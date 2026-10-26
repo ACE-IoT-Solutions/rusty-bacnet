@@ -21,12 +21,14 @@ pub mod alarms;
 mod commands;
 mod constructed;
 mod data;
+mod event_parameter;
+mod fields;
 mod primitive;
 mod recipients;
 mod tagged;
 mod units;
 
-pub use data::Datum;
+pub use data::{Datum, Fields};
 
 use bacnet_encoding::constructed::{ConstructedElement, ElementShape, property_element};
 use bacnet_encoding::primitives::decode_application_value;

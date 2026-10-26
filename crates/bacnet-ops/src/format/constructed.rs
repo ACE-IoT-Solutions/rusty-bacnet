@@ -20,7 +20,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier};
 
 use super::primitive::{date_range, date_text, date_time, month_text, time_text, weekday};
-use super::{ValueFormat, commands, recipients};
+use super::{ValueFormat, commands, event_parameter, recipients};
 use crate::label::{kebab, object_label};
 
 /// The object instance an unset reference names: the standard keeps
@@ -121,7 +121,7 @@ pub(super) fn renderer(element: ConstructedElement) -> Option<Render> {
         E::Recipient => recipients::recipient,
         E::CovSubscription => recipients::cov_subscription,
         E::AddressBinding => recipients::address_binding,
-        E::EventParameter => recipients::event_parameter,
+        E::EventParameter => event_parameter::event_parameter,
         E::ActionList => commands::action_list,
         E::ReadAccessSpecification => commands::read_access_specification,
         E::ReadAccessResult => commands::read_access_result,

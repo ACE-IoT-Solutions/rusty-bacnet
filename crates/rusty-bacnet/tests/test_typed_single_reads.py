@@ -82,9 +82,17 @@ EVENT_PARAMETERS = [
     (bytes.fromhex("9e0a022b19092e21052f9f"),
      {"kind": "extended", "vendor_id": 555, "extended_event_type": 9,
       "parameters": b"\x21\x05"}),
-    # Command-failure, an algorithm the stack keeps as its encoded contents.
     (bytes.fromhex("3e09051e0c0080000719551f3f"),
-     {"kind": "other", "tag": 3, "data": bytes.fromhex("09051e0c0080000719551f")}),
+     {"kind": "command_failure", "time_delay": 5,
+      "feedback_property_reference": SETPOINT}),
+    (bytes.fromhex("be091e190a2a012cbf"),
+     {"kind": "unsigned_range", "time_delay": 30, "low_limit": 10, "high_limit": 300}),
+    (bytes.fromhex("fe1209051a04c0ff12"),
+     {"kind": "change_of_status_flags", "time_delay": 5,
+      "selected_flags": BitString(4, b"\xc0")}),
+    # A tag the standard doesn't assign keeps its encoded contents.
+    (bytes.fromhex("fe1e0905ff1e"),
+     {"kind": "other", "tag": 30, "data": bytes.fromhex("0905")}),
     # The none alternative, context tag 20 with no contents.
     (bytes.fromhex("f814"), {"kind": "none"}),
 ]

@@ -645,21 +645,37 @@ unspecified. An Access Rights rule whose specifiers disagree with the
 references it carries, which no typed write makes, has no `AccessRule` form,
 so its array reads as `application_data`.
 
-An Event_Parameters mapping carries `kind` and the algorithm's members:
-`change_of_bitstring` (`time_delay`, `bitmask`, `list_of_values`, each bit
-string a `BitString` as a `bit_string` value reads),
-`change_of_state` (`time_delay`, `list_of_values` of `(choice_tag, value)`
-pairs: a bool for tag 0, an int for the enumerated and numeric tags, the
-contents as `bytes` for a vendor tag), `change_of_value` (`time_delay`, then
-`bitmask` or `referenced_property_increment`, the other `None`),
-`floating_limit` (`time_delay`, `setpoint_reference` as a
-`DeviceObjectPropertyReference` mapping, `low_diff_limit`, `high_diff_limit`,
-`deadband`), `out_of_range` (`time_delay`, `low_limit`, `high_limit`,
-`deadband`), `extended` (`vendor_id`, `extended_event_type`, `parameters` as
-encoded `bytes`), `none`, or `other` (`tag` and `data`, the encoded contents)
-for an algorithm the stack keeps as octets. There is no typed write; the read
-value writes back as its octets. An enrollment whose parameters were never set
-serves the `none` alternative (#1868).
+An Event_Parameters mapping carries `kind` and the algorithm's members,
+every algorithm of the standard by name (#2090):
+
+| `kind` | Members |
+|--------|---------|
+| `change_of_bitstring` | `time_delay`, `bitmask`, `list_of_values`; each bit string a `BitString` as a `bit_string` value reads |
+| `change_of_state` | `time_delay`, `list_of_values` of `(choice_tag, value)` pairs: a bool for tag 0, an int for the enumerated and numeric tags, the contents as `bytes` for a vendor tag |
+| `change_of_value` | `time_delay`, then `bitmask` or `referenced_property_increment`, the other `None` |
+| `command_failure` | `time_delay`, `feedback_property_reference` |
+| `floating_limit` | `time_delay`, `setpoint_reference`, `low_diff_limit`, `high_diff_limit`, `deadband` |
+| `out_of_range`, `double_out_of_range` | `time_delay`, `low_limit`, `high_limit`, `deadband`, floats |
+| `signed_out_of_range`, `unsigned_out_of_range` | the same members, ints |
+| `unsigned_range` | `time_delay`, `low_limit`, `high_limit` |
+| `change_of_life_safety` | `time_delay`, `list_of_life_safety_alarm_values`, `list_of_alarm_values` (life safety states as ints), `mode_property_reference` |
+| `extended` | `vendor_id`, `extended_event_type`, `parameters` as encoded `bytes` |
+| `buffer_ready` | `notification_threshold`, `previous_notification_count` |
+| `access_event` | `list_of_access_events` (access events as ints), `access_event_time_reference` |
+| `change_of_characterstring` | `time_delay`, `list_of_alarm_values`, strings |
+| `change_of_status_flags` | `time_delay`, `selected_flags`, a `BitString` naming the status flags |
+| `change_of_discrete_value` | `time_delay` |
+| `change_of_timer` | `time_delay`, `alarm_values` (timer states as ints), `update_time_reference` |
+| `none` | no other key |
+| `other` | `tag` and `data`, the encoded contents, for a tag the standard doesn't assign |
+
+A `*_reference` member is a `DeviceObjectPropertyReference` mapping.
+Python has no enumeration class for life safety states, access events or
+timer states, so those are their numbers. Before 0.15 the algorithms from
+`command_failure` on (but `floating_limit` and `extended`) read as `other`.
+There is no typed write; the read value writes back as its octets. An
+enrollment whose parameters were never set serves the `none` alternative
+(#1868).
 
 A Group's Present_Value results, and an `ActionCommand`'s `property_value`,
 are themselves read results: each value is shaped as a read of the property it

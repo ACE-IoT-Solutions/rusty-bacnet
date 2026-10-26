@@ -129,10 +129,7 @@ impl EventEnrollmentObject {
     /// of the BACnetEventParameter CHOICE (context tag 20, a NULL; Clause
     /// 21), so an unset enrollment serves a member of the property's
     /// datatype (#1868). The evaluator has no algorithm to run for it.
-    const UNSET_EVENT_PARAMETERS: BACnetEventParameter = BACnetEventParameter::Opaque {
-        tag: 20,
-        data: Vec::new(),
-    };
+    const UNSET_EVENT_PARAMETERS: BACnetEventParameter = BACnetEventParameter::None;
 
     /// Put the object in the state ASHRAE 135-2020 Clause 13.2.2.1 prescribes
     /// for disabled detection (`Event_Detection_Enable` FALSE): Event_State
@@ -233,11 +230,12 @@ impl EventEnrollmentObject {
     }
 
     /// The pTimeDelay the stored `Event_Parameters` supply: the `time_delay`
-    /// field every evaluated algorithm carries (Table 12-15). Unmodeled
-    /// alternatives — including `none` and the `0xFF` legacy octet layout,
-    /// which have no time-delay slot — contribute zero, so their TDN fallback reads as 0
-    /// and their evaluation fires immediately, exactly as they did before
-    /// delay honoring existed.
+    /// field every evaluated algorithm carries (Table 12-15). Every other
+    /// alternative contributes zero: `none` and the `0xFF` legacy octet
+    /// layout have no time-delay slot, and the algorithms the server doesn't
+    /// evaluate keep the zero they had while they were opaque (#2090). So
+    /// their TDN fallback reads as 0 and their evaluation fires immediately,
+    /// exactly as they did before delay honoring existed.
     fn event_parameters_time_delay(&self) -> u32 {
         use BACnetEventParameter as P;
         match &self.event_parameters {

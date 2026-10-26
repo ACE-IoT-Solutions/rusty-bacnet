@@ -1068,9 +1068,10 @@ Text output names what the device sent:
   confirmed, to-offnormal | to-fault | to-normal`), Event_Parameters,
   Active_COV_Subscriptions, Device_Address_Binding, a Command's actions,
   Group and Global Group members, shed levels, Scale and Prescale, and the
-  access control lists. An Event_Parameters algorithm the CLI has no model
-  for lists its fields by context tag, each field's octets as
-  `[raw …]` since their datatype isn't known: `unsigned-range: [0] [raw 1e],
+  access control lists. Event_Parameters name the algorithm and its
+  fields, `unsigned-range: delay 30 s, low 10, high 300`; a value under a tag
+  the standard doesn't assign lists its fields by context tag, each field's
+  octets as `[raw …]` since their datatype isn't known: `30: [0] [raw 1e],
   [1] [raw 0a]`;
 - a list or array whole, every element, in brackets; an indexed read of an
   array as its one element (`weekly-schedule[3]` is Wednesday), and index 0
@@ -1119,6 +1120,25 @@ join it later without removing `text`. The kinds are `access-rule`,
 `read-access-result`, `read-access-specification`, `recipient`, `scale`,
 `shed-level`, `special-event`, `stage-limit-value`, `time-stamp` and
 `value-source`.
+
+An `event-parameter` element also has `fields`, an object of the value's
+members by their snake-case names in wire order, each in the forms above:
+`algorithm` first (an enumerated named as its event type), then the
+algorithm's members, references as `device-object-property-reference`
+elements and change-of-state values as `property-state` elements:
+
+```json
+{
+  "element": "event-parameter",
+  "text": "unsigned-range: delay 30 s, low 10, high 300",
+  "fields": {
+    "algorithm": {"value": 11, "name": "unsigned-range"},
+    "time_delay": 30,
+    "low_limit": 10,
+    "high_limit": 300
+  }
+}
+```
 
 An error result (`readm`) has no `decoded`. `read-range` adds `decoded` beside
 `items` for a list that isn't a log; log records keep their text form.

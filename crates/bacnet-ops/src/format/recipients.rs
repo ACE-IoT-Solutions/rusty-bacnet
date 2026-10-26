@@ -1,15 +1,12 @@
 //! Notification and subscription elements as text: Recipient_List
-//! destinations, recipients, COV subscriptions, address bindings and an
-//! Event Enrollment's Event_Parameters.
+//! destinations, recipients, COV subscriptions, address bindings and
+//! property states.
 
-use bacnet_encoding::constructed::{
-    decode_cov_subscription, decode_destination, decode_event_parameter, decode_recipient,
-};
+use bacnet_encoding::constructed::{decode_cov_subscription, decode_destination, decode_recipient};
 use bacnet_encoding::primitives::decode_application_value;
 use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{
-    BACnetAddress, BACnetCOVSubscription, BACnetDestination, BACnetEventParameter,
-    BACnetPropertyStates, BACnetRecipient, ChangeOfValueCriteria,
+    BACnetAddress, BACnetCOVSubscription, BACnetDestination, BACnetPropertyStates, BACnetRecipient,
 };
 use bacnet_types::enums::{
     AccessEvent, AccessZoneOccupancyState, BinaryPV, DeviceStatus, DoorAlarmState,
@@ -23,20 +20,8 @@ use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::ValueFormat;
 use super::constructed::reference;
-use super::primitive;
-use super::primitive::{hex, plain_bits, time_text, weekday};
-use super::tagged::fields_text;
+use super::primitive::{hex, time_text, weekday};
 use crate::label::kebab;
-use bacnet_encoding::tags::decode_tag;
-use bacnet_types::enums::PropertyIdentifier;
-
-/// The choice tag `decode_event_parameter` gives the forms that aren't the
-/// wire CHOICE (an application octet string, and a legacy wrapper); those
-/// are left to the generic view.
-const NOT_A_CHOICE: u8 = u8::MAX;
-
-/// The Event_Parameters alternative for no algorithm, `none`.
-const NONE_ALGORITHM: u8 = 20;
 
 /// `network 5 address 0x0a000001bac0`; an empty MAC, a broadcast on
 /// that network, as `network 5 broadcast`.
@@ -267,210 +252,6 @@ fn choice_name(state: &BACnetPropertyStates) -> String {
         text.push(ch.to_ascii_lowercase());
     }
     text
-}
-
-/// The algorithm of an Event_Parameters choice, named as the event type
-/// with the same number.
-fn algorithm(tag: u8) -> String {
-    kebab(EventType::from_raw(u32::from(tag)))
-}
-
-fn delay(seconds: u32) -> String {
-    format!("delay {seconds} s")
-}
-
-/// Bit string octets as `bits(0110)`.
-fn bit_text(unused_bits: u8, data: &[u8]) -> String {
-    plain_bits(&PropertyValue::BitString {
-        unused_bits,
-        data: data.to_vec(),
-    })
-}
-
-/// An Event Enrollment's Event_Parameters: the algorithm, then its
-/// parameters, `out-of-range: delay 5 s, low 10, high 90, deadband 1`.
-fn event_parameter_text(format: &ValueFormat<'_>, parameter: &BACnetEventParameter) -> String {
-    let name = algorithm(parameter.tag());
-    let real = |value: f32| format.real(value);
-    let details = match parameter {
-        BACnetEventParameter::ChangeOfBitstring {
-            time_delay,
-            bitmask,
-            list_of_values,
-        } => format!(
-            "{}, mask {}, alarm values [{}]",
-            delay(*time_delay),
-            bit_text(bitmask.0, &bitmask.1),
-            list_of_values
-                .iter()
-                .map(|(unused, data)| bit_text(*unused, data))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        BACnetEventParameter::ChangeOfState {
-            time_delay,
-            list_of_values,
-        } => format!(
-            "{}, alarm values [{}]",
-            delay(*time_delay),
-            list_of_values
-                .iter()
-                .map(property_state_text)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        BACnetEventParameter::ChangeOfValue {
-            time_delay,
-            criteria,
-        } => {
-            let criteria = match criteria {
-                ChangeOfValueCriteria::Bitmask { unused_bits, data } => {
-                    format!("mask {}", bit_text(*unused_bits, data))
-                }
-                ChangeOfValueCriteria::ReferencedPropertyIncrement(increment) => {
-                    format!("increment {}", real(*increment))
-                }
-            };
-            format!("{}, {criteria}", delay(*time_delay))
-        }
-        BACnetEventParameter::FloatingLimit {
-            time_delay,
-            setpoint_reference: r,
-            low_diff_limit,
-            high_diff_limit,
-            deadband,
-        } => {
-            let mut setpoint = reference(
-                r.object_identifier,
-                r.property_identifier,
-                r.property_array_index,
-            );
-            if let Some(device) = r.device_identifier {
-                setpoint.push_str(&format!(" on device {}", device.instance_number()));
-            }
-            format!(
-                "{}, setpoint {setpoint}, low diff {}, high diff {}, deadband {}",
-                delay(*time_delay),
-                real(*low_diff_limit),
-                real(*high_diff_limit),
-                real(*deadband)
-            )
-        }
-        BACnetEventParameter::OutOfRange {
-            time_delay,
-            low_limit,
-            high_limit,
-            deadband,
-        } => format!(
-            "{}, low {}, high {}, deadband {}",
-            delay(*time_delay),
-            real(*low_limit),
-            real(*high_limit),
-            real(*deadband)
-        ),
-        BACnetEventParameter::Extended {
-            vendor_id,
-            extended_event_type,
-            parameters,
-        } => format!(
-            "vendor {vendor_id} type {extended_event_type}, parameters ({})",
-            fields_text(parameters, format.floats)
-        ),
-        BACnetEventParameter::Opaque { tag, data } if *tag == NONE_ALGORITHM => {
-            return if data.is_empty() {
-                "none".into()
-            } else {
-                format!("none {}", fields_text(data, format.floats))
-            };
-        }
-        // An algorithm with no model here: the out-of-range forms by their
-        // fields, any other by context tag.
-        BACnetEventParameter::Opaque { tag, data } => {
-            out_of_range(format, *tag, data).unwrap_or_else(|| fields_text(data, format.floats))
-        }
-    };
-    format!("{name}: {details}")
-}
-
-/// The datatype of an out-of-range limit.
-#[derive(Clone, Copy)]
-enum Limit {
-    Unsigned,
-    Signed,
-    Double,
-}
-
-/// The double-, signed- and unsigned-out-of-range parameters (choices 14,
-/// 15 and 16): a time delay, then low limit `[1]`, high limit `[2]` and
-/// deadband `[3]`, the limits of the choice's datatype and the deadband a
-/// Double for the double form and an Unsigned otherwise. `None` for any
-/// other choice, or a body of another shape.
-fn out_of_range(format: &ValueFormat<'_>, tag: u8, data: &[u8]) -> Option<String> {
-    let (limits, deadband) = match tag {
-        14 => (Limit::Double, Limit::Double),
-        15 => (Limit::Signed, Limit::Unsigned),
-        16 => (Limit::Unsigned, Limit::Unsigned),
-        _ => return None,
-    };
-    let mut offset = 0;
-    let mut field = |number: u8, kind: Limit| -> Option<String> {
-        let (tag, contents) = decode_tag(data, offset).ok()?;
-        if !tag.is_context(number) || tag.is_opening || tag.is_closing {
-            return None;
-        }
-        let octets = data.get(contents..contents.checked_add(tag.length as usize)?)?;
-        offset = contents + octets.len();
-        let text = match kind {
-            Limit::Unsigned if (1..=8).contains(&octets.len()) => octets
-                .iter()
-                .fold(0u64, |n, b| (n << 8) | u64::from(*b))
-                .to_string(),
-            Limit::Signed if (1..=8).contains(&octets.len()) => {
-                let negative = octets[0] & 0x80 != 0;
-                let start = if negative { -1i64 } else { 0 };
-                octets
-                    .iter()
-                    .fold(start, |n, b| (n << 8) | i64::from(*b))
-                    .to_string()
-            }
-            Limit::Double => {
-                let value = f64::from_be_bytes(octets.try_into().ok()?);
-                primitive::text(
-                    PropertyIdentifier::PRESENT_VALUE,
-                    &PropertyValue::Double(value),
-                    format.floats,
-                )
-            }
-            _ => return None,
-        };
-        Some(text)
-    };
-    let delay_seconds = field(0, Limit::Unsigned)?;
-    let low = field(1, limits)?;
-    let high = field(2, limits)?;
-    let band = field(3, deadband)?;
-    if offset != data.len() {
-        return None;
-    }
-    Some(format!(
-        "delay {delay_seconds} s, low {low}, high {high}, deadband {band}"
-    ))
-}
-
-pub(super) fn event_parameter(
-    format: &ValueFormat<'_>,
-    _: usize,
-    octets: &[u8],
-    offset: usize,
-) -> Result<(String, usize), Error> {
-    let (parameter, end) = decode_event_parameter(octets, offset)?;
-    if let BACnetEventParameter::Opaque {
-        tag: NOT_A_CHOICE, ..
-    } = parameter
-    {
-        return Err(Error::decoding(offset, "not an Event_Parameters choice"));
-    }
-    Ok((event_parameter_text(format, &parameter), end))
 }
 
 #[cfg(test)]

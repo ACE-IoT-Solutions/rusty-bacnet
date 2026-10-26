@@ -1,9 +1,10 @@
 //! `BACnetEventParameter` full ASN.1 framing.
 //!
 //! `BACnetEventParameter` (ASHRAE 135-2020 Clause 21) selects one event
-//! algorithm by context tag and carries that algorithm's settings. Each
-//! alternative that [`BACnetEventParameter`] models is a constructed value
-//! under its own tag, holding context-tagged members that are all required:
+//! algorithm by context tag and carries that algorithm's settings. The tag
+//! is also the number of the event type the algorithm reports. Every
+//! alternative but `none` is a constructed value under its own tag, holding
+//! context-tagged members that are all required:
 //!
 //! | Tag | Alternative | Member tag | Member | Type |
 //! |---|---|---|---|---|
@@ -14,6 +15,8 @@
 //! | | | `[1]` | `list-of-values` | list of `BACnetPropertyStates` |
 //! | `[2]` | `change-of-value` | `[0]` | `time-delay` | Unsigned |
 //! | | | `[1]` | `cov-criteria` | `[0]` bit string or `[1]` REAL, see below |
+//! | `[3]` | `command-failure` | `[0]` | `time-delay` | Unsigned |
+//! | | | `[1]` | `feedback-property-reference` | `BACnetDeviceObjectPropertyReference` |
 //! | `[4]` | `floating-limit` | `[0]` | `time-delay` | Unsigned |
 //! | | | `[1]` | `setpoint-reference` | `BACnetDeviceObjectPropertyReference` |
 //! | | | `[2]` | `low-diff-limit` | REAL |
@@ -23,32 +26,57 @@
 //! | | | `[1]` | `low-limit` | REAL |
 //! | | | `[2]` | `high-limit` | REAL |
 //! | | | `[3]` | `deadband` | REAL |
+//! | `[8]` | `change-of-life-safety` | `[0]` | `time-delay` | Unsigned |
+//! | | | `[1]` | `list-of-life-safety-alarm-values` | list of `BACnetLifeSafetyState` |
+//! | | | `[2]` | `list-of-alarm-values` | list of `BACnetLifeSafetyState` |
+//! | | | `[3]` | `mode-property-reference` | `BACnetDeviceObjectPropertyReference` |
 //! | `[9]` | `extended` | `[0]` | `vendor-id` | Unsigned16 |
 //! | | | `[1]` | `extended-event-type` | Unsigned |
 //! | | | `[2]` | `parameters` | list of extended values, see below |
+//! | `[10]` | `buffer-ready` | `[0]` | `notification-threshold` | Unsigned |
+//! | | | `[1]` | `previous-notification-count` | Unsigned32 |
+//! | `[11]` | `unsigned-range` | `[0]` | `time-delay` | Unsigned |
+//! | | | `[1]` | `low-limit` | Unsigned |
+//! | | | `[2]` | `high-limit` | Unsigned |
+//! | `[13]` | `access-event` | `[0]` | `list-of-access-events` | list of `BACnetAccessEvent` |
+//! | | | `[1]` | `access-event-time-reference` | `BACnetDeviceObjectPropertyReference` |
+//! | `[14]` | `double-out-of-range` | `[0]` | `time-delay` | Unsigned |
+//! | | | `[1]`, `[2]`, `[3]` | `low-limit`, `high-limit`, `deadband` | Double |
+//! | `[15]` | `signed-out-of-range` | `[0]` | `time-delay` | Unsigned |
+//! | | | `[1]`, `[2]` | `low-limit`, `high-limit` | INTEGER |
+//! | | | `[3]` | `deadband` | Unsigned |
+//! | `[16]` | `unsigned-out-of-range` | `[0]` | `time-delay` | Unsigned |
+//! | | | `[1]`, `[2]`, `[3]` | `low-limit`, `high-limit`, `deadband` | Unsigned |
+//! | `[17]` | `change-of-characterstring` | `[0]` | `time-delay` | Unsigned |
+//! | | | `[1]` | `list-of-alarm-values` | list of CharacterString |
+//! | `[18]` | `change-of-status-flags` | `[0]` | `time-delay` | Unsigned |
+//! | | | `[1]` | `selected-flags` | `BACnetStatusFlags` |
+//! | `[20]` | `none` | | | a primitive NULL, no members |
+//! | `[21]` | `change-of-discrete-value` | `[0]` | `time-delay` | Unsigned |
+//! | `[22]` | `change-of-timer` | `[0]` | `time-delay` | Unsigned |
+//! | | | `[1]` | `alarm-values` | list of `BACnetTimerState` |
+//! | | | `[2]` | `update-time-reference` | `BACnetDeviceObjectPropertyReference` |
 //!
-//! `cov-criteria` is either `[0]` `bitmask` (a bit string) or `[1]`
+//! A list is its member's opening and closing tag around application-tagged
+//! items, and a reference its member's tags around the reference's own
+//! members. `cov-criteria` is either `[0]` `bitmask` (a bit string) or `[1]`
 //! `referenced-property-increment` (a REAL). Each extended `parameters` entry
 //! is an application-tagged primitive or a `[0]`-framed
-//! `BACnetDeviceObjectPropertyReference`.
+//! `BACnetDeviceObjectPropertyReference`. Lists hold at most 10,000 items.
 //!
 //! Four tags carry no alternative here. Tag 6 is skipped because it would
 //! mirror the proprietary complex-event-type notification alternative, and
 //! tag 19 is skipped because change-of-reliability has no event parameters.
-//! Tag 7 is deprecated and tag 12 is reserved.
-//!
-//! Alternatives with no Rust model (`command-failure [3]`,
-//! `change-of-life-safety [8]`, `buffer-ready [10]`, `unsigned-range [11]`,
-//! `access-event [13]`, `*-out-of-range [14..=16]`, `change-of-characterstring
-//! [17]`, `change-of-status-flags [18]`, `none [20] NULL`,
-//! `change-of-discrete-value [21]`, `change-of-timer [22]`, vendor tags) are
-//! preserved byte-for-byte through [`BACnetEventParameter::Opaque`]. The
-//! omitted/deprecated/reserved slots 6, 7, 12 and 19 are rejected on decode.
+//! Tag 7 is deprecated and tag 12 is reserved. These four are rejected on
+//! decode. Any other unassigned tag (23 and up) is preserved byte-for-byte
+//! through [`BACnetEventParameter::Opaque`].
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
-use bacnet_types::constructed::{BACnetEventParameter, ChangeOfValueCriteria};
+use bacnet_types::constructed::{
+    BACnetDeviceObjectPropertyReference, BACnetEventParameter, ChangeOfValueCriteria,
+};
 use bacnet_types::error::{DecodeError, DecodingKind, EncodeError, Error};
 use bytes::BytesMut;
 
@@ -68,7 +96,10 @@ use super::{
 /// Decoding one means the peer is speaking something other than the 135-2020
 /// production, so these are hard errors rather than Opaque shadows.
 const RESERVED_EVENT_TAGS: [u8; 4] = [6, 7, 12, 19];
-const MODELED_EVENT_TAGS: [u8; 6] = [0, 1, 2, 4, 5, 9];
+
+/// The highest tag the 2020 production assigns or reserves: every tag up to
+/// it has a variant or is rejected, so none of them is [`BACnetEventParameter::Opaque`].
+const LAST_ASSIGNED_TAG: u8 = 22;
 
 /// Encode a [`BACnetEventParameter`] as its full CHOICE framing.
 ///
@@ -188,19 +219,15 @@ fn encode_event_parameter_into(
             tags::encode_closing_tag(buf, 2);
             tags::encode_closing_tag(buf, 9);
         }
+        BACnetEventParameter::None => {
+            // Clause 21 defines none [20] as context NULL, not an empty SEQUENCE.
+            tags::encode_tag(buf, 20, tags::TagClass::Context, 0);
+        }
         BACnetEventParameter::Opaque { tag, data } if *tag == u8::MAX => {
             // Legacy pre-framing EventEnrollment values used an Octet String.
             primitives::encode_app_octet_string(buf, data);
         }
-        BACnetEventParameter::Opaque { tag: 20, data } if data.is_empty() => {
-            // Clause 21 defines none [20] as context NULL, not an empty SEQUENCE.
-            tags::encode_tag(buf, 20, tags::TagClass::Context, 0);
-        }
-        BACnetEventParameter::Opaque { tag, .. }
-            if *tag == 20
-                || MODELED_EVENT_TAGS.contains(tag)
-                || RESERVED_EVENT_TAGS.contains(tag) =>
-        {
+        BACnetEventParameter::Opaque { tag, .. } if *tag <= LAST_ASSIGNED_TAG => {
             return Err(
                 EncodeError::new("tag [{}] cannot use an opaque constructed body")
                     .within("BACnetEventParameter")
@@ -217,15 +244,164 @@ fn encode_event_parameter_into(
             buf.extend_from_slice(data);
             tags::encode_closing_tag(buf, *tag);
         }
+        BACnetEventParameter::CommandFailure {
+            time_delay,
+            feedback_property_reference,
+        } => {
+            tags::encode_opening_tag(buf, 3);
+            primitives::encode_ctx_unsigned(buf, 0, *time_delay as u64);
+            encode_reference(buf, 1, feedback_property_reference);
+            tags::encode_closing_tag(buf, 3);
+        }
+        BACnetEventParameter::ChangeOfLifeSafety {
+            time_delay,
+            list_of_life_safety_alarm_values,
+            list_of_alarm_values,
+            mode_property_reference,
+        } => {
+            tags::encode_opening_tag(buf, 8);
+            primitives::encode_ctx_unsigned(buf, 0, *time_delay as u64);
+            encode_enumerations(buf, 1, list_of_life_safety_alarm_values.iter().map(|s| s.to_raw()));
+            encode_enumerations(buf, 2, list_of_alarm_values.iter().map(|s| s.to_raw()));
+            encode_reference(buf, 3, mode_property_reference);
+            tags::encode_closing_tag(buf, 8);
+        }
+        BACnetEventParameter::BufferReady {
+            notification_threshold,
+            previous_notification_count,
+        } => {
+            tags::encode_opening_tag(buf, 10);
+            primitives::encode_ctx_unsigned(buf, 0, u64::from(*notification_threshold));
+            primitives::encode_ctx_unsigned(buf, 1, u64::from(*previous_notification_count));
+            tags::encode_closing_tag(buf, 10);
+        }
+        BACnetEventParameter::UnsignedRange {
+            time_delay,
+            low_limit,
+            high_limit,
+        } => {
+            tags::encode_opening_tag(buf, 11);
+            primitives::encode_ctx_unsigned(buf, 0, *time_delay as u64);
+            primitives::encode_ctx_unsigned(buf, 1, *low_limit);
+            primitives::encode_ctx_unsigned(buf, 2, *high_limit);
+            tags::encode_closing_tag(buf, 11);
+        }
+        BACnetEventParameter::AccessEvent {
+            list_of_access_events,
+            access_event_time_reference,
+        } => {
+            tags::encode_opening_tag(buf, 13);
+            encode_enumerations(buf, 0, list_of_access_events.iter().map(|e| e.to_raw()));
+            encode_reference(buf, 1, access_event_time_reference);
+            tags::encode_closing_tag(buf, 13);
+        }
+        BACnetEventParameter::DoubleOutOfRange {
+            time_delay,
+            low_limit,
+            high_limit,
+            deadband,
+        } => {
+            tags::encode_opening_tag(buf, 14);
+            primitives::encode_ctx_unsigned(buf, 0, *time_delay as u64);
+            primitives::encode_ctx_double(buf, 1, *low_limit);
+            primitives::encode_ctx_double(buf, 2, *high_limit);
+            primitives::encode_ctx_double(buf, 3, *deadband);
+            tags::encode_closing_tag(buf, 14);
+        }
+        BACnetEventParameter::SignedOutOfRange {
+            time_delay,
+            low_limit,
+            high_limit,
+            deadband,
+        } => {
+            tags::encode_opening_tag(buf, 15);
+            primitives::encode_ctx_unsigned(buf, 0, *time_delay as u64);
+            primitives::encode_ctx_signed(buf, 1, *low_limit);
+            primitives::encode_ctx_signed(buf, 2, *high_limit);
+            primitives::encode_ctx_unsigned(buf, 3, *deadband);
+            tags::encode_closing_tag(buf, 15);
+        }
+        BACnetEventParameter::UnsignedOutOfRange {
+            time_delay,
+            low_limit,
+            high_limit,
+            deadband,
+        } => {
+            tags::encode_opening_tag(buf, 16);
+            primitives::encode_ctx_unsigned(buf, 0, *time_delay as u64);
+            primitives::encode_ctx_unsigned(buf, 1, *low_limit);
+            primitives::encode_ctx_unsigned(buf, 2, *high_limit);
+            primitives::encode_ctx_unsigned(buf, 3, *deadband);
+            tags::encode_closing_tag(buf, 16);
+        }
+        BACnetEventParameter::ChangeOfCharacterstring {
+            time_delay,
+            list_of_alarm_values,
+        } => {
+            let mut strings = BytesMut::new();
+            for value in list_of_alarm_values {
+                primitives::encode_app_character_string(&mut strings, value)?;
+            }
+            tags::encode_opening_tag(buf, 17);
+            primitives::encode_ctx_unsigned(buf, 0, *time_delay as u64);
+            tags::encode_opening_tag(buf, 1);
+            buf.extend_from_slice(&strings);
+            tags::encode_closing_tag(buf, 1);
+            tags::encode_closing_tag(buf, 17);
+        }
+        BACnetEventParameter::ChangeOfStatusFlags {
+            time_delay,
+            selected_flags,
+        } => {
+            tags::encode_opening_tag(buf, 18);
+            primitives::encode_ctx_unsigned(buf, 0, *time_delay as u64);
+            primitives::encode_ctx_bit_string(buf, 1, 4, &[selected_flags.bits() << 4]);
+            tags::encode_closing_tag(buf, 18);
+        }
+        BACnetEventParameter::ChangeOfDiscreteValue { time_delay } => {
+            tags::encode_opening_tag(buf, 21);
+            primitives::encode_ctx_unsigned(buf, 0, *time_delay as u64);
+            tags::encode_closing_tag(buf, 21);
+        }
+        BACnetEventParameter::ChangeOfTimer {
+            time_delay,
+            alarm_values,
+            update_time_reference,
+        } => {
+            tags::encode_opening_tag(buf, 22);
+            primitives::encode_ctx_unsigned(buf, 0, *time_delay as u64);
+            encode_enumerations(buf, 1, alarm_values.iter().map(|s| s.to_raw()));
+            encode_reference(buf, 2, update_time_reference);
+            tags::encode_closing_tag(buf, 22);
+        }
     }
     Ok(())
 }
 
+/// A reference member: its opening tag, the reference's members, its
+/// closing tag.
+fn encode_reference(buf: &mut BytesMut, tag: u8, reference: &BACnetDeviceObjectPropertyReference) {
+    tags::encode_opening_tag(buf, tag);
+    encode_dopr_body(buf, reference);
+    tags::encode_closing_tag(buf, tag);
+}
+
+/// A list of enumerations member: its opening tag, each value application
+/// tagged, its closing tag.
+fn encode_enumerations(buf: &mut BytesMut, tag: u8, values: impl Iterator<Item = u32>) {
+    tags::encode_opening_tag(buf, tag);
+    for value in values {
+        primitives::encode_app_enumerated(buf, value);
+    }
+    tags::encode_closing_tag(buf, tag);
+}
+
 /// Decode one framed [`BACnetEventParameter`] CHOICE alternative at `offset`.
 ///
-/// Returns the value and the offset past its encoding. Unmodeled (but valid)
-/// alternatives are preserved as [`BACnetEventParameter::Opaque`]; the
-/// omitted/deprecated/reserved tags 6, 7, 12, 19 are rejected.
+/// Returns the value and the offset past its encoding. An alternative under a
+/// tag the 2020 production doesn't assign is preserved as
+/// [`BACnetEventParameter::Opaque`]; the omitted/deprecated/reserved tags 6,
+/// 7, 12, 19 are rejected.
 pub fn decode_event_parameter(
     data: &[u8],
     offset: usize,
@@ -291,13 +467,7 @@ pub fn decode_event_parameter(
     // `none [20] NULL` is the only primitive alternative in this CHOICE.
     if !tag.is_opening && !tag.is_closing {
         if tag.number == 20 && tag.length == 0 {
-            return Ok((
-                EP::Opaque {
-                    tag: 20,
-                    data: Vec::new(),
-                },
-                pos,
-            ));
+            return Ok((EP::None, pos));
         }
         return Err(Error::decoding(
             offset,
@@ -462,9 +632,10 @@ pub fn decode_event_parameter(
                 pos,
             )
         }
+        n @ (3 | 8 | 10 | 11 | 13..=18 | 21 | 22) => members::decode(data, pos, n)?,
         n => {
-            // Unmodeled constructed alternative: preserve the SEQUENCE body
-            // verbatim after validating its nested tag structure.
+            // A tag the 2020 production doesn't assign: preserve the SEQUENCE
+            // body verbatim after validating its nested tag structure.
             let (body, p) = tags::extract_context_value(data, pos, n)?;
             validate_tlv_sequence(body, "opaque event parameters")?;
             (
@@ -480,3 +651,5 @@ pub fn decode_event_parameter(
     validate_tlv_sequence(&data[offset..end], what)?;
     Ok((value, end))
 }
+
+mod members;
