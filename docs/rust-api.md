@@ -3604,7 +3604,11 @@ let ack = client
   port's `max_npdu` and `egress_apdu_limit` follow it and `max_npdu_changes`
   publishes it, so the client builds its next request for it (#2070).
   `with_max_npdu` caps the limits. `local_receive_apdu_capacity` stays as it
-  was when the port was made.
+  was when the port was made (#2087): the port can't know a later limit, and
+  the trait keeps the declaration stable for the stacks above. After a port's
+  limit falls, the router refuses a message routed onto that path that is too
+  long with reject reason 4, and the port's own send fails with
+  `Error::SendTooLong`.
 - The client takes every APDU for the router's application. To host a server
   as well, split the entity, as below.
 
