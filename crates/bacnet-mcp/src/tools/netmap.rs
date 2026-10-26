@@ -1,5 +1,6 @@
 //! `bacnet_network_map`: the networks and routers the client knows, and
-//! the devices on each.
+//! the devices on each; with `bbmd: true`, the BBMD tables of the local
+//! B/IP network and a consistency verdict ([`super::bbmd`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::PoisonError;
@@ -10,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::time::Instant;
 
-use super::{Spec, schema};
+use super::{Spec, bbmd, schema};
 use crate::context::{Call, Ctx, ROUTER_CAP};
 use crate::errors::ToolError;
 
@@ -25,8 +26,14 @@ pub(super) const SPEC: Spec = Spec {
                   true first broadcasts a Who-Is-Router-To-Network (for one network, or all) \
                   and waits wait_s for the routers' answers; that is a broadcast every router \
                   answers, so it needs broad discovery in the server's policy and goes at most \
-                  once a minute. Without send, the routers are the last ones heard. Sends no \
-                  network-layer writes. Read-only.",
+                  once a minute. Without send, the routers are the last ones heard. bbmd: true \
+                  also reads the BDT and FDT (BBMD tables) of the BBMDs \
+                  in reach (the one this server registers with, any bbmds named by a known \
+                  device's or router's ip:port, and the peers their tables list) and returns a \
+                  verdict: entries one BBMD has and its peer lacks, mismatched masks, foreign \
+                  devices near expiry, and BBMDs that didn't answer or don't support the read. \
+                  It needs broad discovery and goes at most once a minute. Sends no table \
+                  writes, registrations or network-layer writes. Read-only.",
     input,
     output,
     idempotent: true,
@@ -55,6 +62,19 @@ fn input() -> Value {
                 "description": "Ask only for the routers to this network, and map only it",
             },
             "wait_s": { "type": "integer", "minimum": 1, "maximum": 30, "default": 3 },
+            "bbmd": {
+                "type": "boolean",
+                "default": false,
+                "description": "Read the BBMD tables of the local B/IP network and check them \
+                                (broad discovery only, once a minute)",
+            },
+            "bbmds": {
+                "type": "array",
+                "items": { "type": "string", "description": "ip:port" },
+                "maxItems": bbmd::MAX_NAMED,
+                "description": "BBMDs to start from besides the registration's: each the B/IP \
+                                address of a device discovered or a router heard (needs bbmd)",
+            },
         }),
         &[],
     )
@@ -65,6 +85,7 @@ fn output() -> Value {
     let strings = json!({ "type": "array", "items": { "type": "string" } });
     schema::output(json!({
         "sent": { "type": "boolean" },
+        "bbmd": bbmd::schema(),
         "routers_heard_s": {
             "type": ["integer", "null"],
             "description": "Seconds since the routers were last asked; null if never",
@@ -106,6 +127,10 @@ pub(super) struct Args {
     send: bool,
     network: Option<u32>,
     wait_s: Option<u64>,
+    #[serde(default)]
+    bbmd: bool,
+    #[serde(default)]
+    bbmds: Vec<String>,
 }
 
 pub(super) async fn run<T: TransportPort + 'static>(
@@ -126,8 +151,21 @@ pub(super) async fn run<T: TransportPort + 'static>(
         ctx.allow_network(network)?;
     }
     let engine = ctx.engine()?;
-    if args.send {
-        ask_routers(ctx, call, network, args.wait_s).await?;
+    if !args.bbmd && !args.bbmds.is_empty() {
+        return Err(ToolError::invalid("bbmds", "bbmds needs bbmd: true"));
+    }
+    // Checked before anything is sent, so a refusal sends nothing.
+    let plan = match args.bbmd {
+        true => Some(bbmd::plan(ctx, engine, &args.bbmds).await?),
+        false => None,
+    };
+    if args.send
+        && let Err(error) = ask_routers(ctx, call, network, args.wait_s).await
+    {
+        if let Some(plan) = &plan {
+            bbmd::release(ctx, plan);
+        }
+        return Err(error);
     }
     let style = engine.address_style();
     let address = |mac: &[u8]| style.locate(mac, None).0;
@@ -198,13 +236,17 @@ pub(super) async fn run<T: TransportPort + 'static>(
             })
         })
         .collect();
-    Ok(json!({
+    let mut body = json!({
         "sent": args.send,
         "routers_heard_s": heard,
         "routers": routers,
         "networks": networks,
         "limits": ctx.limits(None),
-    }))
+    });
+    if let Some(plan) = plan {
+        body["bbmd"] = bbmd::run(engine, call, plan).await;
+    }
+    Ok(body)
 }
 
 /// Broadcast a Who-Is-Router-To-Network and keep what answers, if the

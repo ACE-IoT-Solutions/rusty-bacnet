@@ -13,8 +13,8 @@ use ratatui::crossterm::event::KeyCode;
 use super::*;
 use crate::tui::app::network::View;
 use crate::tui::app::watch::Screen;
-use crate::tui::network::matrix::Probe;
 use crate::tui::network::{BdtRow, FdtRow, Foreign, NetworkCommand, NetworkEvent};
+use bacnet_ops::bbmd::Probe;
 
 fn at_ip(last: u8) -> SocketAddrV4 {
     SocketAddrV4::new(Ipv4Addr::new(10, 0, last, 1), 47808)

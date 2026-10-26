@@ -257,7 +257,7 @@ openWorldHint: false`.
 |---|---|---|---|---|
 | `bacnet_discover` | 1 | RO, idempotent | `send` (default true), `scope` (local, network, directed, global), `network`, `address`, `range`, `wait_s` (1 to 30), `cursor` | devices: instance, address, network, vendor, max APDU, segmentation, last seen; names only on request |
 | `bacnet_find_object` | 1 | RO | `name`, `description`, `object` or `types`; `range`, `cursor` | matches: device, object, name and description (untrusted); devices incomplete or skipped |
-| `bacnet_network_map` | 1 | RO | `send`, `network`, `wait_s` (a BBMD's tables and a consistency verdict: **planned**) | routers and the networks they reach; networks with routers, speed, rate and devices |
+| `bacnet_network_map` | 1 | RO | `send`, `network`, `wait_s`, `bbmd` and `bbmds` (built in #2102) | routers and the networks they reach; networks with routers, speed, rate and devices; with `bbmd`, the BBMDs' BDT and FDT and a consistency verdict |
 | `bacnet_read` | 1 | RO, idempotent | `device`, `reads` (up to 100: object, properties or `all`/`required`, index), `preset` (`point`, `device`), `format` (display, typed, both) | results per property: value or BACnet error; `via` rpm or rp |
 | `bacnet_list_objects` | 1 | RO | `device`, `types`, `names`, `cursor` | objects, total, next cursor |
 | `bacnet_describe_device` | 1 | RO, idempotent | `device`, `count_objects` | vendor, model, firmware and software versions, protocol revision, services and object types by name, segmentation, APDU size, database revision, route |
@@ -287,6 +287,11 @@ Notes:
 - `bacnet_network_map` with `send: true` broadcasts a
   Who-Is-Router-To-Network, which every router answers, so it follows the
   broad-discovery rule: allowed by the policy, and one a minute.
+- `bacnet_network_map` with `bbmd: true` (#2102) reads BDTs and FDTs by
+  the read messages of Annex J only, starting from the registration's BBMD
+  or a known device's or router's address and following the tables (no
+  scan), up to 16 BBMDs, four at once. It follows the same broad rule,
+  with its own minute.
 - A page budget keeps text under about 24 kB and structured content under
   about 64 kB per call. A larger result returns a page and `next_cursor`.
   Default page sizes: 200 devices, 200 objects, 100 property values, 500

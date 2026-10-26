@@ -3,14 +3,14 @@
 //! silent peer's three seconds cost no wall-clock time.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use bacnet_transport::bbmd::BdtEntry;
 use bacnet_transport::bvll::BvlcResultCode;
 use tokio::time::Instant;
 
-use crate::tui::network::matrix::Matrix;
+use bacnet_ops::bbmd::Matrix;
 
 use super::*;
 

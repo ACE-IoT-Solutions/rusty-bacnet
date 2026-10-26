@@ -10,41 +10,22 @@
 //! entry makes broadcasts reach a subnet one way only, which is quiet in
 //! the field: nothing errors, devices just go missing.
 //!
-//! Pure functions only: the worker reads the tables, the view draws the
-//! grid.
+//! Pure functions only: a front end reads the tables (the TUI's network
+//! worker, the MCP server's network map) and shows the grid or findings.
 
 use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_transport::bvll::BvlcResultCode;
 
-use super::BdtRow;
+use super::{BdtRow, Outcome};
 
 /// What reading one BBMD's BDT gave.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Probe {
-    /// Its table.
-    Table(Vec<BdtRow>),
-    /// It answered with this NAK result.
-    Nak(BvlcResultCode),
-    /// It did not answer, or the request could not be sent.
-    Unreachable(String),
-    /// Not read: the survey had reached its limit.
-    Skipped,
-}
-
-impl Probe {
-    fn table(&self) -> Option<&[BdtRow]> {
-        match self {
-            Self::Table(rows) => Some(rows),
-            _ => None,
-        }
-    }
-}
+pub type Probe = Outcome<Vec<BdtRow>>;
 
 /// One cell of the grid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Cell {
+pub enum Cell {
     /// The row's BDT lists the column with this mask; `mixed` when other
     /// tables list the column with a different one.
     Listed {
@@ -64,7 +45,7 @@ pub(crate) enum Cell {
 
 /// One problem the matrix shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Finding {
+pub enum Finding {
     /// `from` lists `to`, but `to` does not list `from`: broadcasts reach
     /// `to`'s subnet from `from`'s, and not back.
     Asymmetric {
@@ -100,7 +81,7 @@ pub(crate) enum Finding {
 
 impl Finding {
     /// One line for the findings list.
-    pub(crate) fn describe(&self) -> String {
+    pub fn describe(&self) -> String {
         match self {
             Self::Asymmetric { from, to } => {
                 format!(
@@ -125,19 +106,19 @@ impl Finding {
 
 /// The grid and its findings.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Matrix {
+pub struct Matrix {
     /// The BBMDs, rows and columns alike, in the order the survey found them.
-    pub(crate) bbmds: Vec<SocketAddrV4>,
+    pub bbmds: Vec<SocketAddrV4>,
     /// `cells[row][column]`.
-    pub(crate) cells: Vec<Vec<Cell>>,
+    pub cells: Vec<Vec<Cell>>,
     /// Every problem found, in the order the view lists them.
-    pub(crate) findings: Vec<Finding>,
+    pub findings: Vec<Finding>,
 }
 
 impl Matrix {
     /// Build the grid from what a survey read. A BBMD some table lists but
     /// the survey has no probe for is added as a row that could not be read.
-    pub(crate) fn build(probes: &[(SocketAddrV4, Probe)]) -> Self {
+    pub fn build(probes: &[(SocketAddrV4, Probe)]) -> Self {
         let mut bbmds: Vec<SocketAddrV4> = Vec::new();
         let mut add = |address: SocketAddrV4| {
             if !bbmds.contains(&address) {
@@ -146,7 +127,7 @@ impl Matrix {
         };
         for (bbmd, probe) in probes {
             add(*bbmd);
-            for row in probe.table().unwrap_or_default() {
+            for row in probe.table().map_or(&[][..], Vec::as_slice) {
                 add(row.address);
             }
         }
@@ -156,7 +137,7 @@ impl Matrix {
                 probes
                     .iter()
                     .find(|(address, _)| address == bbmd)
-                    .and_then(|(_, probe)| probe.table())
+                    .and_then(|(_, probe)| probe.table().map(Vec::as_slice))
             })
             .collect();
         // The mask each table gives a BBMD: the first entry for it.
@@ -226,7 +207,7 @@ impl Matrix {
     }
 
     /// True when every table was read and nothing disagrees.
-    pub(crate) fn consistent(&self) -> bool {
+    pub fn consistent(&self) -> bool {
         self.findings.is_empty()
             && self
                 .cells
