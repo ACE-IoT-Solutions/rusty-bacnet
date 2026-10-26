@@ -412,3 +412,41 @@ fn row_errors_keep_the_device_answer_typed() {
     assert_eq!(other, RowError::Other("encoding error: bad tag".into()));
     let _: &dyn std::error::Error = &other;
 }
+
+/// A string, or an element that may quote one, may hold device text; the
+/// formatter's own numbers, names and plain elements don't (#2074).
+#[test]
+fn device_text_is_told_apart_from_the_formatters_own() {
+    let element = |kind: &str, fields: Option<Fields>| Datum::Constructed {
+        element: kind.into(),
+        text: "x".into(),
+        fields,
+    };
+    let named = Datum::Enumerated {
+        value: 1,
+        name: Some("active".into()),
+    };
+    for plain in [
+        Datum::Real(1.0),
+        named.clone(),
+        element("time-stamp", None),
+        Datum::List(vec![Datum::Unsigned(1), element("date-range", None)]),
+        element(
+            "time-stamp",
+            Some(Fields::new(vec![("state".into(), named)])),
+        ),
+    ] {
+        assert!(!plain.may_hold_device_text(), "{plain:?}");
+    }
+    for text in [
+        Datum::Text("Fan".into()),
+        Datum::List(vec![Datum::Unsigned(1), Datum::Text("Fan".into())]),
+        element("name-value", None),
+        element(
+            "time-stamp",
+            Some(Fields::new(vec![("label".into(), Datum::Text("x".into()))])),
+        ),
+    ] {
+        assert!(text.may_hold_device_text(), "{text:?}");
+    }
+}

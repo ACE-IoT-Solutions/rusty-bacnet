@@ -119,7 +119,7 @@ async fn a_read_property_over_bip_shows_the_tapped_request_and_response() {
         labels.contains(&"Service: read-property".to_string()),
         "{labels:?}"
     );
-    assert!(labels.iter().any(|l| l == "Real: 72.5"), "{labels:?}");
+    assert!(labels.iter().any(|l| l == "Value: 72.5"), "{labels:?}");
 
     filter(&mut app, "svc:ReadProperty errors");
     assert_eq!(app.capture.visible().collect::<Vec<_>>(), [4]);

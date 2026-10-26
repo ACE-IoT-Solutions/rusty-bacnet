@@ -115,11 +115,8 @@ fn odd_charsets_trailing_octets_and_truncation_are_masked() {
     let frame = testing::bip(&npdu(&request(REINIT, &body)), false);
     let masked = redacted(Framing::Bip, &frame).expect("masked");
     assert!(!holds(&masked, b"\0h\0u\0n"), "{masked:?}");
-    assert_eq!(
-        &masked[masked.len() - 2..],
-        &[0xAA, 0xBB],
-        "only the password"
-    );
+    // What follows the password is masked too: nothing after it is trusted.
+    assert_eq!(&masked[masked.len() - 2..], b"**", "the tail too");
     // Invalid UTF-8 under character set 0.
     let body = [&reinit_state[..], &ctx_string(1, 0, b"\xFF\xFEsecret-xyz")].concat();
     let frame = testing::bip(&npdu(&request(REINIT, &body)), false);
@@ -305,5 +302,118 @@ fn frames_are_scrubbed_whichever_way_they_went() {
         let scrubbed = scrub(frame(direction));
         assert!(scrubbed.redacted);
         assert!(!holds(&scrubbed.bytes, b"hunter2"));
+    }
+}
+
+/// Every label of a decode tree, depth first.
+fn tree_labels(fields: &[bacnet_ops::decode::tree::Field], out: &mut Vec<String>) {
+    for field in fields {
+        out.push(field.label.clone());
+        tree_labels(&field.children, out);
+    }
+}
+
+/// A masked DCC or ReinitializeDevice frame decodes with its fields named
+/// (#2074), and the tree shows the password as hidden: neither the secret
+/// nor its mask, plain or as hex.
+#[test]
+fn the_decode_tree_of_a_masked_frame_names_fields_and_hides_the_password() {
+    let cases = [
+        (
+            testing::bip(&npdu(&dcc(Some("Zq7-hunter2"))), false),
+            "Enable/disable: disable-initiation",
+        ),
+        (
+            testing::bip(&reinit_npdu("Zq7-hunter2"), false),
+            "Reinitialized state: coldstart",
+        ),
+    ];
+    for (frame, named) in cases {
+        let masked = masked_in_place(Framing::Bip, &frame, b"Zq7-hunter2");
+        let mut labels = Vec::new();
+        tree_labels(
+            &bacnet_ops::decode::tree::decode_tree(Framing::Bip, &masked),
+            &mut labels,
+        );
+        assert!(labels.iter().any(|l| l == named), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l == "Password: (hidden)"),
+            "{labels:?}"
+        );
+        let all = labels.join("\n");
+        for leaked in ["hunter2", "***", "2A2A2A", "68756E74"] {
+            assert!(!all.contains(leaked), "{leaked} in {all}");
+        }
+    }
+}
+
+/// A password tag whose length claims too little leaves the rest of the
+/// password to read as more tags: it is masked from the password on to the
+/// end of the APDU, so neither the ring nor the decode tree holds it.
+#[test]
+fn a_password_that_claims_too_little_is_masked_to_the_end() {
+    // DCC: [1] disable, a [2] of 2 octets ("h"), then "unte" as a [0].
+    let dcc = [0x19, 0x00, 0x2A, 0x00, 0x68, 0x0C, 0x75, 0x6E, 0x74, 0x65];
+    // Reinitialize: [0] coldstart, a [1] of 2 octets, then "unt" as a [0].
+    let reinit = [0x09, 0x00, 0x1A, 0x00, 0x68, 0x0B, 0x75, 0x6E, 0x74];
+    for apdu in [request(DCC, &dcc), request(REINIT, &reinit)] {
+        let frame = testing::bip(&npdu(&apdu), false);
+        let masked = redacted(Framing::Bip, &frame).expect("masked");
+        assert_eq!(masked.len(), frame.len());
+        for secret in [&b"unt"[..], b"h", &[0x75, 0x6E]] {
+            assert!(!holds(&masked[frame.len() - apdu.len() + 4..], secret));
+        }
+        let mut labels = Vec::new();
+        tree_labels(
+            &bacnet_ops::decode::tree::decode_tree(Framing::Bip, &masked),
+            &mut labels,
+        );
+        let all = labels.join("\n");
+        for leaked in ["unt", "756E74", "68756E74", "2A2A"] {
+            assert!(!all.contains(leaked), "{leaked} in {all}");
+        }
+    }
+}
+
+/// Masked segments of a ReinitializeDevice request decode with the
+/// password hidden: the first segment's tag walk names it hidden, and a
+/// later segment is one opaque leaf. Neither the secret nor its mask shows.
+#[test]
+fn the_decode_tree_of_masked_segments_hides_the_password() {
+    let mut body = BytesMut::new();
+    ReinitializeDeviceRequest {
+        reinitialized_state: ReinitializedState::WARMSTART,
+        password: Some("Zq7-hunter2".into()),
+    }
+    .encode(&mut body)
+    .unwrap();
+    // First segment (sequence 0, window 4), then a later one (sequence 1)
+    // carrying more of the password.
+    let first = [&[0x0E, 0x05, 0x01, 0x00, 0x04, REINIT.to_raw()][..], &body].concat();
+    let later = [
+        &[0x0E, 0x05, 0x01, 0x01, 0x04, REINIT.to_raw()][..],
+        b"hunter2-Xv9",
+    ]
+    .concat();
+    for (apdu, expected) in [
+        (first, "Password: (hidden)"),
+        (
+            later,
+            "Segment data: 11 octets, hidden (may hold a password)",
+        ),
+    ] {
+        let frame = testing::bip(&npdu(&apdu), false);
+        let masked = redacted(Framing::Bip, &frame).expect("masked");
+        assert!(!holds(&masked, b"hunter2"));
+        let mut labels = Vec::new();
+        tree_labels(
+            &bacnet_ops::decode::tree::decode_tree(Framing::Bip, &masked),
+            &mut labels,
+        );
+        assert!(labels.iter().any(|l| l == expected), "{labels:?}");
+        let all = labels.join("\n");
+        for leaked in ["hunter2", "***", "2A2A2A", "68756E74"] {
+            assert!(!all.contains(leaked), "{leaked} in {all}");
+        }
     }
 }
