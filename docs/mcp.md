@@ -34,7 +34,7 @@ input and output schemas and structured content plus a text rendering.
 | `bacnet_list_objects` | Object_List, cached five minutes per device for paging; `types` filter; `names` reads each name (50 a page). A list read element by element stops at the call's budget and keeps its place, so the next call (with `next_cursor`) goes on from there; `list.complete` says when it's done. Calls on one device take turns, so progress never goes back. A resumed read checks the count again and starts over if it changed, and one begun more than 10 minutes ago starts over; an element the device can't give is a gap (`list.gaps`); at most 64 devices' lists are kept |
 | `bacnet_describe_device` | The Device object's summary properties, services and object types by name, the address and route; `count_objects` |
 | `bacnet_find_object` | Objects across the discovery table, within reach and an optional device `range`: by `name` or `description` (a case-insensitive substring of the cleaned device text), `object` or `types`. Lists come from `bacnet_list_objects`' cache (read once, kept five minutes); a text match reads each candidate's name (and description, if asked) once, kept five minutes too. A page holds up to 100 matches (or the policy's object page), and a full page ends before the next device is read; the cursor packs a device and a candidate index. Names are kept cleaned and capped at 4,096 characters, which a search matches against (a result shows the policy's text cap of them), at most 4,096 objects a device and 16,384 in all. A device whose list read stopped is under `incomplete` with why, after searching what was read; one that failed is under `skipped` with its error; a list read cut by the budget resumes on the next page. A device that stops answering while its names are read is under `incomplete` too, and the search moves on without a cursor back to it, so a silent device doesn't cost each later page a timeout; search it alone to retry. |
-| `bacnet_network_map` | Networks in `[mcp] networks`, each with its routers (from the last Who-Is-Router-To-Network and from the routed devices' router addresses), its speed and rate under the policy, and its devices in reach; and the routers with the networks each reaches. `send: true` broadcasts a Who-Is-Router-To-Network: it needs `broad_discovery`, goes at most once a minute (checked and claimed under one lock), takes the local network's slot and is charged. The wait for answers ends with the call's budget, counted after the wait for the rate slot. A query cancelled while it waits (for the slot or for answers) keeps its claim on the minute but records no routers; at most 256 routers are kept, replaced by each finished query (one asking about a single network merges into them, the routers just heard first). No network-layer writes. |
+| `bacnet_network_map` | Networks in `[mcp] networks`, each with its routers (from the last Who-Is-Router-To-Network and from the routed devices' router addresses), its speed and rate under the policy, and its devices in reach; and the routers with the networks each reaches. `send: true` broadcasts a Who-Is-Router-To-Network: it needs `broad_discovery`, goes at most once a minute (checked and claimed under one lock), takes the local network's slot and is charged. The wait for answers ends with the call's budget, counted after the wait for the rate slot. A query cancelled while it waits (for the slot or for answers) keeps its claim on the minute but records no routers; at most 256 routers are kept, replaced by each finished query (one asking about a single network merges into them, the routers just heard first). `bbmd: true` adds the BBMD tables and a consistency verdict (see [BBMD tables](#bbmd-tables)). No network-layer writes, table writes or registrations. |
 | `bacnet_read_trend` | A Trend Log or Trend Log Multiple through `Engine::read_trend`, each request charged. From the oldest record or after `from`, up to `to`; at most `max_records` (500 by default, 2,000 at most, and about 60 kB of structured content) a call, then a cursor holding the log's next sequence number (a log that has more but gives no sequence number to resume from returns `truncated` without a cursor, and says why under `stopped`). `from` after `to` is a JSON-RPC -32602.
  Records: time, sequence number, `values` as `Datum`s (a failure as its error), status flags named, `flagged` when a status flag is set or the record is a log status change. A summary of the records read comes with every call: count, flagged, log status and time-change counts, first and last time, and per column (a member of a Trend Log Multiple) count, min, max and mean of numbers, counts of booleans and enumerations by value, failures. Once the device has answered the first page, a call reads the log's Log_DeviceObjectProperty once (one more charged request, through `Engine::log_columns`, so a silent device still costs one timeout) and names each column's enumerations and bit strings by the property it samples, in `values` and in the state counts (#2091); when that read fails or names nothing, values keep their numbers. State keys are therefore names when the reference names them and numbers otherwise, and can differ between calls on the same log if the reference read fails on one of them. A column that samples a binary or multi-state object's state (its Present_Value and the like) counts its samples as states, keyed `active`/`inactive` or by state number, never as numbers to average; when the reference read fails, the call doesn't know the column holds states, so a multi-state column falls back to `numeric` and `numeric` versus `states` can also differ between calls. The call then reads that object's Active_Text and Inactive_Text, or State_Text: one more charged request an object, once a call, for at most 8 objects on the log's own device, and skipped once the call's budget is spent (#2122). The texts are device strings, so they never become keys or join a value: the column's `state_texts` maps each state key it counted to its text, as the device sent it, in an untrusted envelope (cleaned and capped there, with `truncated` set when cut) (source `device N multi-state-value:1 state-text`, `active-text` or `inactive-text`), and is null when no key has one (a refused read, an empty text, a state past the end of State_Text). `summary: true` reads up to 20,000 records and returns only the summary. `pages`, `more_items` (answers cut short by the device) and `gaps` report how the reading went. |
 | `bacnet_alarms` | GetEventInformation through `bacnet_ops::format::alarms` (#2077): objects, states, transitions, notify types, timestamps and priorities named; paged over the device's answers (`more_events`) up to `max` (100) a call, the cursor holding the last object; once the call's budget is spent no further answer is asked for, and what was read comes back with `more_events` and a cursor (`format::alarms::read_event_information_until`).  `summaries: true` adds GetAlarmSummary and GetEnrollmentSummary on the first page; a device refusing one reports it under `summary_errors`. When the events spent the call's budget, neither is sent, and each shows under `summary_errors` as `{"skipped": "budget"}`. Every datum is passed through the envelope check. |
@@ -147,6 +147,67 @@ lifetime), cancelling its subscription. It counts against the same
 per-principal cap; a point past it, or a device out of reach, is an error
 row while the others are returned.
 
+## BBMD tables
+
+`bacnet_network_map` with `bbmd: true` reads the broadcast distribution
+table (BDT) and foreign device table (FDT) of the BBMDs in reach, by
+Read-Broadcast-Distribution-Table and Read-Foreign-Device-Table only (Annex
+J.2.3 and J.2.7), and returns them under `bbmd` with a verdict.
+
+- **Which BBMDs.** No address range is scanned. The survey starts from the
+  BBMD the server registers with as a foreign device (the profile's
+  registration) and from up to four `bbmds` the agent names, each the B/IP
+  `ip:port` of a device in the discovery table (one the policy allows) or of
+  a router heard; any other address is refused (`address-not-known`). From
+  there it follows each BDT read to the BBMDs it lists, breadth first, up
+  to 16 BBMDs; those past the limit come back as a count with a few
+  examples (`unread`). With nothing to start from it is refused
+  (`no-bbmd-known`).
+- **Peers are device data, so they are filtered.** A BDT peer is on
+  network 0 by definition, so following it stays within reach, but its
+  address comes from whatever the BBMD holds. An entry that is all zeros
+  (a host name the BBMD couldn't resolve), unspecified or port 0, the
+  limited broadcast, a directed broadcast (the server's own broadcast
+  address, or every host bit of the entry's own mask set: an entry is
+  always a BBMD's unicast address), multicast, loopback (unless the server itself is on
+  loopback) or the server's own address is never read: it is reported as a
+  `not-followed` finding with its reason (`unresolved`, `unspecified`,
+  `broadcast`, `directed-broadcast`, `multicast`, `loopback`,
+  `own-address`). A named seed must pass the same check, or the call is
+  an `invalid-argument`. The TUI's survey
+  applies the same filter.
+- **Reach and charging.** Every BBMD is on the server's own B/IP network,
+  so `[mcp] networks` must include 0 (else `network-not-allowed`); a server
+  whose link isn't B/IP refuses (`needs-bip`). Like a router query, it needs
+  `broad_discovery` and goes at most once a minute. Each table read is one
+  request under the local network's rate, the global rate and the caller's
+  tokens. Four BBMDs are read at once, so a silent one costs one 3 s
+  timeout without holding up the others, and a read the call's budget
+  can't wait for isn't sent. The FDT is read only from a BBMD that gave its
+  BDT.
+- **The verdict.** `inconsistent` when the BDTs disagree, `incomplete` when
+  they don't but some BBMD wasn't read, else `consistent`. Each finding
+  names its addresses: `one-way-entry` (`from` lists `to`, which doesn't
+  list it back), `missing-own-entry` (a non-empty table without the BBMD itself),
+  `no-peers` (an empty table, as a BBMD serving only foreign devices has: a
+  note that leaves the verdict alone), `mismatched-masks` (the BBMD and
+  every mask the tables give it), `read-not-supported` (a NAK: the BBMD
+  refused the read or doesn't support it, as a node that is no BBMD
+  answers; not an error), `not-followed`,
+  `no-answer`, and `foreign-device-expiring` (under 30 s left, which is
+  inside the BBMD's 30 s grace period: the device is past its time-to-live
+  without registering again). Addresses are `ip:port`, masks dotted, with
+  where peers forward each entry's broadcasts (`forward_to`), and times in
+  seconds.
+- **Bounds.** Each table lists its first 24 entries with its `count` (the
+  check uses them all), at most 64 findings are listed with
+  `finding_count`, and `truncated` says when anything was cut. The
+  consistency check compares only the tables read, so its work is bounded
+  by the 16 reads, not by what the tables list. A survey whose every read
+  the call's budget left unsent gives its minute back. The table
+  rows, the survey and the consistency matrix are `bacnet_ops::bbmd`'s,
+  shared with the TUI's Network screen.
+
 ## Passive mode and resources
 
 `--passive` lists only `bacnet://session` and `bacnet://ledger` and no
@@ -179,7 +240,8 @@ offered.
   strings, a character-string value in `typed`, and the `text` of a
   constructed element whose kind can hold a string (a name and value, a
   schedule's values, an access result, an unnamed kind), but not of one
-  that can't (a time stamp, a reference, a date range). An element's
+  that can't (a time stamp, a date and time, a reference, a date range:
+  the kinds in `bacnet_ops::format::PLAIN_ELEMENTS`). An element's
   `fields` are values in turn, so a character string among them (a
   change-of-characterstring alarm value) is enveloped too. The display text is
   enveloped whole only when the value holds device text. Each envelope is
@@ -241,7 +303,14 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   policy's reach, broad discovery (wide ranges, ranges outside the policy,
   parallel calls), network numbers, network-paced Who-Is, cancellation, a
   long indexed Object_List across calls, and output schemas (success and
-  error results of all nine tools, nested values included).
+  error results of all ten tools, nested values included).
+- `crates/bacnet-mcp/src/tests/bbmd.rs`: real BBMDs on loopback. A survey
+  from the registration's BBMD reports a missing peer entry, a refused
+  read, a silent address (one timeout) and a foreign device near expiry,
+  and the wire shows only table reads; a known device's address seeds a
+  survey that names mismatched masks; unknown addresses, a device outside
+  the policy, a network outside it, no broad discovery, a second survey
+  within the minute and passive mode are refused with nothing sent.
 - `crates/bacnet-mcp/src/tests/site.rs` and `trends.rs` (part B): finding
   objects by name, type and object, cached names, pages across devices,
   reach and skipped devices; the network map, its broad-request rule and

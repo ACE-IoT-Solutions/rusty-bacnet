@@ -126,7 +126,7 @@ The COV limits are `CovPolicy` fields you can change. The CreateObject limit cou
 
 ## Describe the device in a PICS
 
-Rust's `server.generate_pics(&PicsConfig)` builds a Protocol Implementation Conformance Statement from the served objects and the server's services. `PicsConfig` supplies what the server can't know, such as the vendor and model names, and `Pics::generate_text()` or `generate_markdown()` renders it. Python has no PICS generator. See <a href={`https://docs.rs/bacnet-server/${release}/bacnet_server/pics/index.html`}>bacnet_server::pics</a> on docs.rs.
+Rust's `server.generate_pics(&PicsConfig)` builds a Protocol Implementation Conformance Statement from the served objects and the server's services. `PicsConfig` supplies what the server can't know, such as the vendor and model names, and `Pics::generate_text()` or `generate_markdown()` renders it. Python has no PICS generator. [Generate a PICS for your device](/rusty-bacnet/integrate/pics/) walks through a program and the fields you fill in. See <a href={`https://docs.rs/bacnet-server/${release}/bacnet_server/pics/index.html`}>bacnet_server::pics</a> on docs.rs.
 
 ## Stop the server
 

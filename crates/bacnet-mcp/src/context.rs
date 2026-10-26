@@ -53,6 +53,9 @@ pub(crate) struct Ctx<T: TransportPort + 'static> {
     /// What Who-Is-Router-To-Network queries found, and when the last one
     /// went; at most one goes a minute.
     pub(crate) routers: Mutex<Routers>,
+    /// When the last BBMD survey of `bacnet_network_map` began; at most
+    /// one goes a minute.
+    pub(crate) bbmd_asked: Mutex<Option<Instant>>,
     /// The watch hub; `None` in passive mode.
     pub(crate) hub: Option<Hub<T>>,
     /// What the principal watches, and the subscriptions waiting for their

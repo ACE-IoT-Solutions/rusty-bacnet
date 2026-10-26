@@ -117,6 +117,21 @@ fn violations(schema: &Value, value: &Value, path: &str, out: &mut Vec<String>) 
     }
 }
 
+/// Check `body` against `tool`'s output schema, as the server lists it.
+pub(super) async fn check_output(agent: &mut super::Agent, tool: &str, body: &Value) {
+    let tools = agent.request("tools/list", json!({})).await;
+    let schema = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == json!(tool))
+        .map(|t| t["outputSchema"].clone())
+        .unwrap();
+    let mut out = Vec::new();
+    violations(&schema, body, "$", &mut out);
+    assert!(out.is_empty(), "{tool}: {out:?}");
+}
+
 /// The validator itself catches a wrong type, a missing field and a value
 /// outside an enum.
 #[test]
@@ -225,6 +240,8 @@ async fn results_fit_their_output_schemas() {
         ("bacnet_find_object", json!({ "range": "1201" })),
         ("bacnet_network_map", json!({})),
         ("bacnet_network_map", json!({ "send": true })),
+        // The lab's link is no B/IP: refused (tests/bbmd.rs checks a survey).
+        ("bacnet_network_map", json!({ "bbmd": true })),
         (
             "bacnet_read_trend",
             json!({ "device": 1201, "object": "trend-log:1", "max_records": 60 }),
