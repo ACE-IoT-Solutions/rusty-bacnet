@@ -80,9 +80,11 @@ delete_cache() {
     fi
     # Match gh's JSON/plain HTTP diagnostics, choosing the last one over
     # earlier body lookalikes. Scope or SSO guidance may follow that line.
+    # gh prints a compact JSON body with no trailing newline, so its
+    # diagnostic can follow the body's closing brace on the same line.
     status=$(sed -n \
-      -e 's/^gh: .* (HTTP \([0-9][0-9][0-9]\))$/\1/p' \
-      -e 's/^gh: HTTP \([0-9][0-9][0-9]\)$/\1/p' <<<"$out" | tail -n 1)
+      -e 's/^\(.*}\)\{0,1\}gh: .* (HTTP \([0-9][0-9][0-9]\))$/\2/p' \
+      -e 's/^\(.*}\)\{0,1\}gh: HTTP \([0-9][0-9][0-9]\)$/\2/p' <<<"$out" | tail -n 1)
     case "$status" in
       404)
         # The other workflow's prune, or an earlier attempt, got there first.
