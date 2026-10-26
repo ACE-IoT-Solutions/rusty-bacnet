@@ -131,7 +131,7 @@ fn envelope_object() -> Value {
 
 /// The typed form of a value: one decoded value, or a list of them (a
 /// list's items may be lists in turn).
-fn typed() -> Value {
+pub(super) fn typed() -> Value {
     let mut leaves = datum_leaves();
     let mut items = leaves.clone();
     items.push(json!({ "type": "array" }));

@@ -8,8 +8,8 @@ use bacnet_types::enums::{EnableDisable, ReinitializedState};
 use bytes::BytesMut;
 
 use super::*;
-use crate::decode::testing;
 use crate::tui::capture::Direction;
+use bacnet_ops::decode::testing;
 
 const DCC: ConfirmedServiceChoice = ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL;
 const REINIT: ConfirmedServiceChoice = ConfirmedServiceChoice::REINITIALIZE_DEVICE;

@@ -138,7 +138,7 @@ pub(super) struct Args {
 }
 
 /// A range argument: `low-high` or one instance.
-fn parse_range(text: &str) -> Result<(u32, u32), ToolError> {
+pub(super) fn parse_range(text: &str) -> Result<(u32, u32), ToolError> {
     let bad = || ToolError::invalid("range", format!("'{text}' is not low-high or an instance"));
     let (low, high) = match text.split_once('-') {
         Some((low, high)) => (

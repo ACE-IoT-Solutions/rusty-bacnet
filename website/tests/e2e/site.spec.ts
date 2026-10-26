@@ -3,7 +3,9 @@ import AxeBuilder from '@axe-core/playwright';
 import navigation from '../../src/data/navigation.json' with { type: 'json' };
 import { selectTheme, expectContainedPage } from './helpers';
 const base = '/rusty-bacnet/';
-const routes = ['', ...navigation.flatMap(group => group.items.map(item => `${item.slug}/`))];
+// A sidebar entry: a page, or a nested group of pages.
+type NavItem = { slug?: string; items?: NavItem[] };
+const routes = ['', ...navigation.flatMap(group => (group.items as NavItem[]).flatMap((item): NavItem[] => item.items ?? [item]).map(item => `${item.slug}/`))];
 
 test('all pages load directly under the project prefix without page overflow', async ({ page }) => {
   const errors: string[] = [];

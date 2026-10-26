@@ -25,8 +25,10 @@ mod primitive;
 mod recipients;
 mod tagged;
 mod units;
+mod wire;
 
 pub use data::Datum;
+pub use wire::format_property_value;
 
 use bacnet_encoding::constructed::{ConstructedElement, ElementShape, property_element};
 use bacnet_encoding::primitives::{decode_application_value, decode_priority_date_time};

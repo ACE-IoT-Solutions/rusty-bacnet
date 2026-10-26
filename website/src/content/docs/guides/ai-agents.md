@@ -3,7 +3,7 @@ title: "Use rusty-bacnet with AI agents"
 description: "Let an AI agent host such as Claude Code discover and read a BACnet site through a read-only MCP server."
 ---
 
-`bacnet mcp serve` is a [Model Context Protocol](https://modelcontextprotocol.io) server: an agent host such as Claude Code or Codex starts it as a child process and calls its tools to discover devices, describe them, list their objects and read their properties. It is experimental in 0.15, built only with the CLI's `mcp` feature, and **read-only**: no configuration offers a tool that writes.
+`bacnet mcp serve` is a [Model Context Protocol](https://modelcontextprotocol.io) server: an agent host such as Claude Code or Codex starts it as a child process and calls its tools to discover devices, describe them, find and read their objects, read trend logs and alarms, map the networks, and decode frames. It is experimental in 0.15, built only with the CLI's `mcp` feature, and **read-only**: no configuration offers a tool that writes.
 
 ## Build it
 
@@ -50,7 +50,7 @@ Claude Code reads a project's `.mcp.json`. The host launches the command and spe
 }
 ```
 
-A live server needs an authorized profile, and refuses transport flags beside it: they would change the transport that was authorized. Without a profile only `--passive` runs: it builds no client and sends nothing, and offers only the discovery table, empty then. Logs go to stderr (`-v` or `RUST_LOG` for more), never to stdout, which carries only the protocol.
+A live server needs an authorized profile, and refuses transport flags beside it: they would change the transport that was authorized. Without a profile only `--passive` runs: it builds no client and sends nothing, and offers only the discovery table, empty then, and the decoder. Logs go to stderr (`-v` or `RUST_LOG` for more), never to stdout, which carries only the protocol.
 
 ```sh
 bacnet mcp serve --stdio --profile plant-a --passive
@@ -64,14 +64,19 @@ bacnet mcp serve --stdio --profile plant-a --passive
 | `bacnet_describe_device` | Summarises a device: vendor, model, firmware, protocol revision, supported services and object types, and object counts |
 | `bacnet_list_objects` | Lists a device's objects, filtered by type, with their names on request |
 | `bacnet_read` | Reads properties, by ReadPropertyMultiple with a ReadProperty fallback; `preset: "point"` reads what matters about a point |
+| `bacnet_find_object` | Finds objects across the discovered devices by name, description, object or type, and says which devices it couldn't search fully |
+| `bacnet_network_map` | Shows the networks the profile reaches, the routers to each and the devices on them; asking the routers again is a broad request |
+| `bacnet_read_trend` | Reads a trend log's records, by count or time window, and summarises them: count, first and last time, minimum, maximum and mean, and counts of states |
+| `bacnet_alarms` | Lists a device's objects in alarm or fault or waiting for acknowledgment, with states, times and priorities named, and optionally its alarm and enrollment summaries |
+| `bacnet_decode` | Decodes a frame, NPDU or APDU given as hex into its layers and fields, without sending anything (also in passive mode) |
 
-Two prompts start common jobs: `survey_site` surveys a range of devices, and `investigate_point` explains one point's value, status and priority array. Every value comes as display text and a typed form with enumeration and bit names. A property a device can't give is an error row with the device's error class and code.
+Two prompts start common jobs: `survey_site` surveys a range of devices, their networks and their alarms, and `investigate_point` explains one point's value, status, priority array, alarms and trend. Every value comes as display text and a typed form with enumeration and bit names. A property a device can't give is an error row with the device's error class and code.
 
 ## Safety
 
-- **Device text is data.** Names, descriptions and vendor strings come back in an `untrusted` envelope that says where each came from, with control characters, bidirectional overrides and other invisible format characters removed, links defanged and the length capped. A device can still say anything in them, so a model can still be misled by what it reads; the server's answer is that it can't change anything.
+- **Device text is data.** Names, descriptions, vendor strings and character strings in a decoded frame come back in an `untrusted` envelope that says where each came from, with control characters, bidirectional overrides and other invisible format characters removed, links defanged and the length capped. A device can still say anything in them, so a model can still be misled by what it reads; the server's answer is that it can't change anything.
 - **Limits hold on the server.** One request at a time per device, 20 a second in all, 20 a second per network (2 on a network marked slow, 5 on one marked fast), and 5 a second for the agent, with bursts of 20. Each result reports what it cost, including the time spent waiting, so an agent can slow down.
-- **Results are paged.** Large lists end with a signed cursor that only resumes the same call. A long object list read element by element goes on where the last call stopped.
+- **Results are paged.** Large lists, trend logs and alarm lists end with a signed cursor that only resumes the same call. A long object list read element by element goes on where the last call stopped. Each trend log request is charged, and a summary reads at most 20,000 records a call.
 - **Reads are logged as summaries** on stderr, always: a line per call, and the counts per device when the server stops.
 - **Site data reaches the agent's host.** Don't share an agent session that reads a sensitive site with tools that can send data elsewhere.
 

@@ -31,7 +31,7 @@ use serde::Serialize;
 
 use super::read::{format_items, formatter, hex};
 pub use super::read_range_options::RangeOptions;
-use crate::output::{self, OutputFormat};
+use crate::output::OutputFormat;
 
 /// Read a range of items from a list or log-buffer property: one read over
 /// the range `range` names, or with `--all` every page of a log.
@@ -370,8 +370,8 @@ fn audit_log_row(record: &BACnetAuditLogRecord) -> LogRecordRow {
 fn timestamp(date: Date, time: Time) -> String {
     format!(
         "{} {}",
-        output::format_property_value(&PropertyValue::Date(date)),
-        output::format_property_value(&PropertyValue::Time(time))
+        bacnet_ops::format::format_property_value(&PropertyValue::Date(date)),
+        bacnet_ops::format::format_property_value(&PropertyValue::Time(time))
     )
 }
 
