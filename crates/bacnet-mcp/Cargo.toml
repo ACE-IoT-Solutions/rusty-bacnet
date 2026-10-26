@@ -46,3 +46,8 @@ stdio = ["rmcp/transport-io", "tokio/io-std"]
 
 [lints]
 workspace = true
+
+# The release that first publishes this crate. Until the website names that
+# release, its crate map links the source here instead of docs.rs (#1989).
+[package.metadata.website]
+first-release = "0.15.0"

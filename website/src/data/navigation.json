@@ -176,16 +176,62 @@
     "label": "Reference",
     "items": [
       {
+        "label": "APIs & examples",
+        "slug": "reference/api"
+      },
+      {
+        "label": "Rust crates",
+        "slug": "reference/rust"
+      },
+      {
+        "label": "Python API",
+        "collapsed": true,
+        "items": [
+          {
+            "label": "All groups",
+            "slug": "reference/python"
+          },
+          {
+            "label": "Client",
+            "slug": "reference/python/client"
+          },
+          {
+            "label": "Server",
+            "slug": "reference/python/server"
+          },
+          {
+            "label": "Router",
+            "slug": "reference/python/router"
+          },
+          {
+            "label": "Shared endpoints",
+            "slug": "reference/python/endpoints"
+          },
+          {
+            "label": "Types and values",
+            "slug": "reference/python/types"
+          },
+          {
+            "label": "Enumerations",
+            "slug": "reference/python/enums"
+          },
+          {
+            "label": "Errors",
+            "slug": "reference/python/errors"
+          },
+          {
+            "label": "Module functions",
+            "slug": "reference/python/functions"
+          }
+        ]
+      },
+      {
         "label": "CLI commands",
         "slug": "reference/cli"
       },
       {
         "label": "Transport boundaries",
         "slug": "reference/transports"
-      },
-      {
-        "label": "APIs & examples",
-        "slug": "reference/api"
       }
     ]
   },
