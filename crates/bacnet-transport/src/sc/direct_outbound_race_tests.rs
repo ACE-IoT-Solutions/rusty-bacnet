@@ -94,7 +94,17 @@ impl Dials {
         let uri = self.uri.clone();
         tokio::spawn(async move {
             direct
-                .try_direct_uris(&[uri], REMOTE, NPDU, &[], &conn, 3000)
+                .try_direct_uris(
+                    &[uri],
+                    REMOTE,
+                    NPDU,
+                    &[],
+                    &conn,
+                    DirectTiming {
+                        connect_timeout_ms: 3000,
+                        heartbeat_ms: (30_000, 60_000),
+                    },
+                )
                 .await
                 .map_err(|_| ())
         })
