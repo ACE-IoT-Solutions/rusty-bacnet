@@ -109,6 +109,27 @@ async fn find_leaves_a_device_silent_while_naming() {
     lab.stop().await;
 }
 
+/// A device that stops answering after the first object of a read: the
+/// read returns what it read, stopped at the timeout, and the cost counts
+/// it (#2131).
+#[tokio::test(start_paused = true)]
+async fn read_counts_a_device_silent_after_its_first_object() {
+    let mut lab = Lab::start_site(Policy::default(), Duration::ZERO).await;
+    lab.agent.initialize().await;
+    lab.go_silent_after(1);
+    let result = lab
+        .agent
+        .call(
+            "bacnet_read",
+            json!({ "device": "1201", "reads": [{ "object": "ai:1" }, { "object": "ai:2" }] }),
+        )
+        .await;
+    let body = ok(&result);
+    assert_eq!(body["stopped"]["error"], json!("timeout"), "{body}");
+    assert_eq!(result["structuredContent"]["cost"]["timeouts"], json!(1));
+    lab.stop().await;
+}
+
 /// An Object_List longer than one call's budget: the first page stops with
 /// the list half read and a cursor to the same device, and the pages after
 /// go on reading it and then find every match once.

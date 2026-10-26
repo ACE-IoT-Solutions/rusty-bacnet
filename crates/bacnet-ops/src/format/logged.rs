@@ -30,7 +30,7 @@ use bacnet_encoding::constructed::decode_device_object_property_reference;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
-use super::{Datum, StateTexts, ValueFormat, clean_name, holds_state, is_binary, is_multistate};
+use super::{Datum, StateTexts, ValueFormat, holds_state, is_binary, is_multistate};
 
 /// The property a log column samples, from its Log_DeviceObjectProperty
 /// reference.
@@ -85,7 +85,7 @@ pub struct LogColumns {
     /// The state texts of each column as the device sent them, by column;
     /// shorter when the last columns have none.
     raw: Vec<StateTexts>,
-    /// The same, cleaned for display ([`clean_name`]).
+    /// The same, cleaned for display ([`clean_name`](super::clean_name)).
     texts: Vec<StateTexts>,
 }
 
@@ -135,8 +135,8 @@ impl LogColumns {
     }
 
     /// The state texts of the object column `column` samples, cleaned for
-    /// display ([`clean_name`]); none unless they were read. A formatter
-    /// made with them names the column's states
+    /// display ([`StateTexts::cleaned`]); none unless they were read. A
+    /// formatter made with them names the column's states
     /// ([`ValueFormat::new`]). Device-supplied text: a front end shows it
     /// as data.
     pub fn state_texts(&self, column: usize) -> &StateTexts {
@@ -174,11 +174,7 @@ impl LogColumns {
         object: ObjectIdentifier,
         texts: &StateTexts,
     ) {
-        let cleaned = StateTexts {
-            active: texts.active.as_deref().map(clean_name),
-            inactive: texts.inactive.as_deref().map(clean_name),
-            states: texts.states.iter().map(|text| clean_name(text)).collect(),
-        };
+        let cleaned = texts.cleaned();
         for (index, column) in self.columns.iter().enumerate() {
             if column.is_some_and(|column| {
                 column.object == object && column.holds_states() && column.on(log_device)

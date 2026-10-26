@@ -1,7 +1,7 @@
 //! `bacnet_read`: properties of one device's objects, by
 //! ReadPropertyMultiple with the engine's ReadProperty fallback.
 
-use bacnet_ops::engine::{DEVICE_PROPERTIES, ReadVia, Wanted, unreachable};
+use bacnet_ops::engine::{DEVICE_PROPERTIES, ReadVia, Wanted, timed_out, unreachable};
 use bacnet_ops::format::{self, RawRow};
 use bacnet_ops::label::kebab;
 use bacnet_ops::parse::{parse_object_specifier, parse_property};
@@ -271,7 +271,7 @@ pub(super) async fn run<T: TransportPort + 'static>(
             if results.is_empty() {
                 return Err(ToolError::device(device.instance, &error));
             }
-            if unreachable(&error) {
+            if timed_out(&error) {
                 call.timed_out();
             }
             // Later objects would fail the same way: stop here, and say why.
