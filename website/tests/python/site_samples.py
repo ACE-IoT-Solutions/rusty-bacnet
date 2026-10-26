@@ -301,7 +301,14 @@ SAMPLES: dict[str, object] = {
         Run(DEVICE, (REFUSED, ok(r'"value": "0"'))),
     "guides/safe-writes.md::bacnet --allow-write write 192.168.1.100 av:1 pv 72.5 --priority 8":
         Run(DEVICE, (WRITTEN, WRITTEN)),
-    "integrate/pics.mdx::use bacnet_objects::DeviceIdentity;": Example(PICS_RS),
+    # The release program sets PicsConfig's protocol fields, which dev removed
+    # (#2125); the dev section's program is the Cargo example, and replaces it
+    # at the next release.
+    "integrate/pics.mdx::use bacnet_objects::DeviceIdentity;": Skip(
+        "E", "the v0.14.0 program; CI compiled it until #2125 removed the protocol fields it sets"
+    ),
+    "integrate/pics.mdx::// On dev: the PICS takes the protocol version and revision from the Device.":
+        Example(PICS_RS),
     "integrate/router.mdx::bacnet whois-router": Parse(),
     'integrate/router.mdx::<Code code={routerManifest} lang="toml" title="Cargo.toml" />': ROUTER_A,
     'integrate/router.mdx::<Code code={routerSource} lang="rust" title="src/main.rs" />': ROUTER_A,

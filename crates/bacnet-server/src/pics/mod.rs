@@ -11,6 +11,7 @@ use bacnet_objects::database::ObjectDatabase;
 use bacnet_types::bitstring::ServicesSupported;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier, ServiceSupported};
 use bacnet_types::primitives::PropertyValue;
+use bacnet_types::{PROTOCOL_REVISION, PROTOCOL_VERSION};
 
 use crate::server::ServerConfig;
 
@@ -82,9 +83,11 @@ pub struct VendorInfo {
     pub firmware_revision: String,
     /// Application software version string.
     pub application_software_version: String,
-    /// BACnet protocol version implemented.
+    /// BACnet protocol version implemented: the Device object's
+    /// Protocol_Version (see [`PicsGenerator::generate`]).
     pub protocol_version: u16,
-    /// BACnet protocol revision implemented.
+    /// BACnet protocol revision implemented: the Device object's
+    /// Protocol_Revision (see [`PicsGenerator::generate`]).
     pub protocol_revision: u16,
 }
 
@@ -305,10 +308,6 @@ pub struct PicsConfig {
     pub firmware_revision: String,
     /// Application software version string.
     pub application_software_version: String,
-    /// BACnet protocol version implemented (default 1).
-    pub protocol_version: u16,
-    /// BACnet protocol revision implemented (default 24).
-    pub protocol_revision: u16,
     /// Device profile claimed.
     pub device_profile: DeviceProfile,
     /// Data-link layers the device supports.
@@ -328,8 +327,6 @@ impl Default for PicsConfig {
             model_name: String::new(),
             firmware_revision: String::new(),
             application_software_version: String::new(),
-            protocol_version: 1,
-            protocol_revision: 24,
             device_profile: DeviceProfile::BAsc,
             data_link_layers: vec![DataLinkSupport::BipV4],
             network_layer: NetworkLayerSupport {
@@ -376,6 +373,13 @@ impl<'a> PicsGenerator<'a> {
     }
 
     /// Generate the complete PICS document.
+    ///
+    /// The protocol version and revision are the selected Device object's
+    /// Protocol_Version and Protocol_Revision, so the PICS states what the
+    /// device reports. Without a Device, or when either property isn't an
+    /// unsigned value that fits in a `u16`, the stack's own
+    /// [`bacnet_types::PROTOCOL_VERSION`] and
+    /// [`bacnet_types::PROTOCOL_REVISION`] stand in.
     pub fn generate(&self) -> Pics {
         Pics {
             vendor_info: self.build_vendor_info(),
@@ -390,14 +394,25 @@ impl<'a> PicsGenerator<'a> {
     }
 
     fn build_vendor_info(&self) -> VendorInfo {
+        // The selected Device's raw object: the server's Device view projects
+        // neither protocol property, so both generators read the same value.
+        let device = self.db.selected_device().and_then(|oid| self.db.get(&oid));
+        let protocol = |property, fallback| {
+            device
+                .and_then(|device| match device.read_property(property, None).ok()? {
+                    PropertyValue::Unsigned(raw) => u16::try_from(raw).ok(),
+                    _ => None,
+                })
+                .unwrap_or(fallback)
+        };
         VendorInfo {
             vendor_id: self.server_config.device.vendor_id(),
             vendor_name: self.pics_config.vendor_name.clone(),
             model_name: self.pics_config.model_name.clone(),
             firmware_revision: self.pics_config.firmware_revision.clone(),
             application_software_version: self.pics_config.application_software_version.clone(),
-            protocol_version: self.pics_config.protocol_version,
-            protocol_revision: self.pics_config.protocol_revision,
+            protocol_version: protocol(PropertyIdentifier::PROTOCOL_VERSION, PROTOCOL_VERSION),
+            protocol_revision: protocol(PropertyIdentifier::PROTOCOL_REVISION, PROTOCOL_REVISION),
         }
     }
 
@@ -899,6 +914,9 @@ mod acked_transitions_policy_tests;
 
 #[cfg(test)]
 mod truth_source_tests;
+
+#[cfg(test)]
+mod protocol_revision_tests;
 
 #[cfg(test)]
 mod property_union_tests;
