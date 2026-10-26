@@ -226,6 +226,8 @@ LAB_A = Covered(("website/tests/python/test_loopback_lab.py",))
 PY_FIRST_READ_A = Covered(("crates/rusty-bacnet/tests/test_website_first_read.py",))
 README_READ_RS = "examples/rust/readme_read.rs"
 README_SERVER_RS = "examples/rust/readme_server.rs"
+# The PICS task page's program (#1496), a Cargo example like the README's.
+PICS_RS = "examples/rust/generate_pics.rs"
 # The README quickstart server: test_site_samples runs this block as the
 # "readme" server, and checks that scripts/release/cli_smoke.sh, which runs
 # it at release time, holds the same text.
@@ -299,6 +301,7 @@ SAMPLES: dict[str, object] = {
         Run(DEVICE, (REFUSED, ok(r'"value": "0"'))),
     "guides/safe-writes.md::bacnet --allow-write write 192.168.1.100 av:1 pv 72.5 --priority 8":
         Run(DEVICE, (WRITTEN, WRITTEN)),
+    "integrate/pics.mdx::use bacnet_objects::DeviceIdentity;": Example(PICS_RS),
     "integrate/router.mdx::bacnet whois-router": Parse(),
     'integrate/router.mdx::<Code code={routerManifest} lang="toml" title="Cargo.toml" />': ROUTER_A,
     'integrate/router.mdx::<Code code={routerSource} lang="rust" title="src/main.rs" />': ROUTER_A,

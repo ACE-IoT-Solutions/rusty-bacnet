@@ -8,7 +8,7 @@ import { release, repository } from '../../../lib/site.mjs';
 
 [Evaluate and get help](/rusty-bacnet/project/support/) / Capability tables
 
-These tables list what the code implements: the object types it can construct, the services each surface executes, initiates or sends, and the data links each artifact is built with. They are generated from the code, not written by hand. A row records a capability, not tested behaviour and not interoperability with other vendors' devices: read [what a result proves](/rusty-bacnet/project/support/#understand-what-a-result-proves) before relying on one, and generate a PICS to describe a configured device.
+These tables list what the code implements: the object types it can construct, the services each surface executes, initiates or sends, and the data links each artifact is built with. They are generated from the code, not written by hand. A row records a capability, not tested behaviour and not interoperability with other vendors' devices: read [what a result proves](/rusty-bacnet/project/support/#understand-what-a-result-proves) before relying on one, and [generate a PICS](/rusty-bacnet/integrate/pics/) to describe a configured device. The [sample PICS](/rusty-bacnet/project/sample-pics/) shows that output for one reference configuration, a database holding one object of each type below.
 
 :::note[On `dev` after the release]
 The tables are generated on the `dev` branch and track the next release, so they can list object types, services or data links merged after v{release} that the released crates, wheel and executables don't have. The <a href={`${repository}/releases/tag/v${release}`}>v{release} release notes</a> and the <a href={`${repository}/tree/dev/changelog.d`}>changes waiting for the next release</a> say what changed.
@@ -46,10 +46,11 @@ A missing object type, service or data-link behaviour is tracked as an issue wit
 
 ## How the tables are made
 
-<a href={`${repository}/blob/dev/crates/bacnet-integration-tests/support_tables.rs`}>A generator in the integration tests</a> builds the page's data file from the object catalogue and the PICS generator, the service lists named above, the Python type stub, and the Cargo manifests and release scripts. A workspace test regenerates the file and fails when the committed copy differs, so a change that adds a service, an object type or a data link has to regenerate it: run `cargo run -p bacnet-integration-tests --example support-tables`.
+<a href={`${repository}/blob/dev/crates/bacnet-integration-tests/support_tables.rs`}>A generator in the integration tests</a> builds the page's data file, and the [sample PICS](/rusty-bacnet/project/sample-pics/), from the object catalogue and the PICS generator, the service lists named above, the Python type stub, and the Cargo manifests and release scripts. A workspace test regenerates both and fails when a committed copy differs, so a change that adds a service, an object type or a data link has to regenerate them: run `cargo run -p bacnet-integration-tests --example support-tables`.
 
 ## Next steps
 
 - [Read what a result proves](/rusty-bacnet/project/support/#understand-what-a-result-proves).
+- [Read the sample PICS](/rusty-bacnet/project/sample-pics/), or [generate one for your device](/rusty-bacnet/integrate/pics/).
 - [Choose a data link](/rusty-bacnet/connect/overview/).
 - [Serve objects from your application](/rusty-bacnet/integrate/server/).
