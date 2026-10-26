@@ -516,11 +516,18 @@ impl<'a> PicsGenerator<'a> {
         properties.into_values().collect()
     }
 
-    /// Build the service support list based on what the server actually handles.
-    /// Services this server initiates (the PICS initiator column): replies
-    /// and notifications constructed outbound by `bacnet-server`. Distinct
-    /// from [`EXECUTED_SERVICES`](bacnet_objects::device::EXECUTED_SERVICES), which Clause 12.11 ties to execution.
-    const INITIATED_SERVICES: &'static [ServiceSupported] = &[
+    /// The services the PICS marks as initiated (its initiator column):
+    /// announcements and notifications `bacnet-server` builds and sends
+    /// itself. Distinct from
+    /// [`EXECUTED_SERVICES`](bacnet_objects::device::EXECUTED_SERVICES), which
+    /// Clause 12.11 ties to execution.
+    ///
+    /// The server sends these through its own outbound paths, not through
+    /// `bacnet-client`, and none of them is a request `bacnet-client` sends
+    /// (`bacnet_client::client::SENT_SERVICES`): a test pins that the two lists
+    /// don't overlap. An application that runs a client beside the server
+    /// initiates both.
+    pub const INITIATED_SERVICES: &'static [ServiceSupported] = &[
         ServiceSupported::I_AM,
         ServiceSupported::I_HAVE,
         ServiceSupported::CONFIRMED_COV_NOTIFICATION,
@@ -817,10 +824,9 @@ pub fn generate_pics(
     PicsGenerator::new(db, server_config, pics_config).generate()
 }
 
-// ─────────────────────────────── Tests ─────────────────────────────────────
-
-/// PICS display name for a `BACnetServicesSupported` bit position.
-fn service_display_name(service: ServiceSupported) -> &'static str {
+/// The name the PICS prints for a `BACnetServicesSupported` bit position,
+/// such as `ReadProperty` or `I-Am`, or `Unknown` for a reserved bit.
+pub fn service_display_name(service: ServiceSupported) -> &'static str {
     match service.to_raw() {
         0 => "AcknowledgeAlarm",
         1 => "ConfirmedCOVNotification",
@@ -872,6 +878,8 @@ fn service_display_name(service: ServiceSupported) -> &'static str {
     }
 }
 
+// ─────────────────────────────── Tests ─────────────────────────────────────
+
 #[cfg(test)]
 mod tests;
 
@@ -898,3 +906,6 @@ mod creation_only_tests;
 
 #[cfg(test)]
 mod data_link_tests;
+
+#[cfg(test)]
+mod initiated_tests;

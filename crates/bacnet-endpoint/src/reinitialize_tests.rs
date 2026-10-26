@@ -374,3 +374,50 @@ async fn a_password_over_twenty_characters_is_refused() {
     fits.start().await.unwrap();
     fits.stop().await.unwrap();
 }
+
+/// The executed services follow the published lists, and each opt-in names
+/// the session method that enables it.
+#[test]
+fn the_responder_lists_match_what_each_session_executes() {
+    let session = |writes: bool, reinitialize: bool| {
+        let (transport, _peer) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
+        let mut session =
+            EndpointSession::new(transport, SessionRole::ServerOnly, SessionConfig::default())
+                .unwrap();
+        if writes {
+            session = session.with_device_writes(Arc::new(|_| true));
+        }
+        if reinitialize {
+            session =
+                session.with_reinitialize(|_: &ReinitializeContext, _: &mut ObjectDatabase| Ok(()));
+        }
+        session.executed_services()
+    };
+    assert_eq!(session(false, false), RESPONDER_SERVICES);
+    let all: Vec<_> = RESPONDER_SERVICES
+        .iter()
+        .copied()
+        .chain(
+            RESPONDER_OPT_IN_SERVICES
+                .iter()
+                .map(|(service, _)| *service),
+        )
+        .collect();
+    assert_eq!(session(true, true), all);
+    assert_eq!(
+        session(true, false),
+        [
+            ServiceSupported::READ_PROPERTY,
+            ServiceSupported::WRITE_PROPERTY
+        ]
+    );
+
+    let source = include_str!("device_writes.rs");
+    for (service, method) in RESPONDER_OPT_IN_SERVICES {
+        assert!(
+            source.contains(&format!("pub fn {method}("))
+                || source.contains(&format!("pub fn {method}<")),
+            "{service:?} names an EndpointSession method that exists: {method}"
+        );
+    }
+}
