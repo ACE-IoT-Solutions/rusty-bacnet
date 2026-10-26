@@ -203,14 +203,16 @@ fn timestamp(
     octets: &[u8],
     offset: usize,
 ) -> Result<(String, usize), Error> {
-    decode_timestamp_choice(octets, offset).map(|(stamp, end)| {
-        let text = match stamp {
-            BACnetTimeStamp::Time(time) => time_text(&time),
-            BACnetTimeStamp::SequenceNumber(n) => format!("seq {n}"),
-            BACnetTimeStamp::DateTime { date, time } => date_time(&date, &time),
-        };
-        (text, end)
-    })
+    decode_timestamp_choice(octets, offset).map(|(stamp, end)| (timestamp_text(&stamp), end))
+}
+
+/// A timestamp as text: a time, `seq 12`, or a date and time.
+pub(super) fn timestamp_text(stamp: &BACnetTimeStamp) -> String {
+    match stamp {
+        BACnetTimeStamp::Time(time) => time_text(time),
+        BACnetTimeStamp::SequenceNumber(n) => format!("seq {n}"),
+        BACnetTimeStamp::DateTime { date, time } => date_time(date, time),
+    }
 }
 
 /// Time and value pairs: `07:00 = active, 18:00 = inactive`.

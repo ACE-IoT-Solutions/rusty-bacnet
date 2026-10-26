@@ -244,13 +244,10 @@ impl<T: TransportPort + 'static> Engine<T> {
         device: u32,
         after: Option<ObjectIdentifier>,
     ) -> Result<GetEventInformationAck, Error> {
-        let ack = {
-            let _turn = self.turn(device).await;
-            self.client
-                .get_event_information_from_device(device, after)
-                .await?
-        };
-        GetEventInformationAck::decode(&ack)
+        let _turn = self.turn(device).await;
+        self.client
+            .get_event_information_from_device(device, after)
+            .await
     }
 }
 

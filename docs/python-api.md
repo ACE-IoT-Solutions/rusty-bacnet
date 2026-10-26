@@ -310,6 +310,16 @@ BACnet event types. Constants: `CHANGE_OF_BITSTRING`, `CHANGE_OF_STATE`, `CHANGE
 et = EventType.CHANGE_OF_VALUE
 ```
 
+### NotifyType
+
+Whether a transition is reported as an alarm or an event, as
+`get_event_information` returns it. Constants: `ALARM`, `EVENT`,
+`ACK_NOTIFICATION`.
+
+```python
+nt = NotifyType.ALARM
+```
+
 ### MessagePriority
 
 For text message services. Constants: `NORMAL`, `URGENT`.
@@ -2004,12 +2014,34 @@ await client.acknowledge_alarm(
 )
 ```
 
-#### `get_event_information(address, last_received_object_identifier=None) -> bytes`
+#### `get_event_information(address, last_received_object_identifier=None) -> dict`
 
-Returns raw encoded event information.
+One GetEventInformation answer, decoded: `{"summaries": [...], "more_events":
+bool}`. Each summary is a dict, shaped like `get_alarm_summary`'s entries:
+
+| Key | Value |
+|-----|-------|
+| `object_id` | `ObjectIdentifier` |
+| `event_state` | `EventState` |
+| `acknowledged_transitions` | `BitString` naming `TO_OFFNORMAL`, `TO_FAULT`, `TO_NORMAL` |
+| `event_timestamps` | three `BACnetTimeStamp`s: to-offnormal, to-fault, to-normal |
+| `notify_type` | `NotifyType` (`ALARM`, `EVENT` or `ACK_NOTIFICATION`) |
+| `event_enable` | `BitString`, named as above |
+| `event_priorities` | three ints, in the timestamps' order |
+
+While `more_events` is true the device holds more; ask again from the last
+summary's `object_id`. An answer that doesn't decode raises `BacnetError`.
 
 ```python
-raw = await client.get_event_information("192.168.1.100:47808")
+summaries, after = [], None
+while True:
+    page = await client.get_event_information("192.168.1.100:47808", after)
+    summaries += page["summaries"]
+    if not page["more_events"] or not page["summaries"]:
+        break
+    after = page["summaries"][-1]["object_id"]
+for s in summaries:
+    print(s["object_id"], s["event_state"].name, s["acknowledged_transitions"].names)
 ```
 
 ---

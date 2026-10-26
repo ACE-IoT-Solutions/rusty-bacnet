@@ -540,6 +540,7 @@ dependencies = [
  "bacnet-types",
  "bytes",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]

@@ -272,9 +272,17 @@ async fn execute_command<T: TransportPort + 'static>(
             let to = resolve_destination(client, target).await?;
             commands::device::reinit_cmd(client, &to, state, password.as_deref(), format).await?;
         }
-        Command::Alarms { target } => {
+        Command::Alarms { target, max } => {
             let to = resolve_destination(client, target).await?;
-            commands::device::alarms_cmd(client, &to, format).await?;
+            commands::alarms::alarms_cmd(client, &to, *max, format).await?;
+        }
+        Command::AlarmSummary { target } => {
+            let to = resolve_destination(client, target).await?;
+            commands::alarms::alarm_summary_cmd(client, &to, format).await?;
+        }
+        Command::EnrollmentSummary { target, filters } => {
+            let to = resolve_destination(client, target).await?;
+            commands::alarms::enrollment_summary_cmd(client, &to, filters, format).await?;
         }
         Command::FileRead {
             target,

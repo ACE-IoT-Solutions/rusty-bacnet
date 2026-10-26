@@ -106,8 +106,8 @@ Commands that take a `<target>` argument accept several formats:
 
 When using a device instance number, the device must have been previously found via `discover` in the same process. A one-shot command starts with an empty device table, so give it an address, a `bip6:` or `mstp:` target, or a routed `DNET:instance` target, which it looks up itself.
 
-**Routed targets.** `read`, `readm`, `read-range`, `alarms`, `file-read`,
-`file-write`, `write`, `writem`, `subscribe`, `control`, `reinit`, `time-sync`,
+**Routed targets.** `read`, `readm`, `read-range`, `alarms`, `alarm-summary`,
+`enrollment-summary`, `file-read`, `file-write`, `write`, `writem`, `subscribe`, `control`, `reinit`, `time-sync`,
 `create-object`, `delete-object` and `ack-alarm` (`ack`) take
 `DNET:instance` and `DNET:0xMAC`. When the device isn't in the discovery table
 yet, the CLI sends a Who-Is to that network and waits up to three seconds for
@@ -151,7 +151,7 @@ before the CLI binds a socket.
 
 | Class | Commands (aliases) | Needs |
 |---|---|---|
-| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `mstp-ports`, `capture`, `sc-check`, `tui`, `help` | nothing |
+| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `alarm-summary`, `enrollment-summary`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `mstp-ports`, `capture`, `sc-check`, `tui`, `help` | nothing |
 | write | `write` (`wp`), `writem` (`wpm`), `create-object`, `delete-object`, `file-write`, `ack-alarm` (`ack`), `time-sync` (`ts`), `unregister`, `subscribe --lifetime 0` | `--allow-write` |
 | device management | `control` (`dcc`), `reinit` | `--allow-write`, plus `--yes` or the typed confirmation |
 
@@ -1226,7 +1226,12 @@ decodes them; JSON adds their typed forms under `decoded`, keyed by property.
 ### Alarms and Events
 
 ```bash
-bacnet alarms 192.168.1.100                              # get event/alarm summary
+bacnet alarms 192.168.1.100                              # active events and unacknowledged transitions
+bacnet alarms 192.168.1.100 --max 50                     # stop after 50 objects
+bacnet alarm-summary 192.168.1.100                       # objects in alarm (GetAlarmSummary)
+bacnet enrollment-summary 192.168.1.100                  # event-initiating objects (GetEnrollmentSummary)
+bacnet enrollment-summary 192.168.1.100 --acked not-acked --state active
+bacnet enrollment-summary 192.168.1.100 --event-type out-of-range --priority 1-100 --class 5
 
 bacnet --allow-write ack-alarm 192.168.1.100 ai:1 --state 1 \
   --timestamp sequence:417 --ack-time time:14,30,00,00
@@ -1234,6 +1239,61 @@ bacnet --allow-write ack-alarm 192.168.1.100 ai:1 --state 1 --source "operator" 
   --timestamp time:14,29,58,25 \
   --ack-time "datetime:2026,9,2,3;14,30,00,00"
 ```
+
+`alarms` lists every object with an event state other than normal or a
+transition not yet acknowledged (GetEventInformation). A device can answer
+in pages; `alarms` asks for the next page, from the last object, until the
+device says there are no more or `--max` objects (default 10000) have
+arrived. The table shows each object, its event state, the transitions
+acknowledged (`Acked`) and enabled, the notify type, the time of each
+transition's last event (to-offnormal, to-fault, to-normal) and their
+notification priorities (`3/5/200`, in the same order). When `--max` stops
+the reading early, a last line says the device holds more.
+
+`alarm-summary` lists the objects in alarm with their state and
+acknowledged transitions (GetAlarmSummary). `enrollment-summary` lists
+event-initiating objects with their event type, state, notification
+priority and notification class (GetEnrollmentSummary); a device returns
+only the objects that match all the filters given. The standard keeps both
+services only so clients can reach older devices, and advises newer ones
+not to serve them (Clauses 13.10 and 13.11), so a current device may reject
+them; `alarms` works everywhere. The `enrollment-summary` filters:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--acked <F>` | `all` | `all`, `acked`, or `not-acked` (an unacknowledged transition) |
+| `--state <S>` | (any) | `offnormal`, `fault`, `normal`, `all`, or `active` (not normal) |
+| `--event-type <T>` | (any) | An event type by name: `out-of-range`, `change-of-state`, ... |
+| `--priority <P>` | (any) | Notification priority, `MIN-MAX` (0 to 255) or one value |
+| `--class <N>` | (any) | Notification class number |
+
+Names take either spelling, `not-acked` or `NOT_ACKED`. All three commands
+take routed targets.
+
+In JSON, `alarms` prints `{"summaries": [...], "more_events": false}`, and
+`alarm-summary` and `enrollment-summary` print an array. Each field is a
+value in the [Value output](#value-output) forms, keyed in snake case:
+
+```json
+{
+  "object": {"type": "analog-value", "type_number": 2, "instance": 1},
+  "event_state": {"value": 3, "name": "high-limit"},
+  "acknowledged_transitions": {"bits": "011", "names": ["to-fault", "to-normal"]},
+  "event_enable": {"bits": "111", "names": ["to-offnormal", "to-fault", "to-normal"]},
+  "notify_type": {"value": 0, "name": "alarm"},
+  "event_timestamps": {
+    "to_offnormal": {"element": "time-stamp", "text": "2026-10-25 Sun 14:30:05"},
+    "to_fault": {"element": "time-stamp", "text": "seq 42"},
+    "to_normal": {"element": "time-stamp", "text": "07:00"}
+  },
+  "event_priorities": {"to_offnormal": 3, "to_fault": 5, "to_normal": 200}
+}
+```
+
+An `alarm-summary` entry has `object`, `alarm_state` and
+`acknowledged_transitions`; an `enrollment-summary` entry has `object`,
+`event_type`, `event_state`, `priority` and `notification_class` (`null`
+when the device left it out).
 
 **ack-alarm flags:**
 
@@ -1257,8 +1317,9 @@ when BACnet's unspecified value is intended (use full-year `255` for an
 unspecified year). Values are preserved exactly and neither timestamp is
 inferred from a clock. Quote `datetime:` values in command shells because the
 grammar contains a semicolon. `--timestamp` must come from the original event
-notification; `--ack-time` is explicitly chosen by the caller. The current
-raw `alarms` response is not a guided source for these values.
+notification; `--ack-time` is explicitly chosen by the caller. `alarms`
+shows each transition's last event time decoded for reading, not in this
+grammar.
 
 **Alias:** `ack` = ack-alarm
 

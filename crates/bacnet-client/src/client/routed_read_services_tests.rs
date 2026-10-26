@@ -197,7 +197,7 @@ fn assert_record(records: LogRecords) {
 }
 
 #[tokio::test(start_paused = true)]
-async fn routed_event_information_preserves_cursor_and_ack_bytes() {
+async fn routed_event_information_preserves_cursor_and_decodes_the_ack() {
     let (mut client, mut peer) = site(true).await;
     for cursor in [None, Some(log())] {
         let (result, ()) = tokio::join!(
@@ -216,7 +216,9 @@ async fn routed_event_information_preserves_cursor_and_ack_bytes() {
                     .await;
             }
         );
-        assert_eq!(result.unwrap().as_ref(), &[0x0e, 0x0f, 0x19, 0]);
+        let ack = result.unwrap();
+        assert!(ack.list_of_event_summaries.is_empty());
+        assert!(!ack.more_events);
     }
     client.stop().await.unwrap();
     peer.transport.stop().await.unwrap();
@@ -374,7 +376,8 @@ async fn read_service_device_methods_keep_local_devices_direct() {
                 .await;
         }
     );
-    assert_eq!(result.unwrap().as_ref(), &[0x0e, 0x0f, 0x19, 0]);
+    let ack = result.unwrap();
+    assert!(ack.list_of_event_summaries.is_empty() && !ack.more_events);
     let (result, ()) = tokio::join!(
         client.read_range_from_device(
             INSTANCE,
@@ -472,4 +475,68 @@ async fn missing_read_service_device_and_invalid_page_fail_without_traffic() {
     assert!(peer.destinations.try_recv().is_err());
     client.stop().await.unwrap();
     peer.transport.stop().await.unwrap();
+}
+
+/// The alarm and enrollment summaries go through the router to a routed
+/// device and straight to a local one, and come back decoded (#2077).
+#[tokio::test(start_paused = true)]
+async fn summaries_route_when_the_device_is_routed_and_decode() {
+    use bacnet_services::alarm_summary::{AlarmSummaryEntry, GetAlarmSummaryAck};
+    use bacnet_services::enrollment_summary::{
+        GetEnrollmentSummaryAck, GetEnrollmentSummaryRequest,
+    };
+    use bacnet_types::bitstring::EventTransitionBits;
+    use bacnet_types::enums::{AcknowledgmentFilter, EventState};
+
+    let entry = AlarmSummaryEntry {
+        object_identifier: log(),
+        alarm_state: EventState::FAULT,
+        acknowledged_transitions: EventTransitionBits::TO_NORMAL,
+    };
+    let filters = GetEnrollmentSummaryRequest {
+        acknowledgment_filter: AcknowledgmentFilter::NOT_ACKED,
+        enrollment_filter: None,
+        event_state_filter: None,
+        event_type_filter: None,
+        priority_filter: None,
+        notification_class_filter: Some(4),
+    };
+    for routed in [true, false] {
+        let (mut client, mut peer) = site(routed).await;
+        let (result, ()) = tokio::join!(client.get_alarm_summary_from_device(INSTANCE), async {
+            let request = peer
+                .request(ConfirmedServiceChoice::GET_ALARM_SUMMARY)
+                .await;
+            assert!(request.service_request.is_empty());
+            let mut ack = BytesMut::new();
+            GetAlarmSummaryAck {
+                entries: vec![entry.clone()],
+            }
+            .encode(&mut ack);
+            peer.reply(&request, ack.freeze()).await;
+        });
+        assert_eq!(
+            result.unwrap().entries,
+            std::slice::from_ref(&entry),
+            "routed {routed}"
+        );
+        let (result, ()) = tokio::join!(
+            client.get_enrollment_summary_from_device(INSTANCE, &filters),
+            async {
+                let request = peer
+                    .request(ConfirmedServiceChoice::GET_ENROLLMENT_SUMMARY)
+                    .await;
+                assert_eq!(
+                    GetEnrollmentSummaryRequest::decode(&request.service_request).unwrap(),
+                    filters
+                );
+                let mut ack = BytesMut::new();
+                GetEnrollmentSummaryAck { entries: vec![] }.encode(&mut ack);
+                peer.reply(&request, ack.freeze()).await;
+            }
+        );
+        assert!(result.unwrap().entries.is_empty(), "routed {routed}");
+        client.stop().await.unwrap();
+        peer.transport.stop().await.unwrap();
+    }
 }
