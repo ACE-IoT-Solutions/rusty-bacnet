@@ -176,7 +176,8 @@ def text(output: str | bytes | None) -> str:
 class Server:
     """A server program on loopback; its output lines are collected as it runs."""
 
-    def __init__(self, argv: list[str], ready: str, stop_on_eof: bool, scratch: str | None = None):
+    def __init__(self, argv: list[str], ready: str, stop_on_eof: bool, scratch: str | None = None,
+                 ready_timeout: float = 15):
         self.stop_on_eof = stop_on_eof
         # A directory the server's program was written to, removed on stop.
         self.scratch = scratch
@@ -187,9 +188,20 @@ class Server:
         )
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
-        first = self.wait_for(ready)
-        self.address = re.search(r"127\.0\.0\.1:\d+", first).group(0)
-        check_loopback([self.address])
+        try:
+            first = self.wait_for(ready, ready_timeout)
+            self.address = re.search(r"127\.0\.0\.1:\d+", first).group(0)
+            check_loopback([self.address])
+        except BaseException:
+            # A server that never got ready must not live on holding its port.
+            self.process.kill()
+            self.process.wait()
+            self.reader.join(timeout=5)
+            for stream in (self.process.stdin, self.process.stdout):
+                stream.close()
+            if self.scratch:
+                shutil.rmtree(self.scratch, ignore_errors=True)
+            raise
 
     def _read(self) -> None:
         for line in self.process.stdout:
@@ -239,11 +251,7 @@ def start_server(kind: str) -> Server:
         scratch = tempfile.mkdtemp(prefix="readme-server-")
         program = Path(scratch) / "local_server.py"
         program.write_text(block_by_key(samples.README_SERVER).text + "\n", encoding="utf-8")
-        try:
-            return Server([sys.executable, "-u", str(program)], "Listening at ", False, scratch)
-        except BaseException:
-            shutil.rmtree(scratch, ignore_errors=True)
-            raise
+        return Server([sys.executable, "-u", str(program)], "Listening at ", False, scratch)
     raise ValueError(kind)
 
 
@@ -363,6 +371,26 @@ def dependency_problems(table: str, examples: tuple[str, ...]) -> list[str]:
         if needed - features:
             problems.append(f"{path} needs tokio features {sorted(needed - features)}")
     return problems
+
+
+class ServerStartup(unittest.TestCase):
+    def test_a_server_that_never_gets_ready_is_killed(self):
+        scratch = tempfile.mkdtemp(prefix="never-ready-")
+        with tempfile.TemporaryDirectory(prefix="never-ready-pid-") as keep:
+            pid_file = Path(keep) / "pid"
+            program = (f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); "
+                       "print('starting', flush=True); time.sleep(60)")
+            started = time.monotonic()
+            with self.assertRaises(AssertionError):
+                Server([sys.executable, "-c", program], "never printed", False, scratch, ready_timeout=2)
+            # Without the kill, closing the pipes waits for the child's 60 s sleep.
+            self.assertLess(time.monotonic() - started, 20, "the child outlived its failed start")
+            self.assertFalse(Path(scratch).exists(), "the scratch directory was left behind")
+            pid = int(pid_file.read_text())
+        if os.name != "nt":
+            # Killed and reaped: the pid no longer names a process.
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
 
 
 class ReadmeSamples(unittest.TestCase):

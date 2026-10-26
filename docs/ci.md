@@ -1768,6 +1768,29 @@ To release:
    crates; and bacnet-cli's tests run the CLI generator, so the generator
    can't rot, and check that the committed page has a section for every
    command. They don't compare the rendered page with the committed one.
+
+   **README site links and versions (#2105).** GitHub shows the `dev`
+   README, but the website is published from the release, so the README
+   links only pages the live site has. In the same PR:
+   - Bump the README's `[dependencies]` versions to the new release. The
+     website sample tests' `Deps` check compares them with
+     `website/src/lib/site.mjs`, so it fails until they match. The README's
+     Rust blocks are compiled against `dev`; this is the point where the
+     release catches up with them.
+   - At 0.15.0, after the Pages deploy, point these README links at the new
+     pages: the MCP row and section (now `docs/mcp.md`) at `guides/ai-agents/`,
+     the shared-endpoints row (now `development/shared-endpoints/`) at
+     `integrate/shared-endpoints/`, the routing row (now
+     `docs/rust-api.md#bacnet-network`) at `integrate/router/`, the Rust
+     server's link (now `docs/rust-api.md#bacnet-server`) at
+     `integrate/server/`, the crate map (now `reference/api/`) at
+     `reference/rust/`, building from source (now
+     `development/overview/#build-a-source-checkout`) at
+     `development/build-from-source/`, and the transports link (now
+     `reference/transports/`) at `connect/overview/` if wanted; the same
+     build-from-source link sits in `docs/rust-api.md` and
+     `docs/python-api.md`. Then `curl -sI` every
+     `jscott3201.github.io/rusty-bacnet/` link in the README for a 200.
 2. Optionally, dispatch a dry run on the release branch first: it runs
    everything the release does short of publishing.
 3. Tag a commit on `main`'s or `dev`'s first-parent history (a merge commit,

@@ -27,6 +27,13 @@ The classes match section 6 of ``docs/design/website-audit-0.15.md``:
   ``bacnet-*`` crate is a published workspace crate at the site's release,
   and that it names every crate the listed examples use.
 - ``Skip``: not run by CI, with the audit class and the reason.
+
+The README's Rust blocks compile against the ``dev`` workspace, while its
+dependency table tells users to depend on the release (the minor version in
+``src/lib/site.mjs``). An API change on ``dev`` that a README block uses
+therefore needs its table, and the release, to follow; when the release
+bumps ``site.mjs``, the ``Deps`` check fails until the README's versions
+follow it (docs/ci.md, release checklist).
 """
 from __future__ import annotations
 
@@ -411,13 +418,8 @@ SAMPLES: dict[str, object] = {
     "README.md::# watch_value.py: subscribe to Analog Input 1 and print its first notification":
         Run(QUICKSTART, (ok(r"^PropertyIdentifier\.PRESENT_VALUE 22\.5$"),), server="readme"),
     "README.md::bacnet": Parse(),
-    "README.md::cargo install --path crates/bacnet-cli --locked --features mcp": Skip("F", INSTALL),
     "README.md::bacnet mcp authorize --profile plant-a": Parse(),
     "README.md::{": Parse(),
-    "README.md::bacnet mcp serve --stdio --passive": Parse(),
-    "README.md::python -m pip install rusty-bacnet": Skip("F", INSTALL),
     "README.md::[dependencies]": Deps((README_READ_RS, README_SERVER_RS)),
-    "README.md::cargo install bacnet-cli --locked --features sc-tls": Skip("F", INSTALL),
     "README.md::git clone https://github.com/jscott3201/rusty-bacnet.git": Skip("F", INSTALL),
-    "README.md::python -m venv .venv && source .venv/bin/activate": Skip("F", INSTALL),
 }

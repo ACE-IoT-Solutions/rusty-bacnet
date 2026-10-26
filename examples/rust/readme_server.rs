@@ -5,7 +5,6 @@
 
 use bacnet_objects::DeviceIdentity;
 use bacnet_objects::analog::AnalogInputObject;
-use bacnet_objects::binary::BinaryOutputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
@@ -24,8 +23,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut supply = AnalogInputObject::new(1, "Supply air", EngineeringUnits::DEGREES_CELSIUS)?;
     supply.set_present_value(21.5);
     database.add(Box::new(supply))?;
-    // Peers command the fan through its priority array.
-    database.add(Box::new(BinaryOutputObject::new(1, "Supply fan")?))?;
 
     let mut server = BACnetServer::bip_builder()
         .device(identity)
