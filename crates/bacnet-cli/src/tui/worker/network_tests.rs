@@ -15,7 +15,10 @@ use bacnet_ops::bbmd::Matrix;
 use super::*;
 
 /// This client's address in the fixtures: none of theirs.
-const LOCAL: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(10, 255, 255, 254), 47808);
+const LOCAL: Here = Here {
+    own: SocketAddrV4::new(Ipv4Addr::new(10, 255, 255, 254), 47808),
+    broadcast: Ipv4Addr::BROADCAST,
+};
 
 /// The transport's wait for a BVLC response.
 const TIMEOUT: Duration = Duration::from_secs(3);
@@ -215,8 +218,11 @@ async fn a_real_survey_waits_out_silent_peers_together() {
     let mut client = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
     let _client_rx = client.start().await.unwrap();
     let begin = Instant::now();
-    let local = address_of(client.local_mac()).unwrap();
-    let probes = survey(&client, seed_at, local).await;
+    let here = Here {
+        own: address_of(client.local_mac()).unwrap(),
+        broadcast: client.broadcast_address(),
+    };
+    let probes = survey(&client, seed_at, here).await;
     let took = begin.elapsed();
     assert_eq!(probes.len(), 4);
     assert!(matches!(probes[0], (at, Probe::Table(_)) if at == seed_at));

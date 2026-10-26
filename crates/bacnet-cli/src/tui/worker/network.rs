@@ -17,7 +17,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
 use bacnet_client::client::BACnetClient;
-use bacnet_ops::bbmd::Probe;
+use bacnet_ops::bbmd::{Here, Probe};
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::port::TransportPort;
 use tokio::sync::mpsc;
@@ -137,21 +137,25 @@ async fn execute(bip: &BipTransport, command: NetworkCommand, local: SocketAddrV
         }
         NetworkCommand::Survey { seed } => NetworkEvent::Survey {
             seed,
-            probes: survey(bip, seed, local).await,
+            probes: survey(
+                bip,
+                seed,
+                Here {
+                    own: local,
+                    broadcast: bip.broadcast_address(),
+                },
+            )
+            .await,
         },
     }
 }
 
 /// Read the BDT of `seed`, then of every BBMD a table read lists, breadth
 /// first, up to [`MAX_SURVEY`](bacnet_ops::bbmd::MAX_SURVEY) reads; the rest
-/// come back skipped. `local` is this client's address: entries no read
-/// may go to are not followed ([`bacnet_ops::bbmd::NotFollowed`]).
-async fn survey(
-    bip: &BipTransport,
-    seed: SocketAddrV4,
-    local: SocketAddrV4,
-) -> Vec<(SocketAddrV4, Probe)> {
-    survey_with(seed, local, |bbmd| async move {
+/// come back skipped. `here` is where this client is: entries no read may
+/// go to are not followed ([`bacnet_ops::bbmd::NotFollowed`]).
+async fn survey(bip: &BipTransport, seed: SocketAddrV4, here: Here) -> Vec<(SocketAddrV4, Probe)> {
+    survey_with(seed, here, |bbmd| async move {
         match bip.read_bdt(&mac(bbmd)).await {
             Ok(rows) => Probe::Table(rows.iter().map(BdtRow::from).collect()),
             Err(error) => probe_error(&error),
@@ -164,19 +168,14 @@ async fn survey(
 /// ([`bacnet_ops::bbmd::survey`]) from one seed. The BBMDs past the
 /// survey's limit come back skipped; an entry not followed is a column
 /// whose row couldn't be read.
-async fn survey_with<F, R>(
-    seed: SocketAddrV4,
-    local: SocketAddrV4,
-    read: F,
-) -> Vec<(SocketAddrV4, Probe)>
+async fn survey_with<F, R>(seed: SocketAddrV4, here: Here, read: F) -> Vec<(SocketAddrV4, Probe)>
 where
     F: Fn(SocketAddrV4) -> R,
     R: Future<Output = Probe>,
 {
     let read = &read;
     let found =
-        bacnet_ops::bbmd::survey(&[seed], local, |bbmd| async move { (read(bbmd).await, ()) })
-            .await;
+        bacnet_ops::bbmd::survey(&[seed], here, |bbmd| async move { (read(bbmd).await, ()) }).await;
     let read = found.read.into_iter().map(|s| (s.bbmd, s.probe));
     let unread = found.unread.into_iter().map(|bbmd| (bbmd, Probe::Skipped));
     read.chain(unread).collect()

@@ -365,6 +365,26 @@ async fn a_known_address_seeds_the_survey_and_mismatched_masks_are_named() {
         json!("address-not-known"),
         "{unknown}"
     );
+    // A named seed passes the same check as a listed peer: no broadcast and
+    // not our own address, refused as an argument before anything is sent.
+    let own = address_of(client.transport().local_mac()).unwrap();
+    for (seed, reason) in [
+        ("255.255.255.255:47808".to_string(), "broadcast"),
+        (own.to_string(), "own-address"),
+    ] {
+        let refused = agent
+            .call(
+                "bacnet_network_map",
+                json!({ "bbmd": true, "bbmds": [seed] }),
+            )
+            .await;
+        let body = &refused["structuredContent"];
+        assert_eq!(body["error"], json!("invalid-argument"), "{refused}");
+        assert!(
+            body["message"].as_str().unwrap().contains(reason),
+            "{refused}"
+        );
+    }
     // A device the policy leaves out doesn't make its address known.
     client.add_device(77, &mac(a_at)).await.unwrap();
     let mut fenced = serve(

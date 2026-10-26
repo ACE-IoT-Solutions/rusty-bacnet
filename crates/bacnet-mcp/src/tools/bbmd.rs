@@ -30,8 +30,8 @@ use std::time::Duration;
 use std::net::Ipv4Addr;
 
 use bacnet_ops::bbmd::{
-    FdtRow, Finding, MAX_SURVEY, Matrix, NO_ANSWER, Outcome, Probe, SURVEY_AT_ONCE, Survey,
-    address_of, survey,
+    FdtRow, Finding, Here, MAX_SURVEY, Matrix, NO_ANSWER, NotFollowed, Outcome, Probe,
+    SURVEY_AT_ONCE, Survey, address_of, survey,
 };
 use bacnet_ops::engine::Engine;
 use bacnet_ops::label::kebab;
@@ -101,6 +101,14 @@ pub(super) async fn plan<T: TransportPort + 'static>(
         let address: SocketAddrV4 = text
             .parse()
             .map_err(|_| ToolError::invalid("bbmds", format!("{text}: not an ip:port")))?;
+        // The same rule as for the peers a table lists: no broadcast,
+        // multicast, loopback or own address is read.
+        if let Some(why) = NotFollowed::check_address(address, &here(engine)) {
+            return Err(ToolError::invalid(
+                "bbmds",
+                format!("{address} is no BBMD a read may go to ({})", why.as_str()),
+            ));
+        }
         if !known(ctx, engine, address).await {
             return Err(ToolError::refused(
                 "address-not-known",
@@ -173,6 +181,19 @@ async fn known<T: TransportPort + 'static>(
         })
 }
 
+/// Where this server is on its B/IP link: its own address, so a table
+/// listing it isn't read back, and its broadcast address. A `bip()` client
+/// always has both.
+fn here<T: TransportPort + 'static>(engine: &Engine<T>) -> Here {
+    let bip = engine.bip();
+    Here {
+        own: bip
+            .and_then(|bip| address_of(bip.local_mac()))
+            .unwrap_or(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
+        broadcast: bip.map_or(Ipv4Addr::BROADCAST, |bip| bip.broadcast_address()),
+    }
+}
+
 /// Read the tables and judge them. A survey whose every read the budget
 /// left unsent gives its minute back.
 pub(super) async fn run<T: TransportPort + 'static>(
@@ -181,13 +202,7 @@ pub(super) async fn run<T: TransportPort + 'static>(
     call: &Call,
     plan: &Plan,
 ) -> Value {
-    // Our own address, so a table listing it isn't read back; a bip()
-    // client always has one.
-    let own = engine
-        .bip()
-        .and_then(|bip| address_of(bip.local_mac()))
-        .unwrap_or(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
-    let found = survey(&plan.seeds, own, |bbmd| read(engine, call, bbmd)).await;
+    let found = survey(&plan.seeds, here(engine), |bbmd| read(engine, call, bbmd)).await;
     if found
         .read
         .iter()

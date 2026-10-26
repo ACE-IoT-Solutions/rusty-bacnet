@@ -157,6 +157,26 @@ fn matrix_flags_the_missing_entry_120x40() {
     assert_snapshot!("network_matrix_120x40", text);
 }
 
+/// A lone BBMD with an empty BDT (one serving only foreign devices) shows
+/// the note, not the sentence that every BDT lists itself.
+#[test]
+fn an_empty_bdt_shows_its_note_120x40() {
+    let mut app = registered();
+    press(&mut app, KeyCode::Char('m'));
+    let survey = NetworkEvent::Survey {
+        seed: at_ip(1),
+        probes: vec![(at_ip(1), Probe::Table(Vec::new()))],
+    };
+    worker(&mut app, WorkerEvent::Network(survey));
+    let text = screen(&mut app, 120, 40);
+    assert!(
+        text.contains("10.0.1.1:47808 has an empty BDT: it forwards to no peer BBMD"),
+        "{text}"
+    );
+    assert!(!text.contains("BDTs agree"), "{text}");
+    assert_snapshot!("network_matrix_empty_120x40", text);
+}
+
 #[test]
 fn a_refusal_shows_a_banner_on_every_screen() {
     let mut app = connected_app();

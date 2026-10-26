@@ -23,7 +23,7 @@ use super::{Theme, WIDE_WIDTH};
 use crate::tui::app::App;
 use crate::tui::app::devices::age_label;
 use crate::tui::app::network::{Fetched, NetworkState, View};
-use bacnet_ops::bbmd::{Cell, Matrix};
+use bacnet_ops::bbmd::{Cell, Finding, Matrix};
 
 /// Height of the foreign-device panel, borders included, with the
 /// registration counters on the status line.
@@ -519,7 +519,19 @@ fn matrix(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     .areas(area);
     grid_table(frame, grid, matrix, theme);
     frame.render_widget(Paragraph::new(legend_lines), legend_area);
-    let lines: Vec<Line> = if matrix.consistent() {
+    let notes_only = !matrix.findings.is_empty()
+        && matrix
+            .findings
+            .iter()
+            .all(|finding| matches!(finding, Finding::NoPeers(_)));
+    let lines: Vec<Line> = if matrix.consistent() && notes_only {
+        // Only notes: an empty table lists nothing, itself included.
+        matrix
+            .findings
+            .iter()
+            .map(|finding| Line::styled(finding.describe(), theme.dim()))
+            .collect()
+    } else if matrix.consistent() {
         vec![Line::styled(
             format!(
                 "All {n} BDTs agree: each BBMD lists itself, every entry is listed back, and masks match."

@@ -167,10 +167,14 @@ J.2.3 and J.2.7), and returns them under `bbmd` with a verdict.
   network 0 by definition, so following it stays within reach, but its
   address comes from whatever the BBMD holds. An entry that is all zeros
   (a host name the BBMD couldn't resolve), unspecified or port 0, the
-  limited broadcast, multicast, loopback (unless the server itself is on
+  limited broadcast, a directed broadcast (the server's own broadcast
+  address, or every host bit of the entry's own mask set: an entry is
+  always a BBMD's unicast address), multicast, loopback (unless the server itself is on
   loopback) or the server's own address is never read: it is reported as a
   `not-followed` finding with its reason (`unresolved`, `unspecified`,
-  `broadcast`, `multicast`, `loopback`, `own-address`). The TUI's survey
+  `broadcast`, `directed-broadcast`, `multicast`, `loopback`,
+  `own-address`). A named seed must pass the same check, or the call is
+  an `invalid-argument`. The TUI's survey
   applies the same filter.
 - **Reach and charging.** Every BBMD is on the server's own B/IP network,
   so `[mcp] networks` must include 0 (else `network-not-allowed`); a server

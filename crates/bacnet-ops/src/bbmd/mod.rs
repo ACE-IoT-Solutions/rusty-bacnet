@@ -205,6 +205,10 @@ pub enum NotFollowed {
     Unspecified,
     /// The limited broadcast address.
     Broadcast,
+    /// A subnet's directed broadcast address: a BDT entry always holds a
+    /// BBMD's own unicast address, so one that is the local broadcast
+    /// address, or has every host bit of its own mask set, is none.
+    DirectedBroadcast,
     /// A multicast address.
     Multicast,
     /// A loopback address, while this node isn't on loopback itself.
@@ -220,17 +224,26 @@ impl NotFollowed {
             Self::Unresolved => "unresolved",
             Self::Unspecified => "unspecified",
             Self::Broadcast => "broadcast",
+            Self::DirectedBroadcast => "directed-broadcast",
             Self::Multicast => "multicast",
             Self::Loopback => "loopback",
             Self::Own => "own-address",
         }
     }
 
-    /// Why `address`, listed in a BDT, is not read by a node at `own`;
-    /// `None` when it may be. BDT entries are device data, so a hostile or
-    /// broken table must not turn the survey into a broadcast, a multicast
-    /// or a send to this host's other services.
-    pub fn check(address: SocketAddrV4, own: SocketAddrV4) -> Option<Self> {
+    /// Why `row`, a BDT entry, is not read by a node at `here`; `None` when
+    /// it may be. BDT entries are device data, so a hostile or broken table
+    /// must not turn the survey into a broadcast, a multicast or a send to
+    /// this host's other services.
+    pub fn check(row: &BdtRow, here: &Here) -> Option<Self> {
+        let directed = !row.is_unicast() && row.forward_to() == *row.address.ip();
+        Self::check_address(row.address, here).or(directed.then_some(Self::DirectedBroadcast))
+    }
+
+    /// [`check`](Self::check) for an address without a mask, such as a
+    /// survey's seed.
+    pub fn check_address(address: SocketAddrV4, here: &Here) -> Option<Self> {
+        let own = here.own;
         let ip = address.ip();
         if ip.is_unspecified() && address.port() == 0 {
             Some(Self::Unresolved)
@@ -240,6 +253,10 @@ impl NotFollowed {
             Some(Self::Broadcast)
         } else if ip.is_multicast() {
             Some(Self::Multicast)
+        } else if *ip == here.broadcast && here.broadcast != *own.ip() {
+            // A "broadcast" address that is our own (a loopback lab's
+            // setting) broadcasts nothing.
+            Some(Self::DirectedBroadcast)
         } else if address == own {
             Some(Self::Own)
         } else if ip.is_loopback() && !own.ip().is_loopback() {
@@ -248,6 +265,16 @@ impl NotFollowed {
             None
         }
     }
+}
+
+/// Where the surveying node is: its own address, and the broadcast address
+/// its transport sends local broadcasts to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Here {
+    /// This node's B/IP address.
+    pub own: SocketAddrV4,
+    /// Its transport's broadcast address.
+    pub broadcast: Ipv4Addr,
 }
 
 /// A BDT entry a survey did not follow, and the first BBMD that listed it.
@@ -276,8 +303,8 @@ pub struct Survey<X> {
 /// Read the BDT of each seed, then of every BBMD a table read lists,
 /// breadth first, up to [`MAX_SURVEY`] reads; the rest are listed unread.
 /// `read` gives each BBMD's BDT and anything else the caller reads of it;
-/// `own` is this node's address, for [`NotFollowed::check`], which every
-/// listed address passes before it is read (the seeds are the caller's).
+/// `here` is where this node is, for [`NotFollowed::check`], which every
+/// listed entry passes before it is read (the seeds are the caller's).
 ///
 /// Up to [`SURVEY_AT_ONCE`] reads run at once, so silent peers wait out
 /// their timeouts together. The result is the one reading them one at a
@@ -285,7 +312,7 @@ pub struct Survey<X> {
 /// starts only for one of the first [`MAX_SURVEY`], and a table's entries
 /// join the list only once every read before it has been taken in, so a
 /// fast answer from a later BBMD can't jump the breadth-first order.
-pub async fn survey<X, F, R>(seeds: &[SocketAddrV4], own: SocketAddrV4, read: F) -> Survey<X>
+pub async fn survey<X, F, R>(seeds: &[SocketAddrV4], here: Here, read: F) -> Survey<X>
 where
     F: Fn(SocketAddrV4) -> R,
     R: Future<Output = (Probe, X)>,
@@ -317,7 +344,7 @@ where
                     if !seen.insert(row.address) {
                         continue;
                     }
-                    match NotFollowed::check(row.address, own) {
+                    match NotFollowed::check(row, &here) {
                         Some(why) => not_followed.push(Unfollowed {
                             address: row.address,
                             listed_by: bbmd,
@@ -344,6 +371,14 @@ mod tests {
 
     fn at(last: u8) -> SocketAddrV4 {
         SocketAddrV4::new(Ipv4Addr::new(10, 0, last, 1), 47808)
+    }
+
+    /// A node at none of the tests' addresses.
+    fn nowhere() -> Here {
+        Here {
+            own: at(250),
+            broadcast: Ipv4Addr::BROADCAST,
+        }
     }
 
     fn row(address: &str, mask: [u8; 4]) -> BdtRow {
@@ -410,7 +445,7 @@ mod tests {
             2 => vec![at(2), at(1)],
             _ => vec![],
         };
-        let surveyed = survey(&[at(1), at(2), at(1)], at(9), |bbmd| async move {
+        let surveyed = survey(&[at(1), at(2), at(1)], nowhere(), |bbmd| async move {
             let rows = tables(bbmd)
                 .into_iter()
                 .map(|address| BdtRow {
@@ -432,31 +467,40 @@ mod tests {
     /// loopback peer is read only by a node on loopback.
     #[tokio::test]
     async fn addresses_no_read_may_go_to_are_not_followed() {
-        let own = at(1);
+        let here = Here {
+            own: at(1),
+            broadcast: Ipv4Addr::new(10, 0, 9, 255),
+        };
+        const ONES: [u8; 4] = [255; 4];
+        const SUBNET: [u8; 4] = [255, 255, 255, 0];
         let bad = [
-            ("0.0.0.0:0", NotFollowed::Unresolved),
-            ("0.0.0.0:47808", NotFollowed::Unspecified),
-            ("10.0.5.1:0", NotFollowed::Unspecified),
-            ("255.255.255.255:47808", NotFollowed::Broadcast),
-            ("224.0.0.1:47808", NotFollowed::Multicast),
-            ("239.255.255.250:1900", NotFollowed::Multicast),
-            ("127.0.0.1:53", NotFollowed::Loopback),
+            ("0.0.0.0:0", ONES, NotFollowed::Unresolved),
+            ("0.0.0.0:47808", ONES, NotFollowed::Unspecified),
+            ("10.0.5.1:0", ONES, NotFollowed::Unspecified),
+            ("255.255.255.255:47808", ONES, NotFollowed::Broadcast),
+            ("224.0.0.1:47808", ONES, NotFollowed::Multicast),
+            ("239.255.255.250:1900", ONES, NotFollowed::Multicast),
+            ("127.0.0.1:53", ONES, NotFollowed::Loopback),
+            // The local broadcast address, whatever its mask.
+            ("10.0.9.255:47808", ONES, NotFollowed::DirectedBroadcast),
+            // Every host bit of its own mask set.
+            ("10.0.7.255:47808", SUBNET, NotFollowed::DirectedBroadcast),
         ];
         let mut rows: Vec<BdtRow> = bad
             .iter()
-            .map(|(address, _)| BdtRow {
+            .map(|(address, mask, _)| BdtRow {
                 address: address.parse().unwrap(),
-                mask: Ipv4Addr::BROADCAST,
+                mask: Ipv4Addr::from(*mask),
             })
             .collect();
         // Our own address, and one bad entry listed twice.
         rows.push(BdtRow {
-            address: own,
+            address: here.own,
             mask: Ipv4Addr::BROADCAST,
         });
         rows.push(rows[0]);
         let reads = std::sync::Mutex::new(Vec::new());
-        let surveyed = survey(&[at(2)], own, |bbmd| {
+        let surveyed = survey(&[at(2)], here, |bbmd| {
             reads.lock().unwrap().push(bbmd);
             let rows = rows.clone();
             async move { (Probe::Table(rows), ()) }
@@ -465,24 +509,44 @@ mod tests {
         assert_eq!(*reads.lock().unwrap(), [at(2)], "only the seed is read");
         let mut expected: Vec<Unfollowed> = bad
             .iter()
-            .map(|(address, why)| Unfollowed {
+            .map(|(address, _, why)| Unfollowed {
                 address: address.parse().unwrap(),
                 listed_by: at(2),
                 why: *why,
             })
             .collect();
         expected.push(Unfollowed {
-            address: own,
+            address: here.own,
             listed_by: at(2),
             why: NotFollowed::Own,
         });
         assert_eq!(surveyed.not_followed, expected);
+        // A unicast entry ending in .255, and a subnet mask on a BBMD's own
+        // address, are peers.
+        let entry = |address: &str, mask: [u8; 4]| BdtRow {
+            address: address.parse().unwrap(),
+            mask: Ipv4Addr::from(mask),
+        };
+        assert_eq!(
+            NotFollowed::check(&entry("10.0.7.255:47808", ONES), &here),
+            None
+        );
+        assert_eq!(
+            NotFollowed::check(&entry("10.0.7.1:47808", SUBNET), &here),
+            None
+        );
         // On loopback, a loopback peer is a peer.
-        let local = "127.0.0.1:47808".parse().unwrap();
-        let peer: SocketAddrV4 = "127.0.0.1:47809".parse().unwrap();
-        assert_eq!(NotFollowed::check(peer, local), None);
-        assert_eq!(NotFollowed::check(local, local), Some(NotFollowed::Own));
-        assert_eq!(NotFollowed::check(at(3), own), None);
+        let local = Here {
+            own: "127.0.0.1:47808".parse().unwrap(),
+            broadcast: Ipv4Addr::new(127, 255, 255, 255),
+        };
+        let peer = entry("127.0.0.2:47809", ONES);
+        assert_eq!(NotFollowed::check(&peer, &local), None);
+        assert_eq!(
+            NotFollowed::check_address(local.own, &local),
+            Some(NotFollowed::Own)
+        );
+        assert_eq!(NotFollowed::check_address(at(3), &here), None);
     }
 
     /// A survey whose tables name far more BBMDs than it reads stops at
@@ -503,7 +567,7 @@ mod tests {
                 .collect()
         };
         let reads = std::sync::atomic::AtomicUsize::new(0);
-        let surveyed = survey(&[at(1)], at(250), |bbmd| {
+        let surveyed = survey(&[at(1)], nowhere(), |bbmd| {
             reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let rows = peers(bbmd);
             async move { (Probe::Table(rows), ()) }
@@ -526,7 +590,7 @@ mod tests {
     /// No seed reads nothing.
     #[tokio::test]
     async fn no_seed_reads_nothing() {
-        let surveyed = survey(&[], at(9), |_| async { (Probe::Skipped, ()) }).await;
+        let surveyed = survey(&[], nowhere(), |_| async { (Probe::Skipped, ()) }).await;
         assert!(surveyed.read.is_empty() && surveyed.unread.is_empty());
     }
 }
