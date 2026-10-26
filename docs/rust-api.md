@@ -914,6 +914,14 @@ the current outgoing path, and SC negotiation/reconnect/failover can change it.
 Client budgets continue using egress limits and the client's existing canonical
 configuration policy.
 
+A server resolves its Device's `Max_APDU_Length_Accepted` from that capacity
+once, at start, and keeps it while it runs, even if the capacity later falls
+(an SC hub failover, a router application port whose path shrinks; #2093).
+Peers learn the value once, from I-Am or their address binding, and cache it,
+so a later change would not reach them. Each reply is sized to its own route
+instead (the requester's declared limit and the path's NPDU limit), so a
+smaller path still gets replies that fit.
+
 `bacnet_objects::DeviceIdentity` owns the Device instance, vendor, raw receive
 ceiling, segmentation mode and segment timeout. Full-server builders and
 endpoint builders take `.device(identity)`; `ServerConfig.device` and

@@ -24,7 +24,7 @@ use std::any::Any;
 use std::future::Future;
 use std::net::SocketAddrV4;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use bacnet_encoding::apdu::{Apdu, decode_apdu};
@@ -193,6 +193,9 @@ impl SendLog {
 struct Shared {
     sent: SendLog,
     starts: AtomicUsize,
+    /// What `local_receive_apdu_capacity` reports; see
+    /// [`TestTransportHandle::set_receive_capacity`].
+    receive_capacity: AtomicU16,
     fail_next: AtomicBool,
     block_next: AtomicBool,
     blocked: Semaphore,
@@ -204,6 +207,7 @@ impl Default for Shared {
         Self {
             sent: SendLog::default(),
             starts: AtomicUsize::new(0),
+            receive_capacity: AtomicU16::new(1476),
             fail_next: AtomicBool::new(false),
             block_next: AtomicBool::new(false),
             blocked: Semaphore::new(0),
@@ -245,6 +249,14 @@ impl TestTransportHandle {
     /// Calls to `start`, counted before the start mode runs.
     pub(crate) fn starts(&self) -> usize {
         self.shared.starts.load(Ordering::SeqCst)
+    }
+
+    /// Change what the transport reports as its receive capacity (1476 at
+    /// first), as a real link might after start (#2093).
+    pub(crate) fn set_receive_capacity(&self, capacity: u16) {
+        self.shared
+            .receive_capacity
+            .store(capacity, Ordering::SeqCst);
     }
 
     /// Fail the next recorded send only.
@@ -456,7 +468,7 @@ impl TransportPort for TestTransport {
     }
 
     fn local_receive_apdu_capacity(&self) -> u16 {
-        1476
+        self.shared.receive_capacity.load(Ordering::SeqCst)
     }
 
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {
