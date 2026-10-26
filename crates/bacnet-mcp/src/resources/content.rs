@@ -24,10 +24,12 @@ use crate::value::object_text;
 /// How long a device summary is served from the cache.
 const DEVICE_TTL: Duration = Duration::from_secs(300);
 
-/// The most devices whose summaries or alarms are kept.
+/// The fewest devices whose summaries or alarms are kept; a policy whose
+/// device page is larger keeps that many, so a full alarm sweep fits.
 const CACHE_CAP: usize = 64;
 
-/// A cache of resource bodies by device, at most [`CACHE_CAP`] of them.
+/// A cache of resource bodies by device, at most [`CACHE_CAP`] or the
+/// device page of them.
 pub(crate) type Cache = Mutex<HashMap<u32, (Instant, Value)>>;
 
 fn cached(cache: &Cache, device: u32, ttl: Duration) -> Option<Value> {
@@ -36,9 +38,9 @@ fn cached(cache: &Cache, device: u32, ttl: Duration) -> Option<Value> {
     (at.elapsed() < ttl).then(|| body.clone())
 }
 
-fn keep(cache: &Cache, device: u32, body: &Value) {
+fn keep(cache: &Cache, cap: usize, device: u32, body: &Value) {
     let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
-    if cache.len() >= CACHE_CAP
+    if cache.len() >= cap.max(CACHE_CAP)
         && !cache.contains_key(&device)
         && let Some(oldest) = cache.iter().min_by_key(|(_, (at, _))| *at).map(|(d, _)| *d)
     {
@@ -207,7 +209,7 @@ pub(super) async fn device<T: TransportPort + 'static>(
         return Ok(body);
     }
     let mut body = describe::run(ctx, call, describe::Args::of(device)).await?;
-    keep(&ctx.described, device, &body);
+    keep(&ctx.described, ctx.policy.caps.devices, device, &body);
     body["cached"] = json!(false);
     Ok(body)
 }
@@ -243,7 +245,7 @@ async fn alarms_of<T: TransportPort + 'static>(
             map.remove(key);
         }
     }
-    keep(&ctx.alarms, device, &body);
+    keep(&ctx.alarms, ctx.policy.caps.devices, device, &body);
     Ok(body)
 }
 
@@ -291,7 +293,11 @@ pub(super) async fn alarms<T: TransportPort + 'static>(
 pub(crate) async fn refresh_alarms<T: TransportPort + 'static>(ctx: &Ctx<T>, text: &str) -> bool {
     let devices: Vec<u32> = match uri::parse(text) {
         Ok(Uri::DeviceAlarms(device)) => vec![device],
-        Ok(Uri::Alarms) => ctx.known_in_reach(),
+        Ok(Uri::Alarms) => {
+            let mut devices = ctx.known_in_reach();
+            devices.truncate(ctx.policy.caps.devices);
+            devices
+        }
         _ => return false,
     };
     let account = Arc::new(Account::new(Some(Arc::clone(&ctx.bucket))));
@@ -304,12 +310,15 @@ pub(crate) async fn refresh_alarms<T: TransportPort + 'static>(ctx: &Ctx<T>, tex
             if call.out_of_time() {
                 break;
             }
+            // A device not read before (or evicted) is unknown, not changed:
+            // the subscriber reads the resource itself.
             let before = events(device);
             if alarms_of(ctx, &call, device, ALARMS_EVERY / 2)
                 .await
                 .is_ok()
+                && let Some(before) = before
             {
-                changed |= before != events(device);
+                changed |= Some(before) != events(device);
             }
         }
         changed

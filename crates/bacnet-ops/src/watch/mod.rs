@@ -593,7 +593,8 @@ impl<T: TransportPort + 'static> Hub<T> {
                     return Err(WatchError::Full { max });
                 }
                 let mut process = table.next_process;
-                while table.by_process.contains_key(&process) {
+                // 0 is skipped when the count wraps.
+                while process == 0 || table.by_process.contains_key(&process) {
                     process = process.wrapping_add(1);
                 }
                 table.next_process = process.wrapping_add(1);

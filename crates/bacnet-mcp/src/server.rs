@@ -20,9 +20,10 @@ use bacnet_ops::watch::{Hub, WatchOptions};
 use bacnet_transport::port::TransportPort;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, GetPromptRequestParams, GetPromptResponse,
-    Implementation, ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, ProtocolVersion, ReadResourceRequestParams,
-    ReadResourceResponse, ServerCapabilities, ServerConfig, SubscriptionFilter,
+    Implementation, InitializeRequestParams, InitializeResult, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
+    ServerConfig, SubscriptionFilter,
 };
 use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -38,8 +39,15 @@ use crate::{prompts, resources, tools};
 /// How long a graceful shutdown waits for the listen streams to complete.
 const LISTEN_WAIT: Duration = Duration::from_secs(5);
 
-/// How long a shutdown waits for the watch hub's cancels.
-const CANCEL_WAIT: Duration = Duration::from_secs(10);
+/// How long a shutdown waits for the watch hub's cancels: 10 s, plus
+/// 60 ms a point (one cancel each, paced at the global rate of 20 a
+/// second), up to 30 s. A cancel still waiting then is given up, and its
+/// subscription lapses with its lifetime (300 s).
+fn cancel_wait(points: usize) -> Duration {
+    let points = u32::try_from(points).unwrap_or(u32::MAX);
+    (Duration::from_secs(10) + Duration::from_millis(60).saturating_mul(points))
+        .min(Duration::from_secs(30))
+}
 
 /// What the server tells the agent host about itself.
 const INSTRUCTIONS: &str = "Read-only access to a BACnet building automation network. \
@@ -89,25 +97,33 @@ impl<T: TransportPort + 'static> McpServer<T> {
     /// The engine's request limits should come from
     /// [`Policy::request_limits`], so the policy's rates hold. With an
     /// engine it starts the watch hub, so it must be called inside a Tokio
-    /// runtime.
+    /// runtime. A policy that doesn't validate ([`Policy::validate`]) is
+    /// refused.
     pub fn new(
         engine: Option<Arc<Engine<T>>>,
         policy: Policy,
         principal: impl Into<String>,
-    ) -> Self {
+    ) -> Result<Self, ServeError> {
+        policy
+            .validate()
+            .map_err(|e| ServeError(format!("the MCP policy: {e}")))?;
         let rates = policy.rates;
         // The hub's own bucket, at a principal's rate: its polls and
         // subscriptions never take the agent's tokens, and a shared point
         // costs the same whatever the number of listeners.
-        let hub = engine.as_ref().map(|engine| {
-            let options = WatchOptions {
-                max_points: policy.caps.process_watches,
-                bucket: Some(Arc::new(TokenBucket::new(rates.principal, rates.burst))),
-                ..WatchOptions::default()
-            };
-            Hub::new(Arc::clone(engine), options).expect("the watch options are fixed and valid")
-        });
-        Self {
+        let hub = engine
+            .as_ref()
+            .map(|engine| {
+                let options = WatchOptions {
+                    max_points: policy.caps.process_watches,
+                    bucket: Some(Arc::new(TokenBucket::new(rates.principal, rates.burst))),
+                    ..WatchOptions::default()
+                };
+                Hub::new(Arc::clone(engine), options)
+                    .map_err(|e| ServeError(format!("the watch hub: {e}")))
+            })
+            .transpose()?;
+        Ok(Self {
             ctx: Arc::new(Ctx {
                 engine,
                 policy,
@@ -128,7 +144,7 @@ impl<T: TransportPort + 'static> McpServer<T> {
                 described: Mutex::new(HashMap::new()),
                 alarms: Mutex::new(HashMap::new()),
             }),
-        }
+        })
     }
 
     /// The names of the tools this server lists.
@@ -206,7 +222,7 @@ impl<T: TransportPort + 'static> McpServer<T> {
         ctx.closing.cancel();
         ctx.subs.clear();
         if let Some(hub) = &ctx.hub {
-            hub.shutdown(CANCEL_WAIT).await;
+            hub.shutdown(cancel_wait(hub.stats().tasks)).await;
         }
         let _ = follow.await;
         ctx.log_summary();
@@ -277,6 +293,24 @@ impl<T: TransportPort + 'static> ServerHandler for McpServer<T> {
 
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
         Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS)
+    }
+
+    /// The handshake of the older revisions: such a session can't open a
+    /// listen stream, and `resources/subscribe` isn't offered, so the
+    /// answer doesn't advertise subscriptions.
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        context.peer.set_peer_info(request.clone());
+        let mut result = self.negotiate_initialize(&request)?;
+        if result.protocol_version.as_str() < ProtocolVersion::V_2026_07_28.as_str()
+            && let Some(resources) = result.capabilities.resources.as_mut()
+        {
+            resources.subscribe = None;
+        }
+        Ok(result)
     }
 
     async fn list_tools(

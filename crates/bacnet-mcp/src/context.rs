@@ -364,6 +364,10 @@ impl<T: TransportPort + 'static> Ctx<T> {
                 event = events.recv() => event,
                 _ = sweep.tick() => {
                     self.subs.expire_tool(TOOL_IDLE);
+                    // A stream acknowledged but never begun (its
+                    // acknowledgment failed, or the client cancelled first)
+                    // leaves a reservation no later one may come to clear.
+                    self.subs.prune();
                     continue;
                 }
             };

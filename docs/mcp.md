@@ -79,14 +79,20 @@ all) is a -32603 with the same body.
 `rmcp` 3.5.1 implements `subscriptions/listen` (2026-07-28): the server
 sends the acknowledgment, then `notifications/resources/updated` carrying
 only the URI; the client reads the resource. A legacy client (the older
-`initialize` handshake) can't open a listen stream; `resources/subscribe`
-is not offered, so such hosts use `bacnet_watch`.
+`initialize` handshake) can't open a listen stream, and
+`resources/subscribe` is not offered, so the server's `initialize` answer
+for a version older than 2026-07-28 doesn't advertise `resources.subscribe`
+(`server/discover` does); such hosts use `bacnet_watch`.
 
 - **Acknowledgment.** It lists only the URIs honoured. A point URI is
   honoured when it parses, its device is in the discovery table (so call
   `bacnet_discover` first) and in reach, and both caps leave room; an
   over-cap, unknown or malformed URI is visibly left out. The SDK keeps a
   URI asked for twice twice in the acknowledgment; it is watched once.
+  The watches are taken when the acknowledgment is built and held for the
+  stream; one the stream never claims (the acknowledgment couldn't be
+  sent, or the client cancelled first) is released by a sweep within
+  about 90 s, and at most 16 such reservations wait at once.
 - **Caps.** 32 points per principal (`Caps::watches`; the same point on
   two streams, or a stream and `bacnet_watch`, counts once) and 256 per
   process (`Caps::process_watches`, the hub's cap, which counts points
@@ -99,7 +105,12 @@ is not offered, so such hosts use `bacnet_watch`.
   in `note`). A device that doesn't answer is polled with a backoff up to a
   minute, and subscribed again after five minutes. The last listener
   leaving cancels the subscription; a listener joining as the last leaves
-  gets a fresh entry with its own subscriber process identifier.
+  gets a fresh entry with its own subscriber process identifier. A point
+  whose device isn't in the discovery table yet says so and is looked up
+  again at each poll, then read and subscribed once it appears. An object
+  watch keeps the point properties: a notification can refresh a row but
+  adds one only for a point property, and never past 16 rows, so a device
+  can't grow it; a property watch keeps its property, at its element.
 - **Bursts.** Changes to one point within a second make one notification;
   the folded ones are counted (`updates.coalesced`), and a read always has
   the latest values. Notifications the hub's receiver fell behind on are
@@ -111,10 +122,16 @@ is not offered, so such hosts use `bacnet_watch`.
   and notifications cost nothing. Renewals take the device's gate but no
   rate slot; cancels skip the hub's bucket. A resource read is charged to
   the principal like a tool call; the alarm polls of a stream are too.
+  The bound: at most 256 points (32 per principal) are watched, each
+  polled at most every 10 s or renewed once a lifetime, and every hub
+  request still waits for its device's gate and the network and global
+  rates, so the hub sends at most 5 requests a second beyond renewals and
+  cancels however many agents listen.
 - **Shutdown.** On a signal (SIGINT or SIGTERM; Ctrl-C on Windows) each
   listen stream completes with its final result, the session closes, and
-  every BACnet subscription is cancelled, waiting up to 10 s (what doesn't
-  answer lapses with its lifetime). The host closing stdin does the same,
+  every BACnet subscription is cancelled, waiting 10 s plus 60 ms a point,
+  at most 30 s (enough for 256 cancels at the global rate); what doesn't
+  answer by then lapses with its lifetime, within five minutes. The host closing stdin does the same,
   with nowhere to send the final results.
 
 ## The tool-only fallback

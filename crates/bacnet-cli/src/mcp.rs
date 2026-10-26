@@ -175,7 +175,7 @@ async fn serve(cli: &Cli, profile: Option<&str>, passive: bool) -> crate::CliRes
             None => McpSection::default(),
         };
         tracing::info!("passive MCP server: no client is built, nothing is sent");
-        let server = McpServer::<BipTransport>::new(None, policy(&section, true)?, principal());
+        let server = McpServer::<BipTransport>::new(None, policy(&section, true)?, principal())?;
         return Ok(server.serve_stdio_until(shutdown_signal()).await?);
     }
     let Some(name) = profile else {
@@ -251,7 +251,7 @@ async fn serve_on<T: TransportPort + 'static>(
 ) -> crate::CliResult {
     let client = Arc::new(client);
     let engine = Engine::new(Arc::clone(&client), Arc::new(policy.request_limits()));
-    let server = McpServer::new(Some(Arc::new(engine)), policy, principal());
+    let server = McpServer::new(Some(Arc::new(engine)), policy, principal())?;
     let served = server.serve_stdio_until(shutdown_signal()).await;
     // The server has let go of the engine, and with it the client.
     if let Ok(mut client) = Arc::try_unwrap(client) {

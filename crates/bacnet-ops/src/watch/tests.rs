@@ -423,3 +423,139 @@ async fn joining_as_the_last_leaves_keeps_one_live_subscription() {
     assert_eq!(present_value(&new.snapshot()), Some(42.0));
     lab.stop().await;
 }
+
+/// A notification for `point`'s object, from the lab device's MAC,
+/// carrying `values` (property, index).
+fn notification(
+    object: ObjectIdentifier,
+    values: &[(PropertyIdentifier, Option<u32>)],
+) -> ReceivedCOVNotification {
+    ReceivedCOVNotification {
+        notification: bacnet_services::cov::COVNotificationRequest {
+            subscriber_process_identifier: PROCESS_BASE,
+            initiating_device_identifier: oid(ObjectType::DEVICE, LAB),
+            monitored_object_identifier: object,
+            time_remaining: 100,
+            list_of_values: values
+                .iter()
+                .map(
+                    |&(property, index)| bacnet_types::constructed::BACnetPropertyValue {
+                        property_identifier: property,
+                        property_array_index: index,
+                        value: vec![0x44, 0x42, 0x28, 0, 0],
+                        priority: None,
+                    },
+                )
+                .collect(),
+        },
+        source_mac: bacnet_types::MacAddr::from_slice(&[2]),
+        source_network: None,
+        source_address: None,
+        delivery: bacnet_client::client::COVNotificationDelivery::Unconfirmed,
+    }
+}
+
+/// A device can't grow an object watch's rows by reporting properties it
+/// doesn't watch; a property watch keeps only its property and element.
+#[test]
+fn notifications_cannot_grow_the_rows() {
+    let point = object(ai(1));
+    let mut rows = Vec::new();
+    let flood: Vec<(PropertyIdentifier, Option<u32>)> = (0..500)
+        .map(|n| (PropertyIdentifier::from_raw(600 + n), None))
+        .chain([(PropertyIdentifier::PRESENT_VALUE, None)])
+        .collect();
+    dispatch::merge(&mut rows, &point, &notification(ai(1), &flood));
+    assert_eq!(rows.len(), 1, "only the point property joins");
+    for _ in 0..3 {
+        dispatch::merge(&mut rows, &point, &notification(ai(1), &flood));
+    }
+    assert_eq!(rows.len(), 1);
+    assert!(rows.len() <= dispatch::MAX_ROWS);
+
+    let element = Point {
+        device: LAB,
+        object: oid(ObjectType::ANALOG_OUTPUT, 1),
+        watched: Watched::Property {
+            property: PropertyIdentifier::PRIORITY_ARRAY,
+            index: Some(8),
+        },
+    };
+    let target = CovTarget::local(&[2]);
+    let other = notification(
+        element.object,
+        &[(PropertyIdentifier::PRIORITY_ARRAY, Some(9))],
+    );
+    assert!(!dispatch::belongs(&element, Some(&target), &other));
+    let mine = notification(
+        element.object,
+        &[(PropertyIdentifier::PRIORITY_ARRAY, Some(8))],
+    );
+    assert!(dispatch::belongs(&element, Some(&target), &mine));
+    let mut rows = Vec::new();
+    dispatch::merge(&mut rows, &element, &other);
+    assert!(rows.is_empty());
+    dispatch::merge(&mut rows, &element, &mine);
+    assert_eq!(rows.len(), 1);
+    let whole = Point {
+        watched: Watched::Property {
+            property: PropertyIdentifier::PRIORITY_ARRAY,
+            index: None,
+        },
+        ..element
+    };
+    assert!(!dispatch::belongs(&whole, Some(&target), &mine));
+}
+
+/// Notifications the hub's receiver falls behind on are counted.
+#[tokio::test(start_paused = true)]
+async fn lagged_notifications_are_counted() {
+    let registry = Arc::new(Registry {
+        table: Mutex::new(Table {
+            entries: HashMap::new(),
+            by_process: HashMap::new(),
+            next_process: PROCESS_BASE,
+            shut: false,
+        }),
+        seq: AtomicU64::new(0),
+        lagged: AtomicU64::new(0),
+        coalesce: Duration::from_secs(1),
+        tasks: watch::Sender::new(0),
+    });
+    let (sender, receiver) = tokio::sync::broadcast::channel(1);
+    for _ in 0..4 {
+        sender.send(notification(ai(1), &[])).unwrap();
+    }
+    let (stop, stopped) = watch::channel(false);
+    let task = tokio::spawn(dispatch::run(Arc::clone(&registry), receiver, stopped));
+    settle().await;
+    assert_eq!(registry.lagged.load(Ordering::Relaxed), 3);
+    stop.send_replace(true);
+    task.await.unwrap();
+}
+
+/// A point whose device isn't in the table yet is reported so, and is
+/// subscribed once the device appears.
+#[tokio::test(start_paused = true)]
+async fn a_device_that_appears_later_is_subscribed() {
+    let lab = Lab::start(WatchOptions::default()).await;
+    let point = Point {
+        device: 2002,
+        object: ai(1),
+        watched: Watched::Object,
+    };
+    let lease = lab.hub.watch(point).unwrap();
+    settle().await;
+    let snapshot = lease.snapshot();
+    assert_eq!(snapshot.state, State::Unreachable);
+    assert!(snapshot.note.as_deref().unwrap().contains("device table"));
+    lab.engine.client().add_device(2002, &[2]).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    let snapshot = lease.snapshot();
+    assert_eq!(snapshot.source, Some(Source::Cov), "{snapshot:?}");
+    assert_eq!(snapshot.state, State::Live);
+    assert_eq!(snapshot.note, None);
+    assert_eq!(present_value(&snapshot), Some(10.0));
+    assert_eq!(lab.table().await.len(), 1);
+    lab.stop().await;
+}

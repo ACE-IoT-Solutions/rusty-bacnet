@@ -277,9 +277,9 @@ async fn a_passive_server_offers_only_what_sends_nothing() {
         passive: true,
         ..Policy::default()
     };
-    let (mut agent, serving) = super::Agent::connect(crate::McpServer::<BipTransport>::new(
-        None, policy, "tester",
-    ));
+    let (mut agent, serving) = super::Agent::connect(
+        crate::McpServer::<BipTransport>::new(None, policy, "tester").unwrap(),
+    );
     let listed = agent.modern("resources/list", json!({})).await;
     let uris: Vec<&str> = listed["result"]["resources"]
         .as_array()
@@ -318,5 +318,29 @@ async fn the_device_list_is_announced_when_a_device_arrives() {
     assert_eq!(updates[0]["params"]["uri"], json!("bacnet://devices"));
     let devices = lab.agent.read("bacnet://devices").await.unwrap();
     assert_eq!(devices["devices"][0]["instance"], json!(LAB));
+    lab.stop().await;
+}
+
+/// A reservation no stream claims (its acknowledgment failed, or the
+/// client cancelled first) is released by the server's sweep, with no
+/// later subscription to clear it: its subscription is cancelled and the
+/// principal's cap freed.
+#[tokio::test(start_paused = true)]
+async fn a_reservation_never_claimed_is_released() {
+    use rmcp::ServerHandler;
+    use rmcp::model::SubscriptionFilter;
+    let mut lab = Lab::start(Policy::default()).await;
+    lab.known().await;
+    let filter = SubscriptionFilter::builder()
+        .resource_subscriptions([AI1])
+        .build();
+    let accepted = lab.mcp.accepted_subscription_filter(&filter).unwrap();
+    assert_eq!(accepted.resource_subscriptions, Some(vec![AI1.to_string()]));
+    settle().await;
+    assert_eq!(lab.cov_table().await.len(), 1);
+    tokio::time::sleep(Duration::from_secs(95)).await;
+    assert!(lab.cov_table().await.is_empty());
+    let session = lab.agent.read("bacnet://session").await.unwrap();
+    assert_eq!(session["watches"]["held"], json!(0));
     lab.stop().await;
 }

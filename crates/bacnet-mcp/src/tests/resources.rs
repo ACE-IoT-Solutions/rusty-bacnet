@@ -49,9 +49,23 @@ async fn lists_name_resources_from_identifiers_only() {
         );
         assert_eq!(item["mimeType"], json!("application/json"));
     }
-    let hello = lab.agent.initialize().await;
+    // A 2026-07-28 client learns that it can subscribe; one on an older
+    // revision, which can't, isn't told it can.
+    let discover = lab.agent.modern("server/discover", json!({})).await;
+    let resources = &discover["result"]["capabilities"]["resources"];
+    assert_eq!(resources["subscribe"], json!(true), "{discover}");
+    let hello = lab
+        .agent
+        .request(
+            "initialize",
+            json!({ "protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": { "name": "old-agent", "version": "1" } }),
+        )
+        .await;
+    assert_eq!(hello["result"]["protocolVersion"], json!("2025-06-18"));
     let resources = &hello["result"]["capabilities"]["resources"];
-    assert_eq!(resources["subscribe"], json!(true), "{hello}");
+    assert!(resources.is_object(), "{hello}");
+    assert!(resources.get("subscribe").is_none(), "{hello}");
     lab.stop().await;
 }
 
@@ -302,5 +316,36 @@ async fn bacnet_watch_keeps_to_the_cap_and_the_reach() {
     let rows: Vec<Value> = ok(&result)["points"].as_array().unwrap().clone();
     assert_eq!(rows[0]["error"]["reason"], json!("watch-cap"), "{rows:?}");
     assert_eq!(rows[1]["error"]["reason"], json!("device-not-allowed"));
+    lab.stop().await;
+}
+
+/// A policy that doesn't validate is refused, not a panic.
+#[test]
+fn a_bad_policy_is_refused_when_the_server_is_made() {
+    use bacnet_transport::bip::BipTransport;
+    let policy = Policy {
+        caps: crate::policy::Caps {
+            process_watches: 0,
+            ..crate::policy::Caps::default()
+        },
+        ..Policy::default()
+    };
+    assert!(crate::McpServer::<BipTransport>::new(None, policy, "tester").is_err());
+}
+
+/// A subscribed alarm resource whose events don't change sends no update:
+/// a device read for the first time on a tick is unknown, not changed.
+#[tokio::test(start_paused = true)]
+async fn unchanged_alarms_send_no_update() {
+    let mut lab = Lab::start_site(Policy::default(), Duration::ZERO).await;
+    lab.known().await;
+    let uris = ["bacnet://alarms", "bacnet://device/1201/alarms"];
+    let (_, accepted) = lab.agent.listen(&uris).await;
+    assert_eq!(accepted, uris);
+    let updates = lab
+        .agent
+        .drain("notifications/resources/updated", Duration::from_secs(200))
+        .await;
+    assert!(updates.is_empty(), "{updates:?}");
     lab.stop().await;
 }

@@ -364,12 +364,14 @@ As built (#2067), and where it differs from the plan above:
 - **`rmcp` 3.5.1 already implements `subscriptions/listen`**
   (`accepted_subscription_filter` and `listen`), so no custom request and
   no SDK bump were needed. The older `resources/subscribe` is not offered:
-  legacy clients use `bacnet_watch`.
+  legacy clients use `bacnet_watch`, and the `initialize` answer for a
+  version before 2026-07-28 doesn't advertise subscriptions.
 - The SDK asks for the accepted filter synchronously, before the
   acknowledgment. The watches are taken there and held for the stream,
   matched by its URI list; a point URI needs its device in the discovery
   table, which a synchronous copy tracks. The SDK repeats a URI asked for
-  twice in the acknowledgment; it is watched once.
+  twice in the acknowledgment; it is watched once. A reservation no stream
+  claims is released by a sweep (about 90 s); at most 16 wait at once.
 - `bacnet://device/{instance}` has no subscription meaning and is not
   honoured. The session and ledger resources are honoured but don't change
   before phase 3.
@@ -378,12 +380,17 @@ As built (#2067), and where it differs from the plan above:
 - Charging: the hub's requests run under its own account and token bucket
   at the principal rate, so a shared point costs once whatever the number
   of listeners and never takes the agent's tokens; renewals take the
-  device's gate but no rate slot, and cancels skip the hub's bucket.
+  device's gate but no rate slot, and cancels skip the hub's bucket. The
+  bound: 256 points at most (32 per principal), each polled at most every
+  10 s or renewed once a lifetime, through the device gates and the
+  network and global rates, so the hub adds at most 5 requests a second
+  (plus renewals and cancels) whatever the number of listeners.
 - `--passive` lists only the session and ledger resources and refuses the
   others, rather than listing resources it can't serve.
 - Graceful shutdown is a signal (or the host closing stdin): streams
-  complete, then every subscription is cancelled within 10 s; one whose
-  device doesn't answer lapses with its lifetime.
+  complete, then every subscription is cancelled, waiting 10 s plus 60 ms
+  a point up to 30 s; one whose device doesn't answer lapses with its
+  lifetime.
 
 Prompts (low risk, user-selected): `survey_site` and `investigate_point` in
 phase 1; `alarm_triage` and `commissioning_check` later. Each prompt tells the

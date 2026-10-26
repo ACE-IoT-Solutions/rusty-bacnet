@@ -212,6 +212,8 @@ pub(crate) struct Lab {
     client: Arc<BACnetClient<Recording>>,
     serving: JoinHandle<()>,
     mute: Arc<Mutex<Option<usize>>>,
+    /// A handle on the server, for calling its handler directly.
+    pub(crate) mcp: McpServer<Recording>,
     /// Shuts the server down gracefully when sent; `None` once it has.
     shutdown: Option<oneshot::Sender<()>>,
 }
@@ -343,8 +345,8 @@ impl Lab {
             Arc::clone(&client),
             Arc::new(policy.request_limits()),
         ));
-        let mcp = McpServer::new(Some(engine), policy, "tester");
-        let (agent, serving, shutdown) = Agent::connect_until(mcp);
+        let mcp = McpServer::new(Some(engine), policy, "tester").unwrap();
+        let (agent, serving, shutdown) = Agent::connect_until(mcp.clone());
         Self {
             agent,
             sent,
@@ -353,6 +355,7 @@ impl Lab {
             client,
             serving,
             mute,
+            mcp,
             shutdown: Some(shutdown),
         }
     }
@@ -406,6 +409,7 @@ impl Lab {
         if self.shutdown.is_some() {
             self.serving.await.unwrap();
         }
+        drop(self.mcp);
         let Ok(mut client) = Arc::try_unwrap(self.client) else {
             panic!("the server let go of the client");
         };

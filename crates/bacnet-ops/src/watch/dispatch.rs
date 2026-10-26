@@ -10,11 +10,12 @@ use std::sync::atomic::Ordering;
 
 use bacnet_client::client::{CovTarget, ReceivedCOVNotification};
 use bacnet_types::MacAddr;
+use bacnet_types::constructed::BACnetPropertyValue;
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-use super::{Point, Registry, Shared, Watched};
+use super::{POINT_PROPERTIES, Point, Registry, Shared, Watched};
 use crate::format::RawRow;
 
 /// Route notifications until the hub stops or the client closes its
@@ -64,11 +65,11 @@ pub(super) fn belongs(
     if notification.monitored_object_identifier != point.object {
         return false;
     }
-    if let Watched::Property { property, .. } = point.watched
+    if matches!(point.watched, Watched::Property { .. })
         && !notification
             .list_of_values
             .iter()
-            .any(|value| value.property_identifier == property)
+            .any(|value| watched_value(point, value))
     {
         return false;
     }
@@ -92,23 +93,48 @@ pub(super) fn belongs(
     }
 }
 
-/// Fold a notification's values into `rows`: each reported property
-/// replaces the row of the same property, or joins the rows. A property
-/// watch keeps only its property.
+/// The most rows a snapshot holds: the point properties and a few the
+/// device reported besides, which a device can't grow past.
+pub(super) const MAX_ROWS: usize = POINT_PROPERTIES.len() + 6;
+
+/// Whether `value` is one a point keeps: for an object watch, any value
+/// (what is kept is limited in [`merge`]); for a property watch, its
+/// property, at its element when it watches one (a value that names no
+/// element is taken as that element, as some devices send it).
+fn watched_value(point: &Point, value: &BACnetPropertyValue) -> bool {
+    match point.watched {
+        Watched::Object => true,
+        Watched::Property { property, index } => {
+            value.property_identifier == property
+                && match index {
+                    None => value.property_array_index.is_none(),
+                    Some(index) => value.property_array_index.is_none_or(|i| i == index),
+                }
+        }
+    }
+}
+
+/// Fold a notification's values into `rows`: each reported value replaces
+/// the row of the same property. An object watch takes in a new row only
+/// for a point property, up to [`MAX_ROWS`], so a device sending many
+/// other properties can't grow it; a property watch keeps its property.
 pub(super) fn merge(rows: &mut Vec<RawRow>, point: &Point, received: &ReceivedCOVNotification) {
     for value in &received.notification.list_of_values {
-        let property = value.property_identifier;
-        if let Watched::Property {
-            property: watched, ..
-        } = point.watched
-            && watched != property
-        {
+        if !watched_value(point, value) {
             continue;
         }
+        let property = value.property_identifier;
         let row = (property, Ok(value.value.clone()));
-        match rows.iter_mut().find(|(p, _)| *p == property) {
-            Some(slot) => *slot = row,
-            None => rows.push(row),
+        if let Some(slot) = rows.iter_mut().find(|(p, _)| *p == property) {
+            *slot = row;
+            continue;
+        }
+        let joins = match point.watched {
+            Watched::Object => POINT_PROPERTIES.contains(&property) && rows.len() < MAX_ROWS,
+            Watched::Property { .. } => rows.is_empty(),
+        };
+        if joins {
+            rows.push(row);
         }
     }
 }

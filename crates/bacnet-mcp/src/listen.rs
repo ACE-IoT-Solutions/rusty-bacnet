@@ -40,6 +40,9 @@ use crate::resources::uri::{self, DEVICES, LEDGER, SESSION, Uri};
 /// How long a reservation waits for its stream.
 const UNCLAIMED: Duration = Duration::from_secs(30);
 
+/// Reservations waiting at once; past it the oldest is dropped.
+const MAX_PENDING: usize = 16;
+
 /// The fastest the device list is announced as changed.
 const DEVICES_EVERY: Duration = Duration::from_secs(1);
 
@@ -210,7 +213,15 @@ impl Subs {
             }
         }
         if !accepted.is_empty() {
-            self.lock().pending.push(Pending {
+            let mut state = self.lock();
+            if state.pending.len() >= MAX_PENDING {
+                // Dropped after the lock: its leases' release takes it.
+                let oldest = state.pending.remove(0);
+                drop(state);
+                drop(oldest);
+                state = self.lock();
+            }
+            state.pending.push(Pending {
                 at: Instant::now(),
                 uris: accepted.clone(),
                 claim,
@@ -227,7 +238,7 @@ impl Subs {
     }
 
     /// Drop reservations no stream claimed in time.
-    fn prune(&self) {
+    pub(crate) fn prune(&self) {
         let stale: Vec<Pending> = {
             let mut state = self.lock();
             let now = Instant::now();

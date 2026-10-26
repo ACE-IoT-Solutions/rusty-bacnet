@@ -125,25 +125,14 @@ impl<'a, T: TransportPort + 'static> Entry<'a, T> {
     /// Look the device up, read the point once and subscribe. False when
     /// stopped meanwhile.
     async fn start(&mut self) -> bool {
-        let engine = &self.inner.engine;
-        let Some(found) = self.or_stop(engine.device(self.device())).await else {
-            return false;
-        };
-        let Some(device) = found else {
-            self.set_state(
-                Some(Source::Poll),
-                State::Unreachable,
-                Some(format!(
-                    "device {} is not in the device table",
-                    self.device()
-                )),
-            );
-            self.poll_later(true);
-            return true;
-        };
-        let target = CovTarget::of_device(&device);
-        self.shared.lock().target = Some(target.clone());
-        self.target = Some(target);
+        match self.locate().await {
+            None => return false,
+            Some(true) => {}
+            Some(false) => {
+                self.missing();
+                return true;
+            }
+        }
         let Some(first) = self.or_stop(self.read()).await else {
             return false;
         };
@@ -165,10 +154,55 @@ impl<'a, T: TransportPort + 'static> Entry<'a, T> {
         self.subscribe().await
     }
 
+    /// Look the device up in the discovery table and note where it is:
+    /// whether it is there, or `None` when stopped meanwhile.
+    async fn locate(&mut self) -> Option<bool> {
+        let engine = &self.inner.engine;
+        let Some(device) = self.or_stop(engine.device(self.device())).await? else {
+            return Some(false);
+        };
+        let target = CovTarget::of_device(&device);
+        self.shared.lock().target = Some(target.clone());
+        self.target = Some(target);
+        Some(true)
+    }
+
+    /// The device isn't in the table (yet): say so, poll with a backoff,
+    /// and look again at the next poll.
+    fn missing(&mut self) {
+        self.set_state(
+            Some(Source::Poll),
+            State::Unreachable,
+            Some(format!(
+                "device {} is not in the device table",
+                self.device()
+            )),
+        );
+        self.poll_later(true);
+        self.retry_cov = self.next_poll;
+    }
+
     /// Ask for the managed subscription. False when stopped meanwhile.
     async fn subscribe(&mut self) -> bool {
+        if self.target.is_none() {
+            match self.locate().await {
+                None => return false,
+                Some(false) => {
+                    self.missing();
+                    return true;
+                }
+                Some(true) => {
+                    // Found now: the note about the table no longer holds,
+                    // and the point has its first read.
+                    let state = self.shared.lock().snapshot.state;
+                    self.set_state(None, state, None);
+                    if !self.poll().await {
+                        return false;
+                    }
+                }
+            }
+        }
         let Some(target) = self.target.clone() else {
-            self.poll_later(false);
             return true;
         };
         // Until the answer comes, the request may have reached the device.
