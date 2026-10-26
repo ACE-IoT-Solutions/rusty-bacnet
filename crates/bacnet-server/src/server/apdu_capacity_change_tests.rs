@@ -1,12 +1,13 @@
-//! #2093: the server keeps the Max_APDU_Length_Accepted it resolved at start
-//! when its transport's receive capacity later falls, and each reply follows
-//! its own request's budget instead.
+//! #2093: when the transport's receive capacity falls after start, the
+//! server's Max_APDU_Length_Accepted property and I-Am stay as resolved at
+//! start, and each reply honours its requester's declared limit, not the
+//! receive capacity, which only bounds what comes in.
 use super::*;
 use bacnet_encoding::apdu::ComplexAck;
 
-/// A confirmed ReadProperty of `object`'s Object_Name from a peer on the
-/// smaller path: it accepts 480-octet APDUs, in segments.
-fn read_name(object: ObjectIdentifier) -> Bytes {
+/// A confirmed ReadProperty of `object`'s Object_Name from a peer that
+/// accepts APDUs of `max_apdu_length` octets, in segments.
+fn read_name(object: ObjectIdentifier, max_apdu_length: u16, invoke_id: u8) -> Bytes {
     let mut service_request = BytesMut::new();
     ReadPropertyRequest {
         object_identifier: object,
@@ -22,8 +23,8 @@ fn read_name(object: ObjectIdentifier) -> Bytes {
             more_follows: false,
             segmented_response_accepted: true,
             max_segments: Some(16),
-            max_apdu_length: 480,
-            invoke_id: 9,
+            max_apdu_length,
+            invoke_id,
             sequence_number: None,
             proposed_window_size: None,
             service_choice: ConfirmedServiceChoice::READ_PROPERTY,
@@ -90,10 +91,10 @@ async fn max_apdu_stays_fixed_when_the_receive_capacity_falls() {
         1476
     );
 
-    // A reply to a peer on the smaller path fits its budget: the name is
-    // over 480 octets, so it goes out in segments of at most 480.
+    // A requester declaring 480: the name is over 480 octets, so the reply
+    // goes out in segments of at most 480.
     let before = sent.len();
-    tx.send(wrap_apdu(read_name(long), &[0x0A, 0, 0, 2], None))
+    tx.send(wrap_apdu(read_name(long, 480, 9), &[0x0A, 0, 0, 2], None))
         .await
         .unwrap();
     sent.wait_for_len(before + 1).await;
@@ -107,6 +108,29 @@ async fn max_apdu_stays_fixed_when_the_receive_capacity_falls() {
                 segmented: true,
                 more_follows: true,
                 sequence_number: Some(0),
+                ..
+            })
+        ),
+        "{:?}",
+        frame.apdu()
+    );
+
+    // A requester declaring 1476 gets the whole name in one APDU: the
+    // fallen receive capacity doesn't shrink replies.
+    let before = sent.len();
+    tx.send(wrap_apdu(read_name(long, 1476, 10), &[0x0A, 0, 0, 3], None))
+        .await
+        .unwrap();
+    sent.wait_for_len(before + 1).await;
+    let frame = sent.frame(before);
+    let apdu_len = frame.decode_npdu().payload.len();
+    assert!(apdu_len > 480 && apdu_len <= 1476, "{apdu_len} octets");
+    assert!(
+        matches!(
+            frame.apdu(),
+            Apdu::ComplexAck(ComplexAck {
+                segmented: false,
+                invoke_id: 10,
                 ..
             })
         ),

@@ -881,8 +881,9 @@ or a slot's holder changed since the preview, nothing is sent and the result
 says to review it again. A priority array that was read but isn't 16 values
 refuses the write. Esc declines; nothing is sent and the audit log records it.
 The result shows
-each write's outcome; a device whose write policy refuses it
-(SERVICE_REQUEST_DENIED) is shown as `DENIED`, apart from other errors.
+each write's outcome; one the device's policy refuses
+(SERVICE_REQUEST_DENIED) is shown as `DENIED by the device's policy`, apart
+from other errors.
 
 **Device management.** `:dcc enable`, `:dcc disable-initiation|disable
 [MINUTES|forever]` (also `:control`) send DeviceCommunicationControl, and

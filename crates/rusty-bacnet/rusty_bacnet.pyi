@@ -2135,7 +2135,10 @@ class PropertyValue:
     - A whole read (no ``array_index``) of a property the stack's
       classification table marks as an array or list on that object type
       (every BACnetARRAY and BACnetLIST of the 2020 object tables) is a
-      ``list`` at every length, 0 and 1 included.
+      ``list`` at every length, 0 and 1 included. A DateTime Value or
+      DateTime Pattern Value's Priority_Array is such a list of 16 slots: a
+      set slot, the date-time choice under context tag 1, is
+      ``application_data`` whose ``.value`` is ``[date, time]`` (#2098).
     - Any other read is the bare value when it holds one element, and a
       ``list`` in wire order when it holds none or several (a date-time is
       a date and then a time). An indexed read is one element under these
@@ -2221,7 +2224,8 @@ class PropertyValue:
     @property
     def value(self) -> Any:
         """The Python-native value (int, float, str, bytes, bool, dict, tuple,
-        ObjectIdentifier, BitString, list, or None); ``application_data`` is ``bytes``,
+        ObjectIdentifier, BitString, list, or None); ``application_data`` is ``bytes``
+        (except a DateTime Value's set Priority_Array slot, ``[date, time]``),
         and a typed constructed element the form its typed write takes, or
         the form docs/python-api.md gives it. A date is ``(year, month, day,
         day_of_week)`` with the full year, or 255 for an unspecified year,

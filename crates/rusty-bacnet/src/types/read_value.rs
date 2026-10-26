@@ -24,7 +24,8 @@
 //!   back sends the same octets. A Priority_Array is the exception: each
 //!   slot is one tagged element even when it is the date-time choice under
 //!   context tag 1 (a DateTime Value's set slot, #2098), so it still splits
-//!   into slots, that slot keeping its octets.
+//!   into slots. That slot keeps its octets as read; its `.value` is the
+//!   date and time. A Present_Value write takes the bare pair, not them.
 //! - When an application element is well framed but [`PropertyValue`] has no
 //!   form for its content (a CharacterString in UCS-4, DBCS or JIS X 0208,
 //!   UTF-8 that doesn't decode, an ENUMERATED past 32 bits), the whole value

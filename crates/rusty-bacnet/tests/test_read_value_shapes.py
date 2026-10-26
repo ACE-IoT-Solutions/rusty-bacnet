@@ -179,8 +179,9 @@ class ClientReadShapeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_date_time_priority_array_has_sixteen_slots(self) -> None:
         # A set slot is the BACnetPriorityValue date-time choice, context tag
-        # 1 around the Date and Time (#2098): one element, read as the date
-        # and time, its octets kept so it writes back as read.
+        # 1 around the Date and Time (#2098): one element holding its octets
+        # as read, whose value is the date and time. A Present_Value write
+        # takes the bare pair instead.
         slot = bytes([0x1E, 0xA4, 126, 10, 25, 7, 0xB4, 7, 30, 0, 0, 0x1F])
         when = [(2026, 10, 25, 7), (7, 30, 0, 0)]
         value = await self.read(DTV_1, P.PRIORITY_ARRAY)

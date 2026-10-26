@@ -528,6 +528,12 @@ is an error.
   a BACnetARRAY or BACnetLIST; a vendor-defined collection is shaped by the
   last rule. A whole Object_List, Priority_Array, one-state State_Text or a
   B/IP Network Port's IP_DNS_SERVER is a `list`.
+- **A DateTime Value or DateTime Pattern Value's Priority_Array** is a
+  `list` of 16 slots too. A set slot is the date-time choice under context
+  tag 1, so it reads as `application_data` holding those octets, and its
+  `.value` is `[date, time]`, the form Present_Value reads in; an indexed
+  read of that slot is the same `application_data` (#2098). A Present_Value
+  write takes the bare date and time, not the slot's octets.
 - **Anything else** is the bare value when it holds one element, and a
   `list` in wire order when it holds none or several. An empty value is
   `PropertyValue.list([])`, whatever the property's element type. A
