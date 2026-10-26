@@ -354,3 +354,48 @@ async fn a_logged_string_prints_cleaned_in_the_table() {
     assert_eq!(json["records"][0]["datum"], format!("\"{text}\""), "{json}");
     task.abort();
 }
+
+/// A list that isn't a log prints one item a line; a string item holding
+/// an override, an escape sequence and a newline prints cleaned, and
+/// exactly in JSON (#2144).
+#[tokio::test]
+async fn a_list_item_string_prints_cleaned() {
+    let text = "Door\u{202E} open\u{1b}[2J\nnow";
+    let (target, task) = device(move |request| {
+        let mut item_data = BytesMut::new();
+        bacnet_encoding::primitives::encode_app_character_string(&mut item_data, text).unwrap();
+        Some(ReadRangeAck {
+            object_identifier: request.object_identifier,
+            property_identifier: request.property_identifier,
+            property_array_index: None,
+            result_flags: (true, true, false),
+            item_count: 1,
+            item_data: item_data.to_vec(),
+            first_sequence_number: None,
+        })
+    })
+    .await;
+    let read = |format: &'static str| {
+        run([
+            "--interface",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--timeout",
+            "100",
+            "--format",
+            format,
+            "read-range",
+            &target,
+            "msv:1",
+            "state-text",
+        ])
+    };
+    let output = read("table").await;
+    let table = String::from_utf8(output.stdout).unwrap();
+    assert!(table.contains("  [1] \"Door open [2J now\""), "{table:?}");
+    let output = read("json").await;
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["items"][0], format!("\"{text}\""), "{json}");
+    task.abort();
+}

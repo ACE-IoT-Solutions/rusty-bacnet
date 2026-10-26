@@ -5,9 +5,11 @@
 //! and a format character (a bidirectional override or isolate, a
 //! zero-width one) changes how the text around it reads without showing
 //! itself: `High` followed by a right-to-left override reverses the rest
-//! of the row. [`clean_name`] turns the first into spaces and drops the
-//! second, for the CLI and the TUI; the MCP server's untrusted envelopes
-//! drop the same [`HIDDEN`] set.
+//! of the row. [`clean_text`] turns the first into spaces and drops the
+//! second, for the one-shot CLI's table and text output; [`clean_name`]
+//! does the same with a length cap, for names and state texts in the CLI
+//! and the TUI. The MCP server's untrusted envelopes drop the same
+//! [`HIDDEN`] set.
 
 /// The characters dropped from device text: every format character
 /// (general category Cf, Unicode 16: the bidirectional embeddings,

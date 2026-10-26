@@ -39,7 +39,7 @@ Commands that change a device need `--allow-write`; communication control and re
 
 ## Machine-readable output
 
-Use `--json` explicitly in automation. Preserve protocol errors and nonzero process outcomes rather than interpreting an empty result as an empty building. If scripts depend on particular JSON fields, add a small fixture test against the supported CLI version; a formatted example is not a schema guarantee.
+Use `--json` explicitly in automation. Preserve protocol errors and nonzero process outcomes rather than interpreting an empty result as an empty building. If scripts depend on particular JSON fields, add a small fixture test against the supported CLI version; a formatted example is not a schema guarantee. Table output cleans the strings a device supplies, but JSON keeps the device's exact text, with control characters escaped as JSON requires; a script that prints a JSON string to a terminal should clean it first.
 
 ## Sources
 

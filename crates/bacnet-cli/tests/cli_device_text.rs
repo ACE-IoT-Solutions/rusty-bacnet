@@ -248,12 +248,9 @@ async fn subscribe_prints_notified_text_cleaned() {
                 }
             }
         });
+        // From here a failed assert or a panicking reader kills the child.
+        let mut child = KillOnDrop(child);
         let found = tokio::time::timeout(std::time::Duration::from_secs(10), read).await;
-        if found.is_err() {
-            // Unblock the reader before failing.
-            let _ = child.kill();
-            let _ = child.wait();
-        }
         let (line, _reader) = found.expect("no notification line").unwrap();
         if format == "table" {
             assert_clean(&line, &["Value"]);
@@ -267,15 +264,35 @@ async fn subscribe_prints_notified_text_cleaned() {
             assert_eq!(json["decoded"]["PRESENT_VALUE"], hostile("Value"));
         }
         let killed = std::process::Command::new("kill")
-            .args(["-TERM", &child.id().to_string()])
+            .args(["-TERM", &child.0.id().to_string()])
             .status()
             .unwrap();
         assert!(killed.success());
-        let status = support::bounded(tokio::task::spawn_blocking(move || child.wait()))
-            .await
-            .unwrap()
-            .unwrap();
+        let status = support::bounded(async {
+            loop {
+                if let Some(status) = child.0.try_wait().unwrap() {
+                    return status;
+                }
+                // Process-exit polling only.
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await;
         assert!(status.success(), "{status:?}");
     }
     server.stop().await.unwrap();
+}
+
+/// A child process killed and reaped when dropped, unless it has exited.
+#[cfg(unix)]
+struct KillOnDrop(std::process::Child);
+
+#[cfg(unix)]
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
 }
