@@ -14,6 +14,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bacnet_client::client::BACnetClient;
+use bacnet_services::rpm::ReadPropertyMultipleACK;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::{AbortReason, ErrorClass, ObjectType, PropertyIdentifier, RejectReason};
@@ -234,21 +235,7 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
             .read_property_multiple_from_device(self.device, vec![spec])
             .await
             .map_err(Halt::Device)?;
-        Ok(ack
-            .list_of_read_access_results
-            .into_iter()
-            .flat_map(|result| result.list_of_results)
-            .map(|element| {
-                let value = match (element.property_value, element.error) {
-                    (Some(value), _) => Ok(value),
-                    (None, Some((class, code))) => {
-                        Err(RowError::Remote(RemoteError::Error { class, code }))
-                    }
-                    (None, None) => Err(RowError::NoValue),
-                };
-                (element.property_identifier, value)
-            })
-            .collect())
+        Ok(rpm_rows(ack))
     }
 
     /// The properties `wanted` of `object`, by RPM or, once the device has
@@ -389,6 +376,25 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
             stopped,
         })
     }
+}
+
+/// The properties an RPM answer holds, each its value or the device's
+/// error for it.
+pub(crate) fn rpm_rows(ack: ReadPropertyMultipleACK) -> Vec<RawRow> {
+    ack.list_of_read_access_results
+        .into_iter()
+        .flat_map(|result| result.list_of_results)
+        .map(|element| {
+            let value = match (element.property_value, element.error) {
+                (Some(value), _) => Ok(value),
+                (None, Some((class, code))) => {
+                    Err(RowError::Remote(RemoteError::Error { class, code }))
+                }
+                (None, None) => Err(RowError::NoValue),
+            };
+            (element.property_identifier, value)
+        })
+        .collect()
 }
 
 /// The object identifiers in an application-tagged value.

@@ -468,9 +468,10 @@ async fn log_columns_read_the_reference_once_and_fall_back() {
     assert_eq!(
         columns.column(0),
         Some(LoggedProperty {
-            object_type: ObjectType::ANALOG_INPUT,
+            object: oid(ObjectType::ANALOG_INPUT, 1),
             property: PropertyIdentifier::EVENT_STATE,
             index: None,
+            device: None,
         })
     );
     let texts = StateTexts::default();

@@ -4,14 +4,19 @@
 
 use std::time::Duration;
 
+use bacnet_objects::binary::BinaryValueObject;
 use bacnet_objects::event_enrollment::EventEnrollmentObject;
+use bacnet_objects::multistate::MultiStateValueObject;
 use bacnet_objects::notification_class::NotificationClass;
 use bacnet_objects::traits::BACnetObject;
-use bacnet_objects::trend::TrendLogObject;
+use bacnet_objects::trend::{TrendLogMultipleObject, TrendLogObject};
 use bacnet_transport::bip::BipTransport;
-use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetLogRecord, LogDatum};
+use bacnet_types::constructed::{
+    BACnetDeviceObjectPropertyReference, BACnetLogMultipleRecord, BACnetLogRecord, LogData,
+    LogDatum, LogValue,
+};
 use bacnet_types::enums::{EventState, EventType, ObjectType, PropertyIdentifier};
-use bacnet_types::primitives::{Date, ObjectIdentifier, StatusFlags, Time};
+use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, StatusFlags, Time};
 use serde_json::{Value, json};
 
 use super::{Agent, LAB, Lab};
@@ -144,7 +149,65 @@ pub(crate) fn objects() -> Vec<Box<dyn BACnetObject>> {
         objects.push(Box::new(enrollment));
     }
     objects.push(Box::new(NotificationClass::new(0, "Alarms").unwrap()));
+    objects.extend(state_objects());
     objects
+}
+
+/// The state of member 0 of trend-log-multiple:1's record `i`: states 1 to
+/// 4 in turn, 4 past multi-state-value:1's State_Text.
+pub(crate) fn multi_state(i: u32) -> u64 {
+    u64::from(i % 4 + 1)
+}
+
+/// Multi-state-value:1 (State_Text `Off`, `Low` and a `High` with a
+/// right-to-left override), binary-value:1 (`Running` and `Stopped`) and
+/// trend-log-multiple:1, [`STATE_RECORDS`] records of their Present_Values
+/// and of a multi-state-value:9 that doesn't exist (#2122).
+fn state_objects() -> Vec<Box<dyn BACnetObject>> {
+    let text = |text: &str| PropertyValue::CharacterString(text.into());
+    let mut speed = MultiStateValueObject::new(1, "Fan Speed", 3).unwrap();
+    speed
+        .write_property(
+            PropertyIdentifier::STATE_TEXT,
+            None,
+            PropertyValue::List(vec![text("Off"), text("Low"), text("High\u{202E}")]),
+            None,
+        )
+        .unwrap();
+    let mut fan = BinaryValueObject::new(1, "Fan").unwrap();
+    for (property, value) in [
+        (PropertyIdentifier::ACTIVE_TEXT, "Running"),
+        (PropertyIdentifier::INACTIVE_TEXT, "Stopped"),
+    ] {
+        fan.write_property(property, None, text(value), None)
+            .unwrap();
+    }
+    let mut log = TrendLogMultipleObject::new(1, "Fan Log", STATE_RECORDS).unwrap();
+    for (object_type, instance) in [
+        (ObjectType::MULTI_STATE_VALUE, 1),
+        (ObjectType::BINARY_VALUE, 1),
+        (ObjectType::MULTI_STATE_VALUE, 9),
+    ] {
+        log.add_property_reference(BACnetDeviceObjectPropertyReference::new_local(
+            ObjectIdentifier::new(object_type, instance).unwrap(),
+            PropertyIdentifier::PRESENT_VALUE.to_raw(),
+        ))
+        .unwrap();
+    }
+    for i in 0..STATE_RECORDS {
+        let (date, time) = trend_time(i);
+        log.add_record(BACnetLogMultipleRecord {
+            date,
+            time,
+            log_data: LogData::Values(vec![
+                LogValue::UnsignedValue(multi_state(i)),
+                LogValue::EnumValue(u64::from(i % 2)),
+                LogValue::UnsignedValue(1),
+            ]),
+        })
+        .unwrap();
+    }
+    vec![Box::new(speed), Box::new(fan), Box::new(log)]
 }
 
 /// The structured content of a successful result.

@@ -1179,7 +1179,16 @@ Present_Value `active`. A Trend Log Multiple names each member's value by
 its own reference. When that read fails or names nothing, when a member's
 reference is empty, or when a value's type doesn't fit the property (a REAL
 where an enumeration was expected), the value prints as logged: an
-enumeration as `enum 3` and a bit string as its bits. An Event Log
+enumeration as `enum 3` and a bit string as its bits. When a column samples
+the state of a binary or multi-state object on the same device (its
+Present_Value, Relinquish_Default, a Priority_Array slot and the like),
+`read-range` then reads that object's Active_Text and Inactive_Text, or its
+State_Text, and shows each state with its text: `active (Running)`, `2
+(Low)`. That is one request more an object, once per command, for at most 8
+objects (the rest of a large Trend Log Multiple keeps plain states). A
+refused read, an empty text or a state past the end of State_Text keeps the
+plain form, `active` or `2`. The texts come from the device; control
+characters in them print as spaces. An Event Log
 notification ends with its event values in braces, each named for its event
 type:
 

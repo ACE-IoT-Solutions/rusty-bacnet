@@ -33,7 +33,7 @@ mod wire;
 
 pub(crate) use constructed::timestamp_text;
 pub use data::{Datum, Fields, PLAIN_ELEMENTS};
-pub use logged::{LogColumns, LoggedProperty};
+pub use logged::{LogColumns, LoggedProperty, MAX_STATE_TEXT_OBJECTS};
 pub use wire::format_property_value;
 
 use bacnet_encoding::constructed::{ConstructedElement, ElementShape, property_element};
