@@ -16,11 +16,11 @@ use crate::tui::app::watch::Screen;
 use crate::tui::network::{BdtRow, FdtRow, Foreign, NetworkCommand, NetworkEvent};
 use bacnet_ops::bbmd::Probe;
 
-fn at_ip(last: u8) -> SocketAddrV4 {
+pub(super) fn at_ip(last: u8) -> SocketAddrV4 {
     SocketAddrV4::new(Ipv4Addr::new(10, 0, last, 1), 47808)
 }
 
-const LOCAL: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(10, 0, 9, 5), 47808);
+pub(super) const LOCAL: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(10, 0, 9, 5), 47808);
 
 fn foreign() -> Foreign {
     Foreign {
@@ -50,14 +50,14 @@ fn snapshot(outcome: ForeignRegistrationOutcome) -> ForeignRegistrationSnapshot 
     s
 }
 
-fn bdt_row(last: u8, mask: [u8; 4]) -> BdtRow {
+pub(super) fn bdt_row(last: u8, mask: [u8; 4]) -> BdtRow {
     BdtRow {
         address: at_ip(last),
         mask: Ipv4Addr::from(mask),
     }
 }
 
-fn fdt_row(address: SocketAddrV4, remaining: u16) -> FdtRow {
+pub(super) fn fdt_row(address: SocketAddrV4, remaining: u16) -> FdtRow {
     FdtRow {
         address,
         ttl: 60,
@@ -67,7 +67,7 @@ fn fdt_row(address: SocketAddrV4, remaining: u16) -> FdtRow {
 
 /// Registered with 10.0.1.1 at 10 s, its tables read at 12 s, viewed at
 /// 15 s.
-fn registered() -> App {
+pub(super) fn registered() -> App {
     let mut app = connected_app();
     worker(&mut app, WorkerEvent::ForeignDevice(foreign()));
     press(&mut app, KeyCode::Char('4'));
@@ -141,6 +141,7 @@ fn matrix_flags_the_missing_entry_120x40() {
     let survey = NetworkEvent::Survey {
         seed: at_ip(1),
         probes,
+        not_followed: Vec::new(),
     };
     worker(&mut app, WorkerEvent::Network(survey));
     let text = screen(&mut app, 120, 40);
@@ -166,6 +167,7 @@ fn an_empty_bdt_shows_its_note_120x40() {
     let survey = NetworkEvent::Survey {
         seed: at_ip(1),
         probes: vec![(at_ip(1), Probe::Table(Vec::new()))],
+        not_followed: Vec::new(),
     };
     worker(&mut app, WorkerEvent::Network(survey));
     let text = screen(&mut app, 120, 40);
@@ -289,6 +291,7 @@ fn answers_for_an_earlier_target_are_dropped() {
     let late = NetworkEvent::Survey {
         seed: at_ip(1),
         probes: vec![(at_ip(1), Probe::Table(vec![bdt_row(1, [255; 4])]))],
+        not_followed: Vec::new(),
     };
     worker(&mut app, WorkerEvent::Network(late));
     assert_eq!(app.network.matrix, None, "the old survey's matrix shows");
@@ -326,6 +329,7 @@ fn a_large_matrix_shows_what_fits_and_counts_the_rest() {
     let survey = NetworkEvent::Survey {
         seed: at_ip(1),
         probes,
+        not_followed: Vec::new(),
     };
     worker(&mut app, WorkerEvent::Network(survey));
     let text = screen(&mut app, 120, 40);
@@ -354,6 +358,7 @@ fn the_panel_and_the_matrix_legend_fit_80x24() {
     let survey = NetworkEvent::Survey {
         seed: at_ip(1),
         probes,
+        not_followed: Vec::new(),
     };
     worker(&mut app, WorkerEvent::Network(survey));
     let text = screen(&mut app, 80, 24);

@@ -23,7 +23,10 @@ use super::{Theme, WIDE_WIDTH};
 use crate::tui::app::App;
 use crate::tui::app::devices::age_label;
 use crate::tui::app::network::{Fetched, NetworkState, View};
-use bacnet_ops::bbmd::{Cell, Finding, Matrix};
+
+#[path = "network_matrix.rs"]
+mod matrix;
+use matrix::matrix;
 
 /// Height of the foreign-device panel, borders included, with the
 /// registration counters on the status line.
@@ -446,15 +449,25 @@ fn fdt(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .enumerate()
         .map(|(i, entry)| {
             let ours = state.own == Some(i);
+            let left = state.remaining(entry, app.now);
+            // Near expiry (#2130): `!` before the seconds left, and the
+            // word in the marker column unless it already names us, so the
+            // warning never rests on colour alone.
+            let (left, mark) = if state.expiring(entry, app.now) {
+                let mark = if ours { "this client" } else { "expiring" };
+                (
+                    Span::styled(format!("! {left} s"), theme.warn()),
+                    Span::styled(mark, if ours { Style::new() } else { theme.warn() }),
+                )
+            } else {
+                let mark = if ours { "this client" } else { "" };
+                (Span::raw(format!("{left} s")), Span::raw(mark))
+            };
             let row = Row::new([
-                entry.address.to_string(),
-                format!("{} s", entry.ttl),
-                format!("{} s", state.remaining(entry, app.now)),
-                if ours {
-                    "this client".into()
-                } else {
-                    String::new()
-                },
+                Span::raw(entry.address.to_string()),
+                Span::raw(format!("{} s", entry.ttl)),
+                left,
+                mark,
             ]);
             if ours {
                 row.style(theme.selected())
@@ -473,115 +486,6 @@ fn fdt(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .header(Row::new(["Foreign device", "TTL", "Left", ""]).style(theme.accent()))
         .column_spacing(2);
     frame.render_widget(table, area);
-}
-
-/// A cell as text: `uni` and `dir` for the two forwarding methods, with
-/// `*` when the tables disagree on the mask.
-fn cell_text(cell: Cell) -> String {
-    match cell {
-        Cell::Listed { mask, mixed } => {
-            let method = if mask == std::net::Ipv4Addr::BROADCAST {
-                "uni"
-            } else {
-                "dir"
-            };
-            format!("{method}{}", if mixed { "*" } else { "" })
-        }
-        Cell::Absent => "-".into(),
-        Cell::Missing => "MISS".into(),
-        Cell::Unknown => "?".into(),
-    }
-}
-
-fn matrix(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let Some((matrix, _)) = &app.network.matrix else {
-        return note(
-            frame,
-            area,
-            "Press m to read the BDT of every BBMD the target's table leads to.".into(),
-            theme,
-        );
-    };
-    let n = matrix.bbmds.len();
-    let shown = shown(n, area.width);
-    let findings = matrix.findings.len().max(1);
-    let mut legend_lines = vec![Line::raw("")];
-    legend_lines.extend(
-        legend(usize::from(area.width))
-            .into_iter()
-            .map(|line| Line::styled(line, theme.dim())),
-    );
-    let [grid, legend_area, list] = Layout::vertical([
-        Constraint::Length(shown as u16 + 1 + u16::from(shown < n)),
-        Constraint::Length(legend_lines.len() as u16),
-        Constraint::Min(findings.min(8) as u16),
-    ])
-    .areas(area);
-    grid_table(frame, grid, matrix, theme);
-    frame.render_widget(Paragraph::new(legend_lines), legend_area);
-    let notes_only = !matrix.findings.is_empty()
-        && matrix
-            .findings
-            .iter()
-            .all(|finding| matches!(finding, Finding::NoPeers(_)));
-    let lines: Vec<Line> = if matrix.consistent() && notes_only {
-        // Only notes: an empty table lists nothing, itself included.
-        matrix
-            .findings
-            .iter()
-            .map(|finding| Line::styled(finding.describe(), theme.dim()))
-            .collect()
-    } else if matrix.consistent() {
-        vec![Line::styled(
-            format!(
-                "All {n} BDTs agree: each BBMD lists itself, every entry is listed back, and masks match."
-            ),
-            theme.accent(),
-        )]
-    } else if matrix.findings.is_empty() {
-        vec![Line::styled("Some BDTs were not read.", theme.warn())]
-    } else {
-        matrix
-            .findings
-            .iter()
-            .map(|finding| Line::styled(format!("! {}", finding.describe()), theme.warn()))
-            .collect()
-    };
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), list);
-}
-
-/// The matrix legend's entries, packed into lines by [`legend`].
-const LEGEND: [&str; 6] = [
-    "uni = all-ones mask, sent to the BBMD",
-    "dir = directed broadcast",
-    "* = masks differ",
-    "MISS = should be listed",
-    "- = not listed",
-    "? = not read",
-];
-
-/// The legend as lines at most `width` columns wide, breaking only between
-/// entries.
-fn legend(width: usize) -> Vec<String> {
-    // One column spare for the `;` that ends a broken line.
-    let room = width.saturating_sub(1);
-    let mut lines = Vec::new();
-    let mut line = "Row lists column:".to_string();
-    for (i, item) in LEGEND.iter().enumerate() {
-        let sep = if i == 0 { " " } else { "; " };
-        if line.chars().count() + sep.len() + item.chars().count() > room {
-            if i > 0 {
-                line.push(';');
-            }
-            lines.push(std::mem::take(&mut line));
-            line.push_str(item);
-        } else {
-            line.push_str(sep);
-            line.push_str(item);
-        }
-    }
-    lines.push(line);
-    lines
 }
 
 /// Whether the screen, drawn in `body`, uses the wide layout: from
@@ -662,105 +566,13 @@ fn side_by_side(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     }
 }
 
-/// Width of a grid cell, and of the `+k more` column.
-const CELL: u16 = 5;
-const MORE: u16 = 8;
-/// The most BBMDs the grid shows; the findings below still name them all.
-const MAX_SHOWN: usize = 16;
-
-/// How many of `n` BBMDs fit a grid `width` columns wide, as rows and as
-/// columns, leaving room for a `+k more` column when some don't.
-fn shown(n: usize, width: u16) -> usize {
-    let first = ADDRESS + 4;
-    let fit = |extra: u16| usize::from(width.saturating_sub(first + extra) / (CELL + 1));
-    if n <= fit(0).min(MAX_SHOWN) {
-        n
-    } else {
-        fit(MORE + 1).min(MAX_SHOWN)
-    }
-}
-
-fn grid_table(frame: &mut Frame, area: Rect, matrix: &Matrix, theme: &Theme) {
-    let n = matrix.bbmds.len();
-    let shown = shown(n, area.width);
-    let hidden = n - shown;
-    let more = || Span::styled(format!("+{hidden} more"), theme.warn());
-    let mut header = vec![Span::raw("BBMD (row lists column)")];
-    header.extend((1..=shown).map(|i| Span::raw(format!("#{i}"))));
-    if hidden > 0 {
-        header.push(more());
-    }
-    let mut rows: Vec<Row> = matrix
-        .bbmds
-        .iter()
-        .zip(&matrix.cells)
-        .take(shown)
-        .enumerate()
-        .map(|(i, (bbmd, cells))| {
-            let mut row = vec![Span::raw(format!("#{} {bbmd}", i + 1))];
-            row.extend(cells.iter().take(shown).map(|cell| {
-                let style = match cell {
-                    Cell::Missing | Cell::Listed { mixed: true, .. } => theme.danger(),
-                    Cell::Unknown => theme.warn(),
-                    Cell::Absent => theme.dim(),
-                    Cell::Listed { .. } => theme.accent(),
-                };
-                Span::styled(cell_text(*cell), style)
-            }));
-            Row::new(row)
-        })
-        .collect();
-    if hidden > 0 {
-        rows.push(Row::new([more()]));
-    }
-    let mut widths = vec![Constraint::Length(ADDRESS + 4)];
-    widths.extend(std::iter::repeat_n(Constraint::Length(CELL), shown));
-    widths.push(Constraint::Length(MORE));
-    let table = Table::new(rows, widths)
-        .header(Row::new(header).style(theme.accent()))
-        .column_spacing(1);
-    frame.render_widget(table, area);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn cells_read_as_text() {
-        let unicast = std::net::Ipv4Addr::BROADCAST;
-        let subnet = std::net::Ipv4Addr::new(255, 255, 255, 0);
-        let listed = |mask, mixed| Cell::Listed { mask, mixed };
-        assert_eq!(cell_text(listed(unicast, false)), "uni");
-        assert_eq!(cell_text(listed(subnet, true)), "dir*");
-        assert_eq!(cell_text(Cell::Missing), "MISS");
-        assert_eq!(cell_text(Cell::Unknown), "?");
+    fn a_countdown_shows_the_second_it_is_in() {
         assert_eq!(seconds(Duration::from_millis(400)), 1);
         assert_eq!(seconds(Duration::ZERO), 0);
-    }
-
-    #[test]
-    fn the_legend_breaks_between_entries_within_the_width() {
-        for width in [40, 78, 118, 198] {
-            let lines = legend(width);
-            assert!(
-                lines.iter().all(|line| line.chars().count() <= width),
-                "{width}: {lines:?}"
-            );
-            let text = lines.join(" ");
-            assert!(LEGEND.iter().all(|item| text.contains(item)), "{text}");
-        }
-        assert_eq!(legend(118).len(), 2);
-        assert_eq!(legend(198).len(), 1);
-    }
-
-    #[test]
-    fn the_grid_shows_what_fits_and_counts_the_rest() {
-        // 118 columns inside the border: all of 12, 14 of 20.
-        assert_eq!(shown(12, 118), 12);
-        assert_eq!(shown(15, 118), 15);
-        assert_eq!(shown(20, 118), 14);
-        assert_eq!(shown(40, 400), MAX_SHOWN);
-        assert_eq!(shown(3, 78), 3);
     }
 }
