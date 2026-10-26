@@ -650,7 +650,7 @@ every algorithm of the standard by name (#2090):
 
 | `kind` | Members |
 |--------|---------|
-| `change_of_bitstring` | `time_delay`, `bitmask`, `list_of_values`; each bit string a `BitString` as a `bit_string` value reads |
+| `change_of_bitstring` | `time_delay`, `bitmask`, `list_of_values` (the CLI's JSON calls it `list_of_bitstring_values`, the standard's name; Python keeps its earlier key); each bit string a `BitString` as a `bit_string` value reads |
 | `change_of_state` | `time_delay`, `list_of_values` of `(choice_tag, value)` pairs: a bool for tag 0, an int for the enumerated and numeric tags, the contents as `bytes` for a vendor tag |
 | `change_of_value` | `time_delay`, then `bitmask` or `referenced_property_increment`, the other `None` |
 | `command_failure` | `time_delay`, `feedback_property_reference` |

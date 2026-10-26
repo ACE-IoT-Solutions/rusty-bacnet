@@ -181,6 +181,8 @@ fn framed_unevaluated_alternative_is_never_le_evaluated() {
 
 /// Every algorithm #2090 decoded that the evaluator doesn't run behaves as
 /// it did while it was opaque: stored, no transition, the state left NORMAL.
+/// Its unset Time_Delay_Normal reads back its own time delay, or 0 for the
+/// two with none (buffer-ready, access-event).
 #[test]
 fn newly_decoded_algorithms_stay_unevaluated() {
     use bacnet_types::enums::{AccessEvent, LifeSafetyState, TimerState};
@@ -281,13 +283,16 @@ fn newly_decoded_algorithms_stay_unevaluated() {
             PropertyValue::Enumerated(EventState::NORMAL.to_raw()),
             "{algorithm:?}"
         );
-        // Time_Delay_Normal still falls back to zero for it.
+        let expected = match algorithm {
+            EP::BufferReady { .. } | EP::AccessEvent { .. } => 0,
+            _ => 7,
+        };
         let delay = db
             .get(&ee_oid)
             .unwrap()
             .read_property(PropertyIdentifier::TIME_DELAY_NORMAL, None)
             .unwrap();
-        assert_eq!(delay, PropertyValue::Unsigned(0), "{algorithm:?}");
+        assert_eq!(delay, PropertyValue::Unsigned(expected), "{algorithm:?}");
     }
 }
 

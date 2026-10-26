@@ -1,75 +1,23 @@
 //! `BACnetEventParameter` full ASN.1 framing.
 //!
-//! `BACnetEventParameter` (ASHRAE 135-2020 Clause 21) selects one event
-//! algorithm by context tag and carries that algorithm's settings. The tag
-//! is also the number of the event type the algorithm reports. Every
-//! alternative but `none` is a constructed value under its own tag, holding
-//! context-tagged members that are all required:
+//! The Event_Parameters CHOICE (ASHRAE 135-2020 Clause 21) picks one event
+//! algorithm by context tag, the number of the event type it reports, and
+//! carries that algorithm's settings as context-tagged members. Every
+//! algorithm the 2020 production assigns has a [`BACnetEventParameter`]
+//! variant, from change-of-bitstring `[0]` to change-of-timer `[22]`, `none`
+//! `[20]` (a primitive NULL) included; see the variants for their members.
+//! The decoders for the variants added in #2090 are in `members`.
 //!
-//! | Tag | Alternative | Member tag | Member | Type |
-//! |---|---|---|---|---|
-//! | `[0]` | `change-of-bitstring` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]` | `bitmask` | bit string |
-//! | | | `[2]` | `list-of-bitstring-values` | list of bit strings |
-//! | `[1]` | `change-of-state` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]` | `list-of-values` | list of `BACnetPropertyStates` |
-//! | `[2]` | `change-of-value` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]` | `cov-criteria` | `[0]` bit string or `[1]` REAL, see below |
-//! | `[3]` | `command-failure` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]` | `feedback-property-reference` | `BACnetDeviceObjectPropertyReference` |
-//! | `[4]` | `floating-limit` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]` | `setpoint-reference` | `BACnetDeviceObjectPropertyReference` |
-//! | | | `[2]` | `low-diff-limit` | REAL |
-//! | | | `[3]` | `high-diff-limit` | REAL |
-//! | | | `[4]` | `deadband` | REAL |
-//! | `[5]` | `out-of-range` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]` | `low-limit` | REAL |
-//! | | | `[2]` | `high-limit` | REAL |
-//! | | | `[3]` | `deadband` | REAL |
-//! | `[8]` | `change-of-life-safety` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]` | `list-of-life-safety-alarm-values` | list of `BACnetLifeSafetyState` |
-//! | | | `[2]` | `list-of-alarm-values` | list of `BACnetLifeSafetyState` |
-//! | | | `[3]` | `mode-property-reference` | `BACnetDeviceObjectPropertyReference` |
-//! | `[9]` | `extended` | `[0]` | `vendor-id` | Unsigned16 |
-//! | | | `[1]` | `extended-event-type` | Unsigned |
-//! | | | `[2]` | `parameters` | list of extended values, see below |
-//! | `[10]` | `buffer-ready` | `[0]` | `notification-threshold` | Unsigned |
-//! | | | `[1]` | `previous-notification-count` | Unsigned32 |
-//! | `[11]` | `unsigned-range` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]` | `low-limit` | Unsigned |
-//! | | | `[2]` | `high-limit` | Unsigned |
-//! | `[13]` | `access-event` | `[0]` | `list-of-access-events` | list of `BACnetAccessEvent` |
-//! | | | `[1]` | `access-event-time-reference` | `BACnetDeviceObjectPropertyReference` |
-//! | `[14]` | `double-out-of-range` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]`, `[2]`, `[3]` | `low-limit`, `high-limit`, `deadband` | Double |
-//! | `[15]` | `signed-out-of-range` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]`, `[2]` | `low-limit`, `high-limit` | INTEGER |
-//! | | | `[3]` | `deadband` | Unsigned |
-//! | `[16]` | `unsigned-out-of-range` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]`, `[2]`, `[3]` | `low-limit`, `high-limit`, `deadband` | Unsigned |
-//! | `[17]` | `change-of-characterstring` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]` | `list-of-alarm-values` | list of CharacterString |
-//! | `[18]` | `change-of-status-flags` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]` | `selected-flags` | `BACnetStatusFlags` |
-//! | `[20]` | `none` | | | a primitive NULL, no members |
-//! | `[21]` | `change-of-discrete-value` | `[0]` | `time-delay` | Unsigned |
-//! | `[22]` | `change-of-timer` | `[0]` | `time-delay` | Unsigned |
-//! | | | `[1]` | `alarm-values` | list of `BACnetTimerState` |
-//! | | | `[2]` | `update-time-reference` | `BACnetDeviceObjectPropertyReference` |
+//! A list member is its tag's opening and closing pair around application
+//! tagged items, at most 10,000 of them, and a reference member the same
+//! pair around the reference's own members. An `extended` parameter list is
+//! kept as its encoded items, each checked to be an application value or a
+//! `[0]`-framed reference.
 //!
-//! A list is its member's opening and closing tag around application-tagged
-//! items, and a reference its member's tags around the reference's own
-//! members. `cov-criteria` is either `[0]` `bitmask` (a bit string) or `[1]`
-//! `referenced-property-increment` (a REAL). Each extended `parameters` entry
-//! is an application-tagged primitive or a `[0]`-framed
-//! `BACnetDeviceObjectPropertyReference`. Lists hold at most 10,000 items.
-//!
-//! Four tags carry no alternative here. Tag 6 is skipped because it would
-//! mirror the proprietary complex-event-type notification alternative, and
-//! tag 19 is skipped because change-of-reliability has no event parameters.
-//! Tag 7 is deprecated and tag 12 is reserved. These four are rejected on
-//! decode. Any other unassigned tag (23 and up) is preserved byte-for-byte
-//! through [`BACnetEventParameter::Opaque`].
+//! Tags 6, 7, 12 and 19 carry no alternative (Clause 21 omits 6 and 19,
+//! deprecates 7 and reserves 12), so decoding one is an error. An
+//! alternative under a tag the 2020 production doesn't assign (23 and up) is
+//! preserved byte-for-byte as [`BACnetEventParameter::Opaque`].
 
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;

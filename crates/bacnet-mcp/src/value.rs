@@ -105,7 +105,8 @@ fn safe_shape(map: &serde_json::Map<String, Value>) -> bool {
 /// Put each device-text leaf of `typed` in an envelope; true when there
 /// was one. A bare JSON string in a datum is a character string; an
 /// object with `element` and `text` is a constructed element, whose text
-/// is enveloped unless its kind is plain; a known object form is left as
+/// is enveloped unless its kind is plain and whose `fields`, when it has
+/// them, are values in turn; a known object form is left as
 /// it is; and any other object (a form the formatter adds later) has
 /// every string in it enveloped, so nothing new slips past.
 fn envelope_leaves(typed: &mut Value, source: &str, cap: usize) -> bool {
@@ -122,20 +123,36 @@ fn envelope_leaves(typed: &mut Value, source: &str, cap: usize) -> bool {
             any
         }
         Value::Object(map) if safe_shape(map) => false,
-        Value::Object(map) if map.len() == 2 && map.contains_key("element") => {
+        Value::Object(map) if is_element(map) => {
             let plain = map
                 .get("element")
                 .and_then(Value::as_str)
                 .is_some_and(|kind| PLAIN_ELEMENTS.contains(&kind));
-            match map.get_mut("text") {
+            let mut any = match map.get_mut("text") {
                 Some(text) if !plain => envelope_leaves(text, source, cap),
-                Some(_) => false,
-                None => envelope_every(map, source, cap),
+                _ => false,
+            };
+            // Each member by name, as any other value: a character string
+            // among them is device text.
+            if let Some(Value::Object(fields)) = map.get_mut("fields") {
+                any |= envelope_every(fields, source, cap);
             }
+            any
         }
         Value::Object(map) => envelope_every(map, source, cap),
         _ => false,
     }
+}
+
+/// Whether `map` is a constructed element: its kind and text, and the
+/// fields of an element decoded field by field (an object), nothing else.
+fn is_element(map: &serde_json::Map<String, Value>) -> bool {
+    map.get("element").is_some_and(Value::is_string)
+        && map.contains_key("text")
+        && map.get("fields").is_none_or(Value::is_object)
+        && map
+            .keys()
+            .all(|key| ["element", "text", "fields"].contains(&key.as_str()))
 }
 
 /// Envelope every string in an object of a form not known to be safe.

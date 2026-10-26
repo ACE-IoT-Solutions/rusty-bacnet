@@ -230,12 +230,12 @@ impl EventEnrollmentObject {
     }
 
     /// The pTimeDelay the stored `Event_Parameters` supply: the `time_delay`
-    /// field every evaluated algorithm carries (Table 12-15). Every other
-    /// alternative contributes zero: `none` and the `0xFF` legacy octet
-    /// layout have no time-delay slot, and the algorithms the server doesn't
-    /// evaluate keep the zero they had while they were opaque (#2090). So
-    /// their TDN fallback reads as 0 and their evaluation fires immediately,
-    /// exactly as they did before delay honoring existed.
+    /// member of every algorithm that has one (Table 12-15), so an unset
+    /// Time_Delay_Normal reads back the algorithm's delay (#2090), whether
+    /// or not the server runs it. The alternatives with no time-delay slot
+    /// (`none`, buffer-ready, access-event, extended, an unassigned tag and
+    /// the `0xFF` legacy octet layout) contribute zero, so their evaluation
+    /// fires immediately, exactly as it did before delay honoring existed.
     fn event_parameters_time_delay(&self) -> u32 {
         use BACnetEventParameter as P;
         match &self.event_parameters {
@@ -243,7 +243,17 @@ impl EventEnrollmentObject {
             | P::ChangeOfState { time_delay, .. }
             | P::ChangeOfValue { time_delay, .. }
             | P::FloatingLimit { time_delay, .. }
-            | P::OutOfRange { time_delay, .. } => *time_delay,
+            | P::OutOfRange { time_delay, .. }
+            | P::CommandFailure { time_delay, .. }
+            | P::ChangeOfLifeSafety { time_delay, .. }
+            | P::UnsignedRange { time_delay, .. }
+            | P::DoubleOutOfRange { time_delay, .. }
+            | P::SignedOutOfRange { time_delay, .. }
+            | P::UnsignedOutOfRange { time_delay, .. }
+            | P::ChangeOfCharacterstring { time_delay, .. }
+            | P::ChangeOfStatusFlags { time_delay, .. }
+            | P::ChangeOfDiscreteValue { time_delay }
+            | P::ChangeOfTimer { time_delay, .. } => *time_delay,
             _ => 0,
         }
     }

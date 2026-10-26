@@ -55,13 +55,16 @@ The other five tools of phase 1 (`bacnet_find_object`, `bacnet_network_map`,
   typed form, `bacnet_ops::format::Datum`, the shape the CLI's JSON uses
   (numbers as numbers, `{value, name}` for enumerations, `{bits, names}` for
   bit strings, `{type, type_number, instance}` for objects, `{element,
-  text}` for constructed elements). Raw hex only for octets that don't
-  decode.
+  text}` for constructed elements, with `fields` for an Event_Parameters
+  value: its algorithm and each member by name, each a typed value). Raw
+  hex only for octets that don't decode.
 - Device text is an envelope, leaf by leaf: names, descriptions, vendor
   strings, a character-string value in `typed`, and the `text` of a
   constructed element whose kind can hold a string (a name and value, a
   schedule's values, an access result, an unnamed kind), but not of one
-  that can't (a time stamp, a reference, a date range). The display text is
+  that can't (a time stamp, a reference, a date range). An element's
+  `fields` are values in turn, so a character string among them (a
+  change-of-characterstring alarm value) is enveloped too. The display text is
   enveloped whole only when the value holds device text. Each envelope is
   `{untrusted, source, truncated}`: C0 and C1 controls and the line and
   paragraph separators become spaces; format characters (category Cf:

@@ -102,11 +102,23 @@ fn every_new_algorithm_round_trips() {
     }
 }
 
-/// Fixtures hand-built from the production: each alternative's opening
-/// tag, its members in order, its closing tag.
+/// Fixtures hand-built from the production, one for every alternative
+/// #2090 modelled: each alternative's opening tag, its members in order,
+/// its closing tag.
 #[test]
 fn new_algorithms_match_hand_built_fixtures() {
-    let cases: [(BACnetEventParameter, &[u8]); 5] = [
+    let double = |value: f64| value.to_be_bytes();
+    let double_out_of_range = [
+        &[0xEE, 0x09, 0x00, 0x1D, 0x08][..],
+        &double(-1.5),
+        &[0x2D, 0x08],
+        &double(99.25),
+        &[0x3D, 0x08],
+        &double(0.5),
+        &[0xEF],
+    ]
+    .concat();
+    let cases: [(BACnetEventParameter, &[u8]); 13] = [
         (
             BACnetEventParameter::UnsignedRange {
                 time_delay: 30,
@@ -168,6 +180,77 @@ fn new_algorithms_match_hand_built_fixtures() {
             // [15] { [0] 30, [1] -5, [2] 40, [3] 2 }
             &[
                 0xFE, 0x0F, 0x09, 0x1E, 0x19, 0xFB, 0x29, 0x28, 0x39, 0x02, 0xFF, 0x0F,
+            ],
+        ),
+        (
+            BACnetEventParameter::CommandFailure {
+                time_delay: 4,
+                feedback_property_reference: dopr_ai(3, 85),
+            },
+            // [3] { [0] 4, [1] { [0] analog-input 3, [1] 85 } }
+            &[
+                0x3E, 0x09, 0x04, 0x1E, 0x0C, 0x00, 0x00, 0x00, 0x03, 0x19, 0x55, 0x1F, 0x3F,
+            ],
+        ),
+        (
+            BACnetEventParameter::BufferReady {
+                notification_threshold: 50,
+                previous_notification_count: 4_000_000_000,
+            },
+            // [10] { [0] 50, [1] 4000000000 }
+            &[0xAE, 0x09, 0x32, 0x1C, 0xEE, 0x6B, 0x28, 0x00, 0xAF],
+        ),
+        (
+            BACnetEventParameter::AccessEvent {
+                list_of_access_events: vec![AccessEvent::from_raw(1), AccessEvent::from_raw(129)],
+                access_event_time_reference: dopr_ai(7, 4),
+            },
+            // [13] { [0] { ENUM 1, ENUM 129 }, [1] { [0] analog-input 7, [1] 4 } }
+            &[
+                0xDE, 0x0E, 0x91, 0x01, 0x91, 0x81, 0x0F, 0x1E, 0x0C, 0x00, 0x00, 0x00, 0x07, 0x19,
+                0x04, 0x1F, 0xDF,
+            ],
+        ),
+        (
+            BACnetEventParameter::DoubleOutOfRange {
+                time_delay: 0,
+                low_limit: -1.5,
+                high_limit: 99.25,
+                deadband: 0.5,
+            },
+            // [14] { [0] 0, [1] -1.5, [2] 99.25, [3] 0.5 }, each a Double; tag 14
+            // still fits the tag octet
+            &double_out_of_range,
+        ),
+        (
+            BACnetEventParameter::UnsignedOutOfRange {
+                time_delay: 5,
+                low_limit: 10,
+                high_limit: 300,
+                deadband: 1,
+            },
+            // [16] { [0] 5, [1] 10, [2] 300, [3] 1 }
+            &[
+                0xFE, 0x10, 0x09, 0x05, 0x19, 0x0A, 0x2A, 0x01, 0x2C, 0x39, 0x01, 0xFF, 0x10,
+            ],
+        ),
+        // none [20]: a primitive NULL with no contents.
+        (BACnetEventParameter::None, &[0xF8, 0x14]),
+        (
+            BACnetEventParameter::ChangeOfDiscreteValue { time_delay: 9 },
+            // [21] { [0] 9 }
+            &[0xFE, 0x15, 0x09, 0x09, 0xFF, 0x15],
+        ),
+        (
+            BACnetEventParameter::ChangeOfTimer {
+                time_delay: 3,
+                alarm_values: vec![TimerState::from_raw(1), TimerState::from_raw(2)],
+                update_time_reference: dopr_ai(2, 85),
+            },
+            // [22] { [0] 3, [1] { ENUM 1, ENUM 2 }, [2] { [0] analog-input 2, [1] 85 } }
+            &[
+                0xFE, 0x16, 0x09, 0x03, 0x1E, 0x91, 0x01, 0x91, 0x02, 0x1F, 0x2E, 0x0C, 0x00, 0x00,
+                0x00, 0x02, 0x19, 0x55, 0x2F, 0xFF, 0x16,
             ],
         ),
     ];

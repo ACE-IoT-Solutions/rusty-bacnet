@@ -4118,10 +4118,17 @@ framing, through the shared `bacnet-encoding` codecs.
   reads. The server's list services and ReadRange edit and page the list of any
   NOTIFICATION_FORWARDER object held this way.
 - **`Event_Parameters` and `Fault_Parameters`** (Clause 12.12) use the
-  BACnetEventParameter and BACnetFaultParameter CHOICE framing. Modeled
-  alternatives round-trip. An alternative the stack does not model is kept as
-  opaque bytes, and omitted, deprecated and reserved choices, or trailing bytes
-  after a framed element, are rejected. Event_Parameters never set reads as
+  BACnetEventParameter and BACnetFaultParameter CHOICE framing. Every
+  Event_Parameters algorithm of the 2020 standard is modeled (#2090) and
+  round-trips; a body under one of their tags that doesn't follow its form is
+  refused with INVALID_DATA_TYPE, and a string in a character set the stack
+  can't convert with CHARACTER_SET_NOT_SUPPORTED. Only an alternative under
+  an unassigned tag (23 and up) is kept as opaque bytes. Omitted, deprecated
+  and reserved choices, or trailing bytes after a framed element, are
+  rejected. The server runs five of them (out-of-range, floating-limit,
+  change-of-value, change-of-state and change-of-bitstring); the others
+  are stored and served but produce no transition, and an unset
+  Time_Delay_Normal reads back their time delay. Event_Parameters never set reads as
   the context-tagged `none` choice (`F8 14`, tag 20; #1868). Such an
   enrollment evaluates reliability only (Clause 12.12.7), and one left
   offnormal by earlier parameters returns to NORMAL with a TO_NORMAL. Any

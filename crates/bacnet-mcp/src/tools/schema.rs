@@ -88,8 +88,33 @@ fn shape(fields: Value, optional: &[&str]) -> Value {
 }
 
 /// One decoded value that isn't a list: the forms of
-/// `bacnet_ops::format::Datum`, with device text as an envelope.
+/// `bacnet_ops::format::Datum`, with device text as an envelope. A
+/// constructed element may carry `fields` (an Event_Parameters value): an
+/// object of its members by name, each a value of the forms below or a
+/// list of them.
 fn datum_leaves() -> Vec<Value> {
+    let text = json!({ "type": "string" });
+    let element_text = json!({ "anyOf": [{ "type": "string" }, envelope_object()] });
+    let mut members = member_leaves();
+    let list = json!({ "type": "array", "items": { "anyOf": members.clone() } });
+    members.push(list);
+    let fields = json!({
+        "type": "object",
+        "additionalProperties": { "anyOf": members },
+    });
+    let plain_element = shape(json!({ "element": text, "text": element_text }), &[]);
+    let mut leaves = member_leaves();
+    leaves.retain(|leaf| *leaf != plain_element);
+    leaves.push(shape(
+        json!({ "element": text, "text": element_text, "fields": fields }),
+        &["fields"],
+    ));
+    leaves
+}
+
+/// The forms of one decoded value inside an element's `fields`: those of
+/// [`datum_leaves`], an element there having no fields of its own.
+fn member_leaves() -> Vec<Value> {
     let text = json!({ "type": "string" });
     let element_text = json!({ "anyOf": [{ "type": "string" }, envelope_object()] });
     vec![
@@ -140,7 +165,8 @@ fn typed() -> Value {
         "description": "The decoded value, as the CLI's JSON writes it: a number, boolean or \
                         null; {value, name} for an enumeration; {bits, names} for a bit string; \
                         {type, type_number, instance} for an object; {date}, {time}, {octets}, \
-                        {float} or {raw}; {element, text} for a constructed element; an array \
+                        {float} or {raw}; {element, text} for a constructed element, with \
+                        {fields} by name when it is decoded field by field; an array \
                         for several; device text as an untrusted envelope, in place of a string \
                         or of an element's text",
         "anyOf": leaves,
