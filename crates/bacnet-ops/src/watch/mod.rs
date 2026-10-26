@@ -500,6 +500,32 @@ impl Lease {
             std::future::pending::<()>().await;
         }
     }
+
+    /// A second view of this lease's change signal, for a waiter that
+    /// can't hold the lease itself (one kept under a lock, say). It starts
+    /// where the lease stands and keeps nothing watched: once the point's
+    /// last lease goes, it never fires again.
+    pub fn changes(&self) -> Changes {
+        Changes {
+            signal: self.signal.clone(),
+        }
+    }
+}
+
+/// A point's change signal without a lease ([`Lease::changes`]).
+#[derive(Debug, Clone)]
+pub struct Changes {
+    signal: watch::Receiver<u64>,
+}
+
+impl Changes {
+    /// Wait for the next signalled change, as [`Lease::changed`] does;
+    /// pending for ever once the point is no longer watched. Cancel safe.
+    pub async fn changed(&mut self) {
+        if self.signal.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
 }
 
 impl Drop for Lease {

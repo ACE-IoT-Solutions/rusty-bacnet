@@ -15,27 +15,29 @@
 //! either's leases. A reservation no stream claims within
 //! [`UNCLAIMED`] (the acknowledgment couldn't be sent) is dropped.
 //!
-//! The listen loop waits on the leases' signals, the discovery table's
-//! events and an alarm tick. Its arms send notifications and refresh
-//! alarms; the futures it leaves pending meanwhile wait on watch and
-//! broadcast channels only, never a lock (#1498).
+//! The listen loop waits on a [`Follow`]: the leases' signals, the
+//! discovery table's events and an alarm tick. Its arms send notifications
+//! and refresh alarms; the futures it leaves pending meanwhile wait on
+//! watch and broadcast channels only, never a lock (#1498). Legacy
+//! subscriptions ([`crate::legacy`]) follow theirs the same way, and their
+//! holds live here too, so every way of watching shares the caps.
 
 use std::collections::{HashMap, HashSet};
-use std::pin::Pin;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use bacnet_client::client::{DeviceEvent, DeviceEventKind};
-use bacnet_ops::watch::{Lease, Point};
+use bacnet_ops::watch::{Changes, Lease, Point};
 use bacnet_transport::port::TransportPort;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use rmcp::ErrorData;
 use rmcp::service::SubscriptionContext;
 use tokio::sync::broadcast::{self, error::RecvError};
-use tokio::time::Instant;
+use tokio::sync::watch;
+use tokio::time::{Instant, Interval};
 
 use crate::context::Ctx;
-use crate::resources::uri::{self, DEVICES, LEDGER, SESSION, Uri};
+use crate::resources::uri::{self, DEVICES, Uri};
 
 /// How long a reservation waits for its stream.
 const UNCLAIMED: Duration = Duration::from_secs(30);
@@ -53,10 +55,22 @@ pub(crate) const TOOL_IDLE: Duration = Duration::from_secs(600);
 /// How often subscribed alarm resources are polled.
 pub(crate) const ALARMS_EVERY: Duration = Duration::from_secs(60);
 
-/// What the principal watches, through listen streams and `bacnet_watch`.
-#[derive(Default)]
+/// What the principal watches, through listen streams, legacy
+/// subscriptions and `bacnet_watch`.
 pub(crate) struct Subs {
     state: Mutex<SubsState>,
+    /// Bumped whenever the legacy subscriptions change, for the session's
+    /// notifier ([`crate::legacy::notify`]).
+    legacy_changed: watch::Sender<u64>,
+}
+
+impl Default for Subs {
+    fn default() -> Self {
+        Self {
+            state: Mutex::default(),
+            legacy_changed: watch::Sender::new(0),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -68,6 +82,26 @@ struct SubsState {
     pending: Vec<Pending>,
     /// `bacnet_watch`'s points and when each was last asked for.
     tool: HashMap<Point, (Instant, Lease)>,
+    /// The session's legacy `resources/subscribe` URIs, each point URI
+    /// with its hold.
+    legacy: HashMap<String, Option<Hold>>,
+}
+
+/// One legacy subscription's watch on a point: counted against the
+/// principal's cap, and its lease held, until it is dropped. It points
+/// back weakly, so a hold left in a dropped server's state frees itself.
+pub(crate) struct Hold {
+    subs: Weak<Subs>,
+    point: Point,
+    lease: Lease,
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        if let Some(subs) = self.subs.upgrade() {
+            subs.release(&[self.point]);
+        }
+    }
 }
 
 struct Pending {
@@ -127,6 +161,81 @@ impl Subs {
         let lease = hub.watch(point).map_err(|_| "process-cap")?;
         *state.held.entry(point).or_default() += 1;
         Ok(lease)
+    }
+
+    /// A hold on `point` for a legacy subscription, under both caps.
+    pub(crate) fn hold<T: TransportPort + 'static>(
+        self: &Arc<Self>,
+        ctx: &Ctx<T>,
+        point: Point,
+    ) -> Result<Hold, &'static str> {
+        let lease = self.take(ctx, point)?;
+        Ok(Hold {
+            subs: Arc::downgrade(self),
+            point,
+            lease,
+        })
+    }
+
+    /// Whether the session subscribes to `uri` (legacy).
+    pub(crate) fn legacy_has(&self, uri: &str) -> bool {
+        self.lock().legacy.contains_key(uri)
+    }
+
+    /// Add the legacy subscription `uri`, with its point's hold, unless the
+    /// session already holds `max` URIs. One added meanwhile by another
+    /// call stays, and `hold` goes.
+    pub(crate) fn legacy_add(
+        &self,
+        uri: &str,
+        hold: Option<Hold>,
+        max: usize,
+    ) -> Result<(), &'static str> {
+        let mut state = self.lock();
+        let added = if state.legacy.contains_key(uri) {
+            Ok(false)
+        } else if state.legacy.len() >= max {
+            Err("principal-cap")
+        } else {
+            state.legacy.insert(uri.to_string(), hold);
+            Ok(true)
+        };
+        drop(state);
+        // A hold not stored goes when this returns, after the lock: its
+        // release takes it.
+        if added? {
+            self.legacy_changed.send_modify(|n| *n = n.wrapping_add(1));
+        }
+        Ok(())
+    }
+
+    /// Drop the legacy subscription `uri`, if the session has it.
+    pub(crate) fn legacy_remove(&self, uri: &str) {
+        let removed = self.lock().legacy.remove(uri);
+        if removed.is_some() {
+            // The guard is gone: the hold's release takes the lock.
+            drop(removed);
+            self.legacy_changed.send_modify(|n| *n = n.wrapping_add(1));
+        }
+    }
+
+    /// The legacy URIs, each point URI with its change signal.
+    pub(crate) fn legacy_snapshot(&self) -> Vec<(String, Option<Changes>)> {
+        self.lock()
+            .legacy
+            .iter()
+            .map(|(uri, hold)| (uri.clone(), hold.as_ref().map(|h| h.lease.changes())))
+            .collect()
+    }
+
+    /// Legacy URIs the session holds.
+    pub(crate) fn legacy_count(&self) -> usize {
+        self.lock().legacy.len()
+    }
+
+    /// Wakes when the legacy subscriptions change.
+    pub(crate) fn legacy_watch(&self) -> watch::Receiver<u64> {
+        self.legacy_changed.subscribe()
     }
 
     /// Drop `bacnet_watch` points not asked for within `idle`.
@@ -251,16 +360,22 @@ impl Subs {
         drop(stale);
     }
 
-    /// Drop every reservation and tool watch, at shutdown.
+    /// Drop every reservation, legacy subscription and tool watch, when
+    /// the session ends.
     pub(crate) fn clear(&self) {
-        let (pending, tool) = {
+        let (pending, legacy, tool) = {
             let mut state = self.lock();
             (
                 std::mem::take(&mut state.pending),
+                std::mem::take(&mut state.legacy),
                 std::mem::take(&mut state.tool),
             )
         };
         drop(pending);
+        if !legacy.is_empty() {
+            drop(legacy);
+            self.legacy_changed.send_modify(|n| *n = n.wrapping_add(1));
+        }
         let points: Vec<Point> = tool.keys().copied().collect();
         drop(tool);
         self.release(&points);
@@ -281,13 +396,131 @@ fn accepted(context: &SubscriptionContext) -> Vec<String> {
         .collect()
 }
 
-type Changed = Pin<Box<dyn std::future::Future<Output = (usize, Lease)> + Send>>;
+/// What one subscriber follows: its points' change signals, the
+/// discovery table's events and the alarm tick. A listen stream's set is
+/// fixed; a legacy session's follows its subscribes and unsubscribes
+/// ([`Follow::set`]). [`Follow::next`] waits on watch and broadcast
+/// channels and timers only, never a lock (#1498), and is cancel safe.
+pub(crate) struct Follow {
+    points: Vec<(String, Changes)>,
+    devices: Option<broadcast::Receiver<DeviceEvent>>,
+    devices_due: Option<Instant>,
+    devices_last: Option<Instant>,
+    alarm_uris: Vec<String>,
+    alarms: Interval,
+}
 
-fn changed(at: usize, mut lease: Lease) -> Changed {
-    Box::pin(async move {
-        lease.changed().await;
-        (at, lease)
-    })
+/// Why [`Follow::next`] woke.
+pub(crate) enum Wake {
+    /// This resource changed.
+    Updated(String),
+    /// The alarm resources are due for a poll.
+    Alarms,
+}
+
+impl Follow {
+    pub(crate) fn new() -> Self {
+        let mut alarms = tokio::time::interval_at(Instant::now() + ALARMS_EVERY, ALARMS_EVERY);
+        alarms.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        Self {
+            points: Vec::new(),
+            devices: None,
+            devices_due: None,
+            devices_last: None,
+            alarm_uris: Vec::new(),
+            alarms,
+        }
+    }
+
+    /// Follow `uris`, each point URI with its change signal. A point
+    /// already followed keeps the signal it had, so nothing is announced
+    /// twice.
+    pub(crate) fn set<T: TransportPort + 'static>(
+        &mut self,
+        ctx: &Ctx<T>,
+        uris: Vec<(String, Option<Changes>)>,
+    ) {
+        let mut kept: HashMap<String, Changes> =
+            std::mem::take(&mut self.points).into_iter().collect();
+        let mut devices = false;
+        self.alarm_uris.clear();
+        for (name, changes) in uris {
+            if let Some(changes) = changes {
+                let changes = kept.remove(&name).unwrap_or(changes);
+                self.points.push((name, changes));
+            } else if name == DEVICES {
+                devices = true;
+            } else if matches!(uri::parse(&name), Ok(Uri::Alarms | Uri::DeviceAlarms(_))) {
+                self.alarm_uris.push(name);
+            }
+        }
+        if !devices {
+            self.devices = None;
+            self.devices_due = None;
+        } else if self.devices.is_none() {
+            self.devices = ctx.engine.as_ref().map(|e| e.device_events());
+        }
+    }
+
+    /// Whether nothing followed can change.
+    pub(crate) fn quiet(&self) -> bool {
+        self.points.is_empty() && self.devices.is_none() && self.alarm_uris.is_empty()
+    }
+
+    /// The alarm resources followed.
+    pub(crate) fn alarm_uris(&self) -> &[String] {
+        &self.alarm_uris
+    }
+
+    /// The next change to announce, or the alarm tick; pending while
+    /// nothing followed can change.
+    pub(crate) async fn next(&mut self) -> Wake {
+        loop {
+            tokio::select! {
+                biased;
+                at = point_change(&mut self.points), if !self.points.is_empty() => {
+                    return Wake::Updated(self.points[at].0.clone());
+                }
+                change = device_change(&mut self.devices), if self.devices.is_some() => {
+                    match change {
+                        None => self.devices = None,
+                        Some(true) if self.devices_due.is_none() => {
+                            let earliest = self
+                                .devices_last
+                                .map_or_else(Instant::now, |at| at + DEVICES_EVERY);
+                            self.devices_due = Some(earliest.max(Instant::now()));
+                        }
+                        Some(_) => {}
+                    }
+                }
+                () = tokio::time::sleep_until(self.devices_due.unwrap_or_else(Instant::now)),
+                    if self.devices_due.is_some() => {
+                    self.devices_due = None;
+                    self.devices_last = Some(Instant::now());
+                    return Wake::Updated(DEVICES.to_string());
+                }
+                _ = self.alarms.tick(), if !self.alarm_uris.is_empty() => return Wake::Alarms,
+                else => std::future::pending::<()>().await,
+            }
+        }
+    }
+}
+
+/// The index of the next point to change. Each signal's wait is cancel
+/// safe, so the ones not first lose nothing.
+async fn point_change(points: &mut [(String, Changes)]) -> usize {
+    let mut waiting: FuturesUnordered<_> = points
+        .iter_mut()
+        .enumerate()
+        .map(|(at, (_, changes))| async move {
+            changes.changed().await;
+            at
+        })
+        .collect();
+    match waiting.next().await {
+        Some(at) => at,
+        None => std::future::pending().await,
+    }
 }
 
 /// Serve one stream until the client cancels it or the server closes.
@@ -298,75 +531,56 @@ pub(crate) async fn run<T: TransportPort + 'static>(
 ) -> Result<(), ErrorData> {
     let _listening = ctx.listening();
     let uris = accepted(&context);
-    let mut claim = ctx.subs.claim(&uris);
+    // Held to the end: its leases keep the points watched.
+    let claim = ctx.subs.claim(&uris);
     if claim.is_none() && !uris.is_empty() {
         // Only when the reservation was dropped before the stream began.
         tracing::warn!(
             "a listen stream found no watches set aside for it; its points won't update"
         );
     }
-    let mut names = Vec::new();
-    let mut points: FuturesUnordered<Changed> = FuturesUnordered::new();
-    if let Some(claim) = claim.as_mut() {
-        for (at, (name, lease)) in std::mem::take(&mut claim.leases).into_iter().enumerate() {
-            names.push(name);
-            points.push(changed(at, lease));
-        }
-    }
-    let alarm_uris: Vec<&String> = uris
-        .iter()
-        .filter(|u| matches!(uri::parse(u), Ok(Uri::Alarms | Uri::DeviceAlarms(_))))
-        .collect();
-    let mut devices = uris
-        .iter()
-        .any(|u| u == DEVICES)
-        .then(|| ctx.engine.as_ref().map(|e| e.device_events()))
-        .flatten();
-    let mut devices_due: Option<Instant> = None;
-    let mut devices_last: Option<Instant> = None;
-    let mut alarms = tokio::time::interval_at(Instant::now() + ALARMS_EVERY, ALARMS_EVERY);
-    alarms.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let leases = claim.as_ref().map_or(&[][..], |c| &c.leases[..]);
+    let mut follow = Follow::new();
+    follow.set(
+        ctx,
+        uris.iter()
+            .map(|name| {
+                let changes = leases
+                    .iter()
+                    .find(|(held, _)| held == name)
+                    .map(|(_, lease)| lease.changes());
+                (name.clone(), changes)
+            })
+            .collect(),
+    );
     let sink = context.sink().clone();
-    let quiet = uris.iter().all(|u| u == SESSION || u == LEDGER);
-    tracing::debug!(streams = uris.len(), quiet, "listen stream opened");
+    tracing::debug!(
+        streams = uris.len(),
+        quiet = follow.quiet(),
+        "listen stream opened"
+    );
     loop {
-        let update = tokio::select! {
+        let wake = tokio::select! {
             biased;
             () = context.cancelled() => return Ok(()),
             () = ctx.closing.cancelled() => return Ok(()),
-            Some((at, lease)) = points.next(), if !points.is_empty() => {
-                points.push(changed(at, lease));
-                names[at].clone()
-            }
-            change = device_change(&mut devices), if devices.is_some() => {
-                match change {
-                    None => devices = None,
-                    Some(true) if devices_due.is_none() => {
-                        let earliest = devices_last.map_or_else(Instant::now, |at| at + DEVICES_EVERY);
-                        devices_due = Some(earliest.max(Instant::now()));
-                    }
-                    Some(_) => {}
+            wake = follow.next() => wake,
+        };
+        match wake {
+            Wake::Updated(name) => {
+                if sink.notify_resource_updated(name).await.is_err() {
+                    return Ok(());
                 }
-                continue;
             }
-            () = tokio::time::sleep_until(devices_due.unwrap_or_else(Instant::now)), if devices_due.is_some() => {
-                devices_due = None;
-                devices_last = Some(Instant::now());
-                DEVICES.to_string()
-            }
-            _ = alarms.tick(), if !alarm_uris.is_empty() => {
-                for name in &alarm_uris {
+            Wake::Alarms => {
+                for name in follow.alarm_uris() {
                     if crate::resources::refresh_alarms(ctx, name).await
                         && sink.notify_resource_updated(name.as_str()).await.is_err()
                     {
                         return Ok(());
                     }
                 }
-                continue;
             }
-        };
-        if sink.notify_resource_updated(update).await.is_err() {
-            return Ok(());
         }
     }
 }
