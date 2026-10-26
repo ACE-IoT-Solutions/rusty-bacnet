@@ -17,7 +17,7 @@ test('homepage paths reach a start page for each reader, and the contributor pag
   await page.goto(base);
   const paths = page.getByRole('region', { name: 'Start where you are.' });
   const cards = await paths.getByRole('link').evaluateAll(links => links.map(link => link.getAttribute('href') || ''));
-  for (const reader of ['project/support/', 'start/python/', 'start/rust/', 'start/first-read/', 'start/embedded/']) {
+  for (const reader of ['project/support/', 'start/python/', 'start/rust/', 'start/first-read/', 'tui/overview/', 'start/embedded/']) {
     expect(cards, reader).toContain(base + reader);
   }
   const more = await page.getByRole('region', { name: 'Then go further.' }).getByRole('link').evaluateAll(links => links.map(link => link.getAttribute('href') || ''));

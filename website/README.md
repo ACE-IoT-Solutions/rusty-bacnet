@@ -171,6 +171,12 @@ Rerun it after a TUI change that the pages show, and review the new PNGs before
 committing them. A new shot needs an entry in `SHOTS` in `capture.py`, a step
 in one of its scenarios, and a page that uses it.
 
+**Known gap (#2110):** the shots date from before many TUI changes on `dev`,
+and some of the script's scenarios no longer match the TUI. A `--tmux-only`
+run on 2026-10-25 stopped at the watch list (waiting for `polled`) and at a
+`Press Enter again` prompt, so nine shots weren't taken. Fix those scenarios
+before the next full capture.
+
 ## Retained CI and publication reference
 
 `.github/workflows/docs-pages.yml` validates pull requests targeting `dev` or

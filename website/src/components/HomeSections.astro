@@ -10,8 +10,9 @@ const paths = [
     text: 'Install the package and read a property from a short script with typed values.' },
   { label: 'RUST', icon: 'rs', title: 'Build it into your system.', href: 'start/rust/', link: 'Start with Rust',
     text: 'Add the client crates to a Tokio application and read a property from a known device.' },
-  { label: 'CLI AND TERMINAL UI', icon: '>_', title: 'Work from the terminal.', href: 'start/first-read/', link: 'Read a known device',
-    text: 'Read points with one-shot commands, or browse, watch and write in the terminal UI.' },
+  { label: 'CLI AND TERMINAL UI', icon: '>_', title: 'Work from the terminal.',
+    links: [{ href: 'start/first-read/', link: 'One-shot commands' }, { href: 'tui/overview/', link: 'The terminal UI' }],
+    text: 'Read a known device with one-shot commands, or browse, watch and write in the full-screen terminal UI.' },
   { label: 'EMBEDDED', icon: 'μc', title: 'Run on a microcontroller.', href: 'start/embedded/', link: 'Run on firmware',
     text: 'Portable no_std cores for MS/TP, BACnet/IP and routing, with no allocator.' },
   { label: 'NO CONTROLLER?', icon: '127', title: 'Start on your own machine.', href: 'start/local-lab/', link: 'Try the local lab',
@@ -19,7 +20,7 @@ const paths = [
 ];
 const more = [
   { href: 'connect/overview/', title: 'Connect to a network', text: 'BACnet/IP, BBMDs, BACnet/SC, MS/TP and IPv6' },
-  { href: 'guides/discovery/', title: 'Discover, read and write', text: 'Discovery, COV and guarded writes' },
+  { href: 'guides/discovery/', title: 'Discover devices', text: 'Directed and broadcast Who-Is, BBMDs and routed targets' },
   { href: 'integrate/overview/', title: 'Build applications', text: 'Servers, routers, shared endpoints and policies' },
   { href: 'tui/overview/', title: 'Terminal UI', text: 'Every screen of the full-screen browser' },
   { href: 'reference/api/', title: 'Reference', text: 'Rust crates, the Python API and CLI commands' },
@@ -32,7 +33,9 @@ const base = '/rusty-bacnet/';
     <div class="rb-section-heading"><div><p class="rb-eyebrow">RELEASE v{release}</p><h2 id="paths-title">Start where you are.</h2></div><a href={`${base}start/installation/`}>Install v{release} <span aria-hidden="true">→</span></a></div>
     <ul class="rb-journey-grid" role="list">
       {paths.map(path => (
-        <li><a class="rb-journey" href={base + path.href}><span class="rb-card-icon" aria-hidden="true">{path.icon}</span><span class="rb-card-label">{path.label}</span><h3>{path.title}</h3><p>{path.text}</p><span class="rb-card-link">{path.link} <span aria-hidden="true">→</span></span></a></li>
+        <li>{path.links
+          ? <div class="rb-journey"><span class="rb-card-icon" aria-hidden="true">{path.icon}</span><span class="rb-card-label">{path.label}</span><h3>{path.title}</h3><p>{path.text}</p><span class="rb-card-links">{path.links.map(item => <a class="rb-card-link" href={base + item.href}>{item.link} <span aria-hidden="true">→</span></a>)}</span></div>
+          : <a class="rb-journey" href={base + path.href}><span class="rb-card-icon" aria-hidden="true">{path.icon}</span><span class="rb-card-label">{path.label}</span><h3>{path.title}</h3><p>{path.text}</p><span class="rb-card-link">{path.link} <span aria-hidden="true">→</span></span></a>}</li>
       ))}
     </ul>
   </section>
@@ -44,7 +47,7 @@ const base = '/rusty-bacnet/';
       ))}
     </ul>
   </section>
-  <aside class="rb-lab-banner" aria-labelledby="dev-title"><div><strong id="dev-title">Coming in 0.15, on <code>dev</code> now</strong><p>An MCP server that lets an AI agent host read a BACnet site, with no tool that writes. The release executables leave it out.</p></div><a href={`${base}guides/ai-agents/`}>AI agents (MCP) <span aria-hidden="true">→</span></a></aside>
+  <aside class="rb-dev-note" aria-labelledby="dev-title"><div><strong id="dev-title">Coming in 0.15, on <code>dev</code> now</strong><p>An MCP server that lets an AI agent host read a BACnet site, with no tool that writes. The release executables leave it out.</p></div><a href={`${base}guides/ai-agents/`}>AI agents (MCP) <span aria-hidden="true">→</span></a></aside>
   <p class="rb-home-contribute">Working on Rusty BACnet itself? <a class="rb-text-link" href={`${base}development/build-from-source/`}>Build from source</a> · <a class="rb-text-link" href={`${base}development/documentation/`}>Improve the documentation</a></p>
   <p class="rb-footnote">Rusty BACnet is an MIT-licensed protocol stack. It targets ASHRAE Standard 135-2020 and isn't BTL certified. Pre-1.0: APIs change between minor releases. Work only on networks you are authorized to access.</p>
 </div>
