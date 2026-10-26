@@ -38,6 +38,12 @@ fn cell_text(cell: Cell) -> String {
 }
 
 /// The matrix view, or how to start a survey before the first.
+///
+/// Below the grid, what fits goes by one rule (#2130): the findings first,
+/// with a count of those cut; then the line on BBMDs past the grid's limit;
+/// then the entries not followed, as many as fit and a count of the rest;
+/// then the legend, which the help screen also carries. They are drawn grid, legend,
+/// findings, limit, entries.
 pub(super) fn matrix(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let state = &app.network;
     let Some((matrix, _)) = &state.matrix else {
@@ -50,61 +56,91 @@ pub(super) fn matrix(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     };
     let rows = grid_rows(matrix, &state.not_followed);
     let n = rows.len();
+    let skipped = state.not_followed.len();
     // Entries not followed are no BBMDs: the list below names them, so
-    // they take no row or column (#2130). Those past the grid's limit are
-    // in `omitted` too, and are not counted as BBMDs left out.
+    // they take no row or column. Those past the grid's limit are in
+    // `omitted` too, and are not counted as BBMDs left out.
     let in_grid = matrix.bbmds.len() - n;
     let omitted = matrix
         .omitted
-        .saturating_sub(state.not_followed.len().saturating_sub(in_grid));
+        .saturating_sub(skipped.saturating_sub(in_grid));
     let shown = shown(n + omitted, area.width).min(n);
     let hidden = n - shown + omitted;
+    let grid_h = shown as u16 + 1 + u16::from(hidden > 0);
+    let [grid, below] =
+        Layout::vertical([Constraint::Length(grid_h), Constraint::Min(0)]).areas(area);
+    grid_table(frame, grid, matrix, &rows[..shown], hidden, theme);
+
     let width = usize::from(area.width);
+    let mut room = usize::from(below.height);
+    // Findings first: those that fit whole, and a count of the rest.
+    let findings = findings_lines(matrix, &rows, omitted, skipped, theme);
+    let heights: Vec<usize> = findings.iter().map(|line| wrapped(line, width)).collect();
+    let mut listed = findings;
+    let mut findings_h: usize = heights.iter().sum();
+    if findings_h > room {
+        let mut used = 0;
+        let keep = heights
+            .iter()
+            .take_while(|&&h| {
+                used += h;
+                used < room
+            })
+            .count();
+        let cut = listed.len() - keep;
+        listed.truncate(keep);
+        findings_h = heights[..keep].iter().sum::<usize>();
+        if room > findings_h {
+            let plural = if cut == 1 { "" } else { "s" };
+            listed.push(Line::styled(
+                format!("+{cut} more finding{plural}"),
+                theme.warn(),
+            ));
+            findings_h += 1;
+        }
+    }
+    room -= findings_h.min(room);
+    // Then the BBMDs past the grid's limit.
+    let limit = (omitted > 0).then(|| omitted_line(omitted, theme));
+    let limit_h = limit.as_ref().map_or(0, |line| wrapped(line, width));
+    let limit = limit.filter(|_| limit_h <= room);
+    let limit_h = if limit.is_some() { limit_h } else { 0 };
+    room -= limit_h;
+    // Then the entries not followed, in the rows left.
+    let notes = not_followed_lines(&state.not_followed, room, theme);
+    room -= notes.len();
+    // The legend last, whole or not at all.
     let mut legend_lines = vec![Line::raw("")];
     legend_lines.extend(
         legend(width)
             .into_iter()
             .map(|line| Line::styled(line, theme.dim())),
     );
-    let lines = findings_lines(matrix, &rows, omitted, theme);
-    let skipped = state.not_followed.len();
-    let grid_h = shown as u16 + 1 + u16::from(hidden > 0);
-    let [grid, below] =
-        Layout::vertical([Constraint::Length(grid_h), Constraint::Min(0)]).areas(area);
-    grid_table(frame, grid, matrix, &rows[..shown], hidden, theme);
-    if skipped == 0 {
-        let findings = lines.len().max(1);
-        let [legend_area, list] = Layout::vertical([
-            Constraint::Length(legend_lines.len() as u16),
-            Constraint::Min(findings.min(8) as u16),
-        ])
-        .areas(below);
-        frame.render_widget(Paragraph::new(legend_lines), legend_area);
-        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), list);
-        return;
-    }
-    // The list of entries not followed comes before the legend: when the
-    // three don't fit, the legend (also on the help screen) goes first.
-    let list_need: usize = lines.iter().map(|line| wrapped(line, width)).sum();
-    let notes_need = 1 + skipped;
-    let room = usize::from(below.height);
-    if list_need + notes_need + legend_lines.len() > room {
+    if legend_lines.len() > room {
         legend_lines.clear();
     }
-    let room = room - legend_lines.len().min(room);
-    let list_h = list_need.min(room.saturating_sub(notes_need.min(2)));
-    let [legend_area, list, notes] = Layout::vertical([
+    room -= legend_lines.len();
+    // Spare rows go to the findings when nothing follows them, so a line
+    // that wraps longer than counted still shows whole.
+    if limit.is_none() && notes.is_empty() {
+        findings_h += room;
+    }
+    let [legend_area, findings_area, limit_area, notes_area] = Layout::vertical([
         Constraint::Length(legend_lines.len() as u16),
-        Constraint::Length(list_h as u16),
-        Constraint::Min(0),
+        Constraint::Length(findings_h as u16),
+        Constraint::Length(limit_h as u16),
+        Constraint::Length(notes.len() as u16),
     ])
     .areas(below);
     frame.render_widget(Paragraph::new(legend_lines), legend_area);
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), list);
     frame.render_widget(
-        Paragraph::new(not_followed_lines(&state.not_followed, notes.height, theme)),
-        notes,
+        Paragraph::new(listed).wrap(Wrap { trim: true }),
+        findings_area,
     );
+    if let Some(limit) = limit {
+        frame.render_widget(Paragraph::new(limit).wrap(Wrap { trim: true }), limit_area);
+    }
+    frame.render_widget(Paragraph::new(notes), notes_area);
 }
 
 /// The matrix's BBMDs that take a grid row and column: all but the
@@ -117,32 +153,46 @@ fn grid_rows(matrix: &Matrix, not_followed: &[Unfollowed]) -> Vec<usize> {
 }
 
 /// The findings list: the problems, the notes, or the line saying every
-/// table agrees, then how many BBMDs are past the grid's limit.
+/// table read agrees. `omitted` counts BBMDs past the grid's limit, and
+/// `skipped` the entries not followed.
 fn findings_lines<'a>(
     matrix: &Matrix,
     rows: &[usize],
     omitted: usize,
+    skipped: usize,
     theme: &Theme,
 ) -> Vec<Line<'a>> {
     let notes_only = matrix
         .findings
         .iter()
         .all(|finding| matches!(finding, Finding::NoPeers(_)));
-    // [`Matrix::consistent`] without the rows of entries not followed,
-    // which no read went to.
-    let agree = matrix.omitted == 0
+    // [`Matrix::consistent`] without the entries not followed, which no
+    // read went to.
+    let agree = omitted == 0
         && notes_only
         && rows
             .iter()
             .all(|&r| matrix.cells[r].iter().all(|cell| *cell != Cell::Unknown));
     let n = rows.len();
-    let mut lines: Vec<Line> = if agree && !matrix.findings.is_empty() {
+    if agree && !matrix.findings.is_empty() {
         // Only notes: an empty table lists nothing, itself included.
         matrix
             .findings
             .iter()
             .map(|finding| Line::styled(finding.describe(), theme.dim()))
             .collect()
+    } else if agree && skipped > 0 {
+        let others = match skipped {
+            1 => "1 other entry was".to_string(),
+            _ => format!("{skipped} other entries were"),
+        };
+        vec![Line::styled(
+            format!(
+                "All {n} BDTs read agree: each BBMD lists itself, every BBMD read is listed back, \
+                 and masks match; {others} not read on purpose."
+            ),
+            theme.accent(),
+        )]
     } else if agree {
         vec![Line::styled(
             format!(
@@ -158,18 +208,19 @@ fn findings_lines<'a>(
             .iter()
             .map(|finding| Line::styled(format!("! {}", finding.describe()), theme.warn()))
             .collect()
-    };
-    if omitted > 0 {
-        let (count, are) = match omitted {
-            1 => ("1 more BBMD".to_string(), "is"),
-            _ => (format!("{omitted} more BBMDs"), "are"),
-        };
-        lines.push(Line::styled(
-            format!("{count} past the grid's limit of {GRID_CAP} {are} not shown."),
-            theme.dim(),
-        ));
     }
-    lines
+}
+
+/// How many BBMDs are past the grid's limit.
+fn omitted_line<'a>(omitted: usize, theme: &Theme) -> Line<'a> {
+    let (count, are) = match omitted {
+        1 => ("1 more BBMD".to_string(), "is"),
+        _ => (format!("{omitted} more BBMDs"), "are"),
+    };
+    Line::styled(
+        format!("{count} past the grid's limit of {GRID_CAP} {are} not shown."),
+        theme.dim(),
+    )
 }
 
 /// Rows `line` takes when wrapped between words to `width` columns.
@@ -208,20 +259,33 @@ fn not_followed_reason(why: NotFollowed) -> &'static str {
     }
 }
 
-/// The entries the survey did not follow, under a heading, in at most
-/// `height` lines: when some don't fit, the last line counts them. They
-/// are dim, not flagged: the survey left them out on purpose.
-fn not_followed_lines<'a>(skipped: &[Unfollowed], height: u16, theme: &Theme) -> Vec<Line<'a>> {
-    let room = usize::from(height);
+/// The entries the survey did not follow in at most `room` lines: under a
+/// heading, one line each, with a count of those that don't fit; with
+/// under three lines, one line counting them all. They are dim, not
+/// flagged: the survey left them out on purpose.
+fn not_followed_lines<'a>(skipped: &[Unfollowed], room: usize, theme: &Theme) -> Vec<Line<'a>> {
+    if skipped.is_empty() || room == 0 {
+        return Vec::new();
+    }
+    if room < 3 && 1 + skipped.len() > room {
+        let count = match skipped.len() {
+            1 => "1 entry".to_string(),
+            k => format!("{k} entries"),
+        };
+        return vec![Line::styled(
+            format!("{count} not read on purpose (no read goes to such an address)"),
+            theme.dim(),
+        )];
+    }
+    let fit = if 1 + skipped.len() > room {
+        room - 2
+    } else {
+        skipped.len()
+    };
     let mut lines = vec![Line::styled(
         "Not read on purpose (no read goes to such an address):",
         theme.dim(),
     )];
-    let fit = if 1 + skipped.len() > room {
-        room.saturating_sub(2)
-    } else {
-        skipped.len()
-    };
     // Typed addresses only, but sanitized as every table's text is.
     lines.extend(skipped.iter().take(fit).map(|entry| {
         let text = format!(
@@ -233,13 +297,12 @@ fn not_followed_lines<'a>(skipped: &[Unfollowed], height: u16, theme: &Theme) ->
         );
         Line::styled(crate::tui::view::sanitize(&text), theme.dim())
     }));
-    if fit < skipped.len() && room >= 2 {
+    if fit < skipped.len() {
         lines.push(Line::styled(
             format!("+{} more not read on purpose", skipped.len() - fit),
             theme.dim(),
         ));
     }
-    lines.truncate(room);
     lines
 }
 
@@ -335,7 +398,9 @@ fn grid_table(
     }
     let mut widths = vec![Constraint::Length(ADDRESS + 4)];
     widths.extend(std::iter::repeat_n(Constraint::Length(CELL), shown));
-    widths.push(Constraint::Length(MORE));
+    if hidden > 0 {
+        widths.push(Constraint::Length(MORE));
+    }
     let table = Table::new(lines, widths)
         .header(Row::new(header).style(theme.accent()))
         .column_spacing(1);
@@ -393,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn entries_not_followed_fit_their_height_and_count_the_rest() {
+    fn entries_not_followed_fit_their_rows_and_count_the_rest() {
         let theme = Theme { color: false };
         let entry = |last| Unfollowed {
             address: SocketAddrV4::new(std::net::Ipv4Addr::new(224, 0, 0, last), 47808),
@@ -401,18 +466,22 @@ mod tests {
             why: NotFollowed::Multicast,
         };
         let skipped: Vec<Unfollowed> = (1..=4).map(entry).collect();
-        let text = |height| -> Vec<String> {
-            not_followed_lines(&skipped, height, &theme)
+        let text = |room| -> Vec<String> {
+            not_followed_lines(&skipped, room, &theme)
                 .iter()
                 .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
                 .collect()
         };
-        assert_eq!(text(5).len(), 5);
-        assert!(text(5)[4].ends_with("multicast"), "{:?}", text(5));
+        let full = text(9);
+        assert_eq!(full.len(), 5);
+        assert!(full[4].ends_with("multicast"), "{full:?}");
         let three = text(3);
         assert_eq!(three.len(), 3);
         assert_eq!(three[2], "+3 more not read on purpose");
-        assert_eq!(text(1).len(), 1);
+        let one = ["4 entries not read on purpose (no read goes to such an address)"];
+        assert_eq!(text(2), one);
+        assert_eq!(text(1), one);
         assert!(text(0).is_empty());
+        assert!(not_followed_lines(&[], 5, &theme).is_empty());
     }
 }

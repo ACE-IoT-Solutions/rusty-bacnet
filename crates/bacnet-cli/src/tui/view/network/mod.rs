@@ -24,7 +24,6 @@ use crate::tui::app::App;
 use crate::tui::app::devices::age_label;
 use crate::tui::app::network::{Fetched, NetworkState, View};
 
-#[path = "network_matrix.rs"]
 mod matrix;
 use matrix::matrix;
 
