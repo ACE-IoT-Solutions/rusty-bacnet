@@ -30,7 +30,7 @@ fn read(bbmd: SocketAddrV4, probe: Probe, fdt: Vec<FdtRow>) -> Surveyed<Fdt> {
     Surveyed {
         bbmd,
         probe,
-        extra: Some((Outcome::Table(fdt))),
+        extra: Some(Outcome::Table(fdt)),
     }
 }
 
@@ -181,7 +181,7 @@ fn an_fdt_nak_is_reported_for_the_fdt() {
         &[Surveyed {
             bbmd: at(1),
             probe: bdt(&[(1, ONES)]),
-            extra: Some((Outcome::Nak(code))),
+            extra: Some(Outcome::Nak(code)),
         }],
     );
     assert_eq!(report["verdict"], json!("consistent"));
