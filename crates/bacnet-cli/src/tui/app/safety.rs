@@ -9,7 +9,7 @@
 use std::time::{Duration, Instant};
 
 use bacnet_ops::class::Class;
-use bacnet_ops::parse::{parse_property, parse_value};
+use bacnet_ops::parse::{parse_property, parse_value_for};
 use bacnet_types::enums::PropertyIdentifier;
 
 use super::browser::ViewState;
@@ -727,7 +727,7 @@ fn write_spec(
         None
     } else {
         let text = form.get("Value");
-        parse_value(text)?;
+        parse_value_for(object.object_type(), property, index, text)?;
         Some(text.to_string())
     };
     let priority = match form.get("Priority") {

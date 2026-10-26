@@ -172,7 +172,7 @@ impl StateTexts {
 }
 
 /// The binary object types, whose state is a BACnetBinaryPV.
-fn is_binary(object_type: ObjectType) -> bool {
+pub(crate) fn is_binary(object_type: ObjectType) -> bool {
     [
         ObjectType::BINARY_INPUT,
         ObjectType::BINARY_OUTPUT,
@@ -182,7 +182,7 @@ fn is_binary(object_type: ObjectType) -> bool {
 }
 
 /// The multi-state object types, whose state is an Unsigned from 1.
-fn is_multistate(object_type: ObjectType) -> bool {
+pub(crate) fn is_multistate(object_type: ObjectType) -> bool {
     [
         ObjectType::MULTI_STATE_INPUT,
         ObjectType::MULTI_STATE_OUTPUT,
@@ -192,7 +192,7 @@ fn is_multistate(object_type: ObjectType) -> bool {
 }
 
 /// The properties that hold a binary or multi-state object's state.
-fn holds_state(property: PropertyIdentifier) -> bool {
+pub(crate) fn holds_state(property: PropertyIdentifier) -> bool {
     [
         PropertyIdentifier::PRESENT_VALUE,
         PropertyIdentifier::FEEDBACK_VALUE,

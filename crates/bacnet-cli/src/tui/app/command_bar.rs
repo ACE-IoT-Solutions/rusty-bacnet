@@ -36,7 +36,7 @@ mod words;
 
 use std::time::Duration;
 
-use bacnet_ops::parse::{parse_object_specifier, parse_property, parse_value_with_priority};
+use bacnet_ops::parse::{parse_object_specifier, parse_property, parse_value_for_with_priority};
 use bacnet_ops::target::{Target, parse_target};
 use bacnet_types::enums::{EnableDisable, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
@@ -289,10 +289,16 @@ fn object(word: &str) -> Result<ObjectIdentifier, String> {
 /// A `VALUE[@P]` word as the value grammar's text and the priority. A word
 /// with a quoted or escaped part is a CharacterString, its priority an `@P`
 /// after the last such part; any other word is read by the one-shot value
-/// grammar.
-fn value(word: &Word) -> Result<(String, Option<u8>), String> {
+/// grammar for the property written, which knows its names.
+fn value(
+    word: &Word,
+    object: ObjectIdentifier,
+    property: PropertyIdentifier,
+    index: Option<u32>,
+) -> Result<(String, Option<u8>), String> {
     let Some(literal_to) = word.literal_to else {
-        let (_, priority) = parse_value_with_priority(&word.text)?;
+        let (_, priority) =
+            parse_value_for_with_priority(object.object_type(), property, index, &word.text)?;
         let text = match priority {
             Some(_) => word.text.rsplit_once('@').map_or(&*word.text, |(v, _)| v),
             None => &word.text,
@@ -335,10 +341,11 @@ fn writes(device: u32, words: &[Word]) -> Result<Vec<WriteSpec>, String> {
         .chunks(3)
         .map(|group| {
             let (property, index) = parse_property(&group[1].text)?;
-            let (value, priority) = value(&group[2])?;
+            let object = object(&group[0].text)?;
+            let (value, priority) = value(&group[2], object, property, index)?;
             Ok(WriteSpec {
                 device,
-                object: object(&group[0].text)?,
+                object,
                 property,
                 index,
                 value: Some(value),
