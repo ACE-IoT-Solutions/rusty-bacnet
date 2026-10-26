@@ -11,8 +11,9 @@
 //! - router, BBMD and foreign-device registration off;
 //! - fixed placeholder vendor fields, version fields set to the release the
 //!   site describes (from `website/src/lib/site.mjs`, as for `support.json`),
-//!   and the protocol version and revision the served Device reports, so the
-//!   file changes only when the code or the release does.
+//!   so the file changes only when the code or the release does. The
+//!   generator takes the protocol version and revision from the served
+//!   Device.
 //!
 //! The server runs on BACnet/IP on loopback just long enough to answer. The
 //! generator's Markdown goes in below a banner that names the configuration
@@ -34,9 +35,7 @@ use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::pics::{DataLinkSupport, DeviceProfile, NetworkLayerSupport, PicsConfig};
 use bacnet_server::server::BACnetServer;
-use bacnet_transport::bip::BipTransport;
-use bacnet_types::enums::{ObjectType, PropertyIdentifier};
-use bacnet_types::primitives::PropertyValue;
+use bacnet_types::enums::ObjectType;
 
 use crate::support_tables::{FORBIDDEN_WORDS, site_release};
 
@@ -60,15 +59,13 @@ const MODEL_NAME: &str = "Rusty BACnet catalogue reference";
 type Result<T> = std::result::Result<T, String>;
 
 /// The PICS settings the reference configuration declares; `version` fills
-/// both version fields, and the protocol fields are what the Device reports.
-fn pics_config(version: &str, protocol: (u16, u16)) -> PicsConfig {
+/// both version fields.
+fn pics_config(version: &str) -> PicsConfig {
     PicsConfig {
         vendor_name: VENDOR_NAME.into(),
         model_name: MODEL_NAME.into(),
         firmware_revision: version.into(),
         application_software_version: version.into(),
-        protocol_version: protocol.0,
-        protocol_revision: protocol.1,
         device_profile: DeviceProfile::Custom("None claimed".into()),
         data_link_layers: vec![DataLinkSupport::BipV4, DataLinkSupport::BacnetSc],
         network_layer: NetworkLayerSupport {
@@ -117,37 +114,12 @@ async fn pics_markdown(version: &str) -> Result<String> {
         .build()
         .await
         .map_err(|error| format!("start the reference server: {error}"))?;
-    let protocol = device_protocol(&server, &identity).await;
     server
         .stop()
         .await
         .map_err(|error| format!("stop the reference server: {error}"))?;
-    let pics = server.generate_pics(&pics_config(version, protocol?)).await;
+    let pics = server.generate_pics(&pics_config(version)).await;
     Ok(pics.generate_markdown())
-}
-
-/// The served Device's Protocol_Version and Protocol_Revision, so the PICS
-/// states what the device itself reports.
-async fn device_protocol(
-    server: &BACnetServer<BipTransport>,
-    identity: &DeviceIdentity,
-) -> Result<(u16, u16)> {
-    let mut values = [0u16; 2];
-    let properties = [
-        PropertyIdentifier::PROTOCOL_VERSION,
-        PropertyIdentifier::PROTOCOL_REVISION,
-    ];
-    for (value, property) in values.iter_mut().zip(properties) {
-        let read = server
-            .read_local(&identity.device_oid(), property, None)
-            .await
-            .map_err(|error| format!("read the Device's {property}: {error}"))?;
-        let PropertyValue::Unsigned(raw) = read else {
-            return Err(format!("the Device's {property} is {read:?}"));
-        };
-        *value = u16::try_from(raw).map_err(|_| format!("the Device's {property} is {raw}"))?;
-    }
-    Ok((values[0], values[1]))
 }
 
 /// Moves every Markdown heading down one level, so the generator's title

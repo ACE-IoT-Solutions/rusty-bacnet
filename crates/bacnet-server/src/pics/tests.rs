@@ -182,8 +182,6 @@ fn make_pics_config() -> PicsConfig {
         model_name: "BACnet Controller 3000".into(),
         firmware_revision: "1.0.0".into(),
         application_software_version: "2.0.0".into(),
-        protocol_version: 1,
-        protocol_revision: 24,
         device_profile: DeviceProfile::BAsc,
         data_link_layers: vec![DataLinkSupport::BipV4],
         network_layer: NetworkLayerSupport {
