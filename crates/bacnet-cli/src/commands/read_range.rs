@@ -17,13 +17,16 @@
 //! reads its Log_DeviceObjectProperty and names the logged enumerations and
 //! bit strings by the monitored property: one request more per command,
 //! however many pages (#2091). When that read fails or names nothing, the
-//! values print as logged.
+//! values print as logged. A column that samples a binary or multi-state
+//! object's state then reads that object's state texts, one request an
+//! object, and shows each state with its text, `2 (Low)` (#2122); a
+//! refused read keeps `2`.
 
 use bacnet_client::client::BACnetClient;
 use bacnet_client::log_reader::{LogCursor, LogGap};
 use bacnet_ops::destination::Destination;
 use bacnet_ops::format::notification::EventValues;
-use bacnet_ops::format::{Datum, LogColumns, LoggedProperty};
+use bacnet_ops::format::{Datum, Floats, LogColumns, ValueFormat};
 use bacnet_services::read_range::{
     LogRecords, ReadRangeAck, ReadRangeRequest, ReadRangeValidation, ReadRangeViolation,
 };
@@ -89,11 +92,11 @@ pub async fn read_range_cmd<T: TransportPort + 'static>(
     heading.first_sequence_number = ack.first_sequence_number;
     heading.note_violations(&reply.violations);
     // Only once the device has answered: a silent one costs one timeout.
-    let columns = if property == PropertyIdentifier::LOG_BUFFER {
-        to.log_columns(client, oid).await
-    } else {
-        LogColumns::default()
-    };
+    let mut columns = LogColumns::default();
+    if property == PropertyIdentifier::LOG_BUFFER {
+        columns = to.log_columns(client, oid).await;
+        to.log_state_texts(client, &mut columns).await;
+    }
     match log_rows(&ack, &columns) {
         Some(rows) => print_records(&heading, &rows, format),
         None => print_items(&heading, object_type, property, &ack.item_data, format),
@@ -131,6 +134,7 @@ async fn read_all<T: TransportPort + 'static>(
         if paged.pages == 1 {
             heading.first_sequence_number = page.first_sequence_number;
             columns = to.log_columns(client, log).await;
+            to.log_state_texts(client, &mut columns).await;
         }
         heading.item_count += page.records.len() as u64;
         heading.result_flags = page.result_flags;
@@ -329,7 +333,7 @@ fn record_rows(records: &LogRecords, columns: &LogColumns) -> Vec<LogRecordRow> 
     match records {
         LogRecords::TrendLog(records) => records
             .iter()
-            .map(|record| trend_log_row(record, columns.column(0)))
+            .map(|record| trend_log_row(record, columns))
             .collect(),
         LogRecords::EventLog(records) => records.iter().map(event_log_row).collect(),
         LogRecords::TrendLogMultiple(records) => records
@@ -340,10 +344,10 @@ fn record_rows(records: &LogRecords, columns: &LogColumns) -> Vec<LogRecordRow> 
     }
 }
 
-fn trend_log_row(record: &BACnetLogRecord, column: Option<LoggedProperty>) -> LogRecordRow {
+fn trend_log_row(record: &BACnetLogRecord, columns: &LogColumns) -> LogRecordRow {
     LogRecordRow {
         timestamp: timestamp(record.date, record.time),
-        datum: log_datum(&record.log_datum, column),
+        datum: log_datum(&record.log_datum, columns, 0),
         status_flags: record.status_flags.map(status_flags),
         event_values: None,
     }
@@ -381,9 +385,7 @@ fn trend_log_multiple_row(record: &BACnetLogMultipleRecord, columns: &LogColumns
             let values: Vec<String> = values
                 .iter()
                 .enumerate()
-                .map(|(column, value)| {
-                    log_datum(&LogDatum::from(value.clone()), columns.column(column))
-                })
+                .map(|(column, value)| log_datum(&LogDatum::from(value.clone()), columns, column))
                 .collect();
             format!("[{}]", values.join(", "))
         }
@@ -442,10 +444,18 @@ fn object(oid: ObjectIdentifier) -> String {
 }
 
 /// A logged value, through the shared formatter, named for the property
-/// `column` samples. With no column named, or a value the property doesn't
-/// name, an enumeration shows as `enum 3` and a bit string as its bits.
-fn log_datum(datum: &LogDatum, column: Option<LoggedProperty>) -> String {
-    let format = formatter(ObjectType::TREND_LOG);
+/// column `index` of `columns` samples, and a state by its object's state
+/// texts when they were read. With no column named, or a value the
+/// property doesn't name, an enumeration shows as `enum 3` and a bit
+/// string as its bits.
+fn log_datum(datum: &LogDatum, columns: &LogColumns, index: usize) -> String {
+    let column = columns.column(index);
+    let format = ValueFormat::new(
+        ObjectType::TREND_LOG,
+        columns.state_texts(index),
+        Floats::Exact,
+    )
+    .whole_lists();
     let value = match datum {
         LogDatum::LogStatus(status) => return log_status(*status),
         LogDatum::Failure {

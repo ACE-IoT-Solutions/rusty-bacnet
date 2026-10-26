@@ -450,3 +450,25 @@ fn device_text_is_told_apart_from_the_formatters_own() {
         assert!(text.may_hold_device_text(), "{text:?}");
     }
 }
+
+/// A State_Text entry that isn't a string keeps its place, so the states
+/// after it are still named by their own entries (#2122).
+#[test]
+fn state_text_positions_hold_past_a_value_that_is_not_text() {
+    let text = |text: &str| PropertyValue::CharacterString(text.into());
+    let rows = vec![
+        (
+            P::STATE_TEXT,
+            Ok(encoded(&[text("Off"), PropertyValue::Null, text("High")])),
+        ),
+        (P::ACTIVE_TEXT, Ok(encoded(&[PropertyValue::Null]))),
+    ];
+    let texts = StateTexts::from_rows(&rows);
+    assert_eq!(texts.states, ["Off", "", "High"]);
+    assert_eq!(texts.active, None);
+    let msv = ValueFormat::new(ObjectType::MULTI_STATE_VALUE, &texts, Floats::Display);
+    let state = |n| encoded(&[PropertyValue::Unsigned(n)]);
+    assert_eq!(msv.value(P::PRESENT_VALUE, &state(1)), "1 (Off)");
+    assert_eq!(msv.value(P::PRESENT_VALUE, &state(2)), "2");
+    assert_eq!(msv.value(P::PRESENT_VALUE, &state(3)), "3 (High)");
+}

@@ -368,9 +368,21 @@ As built (#2067), and where it differs from the plan above:
 
 - **`rmcp` 3.5.1 already implements `subscriptions/listen`**
   (`accepted_subscription_filter` and `listen`), so no custom request and
-  no SDK bump were needed. The older `resources/subscribe` is not offered:
-  legacy clients use `bacnet_watch`, and the `initialize` answer for a
-  version before 2026-07-28 doesn't advertise subscriptions.
+  no SDK bump were needed.
+- **Legacy sessions subscribe too (#2114).** The SDK still routes the
+  older `resources/subscribe` and `resources/unsubscribe` to sessions on
+  revisions before 2026-07-28, and the server serves them: a subscribe is
+  checked as a listen URI is and holds a hub watch under the same caps
+  (listen streams, legacy subscriptions and `bacnet_watch` share them), a
+  refused one is a -32602 coded as a refused read, a repeat is one
+  subscription, and unsubscribing drops the watch at once. One notifier
+  task a session follows the subscriptions with the listen loop's signal
+  sources (points, the device list, the alarm poll) and sends
+  `notifications/resources/updated` to the peer; it holds no lease, since
+  the watches live in the principal's state, which the session's end
+  clears on every path, a dropped future included. The `initialize`
+  answer advertises `resources.subscribe` for every version again;
+  `bacnet_watch` stays the fallback for hosts that don't subscribe.
 - The SDK asks for the accepted filter synchronously, before the
   acknowledgment. The watches are taken there and held for the stream,
   matched by its URI list; a point URI needs its device in the discovery

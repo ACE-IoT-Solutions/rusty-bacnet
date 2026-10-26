@@ -157,7 +157,7 @@ fn plain_leaves() -> Vec<Value> {
 }
 
 /// An untrusted envelope (never null).
-fn envelope_object() -> Value {
+pub(super) fn envelope_object() -> Value {
     shape(
         json!({
             "untrusted": { "type": "string" },

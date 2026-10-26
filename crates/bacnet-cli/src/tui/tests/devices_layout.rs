@@ -356,3 +356,15 @@ fn control_characters_in_a_found_name_are_spaces() {
     assert!(panel(&frame).contains("Fan 1 [2J"), "{frame}");
     assert!(!frame.contains(['\t', '\u{1b}']));
 }
+
+/// A right-to-left override or an isolate in a found name is dropped, so
+/// it can't reverse the rest of the row (#2122).
+#[test]
+fn bidi_overrides_in_a_found_name_are_dropped() {
+    let mut app = who_has_app();
+    let search = app.who_has.as_mut().unwrap();
+    search.found[0].name = "Fan\u{202E}1\u{2066}2\u{2069}".into();
+    let frame = screen(&mut app, 120, 40);
+    assert!(panel(&frame).contains("Fan12"), "{frame}");
+    assert!(!frame.contains(['\u{202E}', '\u{2066}', '\u{2069}']));
+}
