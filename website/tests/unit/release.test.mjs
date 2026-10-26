@@ -141,3 +141,15 @@ test('the installation page lists exactly the assets release.yml publishes', asy
   assert.ok(page.includes(`the ${word(crates.length - independent.length)} crates listed under Rust at version {release}`));
   for (const name of independent) assert.ok(page.includes(`\`${name}\` at its own version`), `${install} publishes ${name} at its own version`);
 });
+
+// The landing page takes the release from site.mjs. Any other version series
+// it names (an upcoming one) must sit inside its marked "Coming in" note.
+test('the landing page names another series only in its marked dev note', async () => {
+  const home = await read('src/components/HomeSections.astro');
+  assert.deepEqual(versions(home), [], 'HomeSections.astro uses {release}, not a literal release');
+  const note = home.match(/<aside class="rb-dev-note"[\s\S]*?<\/aside>/)?.[0] ?? '';
+  const outside = home.replace(note, '');
+  const others = [...outside.matchAll(/(?<![\w.])v?(0\.\d+)(?![.\d])/g)].map(match => match[1]).filter(found => found !== series);
+  assert.deepEqual(others, [], 'a version series outside the dev note');
+  if (/(?<![\w.])0\.\d+(?![.\d])/.test(note)) assert.match(note, /Coming in 0\.\d+, on <code>dev<\/code> now/);
+});

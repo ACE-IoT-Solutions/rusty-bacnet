@@ -3,6 +3,7 @@ title: "Join a B/IP multicast group"
 description: "Use an IPv4 multicast group in place of the subnet broadcast (B/IP-M), serve the group from a BBMD, and change it through the Network Port."
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
 import { release, repository } from '../../../lib/site.mjs';
 
 [Connect to a network](/rusty-bacnet/connect/overview/) / Multicast
@@ -20,6 +21,10 @@ The page describes **v{release}**. Two additions merged on `dev` after the relea
 - **An explicit interface.** The group is joined on the node's interface and multicasts leave from it, so `0.0.0.0` is refused. Bind the interface's primary address: with a secondary (alias) address, some systems send multicast from the primary one.
 - **Not a foreign device.** A foreign device broadcasts through its BBMD, so it can't also be a member. Sharing a port by address isn't supported with a group either.
 
+<Tabs syncKey="lang">
+
+<TabItem label="CLI">
+
 ## Join from the CLI
 
 ```sh
@@ -33,6 +38,9 @@ bacnet --interface 127.0.0.1 --port 0 --bip-multicast 239.255.66.1 --bip-multica
 ```
 
 A named terminal UI profile keeps the same settings as `multicast`, `multicast_ttl` and `multicast_port` in its `[bip]` table. See <a href={`${repository}/blob/v${release}/docs/CLI.md#multicast-mode`}>Multicast mode</a> in the CLI reference.
+
+</TabItem>
+<TabItem label="Python">
 
 ## Join from Python
 
@@ -55,9 +63,15 @@ asyncio.run(main())
 
 `Multicast(group, *, ttl=1, port=None)` takes the group's UDP port as `port`, by default the client's, server's or endpoint's own UDP port. Its constructor raises `ValueError` for `interface="0.0.0.0"`, `share_port_by_address=True`, `port=0` without `Multicast(port=...)`, another transport, or `foreign_device=`. See <a href={`${repository}/blob/v${release}/docs/python-api.md#bip-multicast`}>B/IP multicast</a> in the Python reference.
 
+</TabItem>
+<TabItem label="Rust">
+
 ## Join from Rust
 
 Build the group with `BipMulticast::new(group)?`, then `with_ttl` and `with_port` as needed, and pass it to `.multicast(Some(group))` on the client, server or endpoint builder. On a `BipTransport` built by hand, `set_multicast` refuses a `0.0.0.0` interface at once. The <a href={`${repository}/blob/v${release}/docs/rust-api.md#bip-multicast-bip-m`}>B/IP multicast</a> section covers the sockets each OS uses.
+
+</TabItem>
+</Tabs>
 
 ## Serve the group from a BBMD
 

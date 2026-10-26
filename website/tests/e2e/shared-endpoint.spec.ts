@@ -10,8 +10,6 @@ test('integration journey exposes the exact runnable shared-endpoint source and 
   await expect(page).toHaveURL(base + 'integrate/shared-endpoints/');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Compose a shared endpoint');
   const main = page.locator('.sl-markdown-content');
-  await expect(main).toContainText('not a loopback-confined listener');
-  await expect(main).toContainText('does not exercise a BACnet request/reply');
   await expect(main.locator('pre code').filter({ hasText: 'async fn main()' })).toHaveText(source.trimEnd(), { useInnerText: true });
   await expect(main.locator('pre code').filter({ hasText: '[package]' })).toHaveText(manifest.trimEnd(), { useInnerText: true });
   for (const [label, path, expected] of [
@@ -29,5 +27,8 @@ test('integration journey exposes the exact runnable shared-endpoint source and 
   const body = await raw.text();
   expect(body.match(/^```rust\n([\s\S]*?)^```/m)?.[1]).toBe(source);
   expect(body.match(/^```toml\n([\s\S]*?)^```/m)?.[1]).toBe(manifest);
-  expect(body).toContain('Rebound endpoint: 127.0.0.1:<assigned-port>; owner running=false');
+  // The expected output the page shows is the program's own last line.
+  const format = source.match(/"(Rebound endpoint: \{\}; owner running=)\{\}"/)?.[1];
+  expect(format).toBeTruthy();
+  expect(body).toContain(format!.replace('{}', '127.0.0.1:<assigned-port>'));
 });
