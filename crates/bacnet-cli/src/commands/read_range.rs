@@ -43,7 +43,7 @@ use serde::Serialize;
 
 use super::read::{format_items, formatter, hex};
 pub use super::read_range_options::RangeOptions;
-use crate::output::OutputFormat;
+use crate::output::{OutputFormat, screen};
 
 /// Read a range of items from a list or log-buffer property: one read over
 /// the range `range` names, or with `--all` every page of a log.
@@ -550,7 +550,13 @@ fn print_records(heading: &Heading, records: &LogRows, format: OutputFormat) {
             }
             table.set_header(header);
             for (number, row) in (1..).zip(&records.rows) {
-                let mut cells = vec![number.to_string(), row.timestamp.clone(), row.datum.clone()];
+                // The datum may hold device text: a logged string or an
+                // event's message.
+                let mut cells = vec![
+                    number.to_string(),
+                    row.timestamp.clone(),
+                    screen(&row.datum),
+                ];
                 if flags {
                     cells.push(row.status_flags.clone().unwrap_or_default());
                 }
@@ -593,7 +599,7 @@ fn print_items(
         OutputFormat::Table => {
             println!("{}", heading.line());
             for (number, item) in (1..).zip(&items) {
-                println!("  [{number}] {item}");
+                println!("  [{number}] {}", screen(item));
             }
             if let Some(raw) = undecoded {
                 println!("  {raw}");

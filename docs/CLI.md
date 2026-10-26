@@ -84,6 +84,17 @@ macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 
 Output auto-detects: tables in TTY, JSON when piped.
 
+**Device text:** strings a device supplies (values, object names, state
+texts, event messages) are cleaned in table and text output, as the terminal
+UI shows them: control characters (an escape sequence, a bell, a tab, a
+newline) and line or paragraph separators print as spaces, and invisible
+format characters (a bidirectional override, a zero-width space) are
+dropped, so a device can't move the cursor, break a row or reorder what
+follows. A zero width joiner stays, keeping an emoji sequence one picture.
+Nothing marks a cleaned string. JSON output keeps the device's exact text,
+with control characters escaped as JSON requires; a script that prints a
+JSON string to a terminal should clean it first.
+
 **Interface selection:** A one-shot command without `--interface` binds `0.0.0.0`. The terminal UI on BACnet/IP without `-i` lists the available network interfaces in a dialog; named B/IP profiles use their saved interface.
 
 ## Target Resolution

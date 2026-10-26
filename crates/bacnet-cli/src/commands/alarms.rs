@@ -14,7 +14,7 @@ use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{AcknowledgmentFilter, EnrollmentSummaryEventStateFilter, EventType};
 use serde::Serialize;
 
-use crate::output::OutputFormat;
+use crate::output::{OutputFormat, screen};
 
 /// Summaries `alarms` reads before it stops, unless `--max` says otherwise.
 pub const DEFAULT_MAX_EVENTS: u32 = 10_000;
@@ -118,12 +118,12 @@ impl EnrollmentFilters {
     }
 }
 
-/// A table of `rows` under `headers`.
+/// A table of `rows` under `headers`, each cell [`screen`]ed.
 fn table<const N: usize>(headers: [&str; N], rows: impl Iterator<Item = Vec<String>>) -> String {
     let mut table = comfy_table::Table::new();
     table.set_header(headers.to_vec());
     for row in rows {
-        table.add_row(row);
+        table.add_row(row.iter().map(|cell| screen(cell)).collect::<Vec<_>>());
     }
     table.to_string()
 }

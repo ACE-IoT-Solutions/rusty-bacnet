@@ -121,7 +121,11 @@ fn print_found(found: &[FoundObject], format: OutputFormat) {
             let mut table = comfy_table::Table::new();
             table.set_header(vec!["Device", "Object", "Name"]);
             for f in found {
-                table.add_row(vec![f.device.to_string(), f.object.clone(), f.name.clone()]);
+                table.add_row(vec![
+                    f.device.to_string(),
+                    f.object.clone(),
+                    output::screen(&f.name),
+                ]);
             }
             println!("{table}");
         }
