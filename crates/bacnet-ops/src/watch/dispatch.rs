@@ -15,7 +15,11 @@ use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::sync::watch;
 use tokio::time::Instant;
 
-use super::{POINT_PROPERTIES, Point, Registry, Shared, Watched};
+use bacnet_types::enums::PropertyIdentifier;
+
+use super::options::MAX_ROWS;
+use super::shared::{Registry, Shared};
+use super::{Point, Watched};
 use crate::format::{RawRow, decode_all};
 
 /// Route notifications until the hub stops or the client closes its
@@ -93,11 +97,6 @@ pub(super) fn belongs(
     }
 }
 
-/// A backstop on a snapshot's rows, above the point properties: only those
-/// can join (see [`merge`]), so an object watch holds at most
-/// `POINT_PROPERTIES.len()` rows, and this guards that should it change.
-pub(super) const MAX_ROWS: usize = POINT_PROPERTIES.len() + 6;
-
 /// Whether `value` is one a point keeps: for an object watch, any value
 /// (what is kept is limited in [`merge`]); for a property watch, its
 /// property, at its element when it watches one. A value that names no
@@ -122,9 +121,16 @@ fn watched_value(point: &Point, value: &BACnetPropertyValue) -> bool {
 
 /// Fold a notification's values into `rows`: each reported value replaces
 /// the row of the same property. An object watch takes in a new row only
-/// for a point property, up to [`MAX_ROWS`], so a device sending many
-/// other properties can't grow it; a property watch keeps its property.
-pub(super) fn merge(rows: &mut Vec<RawRow>, point: &Point, received: &ReceivedCOVNotification) {
+/// for a property it reads (`object_reads`), up to [`MAX_ROWS`], so a
+/// device sending many other properties can't grow it; a property watch
+/// keeps its property. The values folded in are returned.
+pub(super) fn merge(
+    rows: &mut Vec<RawRow>,
+    point: &Point,
+    object_reads: &[PropertyIdentifier],
+    received: &ReceivedCOVNotification,
+) -> Vec<RawRow> {
+    let mut merged = Vec::new();
     for value in &received.notification.list_of_values {
         if !watched_value(point, value) {
             continue;
@@ -132,15 +138,18 @@ pub(super) fn merge(rows: &mut Vec<RawRow>, point: &Point, received: &ReceivedCO
         let property = value.property_identifier;
         let row = (property, Ok(value.value.clone()));
         if let Some(slot) = rows.iter_mut().find(|(p, _)| *p == property) {
-            *slot = row;
+            *slot = row.clone();
+            merged.push(row);
             continue;
         }
         let joins = match point.watched {
-            Watched::Object => POINT_PROPERTIES.contains(&property) && rows.len() < MAX_ROWS,
+            Watched::Object => object_reads.contains(&property) && rows.len() < MAX_ROWS,
             Watched::Property { .. } => rows.is_empty(),
         };
         if joins {
-            rows.push(row);
+            rows.push(row.clone());
+            merged.push(row);
         }
     }
+    merged
 }

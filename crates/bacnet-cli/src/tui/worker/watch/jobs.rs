@@ -19,19 +19,16 @@ use bacnet_client::client::{
     BACnetClient, CovPropertySubscription, CovTarget, ManagedCOVSubscription,
     ManagedCOVSubscriptionOptions,
 };
-use bacnet_ops::engine::{Halt, Reader, RpmFailure, Wanted, rpm_failure, unreachable};
-use bacnet_ops::format::{RawRow, RowError, StateTexts};
+use bacnet_ops::engine::{Halt, Reader, unreachable};
 use bacnet_ops::limits::RequestLimits;
+use bacnet_ops::watch::first::first_read;
+use bacnet_ops::watch::poll::{self, PollRow};
 use bacnet_transport::port::TransportPort;
-use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
-use bacnet_types::enums::{ErrorClass, PropertyIdentifier};
-use bacnet_types::error::{Error, RemoteError};
+use bacnet_types::enums::PropertyIdentifier;
+use bacnet_types::error::Error;
 
 use super::sample::{self, Reading, RowFormat};
 use crate::tui::watched::{Point, RowId};
-
-/// Rows read by one ReadPropertyMultiple when polling.
-pub(crate) const MAX_BATCH: usize = 16;
 
 /// A subscription's lifetime and how long before its end it is renewed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,22 +40,12 @@ pub(crate) struct Lifetime {
 }
 
 impl Lifetime {
-    /// A lifetime of `secs`, renewed a tenth of it early (1 to 30 s), but
-    /// never later than two `request_budget`s before the end. A budget is
-    /// the time one request takes with every retry: the renewal waits at
-    /// most one for the request holding the device's gate (#1791), which
-    /// may be a whole budget on a device that stops answering, then needs
-    /// one of its own, so neither a busy device nor one lost packet lets
-    /// it lapse. Each worker queues at most one request per device behind
-    /// that holder, and they rarely all coincide with a renewal, so two
-    /// budgets cover the case that matters without renewing far earlier
-    /// than needed. The margin stays at most half the lifetime.
+    /// A lifetime of `secs`, renewed
+    /// [`renewal_margin`](bacnet_ops::watch::renewal_margin) before its end.
     pub(crate) fn new(secs: u32, request_budget: Duration) -> Self {
-        let tenth = Duration::from_secs(u64::from(secs / 10).clamp(1, 30));
-        let half = Duration::from_secs(u64::from(secs)) / 2;
         Self {
             secs,
-            margin: tenth.max(request_budget * 2).min(half),
+            margin: bacnet_ops::watch::renewal_margin(secs, request_budget),
         }
     }
 }
@@ -124,45 +111,19 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         cancel: &cancel,
         rpm,
     };
-    // The name comes free with the first read. A device may answer it with
-    // an error of its own, which leaves the row nameless; one that fails
-    // the whole read in a way the name could explain is asked again
-    // without it (see [`name_may_explain`]).
     let unnamed = [
         point.property,
         PropertyIdentifier::STATUS_FLAGS,
         PropertyIdentifier::UNITS,
     ];
-    let named = point.property != PropertyIdentifier::OBJECT_NAME;
-    let wanted = [unnamed.as_slice(), &[PropertyIdentifier::OBJECT_NAME]].concat();
-    let first_ask = if named { &wanted[..] } else { &unnamed[..] };
-    let mut read = reader
-        .properties(point.object, Wanted::List(first_ask))
-        .await;
-    if let (true, Err(Halt::Device(error))) = (named, &read)
-        && name_may_explain(error)
-    {
-        tracing::debug!(
-            "{}: first read failed ({error}); reading it again without Object_Name",
-            point.object
-        );
-        read = reader
-            .properties(point.object, Wanted::List(&unnamed))
-            .await;
-    }
+    let read = first_read(&mut reader, point.object, &unnamed, true, true).await;
     let name = match &read {
-        Ok((rows, _)) => bacnet_ops::format::object_name(rows),
+        Ok(rows) => bacnet_ops::format::object_name(rows),
         Err(_) => None,
     };
     let first = match &read {
-        Ok((rows, _)) => match sample::from_rows(point.property, rows) {
-            Some(reading) => {
-                let mut rows = rows.clone();
-                rows.extend(state_texts(&mut reader, point).await);
-                Some((reading, RowFormat::from_rows(&rows)))
-            }
-            None => None,
-        },
+        Ok(rows) => sample::from_rows(point.property, rows)
+            .map(|reading| (reading, RowFormat::from_rows(rows))),
         Err(_) => None,
     };
     let refused_rpm = rpm && !reader.rpm;
@@ -183,47 +144,6 @@ pub(crate) async fn start<T: TransportPort + 'static>(
         target: Some(target),
         outcome,
         refused_rpm,
-    }
-}
-
-/// True for a failed first read that asking for Object_Name may have
-/// caused: a whole-request error of the PROPERTY class, or an answer that
-/// didn't decode. Anything else (a timeout, a reject, an OBJECT-class
-/// error) would fail the same way without the name.
-fn name_may_explain(error: &Error) -> bool {
-    match error {
-        Error::Remote(RemoteError::Error { class, .. }) => *class == ErrorClass::PROPERTY,
-        Error::Decoding(_) => true,
-        _ => false,
-    }
-}
-
-/// A binary or multi-state object's state texts, which name the row's
-/// values: a request of its own after the first read, through the same
-/// gate. It is only a nicety, so any failure (a refusal, an unknown
-/// property, an answer too large) leaves the texts out and the row starts
-/// all the same. A watched property that is itself a text was read already.
-async fn state_texts<T: TransportPort + 'static>(
-    reader: &mut Reader<'_, T>,
-    point: Point,
-) -> Vec<RawRow> {
-    let texts: Vec<PropertyIdentifier> = StateTexts::properties(point.object.object_type())
-        .iter()
-        .copied()
-        .filter(|property| *property != point.property)
-        .collect();
-    if texts.is_empty() {
-        return Vec::new();
-    }
-    match reader.properties(point.object, Wanted::List(&texts)).await {
-        Ok((rows, _)) => rows,
-        Err(error) => {
-            tracing::debug!(
-                "{}: state texts not read ({error:?}); values show without them",
-                point.object
-            );
-            Vec::new()
-        }
     }
 }
 
@@ -320,169 +240,51 @@ pub(crate) struct Polled {
     pub(crate) unreachable: bool,
 }
 
-/// Read every row in `rows` of `device`: by ReadPropertyMultiple in
-/// batches of [`MAX_BATCH`], each row with its Status_Flags, or by
-/// ReadProperty once the device has refused RPM (Clause 15.5). A batch the
-/// device fails as a whole is read by ReadProperty for this poll, so one
-/// bad object can't put errors on its neighbours. A device that stops
-/// answering ends the poll: the rows left get the error at once.
+/// Read every row in `rows` of `device`, each with its Status_Flags, by
+/// [`poll::poll`]: once the device has refused RPM, only the watched
+/// property is read.
 pub(crate) async fn poll<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     rate: &RequestLimits,
     device: u32,
     rows: Vec<(RowId, Point)>,
-    mut rpm: bool,
+    rpm: bool,
 ) -> Polled {
-    let started_rpm = rpm;
-    let mut samples = Vec::with_capacity(rows.len());
-    let mut silent: Option<Error> = None;
-    for batch in rows.chunks(MAX_BATCH) {
-        if let Some(error) = &silent {
-            samples.extend(batch.iter().map(|(row, _)| (*row, failed(error))));
-            continue;
-        }
-        if rpm {
-            match rpm_batch(client, rate, device, batch).await {
-                Ok(read) => {
-                    samples.extend(read);
-                    continue;
-                }
-                Err(error) if unreachable(&error) => {
-                    samples.extend(batch.iter().map(|(row, _)| (*row, failed(&error))));
-                    silent = Some(error);
-                    continue;
-                }
-                Err(error) => match rpm_failure(&error) {
-                    RpmFailure::Refused => {
-                        tracing::info!(
-                            "device {device} refused ReadPropertyMultiple ({error}); polling one property at a time"
-                        );
-                        rpm = false;
-                    }
-                    RpmFailure::TooLarge | RpmFailure::Other => tracing::debug!(
-                        "device {device}: batch read failed ({error}); reading it one property at a time"
-                    ),
-                },
-            }
-        }
-        for (row, point) in batch {
-            if let Some(error) = &silent {
-                samples.push((*row, failed(error)));
-                continue;
-            }
-            let turn = rate.turn(device).await;
-            let read = client
-                .read_property_from_device(device, point.object, point.property, None)
-                .await;
-            drop(turn);
-            let value = match read {
-                Ok(ack) => Ok(ack.property_value),
-                Err(error) if unreachable(&error) => {
-                    samples.push((*row, failed(&error)));
-                    silent = Some(error);
-                    continue;
-                }
-                Err(error) => Err(RowError::from(error)),
-            };
-            let rows: Vec<RawRow> = vec![(point.property, value)];
-            if let Some(reading) = sample::from_rows(point.property, &rows) {
-                samples.push((*row, reading));
-            }
-        }
-    }
-    Polled {
-        readings: samples,
-        refused_rpm: started_rpm && !rpm,
-        unreachable: silent.is_some(),
-    }
-}
-
-fn failed(error: &Error) -> Reading {
-    failed_with(error.to_string())
-}
-
-fn failed_with(error: String) -> Reading {
-    Reading::failed(error)
-}
-
-/// One ReadPropertyMultiple for `batch`, one access specification per row.
-async fn rpm_batch<T: TransportPort + 'static>(
-    client: &BACnetClient<T>,
-    rate: &RequestLimits,
-    device: u32,
-    batch: &[(RowId, Point)],
-) -> Result<Vec<(RowId, Reading)>, Error> {
-    let specs = batch
+    let asked: Vec<PollRow<(RowId, PropertyIdentifier)>> = rows
         .iter()
-        .map(|(_, point)| ReadAccessSpecification {
-            object_identifier: point.object,
-            list_of_property_references: [point.property, PropertyIdentifier::STATUS_FLAGS]
-                .into_iter()
-                .map(|property_identifier| PropertyReference {
-                    property_identifier,
-                    property_array_index: None,
-                })
-                .collect(),
+        .map(|(row, point)| PollRow {
+            key: (*row, point.property),
+            object: point.object,
+            wanted: vec![
+                (point.property, None),
+                (PropertyIdentifier::STATUS_FLAGS, None),
+            ],
+            one_by_one: 1,
         })
         .collect();
-    let turn = rate.turn(device).await;
-    let ack = client
-        .read_property_multiple_from_device(device, specs)
-        .await;
-    drop(turn);
-    let ack = ack?;
-    // The answer lists the objects in the order they were asked for; a row
-    // it leaves out, or answers without the property, gets an error.
-    let mut results = ack.list_of_read_access_results.into_iter();
-    Ok(batch
-        .iter()
-        .map(|(row, point)| {
-            let Some(result) = results.next() else {
-                return (*row, failed_with("missing from the device's answer".into()));
+    let polled = poll::poll(client, rate, device, &asked, rpm).await;
+    let readings = polled
+        .rows
+        .into_iter()
+        .map(|((row, property), read)| {
+            let reading = match read {
+                Ok(rows) => sample::from_rows(property, &rows)
+                    .unwrap_or_else(|| Reading::failed(poll::MISSING.into())),
+                Err(error) => Reading::failed(error),
             };
-            let rows: Vec<RawRow> = result
-                .list_of_results
-                .into_iter()
-                .map(|element| {
-                    let value = match (element.property_value, element.error) {
-                        (Some(value), _) => Ok(value),
-                        (None, Some((class, code))) => {
-                            Err(RowError::Remote(RemoteError::Error { class, code }))
-                        }
-                        (None, None) => Err(RowError::NoValue),
-                    };
-                    (element.property_identifier, value)
-                })
-                .collect();
-            let sample = sample::from_rows(point.property, &rows)
-                .unwrap_or_else(|| failed_with("missing from the device's answer".into()));
-            (*row, sample)
+            (row, reading)
         })
-        .collect())
+        .collect();
+    Polled {
+        readings,
+        refused_rpm: polled.refused_rpm,
+        unreachable: polled.unreachable,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_a_property_error_or_a_bad_answer_retries_without_the_name() {
-        use bacnet_types::enums::{AbortReason, ErrorCode, RejectReason};
-        let error = |class| {
-            Error::Remote(RemoteError::Error {
-                class,
-                code: ErrorCode::UNKNOWN_PROPERTY,
-            })
-        };
-        assert!(name_may_explain(&error(ErrorClass::PROPERTY)));
-        assert!(name_may_explain(&Error::decoding(3, "read access result")));
-        assert!(!name_may_explain(&error(ErrorClass::OBJECT)));
-        assert!(!name_may_explain(&Error::reject(
-            RejectReason::UNRECOGNIZED_SERVICE
-        )));
-        assert!(!name_may_explain(&Error::abort(AbortReason::TSM_TIMEOUT)));
-        assert!(!name_may_explain(&Error::Timeout(Duration::from_secs(6))));
-    }
 
     #[test]
     fn the_margin_covers_a_gate_wait_and_a_renewal_within_half_the_lifetime() {

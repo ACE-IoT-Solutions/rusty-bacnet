@@ -143,7 +143,7 @@ impl<T: TransportPort + 'static> Engine<T> {
     }
 
     /// A reader for `device`, by RPM unless the device refused it before.
-    fn reader(&self, device: u32) -> Reader<'_, T> {
+    pub(crate) fn reader(&self, device: u32) -> Reader<'_, T> {
         Reader {
             client: &self.client,
             device,
@@ -154,7 +154,7 @@ impl<T: TransportPort + 'static> Engine<T> {
     }
 
     /// Remember a refusal `reader` met.
-    fn settle(&self, reader: &Reader<'_, T>) {
+    pub(crate) fn settle(&self, reader: &Reader<'_, T>) {
         if !reader.rpm {
             self.no_rpm().insert(reader.device);
         }
