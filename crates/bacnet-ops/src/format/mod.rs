@@ -23,6 +23,7 @@ mod constructed;
 mod data;
 mod event_parameter;
 mod fields;
+pub mod notification;
 mod primitive;
 mod recipients;
 mod tagged;

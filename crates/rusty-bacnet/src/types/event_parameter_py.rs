@@ -311,7 +311,7 @@ fn bit_string<'py>(
 }
 
 /// One property state as `(choice_tag, value)`.
-fn property_state(py: Python<'_>, state: &BACnetPropertyStates) -> PyResult<Py<PyAny>> {
+pub(super) fn property_state(py: Python<'_>, state: &BACnetPropertyStates) -> PyResult<Py<PyAny>> {
     use BACnetPropertyStates as S;
     match state {
         S::BooleanValue(value) => (0u32, *value).into_py_any(py),

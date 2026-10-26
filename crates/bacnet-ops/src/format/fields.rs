@@ -3,12 +3,13 @@
 //! (#2073). Each field has a name, which keys it in the JSON (`low_limit`),
 //! and a label, which leads it in the text (`low 10`).
 
-use bacnet_types::constructed::BACnetDeviceObjectPropertyReference;
+use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetPropertyStates};
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::{PropertyValue, StatusFlags};
 
 use super::constructed::{on_device, reference};
 use super::primitive::{hex, plain_bits};
+use super::recipients::property_state_text;
 use super::tagged::fields_text;
 use super::{Datum, Fields, ValueFormat, decode_all};
 
@@ -202,6 +203,17 @@ impl<'a> FieldList<'a> {
     pub(super) fn finish(self) -> (String, Fields) {
         (self.texts.join(", "), Fields::new(self.fields))
     }
+}
+
+/// A property state by name, as text and as a `property-state` element.
+pub(super) fn property_state_value(state: &BACnetPropertyStates) -> (String, Datum) {
+    let text = property_state_text(state);
+    let datum = Datum::Constructed {
+        element: "property-state".into(),
+        text: text.clone(),
+        fields: None,
+    };
+    (text, datum)
 }
 
 /// A bit string with no names, as text and data.

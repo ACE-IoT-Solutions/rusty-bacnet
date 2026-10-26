@@ -35,6 +35,7 @@ fn row(hour: u8, datum: &str, status_flags: Option<&str>) -> LogRecordRow {
         timestamp: format!("2026-10-03 {hour:02}:15:30.05"),
         datum: datum.to_string(),
         status_flags: status_flags.map(str::to_string),
+        event_values: None,
     }
 }
 

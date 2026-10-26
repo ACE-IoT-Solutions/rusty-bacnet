@@ -40,6 +40,7 @@ mod enums;
 mod event_parameter_py;
 pub(crate) mod int_enums;
 mod mapping;
+mod notification_parameters_py;
 mod object_identifier;
 mod object_profile;
 mod property_reference;
@@ -68,6 +69,7 @@ pub use device::PyDiscoveredDevice;
 pub use enums::*;
 pub(crate) use int_enums::IntEnumValue;
 pub(crate) use mapping::scale as scale_from_py;
+pub(crate) use notification_parameters_py::notification_parameters_to_py;
 pub use object_identifier::PyObjectIdentifier;
 pub(crate) use object_profile::object_profile_from_py;
 pub(crate) use property_reference::{

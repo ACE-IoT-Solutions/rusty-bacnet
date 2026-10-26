@@ -8,9 +8,8 @@ use bacnet_types::enums::{EventType, LifeSafetyState, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 
-use super::fields::{FieldList, encoded_value, named};
+use super::fields::{FieldList, encoded_value, named, property_state_value};
 use super::primitive::hex;
-use super::recipients::property_state_text;
 use super::tagged::fields_text;
 use super::{Datum, Fields, ValueFormat};
 use crate::label::kebab;
@@ -58,18 +57,7 @@ pub(super) fn render(
             list_of_values,
         } => {
             fields.delay(*time_delay);
-            let values = list_of_values
-                .iter()
-                .map(|state| {
-                    let text = property_state_text(state);
-                    let datum = Datum::Constructed {
-                        element: "property-state".into(),
-                        text: text.clone(),
-                        fields: None,
-                    };
-                    (text, datum)
-                })
-                .collect();
+            let values = list_of_values.iter().map(property_state_value).collect();
             fields.list("list_of_values", "alarm values", values);
         }
         EP::ChangeOfValue {

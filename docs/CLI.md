@@ -1141,7 +1141,8 @@ elements and change-of-state values as `property-state` elements:
 ```
 
 An error result (`readm`) has no `decoded`. `read-range` adds `decoded` beside
-`items` for a list that isn't a log; log records keep their text form.
+`items` for a list that isn't a log; log records keep their text form, and an
+Event Log notification adds its typed `event_values`.
 
 `--position`, `--sequence` and `--time` pick the range, each with `--count`
 (default 100; negative reads backward). `--time` takes the device's local time
@@ -1164,7 +1165,38 @@ and, for a Trend Log, status flags (blank when none is set). JSON output
 lists them under `records`, with `result_flags` and `first_sequence_number`,
 and the hex of anything from the first record that doesn't decode under
 `undecoded`. A logged value prints as a value does; the log doesn't say which
-property it came from, so an enumeration prints as `enum 3`. Other
+property it came from, so an enumeration prints as `enum 3`. An Event Log
+notification ends with its event values in braces, each named for its event
+type:
+
+```text
+ALARM OUT_OF_RANGE ANALOG_INPUT:3 NORMAL -> HIGH_LIMIT "too hot" {exceeding value 101.5, flags in-alarm, deadband 1, limit 100}
+ALARM CHANGE_OF_STATE ANALOG_INPUT:3 NORMAL -> OFFNORMAL {state active, flags in-alarm | out-of-service}
+```
+
+Its JSON record adds `event_values`, a `notification-parameters` element
+whose `fields` hold `event_type` (an enumerated) and each value by its
+snake-case name in the [Value output](#value-output) forms:
+
+```json
+{
+  "element": "notification-parameters",
+  "text": "out-of-range: exceeding value 101.5, flags in-alarm, deadband 1, limit 100",
+  "fields": {
+    "event_type": {"value": 5, "name": "out-of-range"},
+    "exceeding_value": 101.5,
+    "status_flags": {"bits": "1000", "names": ["in-alarm"]},
+    "deadband": 1.0,
+    "exceeded_limit": 100.0
+  }
+}
+```
+
+Every event type the stack decodes has its fields, from
+`change-of-bitstring` to `change-of-timer`. A value the standard leaves open,
+such as a command failure's feedback, is decoded as application values, and
+kept as `{"raw": ...}` when it isn't one; an optional value the device left
+out is `null`. Other
 properties list their elements under `items`, each decoded as above, where
 anything that doesn't decode ends the list as `[raw ..]`.
 

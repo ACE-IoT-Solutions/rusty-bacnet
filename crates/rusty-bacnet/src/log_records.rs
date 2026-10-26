@@ -8,21 +8,20 @@
 //! `("position", n)` or `("time", reference_time)`.
 
 use bacnet_client::log_reader::{LogCursor, LogGap, LogPage};
-use bacnet_encoding::constructed::encode_notification_parameters;
 use bacnet_services::read_range::{LogRecords, ReadRangeAck, ReadRangeViolation};
 use bacnet_types::constructed::{
     BACnetEventLogRecord, BACnetLogMultipleRecord, BACnetLogRecord, EventLogDatum,
     EventNotificationRequest, LogData, LogDatum,
 };
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
-use bytes::BytesMut;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyInt, PyList, PySequence, PyString, PyTuple};
 
 use crate::types::{
     IntEnumValue, PyBACnetTimeStamp, PyBitString, PyEventState, PyEventType, PyObjectIdentifier,
-    PyPropertyIdentifier, audit_log_record_to_py, date_value, time_value,
+    PyPropertyIdentifier, audit_log_record_to_py, date_value, notification_parameters_to_py,
+    time_value,
 };
 
 /// `(date, time)` as Python reads them.
@@ -119,12 +118,7 @@ fn notification<'py>(
         },
     )?;
     let event_values = match &notification.event_values {
-        Some(parameters) => {
-            let mut encoded = BytesMut::new();
-            encode_notification_parameters(parameters, &mut encoded)
-                .map_err(|error| PyValueError::new_err(error.to_string()))?;
-            Some(PyBytes::new(py, &encoded))
-        }
+        Some(parameters) => Some(notification_parameters_to_py(py, parameters)?),
         None => None,
     };
     result.set_item("event_values", event_values)?;

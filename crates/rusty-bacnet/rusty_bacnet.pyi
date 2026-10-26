@@ -2624,7 +2624,9 @@ def decode_log_records(result: ReadRangeResult) -> list[dict[str, Any]]:
     ErrorCode)`` members), ``time_change`` (seconds), ``any`` (the value's encoding),
     ``values`` (a Trend Log Multiple record's list of such dicts),
     ``notification`` (an Event Log record's event notification, its
-    ``event_values`` as their encoding) or ``audit_notification`` (an Audit
+    ``event_values`` None or a dict whose ``kind`` names the event type in
+    snake case, ``out_of_range``, with each value under its member's name;
+    see docs/python-api.md) or ``audit_notification`` (an Audit
     Log record, as ``audit_log_query`` shows it). A Trend Log record adds
     ``status_flags`` (a ``BitString`` naming ``IN_ALARM``, ``FAULT``,
     ``OVERRIDDEN``, ``OUT_OF_SERVICE``), or None.

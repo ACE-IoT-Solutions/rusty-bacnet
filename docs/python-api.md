@@ -2151,6 +2151,31 @@ choice and whose key of the same name holds the value, for example
 `{"kind": "real", "real": 72.5}`; a Trend Log record adds `"status_flags"`.
 A `log_status` or `status_flags` value, and a `bitstring` datum, is a
 [`BitString`](#bit-strings-and-enum-names); the first two are named.
+An Event Log's `notification` datum is a dict of the notification's
+members, its `"event_values"` `None` or a dict whose `"kind"` names the event
+type in snake case (#2073), with each value under its member's name:
+
+```python
+{"kind": "out_of_range", "exceeding_value": 101.5,
+ "status_flags": BitString(...),  # names ["IN_ALARM"]
+ "deadband": 1.0, "exceeded_limit": 100.0}
+```
+
+The keys follow the event type's members in the standard, for every type the
+stack decodes, from `change_of_bitstring` to `change_of_timer`, and
+`complex_event_type` too. Status flags and other bit strings are
+`BitString`s; a property state is a `(choice_tag, value)` pair, as in
+[Event_Parameters](#typed-constructed-values); a life safety operation is a
+`LifeSafetyOperation`; the enumerations Python has no class for (life safety
+states and modes, reliabilities, access events, timer states and
+transitions) are their numbers. A value the standard leaves open (a
+command-failure's commanded and feedback values, a discrete value, a status
+flags change's present value, a reported property value) is a
+`PropertyValue`, or a list of them. Dates and times are `(date, time)` pairs,
+references `DeviceObjectPropertyReference` mappings, an access credential an
+`ObjectIdentifier` or `(device, object)` pair, and an authentication factor
+`(format_type, format_class, value)`. An optional member the device left out
+is `None`. Before 0.15, `"event_values"` was the encoded values as `bytes`.
 It raises `ValueError` for any other result, or when the item data doesn't
 decode as `item_count` records, naming the first record that fails by index
 and offset.
