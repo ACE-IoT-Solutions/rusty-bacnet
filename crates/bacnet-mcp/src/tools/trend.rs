@@ -31,8 +31,10 @@ pub(super) const SPEC: Spec = Spec {
                   records it read: count, first and last time, and for each column min, max \
                   and mean of numbers and counts of states. Enumerations and bit strings \
                   are named by the property the log samples (its Log_DeviceObjectProperty, \
-                  read once a call). summary: true reads the whole window on the server (up \
-                  to 20000 records) and returns only the summary. Each request is charged. \
+                  read once a call); a binary or multi-state object's states are counted \
+                  by state, with the object's state texts (read once a call) in each \
+                  column's state_texts. summary: true reads the whole window on the \
+                  server (up to 20000 records) and returns only the summary. Each request is charged. \
                   Read-only.",
     input,
     output,
@@ -102,6 +104,11 @@ fn output() -> Value {
                 },
             },
             "states": { "type": ["object", "null"], "description": "Samples by state" },
+            "state_texts": {
+                "type": ["object", "null"],
+                "description": "The monitored object's text for each key of states, untrusted",
+                "additionalProperties": schema::envelope_object(),
+            },
             "failures": { "type": "integer" },
             "other": { "type": "integer" },
         },
@@ -406,6 +413,12 @@ pub(super) async fn run<T: TransportPort + 'static>(
             // read a call, once the device has answered, so a silent one
             // costs a single timeout; a failure names nothing (#2091).
             columns = engine.log_columns(device.instance, log).await;
+            // Then the state texts of the objects whose states columns
+            // sample, one charged request an object, skipped once the
+            // budget is spent (#2122).
+            engine
+                .log_state_texts(device.instance, &mut columns, || call.out_of_time())
+                .await;
         }
         if page.result_flags.2 {
             read.more_items += 1;
@@ -466,7 +479,7 @@ pub(super) async fn run<T: TransportPort + 'static>(
         "device": device.instance,
         "object": object,
         "records": read.rows,
-        "summary": read.summary.json(),
+        "summary": read.summary.json(&columns, device.instance, cap),
         "pages": read.pages,
         "more_items": read.more_items,
         "gaps": read.gaps,

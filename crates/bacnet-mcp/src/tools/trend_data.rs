@@ -12,6 +12,12 @@
 //! enumeration with its name, a bit string with its set bits' names, and
 //! the summary's state counts by name. A column nothing names keeps the
 //! numbers.
+//!
+//! A column that samples a binary or multi-state object's state counts its
+//! samples as states, keyed `active`/`inactive` or by state number. The
+//! object's own state texts (#2122) are device strings, so they never
+//! become keys or splice into a value: the column's `state_texts` maps
+//! each of those same keys to its text in an untrusted envelope.
 
 use std::collections::BTreeMap;
 
@@ -26,7 +32,8 @@ use bacnet_types::primitives::{Date, PropertyValue, StatusFlags, Time};
 use serde_json::{Value, json};
 
 use crate::errors::remote_json;
-use crate::value::enveloped;
+use crate::untrusted::envelope;
+use crate::value::{enveloped, object_text};
 
 /// A date and time as `2026-10-25 07:00:00.00`, unspecified fields as 0,
 /// so the text sorts as the time does.
@@ -281,7 +288,8 @@ struct Column {
     max: f64,
     sum: f64,
     /// Booleans and enumerations, by value: an enumeration by name when
-    /// the column's property names it.
+    /// the column's property names it, and a multi-state object's state
+    /// by its number.
     states: BTreeMap<String, u64>,
     failures: u64,
     other: u64,
@@ -289,6 +297,13 @@ struct Column {
 
 impl Column {
     fn add(&mut self, sample: &Sample, column: Option<LoggedProperty>) {
+        // A multi-state object's state is a number that counts as a state.
+        if let (Sample::Value(PropertyValue::Unsigned(state)), Some(column)) = (sample, column)
+            && column.holds_states()
+        {
+            *self.states.entry(state.to_string()).or_default() += 1;
+            return;
+        }
         let number = match sample {
             Sample::Value(PropertyValue::Real(v)) if v.is_finite() => Some(f64::from(*v)),
             Sample::Value(PropertyValue::Double(v)) if v.is_finite() => Some(*v),
@@ -328,7 +343,39 @@ impl Column {
         }
     }
 
-    fn json(&self, index: usize) -> Value {
+    /// The device's text for each state key the column counted, in an
+    /// envelope from `source`: `active`/`inactive` by Active_Text and
+    /// Inactive_Text, a state number by its State_Text entry. `None` when
+    /// no counted state has a text.
+    fn state_texts(&self, texts: &StateTexts, source: &str, cap: usize) -> Option<Value> {
+        let labels: serde_json::Map<String, Value> = self
+            .states
+            .keys()
+            .filter_map(|key| {
+                let (text, property) = match key.as_str() {
+                    "active" => (texts.active.as_ref(), "active-text"),
+                    "inactive" => (texts.inactive.as_ref(), "inactive-text"),
+                    number => (
+                        number
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|state| state.checked_sub(1))
+                            .and_then(|index| texts.states.get(index)),
+                        "state-text",
+                    ),
+                };
+                let text = text.filter(|text| !text.is_empty())?;
+                Some((
+                    key.clone(),
+                    envelope(text, format!("{source} {property}"), cap),
+                ))
+            })
+            .collect();
+        (!labels.is_empty()).then_some(Value::Object(labels))
+    }
+
+    /// The column as JSON; `labels` is its [`Self::state_texts`].
+    fn json(&self, index: usize, labels: Option<Value>) -> Value {
         let numeric = (self.numeric > 0).then(|| {
             #[allow(clippy::cast_precision_loss)]
             let mean = self.sum / self.numeric as f64;
@@ -343,6 +390,7 @@ impl Column {
             "column": index,
             "numeric": numeric,
             "states": (!self.states.is_empty()).then(|| json!(self.states)),
+            "state_texts": labels,
             "failures": self.failures,
             "other": self.other,
         })
@@ -386,12 +434,25 @@ impl Summary {
         }
     }
 
-    pub(super) fn json(&self) -> Value {
+    /// The summary as JSON: each column's state keys labelled with the
+    /// state texts `columns` holds, enveloped as from `device` with their
+    /// text capped at `cap`.
+    pub(super) fn json(&self, columns: &LogColumns, device: u32, cap: usize) -> Value {
         let columns: Vec<Value> = self
             .columns
             .iter()
             .enumerate()
-            .map(|(index, column)| column.json(index))
+            .map(|(index, column)| {
+                let labels = columns.column(index).and_then(|logged| {
+                    let object = logged.object;
+                    let source = format!(
+                        "device {device} {}",
+                        object_text(object.object_type(), object.instance_number())
+                    );
+                    column.state_texts(columns.raw_state_texts(index), &source, cap)
+                });
+                column.json(index, labels)
+            })
             .collect();
         json!({
             "records": self.records,
@@ -461,7 +522,7 @@ mod tests {
         for entry in &entries {
             summary.add(entry, &LogColumns::default());
         }
-        let json = summary.json();
+        let json = summary.json(&LogColumns::default(), 1, 256);
         assert_eq!(json["records"], json!(4));
         assert_eq!(json["flagged"], json!(1));
         assert_eq!(json["log_status"], json!(1));
@@ -492,9 +553,14 @@ mod tests {
     fn columns_name_values_and_states() {
         let column = |property| {
             Some(LoggedProperty {
-                object_type: ObjectType::ANALOG_INPUT,
+                object: bacnet_types::primitives::ObjectIdentifier::new(
+                    ObjectType::ANALOG_INPUT,
+                    1,
+                )
+                .unwrap(),
                 property,
                 index: None,
+                device: None,
             })
         };
         let columns: LogColumns = [
@@ -541,7 +607,7 @@ mod tests {
         for entry in &entries {
             summary.add(entry, &columns);
         }
-        let json = summary.json();
+        let json = summary.json(&columns, 1, 256);
         assert_eq!(
             json["columns"][0]["states"],
             json!({ "normal": 1, "offnormal": 1 })
