@@ -20,7 +20,9 @@
 //! - [`decode`]: frames, NPDUs and APDUs decoded into summaries and
 //!   field trees, with no traffic;
 //! - [`engine`]: the read operations (properties, the object list, a device
-//!   summary, trend log pages and alarms) and Who-Is over those limits.
+//!   summary, trend log pages and alarms) and Who-Is over those limits;
+//! - [`watch`]: the watch hub, one managed COV subscription or poller per
+//!   point however many listeners share it, holding the latest values.
 //!
 //! The write safety core (plans, ledger, audit) moves here in a later
 //! phase; see `docs/design/mcp.md`.
@@ -34,3 +36,4 @@ pub mod label;
 pub mod limits;
 pub mod parse;
 pub mod target;
+pub mod watch;
