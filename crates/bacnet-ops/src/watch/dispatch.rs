@@ -119,20 +119,34 @@ fn watched_value(point: &Point, value: &BACnetPropertyValue) -> bool {
     }
 }
 
+/// Whether `value` is the Status_Flags a property watch keeps beside its
+/// property when the hub reads them ([`Reads::property_flags`]).
+///
+/// [`Reads::property_flags`]: super::Reads::property_flags
+fn flags_value(point: &Point, value: &BACnetPropertyValue, property_flags: bool) -> bool {
+    property_flags
+        && matches!(point.watched, Watched::Property { property, .. } if property != PropertyIdentifier::STATUS_FLAGS)
+        && value.property_identifier == PropertyIdentifier::STATUS_FLAGS
+        && value.property_array_index.is_none()
+}
+
 /// Fold a notification's values into `rows`: each reported value replaces
 /// the row of the same property. An object watch takes in a new row only
 /// for a property it reads (`object_reads`), up to [`MAX_ROWS`], so a
 /// device sending many other properties can't grow it; a property watch
-/// keeps its property. The values folded in are returned.
+/// keeps its property, and its Status_Flags when `property_flags`. The
+/// values folded in are returned.
 pub(super) fn merge(
     rows: &mut Vec<RawRow>,
     point: &Point,
     object_reads: &[PropertyIdentifier],
+    property_flags: bool,
     received: &ReceivedCOVNotification,
 ) -> Vec<RawRow> {
     let mut merged = Vec::new();
     for value in &received.notification.list_of_values {
-        if !watched_value(point, value) {
+        let flags = flags_value(point, value, property_flags);
+        if !flags && !watched_value(point, value) {
             continue;
         }
         let property = value.property_identifier;
@@ -144,6 +158,7 @@ pub(super) fn merge(
         }
         let joins = match point.watched {
             Watched::Object => object_reads.contains(&property) && rows.len() < MAX_ROWS,
+            Watched::Property { .. } if flags => rows.len() < MAX_ROWS,
             Watched::Property { .. } => rows.is_empty(),
         };
         if joins {

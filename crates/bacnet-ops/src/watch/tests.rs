@@ -325,6 +325,7 @@ fn notifications_cannot_grow_the_rows() {
         &mut rows,
         &point,
         &POINT_PROPERTIES,
+        false,
         &notification(ai(1), &flood),
     );
     assert_eq!(rows.len(), 1, "only the point property joins");
@@ -333,6 +334,7 @@ fn notifications_cannot_grow_the_rows() {
             &mut rows,
             &point,
             &POINT_PROPERTIES,
+            false,
             &notification(ai(1), &flood),
         );
     }
@@ -359,9 +361,9 @@ fn notifications_cannot_grow_the_rows() {
     );
     assert!(dispatch::belongs(&element, Some(&target), &mine));
     let mut rows = Vec::new();
-    dispatch::merge(&mut rows, &element, &[], &other);
+    dispatch::merge(&mut rows, &element, &[], false, &other);
     assert!(rows.is_empty());
-    dispatch::merge(&mut rows, &element, &[], &mine);
+    dispatch::merge(&mut rows, &element, &[], false, &mine);
     assert_eq!(rows.len(), 1);
     // A whole array sent without an index isn't the element; one value
     // without an index is.
@@ -372,7 +374,7 @@ fn notifications_cannot_grow_the_rows() {
     array.notification.list_of_values[0].value = [0x00; 16].to_vec();
     assert!(!dispatch::belongs(&element, Some(&target), &array));
     let mut kept = rows.clone();
-    dispatch::merge(&mut kept, &element, &[], &array);
+    dispatch::merge(&mut kept, &element, &[], false, &array);
     assert_eq!(kept, rows, "the previous value stays");
     let single = notification(
         element.object,
@@ -396,6 +398,7 @@ async fn lagged_notifications_are_counted() {
         PROCESS_BASE,
         Duration::from_secs(1),
         POINT_PROPERTIES.to_vec(),
+        false,
     ));
     let (sender, receiver) = tokio::sync::broadcast::channel(1);
     for _ in 0..4 {

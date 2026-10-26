@@ -30,7 +30,7 @@ use super::jobs::{self, Started};
 use super::options::MissingDevice;
 use super::poll::Polled;
 use super::sample::Via;
-use super::shared::{Arrival, DeviceSlot, Running, Shared};
+use super::shared::{Arrival, DeviceSlot, FirstSample, Running, Shared};
 use super::{Inner, Source, State, Why};
 use crate::engine::unreachable;
 use crate::limits::charged;
@@ -406,13 +406,22 @@ impl<T: TransportPort + 'static> Device<T> {
             return;
         };
         let read_first = first.is_ok();
+        // Handed on as this returns, whichever way.
+        let _first_sample = FirstSample {
+            shared: &shared,
+            values: Some(
+                first
+                    .as_ref()
+                    .map(Clone::clone)
+                    .map_err(ToString::to_string),
+            ),
+        };
         match first {
             Ok(rows) => {
                 shared.lock().snapshot.note = None;
                 shared.read(seq, rows, false);
             }
             Err(error) => {
-                shared.sample(Err(error.to_string()), Via::First);
                 let (source, state) = if unreachable(&error) {
                     shared.lock().snapshot.why = Some(Why::NoAnswer(error.to_string()));
                     (Some(Source::Poll), State::Unreachable)

@@ -554,3 +554,47 @@ fn a_routed_device_is_matched_by_its_address() {
         &from(DEVICE, &[2], Some((10, &[3])))
     ));
 }
+
+/// Under [`Reads::value`] a property watch keeps the Status_Flags a
+/// notification carries beside its property, so its samples carry the
+/// device's flags; under the MCP's reads it keeps the property alone.
+#[tokio::test(start_paused = true)]
+async fn a_property_watch_keeps_notified_flags_when_it_reads_them() {
+    for (reads, flags) in [(Reads::value(), true), (Reads::points(), false)] {
+        let options = WatchOptions {
+            reads,
+            ..WatchOptions::default()
+        };
+        let lab = Lab::start(options).await;
+        let point = Point {
+            watched: Watched::Property {
+                property: PropertyIdentifier::PRESENT_VALUE,
+                index: None,
+            },
+            ..object(ai(3))
+        };
+        let lease = lab.hub.watch(point).unwrap();
+        settle().await;
+        let mut samples = lease.samples();
+        lab.server
+            .set_present_value_local(&ai(3), PropertyValue::Real(33.0))
+            .await
+            .unwrap();
+        settle().await;
+        let sample = samples.try_next().expect("notified");
+        assert_eq!(sample.via, Via::Notification);
+        let properties: Vec<PropertyIdentifier> =
+            sample.values.unwrap().iter().map(|(p, _)| *p).collect();
+        let expected = if flags {
+            vec![
+                PropertyIdentifier::PRESENT_VALUE,
+                PropertyIdentifier::STATUS_FLAGS,
+            ]
+        } else {
+            vec![PropertyIdentifier::PRESENT_VALUE]
+        };
+        assert_eq!(properties, expected);
+        drop(lease);
+        lab.stop().await;
+    }
+}

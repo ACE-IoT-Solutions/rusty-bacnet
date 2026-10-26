@@ -103,9 +103,13 @@ pub(crate) fn hub_options(options: &WatchOptions) -> hub::WatchOptions {
         missing: MissingDevice::Fail,
         reads: Reads::value(),
         samples: PENDING_PER_ROW,
-        // Points still cancelling count against the hub's cap, not the
-        // list's.
-        max_points: MAX_ROWS * 2,
+        // The list's own MAX_ROWS is the user's limit. The hub's cap also
+        // counts points still cancelling, which the list never counted,
+        // and no fixed multiple of the rows bounds those: removing rows on
+        // a silent device and adding new ones queues cancels that take up
+        // to the cancel's give-up each. So the cap is only a backstop, far
+        // above what removing and re-adding rows by hand could reach.
+        max_points: MAX_ROWS * 100,
         ..hub::WatchOptions::default()
     }
 }

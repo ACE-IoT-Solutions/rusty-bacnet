@@ -420,6 +420,7 @@ impl<T: TransportPort + 'static> Hub<T> {
             PROCESS_BASE,
             options.coalesce,
             options.reads.object.clone(),
+            options.reads.property_flags,
         ));
         let (stop_dispatch, stopped) = watch::channel(false);
         let notifications = engine.client().cov_notifications();

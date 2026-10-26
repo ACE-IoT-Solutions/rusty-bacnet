@@ -150,7 +150,9 @@ impl Shared {
     }
 
     /// Values read (a first read, or a poll when `poll`): fold them into
-    /// the rows, mark the watch live, signal at once and sample them.
+    /// the rows, mark the watch live, signal at once, and sample a poll's.
+    /// A first read's sample waits for its start's outcome
+    /// ([`FirstSample`]).
     pub(super) fn read(&self, seq: &AtomicU64, rows: Vec<RawRow>, poll: bool) {
         let mut state = self.lock();
         fold(&mut state.snapshot.rows, &rows);
@@ -162,7 +164,26 @@ impl Shared {
         }
         self.changed(&mut state, seq, Duration::ZERO);
         drop(state);
-        self.sample(Ok(rows), if poll { Via::Poll } else { Via::First });
+        if poll {
+            self.sample(Ok(rows), Via::Poll);
+        }
+    }
+}
+
+/// A start's first-read sample, handed on when dropped: at the end of the
+/// start's handling, once the snapshot shows its outcome (subscribed,
+/// polled or given up), so a reader labelling the sample by the snapshot
+/// sees the mode the read led to.
+pub(super) struct FirstSample<'a> {
+    pub(super) shared: &'a Shared,
+    pub(super) values: Option<Result<Vec<RawRow>, String>>,
+}
+
+impl Drop for FirstSample<'_> {
+    fn drop(&mut self) {
+        if let Some(values) = self.values.take() {
+            self.shared.sample(values, Via::First);
+        }
     }
 }
 
@@ -239,6 +260,8 @@ pub(super) struct Registry {
     pub(super) coalesce: Duration,
     /// What an object watch keeps from a notification.
     pub(super) object_reads: Vec<PropertyIdentifier>,
+    /// A property watch keeps a notification's Status_Flags too.
+    pub(super) property_flags: bool,
     /// Entries not yet finished, those cancelling included.
     pub(super) tasks: watch::Sender<usize>,
     /// Cancels queued or running.
@@ -254,6 +277,7 @@ impl Registry {
         first_process: u32,
         coalesce: Duration,
         object_reads: Vec<PropertyIdentifier>,
+        property_flags: bool,
     ) -> Self {
         Self {
             table: Mutex::new(Table {
@@ -267,6 +291,7 @@ impl Registry {
             lagged: AtomicU64::new(0),
             coalesce,
             object_reads,
+            property_flags,
             tasks: watch::Sender::new(0),
             cancelling: AtomicUsize::new(0),
             #[cfg(test)]
@@ -317,6 +342,7 @@ impl Registry {
             &mut state.snapshot.rows,
             &shared.point,
             &self.object_reads,
+            self.property_flags,
             received,
         );
         state.snapshot.notifications += 1;
