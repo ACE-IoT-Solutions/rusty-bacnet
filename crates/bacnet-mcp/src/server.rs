@@ -161,6 +161,12 @@ impl<T: TransportPort + 'static> McpServer<T> {
         (self.ctx.subs.held(), self.ctx.subs.legacy_count())
     }
 
+    /// A legacy subscribe handled at once, outside any session's order.
+    #[cfg(test)]
+    pub(crate) fn subscribe_now(&self, uri: &str) -> Result<(), ErrorData> {
+        legacy::subscribe(&self.ctx, uri)
+    }
+
     /// Serve MCP on `reader` and `writer` (newline-delimited JSON-RPC)
     /// until the client closes them.
     pub async fn serve<R, W>(self, reader: R, writer: W) -> Result<(), ServeError>

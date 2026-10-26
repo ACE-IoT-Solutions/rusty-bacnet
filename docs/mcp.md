@@ -93,7 +93,8 @@ advertises `resources.subscribe` for every version.
   tool error body, as a refused read is: `invalid-argument` (malformed, or
   a device summary, which has no updates), `unknown-device`, or `refused`
   with `device-not-allowed`, `network-not-allowed`, `principal-cap`,
-  `process-cap` or `passive`; nothing is sent. Subscribing twice to one
+  `process-cap`, `passive` or `shutting-down` (the session is ending);
+  nothing is sent. Subscribing twice to one
   URI is one subscription, and a session holds at most 64 URIs (twice the
   point cap). `resources/unsubscribe` drops the subscription and its watch
   at once; the last watch on a point cancels its BACnet subscription. When

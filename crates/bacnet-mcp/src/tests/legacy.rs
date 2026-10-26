@@ -3,16 +3,21 @@
 //! and caps as listen streams, checked against the lab device's own
 //! subscription table (Active_COV_Subscriptions).
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use bacnet_ops::engine::Engine;
+use bacnet_ops::watch::{Hub, WatchOptions};
 use bacnet_types::enums::ObjectType;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 
-use super::{Agent, Lab};
+use super::{Agent, Lab, Recording};
 use crate::Policy;
+use crate::listen::Follow;
 use crate::policy::Caps;
+use crate::resources::uri::{self, Uri};
 
 const AI1: &str = "bacnet://device/1201/object/analog-input:1";
 const AI3: &str = "bacnet://device/1201/object/ai:3";
@@ -143,6 +148,66 @@ async fn closing_the_session_releases_every_subscription() {
     lab.shutdown = None;
     assert_eq!(lab.mcp.watches(), (0, 0));
     assert!(lab.cov_table().await.is_empty());
+    // A subscribe that comes in after the end is refused, never kept.
+    for uri in ["bacnet://session", AI1] {
+        let error = lab.mcp.subscribe_now(uri).unwrap_err();
+        let data = error.data.unwrap_or_default();
+        assert_eq!(data["reason"], json!("shutting-down"), "{uri}: {data}");
+    }
+    assert_eq!(lab.mcp.watches(), (0, 0));
+    lab.stop().await;
+}
+
+/// A subscription made before the session's notifier first runs (rmcp
+/// doesn't wait for `notifications/initialized`) is still followed.
+#[tokio::test(start_paused = true)]
+async fn a_subscription_before_the_notifier_starts_is_followed() {
+    let mut lab = Lab::start(Policy::default()).await;
+    // The session's task hasn't run yet: nothing has awaited since it
+    // was spawned.
+    lab.mcp.subscribe_now("bacnet://devices").unwrap();
+    lab.agent.initialize_legacy().await;
+    settle().await;
+    lab.client.clear_devices().await;
+    lab.server.broadcast_i_am().await.unwrap();
+    let updates = lab.agent.drain(UPDATED, Duration::from_secs(3)).await;
+    assert_eq!(updates.len(), 1, "{updates:?}");
+    assert_eq!(updates[0]["params"]["uri"], json!("bacnet://devices"));
+    lab.stop().await;
+}
+
+/// A point let go and watched again between two syncs (unsubscribed and
+/// subscribed again while the notifier was busy) is followed on its new
+/// watch, not the old one, which never fires again.
+#[tokio::test(start_paused = true)]
+async fn a_point_watched_again_is_followed_on_its_new_watch() {
+    let mut lab = Lab::start(Policy::default()).await;
+    lab.agent.initialize_legacy().await;
+    let limits = Arc::new(Policy::default().request_limits());
+    let engine = Arc::new(Engine::new(Arc::clone(&lab.client), limits));
+    let hub = Hub::new(Arc::clone(&engine), WatchOptions::default()).unwrap();
+    let Ok(Uri::Point(point)) = uri::parse(AI1) else {
+        panic!("a point URI");
+    };
+    let mut follow = Follow::new();
+    let first = hub.watch(point).unwrap();
+    follow.set(
+        Some(&*engine),
+        vec![(AI1.to_string(), Some(first.changes()))],
+    );
+    assert!(first.changes().same(follow.signal(AI1).unwrap()));
+    drop(first);
+    let second = hub.watch(point).unwrap();
+    assert!(!second.changes().same(&follow.signal(AI1).unwrap().clone()));
+    follow.set(
+        None::<&Engine<Recording>>,
+        vec![(AI1.to_string(), Some(second.changes()))],
+    );
+    assert!(second.changes().same(follow.signal(AI1).unwrap()));
+    drop(second);
+    hub.shutdown(Duration::from_secs(10)).await;
+    drop(hub);
+    drop(engine);
     lab.stop().await;
 }
 

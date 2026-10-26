@@ -27,7 +27,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use bacnet_client::client::{DeviceEvent, DeviceEventKind};
-use bacnet_ops::watch::{Changes, Lease, Point};
+use bacnet_ops::engine::Engine;
+use bacnet_ops::watch::{Changes, Lease, Point, WatchError};
 use bacnet_transport::port::TransportPort;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use rmcp::ErrorData;
@@ -38,6 +39,9 @@ use tokio::time::{Instant, Interval};
 
 use crate::context::Ctx;
 use crate::resources::uri::{self, DEVICES, Uri};
+
+/// Why a watch is refused once the session has ended or the hub stopped.
+pub(crate) const SHUTTING_DOWN: &str = "shutting-down";
 
 /// How long a reservation waits for its stream.
 const UNCLAIMED: Duration = Duration::from_secs(30);
@@ -85,6 +89,9 @@ struct SubsState {
     /// The session's legacy `resources/subscribe` URIs, each point URI
     /// with its hold.
     legacy: HashMap<String, Option<Hold>>,
+    /// Set when the session ends ([`Subs::clear`]): nothing new is
+    /// watched after it.
+    closed: bool,
 }
 
 /// One legacy subscription's watch on a point: counted against the
@@ -155,10 +162,16 @@ impl Subs {
     ) -> Result<Lease, &'static str> {
         let hub = ctx.hub.as_ref().ok_or("passive")?;
         let mut state = self.lock();
+        if state.closed {
+            return Err(SHUTTING_DOWN);
+        }
         if !state.held.contains_key(&point) && state.held.len() >= ctx.policy.caps.watches {
             return Err("principal-cap");
         }
-        let lease = hub.watch(point).map_err(|_| "process-cap")?;
+        let lease = hub.watch(point).map_err(|e| match e {
+            WatchError::Shut => SHUTTING_DOWN,
+            WatchError::Full { .. } => "process-cap",
+        })?;
         *state.held.entry(point).or_default() += 1;
         Ok(lease)
     }
@@ -192,7 +205,9 @@ impl Subs {
         max: usize,
     ) -> Result<(), &'static str> {
         let mut state = self.lock();
-        let added = if state.legacy.contains_key(uri) {
+        let added = if state.closed {
+            Err(SHUTTING_DOWN)
+        } else if state.legacy.contains_key(uri) {
             Ok(false)
         } else if state.legacy.len() >= max {
             Err("principal-cap")
@@ -270,6 +285,12 @@ impl Subs {
         }
         let lease = self.take(ctx, point)?;
         let mut state = self.lock();
+        if state.closed {
+            // The session ended meanwhile; the lease goes after the lock.
+            drop(state);
+            self.release(&[point]);
+            return Err(SHUTTING_DOWN);
+        }
         if let Some((at, _)) = state.tool.get_mut(&point) {
             // Another call took it meanwhile: keep theirs.
             *at = now;
@@ -323,6 +344,13 @@ impl Subs {
         }
         if !accepted.is_empty() {
             let mut state = self.lock();
+            if state.closed {
+                // The session ended meanwhile: honour nothing, and let the
+                // claim's leases go after the lock.
+                drop(state);
+                drop(claim);
+                return Vec::new();
+            }
             let mut oldest = Vec::new();
             while state.pending.len() >= MAX_PENDING {
                 oldest.push(state.pending.remove(0));
@@ -365,6 +393,7 @@ impl Subs {
     pub(crate) fn clear(&self) {
         let (pending, legacy, tool) = {
             let mut state = self.lock();
+            state.closed = true;
             (
                 std::mem::take(&mut state.pending),
                 std::mem::take(&mut state.legacy),
@@ -433,11 +462,13 @@ impl Follow {
     }
 
     /// Follow `uris`, each point URI with its change signal. A point
-    /// already followed keeps the signal it had, so nothing is announced
-    /// twice.
+    /// already followed on the same watch keeps the signal it had, so
+    /// nothing is announced twice.
+    /// `engine` gives the discovery table's events, when the device list
+    /// is followed.
     pub(crate) fn set<T: TransportPort + 'static>(
         &mut self,
-        ctx: &Ctx<T>,
+        engine: Option<&Engine<T>>,
         uris: Vec<(String, Option<Changes>)>,
     ) {
         let mut kept: HashMap<String, Changes> =
@@ -446,7 +477,13 @@ impl Follow {
         self.alarm_uris.clear();
         for (name, changes) in uris {
             if let Some(changes) = changes {
-                let changes = kept.remove(&name).unwrap_or(changes);
+                // The old signal only while it is the same watch: a URI
+                // unsubscribed and subscribed again between two calls has a
+                // new one, and the old one never fires again.
+                let changes = match kept.remove(&name) {
+                    Some(old) if old.same(&changes) => old,
+                    _ => changes,
+                };
                 self.points.push((name, changes));
             } else if name == DEVICES {
                 devices = true;
@@ -458,8 +495,17 @@ impl Follow {
             self.devices = None;
             self.devices_due = None;
         } else if self.devices.is_none() {
-            self.devices = ctx.engine.as_ref().map(|e| e.device_events());
+            self.devices = engine.map(Engine::device_events);
         }
+    }
+
+    /// The signal followed for `name`, for tests.
+    #[cfg(test)]
+    pub(crate) fn signal(&self, name: &str) -> Option<&Changes> {
+        self.points
+            .iter()
+            .find(|(followed, _)| followed == name)
+            .map(|(_, changes)| changes)
     }
 
     /// Whether nothing followed can change.
@@ -542,7 +588,7 @@ pub(crate) async fn run<T: TransportPort + 'static>(
     let leases = claim.as_ref().map_or(&[][..], |c| &c.leases[..]);
     let mut follow = Follow::new();
     follow.set(
-        ctx,
+        ctx.engine.as_deref(),
         uris.iter()
             .map(|name| {
                 let changes = leases

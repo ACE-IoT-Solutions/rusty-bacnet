@@ -28,7 +28,7 @@ use rmcp::{ErrorData, RoleServer};
 
 use crate::context::Ctx;
 use crate::errors::ToolError;
-use crate::listen::{Follow, Wake};
+use crate::listen::{Follow, SHUTTING_DOWN, Wake};
 use crate::resources::uri::{self, Uri};
 
 /// The most URIs one session subscribes to: twice the principal's point
@@ -47,6 +47,7 @@ fn refusal(error: &ToolError) -> ErrorData {
 fn over_cap(reason: &'static str) -> ToolError {
     let message = match reason {
         "process-cap" => "the server watches as many points as it may",
+        SHUTTING_DOWN => "the server is shutting down",
         "passive" => "the server is passive: it builds no client and sends nothing",
         _ => "this principal watches as many points as it may; unsubscribe from some first",
     };
@@ -93,7 +94,10 @@ pub(crate) fn subscribe<T: TransportPort + 'static>(
     };
     ctx.subs
         .legacy_add(text, hold, max_uris(ctx))
-        .map_err(|_| refusal(&too_many(ctx)))
+        .map_err(|reason| match reason {
+            SHUTTING_DOWN => refusal(&over_cap(reason)),
+            _ => refusal(&too_many(ctx)),
+        })
 }
 
 /// The refusal for a session at its URI bound.
@@ -118,6 +122,9 @@ pub(crate) fn unsubscribe<T: TransportPort + 'static>(ctx: &Ctx<T>, text: &str) 
 pub(crate) async fn notify<T: TransportPort + 'static>(ctx: Arc<Ctx<T>>, peer: Peer<RoleServer>) {
     let mut changed = ctx.subs.legacy_watch();
     let mut follow = Follow::new();
+    // Subscriptions made before this task first ran: the receiver counts
+    // them as seen already.
+    follow.set(ctx.engine.as_deref(), ctx.subs.legacy_snapshot());
     loop {
         let wake = tokio::select! {
             biased;
@@ -126,7 +133,7 @@ pub(crate) async fn notify<T: TransportPort + 'static>(ctx: Arc<Ctx<T>>, peer: P
                 if seen.is_err() {
                     return;
                 }
-                follow.set(&ctx, ctx.subs.legacy_snapshot());
+                follow.set(ctx.engine.as_deref(), ctx.subs.legacy_snapshot());
                 continue;
             }
             wake = follow.next() => wake,

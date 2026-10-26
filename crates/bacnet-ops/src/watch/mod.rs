@@ -526,6 +526,12 @@ impl Changes {
             std::future::pending::<()>().await;
         }
     }
+
+    /// Whether `other` is a signal of the same watch: false once the point
+    /// was let go and watched again, which makes a new watch.
+    pub fn same(&self, other: &Changes) -> bool {
+        self.signal.same_channel(&other.signal)
+    }
 }
 
 impl Drop for Lease {
