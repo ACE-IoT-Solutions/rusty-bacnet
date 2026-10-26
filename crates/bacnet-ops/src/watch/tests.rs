@@ -391,6 +391,31 @@ fn notifications_cannot_grow_the_rows() {
     assert!(!dispatch::belongs(&whole, Some(&target), &mine));
 }
 
+/// A property watch that keeps Status_Flags takes in its property
+/// whichever order a notification lists them, into empty rows (a first
+/// read that failed whole) as into rows it has.
+#[test]
+fn a_property_watch_takes_its_property_whatever_the_order() {
+    let point = Point {
+        device: LAB,
+        object: ai(1),
+        watched: Watched::Property {
+            property: PropertyIdentifier::PRESENT_VALUE,
+            index: None,
+        },
+    };
+    let pv = PropertyIdentifier::PRESENT_VALUE;
+    let flags = PropertyIdentifier::STATUS_FLAGS;
+    for order in [[flags, pv], [pv, flags]] {
+        let values = [(order[0], None), (order[1], None)];
+        let mut rows = Vec::new();
+        let merged = dispatch::merge(&mut rows, &point, &[], true, &notification(ai(1), &values));
+        let kept: Vec<PropertyIdentifier> = merged.iter().map(|(p, _)| *p).collect();
+        assert_eq!(kept, order, "{order:?}");
+        assert_eq!(rows.len(), 2);
+    }
+}
+
 /// Notifications the hub's receiver falls behind on are counted.
 #[tokio::test(start_paused = true)]
 async fn lagged_notifications_are_counted() {

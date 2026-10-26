@@ -36,11 +36,21 @@ pub struct Sample {
 
 impl Sample {
     pub(super) fn new(values: Result<Vec<RawRow>, String>, via: Via) -> Self {
+        Self::at(values, via, Instant::now(), SystemTime::now())
+    }
+
+    /// A sample of values that arrived at `at` (`time` by the wall clock).
+    pub(super) fn at(
+        values: Result<Vec<RawRow>, String>,
+        via: Via,
+        at: Instant,
+        time: SystemTime,
+    ) -> Self {
         Self {
             values,
             via,
-            at: Instant::now(),
-            time: SystemTime::now(),
+            at,
+            time,
         }
     }
 }

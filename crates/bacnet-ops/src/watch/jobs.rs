@@ -9,7 +9,9 @@
 //! the same gate, though no rate slot. No lock is held across an await.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+
+use tokio::time::Instant;
 
 use bacnet_client::client::{
     CovPropertySubscription, CovTarget, ManagedCOVSubscription, ManagedCOVSubscriptionOptions,
@@ -36,6 +38,8 @@ pub(super) struct Started {
     pub(super) target: Option<CovTarget>,
     /// The first read, unless the device is missing.
     pub(super) first: Option<Result<Vec<RawRow>, Error>>,
+    /// When the first read ended, for its sample.
+    pub(super) read_at: Option<(Instant, SystemTime)>,
     /// The subscription, or why there is none; `None` when it wasn't
     /// asked for because the first read had no answer.
     pub(super) outcome: Option<Result<ManagedCOVSubscription, Error>>,
@@ -83,6 +87,7 @@ pub(super) async fn start<T: TransportPort + 'static>(
         return Started {
             target: None,
             first: None,
+            read_at: None,
             outcome: None,
         };
     };
@@ -92,6 +97,7 @@ pub(super) async fn start<T: TransportPort + 'static>(
     // the receiver only takes notifications from where the device is.
     shared.lock().target = Some(target.clone());
     let first = read(&inner, &point).await;
+    let read_at = Some((Instant::now(), SystemTime::now()));
     if let Err(error) = &first
         && unreachable(error)
     {
@@ -99,6 +105,7 @@ pub(super) async fn start<T: TransportPort + 'static>(
         return Started {
             target: Some(target),
             first: Some(first),
+            read_at,
             outcome: None,
         };
     }
@@ -106,6 +113,7 @@ pub(super) async fn start<T: TransportPort + 'static>(
     Started {
         target: Some(target),
         first: Some(first),
+        read_at,
         outcome: Some(outcome),
     }
 }

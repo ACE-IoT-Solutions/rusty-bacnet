@@ -415,6 +415,9 @@ impl<T: TransportPort + 'static> Device<T> {
                     .map(Clone::clone)
                     .map_err(ToString::to_string),
             ),
+            read_at: started
+                .read_at
+                .unwrap_or_else(|| (Instant::now(), std::time::SystemTime::now())),
         };
         match first {
             Ok(rows) => {

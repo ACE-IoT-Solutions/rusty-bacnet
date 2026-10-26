@@ -159,7 +159,8 @@ pub(super) fn merge(
         let joins = match point.watched {
             Watched::Object => object_reads.contains(&property) && rows.len() < MAX_ROWS,
             Watched::Property { .. } if flags => rows.len() < MAX_ROWS,
-            Watched::Property { .. } => rows.is_empty(),
+            // Only the watched property gets here, and it isn't a row yet.
+            Watched::Property { .. } => rows.len() < MAX_ROWS,
         };
         if joins {
             rows.push(row.clone());

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use bacnet_client::client::{CovTarget, ReceivedCOVNotification};
 use bacnet_types::enums::PropertyIdentifier;
@@ -177,12 +177,21 @@ impl Shared {
 pub(super) struct FirstSample<'a> {
     pub(super) shared: &'a Shared,
     pub(super) values: Option<Result<Vec<RawRow>, String>>,
+    /// When the read ended: the sample keeps that time, so a notification
+    /// that came in meanwhile still sorts after it.
+    pub(super) read_at: (Instant, SystemTime),
 }
 
 impl Drop for FirstSample<'_> {
     fn drop(&mut self) {
-        if let Some(values) = self.values.take() {
-            self.shared.sample(values, Via::First);
+        if let Some(values) = self.values.take()
+            && self.shared.samples.receiver_count() > 0
+        {
+            let (at, time) = self.read_at;
+            let _ = self
+                .shared
+                .samples
+                .send(Sample::at(values, Via::First, at, time));
         }
     }
 }
