@@ -52,8 +52,10 @@ if [ "$status" != 2 ] || ! grep -q 'must both be a terminal' <<<"$plain"; then
   exit 1
 fi
 
-# The README quickstart server, unchanged.
+# The README quickstart server, unchanged: website/tests/python/
+# test_site_samples.py fails if this copy and the README's block differ.
 cat >"$tmp/local_server.py" <<'EOF'
+# local_server.py: one simulated temperature sensor on 127.0.0.1:47808
 import asyncio
 from rusty_bacnet import BACnetServer
 

@@ -13,6 +13,8 @@ Issues, pull requests and CI all live on
   [Rusty BACnet Roadmap](https://github.com/users/jscott3201/projects/4)
   board shows every open issue by track, priority and target release. Its
   **Good first issues** and **Needs decision** views are good places to start.
+  An issue with no milestone is in the backlog, and new issues join the board
+  automatically.
 - **Security vulnerabilities:** report them privately, as the
   [security policy](.github/SECURITY.md) describes, not in a public issue.
 
