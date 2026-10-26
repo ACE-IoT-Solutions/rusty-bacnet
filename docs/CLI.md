@@ -1061,6 +1061,18 @@ Text output names what the device sent:
 - enumerations by name in kebab case: `offnormal`, `open-loop`,
   `degrees-fahrenheit`; a binary object's state as `active` or `inactive`. A
   number the property's enumeration doesn't name prints as the number;
+- with `read` and `readm`, a binary or multi-state object's state (its
+  Present_Value, Relinquish_Default, a Priority_Array slot and the like)
+  followed by the object's own text: `active (Running)`, `2 (Low)`. The
+  texts are the object's Active_Text and Inactive_Text, or its State_Text,
+  read with one more request an object once the value has been read, unless
+  the read already holds them (`read bv:1 all`). A refused read, an empty
+  text or a state past the end of State_Text keeps the plain form, `active`
+  or `2`, and a device that stops answering then keeps it for the rest of
+  the command without failing it. The texts come from the device: control
+  characters in them print as spaces and invisible format characters are
+  dropped. `decoded` keeps the number, as before. This form writes back
+  unchanged;
 - bit strings with names as the set bits, `in-alarm | fault`, or `none`;
   other bit strings as their bits, `bits(0101)`;
 - objects as `analog-input 1`, dates as `2026-10-19`, times as `07:00`

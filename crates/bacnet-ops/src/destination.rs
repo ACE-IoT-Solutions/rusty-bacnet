@@ -472,6 +472,34 @@ impl Destination {
             .await;
     }
 
+    /// `object`'s state texts as the device sent them, for naming the
+    /// states a one-shot read prints (#2132): one ReadProperty of a
+    /// multi-state object's State_Text, or one ReadPropertyMultiple of a
+    /// binary object's Active_Text and Inactive_Text (ReadProperty each
+    /// when the device refuses it), and nothing for another object type.
+    /// Best effort: a refused or failed read gives no texts. The error
+    /// comes back only when the device, or the way to it, stopped
+    /// answering ([`unreachable()`]), so a caller reading several objects
+    /// stops asking. Clean the texts before showing them
+    /// ([`StateTexts::cleaned`]).
+    pub async fn state_texts<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        object: ObjectIdentifier,
+    ) -> Result<StateTexts, Error> {
+        if StateTexts::properties(object.object_type()).is_empty() {
+            return Ok(StateTexts::default());
+        }
+        match self
+            .state_text_rows(client, object, &Cell::new(false))
+            .await
+        {
+            Ok(rows) => Ok(StateTexts::from_rows(&rows)),
+            Err(error) if unreachable(&error) => Err(error),
+            Err(_) => Ok(StateTexts::default()),
+        }
+    }
+
     /// `object`'s state text properties: one ReadProperty for a single
     /// one, else one ReadPropertyMultiple, or ReadProperty each when the
     /// device refuses it. `no_rpm` is set once the device has refused

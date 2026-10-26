@@ -63,3 +63,28 @@ async fn a_device_qualified_reference_needs_one_device_at_the_mac() {
     assert_eq!(active(&columns, 2), Some("Open"));
     stop(engine, server).await;
 }
+
+/// One object's texts for a one-shot read (#2132): a binary value's pair,
+/// even from a device that refuses RPM; nothing for a missing object or
+/// a type without texts.
+#[tokio::test(start_paused = true)]
+async fn one_objects_state_texts_fall_back_to_none() {
+    let (engine, server) = lab_on(RefusesRpm::new).await;
+    let to = Destination::Device(LAB);
+    let texts = to
+        .state_texts(&engine.client, oid(ObjectType::BINARY_VALUE, 2))
+        .await
+        .unwrap();
+    assert_eq!(texts.active.as_deref(), Some("Open"));
+    assert_eq!(texts.inactive.as_deref(), Some("Shut"));
+    assert_eq!(engine.client.transport().rejected(), 1);
+    for object in [
+        oid(ObjectType::BINARY_VALUE, 9),
+        oid(ObjectType::MULTI_STATE_VALUE, 9),
+        oid(ObjectType::ANALOG_INPUT, 1),
+    ] {
+        let texts = to.state_texts(&engine.client, object).await;
+        assert_eq!(texts.ok(), Some(StateTexts::default()), "{object:?}");
+    }
+    stop(engine, server).await;
+}

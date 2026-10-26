@@ -42,7 +42,7 @@ pub enum Naming {
     /// Every request sent was answered, or refused, or none was sent.
     #[default]
     Answered,
-    /// A request timed out ([`timed_out`](super::timed_out)), and the
+    /// A request timed out ([`timed_out`]), and the
     /// naming stopped there.
     TimedOut,
 }
