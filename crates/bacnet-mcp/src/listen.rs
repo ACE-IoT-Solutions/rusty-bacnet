@@ -214,18 +214,18 @@ impl Subs {
         }
         if !accepted.is_empty() {
             let mut state = self.lock();
-            if state.pending.len() >= MAX_PENDING {
-                // Dropped after the lock: its leases' release takes it.
-                let oldest = state.pending.remove(0);
-                drop(state);
-                drop(oldest);
-                state = self.lock();
+            let mut oldest = Vec::new();
+            while state.pending.len() >= MAX_PENDING {
+                oldest.push(state.pending.remove(0));
             }
             state.pending.push(Pending {
                 at: Instant::now(),
                 uris: accepted.clone(),
                 claim,
             });
+            drop(state);
+            // Dropped after the lock: their leases' release takes it.
+            drop(oldest);
         }
         accepted
     }

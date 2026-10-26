@@ -497,6 +497,22 @@ fn notifications_cannot_grow_the_rows() {
     assert!(rows.is_empty());
     dispatch::merge(&mut rows, &element, &mine);
     assert_eq!(rows.len(), 1);
+    // A whole array sent without an index isn't the element; one value
+    // without an index is.
+    let mut array = notification(
+        element.object,
+        &[(PropertyIdentifier::PRIORITY_ARRAY, None)],
+    );
+    array.notification.list_of_values[0].value = [0x00; 16].to_vec();
+    assert!(!dispatch::belongs(&element, Some(&target), &array));
+    let mut kept = rows.clone();
+    dispatch::merge(&mut kept, &element, &array);
+    assert_eq!(kept, rows, "the previous value stays");
+    let single = notification(
+        element.object,
+        &[(PropertyIdentifier::PRIORITY_ARRAY, None)],
+    );
+    assert!(dispatch::belongs(&element, Some(&target), &single));
     let whole = Point {
         watched: Watched::Property {
             property: PropertyIdentifier::PRIORITY_ARRAY,

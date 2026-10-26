@@ -16,7 +16,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 
 use super::{POINT_PROPERTIES, Point, Registry, Shared, Watched};
-use crate::format::RawRow;
+use crate::format::{RawRow, decode_all};
 
 /// Route notifications until the hub stops or the client closes its
 /// channel.
@@ -93,14 +93,17 @@ pub(super) fn belongs(
     }
 }
 
-/// The most rows a snapshot holds: the point properties and a few the
-/// device reported besides, which a device can't grow past.
+/// A backstop on a snapshot's rows, above the point properties: only those
+/// can join (see [`merge`]), so an object watch holds at most
+/// `POINT_PROPERTIES.len()` rows, and this guards that should it change.
 pub(super) const MAX_ROWS: usize = POINT_PROPERTIES.len() + 6;
 
 /// Whether `value` is one a point keeps: for an object watch, any value
 /// (what is kept is limited in [`merge`]); for a property watch, its
-/// property, at its element when it watches one (a value that names no
-/// element is taken as that element, as some devices send it).
+/// property, at its element when it watches one. A value that names no
+/// element is taken as that element only when it decodes to a single
+/// value, as some devices send it; a whole array without an index is
+/// dropped, keeping the previous value.
 fn watched_value(point: &Point, value: &BACnetPropertyValue) -> bool {
     match point.watched {
         Watched::Object => true,
@@ -108,7 +111,10 @@ fn watched_value(point: &Point, value: &BACnetPropertyValue) -> bool {
             value.property_identifier == property
                 && match index {
                     None => value.property_array_index.is_none(),
-                    Some(index) => value.property_array_index.is_none_or(|i| i == index),
+                    Some(index) => match value.property_array_index {
+                        Some(i) => i == index,
+                        None => decode_all(&value.value).is_some_and(|v| v.len() == 1),
+                    },
                 }
         }
     }
