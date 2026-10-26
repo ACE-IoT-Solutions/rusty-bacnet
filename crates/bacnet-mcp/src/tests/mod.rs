@@ -3,12 +3,15 @@
 
 mod discovery;
 mod limits;
+mod listen;
 mod protocol;
+mod resources;
 mod safety;
 mod schema;
 mod site;
 mod trends;
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -28,7 +31,7 @@ use serde_json::{Value, json};
 use tokio::io::{
     AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines, ReadHalf, WriteHalf,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -209,6 +212,10 @@ pub(crate) struct Lab {
     client: Arc<BACnetClient<Recording>>,
     serving: JoinHandle<()>,
     mute: Arc<Mutex<Option<usize>>>,
+    /// A handle on the server, for calling its handler directly.
+    pub(crate) mcp: McpServer<Recording>,
+    /// Shuts the server down gracefully when sent; `None` once it has.
+    shutdown: Option<oneshot::Sender<()>>,
 }
 
 impl Lab {
@@ -338,8 +345,8 @@ impl Lab {
             Arc::clone(&client),
             Arc::new(policy.request_limits()),
         ));
-        let mcp = McpServer::new(Some(engine), policy, "tester");
-        let (agent, serving) = Agent::connect(mcp);
+        let mcp = McpServer::new(Some(engine), policy, "tester").unwrap();
+        let (agent, serving, shutdown) = Agent::connect_until(mcp.clone());
         Self {
             agent,
             sent,
@@ -348,6 +355,8 @@ impl Lab {
             client,
             serving,
             mute,
+            mcp,
+            shutdown: Some(shutdown),
         }
     }
 
@@ -387,9 +396,20 @@ impl Lab {
         self.sent.lock().unwrap().clone()
     }
 
+    /// Shut the server down gracefully, as a signal does, and wait for it.
+    pub(crate) async fn shut_down(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        (&mut self.serving).await.unwrap();
+    }
+
     pub(crate) async fn stop(self) {
         drop(self.agent);
-        self.serving.await.unwrap();
+        if self.shutdown.is_some() {
+            self.serving.await.unwrap();
+        }
+        drop(self.mcp);
         let Ok(mut client) = Arc::try_unwrap(self.client) else {
             panic!("the server let go of the client");
         };
@@ -399,28 +419,60 @@ impl Lab {
     }
 }
 
+/// The `_meta` every 2026-07-28 request carries.
+pub(crate) fn modern_meta() -> Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": { "name": "modern-agent", "version": "1" },
+    })
+}
+
 /// The agent host's end of the pipe: newline-delimited JSON-RPC.
 pub(crate) struct Agent {
     write: WriteHalf<DuplexStream>,
     lines: Lines<BufReader<ReadHalf<DuplexStream>>>,
     next_id: u64,
+    /// Messages read while waiting for another: notifications, and
+    /// answers to requests posted earlier.
+    backlog: VecDeque<Value>,
 }
 
 impl Agent {
     /// Serve `mcp` on one end of a pipe; the agent holds the other.
     pub(crate) fn connect<T: TransportPort + 'static>(mcp: McpServer<T>) -> (Self, JoinHandle<()>) {
+        // Dropped, never sent: the server runs until the agent closes the
+        // pipe.
+        let (agent, serving, _shutdown) = Self::connect_until(mcp);
+        (agent, serving)
+    }
+
+    /// [`connect`](Self::connect), with a sender that shuts the server
+    /// down gracefully.
+    pub(crate) fn connect_until<T: TransportPort + 'static>(
+        mcp: McpServer<T>,
+    ) -> (Self, JoinHandle<()>, oneshot::Sender<()>) {
         let (agent, server) = tokio::io::duplex(1 << 20);
         let (server_read, server_write) = tokio::io::split(server);
+        let (shutdown, signal) = oneshot::channel::<()>();
         let serving = tokio::spawn(async move {
-            mcp.serve(server_read, server_write).await.unwrap();
+            let signal = async move {
+                if signal.await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            };
+            mcp.serve_until(server_read, server_write, signal)
+                .await
+                .unwrap();
         });
         let (read, write) = tokio::io::split(agent);
         let agent = Self {
             write,
             lines: BufReader::new(read).lines(),
             next_id: 1,
+            backlog: VecDeque::new(),
         };
-        (agent, serving)
+        (agent, serving, shutdown)
     }
 
     /// Send one message.
@@ -449,14 +501,115 @@ impl Agent {
         id
     }
 
-    /// A request and its response, skipping notifications.
+    /// A request and its response; other messages wait in the backlog.
     pub(crate) async fn request(&mut self, method: &str, params: Value) -> Value {
         let id = self.post(method, params).await;
+        self.answer(id).await
+    }
+
+    /// The answer to request `id`, from the backlog or the pipe.
+    pub(crate) async fn answer(&mut self, id: u64) -> Value {
+        if let Some(at) = self.backlog.iter().position(|m| m["id"] == json!(id)) {
+            return self.backlog.remove(at).unwrap();
+        }
         loop {
             let message = self.receive().await;
-            if message["id"] == json!(id) {
+            if message["id"] == json!(id) && message.get("method").is_none() {
                 return message;
             }
+            self.backlog.push_back(message);
+        }
+    }
+
+    /// The next notification of `method`, from the backlog or the pipe.
+    pub(crate) async fn notification(&mut self, method: &str) -> Value {
+        if let Some(at) = self
+            .backlog
+            .iter()
+            .position(|m| m["method"] == json!(method))
+        {
+            return self.backlog.remove(at).unwrap();
+        }
+        loop {
+            let message = self.receive().await;
+            if message["method"] == json!(method) {
+                return message;
+            }
+            self.backlog.push_back(message);
+        }
+    }
+
+    /// Notifications of `method` already read or arriving within `wait`.
+    pub(crate) async fn drain(&mut self, method: &str, wait: Duration) -> Vec<Value> {
+        let deadline = Instant::now() + wait;
+        while let Ok(Ok(Some(line))) =
+            tokio::time::timeout_at(deadline, self.lines.next_line()).await
+        {
+            self.backlog.push_back(serde_json::from_str(&line).unwrap());
+        }
+        let (matching, rest): (VecDeque<Value>, VecDeque<Value>) =
+            std::mem::take(&mut self.backlog)
+                .into_iter()
+                .partition(|m| m["method"] == json!(method));
+        self.backlog = rest;
+        matching.into()
+    }
+
+    /// A 2026-07-28 request: no handshake, the version and capabilities in
+    /// its `_meta`.
+    pub(crate) async fn modern(&mut self, method: &str, mut params: Value) -> Value {
+        params["_meta"] = modern_meta();
+        self.request(method, params).await
+    }
+
+    /// Open a `subscriptions/listen` stream for `uris`; its request id and
+    /// the URIs the acknowledgment lists.
+    pub(crate) async fn listen(&mut self, uris: &[&str]) -> (u64, Vec<String>) {
+        let id = self
+            .post(
+                "subscriptions/listen",
+                json!({ "_meta": modern_meta(),
+                        "notifications": { "resourceSubscriptions": uris } }),
+            )
+            .await;
+        let ack = loop {
+            let ack = self
+                .notification("notifications/subscriptions/acknowledged")
+                .await;
+            if ack["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"] == json!(id) {
+                break ack;
+            }
+            self.backlog.push_back(ack);
+        };
+        let accepted = ack["params"]["notifications"]["resourceSubscriptions"]
+            .as_array()
+            .map(|uris| {
+                uris.iter()
+                    .map(|uri| uri.as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        (id, accepted)
+    }
+
+    /// Cancel request `id`, a listen stream say.
+    pub(crate) async fn cancel(&mut self, id: u64) {
+        self.send(
+            json!({ "jsonrpc": "2.0", "method": "notifications/cancelled",
+                          "params": { "requestId": id } }),
+        )
+        .await;
+    }
+
+    /// A 2026-07-28 `resources/read`: the JSON content, or the error.
+    pub(crate) async fn read(&mut self, uri: &str) -> Result<Value, Value> {
+        let reply = self.modern("resources/read", json!({ "uri": uri })).await;
+        match reply.get("result") {
+            Some(result) => {
+                let text = result["contents"][0]["text"].as_str().unwrap();
+                Ok(serde_json::from_str(text).unwrap())
+            }
+            None => Err(reply["error"].clone()),
         }
     }
 
