@@ -4,11 +4,14 @@
 //! The rows due on a device are read together: by ReadPropertyMultiple, up
 //! to [`MAX_BATCH`] rows a request, each row its own access specification,
 //! or by ReadProperty once the device has refused RPM (Clause 15.5). A
-//! batch the device fails as a whole is read by ReadProperty for this poll
-//! only, so one bad object can't put errors on its neighbours. A device
+//! batch whose answer would be too large is asked again a row at a time;
+//! any other batch the device fails as a whole is read by ReadProperty for
+//! this poll only, so one bad object can't put errors on its neighbours. A device
 //! that stops answering ends the poll, and the rows left get its error at
 //! once. Every request takes its own turn at the device's gate under the
 //! shared [`RequestLimits`].
+
+use std::collections::VecDeque;
 
 use bacnet_client::client::BACnetClient;
 use bacnet_transport::port::TransportPort;
@@ -23,6 +26,11 @@ use crate::limits::{RequestLimits, Turn};
 
 /// Rows read by one ReadPropertyMultiple when polling.
 pub const MAX_BATCH: usize = 16;
+
+/// Properties one ReadPropertyMultiple of a poll asks for at most, all its
+/// rows together: a batch ends at [`MAX_BATCH`] rows or here, whichever
+/// comes first, so rows that read many properties make smaller batches.
+pub const MAX_BATCH_PROPERTIES: usize = 32;
 
 /// Why a row of an answer has no reading.
 pub const MISSING: &str = "missing from the device's answer";
@@ -74,7 +82,8 @@ pub async fn poll<K: Copy, T: TransportPort + 'static>(
     let started_rpm = rpm;
     let mut read = Vec::with_capacity(rows.len());
     let mut silent: Option<Error> = None;
-    for batch in rows.chunks(MAX_BATCH) {
+    let mut batches: VecDeque<&[PollRow<K>]> = batches(rows).collect();
+    while let Some(batch) = batches.pop_front() {
         if let Some(error) = &silent {
             read.extend(batch.iter().map(|row| (row.key, Err(error.to_string()))));
             continue;
@@ -96,6 +105,15 @@ pub async fn poll<K: Copy, T: TransportPort + 'static>(
                             "device {device} refused ReadPropertyMultiple ({error}); polling one property at a time"
                         );
                         rpm = false;
+                    }
+                    RpmFailure::TooLarge if batch.len() > 1 => {
+                        tracing::debug!(
+                            "device {device}: batch answer too large ({error}); reading it a row at a time"
+                        );
+                        for at in (0..batch.len()).rev() {
+                            batches.push_front(&batch[at..=at]);
+                        }
+                        continue;
                     }
                     RpmFailure::TooLarge | RpmFailure::Other => tracing::debug!(
                         "device {device}: batch read failed ({error}); reading it one property at a time"
@@ -122,6 +140,31 @@ pub async fn poll<K: Copy, T: TransportPort + 'static>(
         refused_rpm: started_rpm && !rpm,
         unreachable: silent.is_some(),
     }
+}
+
+/// `rows` in batches of at most [`MAX_BATCH`] rows and
+/// [`MAX_BATCH_PROPERTIES`] properties; a row asking for more is a batch of
+/// its own.
+fn batches<K>(rows: &[PollRow<K>]) -> impl Iterator<Item = &[PollRow<K>]> {
+    let mut start = 0;
+    std::iter::from_fn(move || {
+        if start == rows.len() {
+            return None;
+        }
+        let mut end = start;
+        let mut properties = 0;
+        while end < rows.len() && end - start < MAX_BATCH {
+            let more = rows[end].wanted.len();
+            if end > start && properties + more > MAX_BATCH_PROPERTIES {
+                break;
+            }
+            properties += more;
+            end += 1;
+        }
+        let batch = &rows[start..end];
+        start = end;
+        Some(batch)
+    })
 }
 
 /// `row`'s first [`PollRow::one_by_one`] properties by ReadProperty each;
@@ -204,4 +247,37 @@ async fn rpm_batch<K: Copy, T: TransportPort + 'static>(
             (row.key, Ok(rows))
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use bacnet_types::enums::ObjectType;
+
+    use super::*;
+
+    fn row(key: usize, properties: usize) -> PollRow<usize> {
+        PollRow {
+            key,
+            object: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
+            wanted: vec![(PropertyIdentifier::PRESENT_VALUE, None); properties],
+            one_by_one: 1,
+        }
+    }
+
+    fn sizes(rows: &[PollRow<usize>]) -> Vec<usize> {
+        batches(rows).map(<[_]>::len).collect()
+    }
+
+    /// Two-property rows go sixteen to a batch; ten-property rows three;
+    /// a row past the property cap goes alone.
+    #[test]
+    fn batches_end_at_sixteen_rows_or_thirty_two_properties() {
+        let small: Vec<_> = (0..40).map(|k| row(k, 2)).collect();
+        assert_eq!(sizes(&small), [16, 16, 8]);
+        let points: Vec<_> = (0..7).map(|k| row(k, 10)).collect();
+        assert_eq!(sizes(&points), [3, 3, 1]);
+        let wide = [row(0, 40), row(1, 2), row(2, 40)];
+        assert_eq!(sizes(&wide), [1, 1, 1]);
+        assert!(sizes(&[]).is_empty());
+    }
 }
