@@ -58,11 +58,12 @@ fn rows_map_to_hub_points() {
 }
 
 fn snapshot(source: Option<hub::Source>, why: Option<Why>, note: Option<&str>) -> Snapshot {
-    let mut snapshot = Snapshot::default();
-    snapshot.source = source;
-    snapshot.why = why;
-    snapshot.note = note.map(str::to_string);
-    snapshot
+    Snapshot {
+        source,
+        why,
+        note: note.map(str::to_string),
+        ..Snapshot::default()
+    }
 }
 
 /// The hub's reasons read as the list has always shown them, and a poll's
