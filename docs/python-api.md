@@ -655,21 +655,37 @@ unspecified. An Access Rights rule whose specifiers disagree with the
 references it carries, which no typed write makes, has no `AccessRule` form,
 so its array reads as `application_data`.
 
-An Event_Parameters mapping carries `kind` and the algorithm's members:
-`change_of_bitstring` (`time_delay`, `bitmask`, `list_of_values`, each bit
-string a `BitString` as a `bit_string` value reads),
-`change_of_state` (`time_delay`, `list_of_values` of `(choice_tag, value)`
-pairs: a bool for tag 0, an int for the enumerated and numeric tags, the
-contents as `bytes` for a vendor tag), `change_of_value` (`time_delay`, then
-`bitmask` or `referenced_property_increment`, the other `None`),
-`floating_limit` (`time_delay`, `setpoint_reference` as a
-`DeviceObjectPropertyReference` mapping, `low_diff_limit`, `high_diff_limit`,
-`deadband`), `out_of_range` (`time_delay`, `low_limit`, `high_limit`,
-`deadband`), `extended` (`vendor_id`, `extended_event_type`, `parameters` as
-encoded `bytes`), `none`, or `other` (`tag` and `data`, the encoded contents)
-for an algorithm the stack keeps as octets. There is no typed write; the read
-value writes back as its octets. An enrollment whose parameters were never set
-serves the `none` alternative (#1868).
+An Event_Parameters mapping carries `kind` and the algorithm's members,
+every algorithm of the standard by name (#2090):
+
+| `kind` | Members |
+|--------|---------|
+| `change_of_bitstring` | `time_delay`, `bitmask`, `list_of_values` (the CLI's JSON calls it `list_of_bitstring_values`, the standard's name; Python keeps its earlier key); each bit string a `BitString` as a `bit_string` value reads |
+| `change_of_state` | `time_delay`, `list_of_values` of `(choice_tag, value)` pairs: a bool for tag 0, an int for the enumerated and numeric tags, the contents as `bytes` for a vendor tag |
+| `change_of_value` | `time_delay`, then `bitmask` or `referenced_property_increment`, the other `None` |
+| `command_failure` | `time_delay`, `feedback_property_reference` |
+| `floating_limit` | `time_delay`, `setpoint_reference`, `low_diff_limit`, `high_diff_limit`, `deadband` |
+| `out_of_range`, `double_out_of_range` | `time_delay`, `low_limit`, `high_limit`, `deadband`, floats |
+| `signed_out_of_range`, `unsigned_out_of_range` | the same members, ints |
+| `unsigned_range` | `time_delay`, `low_limit`, `high_limit` |
+| `change_of_life_safety` | `time_delay`, `list_of_life_safety_alarm_values`, `list_of_alarm_values` (life safety states as ints), `mode_property_reference` |
+| `extended` | `vendor_id`, `extended_event_type`, `parameters` as encoded `bytes` |
+| `buffer_ready` | `notification_threshold`, `previous_notification_count` |
+| `access_event` | `list_of_access_events` (access events as ints), `access_event_time_reference` |
+| `change_of_characterstring` | `time_delay`, `list_of_alarm_values`, strings |
+| `change_of_status_flags` | `time_delay`, `selected_flags`, a `BitString` naming the status flags |
+| `change_of_discrete_value` | `time_delay` |
+| `change_of_timer` | `time_delay`, `alarm_values` (timer states as ints), `update_time_reference` |
+| `none` | no other key |
+| `other` | `tag` and `data`, the encoded contents, for a tag the standard doesn't assign |
+
+A `*_reference` member is a `DeviceObjectPropertyReference` mapping.
+Python has no enumeration class for life safety states, access events or
+timer states, so those are their numbers. Before 0.15 the algorithms from
+`command_failure` on (but `floating_limit` and `extended`) read as `other`.
+There is no typed write; the read value writes back as its octets. An
+enrollment whose parameters were never set serves the `none` alternative
+(#1868).
 
 A Group's Present_Value results, and an `ActionCommand`'s `property_value`,
 are themselves read results: each value is shaped as a read of the property it
@@ -2145,6 +2161,31 @@ choice and whose key of the same name holds the value, for example
 `{"kind": "real", "real": 72.5}`; a Trend Log record adds `"status_flags"`.
 A `log_status` or `status_flags` value, and a `bitstring` datum, is a
 [`BitString`](#bit-strings-and-enum-names); the first two are named.
+An Event Log's `notification` datum is a dict of the notification's
+members, its `"event_values"` `None` or a dict whose `"kind"` names the event
+type in snake case (#2073), with each value under its member's name:
+
+```python
+{"kind": "out_of_range", "exceeding_value": 101.5,
+ "status_flags": BitString(...),  # names ["IN_ALARM"]
+ "deadband": 1.0, "exceeded_limit": 100.0}
+```
+
+The keys follow the event type's members in the standard, for every type the
+stack decodes, from `change_of_bitstring` to `change_of_timer`, and
+`complex_event_type` too. Status flags and other bit strings are
+`BitString`s; a property state is a `(choice_tag, value)` pair, as in
+[Event_Parameters](#typed-constructed-values); a life safety operation is a
+`LifeSafetyOperation`; the enumerations Python has no class for (life safety
+states and modes, reliabilities, access events, timer states and
+transitions) are their numbers. A value the standard leaves open (a
+command-failure's commanded and feedback values, a discrete value, a status
+flags change's present value, a reported property value) is a
+`PropertyValue`, or a list of them. Dates and times are `(date, time)` pairs,
+references `DeviceObjectPropertyReference` mappings, an access credential an
+`ObjectIdentifier` or `(device, object)` pair, and an authentication factor
+`(format_type, format_class, value)`. An optional member the device left out
+is `None`. Before 0.15, `"event_values"` was the encoded values as `bytes`.
 It raises `ValueError` for any other result, or when the item data doesn't
 decode as `item_count` records, naming the first record that fails by index
 and offset.

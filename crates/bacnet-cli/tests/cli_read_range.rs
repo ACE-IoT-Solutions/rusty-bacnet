@@ -14,8 +14,8 @@ use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip::BipTransport;
 use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::{
-    BACnetEventLogRecord, BACnetLogMultipleRecord, BACnetLogRecord, EventLogDatum,
-    EventNotificationRequest, LogData, LogDatum, LogValue,
+    BACnetEventLogRecord, BACnetLogMultipleRecord, BACnetLogRecord, BACnetPropertyStates,
+    EventLogDatum, EventNotificationRequest, LogData, LogDatum, LogValue, NotificationParameters,
 };
 use bacnet_types::enums::{EventState, EventType, NotifyType, ObjectType};
 use bacnet_types::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, StatusFlags, Time};
@@ -101,6 +101,45 @@ async fn server() -> BACnetServer<BipTransport> {
             .unwrap();
     }
 
+    // Event Log 2: notifications carrying their event values (#2073).
+    let mut valued = EventLogObject::new(2, "EL-2", 10).unwrap();
+    for (hour, notification) in [
+        (
+            8,
+            EventNotificationRequest {
+                event_values: Some(NotificationParameters::OutOfRange {
+                    exceeding_value: 101.5,
+                    status_flags: StatusFlags::IN_ALARM,
+                    deadband: 1.0,
+                    exceeded_limit: 100.0,
+                }),
+                ..alarm()
+            },
+        ),
+        (
+            9,
+            EventNotificationRequest {
+                event_type: EventType::CHANGE_OF_STATE,
+                message_text: None,
+                from_state: EventState::NORMAL,
+                to_state: EventState::OFFNORMAL,
+                event_values: Some(NotificationParameters::ChangeOfState {
+                    new_state: BACnetPropertyStates::BinaryValue(1),
+                    status_flags: StatusFlags::IN_ALARM | StatusFlags::OUT_OF_SERVICE,
+                }),
+                ..alarm()
+            },
+        ),
+    ] {
+        valued
+            .add_record(BACnetEventLogRecord {
+                date: DATE,
+                time: time(hour),
+                log_datum: EventLogDatum::Notification(notification),
+            })
+            .unwrap();
+    }
+
     let mut multiple = TrendLogMultipleObject::new(1, "TLM-1", 10).unwrap();
     multiple
         .add_record(BACnetLogMultipleRecord {
@@ -131,6 +170,7 @@ async fn server() -> BACnetServer<BipTransport> {
     let objects: Vec<Box<dyn BACnetObject>> = vec![
         Box::new(trend),
         Box::new(events),
+        Box::new(valued),
         Box::new(multiple),
         Box::new(long),
     ];
@@ -279,6 +319,65 @@ async fn read_range_prints_decoded_log_records() {
     let table = read_range(&target, "trend-log:1", "table").await;
     assert!(table.contains("Status flags"), "{table}");
     assert!(table.contains("IN_ALARM"), "{table}");
+
+    server.stop().await.unwrap();
+}
+
+/// An Event Log's notifications show their event values for each event
+/// type, in the table and as typed fields in JSON (#2073).
+#[tokio::test]
+async fn read_range_shows_event_values_per_event_type() {
+    let mut server = server().await;
+    let target = target(&server);
+
+    let out_of_range = "ALARM OUT_OF_RANGE ANALOG_INPUT:3 NORMAL -> HIGH_LIMIT \"too hot\" \
+                        {exceeding value 101.5, flags in-alarm, deadband 1, limit 100}";
+    let change_of_state = "ALARM CHANGE_OF_STATE ANALOG_INPUT:3 NORMAL -> OFFNORMAL \
+                           {state active, flags in-alarm | out-of-service}";
+    let table = read_range(&target, "event-log:2", "table").await;
+    for cell in [out_of_range, change_of_state] {
+        assert!(table.contains(cell), "{cell}: {table}");
+    }
+
+    let events: serde_json::Value =
+        serde_json::from_str(&read_range(&target, "event-log:2", "json").await).unwrap();
+    assert_eq!(
+        events["records"],
+        json!([
+            {
+                "timestamp": "2026-10-03 08:00:00.00",
+                "datum": out_of_range,
+                "event_values": {
+                    "element": "notification-parameters",
+                    "text": "out-of-range: exceeding value 101.5, flags in-alarm, deadband 1, \
+                             limit 100",
+                    "fields": {
+                        "event_type": {"value": 5, "name": "out-of-range"},
+                        "exceeding_value": 101.5,
+                        "status_flags": {"bits": "1000", "names": ["in-alarm"]},
+                        "deadband": 1.0,
+                        "exceeded_limit": 100.0,
+                    },
+                },
+            },
+            {
+                "timestamp": "2026-10-03 09:00:00.00",
+                "datum": change_of_state,
+                "event_values": {
+                    "element": "notification-parameters",
+                    "text": "change-of-state: state active, flags in-alarm | out-of-service",
+                    "fields": {
+                        "event_type": {"value": 1, "name": "change-of-state"},
+                        "new_state": {"element": "property-state", "text": "active"},
+                        "status_flags": {
+                            "bits": "1001",
+                            "names": ["in-alarm", "out-of-service"],
+                        },
+                    },
+                },
+            },
+        ])
+    );
 
     server.stop().await.unwrap();
 }

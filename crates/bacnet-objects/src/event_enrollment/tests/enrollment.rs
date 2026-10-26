@@ -323,13 +323,7 @@ fn write_event_parameters_framed_trailing_garbage_rejected() {
             panic!("expected ApplicationData");
         };
         let (decoded, _) = bacnet_encoding::constructed::decode_event_parameter(bytes, 0).unwrap();
-        assert_eq!(
-            decoded,
-            BACnetEventParameter::Opaque {
-                tag: 20,
-                data: Vec::new()
-            }
-        );
+        assert_eq!(decoded, BACnetEventParameter::None);
     }
 }
 

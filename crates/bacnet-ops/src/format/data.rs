@@ -6,7 +6,7 @@
 //! reference, `docs/CLI.md`, "Value JSON"); names are kebab case, as in the
 //! text.
 
-use bacnet_encoding::constructed::ElementShape;
+use bacnet_encoding::constructed::{ConstructedElement, ElementShape};
 use bacnet_types::enums::{
     PropertyIdentifier, ResolvedBits, ResolvedEnum, resolve_bits, resolve_enum,
 };
@@ -14,7 +14,7 @@ use bacnet_types::primitives::PropertyValue;
 use serde::Serialize;
 
 use super::primitive::{date_text, hex, plain_bits, time_text};
-use super::{ValueFormat, constructed, decode_all, holds_state, is_binary};
+use super::{ValueFormat, constructed, decode_all, event_parameter, holds_state, is_binary};
 use crate::label::kebab;
 
 /// A property value as typed data. Serialized untagged, so each form is
@@ -92,19 +92,70 @@ pub enum Datum {
     List(Vec<Datum>),
     /// One constructed element (a timestamp, a schedule day, a recipient):
     /// `{"element": "daily-schedule", "text": "Mon 07:00 = active"}`. The
-    /// element names its kind, so structured fields can join it later; the
-    /// text is for display, not for parsing.
+    /// element names its kind; the text is for display, not for parsing.
+    /// An element decoded field by field (an Event_Parameters value, an
+    /// event notification's values) adds them under `fields`.
     Constructed {
         /// The element's kind in kebab case, `destination`.
         element: String,
         /// The element as the text writes it.
         text: String,
+        /// Its fields by name, when the element is decoded field by field.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fields: Option<Fields>,
     },
     /// Octets that don't decode: `{"raw": "0e0f"}`.
     Raw {
         /// The octets as hex.
         raw: String,
     },
+}
+
+/// The named fields of a [`Datum::Constructed`], in their wire order;
+/// JSON writes them as an object keyed by name in snake case,
+/// `{"time_delay": 30, "low_limit": 10}`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Fields(Vec<(String, Datum)>);
+
+impl Fields {
+    /// Fields from `(name, value)` pairs, in order.
+    pub fn new(fields: Vec<(String, Datum)>) -> Self {
+        Self(fields)
+    }
+
+    /// The value of the field `name`.
+    pub fn get(&self, name: &str) -> Option<&Datum> {
+        self.0
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value)
+    }
+
+    /// The fields in order, each its name and value.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Datum)> {
+        self.0.iter().map(|(key, value)| (key.as_str(), value))
+    }
+
+    /// How many fields there are.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Serialize for Fields {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (key, value) in &self.0 {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
 }
 
 impl ValueFormat<'_> {
@@ -118,6 +169,15 @@ impl ValueFormat<'_> {
     /// [`Self::data`] of a read at an array index, as
     /// [`Self::value_at`] reads it.
     pub fn data_at(&self, property: PropertyIdentifier, index: Option<u32>, data: &[u8]) -> Datum {
+        if let Some((ConstructedElement::EventParameter, shape, _)) =
+            self.element_at(property, index)
+            && let Some(mut items) = event_parameter::data(self, data)
+        {
+            return match shape {
+                ElementShape::Single if items.len() == 1 => items.remove(0),
+                _ => Datum::List(items),
+            };
+        }
         if let Some((element, shape, texts)) = self.elements_at(property, index, data) {
             let kind = constructed::element_name(element);
             let mut items: Vec<Datum> = texts
@@ -125,6 +185,7 @@ impl ValueFormat<'_> {
                 .map(|text| Datum::Constructed {
                     element: kind.into(),
                     text,
+                    fields: None,
                 })
                 .collect();
             return match shape {

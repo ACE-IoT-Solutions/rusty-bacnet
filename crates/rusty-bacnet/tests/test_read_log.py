@@ -239,6 +239,69 @@ class ReadLogLiveTests(unittest.IsolatedAsyncioTestCase):
                         client.read_range("not-an-address", LOG, PropertyIdentifier.LOG_BUFFER, **options)
 
 
+# The same alarm carrying its event values (#2073): out-of-range [5] with
+# exceeding value 101.5, IN_ALARM, deadband 1 and exceeded limit 100.
+VALUED_NOTIFICATION = NOTIFICATION + bytes.fromhex(
+    "ce 5e 0c 42cb0000 1a 0480 2c 3f800000 3c 42c80000 5f cf"
+)
+VALUED_APDU = bytes.fromhex("01 00 10 03") + VALUED_NOTIFICATION
+VALUED_FRAME = bytes.fromhex("81 0a") + (4 + len(VALUED_APDU)).to_bytes(2, "big") + VALUED_APDU
+
+
+def holds_bytes(value) -> bool:
+    """Whether `value`, or anything in a dict, list or tuple of it, is bytes."""
+    if isinstance(value, bytes):
+        return True
+    if isinstance(value, dict):
+        return any(holds_bytes(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(holds_bytes(item) for item in value)
+    return False
+
+
+class EventValuesTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_logged_notification_keeps_its_values_as_a_mapping(self) -> None:
+        server = BACnetServer(
+            1_530_002, interface="127.0.0.1", port=0, broadcast_address="127.0.0.1"
+        )
+        server.add_event_log(1, "EL-1", 8, log_received_notifications=True)
+        await server.start()
+        try:
+            address = await server.local_address()
+            ip, port = address.split(":")
+            loop = asyncio.get_running_loop()
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as peer:
+                peer.bind(("127.0.0.1", 0))
+                peer.setblocking(False)
+                await loop.sock_sendto(peer, VALUED_FRAME, (ip, int(port)))
+            async with BACnetClient(interface="127.0.0.1", port=0) as client:
+                async with asyncio.timeout(WAIT):
+                    while True:
+                        result = await client.read_range(
+                            address, LOG, PropertyIdentifier.LOG_BUFFER
+                        )
+                        if result["item_count"] >= 1:
+                            break
+                        await asyncio.sleep(0.05)
+            records = rusty_bacnet.decode_log_records(result)
+        finally:
+            await server.stop()
+        notification = records[0]["datum"]["notification"]
+        values = notification["event_values"]
+        self.assertEqual(
+            values,
+            {
+                "kind": "out_of_range",
+                "exceeding_value": 101.5,
+                "status_flags": values["status_flags"],
+                "deadband": 1.0,
+                "exceeded_limit": 100.0,
+            },
+        )
+        self.assertEqual(values["status_flags"].names, ["IN_ALARM"])
+        self.assertFalse(holds_bytes(records), records)
+
+
 class WrappedDeviceTests(unittest.IsolatedAsyncioTestCase):
     async def test_strict_refuses_and_lenient_keeps_a_zero_first_sequence_page(self) -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as device:

@@ -566,7 +566,8 @@ fn data_carries_numbers_with_names() {
         data(O::DEVICE, P::AUDIT_NOTIFICATION_RECIPIENT, &audit),
         Datum::Constructed {
             element: "recipient".into(),
-            text: "device 9".into()
+            text: "device 9".into(),
+            fields: None,
         }
     );
 }

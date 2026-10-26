@@ -45,7 +45,8 @@
 //! read the monitored value at all is an observation gap and changes no
 //! state, inhibited or not, so a forced return to NORMAL waits for the next
 //! readable pass: its notification carries that value. An enrollment whose
-//! parameters this evaluator doesn't model (Opaque or Extended) still gets
+//! parameters this evaluator doesn't run (Opaque, Extended, or another
+//! algorithm without an evaluator here) still gets
 //! the forced NORMAL, since leaving the OffNormal state under the inhibit
 //! doesn't depend on the algorithm (Clause 13.2.2.1.2). With
 //! `Event_Algorithm_Inhibit_Ref` set, the value is the referenced property's
@@ -704,13 +705,13 @@ pub(crate) fn evaluate_event_enrollments_for_delivery(
             }
             // Legacy raw-octet writes are stored under the sentinel tag 0xFF
             // with the private little-endian payload — only those route to
-            // the byte-layout evaluator. A framed write of an UNMODELED spec
-            // alternative (e.g. access-event [13]) decodes to `Opaque` too,
-            // but its payload is a context-tagged TLV body: feeding tag
-            // bytes to the LE evaluator would reinterpret them as IEEE-754
-            // limits and fabricate spurious HIGH/LOW_LIMIT transitions from
-            // a conformant peer's configuration. Unmodeled alternatives are
-            // preserved for read-back but never evaluated.
+            // the byte-layout evaluator. A framed write of an alternative
+            // under an unassigned tag decodes to `Opaque` too, but its
+            // payload is a context-tagged TLV body: feeding tag bytes to the
+            // LE evaluator would reinterpret them as IEEE-754 limits and
+            // fabricate spurious HIGH/LOW_LIMIT transitions from a peer's
+            // configuration. Such alternatives are preserved for read-back
+            // but never evaluated.
             //
             // The LE layouts carry no Time_Delay field: delay 0 keeps this
             // path's historical immediate-transition behavior.
@@ -719,12 +720,14 @@ pub(crate) fn evaluate_event_enrollments_for_delivery(
                 eval_legacy_le_arm(data, &monitored_value, current_state, event_type),
             ),
             // `none` [20] has no offnormal states (#1868).
-            BACnetEventParameter::Opaque { tag: 20, data } if data.is_empty() => {
-                (0, eval_none_arm(current_state))
-            }
+            BACnetEventParameter::None => (0, eval_none_arm(current_state)),
             BACnetEventParameter::Opaque { .. } => continue,
-            // Extended [9] and any other modeled-but-unmodeled-for-evaluation
-            // alternatives produce no transition here.
+            // Extended [9] and the algorithms this evaluator doesn't run
+            // (command-failure, change-of-life-safety, buffer-ready,
+            // unsigned-range, access-event, the typed out-of-range forms,
+            // change-of-characterstring, change-of-status-flags,
+            // change-of-discrete-value, change-of-timer) produce no
+            // transition here, as when they were kept as `Opaque` (#2090).
             _ => continue,
         };
 
