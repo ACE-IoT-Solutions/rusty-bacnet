@@ -400,7 +400,7 @@ async fn native_serial_execution_modes_share_host_timing_harness() {
     use crate::mstp::{MstpExecutionMode, execution_tests::execution_timing_harness};
 
     // Native pseudo-terminals exercise the backend used for UART and USB ports;
-    // late-tail delivery models host chunking, not physical RS-485 timing.
+    // split reads model host chunking, not physical RS-485 timing.
     for baud in [9600, 38400, 76800] {
         for chunked in [false, true] {
             for software_direction in [false, true] {
