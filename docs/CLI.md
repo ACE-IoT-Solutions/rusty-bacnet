@@ -563,8 +563,8 @@ Its columns are `unix_ms,device,object,property,value,status_flags,source,networ
 `device` is the plain instance and `network` a routed device's network,
 empty on the local network.
 
-**Network screen.** Its BBMD tabs are for B/IP, and its Networks tab
-(below) works on every transport. `4` shows the foreign-device panel and one BBMD's
+**Network screen.** Its BBMD tabs are for B/IP, and its Networks tab (below)
+works on every transport. `4` shows the foreign-device panel and one BBMD's
 tables. With `--foreign-bbmd` (or a profile with a BBMD) the panel shows the
 BBMD, the TTL, the last BVLC-Result, a countdown to the next registration and
 the lease left; a refused registration raises a red banner on every screen.
@@ -572,16 +572,19 @@ Once the BBMD accepts, the TUI reads its FDT and shows the entry the BBMD
 recorded for us, the address it forwards broadcasts to; when no entry has our
 address, a NAT router may have rewritten it. `:bbmd ADDRESS` reads any other
 BBMD, and `:bbmd` alone goes back to ours, as the footer says meanwhile. Tab
-switches between the BDT, with what each entry's mask means for
-forwarding, the FDT, with each entry's seconds left, and the consistency
-matrix; `r` reads again. `m` reads the BDT of every BBMD the tables lead to (up
-to 16) and shows which lists which: a peer listed one way only, a BDT without
-its own entry, a BBMD listed with different masks, and BBMDs that refuse the
-read or don't answer are flagged. Every read is a BVLC request; nothing is
-written. The matrix matches BBMDs by address, so a BBMD reached at an address
-other than its own BDT entry (behind NAT, its global address in peers' tables
-and its private one in its own) shows as two rows, one flagged with no entry
-for itself.
+switches between the BDT, with what each entry's mask means for forwarding,
+the FDT, with each entry's seconds left (`!` and `expiring` under 30 s), and
+the consistency matrix; `r` reads again. `m` reads the BDT of every BBMD the
+tables lead to (up to 16) and shows which lists which: a peer listed one way
+only, a BDT without its own entry, a BBMD listed with different masks, and
+BBMDs that refuse the read or don't answer are flagged. Entries the survey
+never reads (unresolved, unspecified, broadcast, directed broadcast,
+multicast, loopback or our own address) are listed under the findings with the
+BBMD that listed them and the reason, and BBMDs past the grid's limit of 32
+are counted. Every read is a BVLC request; nothing is written. The matrix
+matches BBMDs by address, so a BBMD reached at an address other than its own
+BDT entry (behind NAT, its global address in peers' tables and its private one
+in its own) shows as two rows, one flagged with no entry for itself.
 
 **Who-Has and the Networks tab.** `:find NAME` broadcasts a Who-Has for the
 object named NAME (the rest of the line, exactly as typed, apostrophes and
