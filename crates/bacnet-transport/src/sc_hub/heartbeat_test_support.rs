@@ -230,7 +230,7 @@ pub(super) struct ClockIo(pub AtomicU64);
 
 impl HeartbeatIo for ClockIo {
     fn policy(&self) -> ScHubProbePolicy {
-        ScHubProbePolicy::default()
+        ack_bound_policy()
     }
     fn now_ms(&self) -> u64 {
         self.0.load(Ordering::Acquire)
@@ -260,7 +260,7 @@ impl GatedIo {
 
 impl HeartbeatIo for GatedIo {
     fn policy(&self) -> ScHubProbePolicy {
-        ScHubProbePolicy::default()
+        ack_bound_policy()
     }
     fn now_ms(&self) -> u64 {
         self.now.load(Ordering::Acquire)
@@ -282,7 +282,16 @@ impl HeartbeatIo for GatedIo {
 pub(super) fn probe_runtime() -> super::timing::HubTiming {
     super::timing::HubTiming {
         origin: tokio::time::Instant::now() - Duration::from_secs(100),
-        policy: ScHubProbePolicy::default(),
+        policy: ack_bound_policy(),
         relay_send_budget: Duration::from_secs(5),
     }
+}
+
+/// The default probe policy with its liveness bound cut to the ACK age, so
+/// the first unanswered probe retires, as before #2141. The sweep fixtures
+/// here test ACK matching, generations and retirement races at t=100s/106s,
+/// not the liveness bound, which `probe_liveness_tests` covers.
+pub(super) fn ack_bound_policy() -> ScHubProbePolicy {
+    let policy = ScHubProbePolicy::default();
+    policy.with_liveness_bound(policy.ack_age()).unwrap()
 }

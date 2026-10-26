@@ -5602,6 +5602,7 @@ hub = ScHub(
     handshake_connect_request_ms=10000,  # 5s minimum per Annex AB.6.2.3
     probe_scan_interval_ms=30000, probe_idle_age_ms=60000,
     probe_ack_age_ms=5000, probe_send_budget_ms=5000,
+    probe_liveness_bound_ms=360000,       # silence after an unanswered probe
     relay_send_budget_ms=5000,            # each transit relay acquisition + send
     broadcast_sender_burst=1024, broadcast_sender_per_second=128,
     broadcast_global_burst=4096, broadcast_global_per_second=512,
@@ -5634,6 +5635,16 @@ reservation before sending. Delayed scans are skipped, and serial sends can
 postpone detection, so `probe_ack_age_ms` is not a hard closure deadline. A valid
 matching ACK clears pending and refreshes activity; wrong/invalid ACKs do not.
 `probe_send_budget_ms` includes sink acquisition and send.
+A connector is the initiating peer, so Annex AB.6.3 doesn't oblige it to answer
+probes (#2141). An unanswered probe retires it only once
+`probe_liveness_bound_ms` (default 360000) passes with nothing received from it
+since the probe, and isn't repeated until it sends something. A connector that
+ignores probes but sends its own Heartbeat-Request on any timeout up to 300
+seconds stays registered; the probe restarts its timer, which is why the bound
+counts from the probe. The cost: a dead connector lingers about seven and a half
+to eight minutes with the defaults. A bound no larger than `probe_ack_age_ms`
+retires on the first unanswered probe, unless the connector sends something
+first. The bound is capped at one day (86400000).
 `relay_send_budget_ms` independently bounds each transit acquisition-plus-send
 attempt: NPDU/opaque unicast, each concurrent broadcast recipient, and forwarded
 BVLC-Result. Timeout does not retire, retry, or fabricate a Result and cannot

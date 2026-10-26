@@ -8,11 +8,15 @@ use std::time::Duration;
 fn ms(value: u64) -> Duration {
     Duration::from_millis(value)
 }
+// Liveness bound cut to the ACK age: these tests pin ACK-age strictness and
+// scan skipping on the first unanswered probe, as before #2141.
 fn policy(scan: u64, idle: u64, ack: u64, send: u64) -> ScHubProbePolicy {
-    ScHubProbePolicy::new(ms(scan), ms(idle), ms(ack), ms(send)).unwrap()
+    ScHubProbePolicy::new(ms(scan), ms(idle), ms(ack), ms(send))
+        .and_then(|policy| policy.with_liveness_bound(ms(ack)))
+        .unwrap()
 }
 
-async fn start(tls: &TestTls, probe: ScHubProbePolicy) -> CountedHub {
+pub(super) async fn start(tls: &TestTls, probe: ScHubProbePolicy) -> CountedHub {
     let config = tls
         .hub_config
         .clone()
@@ -43,8 +47,28 @@ async fn start(tls: &TestTls, probe: ScHubProbePolicy) -> CountedHub {
 fn checked_policy_rejects_precision_zero_and_overflow_without_normative_bounds() {
     assert_eq!(
         ScHubProbePolicy::default(),
-        policy(30_000, 60_000, 5_000, 5_000)
+        ScHubProbePolicy::new(ms(30_000), ms(60_000), ms(5_000), ms(5_000)).unwrap()
     );
+    assert_eq!(
+        ScHubProbePolicy::default().liveness_bound(),
+        SC_HUB_PROBE_LIVENESS_BOUND
+    );
+    assert_eq!(SC_HUB_PROBE_LIVENESS_BOUND, Duration::from_secs(360));
+    let base = ScHubProbePolicy::default();
+    for bad in [
+        Duration::ZERO,
+        Duration::from_nanos(1),
+        SC_HUB_PROBE_MAX_LIVENESS_BOUND + ms(1),
+        Duration::MAX,
+    ] {
+        assert!(base.with_liveness_bound(bad).is_err(), "{bad:?}");
+    }
+    for good in [ms(1), SC_HUB_PROBE_MAX_LIVENESS_BOUND] {
+        assert_eq!(
+            base.with_liveness_bound(good).unwrap().liveness_bound(),
+            good
+        );
+    }
     for bad in [
         Duration::ZERO,
         Duration::from_nanos(1),

@@ -6480,6 +6480,11 @@ class ScHub:
     Strictly exceeded ages are checked at scans; ACK age starts at reservation,
     not completed send, and is not a hard closure deadline. Delayed ticks are
     skipped. Only matching valid ACKs refresh activity. Node keepalive is separate.
+    A connector need not answer probes (#2141): an unanswered probe retires it
+    only after ``probe_liveness_bound_ms`` (default 360000, at most 86400000)
+    passes with nothing received from it since the probe, and is not repeated
+    until it sends something. Its own Heartbeat-Request keeps it registered; a
+    dead connector lingers that much longer.
     ``relay_send_budget_ms`` bounds each NPDU/opaque unicast, concurrent broadcast
     recipient and forwarded BVLC-Result acquisition+send attempt (default 5000),
     without timeout-driven retirement, retry or fabricated Result. Probe, control,
@@ -6522,6 +6527,7 @@ class ScHub:
         probe_idle_age_ms: int = 60000,
         probe_ack_age_ms: int = 5000,
         probe_send_budget_ms: int = 5000,
+        probe_liveness_bound_ms: int = 360000,
         broadcast_sender_burst: int = 1024,
         broadcast_sender_per_second: int = 128,
         broadcast_global_burst: int = 4096,
