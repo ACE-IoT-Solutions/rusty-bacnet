@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 use super::{ALIASES, LAB, LAB_MAC, Lab};
 use crate::Policy;
+use crate::listen::MAX_DEVICE_PAGES;
 use crate::policy::Caps;
 
 const UPDATED: &str = "notifications/resources/updated";
@@ -190,6 +191,37 @@ async fn a_passive_server_offers_no_page() {
     assert_eq!(accepted, ["bacnet://session"]);
     drop(agent);
     serving.await.unwrap();
+}
+
+/// A stream asking for more device-list pages than it may follow is
+/// honoured for the first [`MAX_DEVICE_PAGES`] (counted by spelling), and
+/// one change to the list announces only those.
+#[tokio::test(start_paused = true)]
+async fn a_stream_follows_at_most_the_page_cap() {
+    let mut lab = Lab::start(paged(3)).await;
+    let mut asked = vec![
+        "bacnet://session".to_string(),
+        "bacnet://devices".to_string(),
+    ];
+    asked.extend((0..MAX_DEVICE_PAGES + 4).map(|n| format!("bacnet://devices/after/{n}")));
+    // Another spelling of a page held counts as one more.
+    asked.push("bacnet://devices/after/00".to_string());
+    let asked: Vec<&str> = asked.iter().map(String::as_str).collect();
+    let (_, accepted) = lab.agent.listen(&asked).await;
+    let expected: Vec<&str> = asked[..MAX_DEVICE_PAGES + 1].to_vec();
+    assert_eq!(accepted, expected);
+    lab.client.clear_devices().await;
+    lab.server.broadcast_i_am().await.unwrap();
+    let updates = lab.agent.drain(UPDATED, Duration::from_secs(3)).await;
+    let mut told: Vec<&str> = updates
+        .iter()
+        .map(|u| u["params"]["uri"].as_str().unwrap())
+        .collect();
+    told.sort_unstable();
+    let mut pages = expected[1..].to_vec();
+    pages.sort_unstable();
+    assert_eq!(told, pages, "one update per followed page");
+    lab.stop().await;
 }
 
 /// A stream following the first page and a later one is told of both

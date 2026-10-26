@@ -412,3 +412,31 @@ async fn a_device_list_page_is_announced_to_a_legacy_subscriber() {
     assert_eq!(updates[0]["params"]["uri"], json!(PAGE));
     lab.stop().await;
 }
+
+/// Device-list pages count against the session's URI bound (twice the
+/// point cap) like any other resource.
+#[tokio::test(start_paused = true)]
+async fn device_list_pages_count_against_the_uri_bound() {
+    let policy = Policy {
+        caps: Caps {
+            watches: 2,
+            ..Caps::default()
+        },
+        ..Policy::default()
+    };
+    let mut lab = Lab::start(policy).await;
+    lab.agent.initialize_legacy().await;
+    let pages: Vec<String> = (0..5)
+        .map(|n| format!("bacnet://devices/after/{n}"))
+        .collect();
+    for page in &pages[..4] {
+        assert_eq!(lab.agent.subscribe(page).await, Ok(json!({})), "{page}");
+    }
+    let error = lab.agent.subscribe(&pages[4]).await.unwrap_err();
+    assert_eq!(error["code"], json!(-32602), "{error}");
+    assert_eq!(error["data"]["reason"], json!("principal-cap"), "{error}");
+    // Subscribing again to a page held is still one subscription.
+    assert_eq!(lab.agent.subscribe(&pages[0]).await, Ok(json!({})));
+    assert_eq!(watches(&mut lab).await, (json!(0), json!(4)));
+    lab.stop().await;
+}

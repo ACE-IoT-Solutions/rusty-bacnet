@@ -56,7 +56,7 @@ under its own account and budget, and a cancelled read sends nothing more.
 | URI | Content | A subscription means |
 |---|---|---|
 | `bacnet://devices` | the first page of the discovery table in reach, sorted by instance (up to the device page size, 200 by default), no device text; nothing sent. `total` counts every device in reach and `truncated` says more follow; then `next` holds the next page's URI | an update when a device arrives or is lost, at most once a second |
-| `bacnet://devices/after/{instance}` | the next page: the devices whose instance is above `{instance}` (digits only, 0 to 4194303), with the same page size, `total`, `truncated` and its own `next` | the same as `bacnet://devices`: every subscribed page is told when the list changes |
+| `bacnet://devices/after/{instance}` | the next page: the devices whose instance is above `{instance}` (digits only, 0 to 4194303), with the same page size, `total`, `truncated` and its own `next` | the same as `bacnet://devices`: every subscribed page is told when the list changes. A listen stream follows at most 16 device-list pages, the first included and each spelling counted (the acknowledgment leaves out the rest); a legacy session counts them in its 64 URIs |
 | `bacnet://device/{instance}` | `bacnet_describe_device`'s summary, cached five minutes (`cached`) | not honoured: a summary has no updates |
 | `bacnet://device/{instance}/object/{type}:{n}` | the point facts (`bacnet_read`'s `preset: "point"` properties); `source` `read` when read just now, `cov` or `poll` when watched, with `state` (`starting`, `live`, `failed`, `unreachable`, `stopped`), `note` (why it is polled or not live), `seq`, `age_ms` and `updates` (notifications, coalesced, polls, renewals) | a watch on the hub |
 | `.../property/{prop}` | one property (`name` or `name[index]`; `[`, `]` and `:` may be percent-encoded) | a property watch (SubscribeCOVProperty) |
@@ -384,7 +384,9 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   (non-digits, over 4194303, a leading `+`) refused with nothing sent; no
   template and no page under `--passive`; every followed page announced
   when a device arrives (listen streams here, legacy subscriptions in
-  `legacy.rs`).
+  `legacy.rs`); a stream asking for more than 16 pages honoured for 16,
+  with one update per page on a change; legacy pages counted against the
+  session's URI bound.
 - `crates/bacnet-ops/src/watch/tests.rs`: the hub against the device's
   subscription table: sharing and cancel, a refusal polled every 10 s, a
   coalesced storm, renewal before expiry, a silent device and recovery, a

@@ -52,6 +52,15 @@ const MAX_PENDING: usize = 16;
 /// The fastest the device list is announced as changed.
 const DEVICES_EVERY: Duration = Duration::from_secs(1);
 
+/// The most device-list pages (`bacnet://devices` and its `after` pages,
+/// counted by spelling) one listen stream follows. Each followed page is
+/// announced on every change to the list, so this bounds one change's
+/// fan-out and what a stream holds; 16 pages of the default 200 devices
+/// cover 3,200 devices, and a client past that reads the later pages
+/// again when the first is announced. Legacy subscriptions count pages
+/// against the session's URI bound instead.
+pub(crate) const MAX_DEVICE_PAGES: usize = 16;
+
 /// How long a `bacnet_watch` point stays watched without being asked for:
 /// as long as its cursor lasts.
 pub(crate) const TOOL_IDLE: Duration = Duration::from_secs(600);
@@ -317,11 +326,16 @@ impl Subs {
             leases: Vec::new(),
         };
         let mut seen = HashSet::new();
+        let mut pages = 0;
         for text in requested {
             if !seen.insert(text.as_str()) {
                 continue;
             }
             let honoured = match uri::parse(text) {
+                Ok(Uri::Devices | Uri::DevicesAfter(_)) if ctx.hub.is_some() => {
+                    pages += 1;
+                    pages <= MAX_DEVICE_PAGES
+                }
                 Ok(Uri::Point(point)) if ctx.reach_known(point.device) => {
                     match self.take(ctx, point) {
                         Ok(lease) => {
@@ -332,11 +346,14 @@ impl Subs {
                         Err(_) => false,
                     }
                 }
-                Ok(Uri::Devices | Uri::DevicesAfter(_) | Uri::Alarms) => ctx.hub.is_some(),
+                Ok(Uri::Alarms) => ctx.hub.is_some(),
                 Ok(Uri::DeviceAlarms(device)) => ctx.hub.is_some() && ctx.reach_known(device),
                 Ok(Uri::Session | Uri::Ledger) => true,
-                // A device summary has no updates; anything else isn't ours.
-                Ok(Uri::Device(_) | Uri::Point(_)) | Err(_) => false,
+                // A device summary has no updates; a device-list page past
+                // the cap or on a passive server isn't honoured; anything
+                // else isn't ours.
+                Ok(Uri::Device(_) | Uri::Point(_) | Uri::Devices | Uri::DevicesAfter(_))
+                | Err(_) => false,
             };
             if honoured {
                 accepted.push(text.clone());
