@@ -213,12 +213,12 @@ impl PyScHub {
     ///     probe_ack_age_ms: Strictly exceeded age from reservation, checked on
     ///         later scans (default 5000); not a hard ACK deadline.
     ///     probe_send_budget_ms: Sink acquisition plus send budget (default 5000).
-    ///         Probe values must be whole milliseconds in 1..=i64::MAX and
-    ///         representable by the platform monotonic clock.
     ///     probe_liveness_bound_ms: Strictly exceeded silence after an unanswered
     ///         probe before retirement (default 360000, at most 86400000). A
     ///         missed ACK alone does not retire a connector that sends anything
     ///         since the probe, such as its own Heartbeat-Request (#2141).
+    ///         Probe values must be whole milliseconds in 1..=i64::MAX and
+    ///         representable by the platform monotonic clock.
     ///         These local probes do not replace initiating-node keepalive.
     ///     broadcast_sender_burst: Per-connection broadcast burst (default 1024).
     ///     broadcast_sender_per_second: Sender refill rate (default 128).

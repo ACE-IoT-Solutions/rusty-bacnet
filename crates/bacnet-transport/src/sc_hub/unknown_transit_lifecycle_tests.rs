@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicU16;
 use std::time::Duration;
 
 #[tokio::test]
-async fn unknown_transit_activity_local_idle_and_independent_pending_ack_timeout() {
+async fn unknown_transit_activity_local_idle_and_activity_supersedes_unanswered_probe() {
     let tls = TestTls::new();
     let mut hub = CountedHub::start(&tls, ScHubHandshakeTimeouts::default()).await;
     let mut a = ControlledPeer::open(&tls, &hub).await;

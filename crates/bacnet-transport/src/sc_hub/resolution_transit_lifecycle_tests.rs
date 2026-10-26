@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicU16;
 use std::time::Duration;
 
 #[tokio::test]
-async fn resolution_transit_activity_rejection_purity_and_original_ack_timeout() {
+async fn resolution_transit_activity_rejection_purity_and_activity_supersedes_unanswered_probe() {
     let tls = TestTls::new();
     let (mut hub, mut a, mut observer) = matrix_pair(&tls, true, 0x42, 0x44).await;
     let mut b = ControlledPeer::open(&tls, &hub).await;

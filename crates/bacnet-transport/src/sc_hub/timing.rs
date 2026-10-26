@@ -57,7 +57,7 @@ pub struct ScHubProbePolicy {
 ///
 /// Cost: a dead connector is retired only after this bound, counted from the
 /// unanswered probe, instead of a few seconds after it. With the default
-/// policy that is about seven to eight minutes after its last frame: idle
+/// policy that is about seven and a half to eight minutes (450–480 s) after its last frame: idle
 /// age, up to one scan to send the probe, this bound, and up to one more scan
 /// to notice. A connector configured for a heartbeat timeout above 300
 /// seconds needs a larger bound ([`ScHubProbePolicy::with_liveness_bound`]);
