@@ -277,3 +277,21 @@ pub(crate) fn disconnect_request() -> crate::sc_frame::ScMessage {
         payload: bytes::Bytes::new(),
     }
 }
+
+/// Encodes a bare connection-control BVLC: no VMACs, Data Options or payload,
+/// the shape AB.2.12 to AB.2.15 give Disconnect and Heartbeat messages.
+pub(crate) fn bare_control(
+    function: crate::sc_frame::ScFunction,
+    message_id: u16,
+) -> bytes::BytesMut {
+    let mut bytes = bytes::BytesMut::new();
+    crate::sc_frame::encode_sc_message(
+        &mut bytes,
+        &crate::sc_frame::ScMessage {
+            function,
+            message_id,
+            ..disconnect_request()
+        },
+    );
+    bytes
+}

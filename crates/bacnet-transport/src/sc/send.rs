@@ -59,7 +59,10 @@ impl<W: WebSocketPort> ScTransport<W> {
                     npdu,
                     data_attributes,
                     conn,
-                    self.connect_timeout_ms,
+                    super::direct_discovery::DirectTiming {
+                        connect_timeout_ms: self.connect_timeout_ms,
+                        heartbeat_ms: (self.heartbeat_interval_ms, self.heartbeat_timeout_ms),
+                    },
                 )
                 .await
             {
