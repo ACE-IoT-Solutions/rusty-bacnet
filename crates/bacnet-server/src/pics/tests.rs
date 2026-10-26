@@ -115,9 +115,11 @@ impl BACnetObject for TestDevice {
         property: PropertyIdentifier,
         _array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
-        // The PICS prints the Device's Vendor_Name.
+        // The PICS prints the Device's Vendor_Name. Its Vendor_Identifier
+        // isn't an unsigned value, so the ServerConfig's vendor ID stands in.
         Ok(match property {
             PropertyIdentifier::VENDOR_NAME => PropertyValue::CharacterString("Acme Corp".into()),
+            PropertyIdentifier::VENDOR_IDENTIFIER => PropertyValue::Null,
             _ => PropertyValue::Unsigned(0),
         })
     }

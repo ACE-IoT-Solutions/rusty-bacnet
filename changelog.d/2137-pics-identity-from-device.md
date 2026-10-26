@@ -1,7 +1,7 @@
 ---
 section: Fixed
 ---
-- **Breaking (Rust API):** A generated PICS takes Vendor_Name, Model_Name,
-  Firmware_Revision and Application_Software_Version from the Device it
-  describes, so it can't print blank or stale product details; `PicsConfig`
-  loses its four product fields (#2137).
+- **Breaking (Rust API):** A generated PICS takes its vendor block (the vendor
+  ID, the vendor and model names and both versions) from the Device it
+  describes, so it can't print blank or stale details; `PicsConfig` loses its
+  four product fields (#2137).

@@ -163,7 +163,9 @@ On the `dev` branch the initiator list is public, as `PicsGenerator::INITIATED_S
 
 `PicsConfig` has no `vendor_name`, `model_name`, `firmware_revision` or `application_software_version` field on `dev` (#2137). Both generators read Vendor_Name, Model_Name, Firmware_Revision and Application_Software_Version from the same Device as the protocol fields, at the moment you call them, so a value your application changes on its Device appears in the next PICS. A database without a Device, or a value that isn't a character string, leaves the row empty. In v{release} the PICS prints the `PicsConfig` values instead, which default to empty, which is why the program above sets the details in both places.
 
-The PICS prints these values as plain text. Control characters, line breaks among them, become spaces, and the Markdown escapes `|` and the characters that start inline formatting, so a Device string can't add rows or sections to the document.
+The Vendor ID comes from the same Device's Vendor_Identifier. For `server.generate_pics` that is still the server's `DeviceIdentity`, which the server serves as its Device's Vendor_Identifier. The standalone `generate_pics` reads the selected Device's own value and uses the `ServerConfig` identity's only when the Device has none, so the vendor block always describes one Device.
+
+The PICS prints these values as plain text. Control characters and line or paragraph separators become spaces, and bidirectional and zero-width characters are dropped, as the CLI and terminal UI drop them. The Markdown also escapes `|` and the characters that start inline formatting. A Device string can't add rows or sections to the document, or hide or reorder its own text.
 
 On `dev` the program sets the details on the Device only and skips the protocol step. Remove all six fields from your `PicsConfig`; if the PICS needs different text, edit the generated document:
 
