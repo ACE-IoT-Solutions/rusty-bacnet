@@ -35,19 +35,9 @@ pub(super) const SPEC: Spec = Spec {
 };
 
 /// The properties `preset: "point"` reads: what an agent needs to reason
-/// about a point, and what a write preview reads.
-const POINT: [PropertyIdentifier; 10] = [
-    PropertyIdentifier::OBJECT_NAME,
-    PropertyIdentifier::PRESENT_VALUE,
-    PropertyIdentifier::STATUS_FLAGS,
-    PropertyIdentifier::EVENT_STATE,
-    PropertyIdentifier::RELIABILITY,
-    PropertyIdentifier::OUT_OF_SERVICE,
-    PropertyIdentifier::UNITS,
-    PropertyIdentifier::PRIORITY_ARRAY,
-    PropertyIdentifier::RELINQUISH_DEFAULT,
-    PropertyIdentifier::COV_INCREMENT,
-];
+/// about a point, and what a write preview reads. A point resource and
+/// its watch read the same.
+const POINT: [PropertyIdentifier; 10] = bacnet_ops::watch::POINT_PROPERTIES;
 
 /// Objects one call may list.
 const MAX_READS: usize = 100;
@@ -138,7 +128,7 @@ enum Preset {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
-enum Format {
+pub(crate) enum Format {
     Display,
     Typed,
     #[default]
@@ -335,7 +325,7 @@ pub(super) async fn run<T: TransportPort + 'static>(
 
 /// One property's row.
 #[allow(clippy::too_many_arguments)]
-fn result_row(
+pub(crate) fn result_row(
     device: u32,
     object: ObjectIdentifier,
     property: PropertyIdentifier,

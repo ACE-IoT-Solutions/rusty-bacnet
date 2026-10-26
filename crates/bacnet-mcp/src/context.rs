@@ -6,20 +6,26 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use bacnet_client::client::DiscoveredRouter;
+use bacnet_client::client::{DeviceEventKind, DiscoveredRouter};
 use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_ops::engine::Engine;
 use bacnet_ops::limits::{Account, TokenBucket};
 use bacnet_ops::target::{self, Target};
+use bacnet_ops::watch::Hub;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::primitives::ObjectIdentifier;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::watch;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use crate::cursor::Cursors;
 use crate::errors::ToolError;
+use crate::listen::{Subs, TOOL_IDLE};
 use crate::policy::Policy;
+use crate::resources::Cache;
 
 /// The server's state, shared by every call.
 pub(crate) struct Ctx<T: TransportPort + 'static> {
@@ -47,6 +53,32 @@ pub(crate) struct Ctx<T: TransportPort + 'static> {
     /// What Who-Is-Router-To-Network queries found, and when the last one
     /// went; at most one goes a minute.
     pub(crate) routers: Mutex<Routers>,
+    /// The watch hub; `None` in passive mode.
+    pub(crate) hub: Option<Hub<T>>,
+    /// What the principal watches, and the subscriptions waiting for their
+    /// streams.
+    pub(crate) subs: Arc<Subs>,
+    /// Cancelled when the server shuts down gracefully: listen streams
+    /// complete.
+    pub(crate) closing: CancellationToken,
+    /// Listen streams running.
+    pub(crate) listening: watch::Sender<usize>,
+    /// The discovery table's devices and their networks, kept for the
+    /// subscription acknowledgment, which the SDK asks for synchronously.
+    pub(crate) known: Mutex<HashMap<u32, u16>>,
+    /// Device summaries served to `bacnet://device/{instance}`.
+    pub(crate) described: Cache,
+    /// Alarm pages served to the alarm resources.
+    pub(crate) alarms: Cache,
+}
+
+/// Counts a listen stream while it lives.
+pub(crate) struct Listening<'a>(&'a watch::Sender<usize>);
+
+impl Drop for Listening<'_> {
+    fn drop(&mut self) {
+        self.0.send_modify(|n| *n = n.saturating_sub(1));
+    }
 }
 
 /// The routers known from Who-Is-Router-To-Network queries.
@@ -264,8 +296,96 @@ impl<T: TransportPort + 'static> Ctx<T> {
             entry,
         };
         self.allow(device.instance, device.network)?;
+        self.remember(&device.entry);
         call.reached(device.instance);
         Ok(device)
+    }
+
+    /// Note a device of the discovery table for the subscription check.
+    pub(crate) fn remember(&self, found: &DiscoveredDevice) {
+        let instance = found.object_identifier.instance_number();
+        let network = found.source_network.unwrap_or(0);
+        self.known
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(instance, network);
+    }
+
+    /// Whether `instance` is a known device the policy lets the server
+    /// reach, without waiting for the discovery table.
+    pub(crate) fn reach_known(&self, instance: u32) -> bool {
+        let network = self
+            .known
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&instance)
+            .copied();
+        network.is_some_and(|network| self.allow(instance, network).is_ok())
+    }
+
+    /// The known devices in reach, in order.
+    pub(crate) fn known_in_reach(&self) -> Vec<u32> {
+        let known = self.known.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut devices: Vec<u32> = known
+            .iter()
+            .filter(|(instance, network)| self.allow(**instance, **network).is_ok())
+            .map(|(instance, _)| *instance)
+            .collect();
+        devices.sort_unstable();
+        devices
+    }
+
+    /// Keep [`known`](Self::known) in step with the discovery table until
+    /// the server closes: a snapshot, then its events (a snapshot again
+    /// after a burst the receiver missed). It also lets `bacnet_watch`
+    /// points go once nobody has asked for them in [`TOOL_IDLE`].
+    pub(crate) async fn follow_devices(&self) {
+        let Some(engine) = &self.engine else {
+            return;
+        };
+        let mut events = engine.device_events();
+        let mut resync = true;
+        let mut sweep = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            if resync {
+                let devices = engine.devices().await;
+                let mut known = self.known.lock().unwrap_or_else(PoisonError::into_inner);
+                known.clear();
+                for found in &devices {
+                    known.insert(
+                        found.object_identifier.instance_number(),
+                        found.source_network.unwrap_or(0),
+                    );
+                }
+                resync = false;
+            }
+            let event = tokio::select! {
+                () = self.closing.cancelled() => return,
+                event = events.recv() => event,
+                _ = sweep.tick() => {
+                    self.subs.expire_tool(TOOL_IDLE);
+                    continue;
+                }
+            };
+            match event {
+                Ok(event) if event.kind == DeviceEventKind::Lost => {
+                    let instance = event.device.object_identifier.instance_number();
+                    self.known
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .remove(&instance);
+                }
+                Ok(event) => self.remember(&event.device),
+                Err(RecvError::Lagged(_)) => resync = true,
+                Err(RecvError::Closed) => return,
+            }
+        }
+    }
+
+    /// Count a listen stream until the guard drops.
+    pub(crate) fn listening(&self) -> Listening<'_> {
+        self.listening.send_modify(|n| *n += 1);
+        Listening(&self.listening)
     }
 
     /// Refuse a network the policy leaves out.

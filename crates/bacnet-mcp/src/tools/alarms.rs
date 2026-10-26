@@ -105,12 +105,24 @@ fn output() -> Value {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Args {
+pub(crate) struct Args {
     device: DeviceArg,
     max: Option<usize>,
     #[serde(default)]
     summaries: bool,
     cursor: Option<String>,
+}
+
+impl Args {
+    /// The first page of `device`'s events alone, for its resource.
+    pub(crate) fn of(device: u32) -> Self {
+        Self {
+            device: DeviceArg::Number(device),
+            max: None,
+            summaries: false,
+            cursor: None,
+        }
+    }
 }
 
 /// The object a page resumes after, packed into a cursor position: 0 for
@@ -133,7 +145,7 @@ fn position(object: ObjectIdentifier) -> u64 {
     u64::from(u32::from_be_bytes(object.encode())) + 1
 }
 
-pub(super) async fn run<T: TransportPort + 'static>(
+pub(crate) async fn run<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
     call: &Call,
     args: Args,

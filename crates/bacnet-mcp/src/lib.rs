@@ -24,8 +24,10 @@
 mod context;
 mod cursor;
 mod errors;
+mod listen;
 pub mod policy;
 mod prompts;
+mod resources;
 mod server;
 mod tools;
 mod untrusted;

@@ -115,6 +115,7 @@ pub(crate) fn policy(section: &McpSection, passive: bool) -> Result<Policy, Stri
             budget: section
                 .call_budget_s
                 .map_or(caps.budget, Duration::from_secs),
+            ..caps
         },
     };
     policy.validate().map_err(|e| format!("[mcp] {e}"))?;
@@ -175,7 +176,7 @@ async fn serve(cli: &Cli, profile: Option<&str>, passive: bool) -> crate::CliRes
         };
         tracing::info!("passive MCP server: no client is built, nothing is sent");
         let server = McpServer::<BipTransport>::new(None, policy(&section, true)?, principal());
-        return Ok(server.serve_stdio().await?);
+        return Ok(server.serve_stdio_until(shutdown_signal()).await?);
     }
     let Some(name) = profile else {
         return Err(NEEDS_PROFILE.into());
@@ -215,8 +216,35 @@ async fn serve_mstp(_cli: &Cli, _args: &TransportArgs, _policy: Policy) -> crate
     Err("MS/TP requires the 'serial' feature".into())
 }
 
-/// Serve MCP over `client` until the agent host closes stdin, then stop
-/// the client.
+/// Resolves on SIGTERM or SIGINT (Ctrl-C on Windows): the server then
+/// completes its listen streams and cancels its COV subscriptions before
+/// it exits. A signal that can't be watched never resolves.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::interrupt()),
+        ) {
+            (Ok(mut term), Ok(mut int)) => {
+                tokio::select! {
+                    _ = term.recv() => {}
+                    _ = int.recv() => {}
+                }
+            }
+            _ => std::future::pending().await,
+        }
+    }
+    #[cfg(not(unix))]
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
+    }
+    tracing::info!("shutting down: completing listen streams and cancelling COV subscriptions");
+}
+
+/// Serve MCP over `client` until the agent host closes stdin or a signal
+/// stops the server, then stop the client.
 async fn serve_on<T: TransportPort + 'static>(
     client: BACnetClient<T>,
     policy: Policy,
@@ -224,7 +252,7 @@ async fn serve_on<T: TransportPort + 'static>(
     let client = Arc::new(client);
     let engine = Engine::new(Arc::clone(&client), Arc::new(policy.request_limits()));
     let server = McpServer::new(Some(Arc::new(engine)), policy, principal());
-    let served = server.serve_stdio().await;
+    let served = server.serve_stdio_until(shutdown_signal()).await;
     // The server has let go of the engine, and with it the client.
     if let Ok(mut client) = Arc::try_unwrap(client) {
         client.stop().await?;
