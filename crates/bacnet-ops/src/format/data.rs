@@ -150,7 +150,7 @@ impl Fields {
 /// Constructed elements whose text the formatter writes from numbers,
 /// names, times and dates only: references, timestamps, addresses, scales
 /// and the like. Any other kind may quote a character string.
-pub const PLAIN_ELEMENTS: [&str; 19] = [
+pub const PLAIN_ELEMENTS: &[&str] = &[
     "destination",
     "port-permission",
     "read-access-specification",
@@ -190,7 +190,21 @@ impl Datum {
                         .flat_map(Fields::iter)
                         .any(|(_, datum)| datum.may_hold_device_text())
             }
-            _ => false,
+            // The formatter's own digits, names, dates and hex.
+            Self::Null
+            | Self::Boolean(_)
+            | Self::Unsigned(_)
+            | Self::Signed(_)
+            | Self::Real(_)
+            | Self::Double(_)
+            | Self::NonFinite { .. }
+            | Self::Octets { .. }
+            | Self::Enumerated { .. }
+            | Self::Bits { .. }
+            | Self::Date { .. }
+            | Self::Time { .. }
+            | Self::Object { .. }
+            | Self::Raw { .. } => false,
         }
     }
 }

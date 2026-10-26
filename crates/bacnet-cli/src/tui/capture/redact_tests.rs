@@ -349,3 +349,46 @@ fn the_decode_tree_of_a_masked_frame_names_fields_and_hides_the_password() {
         }
     }
 }
+
+/// Masked segments of a ReinitializeDevice request decode with the
+/// password hidden: the first segment's tag walk names it hidden, and a
+/// later segment is one opaque leaf. Neither the secret nor its mask shows.
+#[test]
+fn the_decode_tree_of_masked_segments_hides_the_password() {
+    let mut body = BytesMut::new();
+    ReinitializeDeviceRequest {
+        reinitialized_state: ReinitializedState::WARMSTART,
+        password: Some("Zq7-hunter2".into()),
+    }
+    .encode(&mut body)
+    .unwrap();
+    // First segment (sequence 0, window 4), then a later one (sequence 1)
+    // carrying more of the password.
+    let first = [&[0x0E, 0x05, 0x01, 0x00, 0x04, REINIT.to_raw()][..], &body].concat();
+    let later = [
+        &[0x0E, 0x05, 0x01, 0x01, 0x04, REINIT.to_raw()][..],
+        b"hunter2-Xv9",
+    ]
+    .concat();
+    for (apdu, expected) in [
+        (first, "Password: (hidden)"),
+        (
+            later,
+            "Segment data: 11 octets, hidden (may hold a password)",
+        ),
+    ] {
+        let frame = testing::bip(&npdu(&apdu), false);
+        let masked = redacted(Framing::Bip, &frame).expect("masked");
+        assert!(!holds(&masked, b"hunter2"));
+        let mut labels = Vec::new();
+        tree_labels(
+            &bacnet_ops::decode::tree::decode_tree(Framing::Bip, &masked),
+            &mut labels,
+        );
+        assert!(labels.iter().any(|l| l == expected), "{labels:?}");
+        let all = labels.join("\n");
+        for leaked in ["hunter2", "***", "2A2A2A", "68756E74"] {
+            assert!(!all.contains(leaked), "{leaked} in {all}");
+        }
+    }
+}

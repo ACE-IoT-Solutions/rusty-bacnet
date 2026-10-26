@@ -102,7 +102,7 @@ fn render(field: &Field, depth: usize, out: &mut String) {
     }
 }
 
-fn snapshot(apdu: &[u8]) -> String {
+pub(super) fn snapshot(apdu: &[u8]) -> String {
     let mut out = String::new();
     render(&parameters(apdu), 0, &mut out);
     out

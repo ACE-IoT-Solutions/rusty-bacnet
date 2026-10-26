@@ -32,8 +32,8 @@ pub(super) const SPEC: Spec = Spec {
                   GetEventInformation, DeviceCommunicationControl and ReinitializeDevice \
                   (passwords hidden); any other service, a segment or a damaged frame is \
                   walked tag by tag. Labels quoting device text (character strings, \
-                  decoded values that may hold one) come back as untrusted envelopes. At most 6144 octets. Works in passive mode. Local; \
-                  read-only.",
+                  decoded values that may hold one) come back as untrusted envelopes. At \
+                  most 6144 octets. Works in passive mode. Local; read-only.",
     input,
     output,
     idempotent: true,

@@ -33,10 +33,15 @@ use bacnet_types::enums::{
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::{Field, tags};
-use crate::format::alarms::EventSummaryData;
+
+#[path = "service_password.rs"]
+mod password;
+
+use crate::format::alarms::{EventSummaryData, cell};
 use crate::format::notification::EventValues;
 use crate::format::{Floats, StateTexts, ValueFormat, format_property_value, timestamp_text};
 use crate::label::{kebab, object_label};
+use password::{PASSWORD, hide_passwords};
 
 /// Which parameters an APDU carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,20 +53,6 @@ pub(super) enum Params {
     /// A Complex-ACK's.
     Ack(Confirmed),
 }
-
-impl Params {
-    /// The context tag a password-bearing request holds its password in.
-    fn password_tag(self) -> Option<u8> {
-        match self {
-            Self::Request(Confirmed::DEVICE_COMMUNICATION_CONTROL) => Some(2),
-            Self::Request(Confirmed::REINITIALIZE_DEVICE) => Some(1),
-            _ => None,
-        }
-    }
-}
-
-/// What the password field shows, on either path.
-const PASSWORD: &str = "Password: (hidden)";
 
 /// Why the named decode gave way to the tag walk.
 enum Miss {
@@ -82,10 +73,13 @@ type Named = Result<Vec<Field>, Miss>;
 
 /// The parameters `apdu[start..]` of `params`, named field by field when
 /// the service has a named decode and its decoder reads them, otherwise
-/// tag by tag. `None` (a segment) always takes the tag walk. Ranges are
-/// offsets in `apdu` plus `base`.
+/// tag by tag. A segment (`segment` is its sequence number) always takes
+/// the tag walk; a later segment of a password-bearing request, whose tag
+/// boundaries can't be trusted, is one opaque leaf. Ranges are offsets in
+/// `apdu` plus `base`.
 pub(super) fn parameters(
     params: Option<Params>,
+    segment: Option<u8>,
     apdu: &[u8],
     base: usize,
     start: usize,
@@ -94,14 +88,25 @@ pub(super) fn parameters(
         data: &apdu[start..],
         at: base + start,
     };
-    let refused = match params.map(|params| named(params, &doc)) {
+    let secret = params.and_then(Params::secret);
+    if secret.is_some() && segment.is_some_and(|sequence| sequence != 0) {
+        return vec![Field::leaf(
+            format!(
+                "Segment data: {} octets, hidden (may hold a password)",
+                doc.data.len()
+            ),
+            doc.whole(),
+        )];
+    }
+    let whole = params.filter(|_| segment.is_none());
+    let refused = match whole.map(|params| named(params, &doc)) {
         Some(Ok(fields)) => return fields,
         Some(Err(Miss::Refused(why))) => Some(why),
         Some(Err(Miss::Unnamed)) | None => None,
     };
     let mut fields = tags(apdu, base, start, apdu.len(), 0);
-    if let Some(tag) = params.and_then(Params::password_tag) {
-        hide_passwords(&mut fields, &doc, tag);
+    if let Some(secret) = secret {
+        hide_passwords(&mut fields, &doc, secret, 0);
     }
     if let Some(why) = refused {
         fields.push(Field::leaf(
@@ -694,19 +699,18 @@ fn event_information(doc: &Doc<'_>, ack: &GetEventInformationAck) -> Named {
     let summaries = &ack.list_of_event_summaries;
     let mut rows = Vec::new();
     for (run, summary) in runs(&inner, 0, summaries.len())?.into_iter().zip(summaries) {
-        let cells = EventSummaryData::new(summary).cells();
-        let [
-            object,
-            state,
-            acked,
-            enabled,
-            notify,
-            offnormal,
-            fault,
-            normal,
-            _,
-        ] = <[String; 9]>::try_from(cells).map_err(|_| layout())?;
-        let [p_offnormal, p_fault, p_normal] = summary.event_priorities;
+        let data = EventSummaryData::new(summary);
+        let object = cell(&data.object);
+        let state = cell(&data.event_state);
+        let acked = cell(&data.acknowledged_transitions);
+        let enabled = cell(&data.event_enable);
+        let notify = cell(&data.notify_type);
+        let offnormal = cell(&data.event_timestamps.to_offnormal);
+        let fault = cell(&data.event_timestamps.to_fault);
+        let normal = cell(&data.event_timestamps.to_normal);
+        let p_offnormal = cell(&data.event_priorities.to_offnormal);
+        let p_fault = cell(&data.event_priorities.to_fault);
+        let p_normal = cell(&data.event_priorities.to_normal);
         let kids = vec![
             doc.leaf(need(run, 0)?, format!("Object: {object}")),
             doc.leaf(need(run, 1)?, format!("Event state: {state}")),
@@ -749,28 +753,10 @@ fn event_information(doc: &Doc<'_>, ack: &GetEventInformationAck) -> Named {
     ])
 }
 
-/// On the tag walk of a password-bearing request: hide each top-level
-/// field holding a password, a context tag `tag` or any character string,
-/// since parameters its decoder refused may hold one anywhere.
-fn hide_passwords(fields: &mut [Field], doc: &Doc<'_>, tag: u8) {
-    for field in fields {
-        let Some(at) = field.range.start.checked_sub(doc.at) else {
-            continue;
-        };
-        let Ok((header, _)) = decode_tag(doc.data, at) else {
-            continue;
-        };
-        let password = match header.class {
-            TagClass::Context => header.number == tag,
-            TagClass::Application => header.number == 7,
-        };
-        if password && !header.is_opening && !header.is_closing {
-            field.label = PASSWORD.into();
-            field.device_text = false;
-        }
-    }
-}
-
 #[cfg(test)]
 #[path = "service_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "service_fallback_tests.rs"]
+mod fallback_tests;

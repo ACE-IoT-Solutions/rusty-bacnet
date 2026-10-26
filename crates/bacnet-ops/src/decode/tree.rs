@@ -469,7 +469,7 @@ fn apdu(apdu: &[u8], base: usize) -> Field {
                 format!("Actual window size: {}", ack.actual_window_size),
                 3..4,
             );
-            (String::new(), apdu.len(), None, None)
+            (String::new(), 4, None, None)
         }
         Apdu::Error(error) => {
             leaf(format!("Invoke ID: {}", error.invoke_id), 1..2);
@@ -487,19 +487,31 @@ fn apdu(apdu: &[u8], base: usize) -> Field {
                 format!("Reject reason: {}", kebab(reject.reject_reason)),
                 2..3,
             );
-            (String::new(), apdu.len(), None, None)
+            (String::new(), 3, None, None)
         }
         Apdu::Abort(abort) => {
             leaf(format!("Invoke ID: {}", abort.invoke_id), 1..2);
             leaf(format!("Abort reason: {}", kebab(abort.abort_reason)), 2..3);
-            (String::new(), apdu.len(), None, None)
+            (String::new(), 3, None, None)
         }
     };
-    if params < apdu.len() {
+    if params < apdu.len() && service.is_empty() && extra.is_none() {
+        // A PDU with no parameters: whatever follows its header.
+        kids.push(Field::leaf(
+            format!("Trailing octets: {}", apdu.len() - params),
+            at(params..apdu.len()),
+        ));
+    } else if params < apdu.len() {
         let label = extra.unwrap_or_else(|| format!("{service} parameters"));
-        // A segment holds only part of the parameters: tags it is.
-        let named = named.filter(|_| !segmented);
-        let fields = service::parameters(named, apdu, base, params);
+        // A segment holds only part of the parameters; its sequence
+        // number says whether it is the first.
+        let segment = match &decoded {
+            Apdu::ConfirmedRequest(request) => request.sequence_number,
+            Apdu::ComplexAck(ack) => ack.sequence_number,
+            _ => None,
+        }
+        .filter(|_| segmented);
+        let fields = service::parameters(named, segment, apdu, base, params);
         kids.push(Field::node(label, at(params..apdu.len()), fields));
     }
     Field::node(format!("APDU: {kind}"), whole, kids)
@@ -540,8 +552,20 @@ fn value_text(value: &PropertyValue) -> String {
 
 /// The tagged values in `data[start..end]`, opening and closing tags as
 /// nodes. Stops at the first tag it can't read, with a leaf saying so.
+/// A closing tag with no opening one ends the walk early; the octets from
+/// it on are one leaf, so every octet still has a field.
 fn tags(data: &[u8], base: usize, start: usize, end: usize, depth: usize) -> Vec<Field> {
-    walk(data, base, start, end, depth).0
+    let mut fields = walk(data, base, start, end, depth).0;
+    let covered = fields
+        .last()
+        .map_or(start, |field| field.range.end.saturating_sub(base));
+    if covered < end {
+        fields.push(Field::leaf(
+            format!("Trailing octets: {}", end - covered),
+            base + covered..base + end,
+        ));
+    }
+    fields
 }
 
 /// [`tags`], and where the walk stopped: just past the closing tag that
