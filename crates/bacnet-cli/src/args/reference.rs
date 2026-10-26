@@ -49,14 +49,15 @@ const COMMAND_FEATURES: &[(&str, &str)] = &[
 /// The features this test build knows to be on or off. A table entry whose
 /// command or option is missing from the tree is an error only when its
 /// feature is on here, so a command behind a `#[cfg(feature)]` gate doesn't
-/// fail a build without it. A feature missing from this list (such as
-/// `mcp` until bacnet-cli has it) counts as off: add its `cfg!` here when
-/// Cargo.toml gains the feature.
+/// fail a build without it. A feature missing from this list counts as
+/// off: add its `cfg!` here when bacnet-cli's Cargo.toml gains the
+/// feature.
 const BUILD_FEATURES: &[(&str, bool)] = &[
     ("tui", cfg!(feature = "tui")),
     ("sc-tls", cfg!(feature = "sc-tls")),
     ("pcap", cfg!(feature = "pcap")),
     ("serial", cfg!(feature = "serial")),
+    ("mcp", cfg!(feature = "mcp")),
 ];
 
 fn feature_on(feature: &str) -> bool {
@@ -377,7 +378,8 @@ fn render_command(mut cli: Command) -> String {
             .get_about()
             .map(|about| paragraphs(&about.to_string()).replace("\n\n", " "))
             .unwrap_or_default();
-        if let Some(feature) = command_feature(path) {
+        if let Some(feature) = command_feature(path).filter(|feature| !mentions(&summary, feature))
+        {
             summary = format!("{summary} Needs the `{feature}` feature.")
                 .trim_start()
                 .to_string();
@@ -408,7 +410,7 @@ fn render_command(mut cli: Command) -> String {
         if !about.is_empty() {
             writeln!(w, "{}\n", paragraphs(&about)).expect("write to a String");
         }
-        if let Some(feature) = command_feature(name) {
+        if let Some(feature) = command_feature(name).filter(|feature| !mentions(&about, feature)) {
             writeln!(w, "Needs the `{feature}` feature.\n").expect("write to a String");
         }
         let aliases: Vec<String> = command

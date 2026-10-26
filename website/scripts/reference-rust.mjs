@@ -11,7 +11,7 @@
 //   node website/scripts/reference-rust.mjs --check  # exit 1 if stale
 //
 // LAYERS places each crate. A published crate missing from it, or a name in
-// it that isn't one (outside PENDING), fails the run, so a new crate gets a
+// it that isn't one, fails the run, so a new crate gets a
 // deliberate place.
 //
 // A crate first published after the release in site.mjs sets
@@ -39,12 +39,9 @@ export const LAYERS = [
     ['bacnet-transport', 'bacnet-network']],
   ['Objects and roles', 'The object database, the client and server roles, and the shared endpoint that runs both on one transport.',
     ['bacnet-objects', 'bacnet-endpoint-core', 'bacnet-client', 'bacnet-server', 'bacnet-endpoint']],
-  ['Tools', 'The operations core behind the command-line tools, and the tools.',
+  ['Tools', 'The operations core, the MCP server for AI agent hosts, and the command-line tool.',
     ['bacnet-ops', 'bacnet-mcp', 'bacnet-cli']],
 ];
-
-/** Names LAYERS may hold before their crate lands on dev (#2097). */
-const PENDING = new Set(['bacnet-mcp']);
 
 /** Whether version `a` (x.y.z) comes after `b`. */
 export function newer(a, b) {
@@ -75,13 +72,13 @@ export function render(meta) {
   const placed = LAYERS.flatMap(([, , crates]) => crates);
   const unplaced = [...byName.keys()].filter(name => !placed.includes(name));
   if (unplaced.length) throw new Error(`add ${unplaced.join(', ')} to LAYERS in reference-rust.mjs`);
-  const unknown = placed.filter(name => !byName.has(name) && !PENDING.has(name));
+  const unknown = placed.filter(name => !byName.has(name));
   if (unknown.length) throw new Error(`LAYERS names ${unknown.join(', ')}, not a published workspace crate`);
 
   const out = [];
   for (const [title, blurb, crates] of LAYERS) {
     out.push(`## ${title}`, '', blurb, '', '| Crate | Purpose | Features | Depends on |', '|---|---|---|---|');
-    for (const name of crates.filter(name => byName.has(name))) {
+    for (const name of crates) {
       const pkg = byName.get(name);
       const first = pkg.metadata?.website?.['first-release'];
       const unreleased = first !== undefined && newer(first, release);

@@ -856,10 +856,16 @@ def get_event_information(
     self,
     address: str,
     last_received_object_identifier: Optional[ObjectIdentifier] = None,
-) -> Awaitable[bytes]
+) -> Awaitable[dict[str, Any]]
 ```
 
-Get event information from a remote device. Returns raw response bytes.
+Get event information from a remote device: one GetEventInformation answer, decoded.
+
+Returns `{"summaries": [...], "more_events": bool}`. Each summary is
+`{"object_id": ObjectIdentifier, "event_state": EventState, "acknowledged_transitions": BitString, "event_timestamps": [BACnetTimeStamp, BACnetTimeStamp, BACnetTimeStamp], "notify_type": NotifyType, "event_enable": BitString, "event_priorities": [int, int, int]}`: the bit strings name `TO_OFFNORMAL`, `TO_FAULT` and
+`TO_NORMAL`, and the timestamps and priorities are in that order.
+While `more_events` is true, call again with the last summary's
+`object_id` as `last_received_object_identifier`.
 
 ### BACnetClient.get_alarm_summary
 

@@ -442,6 +442,31 @@ def from_raw(value: int) -> EventType
 def to_raw(self) -> int
 ```
 
+## NotifyType
+
+BACnetNotifyType (Clause 21): whether a transition is reported as an alarm or an event.
+
+3 constants:
+
+`ALARM`, `EVENT`, `ACK_NOTIFICATION`
+
+Properties:
+
+- `name: str | None`: The constant's name (`"ALARM"`), or None for a value without one.
+
+### NotifyType.from_raw
+
+```python
+@staticmethod
+def from_raw(value: int) -> NotifyType
+```
+
+### NotifyType.to_raw
+
+```python
+def to_raw(self) -> int
+```
+
 ## MessagePriority
 
 BACnet text message priority (Clause 16.5).

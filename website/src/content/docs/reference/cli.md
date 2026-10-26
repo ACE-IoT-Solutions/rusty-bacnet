@@ -11,7 +11,7 @@ This page is generated from the `dev` branch and tracks the next release, so it 
 
 ## Features and release executables
 
-Some commands and options need a Cargo feature; their entries below say which. The macOS and Windows release executables carry the terminal UI (`tui`) and BACnet/SC (`sc-tls`); the Linux ones add MS/TP (`serial`) and packet capture (`pcap`). A source build turns on `tui` by default and the others with `cargo install bacnet-cli --features ...`. A command whose feature is missing still parses, then exits with an error that names the feature.
+Some commands and options need a Cargo feature; their entries below say which. The macOS and Windows release executables carry the terminal UI (`tui`) and BACnet/SC (`sc-tls`); the Linux ones add MS/TP (`serial`) and packet capture (`pcap`). No release executable carries `mcp`, the [MCP server for AI agent hosts](/rusty-bacnet/guides/ai-agents/). A source build turns on `tui` by default and the others with `cargo install bacnet-cli --features ...`. A command whose feature is missing still parses, then exits with an error that names the feature.
 
 ## Exit status
 
@@ -105,6 +105,9 @@ These options go before or after the command. Each command also takes `-h` or `-
 |---|---|---|
 | [`sc-check`](#bacnet-sc-check) | — | Inspect local SC credential files offline; no hub or transport identity is needed. Needs the `sc-tls` feature. |
 | [`tui`](#bacnet-tui) | — | Open the full-screen terminal UI (read-only until W arms writes). Needs the `tui` feature. |
+| [`mcp`](#bacnet-mcp) | — | Serve a read-only MCP server to an AI agent host (needs the `mcp` feature). |
+| [`mcp serve`](#bacnet-mcp-serve) | — | Serve MCP on stdin and stdout until the agent host closes them. Stdout carries only JSON-RPC; logs go to stderr. Needs the `mcp` feature. |
+| [`mcp authorize`](#bacnet-mcp-authorize) | — | Record, after showing what an agent may reach, that you authorize the MCP server on a profile. Needs a terminal. Needs the `mcp` feature. |
 | [`discover`](#bacnet-discover) | `whois` | Discover BACnet devices (WhoIs). |
 | [`find`](#bacnet-find) | `whohas` | Find objects by name (WhoHas). |
 | [`read`](#bacnet-read) | `rp` | Read a property. |
@@ -114,7 +117,9 @@ These options go before or after the command. Each command also takes `-h` or `-
 | [`subscribe`](#bacnet-subscribe) | `cov` | Subscribe to COV notifications. |
 | [`control`](#bacnet-control) | `dcc` | Device communication control. |
 | [`reinit`](#bacnet-reinit) | — | Reinitialize device. |
-| [`alarms`](#bacnet-alarms) | — | Get event/alarm information. |
+| [`alarms`](#bacnet-alarms) | — | List the objects with an active event or an unacknowledged transition (GetEventInformation), following the device's pages. |
+| [`alarm-summary`](#bacnet-alarm-summary) | — | List the objects in alarm (GetAlarmSummary). |
+| [`enrollment-summary`](#bacnet-enrollment-summary) | — | List the event-initiating objects that match the filters (GetEnrollmentSummary). |
 | [`file-read`](#bacnet-file-read) | — | Read a file from a device. |
 | [`file-write`](#bacnet-file-write) | — | Write a file to a device. |
 | [`mstp-ports`](#bacnet-mstp-ports) | — | List the serial ports to pass to --mstp (a JSON array of names, possibly empty). Opens no port. Needs the `serial` feature. |
@@ -171,6 +176,46 @@ Options:
 - `--poll-interval <SECS>`: Least time between two polls of a watched point a device won't report by COV, in seconds. Default: `10`.
 - `--capture-ring <N>`: Frames the Capture screen keeps; past that the oldest go. Default: `50000`.
 - `--capture-device <DEVICE>`: Also capture B/IP traffic on the -p port from this network device with libpcap, for the Capture screen (needs the pcap feature and capture rights).
+
+### bacnet mcp
+
+Serve a read-only MCP server to an AI agent host (needs the `mcp` feature).
+
+`bacnet mcp serve --stdio --profile NAME` is what an agent host's configuration launches; `bacnet mcp authorize --profile NAME`, run once in a terminal, records the person's consent first.
+
+```text
+Usage: bacnet mcp [OPTIONS] <COMMAND>
+```
+
+### bacnet mcp serve
+
+Serve MCP on stdin and stdout until the agent host closes them. Stdout carries only JSON-RPC; logs go to stderr.
+
+Needs the `mcp` feature.
+
+```text
+Usage: bacnet mcp serve [OPTIONS] --stdio
+```
+
+Options:
+
+- `--stdio`: Serve on stdin and stdout, the transport an agent host launches. Required.
+- `--profile <NAME>`: Named profile to connect with; its mcp table limits what the agent may reach. Needed unless --passive; no transport flags with it.
+- `--passive`: Build no client and send nothing: only the tools that need no network are offered.
+
+### bacnet mcp authorize
+
+Record, after showing what an agent may reach, that you authorize the MCP server on a profile. Needs a terminal.
+
+Needs the `mcp` feature.
+
+```text
+Usage: bacnet mcp authorize [OPTIONS] --profile <NAME>
+```
+
+Options:
+
+- `--profile <NAME>`: The profile to authorize. Required.
 
 ### bacnet discover
 
@@ -338,7 +383,7 @@ Options:
 
 ### bacnet alarms
 
-Get event/alarm information.
+List the objects with an active event or an unacknowledged transition (GetEventInformation), following the device's pages.
 
 ```text
 Usage: bacnet alarms [OPTIONS] <TARGET>
@@ -347,6 +392,42 @@ Usage: bacnet alarms [OPTIONS] <TARGET>
 Arguments:
 
 - `<TARGET>`: Target device. Required.
+
+Options:
+
+- `--max <MAX>`: Stop after this many objects. Default: `10000`.
+
+### bacnet alarm-summary
+
+List the objects in alarm (GetAlarmSummary).
+
+```text
+Usage: bacnet alarm-summary [OPTIONS] <TARGET>
+```
+
+Arguments:
+
+- `<TARGET>`: Target device. Required.
+
+### bacnet enrollment-summary
+
+List the event-initiating objects that match the filters (GetEnrollmentSummary).
+
+```text
+Usage: bacnet enrollment-summary [OPTIONS] <TARGET>
+```
+
+Arguments:
+
+- `<TARGET>`: Target device. Required.
+
+Options:
+
+- `--acked <ACKED>`: Acknowledgment: all, acked or not-acked. Default: `all`.
+- `--state <STATE>`: Event state: offnormal, fault, normal, all or active.
+- `--event-type <EVENT_TYPE>`: Event algorithm, such as out-of-range or change-of-state.
+- `--priority <PRIORITY>`: Notification priority, MIN-MAX (0 to 255) or one value.
+- `--class <CLASS>`: Notification class number.
 
 ### bacnet file-read
 
