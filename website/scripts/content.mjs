@@ -3,6 +3,8 @@
 import { readFile } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { release, repository, releaseAsset } from '../src/lib/site.mjs';
+import { supportTableMarkdown } from '../src/lib/support.mjs';
+import support from '../src/data/support.json' with { type: 'json' };
 export function frontmatter(source) {
   const match = source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
   if (!match) throw new Error('Missing frontmatter');
@@ -63,6 +65,8 @@ export async function plainBody(body, file, downloads) {
     if (!raws.has(name)) throw new Error(`Unknown raw code import in ${file}`);
     return `\n\n\`\`\`${attr(tag, 'lang')}\n${raws.get(name).trim()}\n\`\`\`\n\n`;
   });
+  // The capability tables (project/conformance), from the same rows the page renders.
+  text = text.replace(/<SupportTable\s+table="([a-z-]+)"\s*\/>/g, (_, id) => `\n\n${supportTableMarkdown(id, support)}\n\n`);
   text = text.replace(/<DownloadList\s*\/>/g, () => downloads.map(item => `- [${item.os} · ${item.architecture}](${releaseAsset(item.file)}) — \`${item.file}\`; ${item.features}; ${item.runtime}.`).join('\n'));
   // Screenshots under src/assets are built to hashed URLs the export can't
   // name, so the export keeps their alt text.

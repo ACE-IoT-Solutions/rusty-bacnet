@@ -247,6 +247,10 @@
         "slug": "project/support"
       },
       {
+        "label": "Capability tables",
+        "slug": "project/conformance"
+      },
+      {
         "label": "Performance",
         "slug": "project/performance"
       },

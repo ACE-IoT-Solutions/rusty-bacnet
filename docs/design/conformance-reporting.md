@@ -3,7 +3,13 @@
 Status: **decided** (maintainer, 2026-10-25): option C in section 4, in two
 PRs, tables first; no BIBBs, no ledger. This settles the project's open
 decision OD-07 ("how to present conformance", #1496, folded into #1989). The
-options stay below for context. Nothing here is built yet. Spec references are clause numbers only.
+options stay below for context. The first PR (part B: the catalogue, the
+client-sent list, the generator, `support.json` and `project/conformance`)
+is built; the sample PICS and `integrate/pics` are not yet. Section 2
+describes the sources as they were before it. One finding from that PR: the
+server and the client send disjoint sets of services, so the test pins that
+the PICS initiator list and the client-sent list don't overlap rather than
+that one contains the other. Spec references are clause numbers only.
 
 ## 1. Problem
 

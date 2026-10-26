@@ -55,8 +55,8 @@ test('every copy of the release version matches site.mjs', async () => {
     (await read('src/content/docs/index.mdx')).includes(`content: 'Guides for the v${series} release`));
   const support = await read('src/content/docs/project/support.md');
   expect(`project/support.md: describe **v${release}**`, support.includes(`and the operating guides describe **v${release}**`));
-  expect(`project/support.md: describes v${release}, with its release notes`,
-    support.includes(`This summary describes v${release}; its [release notes](https://github.com/jscott3201/rusty-bacnet/releases/tag/v${release})`));
+  expect(`project/support.md: links v${release}'s release notes`,
+    support.includes(`the v${release} [release notes](https://github.com/jscott3201/rusty-bacnet/releases/tag/v${release})`));
   const upgrading = await read(`src/content/docs/${upgradeGuide}`);
   expect(`${upgradeGuide}: from v${previous} to v${release}`, upgrading.includes(`title: "Upgrade from v${previous} to v${release}"`));
   assert.deepEqual(stale, [], `release is ${release}; update these`);
