@@ -548,7 +548,8 @@ its subscription on the device; the status bar's `COV` counter is how many
 subscriptions the session holds. A renewal that fails turns the row to
 polling and it subscribes again later, waiting longer each time it fails.
 A device that refuses COV, or a routed one, is polled instead: one
-ReadPropertyMultiple per device for up to 16 rows, a point at most every
+ReadPropertyMultiple per device for up to 16 rows (asked again a row at a
+time when the answer would be too large), a point at most every
 `--poll-interval` seconds (default 10) counted from the end of its last
 poll, and within the shared `--max-rate`; a device that stops answering is
 polled again after a wait that doubles up to a minute. The watch list keeps
@@ -561,7 +562,8 @@ keep up with count in the `drop` counter. With a profile, `:csv on` logs every
 value to `watch-<time>.csv` in the profile's workspace and `:csv off` stops.
 Its columns are `unix_ms,device,object,property,value,status_flags,source,network`:
 `device` is the plain instance and `network` a routed device's network,
-empty on the local network.
+empty on the local network. The list runs on the same watch hub as the MCP server
+(`bacnet_ops::watch`).
 
 **Network screen.** Its BBMD tabs are for B/IP, and its Networks tab (below)
 works on every transport. `4` shows the foreign-device panel and one BBMD's

@@ -89,6 +89,10 @@ async fn a_refused_subscription_falls_back_to_polling() {
         snapshot.note.as_deref().unwrap().starts_with("COV refused"),
         "{snapshot:?}"
     );
+    assert!(
+        matches!(snapshot.why, Some(Why::Refused(_))),
+        "{snapshot:?}"
+    );
     assert!(lab.table().await.is_empty());
     tokio::time::sleep(Duration::from_secs(25)).await;
     assert_eq!(class.snapshot().polls, 2, "a poll every 10 s");
@@ -155,6 +159,16 @@ async fn a_silent_device_is_reported() {
     let snapshot = lease.snapshot();
     assert_eq!(snapshot.state, State::Unreachable, "{snapshot:?}");
     assert_eq!(snapshot.source, Some(Source::Poll));
+    // The poll that followed failed too: its error is the note, while the
+    // reason the point is polled stays the renewal's.
+    assert!(
+        matches!(snapshot.why, Some(Why::Lapsed(Some(_)))),
+        "{snapshot:?}"
+    );
+    assert!(
+        snapshot.polls == 0 && !snapshot.note.as_deref().unwrap().contains("renewal"),
+        "{snapshot:?}"
+    );
     lab.quirks.muted.store(false, Ordering::Relaxed);
     tokio::time::sleep(Duration::from_secs(320)).await;
     let snapshot = lease.snapshot();

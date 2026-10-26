@@ -382,7 +382,8 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   notification match.
   `lifecycle_tests.rs`: the first notification after subscribing kept,
   shutdown within its wait with a poll in flight, an arrival as a
-  scheduler ends, and a one-row batch too large to answer.
+  scheduler ends, a one-row batch too large to answer, the cancel of a
+  point given up, and a renewal behind a busy gate.
 - `crates/bacnet-ops`: network rates, accounts and buckets, a trend page
   charged per request, Who-Is through the engine, and the decoder's tests
   (moved from the CLI).

@@ -31,7 +31,7 @@ use super::options::MissingDevice;
 use super::poll::Polled;
 use super::sample::Via;
 use super::shared::{Arrival, DeviceSlot, Running, Shared};
-use super::{Inner, Source, State};
+use super::{Inner, Source, State, Why};
 use crate::engine::unreachable;
 use crate::limits::charged;
 
@@ -75,16 +75,25 @@ enum Op {
     Start(u32),
     Cancel {
         shared: Arc<Shared>,
-        /// The point's row when it is done once cancelled.
-        row: Option<Box<Row>>,
+        /// What the cancel keeps counted until it ends.
+        holder: Holder,
         target: CovTarget,
         managed: Option<ManagedCOVSubscription>,
     },
 }
 
+/// What a cancel holds until it ends.
+enum Holder {
+    /// The point's row, done once cancelled.
+    Row(Box<Row>),
+    /// A count of its own: the cancel of an earlier attempt's subscription
+    /// for a point that stays (given up, [`State::Gone`]).
+    Alone(Running),
+}
+
 enum Done {
     Started { process: u32, started: Box<Started> },
-    Cancelled(Option<Box<Row>>),
+    Cancelled(Holder),
     Polled(Polled<u32>),
 }
 
@@ -236,7 +245,7 @@ impl<T: TransportPort + 'static> Device<T> {
         match (held, row.target.clone()) {
             (true, Some(target)) => {
                 let shared = Arc::clone(&row.shared);
-                self.queue_cancel(&shared, Some(Box::new(row)), target, managed);
+                self.queue_cancel(&shared, Holder::Row(Box::new(row)), target, managed);
             }
             _ => self.finish(row),
         }
@@ -245,7 +254,7 @@ impl<T: TransportPort + 'static> Device<T> {
     fn queue_cancel(
         &mut self,
         shared: &Arc<Shared>,
-        row: Option<Box<Row>>,
+        holder: Holder,
         target: CovTarget,
         managed: Option<ManagedCOVSubscription>,
     ) {
@@ -255,7 +264,7 @@ impl<T: TransportPort + 'static> Device<T> {
             .fetch_add(1, Ordering::Relaxed);
         self.ops.push_back(Op::Cancel {
             shared: Arc::clone(shared),
-            row,
+            holder,
             target,
             managed,
         });
@@ -288,7 +297,7 @@ impl<T: TransportPort + 'static> Device<T> {
             }
             Some(Op::Cancel {
                 shared,
-                row,
+                holder,
                 target,
                 managed,
             }) => {
@@ -296,7 +305,7 @@ impl<T: TransportPort + 'static> Device<T> {
                 let point = shared.point;
                 Some(Box::pin(async move {
                     jobs::cancel(inner, process, point, target, managed).await;
-                    Done::Cancelled(row)
+                    Done::Cancelled(holder)
                 }))
             }
             None => {
@@ -329,13 +338,14 @@ impl<T: TransportPort + 'static> Device<T> {
     fn done(&mut self, done: Done) {
         match done {
             Done::Started { process, started } => self.started(process, *started),
-            Done::Cancelled(row) => {
+            Done::Cancelled(holder) => {
                 self.inner
                     .registry
                     .cancelling
                     .fetch_sub(1, Ordering::Relaxed);
-                if let Some(row) = row {
-                    self.finish(*row);
+                match holder {
+                    Holder::Row(row) => self.finish(*row),
+                    Holder::Alone(running) => drop(running),
                 }
             }
             Done::Polled(polled) => self.polled(polled),
@@ -371,10 +381,14 @@ impl<T: TransportPort + 'static> Device<T> {
                     row.mode = Mode::Gone;
                     row.resubscribe = None;
                     let prior = std::mem::take(&mut row.maybe_subscribed);
+                    shared.lock().snapshot.why = Some(Why::Missing);
                     shared.set_state(seq, None, State::Gone, Some(note));
                     if let (true, Some(target)) = (prior, row.target.clone()) {
-                        // An earlier attempt may have subscribed.
-                        self.queue_cancel(&shared, None, target, None);
+                        // An earlier attempt may have subscribed. The
+                        // cancel counts as running on its own, so a
+                        // shutdown waits for it as for any other.
+                        let running = Running::new(&self.inner.registry);
+                        self.queue_cancel(&shared, Holder::Alone(running), target, None);
                     }
                 }
                 MissingDevice::Poll => {
@@ -385,6 +399,7 @@ impl<T: TransportPort + 'static> Device<T> {
                     let wait = poll_backoff.next(previous);
                     row.mode = Mode::Waiting;
                     row.resubscribe = Some((Instant::now() + wait, wait));
+                    shared.lock().snapshot.why = Some(Why::Missing);
                     shared.set_state(seq, Some(Source::Poll), State::Unreachable, Some(note));
                 }
             }
@@ -399,6 +414,7 @@ impl<T: TransportPort + 'static> Device<T> {
             Err(error) => {
                 shared.sample(Err(error.to_string()), Via::First);
                 let (source, state) = if unreachable(&error) {
+                    shared.lock().snapshot.why = Some(Why::NoAnswer(error.to_string()));
                     (Some(Source::Poll), State::Unreachable)
                 } else {
                     (None, State::Failed)
@@ -418,6 +434,7 @@ impl<T: TransportPort + 'static> Device<T> {
                 row.mode = Mode::Cov(Box::new(managed), events);
                 row.resubscribe = None;
                 row.maybe_subscribed = false;
+                shared.lock().snapshot.why = None;
                 shared.set_state(seq, Some(Source::Cov), State::Live, None);
                 return;
             }
@@ -450,6 +467,7 @@ impl<T: TransportPort + 'static> Device<T> {
             } else {
                 shared.lock().snapshot.state
             };
+            shared.lock().snapshot.why = Some(Why::Refused(error.to_string()));
             shared.set_state(
                 seq,
                 Some(Source::Poll),
@@ -525,11 +543,15 @@ impl<T: TransportPort + 'static> Device<T> {
             if !managed.is_finished() {
                 continue;
             }
-            let why = match managed.last_event() {
+            let failed = match managed.last_event() {
                 Some(ManagedCOVSubscriptionEvent::RenewalFailed { error }) => {
-                    format!("COV renewal failed: {error}")
+                    Some(error.to_string())
                 }
-                _ => "COV renewal stopped".to_string(),
+                _ => None,
+            };
+            let why = match &failed {
+                Some(error) => format!("COV renewal failed: {error}"),
+                None => "COV renewal stopped".to_string(),
             };
             let wait = retry_cov.first;
             tracing::info!(
@@ -541,6 +563,7 @@ impl<T: TransportPort + 'static> Device<T> {
             // The failed renewal may have reached the device.
             row.maybe_subscribed = true;
             row.resubscribe = Some((now + wait, wait));
+            row.shared.lock().snapshot.why = Some(Why::Lapsed(failed));
             row.shared
                 .set_state(seq, Some(Source::Poll), State::Unreachable, Some(why));
         }

@@ -166,6 +166,10 @@ async fn an_unanswered_subscription_is_retried_after_its_backoff() {
     let snapshot = lease.snapshot();
     assert_eq!(snapshot.source, Some(Source::Poll), "{snapshot:?}");
     assert_eq!(snapshot.state, State::Unreachable);
+    assert!(
+        matches!(snapshot.why, Some(Why::Refused(_))),
+        "{snapshot:?}"
+    );
     assert!(snapshot.note.unwrap().starts_with("COV refused"));
     assert!(lab.table().await.is_empty());
     tokio::time::sleep(Duration::from_secs(25)).await;
@@ -178,6 +182,7 @@ async fn an_unanswered_subscription_is_retried_after_its_backoff() {
     assert_eq!(snapshot.source, Some(Source::Cov), "{snapshot:?}");
     assert_eq!(snapshot.state, State::Live);
     assert_eq!(snapshot.note, None);
+    assert_eq!(snapshot.why, None, "subscribed: nothing to explain");
     assert_eq!(lab.table().await.len(), 1);
     // Polled meanwhile; the retry read the point again first.
     let services = lab.services();
