@@ -9,9 +9,9 @@ use bacnet_objects::notification_class::NotificationClass;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_objects::trend::TrendLogObject;
 use bacnet_transport::bip::BipTransport;
-use bacnet_types::constructed::{BACnetLogRecord, LogDatum};
-use bacnet_types::enums::{EventState, EventType};
-use bacnet_types::primitives::{Date, StatusFlags, Time};
+use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetLogRecord, LogDatum};
+use bacnet_types::enums::{EventState, EventType, ObjectType, PropertyIdentifier};
+use bacnet_types::primitives::{Date, ObjectIdentifier, StatusFlags, Time};
 use serde_json::{Value, json};
 
 use super::{Agent, LAB, Lab};
@@ -23,6 +23,15 @@ pub(crate) const TREND_RECORDS: u32 = 260;
 
 /// Records in trend-log:3: more than one call's structured content holds.
 pub(crate) const LONG_RECORDS: u32 = 900;
+
+/// Records in trend-log:4 and trend-log:5, enough for several pages.
+pub(crate) const STATE_RECORDS: u32 = 360;
+
+/// The event state record `i` of trend-log:4 and trend-log:5 holds:
+/// normal, offnormal and high-limit in turn.
+pub(crate) fn state_value(i: u32) -> u64 {
+    [0, 2, 3][usize::try_from(i % 3).unwrap()]
+}
 
 /// The value of trend-log:1's record `i` (from 0).
 pub(crate) fn trend_value(i: u32) -> f32 {
@@ -55,8 +64,9 @@ pub(crate) fn trend_time(i: u32) -> (Date, Time) {
 
 /// The site's objects beyond the points: trend-log:1 with
 /// [`TREND_RECORDS`] REAL samples, trend-log:2 with ten enumerated ones
-/// (states 0 and 1, three of them 1), and event enrollments 1 to 3 in
-/// alarm.
+/// (states 0 and 1, three of them 1), trend-log:4 sampling analog-input:1's
+/// Event_State and trend-log:5 holding the same records with no reference
+/// (#2091), and event enrollments 1 to 3 in alarm.
 pub(crate) fn objects() -> Vec<Box<dyn BACnetObject>> {
     let mut objects: Vec<Box<dyn BACnetObject>> = Vec::new();
     let mut log = TrendLogObject::new(1, "Zone Temp Log", TREND_RECORDS + 40).unwrap();
@@ -100,6 +110,29 @@ pub(crate) fn objects() -> Vec<Box<dyn BACnetObject>> {
         .unwrap();
     }
     objects.push(Box::new(long));
+    for (instance, name) in [(4, "Event State Log"), (5, "Unreferenced State Log")] {
+        let mut log = TrendLogObject::new(instance, name, STATE_RECORDS).unwrap();
+        if instance == 4 {
+            log.set_log_device_object_property(Some(
+                BACnetDeviceObjectPropertyReference::new_local(
+                    ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
+                    PropertyIdentifier::EVENT_STATE.to_raw(),
+                ),
+            ))
+            .unwrap();
+        }
+        for i in 0..STATE_RECORDS {
+            let (date, time) = trend_time(i);
+            log.add_record(BACnetLogRecord {
+                date,
+                time,
+                log_datum: LogDatum::EnumValue(state_value(i)),
+                status_flags: None,
+            })
+            .unwrap();
+        }
+        objects.push(Box::new(log));
+    }
     for instance in 1..=3 {
         let mut enrollment = EventEnrollmentObject::new(
             instance,
@@ -254,11 +287,13 @@ async fn find_pages_resume_across_devices() {
             "1201 \"trend-log:1\"",
             "1201 \"trend-log:2\"",
             "1201 \"trend-log:3\"",
+            "1201 \"trend-log:4\"",
+            "1201 \"trend-log:5\"",
         ]
     );
     // A full page ends before the next device: 1202 is read only on the
     // last page, which finds nothing there and ends the search.
-    let mut wanted: Vec<(Value, usize)> = vec![(json!([1201]), 1); 5];
+    let mut wanted: Vec<(Value, usize)> = vec![(json!([1201]), 1); 7];
     wanted.push((json!([1202]), 0));
     assert_eq!(pages, wanted);
     assert_eq!(skipped, [json!(1202)], "skipped once, on the last page");

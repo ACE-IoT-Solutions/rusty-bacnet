@@ -11,12 +11,19 @@
 //! The heading carries the result flags and the first sequence number, so a
 //! page that left items out says so; `--all` pages through a whole log and
 //! ends with the checkpoint to resume from (#1532).
+//!
+//! A Trend Log's records don't say which property they sample, so once the
+//! device has answered the first ReadRange of its Log_Buffer, the command
+//! reads its Log_DeviceObjectProperty and names the logged enumerations and
+//! bit strings by the monitored property: one request more per command,
+//! however many pages (#2091). When that read fails or names nothing, the
+//! values print as logged.
 
 use bacnet_client::client::BACnetClient;
 use bacnet_client::log_reader::{LogCursor, LogGap};
 use bacnet_ops::destination::Destination;
-use bacnet_ops::format::Datum;
 use bacnet_ops::format::notification::EventValues;
+use bacnet_ops::format::{Datum, LogColumns, LoggedProperty};
 use bacnet_services::read_range::{
     LogRecords, ReadRangeAck, ReadRangeRequest, ReadRangeValidation, ReadRangeViolation,
 };
@@ -81,7 +88,13 @@ pub async fn read_range_cmd<T: TransportPort + 'static>(
     heading.result_flags = ack.result_flags;
     heading.first_sequence_number = ack.first_sequence_number;
     heading.note_violations(&reply.violations);
-    match log_rows(&ack) {
+    // Only once the device has answered: a silent one costs one timeout.
+    let columns = if property == PropertyIdentifier::LOG_BUFFER {
+        to.log_columns(client, oid).await
+    } else {
+        LogColumns::default()
+    };
+    match log_rows(&ack, &columns) {
         Some(rows) => print_records(&heading, &rows, format),
         None => print_items(&heading, object_type, property, &ack.item_data, format),
     }
@@ -95,7 +108,9 @@ type Stopped = Option<Box<dyn std::error::Error>>;
 /// heading: the records, the last page's flags, the first sequence number,
 /// the rules the device broke, the pages read, any gaps and the checkpoint.
 /// An error after the options are checked stops the read but keeps what it
-/// read, for the caller to print first.
+/// read, for the caller to print first. The log's columns, which name its
+/// values, are read once, after the first page: a device that doesn't
+/// answer costs one timeout, not two.
 async fn read_all<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     to: &Destination,
@@ -106,6 +121,7 @@ async fn read_all<T: TransportPort + 'static>(
     let (mut cursor, page_size) = range.pages()?;
     let mut rows = LogRows::default();
     let mut paged = Paged::default();
+    let mut columns = LogColumns::default();
     let stopped = loop {
         let page = match to.read_log_page(client, log, cursor, page_size).await {
             Ok(page) => page,
@@ -114,12 +130,13 @@ async fn read_all<T: TransportPort + 'static>(
         paged.pages += 1;
         if paged.pages == 1 {
             heading.first_sequence_number = page.first_sequence_number;
+            columns = to.log_columns(client, log).await;
         }
         heading.item_count += page.records.len() as u64;
         heading.result_flags = page.result_flags;
         heading.note_violations(&page.violations);
         paged.gaps.extend(page.gap);
-        rows.rows.extend(record_rows(&page.records));
+        rows.rows.extend(record_rows(&page.records, &columns));
         cursor = page.next;
         if page.done {
             break None;
@@ -289,15 +306,16 @@ struct LogRows {
 
 /// The rows of a log buffer's records, when `ack` answers a read of the
 /// Log_Buffer of a log object: every record that decodes, up to the first
-/// that doesn't, whose octets on are kept as hex.
-fn log_rows(ack: &ReadRangeAck) -> Option<LogRows> {
+/// that doesn't, whose octets on are kept as hex. `columns` names the
+/// logged values.
+fn log_rows(ack: &ReadRangeAck, columns: &LogColumns) -> Option<LogRows> {
     Some(match ack.log_records()? {
         Ok(records) => LogRows {
-            rows: record_rows(&records),
+            rows: record_rows(&records, columns),
             undecoded: None,
         },
         Err(error) => LogRows {
-            rows: record_rows(&error.decoded),
+            rows: record_rows(&error.decoded, columns),
             undecoded: ack
                 .item_data
                 .get(error.offset..)
@@ -307,21 +325,25 @@ fn log_rows(ack: &ReadRangeAck) -> Option<LogRows> {
     })
 }
 
-fn record_rows(records: &LogRecords) -> Vec<LogRecordRow> {
+fn record_rows(records: &LogRecords, columns: &LogColumns) -> Vec<LogRecordRow> {
     match records {
-        LogRecords::TrendLog(records) => records.iter().map(trend_log_row).collect(),
+        LogRecords::TrendLog(records) => records
+            .iter()
+            .map(|record| trend_log_row(record, columns.column(0)))
+            .collect(),
         LogRecords::EventLog(records) => records.iter().map(event_log_row).collect(),
-        LogRecords::TrendLogMultiple(records) => {
-            records.iter().map(trend_log_multiple_row).collect()
-        }
+        LogRecords::TrendLogMultiple(records) => records
+            .iter()
+            .map(|record| trend_log_multiple_row(record, columns))
+            .collect(),
         LogRecords::AuditLog(records) => records.iter().map(audit_log_row).collect(),
     }
 }
 
-fn trend_log_row(record: &BACnetLogRecord) -> LogRecordRow {
+fn trend_log_row(record: &BACnetLogRecord, column: Option<LoggedProperty>) -> LogRecordRow {
     LogRecordRow {
         timestamp: timestamp(record.date, record.time),
-        datum: log_datum(&record.log_datum),
+        datum: log_datum(&record.log_datum, column),
         status_flags: record.status_flags.map(status_flags),
         event_values: None,
     }
@@ -350,13 +372,18 @@ fn event_log_row(record: &BACnetEventLogRecord) -> LogRecordRow {
     }
 }
 
-fn trend_log_multiple_row(record: &BACnetLogMultipleRecord) -> LogRecordRow {
+/// A Trend Log Multiple record, each member's value named by its own
+/// column.
+fn trend_log_multiple_row(record: &BACnetLogMultipleRecord, columns: &LogColumns) -> LogRecordRow {
     let datum = match &record.log_data {
         LogData::LogStatus(status) => log_status(*status),
         LogData::Values(values) => {
             let values: Vec<String> = values
                 .iter()
-                .map(|value| log_datum(&LogDatum::from(value.clone())))
+                .enumerate()
+                .map(|(column, value)| {
+                    log_datum(&LogDatum::from(value.clone()), columns.column(column))
+                })
                 .collect();
             format!("[{}]", values.join(", "))
         }
@@ -414,12 +441,11 @@ fn object(oid: ObjectIdentifier) -> String {
     format!("{}:{}", oid.object_type(), oid.instance_number())
 }
 
-/// A logged value, through the shared formatter. The log doesn't say which
-/// property it logged, so an enumeration shows as `enum 3` and a bit
-/// string as its bits.
-fn log_datum(datum: &LogDatum) -> String {
-    // A property with no enumeration, named bits or constructed element.
-    const ANY: PropertyIdentifier = PropertyIdentifier::LOG_BUFFER;
+/// A logged value, through the shared formatter, named for the property
+/// `column` samples. With no column named, or a value the property doesn't
+/// name, an enumeration shows as `enum 3` and a bit string as its bits.
+fn log_datum(datum: &LogDatum, column: Option<LoggedProperty>) -> String {
+    let format = formatter(ObjectType::TREND_LOG);
     let value = match datum {
         LogDatum::LogStatus(status) => return log_status(*status),
         LogDatum::Failure {
@@ -427,10 +453,13 @@ fn log_datum(datum: &LogDatum) -> String {
             error_code,
         } => return format!("failure {error_class}/{error_code}"),
         LogDatum::TimeChange(seconds) => return time_change(*seconds),
-        LogDatum::AnyValue(bytes) => return formatter(ObjectType::TREND_LOG).value(ANY, bytes),
+        LogDatum::AnyValue(bytes) => return format.logged_octets(column, bytes),
         LogDatum::BooleanValue(value) => PropertyValue::Boolean(*value),
         LogDatum::RealValue(value) => PropertyValue::Real(*value),
-        LogDatum::EnumValue(value) => return format!("enum {value}"),
+        LogDatum::EnumValue(value) => match u32::try_from(*value) {
+            Ok(value) => PropertyValue::Enumerated(value),
+            Err(_) => return format!("enum {value}"),
+        },
         LogDatum::UnsignedValue(value) => PropertyValue::Unsigned(*value),
         LogDatum::SignedValue(value) => match i32::try_from(*value) {
             Ok(value) => PropertyValue::Signed(value),
@@ -442,7 +471,7 @@ fn log_datum(datum: &LogDatum) -> String {
         },
         LogDatum::NullValue => PropertyValue::Null,
     };
-    formatter(ObjectType::TREND_LOG).element(ANY, &value)
+    format.logged(column, &value)
 }
 
 /// Notify type, event type, event object and transition, then the message;

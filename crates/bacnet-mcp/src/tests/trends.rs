@@ -7,7 +7,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::Lab;
-use super::site::{LONG_RECORDS, TREND_RECORDS, failed, ok, trend_flagged, trend_value};
+use super::site::{
+    LONG_RECORDS, STATE_RECORDS, TREND_RECORDS, failed, ok, state_value, trend_flagged, trend_value,
+};
 use crate::Policy;
 use crate::policy::{Caps, Rates};
 
@@ -315,5 +317,95 @@ async fn a_cancelled_trend_read_stops() {
         sent - at_cancel
     );
     assert!(sent < 6, "{sent}");
+    lab.stop().await;
+}
+
+fn requests(result: &Value) -> u64 {
+    result["structuredContent"]["cost"]["requests"]
+        .as_u64()
+        .unwrap()
+}
+
+/// A log whose Log_DeviceObjectProperty names Event_State gets its values
+/// and state counts named, for one request more than its pages, however
+/// many pages the call reads (#2091). The same records with an empty
+/// reference cost the same, since the reference is read either way, and
+/// keep their numbers.
+#[tokio::test(start_paused = true)]
+async fn a_referenced_log_names_its_values_for_one_request_more() {
+    let mut lab = Lab::start_site(Policy::default(), Duration::ZERO).await;
+    lab.agent.initialize().await;
+    let named = lab
+        .agent
+        .call(
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "trend-log:4" }),
+        )
+        .await;
+    let unnamed = lab
+        .agent
+        .call(
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "trend-log:5" }),
+        )
+        .await;
+    let (body, plain) = (ok(&named), ok(&unnamed));
+    let pages = body["pages"].as_u64().unwrap();
+    assert!(pages >= 3, "{body}");
+    assert_eq!(body["gaps"], json!([]));
+    // From the oldest record: Total_Record_Count, Record_Count and
+    // Total_Record_Count, a ReadRange a page, and the reference once.
+    assert_eq!(requests(&named), 3 + pages + 1, "{body}");
+    assert_eq!(plain["pages"], json!(pages));
+    assert_eq!(requests(&unnamed), requests(&named));
+
+    let records = body["records"].as_array().unwrap();
+    assert_eq!(records.len(), usize::try_from(STATE_RECORDS).unwrap());
+    assert_eq!(state_value(1), 2);
+    assert_eq!(
+        records[0]["values"][0],
+        json!({ "value": 0, "name": "normal" })
+    );
+    assert_eq!(
+        records[1]["values"][0],
+        json!({ "value": 2, "name": "offnormal" })
+    );
+    assert_eq!(
+        records[2]["values"][0],
+        json!({ "value": 3, "name": "high-limit" })
+    );
+    let third = STATE_RECORDS / 3;
+    assert_eq!(
+        body["summary"]["columns"][0]["states"],
+        json!({ "normal": third, "offnormal": third, "high-limit": third })
+    );
+    assert_eq!(plain["records"][1]["values"][0], json!({ "value": 2 }));
+    assert_eq!(
+        plain["summary"]["columns"][0]["states"],
+        json!({ "0": third, "2": third, "3": third })
+    );
+    lab.stop().await;
+}
+
+/// A silent device fails the call after one timeout: the reference is
+/// read only once the device has answered a page.
+#[tokio::test(start_paused = true)]
+async fn a_silent_device_costs_one_timeout() {
+    let mut lab = Lab::start_site(Policy::default(), Duration::ZERO).await;
+    lab.agent.initialize().await;
+    lab.go_silent_after(0);
+    let before = lab.sends().len();
+    let result = lab
+        .agent
+        .call(
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "trend-log:4" }),
+        )
+        .await;
+    let body = failed(&result);
+    assert_eq!(body["error"], json!("timeout"), "{result}");
+    assert_eq!(body["cost"]["timeouts"], json!(1), "{result}");
+    assert_eq!(body["cost"]["requests"], json!(1), "{result}");
+    assert_eq!(lab.sends().len() - before, 1, "one request, one timeout");
     lab.stop().await;
 }
