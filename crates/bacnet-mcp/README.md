@@ -5,7 +5,9 @@ for BACnet sites, in the
 [Rusty BACnet](https://github.com/jscott3201/rusty-bacnet) workspace. An AI
 agent host (Claude Code, Codex and others) launches it as `bacnet mcp serve
 --stdio` (the `bacnet-cli` feature `mcp`) and calls its tools to discover
-devices, describe them, list their objects and read their properties.
+devices, describe them, find, list and read their objects, read and
+summarise trend logs, list alarms, map networks and routers, and decode
+frames.
 
 - Built on the official `rmcp` SDK; targets the 2026-07-28 revision of MCP
   and still answers the older `initialize` handshake.

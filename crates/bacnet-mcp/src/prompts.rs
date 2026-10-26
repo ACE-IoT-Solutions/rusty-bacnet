@@ -111,8 +111,11 @@ pub(crate) fn get(name: &str, args: JsonObject) -> Result<GetPromptResult, Error
                  bacnet_describe_device with count_objects true. Then summarise: devices by \
                  vendor and model, firmware and software versions, protocol revisions, object \
                  counts by type, and anything odd (devices that didn't answer, errors, very old \
-                 protocol revisions, unusual segmentation or APDU sizes). Page with next_cursor \
-                 when a result is truncated.\n\n{GROUND_RULES}"
+                 protocol revisions, unusual segmentation or APDU sizes). Call \
+                 bacnet_network_map to show which networks and routers the devices sit \
+                 behind, and bacnet_alarms on each device to list what is in alarm or fault \
+                 or waiting for acknowledgment. Page with next_cursor when a result is \
+                 truncated.\n\n{GROUND_RULES}"
             )
         }
         "investigate_point" => {
@@ -124,7 +127,12 @@ pub(crate) fn get(name: &str, args: JsonObject) -> Result<GetPromptResult, Error
                  present value and units, its status flags, event state and reliability, \
                  whether it is out of service, and which priority array slots are commanding it \
                  (lower numbers win; slot 16 is the lowest). If the device can't give a \
-                 property, say which and why from the error row.\n\n{GROUND_RULES}"
+                 property, say which and why from the error row. Then call bacnet_alarms \
+                 with device {device} and say whether {object} is in alarm, in fault or has \
+                 an unacknowledged transition. If the device has a trend log of the point \
+                 (find one with bacnet_find_object, types [\"trend-log\"]), call \
+                 bacnet_read_trend with summary true and describe its recent range, mean \
+                 and any flagged records.\n\n{GROUND_RULES}"
             )
         }
         other => {
@@ -167,6 +175,13 @@ mod tests {
             text.contains("analog-output:3") && text.contains("untrusted"),
             "{text}"
         );
+        for tool in ["bacnet_alarms", "bacnet_read_trend"] {
+            assert!(text.contains(tool), "{tool}: {text}");
+        }
+        let survey = serde_json::to_string(&survey.messages[0]).unwrap();
+        for tool in ["bacnet_network_map", "bacnet_alarms"] {
+            assert!(survey.contains(tool), "{tool}: {survey}");
+        }
     }
 
     #[test]

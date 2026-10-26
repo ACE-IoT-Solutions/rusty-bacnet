@@ -1,6 +1,7 @@
 //! Discovery through the engine: Who-Is under the rate cap, and the
 //! client's discovery table.
 
+use bacnet_client::client::DiscoveredRouter;
 use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_services::who_is::{DeviceInstanceRange, WhoIsRequest};
 use bacnet_transport::port::TransportPort;
@@ -74,6 +75,25 @@ impl<T: TransportPort + 'static> Engine<T> {
             crate::limits::refund();
         }
         sent
+    }
+
+    /// Broadcast one Who-Is-Router-To-Network on this network, for
+    /// `network` or every network (`None`), under the rate cap, then
+    /// collect the I-Am-Router-To-Network answers heard for `wait`: one
+    /// entry per router, with the networks it reaches. No answer is an
+    /// empty list.
+    pub async fn discover_routers(
+        &self,
+        network: Option<u16>,
+        wait: std::time::Duration,
+    ) -> Result<Vec<DiscoveredRouter>, Error> {
+        self.limits.slot(Some(0)).await;
+        let found = self.client.discover_routers(network, wait).await;
+        // A refused send never left, so it isn't charged.
+        if found.is_err() {
+            crate::limits::refund();
+        }
+        found
     }
 
     /// The link MAC of a station address in the target grammar, checked

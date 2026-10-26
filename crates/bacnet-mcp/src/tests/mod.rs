@@ -5,6 +5,8 @@ mod discovery;
 mod protocol;
 mod safety;
 mod schema;
+mod site;
+mod trends;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -217,6 +219,22 @@ impl Lab {
         extra: u32,
         indexed_only: bool,
     ) -> Self {
+        Self::build(policy, delay, extra, indexed_only, false).await
+    }
+
+    /// [`start_with`](Self::start_with), with the site's other objects
+    /// too: trend logs and event enrollments in alarm ([`site::objects`]).
+    pub(crate) async fn start_site(policy: Policy, delay: Duration) -> Self {
+        Self::build(policy, delay, 0, false, true).await
+    }
+
+    async fn build(
+        policy: Policy,
+        delay: Duration,
+        extra: u32,
+        indexed_only: bool,
+        site: bool,
+    ) -> Self {
         let identity = DeviceIdentity::new(LAB, 260)
             .unwrap()
             .with_name("Lab device");
@@ -242,6 +260,9 @@ impl Lab {
             )
             .unwrap();
             objects.push(Box::new(point));
+        }
+        if site {
+            objects.extend(site::objects());
         }
         let database = build_database_with_extra(&identity, objects).unwrap();
         let (client_port, server_port) =

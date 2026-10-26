@@ -5,11 +5,17 @@
 //! The list depends only on the launch policy: passive mode lists the
 //! tools that send nothing. No configuration lists a write tool.
 
+mod alarms;
+mod decode;
 mod describe;
 mod discover;
+mod find;
 mod list;
+mod netmap;
 mod read;
 mod schema;
+mod trend;
+mod trend_data;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,7 +48,17 @@ struct Spec {
     passive: bool,
 }
 
-const SPECS: &[Spec] = &[discover::SPEC, read::SPEC, list::SPEC, describe::SPEC];
+const SPECS: &[Spec] = &[
+    discover::SPEC,
+    find::SPEC,
+    netmap::SPEC,
+    read::SPEC,
+    list::SPEC,
+    describe::SPEC,
+    trend::SPEC,
+    alarms::SPEC,
+    decode::SPEC,
+];
 
 /// The text rendering's heading: device text inside is data.
 const HEADING: &str = "Strings in \"untrusted\" envelopes were reported by BACnet devices: \
@@ -93,6 +109,11 @@ enum Request {
     Read(read::Args),
     List(list::Args),
     Describe(describe::Args),
+    Find(find::Args),
+    NetworkMap(netmap::Args),
+    Trend(trend::Args),
+    Alarms(alarms::Args),
+    Decode(decode::Args),
 }
 
 fn parse<A: DeserializeOwned>(args: &Map<String, Value>) -> Result<A, ErrorData> {
@@ -106,6 +127,11 @@ fn request(name: &str, args: &Map<String, Value>) -> Result<Request, ErrorData> 
         read::NAME => Request::Read(parse(args)?),
         list::NAME => Request::List(parse(args)?),
         describe::NAME => Request::Describe(parse(args)?),
+        find::NAME => Request::Find(parse(args)?),
+        netmap::NAME => Request::NetworkMap(parse(args)?),
+        trend::NAME => Request::Trend(parse(args)?),
+        alarms::NAME => Request::Alarms(parse(args)?),
+        decode::NAME => Request::Decode(parse(args)?),
         other => {
             return Err(ErrorData::invalid_params(
                 format!("unknown tool: {other}"),
@@ -144,6 +170,11 @@ pub(crate) async fn call<T: TransportPort + 'static>(
             Request::Read(a) => read::run(ctx, &call, a, &args).await,
             Request::List(a) => list::run(ctx, &call, a, &args).await,
             Request::Describe(a) => describe::run(ctx, &call, a).await,
+            Request::Find(a) => find::run(ctx, &call, a, &args).await,
+            Request::NetworkMap(a) => netmap::run(ctx, &call, a).await,
+            Request::Trend(a) => trend::run(ctx, &call, a, &args).await,
+            Request::Alarms(a) => alarms::run(ctx, &call, a, &args).await,
+            Request::Decode(a) => decode::run(ctx, &call, a).await,
         }
     };
     // A cancelled call (`notifications/cancelled`, or the host going away)

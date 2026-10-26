@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use bacnet_client::client::DiscoveredRouter;
 use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_ops::engine::Engine;
 use bacnet_ops::limits::{Account, TokenBucket};
@@ -40,6 +41,29 @@ pub(crate) struct Ctx<T: TransportPort + 'static> {
     pub(crate) list_locks: Mutex<HashMap<u32, Arc<tokio::sync::Mutex<()>>>>,
     /// Calls and requests per device, logged as a summary at shutdown.
     pub(crate) reads: Mutex<BTreeMap<u32, (u64, u64)>>,
+    /// Object names and descriptions read by `bacnet_find_object`, by
+    /// device, so its later pages don't read them again.
+    pub(crate) names: Mutex<HashMap<u32, CachedNames>>,
+    /// The routers the last Who-Is-Router-To-Network found, and when it
+    /// went; at most one goes a minute.
+    pub(crate) routers: Mutex<Option<(Instant, Vec<DiscoveredRouter>)>>,
+}
+
+/// One device's object names and descriptions as read.
+#[derive(Debug, Clone)]
+pub(crate) struct CachedNames {
+    /// When the first was read; the whole entry goes after [`LIST_TTL`].
+    pub(crate) at: Instant,
+    pub(crate) objects: HashMap<ObjectIdentifier, Names>,
+}
+
+/// An object's name and description as its device gave them (raw device
+/// text, enveloped when returned).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Names {
+    pub(crate) name: Option<String>,
+    /// `None` until read; then the description, if the device gave one.
+    pub(crate) description: Option<Option<String>>,
 }
 
 /// A device's Object_List as read so far.

@@ -135,7 +135,7 @@ fn the_check_finds_violations() {
 /// Calls that succeed and calls that fail, for every tool.
 #[tokio::test(start_paused = true)]
 async fn results_fit_their_output_schemas() {
-    let mut lab = Lab::start(Policy::default()).await;
+    let mut lab = Lab::start_site(Policy::default(), std::time::Duration::ZERO).await;
     lab.agent.initialize().await;
     let tools = lab.agent.request("tools/list", json!({})).await;
     let schemas: Vec<(String, Value)> = tools["result"]["tools"]
@@ -191,18 +191,71 @@ async fn results_fit_their_output_schemas() {
             json!({ "device": "1201", "count_objects": true }),
         ),
         ("bacnet_describe_device", json!({ "device": "2001:300" })),
+        (
+            "bacnet_find_object",
+            json!({ "name": "zone", "description": "", "range": "1201" }),
+        ),
+        (
+            "bacnet_find_object",
+            json!({ "name": "zone", "range": "1201" }),
+        ),
+        (
+            "bacnet_find_object",
+            json!({ "types": ["ai"], "range": "1201-1202" }),
+        ),
+        ("bacnet_find_object", json!({ "range": "1201" })),
+        ("bacnet_network_map", json!({})),
+        ("bacnet_network_map", json!({ "send": true })),
+        (
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "trend-log:1", "max_records": 60 }),
+        ),
+        (
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "trend-log:2", "summary": true }),
+        ),
+        (
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "ai:1" }),
+        ),
+        (
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "trend-log:9" }),
+        ),
+        (
+            "bacnet_alarms",
+            json!({ "device": 1201, "summaries": true }),
+        ),
+        ("bacnet_alarms", json!({ "device": 1201, "max": 1 })),
+        ("bacnet_alarms", json!({ "device": 4242 })),
+        (
+            "bacnet_decode",
+            json!({ "hex": super::site::ack_with_text("Fan\u{202E}") }),
+        ),
+        ("bacnet_decode", json!({ "hex": "10 08", "link": "apdu" })),
+        ("bacnet_decode", json!({ "hex": "zz" })),
     ];
-    let mut errors = 0;
+    // Each tool's (successes, errors) checked.
+    let mut checked: std::collections::BTreeMap<&str, (u32, u32)> = Default::default();
     for (tool, args) in calls {
         let result = lab.agent.call(tool, args.clone()).await;
+        let tally = checked.entry(tool).or_default();
         if result["isError"] == json!(true) {
-            errors += 1;
+            tally.1 += 1;
+        } else {
+            tally.0 += 1;
         }
         let schema = &schemas.iter().find(|(name, _)| name == tool).unwrap().1;
         let mut out = Vec::new();
         violations(schema, &result["structuredContent"], "$", &mut out);
         assert!(out.is_empty(), "{tool} {args}: {out:?}");
     }
-    assert!(errors >= 7, "error results were checked too: {errors}");
+    assert_eq!(checked.len(), 9, "every tool: {checked:?}");
+    for (tool, (successes, errors)) in &checked {
+        assert!(
+            *successes > 0 && *errors > 0,
+            "{tool}: {successes} successes, {errors} errors"
+        );
+    }
     lab.stop().await;
 }

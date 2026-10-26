@@ -116,7 +116,7 @@ fn passive_stdout_carries_only_json_rpc() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["bacnet_discover"]);
+    assert_eq!(names, ["bacnet_discover", "bacnet_decode"]);
     assert!(
         stderr.contains("read call"),
         "the read log is on by default: {stderr}"
@@ -228,7 +228,7 @@ fn an_authorized_profile_serves_live() {
     let tools: Value = serde_json::from_str(lines[1].trim_end_matches('\r')).unwrap();
     assert_eq!(
         tools["result"]["tools"].as_array().unwrap().len(),
-        4,
+        9,
         "{tools}"
     );
     let call: Value = serde_json::from_str(lines[2].trim_end_matches('\r')).unwrap();
