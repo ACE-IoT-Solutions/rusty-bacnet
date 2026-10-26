@@ -45,7 +45,7 @@ export async function plainBody(body, file, downloads) {
   // Comments, such as a generated reference page's markers, stay out of the export.
   // Repeat until nothing changes, so removing one comment can't join the
   // text around it into another.
-  const comment = mdx ? /\{\/\*[\s\S]*?\*\/\}\r?\n?/g : /<!--[\s\S]*?-->\r?\n?/g;
+  const comment = mdx ? /\{\/\*[\s\S]*?\*\/\}\r?\n?/g : /<!--[\s\S]*?--!?>\r?\n?/g;
   text = outsideFences(text, part => {
     let previous;
     do {
