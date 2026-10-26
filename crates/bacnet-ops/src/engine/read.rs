@@ -108,9 +108,16 @@ pub fn rpm_failure(error: &Error) -> RpmFailure {
 /// True when `error` says the device, or the way to it, isn't answering: a
 /// timeout or a transport failure. Reading on would only time out again.
 pub fn unreachable(error: &Error) -> bool {
+    timed_out(error) || matches!(error, Error::Transport(_))
+}
+
+/// True when `error` says the request timed out: the client's own timeout,
+/// or the transaction state machine giving up on its retries. A transport
+/// failure is unreachable but not a timeout.
+pub fn timed_out(error: &Error) -> bool {
     match error {
         Error::Remote(RemoteError::Abort { reason }) => *reason == AbortReason::TSM_TIMEOUT,
-        Error::Timeout(_) | Error::Transport(_) => true,
+        Error::Timeout(_) => true,
         _ => false,
     }
 }

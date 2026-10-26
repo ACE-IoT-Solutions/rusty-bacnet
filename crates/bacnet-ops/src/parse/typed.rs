@@ -332,12 +332,33 @@ fn enum_value(enumeration: &Enumeration, text: &str) -> Result<u32, String> {
 }
 
 /// A state name with the object's text after it, `active (On)`, as the
-/// name alone.
+/// name alone. The first ` (` starts the text, since no state name or
+/// number holds one; the text itself may (`2 (Low (eco))`).
 fn without_state_text(text: &str) -> &str {
-    match text.rfind(" (") {
+    match text.find(" (") {
         Some(at) if text.ends_with(')') => text[..at].trim_end(),
         _ => text,
     }
+}
+
+/// A list's items split at the commas outside parentheses, so a state's
+/// text keeps its own commas: `active (On, Auto), inactive`.
+fn list_items(inner: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let (mut depth, mut start) = (0usize, 0);
+    for (at, c) in inner.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                items.push(&inner[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    items.push(&inner[start..]);
+    items
 }
 
 /// An enumeration value, or a bracketed list of them as the formatter
@@ -348,6 +369,7 @@ fn parse_enum(
     text: &str,
 ) -> Result<PropertyValue, String> {
     let one = |text: &str| {
+        let text = text.trim();
         let text = if states {
             without_state_text(text)
         } else {
@@ -357,8 +379,8 @@ fn parse_enum(
     };
     match text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
         Some(inner) if inner.trim().is_empty() => Ok(PropertyValue::List(Vec::new())),
-        Some(inner) => inner
-            .split(',')
+        Some(inner) => list_items(inner)
+            .into_iter()
             .map(one)
             .collect::<Result<_, _>>()
             .map(PropertyValue::List),

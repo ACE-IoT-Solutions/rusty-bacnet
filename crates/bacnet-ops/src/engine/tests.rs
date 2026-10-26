@@ -482,12 +482,13 @@ async fn log_columns_read_the_reference_once_and_fall_back() {
     use crate::limits::{Account, charged};
     let (engine, server) = lab().await;
     let account = Arc::new(Account::new(None));
-    let columns = charged(
+    let (columns, naming) = charged(
         Arc::clone(&account),
         engine.log_columns(LAB, oid(ObjectType::TREND_LOG, 2)),
     )
     .await;
     assert_eq!(account.requests(), 1);
+    assert_eq!(naming, super::Naming::Answered);
     assert_eq!(
         columns.column(0),
         Some(LoggedProperty {
@@ -506,13 +507,15 @@ async fn log_columns_read_the_reference_once_and_fall_back() {
 
     // Trend log 1 has no reference; trend log 9 doesn't exist.
     for log in [1, 9] {
-        let columns = engine
+        let (columns, naming) = engine
             .log_columns(LAB, oid(ObjectType::TREND_LOG, log))
             .await;
         assert!(columns.is_empty(), "trend log {log}: {columns:?}");
+        // A refusal is an answer, not a timeout (#2131).
+        assert!(!naming.timed_out(), "trend log {log}");
     }
     let account = Arc::new(Account::new(None));
-    let columns = charged(
+    let (columns, _) = charged(
         Arc::clone(&account),
         engine.log_columns(LAB, oid(ObjectType::EVENT_LOG, 1)),
     )
@@ -599,6 +602,44 @@ async fn a_refused_who_is_is_not_charged() {
     assert!(sent.is_err());
     assert_eq!(account.requests(), 0);
     stop(engine, server).await;
+}
+
+/// A timeout is the client's own or the state machine's TSM_TIMEOUT abort;
+/// a transport failure is unreachable but no timeout, and a refusal is
+/// neither (#2131).
+#[test]
+fn timeouts_are_a_kind_of_unreachable() {
+    use bacnet_types::error::Error;
+    let cases = [
+        (
+            Error::Timeout(std::time::Duration::from_secs(1)),
+            true,
+            true,
+        ),
+        (
+            Error::Remote(RemoteError::Abort {
+                reason: bacnet_types::enums::AbortReason::TSM_TIMEOUT,
+            }),
+            true,
+            true,
+        ),
+        (
+            Error::Transport(std::io::Error::other("link down")),
+            false,
+            true,
+        ),
+        (
+            Error::Remote(RemoteError::Abort {
+                reason: bacnet_types::enums::AbortReason::OTHER,
+            }),
+            false,
+            false,
+        ),
+    ];
+    for (error, timeout, gone) in cases {
+        assert_eq!(super::timed_out(&error), timeout, "{error}");
+        assert_eq!(super::unreachable(&error), gone, "{error}");
+    }
 }
 
 #[path = "state_text_tests.rs"]

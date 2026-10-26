@@ -209,3 +209,45 @@ fn each_named_bit_is_the_bit_the_formatter_names() {
         }
     }
 }
+
+/// A state text may hold parentheses and commas: the first ` (` starts
+/// it, and a list splits only at commas outside one, so what `read`
+/// prints writes back (#2132).
+#[test]
+fn state_texts_with_parentheses_and_commas_write_back() {
+    let texts = StateTexts {
+        active: Some("On, Auto".into()),
+        inactive: Some("Off (manual)".into()),
+        states: vec!["Off".into(), "Low (eco)".into()],
+    };
+    let format = ValueFormat::new(O::MULTI_STATE_VALUE, &texts, Floats::Exact);
+    let mut state = BytesMut::new();
+    encode_property_value(&mut state, &PropertyValue::Unsigned(2)).unwrap();
+    let printed = format.value(P::PRESENT_VALUE, &state);
+    assert_eq!(printed, "2 (Low (eco))");
+    assert_eq!(
+        parse(O::MULTI_STATE_VALUE, P::PRESENT_VALUE, None, &printed),
+        Ok(PropertyValue::Unsigned(2))
+    );
+    assert_eq!(
+        parse(
+            O::BINARY_VALUE,
+            P::PRESENT_VALUE,
+            None,
+            "inactive (Off (manual))"
+        ),
+        Ok(PropertyValue::Enumerated(0))
+    );
+    assert_eq!(
+        parse(
+            O::BINARY_INPUT,
+            P::ALARM_VALUES,
+            None,
+            "[active (On, Auto), inactive (Off (manual))]"
+        ),
+        Ok(PropertyValue::List(vec![
+            PropertyValue::Enumerated(1),
+            PropertyValue::Enumerated(0)
+        ]))
+    );
+}

@@ -36,10 +36,11 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
 pub use self::discover::WhoIsScope;
+pub use self::log::Naming;
 pub(crate) use self::read::rpm_rows;
 pub use self::read::{
     Halt, ListRead, MAX_OBJECTS, ReadVia, Reader, RpmFailure, Wanted, network_of, rpm_failure,
-    unreachable,
+    timed_out, unreachable,
 };
 use crate::format::{RawRow, object_name};
 use crate::limits::{RequestLimits, Turn};
