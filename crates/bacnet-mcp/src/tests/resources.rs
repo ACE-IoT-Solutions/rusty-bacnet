@@ -40,7 +40,7 @@ async fn lists_name_resources_from_identifiers_only() {
         .as_array()
         .unwrap()
         .clone();
-    assert_eq!(templates.len(), 4);
+    assert_eq!(templates.len(), 5);
     for item in resources.iter().chain(&templates) {
         let text = item.to_string();
         assert!(

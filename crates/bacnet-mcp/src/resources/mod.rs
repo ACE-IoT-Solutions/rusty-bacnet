@@ -83,6 +83,13 @@ pub(crate) fn templates<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Vec<Resourc
     }
     [
         (
+            "bacnet://devices/after/{instance}",
+            "devices-after",
+            "More discovered devices",
+            "The next page of the device list: the devices whose instance is above the one \
+             given, as many as bacnet://devices holds; its `next` names the page after",
+        ),
+        (
             "bacnet://device/{instance}",
             "device",
             "A device",
@@ -135,7 +142,8 @@ pub(crate) async fn read<T: TransportPort + 'static>(
     let work = async {
         match parsed {
             Uri::Point(point) => content::point(ctx, &call, point).await,
-            Uri::Devices => content::devices(ctx).await,
+            Uri::Devices => content::devices(ctx, None).await,
+            Uri::DevicesAfter(after) => content::devices(ctx, Some(after)).await,
             Uri::Device(device) => content::device(ctx, &call, device).await,
             Uri::Alarms => content::alarms(ctx, &call).await,
             Uri::DeviceAlarms(device) => content::device_alarms(ctx, &call, device).await,

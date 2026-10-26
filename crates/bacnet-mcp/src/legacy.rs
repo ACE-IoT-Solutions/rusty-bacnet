@@ -84,7 +84,7 @@ pub(crate) fn subscribe<T: TransportPort + 'static>(
             ctx.reach_check(device).map_err(|e| refusal(&e))?;
             None
         }
-        Uri::Devices | Uri::Alarms | Uri::Session | Uri::Ledger => None,
+        Uri::Devices | Uri::DevicesAfter(_) | Uri::Alarms | Uri::Session | Uri::Ledger => None,
         Uri::Device(_) => {
             return Err(refusal(&ToolError::invalid(
                 "uri",
@@ -142,6 +142,13 @@ pub(crate) async fn notify<T: TransportPort + 'static>(ctx: Arc<Ctx<T>>, peer: P
             Wake::Updated(name) => {
                 if send(&peer, name).await.is_err() {
                     return;
+                }
+            }
+            Wake::Devices => {
+                for name in follow.device_uris() {
+                    if send(&peer, name.clone()).await.is_err() {
+                        return;
+                    }
                 }
             }
             Wake::Alarms => {

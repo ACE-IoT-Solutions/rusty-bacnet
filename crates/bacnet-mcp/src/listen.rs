@@ -38,7 +38,7 @@ use tokio::sync::watch;
 use tokio::time::{Instant, Interval};
 
 use crate::context::Ctx;
-use crate::resources::uri::{self, DEVICES, Uri};
+use crate::resources::uri::{self, Uri};
 
 /// Why a watch is refused once the session has ended or the hub stopped.
 pub(crate) const SHUTTING_DOWN: &str = "shutting-down";
@@ -332,7 +332,7 @@ impl Subs {
                         Err(_) => false,
                     }
                 }
-                Ok(Uri::Devices | Uri::Alarms) => ctx.hub.is_some(),
+                Ok(Uri::Devices | Uri::DevicesAfter(_) | Uri::Alarms) => ctx.hub.is_some(),
                 Ok(Uri::DeviceAlarms(device)) => ctx.hub.is_some() && ctx.reach_known(device),
                 Ok(Uri::Session | Uri::Ledger) => true,
                 // A device summary has no updates; anything else isn't ours.
@@ -435,6 +435,7 @@ pub(crate) struct Follow {
     devices: Option<broadcast::Receiver<DeviceEvent>>,
     devices_due: Option<Instant>,
     devices_last: Option<Instant>,
+    device_uris: Vec<String>,
     alarm_uris: Vec<String>,
     alarms: Interval,
 }
@@ -443,6 +444,9 @@ pub(crate) struct Follow {
 pub(crate) enum Wake {
     /// This resource changed.
     Updated(String),
+    /// A device arrived or was lost: every device-list page followed
+    /// ([`Follow::device_uris`]) changed, since each one counts `total`.
+    Devices,
     /// The alarm resources are due for a poll.
     Alarms,
 }
@@ -456,6 +460,7 @@ impl Follow {
             devices: None,
             devices_due: None,
             devices_last: None,
+            device_uris: Vec::new(),
             alarm_uris: Vec::new(),
             alarms,
         }
@@ -473,7 +478,7 @@ impl Follow {
     ) {
         let mut kept: HashMap<String, Changes> =
             std::mem::take(&mut self.points).into_iter().collect();
-        let mut devices = false;
+        self.device_uris.clear();
         self.alarm_uris.clear();
         for (name, changes) in uris {
             if let Some(changes) = changes {
@@ -485,13 +490,15 @@ impl Follow {
                     _ => changes,
                 };
                 self.points.push((name, changes));
-            } else if name == DEVICES {
-                devices = true;
-            } else if matches!(uri::parse(&name), Ok(Uri::Alarms | Uri::DeviceAlarms(_))) {
-                self.alarm_uris.push(name);
+            } else {
+                match uri::parse(&name) {
+                    Ok(Uri::Devices | Uri::DevicesAfter(_)) => self.device_uris.push(name),
+                    Ok(Uri::Alarms | Uri::DeviceAlarms(_)) => self.alarm_uris.push(name),
+                    _ => {}
+                }
             }
         }
-        if !devices {
+        if self.device_uris.is_empty() {
             self.devices = None;
             self.devices_due = None;
         } else if self.devices.is_none() {
@@ -511,6 +518,11 @@ impl Follow {
     /// Whether nothing followed can change.
     pub(crate) fn quiet(&self) -> bool {
         self.points.is_empty() && self.devices.is_none() && self.alarm_uris.is_empty()
+    }
+
+    /// The device-list pages followed, the first and any later ones.
+    pub(crate) fn device_uris(&self) -> &[String] {
+        &self.device_uris
     }
 
     /// The alarm resources followed.
@@ -543,7 +555,7 @@ impl Follow {
                     if self.devices_due.is_some() => {
                     self.devices_due = None;
                     self.devices_last = Some(Instant::now());
-                    return Wake::Updated(DEVICES.to_string());
+                    return Wake::Devices;
                 }
                 _ = self.alarms.tick(), if !self.alarm_uris.is_empty() => return Wake::Alarms,
                 else => std::future::pending::<()>().await,
@@ -616,6 +628,13 @@ pub(crate) async fn run<T: TransportPort + 'static>(
             Wake::Updated(name) => {
                 if sink.notify_resource_updated(name).await.is_err() {
                     return Ok(());
+                }
+            }
+            Wake::Devices => {
+                for name in follow.device_uris() {
+                    if sink.notify_resource_updated(name.as_str()).await.is_err() {
+                        return Ok(());
+                    }
                 }
             }
             Wake::Alarms => {

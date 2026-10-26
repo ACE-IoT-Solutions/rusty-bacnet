@@ -6,6 +6,7 @@ mod discovery;
 mod legacy;
 mod limits;
 mod listen;
+mod paging;
 mod protocol;
 mod resources;
 mod safety;

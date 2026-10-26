@@ -350,7 +350,12 @@ async fn a_passive_server_takes_only_session_and_ledger() {
     for uri in ["bacnet://session", "bacnet://ledger"] {
         assert_eq!(agent.subscribe(uri).await, Ok(json!({})), "{uri}");
     }
-    for uri in [AI1, "bacnet://devices", "bacnet://alarms"] {
+    for uri in [
+        AI1,
+        "bacnet://devices",
+        "bacnet://devices/after/5",
+        "bacnet://alarms",
+    ] {
         let error = agent.subscribe(uri).await.unwrap_err();
         assert_eq!(error["code"], json!(-32602), "{uri}: {error}");
         assert_eq!(error["data"]["reason"], json!("passive"), "{uri}: {error}");
@@ -374,5 +379,36 @@ async fn the_device_list_is_announced_to_a_legacy_subscriber() {
     let updates = lab.agent.drain(UPDATED, Duration::from_secs(3)).await;
     assert_eq!(updates.len(), 1, "{updates:?}");
     assert_eq!(updates[0]["params"]["uri"], json!("bacnet://devices"));
+    lab.stop().await;
+}
+
+/// A later page of the device list (#2116) is subscribed as the first is,
+/// and each subscribed page is announced when the list changes; an
+/// unsubscribed one isn't.
+#[tokio::test(start_paused = true)]
+async fn a_device_list_page_is_announced_to_a_legacy_subscriber() {
+    const PAGE: &str = "bacnet://devices/after/302";
+    let mut lab = Lab::start(Policy::default()).await;
+    lab.agent.initialize_legacy().await;
+    for uri in ["bacnet://devices", PAGE] {
+        assert_eq!(lab.agent.subscribe(uri).await, Ok(json!({})), "{uri}");
+    }
+    settle().await;
+    lab.client.clear_devices().await;
+    lab.server.broadcast_i_am().await.unwrap();
+    let updates = lab.agent.drain(UPDATED, Duration::from_secs(3)).await;
+    let mut told: Vec<&str> = updates
+        .iter()
+        .map(|u| u["params"]["uri"].as_str().unwrap())
+        .collect();
+    told.sort_unstable();
+    assert_eq!(told, ["bacnet://devices", PAGE], "{updates:?}");
+    lab.agent.unsubscribe("bacnet://devices").await;
+    settle().await;
+    lab.client.clear_devices().await;
+    lab.server.broadcast_i_am().await.unwrap();
+    let updates = lab.agent.drain(UPDATED, Duration::from_secs(3)).await;
+    assert_eq!(updates.len(), 1, "{updates:?}");
+    assert_eq!(updates[0]["params"]["uri"], json!(PAGE));
     lab.stop().await;
 }
