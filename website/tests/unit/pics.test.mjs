@@ -81,20 +81,32 @@ test('the task page covers each surface and links the sample and the tables', ()
   assert.ok(!task.body.slice(0, devStart).includes('INITIATED_SERVICES'));
   assert.ok(task.body.includes('DeviceProfile::Custom("None claimed".into())'));
   assert.ok(!task.body.includes('DeviceProfile::BAsc'));
-  assert.ok(task.body.includes('PropertyIdentifier::PROTOCOL_REVISION'));
+  // The v0.14.0 program reads the protocol fields from its Device; the dev
+  // section says dev takes them from the Device itself (#2125).
+  assert.ok(task.body.slice(0, devStart).includes('PropertyIdentifier::PROTOCOL_REVISION'));
+  const dev = task.body.slice(devStart);
+  assert.ok(dev.includes('`PicsConfig` has no `protocol_version` or `protocol_revision` field on `dev` (#2125)'));
+  assert.ok(dev.includes('bacnet_types::PROTOCOL_REVISION'));
+  assert.ok(!dev.includes('PropertyIdentifier::PROTOCOL_REVISION'));
   assert.doesNotMatch(task.source, /building block/i);
   assert.ok(task.body.includes(`the bindings have no PICS generator in v${release}`));
   assert.ok(task.body.includes('no `bacnet` command generates a PICS'));
   assert.ok(task.body.includes(`(${site}project/sample-pics/)`));
   assert.ok(task.body.includes(`(${site}project/conformance/)`));
   assert.ok(task.body.includes(`(${repository}/blob/v${release}/docs/rust-api.md#bacnet-server)`));
-  // Every PicsConfig field the page tells readers to set exists in the generator.
+  // The table names each PicsConfig field once: the generator's on dev, plus
+  // the v0.14.0 fields dev removed, which the dev section names.
+  const removedOnDev = ['protocol_revision', 'protocol_version'];
   return readFile(new URL('../../../crates/bacnet-server/src/pics/mod.rs', import.meta.url), 'utf8').then(generator => {
     const config = generator.slice(generator.indexOf('pub struct PicsConfig {'), generator.indexOf('impl Default for PicsConfig'));
     const fields = [...config.matchAll(/^ {4}pub (\w+):/gm)].map(match => match[1]);
     const rows = task.source.slice(task.source.indexOf('| `PicsConfig` field |'), task.source.indexOf('Annex A asks for more'));
     const named = [...rows.matchAll(/`(\w+)`/g)].map(match => match[1]).filter(name => name !== 'PicsConfig' && !name.startsWith('DeviceProfile'));
-    assert.deepEqual([...new Set(named)].sort(), [...fields].sort(), 'the table names each PicsConfig field once');
+    for (const field of removedOnDev) {
+      assert.ok(!fields.includes(field), `${field} is back in PicsConfig: drop it from removedOnDev`);
+      assert.ok(dev.includes(`\`${field}\``), field);
+    }
+    assert.deepEqual([...new Set(named)].sort(), [...fields, ...removedOnDev].sort(), 'the table names each PicsConfig field once');
   });
 });
 

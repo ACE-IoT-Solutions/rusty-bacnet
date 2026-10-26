@@ -1,8 +1,12 @@
 //! The website's PICS task page, integrate/pics (#1496). Everything below this
-//! header is the page's Rust block, byte for byte: website/tests/python/
-//! test_site_samples.py checks it, and CI's clippy --all-targets compiles it.
+//! header is the Rust block in the page's "On `dev` after the release"
+//! section, byte for byte: website/tests/python/test_site_samples.py checks
+//! it, and CI's clippy --all-targets compiles it. The page's release program
+//! still sets the protocol fields v0.14.0 has; at the next release this
+//! program replaces it (#2125).
 #![allow(clippy::print_stdout)] // the page's program prints the PICS
 
+// On dev: the PICS takes the protocol version and revision from the Device.
 use bacnet_objects::DeviceIdentity;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::binary::BinaryOutputObject;
@@ -10,8 +14,7 @@ use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::pics::{DataLinkSupport, DeviceProfile, PicsConfig};
 use bacnet_server::server::BACnetServer;
-use bacnet_types::enums::{EngineeringUnits, PropertyIdentifier};
-use bacnet_types::primitives::PropertyValue;
+use bacnet_types::enums::EngineeringUnits;
 use std::net::Ipv4Addr;
 
 #[tokio::main]
@@ -33,7 +36,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     database.add(Box::new(AnalogInputObject::new(1, "Supply air", celsius)?))?;
     database.add(Box::new(BinaryOutputObject::new(1, "Supply fan")?))?;
 
-    let device = identity.device_oid();
     let mut server = BACnetServer::bip_builder()
         .device(identity)
         .interface(Ipv4Addr::LOCALHOST)
@@ -43,19 +45,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .await?;
 
-    // The PICS states the protocol version and revision the Device reports.
-    let mut protocol = [0u16; 2];
-    let properties = [
-        PropertyIdentifier::PROTOCOL_VERSION,
-        PropertyIdentifier::PROTOCOL_REVISION,
-    ];
-    for (value, property) in protocol.iter_mut().zip(properties) {
-        let PropertyValue::Unsigned(raw) = server.read_local(&device, property, None).await? else {
-            return Err(format!("the Device's {property} is not an unsigned value").into());
-        };
-        *value = u16::try_from(raw)?;
-    }
-
     // What the server can't report about itself: the product, the profile
     // you claim, and the data links and network roles you ship.
     let pics_config = PicsConfig {
@@ -63,8 +52,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         model_name: model.into(),
         firmware_revision: version.into(),
         application_software_version: version.into(),
-        protocol_version: protocol[0],
-        protocol_revision: protocol[1],
         // Claim an Annex L profile only if the product meets it.
         device_profile: DeviceProfile::Custom("None claimed".into()),
         data_link_layers: vec![DataLinkSupport::BipV4],

@@ -8,7 +8,11 @@ test('the PICS task page leads to the sample, which opens with its banner on the
   await expect(page).toHaveURL(base + 'integrate/pics/');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Generate a PICS for your device');
   const main = page.locator('.sl-markdown-content');
-  await expect(main.locator('pre').filter({ hasText: 'server.generate_pics(&pics_config).await' })).toHaveCount(1);
+  // The v0.14.0 program and the dev one (#2125); only the release program
+  // reads the protocol fields from the Device itself.
+  const programs = main.locator('pre').filter({ hasText: 'server.generate_pics(&pics_config).await' });
+  await expect(programs).toHaveCount(2);
+  await expect(programs.filter({ hasText: 'PropertyIdentifier::PROTOCOL_REVISION' })).toHaveCount(1);
   await expect(main.getByRole('table').filter({ hasText: 'PicsConfig' })).toHaveCount(1);
 
   await main.getByRole('link', { name: 'sample PICS', exact: true }).first().click();

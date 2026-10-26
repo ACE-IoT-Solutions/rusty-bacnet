@@ -42,6 +42,14 @@ case "$*" in
       400|401|409|422|429|500|501|502|503|504) message='Server Error' ;;
       raw-504) echo 'gh: HTTP 504' >&2; exit 1 ;;
       raw-404) echo 'gh: HTTP 404' >&2; exit 1 ;;
+      compact-404|compact-504)
+        # What gh really prints: a compact body with no trailing newline,
+        # then the diagnostic (seen on dev, #2138's merge run).
+        message='Server Error'
+        [ "$response" != compact-404 ] || message='Not Found'
+        printf '{"message":"%s","status":"%s"}' "$message" "${response#compact-}"
+        printf 'gh: %s (HTTP %s)\n' "$message" "${response#compact-}" >&2
+        exit 1 ;;
       guidance-404|guidance-504)
         message='Server Error'
         [ "$response" != guidance-404 ] || message='Not Found'
@@ -117,7 +125,7 @@ events 'delete 1'
 output 'removed 1 entries, 1 MiB, leaving 0 MiB'
 errors 0
 
-for status in 502 503 504 raw-504 guidance-504; do
+for status in 502 503 504 raw-504 guidance-504 compact-504; do
   single
   responses 1 "$status" ok
   expect 0 "$status is retried and recovers"
@@ -155,7 +163,7 @@ for status in 400 401 403 409 422 429 500 501 network \
   errors 1
 done
 
-for status in 404 raw-404 guidance-404; do
+for status in 404 raw-404 guidance-404 compact-404; do
   single
   responses 1 "$status"
   expect 0 "$status is already-gone success without retry"

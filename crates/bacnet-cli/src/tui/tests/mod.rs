@@ -93,6 +93,7 @@ mod names_filter;
 mod names_site;
 mod network;
 mod network_frames;
+mod network_notes;
 mod passive_discovery;
 mod passive_lifecycle;
 mod passive_repairs;
