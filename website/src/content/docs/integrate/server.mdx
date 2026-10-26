@@ -3,7 +3,7 @@ title: "Serve objects from your application"
 description: "Build a BACnetServer in Rust or Python, serve objects over BACnet/IP, supply their values, act on commands from the network, and stop it cleanly."
 ---
 
-import { Code } from '@astrojs/starlight/components';
+import { Code, Tabs, TabItem } from '@astrojs/starlight/components';
 import { release, repository } from '../../../lib/site.mjs';
 import serverSource from '../../../../examples/rust/server-device/src/main.rs?raw';
 import serverManifest from '../../../../examples/rust/server-device/Cargo.toml?raw';
@@ -35,6 +35,10 @@ These programs serve Device 1001 with two objects on 127.0.0.1, on a port the op
 
 Each runs until you press Enter or send end of input, then stops the server and prints `Stopped`.
 
+<Tabs syncKey="lang">
+
+<TabItem label="Rust">
+
 ### Save the Rust program and manifest
 
 These files target **v{release}**, whose minimum Rust version is **1.93**. Put [Cargo.toml](/rusty-bacnet/examples/rust/server-device/Cargo.toml) in a new directory and [main.rs](/rusty-bacnet/examples/rust/server-device/src/main.rs) in its `src` subdirectory. The BACnet crates are pinned to the release, and the empty workspace table makes the directory a standalone Cargo project.
@@ -49,6 +53,9 @@ From the directory containing `Cargo.toml`, run:
 cargo run
 ```
 
+</TabItem>
+<TabItem label="Python">
+
 ### Save the Python program
 
 The Python program does the same with the v{release} `rusty-bacnet` package; [install it in a virtual environment](/rusty-bacnet/start/python/) first. Save [server_device.py](/rusty-bacnet/examples/server_device.py) and run it with that environment's interpreter:
@@ -58,6 +65,9 @@ The Python program does the same with the v{release} `rusty-bacnet` package; [in
 ```
 
 <Code code={serverPython} lang="python" title="server_device.py" />
+
+</TabItem>
+</Tabs>
 
 ### Read and command it
 
