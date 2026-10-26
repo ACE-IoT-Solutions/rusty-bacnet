@@ -1853,18 +1853,50 @@ loading TLS files. This replaces the pre-1.0 unicast-only setting without an
 alias; update callers to `with_relay_send_budget`, `relay_send_budget` and
 `validate_relay_send_budget`. `ScHubProbePolicy::new(scan_interval, idle_age, ack_age,
 send_budget)` configures the optional accepting-Hub probe through
-`with_probe_policy`. Defaults are 30s/60s/5s/5s. Both policies require positive
+`with_probe_policy`. Defaults are 30s/60s/5s/5s, and
+`with_liveness_bound` sets a fifth value, the liveness bound
+(`SC_HUB_PROBE_LIVENESS_BOUND`, 360 seconds). Both policies require positive
 whole milliseconds, at most `i64::MAX` milliseconds to reserve tick headroom,
-and a future instant representable by the platform monotonic clock.
+and a future instant representable by the platform monotonic clock; the
+liveness bound is also capped at one day (`SC_HUB_PROBE_MAX_LIVENESS_BOUND`).
 
 Each Hub owns one monotonic origin. A scan probes only after idle age strictly
 exceeds its threshold; pending ACK age starts at reservation, before sink
-acquisition, and retirement requires a later scan to observe strictly exceeded
-ACK age. Serial send work or scheduling delays can postpone that scan; ACK age
-is not a hard closure deadline. Missed ticks are skipped. Only a matching valid
-ACK clears pending and refreshes activity. Wrong-ID or malformed ACKs do not.
-The probe send budget includes acquisition and send. These are local Hub
-policies, separate from the initiating node's normative 3–300s heartbeat range.
+acquisition. Serial send work or scheduling delays can postpone later scans;
+neither ACK age nor the liveness bound is a hard closure deadline. Missed ticks
+are skipped. Only a matching valid ACK clears pending and refreshes activity.
+Wrong-ID or malformed ACKs do not. The probe send budget includes acquisition
+and send, and a probe send that fails or overruns it retires the connector at
+once. These are local Hub policies, separate from the initiating node's
+normative 3–300s heartbeat range.
+
+A connector is the initiating peer of its hub connection, so Annex AB.6.3 puts
+keep-alive on the connector and obliges only the hub to answer a
+Heartbeat-Request; a conforming connector may ignore the hub's probes (#2141).
+An unanswered probe therefore retires a connector only when a later scan sees
+that nothing has arrived from it since the probe for longer than both the ACK
+age and the liveness bound. Anything that counts as activity, including the
+connector's own Heartbeat-Request, shows it is alive; the probe then stays
+recorded until the next idle period replaces it. An unanswered probe isn't
+repeated while the connector stays silent, so the count can't restart for a
+dead one. Silence is counted from the probe, not from the connector's last
+frame, because receiving the probe restarts the connector's own heartbeat
+timer: its next Heartbeat-Request can come a full timeout after the probe. The
+360-second default covers every fixed timeout and the whole 3–300 s range a
+configurable timer must offer, plus a minute of margin, as the direct
+listener's idle bound does (#2133).
+
+Only frames received from the connector count. Frames the hub sends it, probes
+and relayed traffic alike, don't, because the hub keeps relaying to a connector
+that may already be dead. So a connector that receives relayed traffic often
+enough never needs to heartbeat, and if it also sends nothing and ignores
+probes, it is retired after the bound. The interop cost the other way: a dead
+connector is now retired only after the bound, about seven and a half to eight
+minutes after its last frame with the defaults (idle age, up to one scan to
+probe, the bound, up to one scan to notice), instead of about 65–95 seconds.
+For a connector whose heartbeat timeout is above 300 seconds, raise the bound;
+a bound no larger than the ACK age retires on the first unanswered probe,
+unless the connector sends something first.
 
 `ScHubBroadcastRatePolicy::new(sender_burst, sender_per_second, global_burst,
 global_per_second)` checks the existing continuously refilled broadcast policy

@@ -52,6 +52,8 @@ pub(super) async fn accept_loop_with_counter(
         let clients_for_hb = clients.clone();
         #[cfg(test)]
         let scans = tasks.probe_scans.clone();
+        #[cfg(test)]
+        let sweeps = tasks.probe_sweeps.clone();
         let mut hb_shutdown = tasks.subscribe();
         let next_msg_id = std::sync::atomic::AtomicU16::new(0x8000); // hub message IDs start high
         tasks.spawner().spawn(async move {
@@ -67,6 +69,8 @@ pub(super) async fn accept_loop_with_counter(
                         #[cfg(test)]
                         scans.fetch_add(1, Ordering::Release);
                         heartbeat::sweep(&clients_for_hb, &next_msg_id, &heartbeat::SocketIo(timing)).await;
+                        #[cfg(test)]
+                        sweeps.fetch_add(1, Ordering::Release);
                     }
                 }
             }
