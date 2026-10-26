@@ -31,10 +31,6 @@ pub const MAX_SURVEY: usize = 16;
 /// silent peers wait out their timeouts together.
 pub const SURVEY_AT_ONCE: usize = 4;
 
-/// The most entries a front end keeps of one table: the workspace's BDT and
-/// FDT caps.
-pub const MAX_ENTRIES: usize = 128;
-
 /// An FDT entry with less than this many seconds left is near expiry. The
 /// BBMD keeps an entry 30 s past its time-to-live (Annex J.5.2.3), so under
 /// this the device is already past its own time-to-live without having
@@ -185,8 +181,8 @@ pub fn unreachable_reason(error: &BvlcExchangeError) -> String {
     }
 }
 
-/// One BBMD as a survey left it: its BDT read (or why not) and what the
-/// caller's read gave besides, which a skipped BBMD lacks.
+/// One BBMD a survey read: its BDT (or why there is none) and what the
+/// caller's read gave besides.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Surveyed<X> {
     /// The BBMD.
@@ -194,14 +190,94 @@ pub struct Surveyed<X> {
     /// Its BDT, or why there is none.
     pub probe: Probe,
     /// What else the read gave (the TUI's is nothing, the MCP server's the
-    /// FDT); `None` when the BBMD was not read.
-    pub extra: Option<X>,
+    /// FDT).
+    pub extra: X,
+}
+
+/// Why a BDT entry was not followed: its address is no BBMD a read may go
+/// to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NotFollowed {
+    /// All zeros: a BBMD reports an entry configured by a host name it
+    /// couldn't resolve this way (Annex J.4.4.1).
+    Unresolved,
+    /// An unspecified address or port 0.
+    Unspecified,
+    /// The limited broadcast address.
+    Broadcast,
+    /// A multicast address.
+    Multicast,
+    /// A loopback address, while this node isn't on loopback itself.
+    Loopback,
+    /// This node's own address.
+    Own,
+}
+
+impl NotFollowed {
+    /// The reason as a kebab-case word.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unresolved => "unresolved",
+            Self::Unspecified => "unspecified",
+            Self::Broadcast => "broadcast",
+            Self::Multicast => "multicast",
+            Self::Loopback => "loopback",
+            Self::Own => "own-address",
+        }
+    }
+
+    /// Why `address`, listed in a BDT, is not read by a node at `own`;
+    /// `None` when it may be. BDT entries are device data, so a hostile or
+    /// broken table must not turn the survey into a broadcast, a multicast
+    /// or a send to this host's other services.
+    pub fn check(address: SocketAddrV4, own: SocketAddrV4) -> Option<Self> {
+        let ip = address.ip();
+        if ip.is_unspecified() && address.port() == 0 {
+            Some(Self::Unresolved)
+        } else if ip.is_unspecified() || address.port() == 0 {
+            Some(Self::Unspecified)
+        } else if ip.is_broadcast() {
+            Some(Self::Broadcast)
+        } else if ip.is_multicast() {
+            Some(Self::Multicast)
+        } else if address == own {
+            Some(Self::Own)
+        } else if ip.is_loopback() && !own.ip().is_loopback() {
+            Some(Self::Loopback)
+        } else {
+            None
+        }
+    }
+}
+
+/// A BDT entry a survey did not follow, and the first BBMD that listed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unfollowed {
+    /// The address listed.
+    pub address: SocketAddrV4,
+    /// The BBMD whose table listed it first.
+    pub listed_by: SocketAddrV4,
+    /// Why it was not read.
+    pub why: NotFollowed,
+}
+
+/// What a survey found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Survey<X> {
+    /// The BBMDs read, at most [`MAX_SURVEY`], in breadth-first order.
+    pub read: Vec<Surveyed<X>>,
+    /// BBMDs the tables list past [`MAX_SURVEY`], in the order found, not
+    /// read.
+    pub unread: Vec<SocketAddrV4>,
+    /// Entries not followed, each address once.
+    pub not_followed: Vec<Unfollowed>,
 }
 
 /// Read the BDT of each seed, then of every BBMD a table read lists,
-/// breadth first, up to [`MAX_SURVEY`] reads; the rest come back
-/// [`Outcome::Skipped`]. `read` gives each BBMD's BDT and anything else
-/// the caller reads of it.
+/// breadth first, up to [`MAX_SURVEY`] reads; the rest are listed unread.
+/// `read` gives each BBMD's BDT and anything else the caller reads of it;
+/// `own` is this node's address, for [`NotFollowed::check`], which every
+/// listed address passes before it is read (the seeds are the caller's).
 ///
 /// Up to [`SURVEY_AT_ONCE`] reads run at once, so silent peers wait out
 /// their timeouts together. The result is the one reading them one at a
@@ -209,7 +285,7 @@ pub struct Surveyed<X> {
 /// starts only for one of the first [`MAX_SURVEY`], and a table's entries
 /// join the list only once every read before it has been taken in, so a
 /// fast answer from a later BBMD can't jump the breadth-first order.
-pub async fn survey<X, F, R>(seeds: &[SocketAddrV4], read: F) -> Vec<Surveyed<X>>
+pub async fn survey<X, F, R>(seeds: &[SocketAddrV4], own: SocketAddrV4, read: F) -> Survey<X>
 where
     F: Fn(SocketAddrV4) -> R,
     R: Future<Output = (Probe, X)>,
@@ -219,6 +295,7 @@ where
     // Every BBMD found, in breadth-first order.
     let mut found: Vec<SocketAddrV4> = seeds.iter().copied().filter(|s| seen.insert(*s)).collect();
     let mut done: Vec<Surveyed<X>> = Vec::new();
+    let mut not_followed = Vec::new();
     // Reads finished ahead of an earlier one, by their place in `found`.
     let mut early = BTreeMap::new();
     let mut started = 0;
@@ -234,27 +311,30 @@ where
         };
         early.insert(index, outcome);
         while let Some((probe, extra)) = early.remove(&done.len()) {
+            let bbmd = found[done.len()];
             if let Probe::Table(rows) = &probe {
                 for row in rows {
-                    if seen.insert(row.address) {
-                        found.push(row.address);
+                    if !seen.insert(row.address) {
+                        continue;
+                    }
+                    match NotFollowed::check(row.address, own) {
+                        Some(why) => not_followed.push(Unfollowed {
+                            address: row.address,
+                            listed_by: bbmd,
+                            why,
+                        }),
+                        None => found.push(row.address),
                     }
                 }
             }
-            done.push(Surveyed {
-                bbmd: found[done.len()],
-                probe,
-                extra: Some(extra),
-            });
+            done.push(Surveyed { bbmd, probe, extra });
         }
     }
-    let unread = found[done.len()..].iter();
-    done.extend(unread.map(|&bbmd| Surveyed {
-        bbmd,
-        probe: Probe::Skipped,
-        extra: None,
-    }));
-    done
+    Survey {
+        unread: found.split_off(done.len()),
+        read: done,
+        not_followed,
+    }
 }
 
 #[cfg(test)]
@@ -330,7 +410,7 @@ mod tests {
             2 => vec![at(2), at(1)],
             _ => vec![],
         };
-        let surveyed = survey(&[at(1), at(2), at(1)], |bbmd| async move {
+        let surveyed = survey(&[at(1), at(2), at(1)], at(9), |bbmd| async move {
             let rows = tables(bbmd)
                 .into_iter()
                 .map(|address| BdtRow {
@@ -341,15 +421,112 @@ mod tests {
             (Probe::Table(rows), bbmd.port())
         })
         .await;
-        let order: Vec<SocketAddrV4> = surveyed.iter().map(|s| s.bbmd).collect();
+        let order: Vec<SocketAddrV4> = surveyed.read.iter().map(|s| s.bbmd).collect();
         assert_eq!(order, [at(1), at(2), at(3)]);
-        assert!(surveyed.iter().all(|s| s.extra == Some(47808)));
+        assert!(surveyed.read.iter().all(|s| s.extra == 47808));
+        assert!(surveyed.unread.is_empty() && surveyed.not_followed.is_empty());
+    }
+
+    /// Each class of address a BDT may list but no read may go to is
+    /// reported, once, with the BBMD that listed it, and never read; a
+    /// loopback peer is read only by a node on loopback.
+    #[tokio::test]
+    async fn addresses_no_read_may_go_to_are_not_followed() {
+        let own = at(1);
+        let bad = [
+            ("0.0.0.0:0", NotFollowed::Unresolved),
+            ("0.0.0.0:47808", NotFollowed::Unspecified),
+            ("10.0.5.1:0", NotFollowed::Unspecified),
+            ("255.255.255.255:47808", NotFollowed::Broadcast),
+            ("224.0.0.1:47808", NotFollowed::Multicast),
+            ("239.255.255.250:1900", NotFollowed::Multicast),
+            ("127.0.0.1:53", NotFollowed::Loopback),
+        ];
+        let mut rows: Vec<BdtRow> = bad
+            .iter()
+            .map(|(address, _)| BdtRow {
+                address: address.parse().unwrap(),
+                mask: Ipv4Addr::BROADCAST,
+            })
+            .collect();
+        // Our own address, and one bad entry listed twice.
+        rows.push(BdtRow {
+            address: own,
+            mask: Ipv4Addr::BROADCAST,
+        });
+        rows.push(rows[0]);
+        let reads = std::sync::Mutex::new(Vec::new());
+        let surveyed = survey(&[at(2)], own, |bbmd| {
+            reads.lock().unwrap().push(bbmd);
+            let rows = rows.clone();
+            async move { (Probe::Table(rows), ()) }
+        })
+        .await;
+        assert_eq!(*reads.lock().unwrap(), [at(2)], "only the seed is read");
+        let mut expected: Vec<Unfollowed> = bad
+            .iter()
+            .map(|(address, why)| Unfollowed {
+                address: address.parse().unwrap(),
+                listed_by: at(2),
+                why: *why,
+            })
+            .collect();
+        expected.push(Unfollowed {
+            address: own,
+            listed_by: at(2),
+            why: NotFollowed::Own,
+        });
+        assert_eq!(surveyed.not_followed, expected);
+        // On loopback, a loopback peer is a peer.
+        let local = "127.0.0.1:47808".parse().unwrap();
+        let peer: SocketAddrV4 = "127.0.0.1:47809".parse().unwrap();
+        assert_eq!(NotFollowed::check(peer, local), None);
+        assert_eq!(NotFollowed::check(local, local), Some(NotFollowed::Own));
+        assert_eq!(NotFollowed::check(at(3), own), None);
+    }
+
+    /// A survey whose tables name far more BBMDs than it reads stops at
+    /// [`MAX_SURVEY`] reads and lists the rest unread.
+    #[tokio::test]
+    async fn a_large_fan_out_reads_at_most_the_cap() {
+        // Every table names 128 peers no other table names.
+        let next = std::sync::atomic::AtomicU32::new(0);
+        let peers = |_: SocketAddrV4| -> Vec<BdtRow> {
+            (0..128)
+                .map(|_| {
+                    let n = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    BdtRow {
+                        address: SocketAddrV4::new(Ipv4Addr::from(0x0B00_0000 + n), 47808),
+                        mask: Ipv4Addr::BROADCAST,
+                    }
+                })
+                .collect()
+        };
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        let surveyed = survey(&[at(1)], at(250), |bbmd| {
+            reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let rows = peers(bbmd);
+            async move { (Probe::Table(rows), ()) }
+        })
+        .await;
+        assert_eq!(reads.into_inner(), MAX_SURVEY);
+        assert_eq!(surveyed.read.len(), MAX_SURVEY);
+        assert!(surveyed.unread.len() > 1_000, "{}", surveyed.unread.len());
+        // The matrix over what was read stays bounded.
+        let probes: Vec<(SocketAddrV4, Probe)> = surveyed
+            .read
+            .iter()
+            .map(|s| (s.bbmd, s.probe.clone()))
+            .collect();
+        let matrix = Matrix::build(&probes);
+        assert!(matrix.bbmds.len() <= matrix::GRID_CAP);
+        assert!(matrix.omitted > 1_000, "{}", matrix.omitted);
     }
 
     /// No seed reads nothing.
     #[tokio::test]
     async fn no_seed_reads_nothing() {
-        let surveyed = survey(&[], |_| async { (Probe::Skipped, ()) }).await;
-        assert!(surveyed.is_empty());
+        let surveyed = survey(&[], at(9), |_| async { (Probe::Skipped, ()) }).await;
+        assert!(surveyed.read.is_empty() && surveyed.unread.is_empty());
     }
 }

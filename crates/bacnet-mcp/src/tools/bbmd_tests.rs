@@ -4,7 +4,7 @@
 
 use std::net::Ipv4Addr;
 
-use bacnet_ops::bbmd::BdtRow;
+use bacnet_ops::bbmd::{BdtRow, NotFollowed, Surveyed, Unfollowed};
 
 use super::*;
 
@@ -30,8 +30,20 @@ fn read(bbmd: SocketAddrV4, probe: Probe, fdt: Vec<FdtRow>) -> Surveyed<Fdt> {
     Surveyed {
         bbmd,
         probe,
-        extra: Some(Some(Outcome::Table(fdt))),
+        extra: Some((Outcome::Table(fdt))),
     }
+}
+
+/// The report of a survey that read `surveyed` and nothing more.
+fn report(seeds: &[SocketAddrV4], surveyed: &[Surveyed<Fdt>]) -> Value {
+    super::report(
+        seeds,
+        &Survey {
+            read: surveyed.to_vec(),
+            unread: Vec::new(),
+            not_followed: Vec::new(),
+        },
+    )
 }
 
 fn problems(report: &Value) -> Vec<&str> {
@@ -140,12 +152,12 @@ fn a_nak_and_a_silence_leave_the_survey_incomplete() {
             Surveyed {
                 bbmd: at(2),
                 probe: Outcome::Nak(code),
-                extra: Some(None),
+                extra: None,
             },
             Surveyed {
                 bbmd: at(3),
                 probe: Outcome::Unreachable(NO_ANSWER.into()),
-                extra: Some(None),
+                extra: None,
             },
         ],
     );
@@ -169,7 +181,7 @@ fn an_fdt_nak_is_reported_for_the_fdt() {
         &[Surveyed {
             bbmd: at(1),
             probe: bdt(&[(1, ONES)]),
-            extra: Some(Some(Outcome::Nak(code))),
+            extra: Some((Outcome::Nak(code))),
         }],
     );
     assert_eq!(report["verdict"], json!("consistent"));
@@ -199,4 +211,44 @@ fn long_tables_are_cut_and_counted() {
         LISTED
     );
     assert_eq!(report["finding_count"], json!(40));
+}
+
+/// An entry not followed is reported with its reason, and the BBMDs past
+/// the survey's limit as a count with a few examples; both leave the
+/// survey incomplete and the result marked cut.
+#[test]
+fn unfollowed_and_unread_bbmds_are_reported_bounded() {
+    let unread: Vec<SocketAddrV4> = (0..2_000u32)
+        .map(|n| SocketAddrV4::new(Ipv4Addr::from(0x0B00_0000 + n), 47808))
+        .collect();
+    let found = Survey {
+        read: vec![read(at(1), bdt(&[(1, ONES)]), vec![])],
+        unread,
+        not_followed: vec![Unfollowed {
+            address: "0.0.0.0:0".parse().unwrap(),
+            listed_by: at(1),
+            why: NotFollowed::Unresolved,
+        }],
+    };
+    let report = super::report(&[at(1)], &found);
+    assert_eq!(report["verdict"], json!("incomplete"));
+    assert_eq!(problems(&report), ["not-followed"]);
+    assert_eq!(report["findings"][0]["reason"], json!("unresolved"));
+    assert_eq!(report["findings"][0]["address"], json!("0.0.0.0:0"));
+    assert_eq!(report["unread"]["count"], json!(2_000));
+    assert_eq!(
+        report["unread"]["examples"].as_array().unwrap().len(),
+        UNREAD_EXAMPLES
+    );
+    assert_eq!(report["truncated"], json!(true));
+    assert!(report.to_string().len() < 10_000);
+}
+
+/// An empty BDT (a BBMD for foreign devices only) is a note; the verdict
+/// stays consistent.
+#[test]
+fn an_empty_table_is_a_note() {
+    let report = report(&[at(1)], &[read(at(1), bdt(&[]), vec![])]);
+    assert_eq!(report["verdict"], json!("consistent"));
+    assert_eq!(problems(&report), ["no-peers"]);
 }

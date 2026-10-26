@@ -13,7 +13,7 @@
 //! Pure functions only: a front end reads the tables (the TUI's network
 //! worker, the MCP server's network map) and shows the grid or findings.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_transport::bvll::BvlcResultCode;
@@ -54,8 +54,11 @@ pub enum Finding {
         /// The BBMD whose table lacks the entry back.
         to: SocketAddrV4,
     },
-    /// The BBMD's BDT has no entry for itself.
+    /// The BBMD's BDT has entries, but none for itself.
     MissingSelf(SocketAddrV4),
+    /// The BBMD's BDT is empty: it forwards broadcasts to no peer, as a
+    /// BBMD that serves only foreign devices may. A note, not a problem.
+    NoPeers(SocketAddrV4),
     /// The tables list `peer` with different masks.
     MixedMasks {
         /// The BBMD listed.
@@ -91,6 +94,9 @@ impl Finding {
             Self::MissingSelf(bbmd) => {
                 format!("{bbmd} has no entry for itself (Annex J.4.3.2)")
             }
+            Self::NoPeers(bbmd) => {
+                format!("{bbmd} has an empty BDT: it forwards to no peer BBMD")
+            }
             Self::MixedMasks { peer, masks } => {
                 let masks: Vec<String> = masks.iter().map(Ipv4Addr::to_string).collect();
                 format!(
@@ -104,13 +110,20 @@ impl Finding {
     }
 }
 
+/// The most BBMDs the grid shows, rows and columns alike; the rest are
+/// counted in [`Matrix::omitted`]. The findings cover them all.
+pub const GRID_CAP: usize = 32;
+
 /// The grid and its findings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Matrix {
-    /// The BBMDs, rows and columns alike, in the order the survey found them.
+    /// The BBMDs, rows and columns alike: those probed in the order the
+    /// survey found them, then those only listed, at most [`GRID_CAP`].
     pub bbmds: Vec<SocketAddrV4>,
     /// `cells[row][column]`.
     pub cells: Vec<Vec<Cell>>,
+    /// BBMDs left out of the grid past [`GRID_CAP`].
+    pub omitted: usize,
     /// Every problem found, in the order the view lists them.
     pub findings: Vec<Finding>,
 }
@@ -118,36 +131,40 @@ pub struct Matrix {
 impl Matrix {
     /// Build the grid from what a survey read. A BBMD some table lists but
     /// the survey has no probe for is added as a row that could not be read.
+    ///
+    /// The work is bounded by what was read, not by what the tables list:
+    /// the findings compare the tables read with one another, and the grid
+    /// stops at [`GRID_CAP`] BBMDs.
     pub fn build(probes: &[(SocketAddrV4, Probe)]) -> Self {
+        let mut seen = HashSet::new();
         let mut bbmds: Vec<SocketAddrV4> = Vec::new();
-        let mut add = |address: SocketAddrV4| {
-            if !bbmds.contains(&address) {
-                bbmds.push(address);
-            }
-        };
-        for (bbmd, probe) in probes {
-            add(*bbmd);
-            for row in probe.table().map_or(&[][..], Vec::as_slice) {
-                add(row.address);
+        for (bbmd, _) in probes {
+            if seen.insert(*bbmd) {
+                bbmds.push(*bbmd);
             }
         }
-        let tables: Vec<Option<&[BdtRow]>> = bbmds
-            .iter()
-            .map(|bbmd| {
-                probes
-                    .iter()
-                    .find(|(address, _)| address == bbmd)
-                    .and_then(|(_, probe)| probe.table().map(Vec::as_slice))
-            })
-            .collect();
-        // The mask each table gives a BBMD: the first entry for it.
-        let listed = |row: usize, column: usize| -> Option<Ipv4Addr> {
-            tables[row]?
+        for (_, probe) in probes {
+            for row in probe.table().map_or(&[][..], Vec::as_slice) {
+                if seen.insert(row.address) {
+                    bbmds.push(row.address);
+                }
+            }
+        }
+        // Each BBMD's table, from its first probe.
+        let mut tables: HashMap<SocketAddrV4, &[BdtRow]> = HashMap::new();
+        for (bbmd, probe) in probes {
+            if let Some(rows) = probe.table() {
+                tables.entry(*bbmd).or_insert(rows.as_slice());
+            }
+        }
+        // The mask a table gives a BBMD: its first entry for it.
+        let listed = |row: SocketAddrV4, column: SocketAddrV4| -> Option<Ipv4Addr> {
+            tables
+                .get(&row)?
                 .iter()
-                .find(|entry| entry.address == bbmds[column])
+                .find(|entry| entry.address == column)
                 .map(|entry| entry.mask)
         };
-        let n = bbmds.len();
         let mut findings = Vec::new();
         for (bbmd, probe) in probes {
             match probe {
@@ -162,39 +179,65 @@ impl Matrix {
                 Probe::Table(_) | Probe::Skipped => {}
             }
         }
-        let mut mixed = vec![false; n];
-        for (column, flag) in mixed.iter_mut().enumerate() {
-            let masks: BTreeSet<Ipv4Addr> = (0..n).filter_map(|row| listed(row, column)).collect();
-            if masks.len() > 1 {
-                *flag = true;
-                findings.push(Finding::MixedMasks {
-                    peer: bbmds[column],
-                    masks: masks.into_iter().collect(),
-                });
+        // Every mask the tables give each BBMD.
+        let mut masks: HashMap<SocketAddrV4, BTreeSet<Ipv4Addr>> = HashMap::new();
+        for rows in tables.values() {
+            let mut first = HashSet::new();
+            for entry in rows.iter().filter(|entry| first.insert(entry.address)) {
+                masks.entry(entry.address).or_default().insert(entry.mask);
             }
         }
-        let mut cells = vec![vec![Cell::Unknown; n]; n];
-        for row in 0..n {
-            if tables[row].is_none() {
-                continue;
+        let mixed: HashSet<SocketAddrV4> = bbmds
+            .iter()
+            .copied()
+            .filter(|bbmd| masks.get(bbmd).is_some_and(|set| set.len() > 1))
+            .collect();
+        for bbmd in bbmds.iter().filter(|bbmd| mixed.contains(bbmd)) {
+            findings.push(Finding::MixedMasks {
+                peer: *bbmd,
+                masks: masks[bbmd].iter().copied().collect(),
+            });
+        }
+        // The tables read, compared with one another.
+        let read: Vec<SocketAddrV4> = bbmds
+            .iter()
+            .copied()
+            .filter(|bbmd| tables.contains_key(bbmd))
+            .collect();
+        for &row in &read {
+            for &column in &read {
+                if listed(row, column).is_some() {
+                    continue;
+                }
+                if row == column {
+                    findings.push(match tables[&row].is_empty() {
+                        true => Finding::NoPeers(row),
+                        false => Finding::MissingSelf(row),
+                    });
+                } else if listed(column, row).is_some() {
+                    findings.push(Finding::Asymmetric {
+                        from: column,
+                        to: row,
+                    });
+                }
             }
-            for column in 0..n {
-                cells[row][column] = match listed(row, column) {
+        }
+        let omitted = bbmds.len().saturating_sub(GRID_CAP);
+        bbmds.truncate(GRID_CAP);
+        let n = bbmds.len();
+        let mut cells = vec![vec![Cell::Unknown; n]; n];
+        for (r, &row) in bbmds.iter().enumerate() {
+            let Some(table) = tables.get(&row) else {
+                continue;
+            };
+            for (c, &column) in bbmds.iter().enumerate() {
+                cells[r][c] = match listed(row, column) {
                     Some(mask) => Cell::Listed {
                         mask,
-                        mixed: mixed[column],
+                        mixed: mixed.contains(&column),
                     },
-                    None if row == column => {
-                        findings.push(Finding::MissingSelf(bbmds[row]));
-                        Cell::Missing
-                    }
-                    None if listed(column, row).is_some() => {
-                        findings.push(Finding::Asymmetric {
-                            from: bbmds[column],
-                            to: bbmds[row],
-                        });
-                        Cell::Missing
-                    }
+                    None if row == column && !table.is_empty() => Cell::Missing,
+                    None if row != column && listed(column, row).is_some() => Cell::Missing,
                     None => Cell::Absent,
                 };
             }
@@ -202,13 +245,19 @@ impl Matrix {
         Self {
             bbmds,
             cells,
+            omitted,
             findings,
         }
     }
 
-    /// True when every table was read and nothing disagrees.
+    /// True when every table was read, the grid shows every BBMD and
+    /// nothing disagrees (an empty table is a note, not a disagreement).
     pub fn consistent(&self) -> bool {
-        self.findings.is_empty()
+        self.omitted == 0
+            && self
+                .findings
+                .iter()
+                .all(|f| matches!(f, Finding::NoPeers(_)))
             && self
                 .cells
                 .iter()
@@ -332,6 +381,31 @@ mod tests {
         assert_eq!(matrix.cells[1], [Cell::Unknown; 2]);
         assert!(matrix.findings.is_empty());
         assert!(!matrix.consistent(), "an unread table is not consistent");
+    }
+
+    /// An empty table (a BBMD for foreign devices only) is a note, and the
+    /// grid stays consistent; a peer listing it still makes a one-way entry.
+    #[test]
+    fn an_empty_table_is_a_note_not_a_problem() {
+        let matrix = Matrix::build(&[(at(1), table(&[]))]);
+        assert_eq!(matrix.findings, [Finding::NoPeers(at(1))]);
+        assert_eq!(matrix.cells, [[Cell::Absent]]);
+        assert!(matrix.consistent());
+        let matrix = Matrix::build(&[
+            (at(1), table(&[(1, UNICAST), (2, UNICAST)])),
+            (at(2), table(&[])),
+        ]);
+        assert_eq!(
+            matrix.findings,
+            [
+                Finding::Asymmetric {
+                    from: at(1),
+                    to: at(2)
+                },
+                Finding::NoPeers(at(2)),
+            ]
+        );
+        assert!(!matrix.consistent());
     }
 
     #[test]

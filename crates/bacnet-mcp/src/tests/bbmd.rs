@@ -68,6 +68,37 @@ fn set_bdt(bbmd: &BipTransport, rows: &[(SocketAddrV4, [u8; 4])]) {
         .unwrap();
 }
 
+/// A BBMD of another make on loopback: it answers Read-BDT with itself,
+/// `peer` and `extra`, which no stack of ours would hold, and Read-FDT with
+/// an empty table.
+async fn hostile_bbmd(peer: SocketAddrV4, extra: &[SocketAddrV4]) -> SocketAddrV4 {
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let std::net::SocketAddr::V4(own) = socket.local_addr().unwrap() else {
+        unreachable!("bound to IPv4");
+    };
+    let mut bdt = Vec::new();
+    for address in [own, peer].iter().chain(extra) {
+        bdt.extend_from_slice(&address.ip().octets());
+        bdt.extend_from_slice(&address.port().to_be_bytes());
+        bdt.extend_from_slice(&ONES);
+    }
+    tokio::spawn(async move {
+        let mut buf = [0; 64];
+        while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+            let reply = match buf[..n] {
+                [0x81, READ_BDT, ..] => {
+                    let len = u16::try_from(4 + bdt.len()).unwrap().to_be_bytes();
+                    [&[0x81, 0x03, len[0], len[1]][..], &bdt].concat()
+                }
+                [0x81, READ_FDT, ..] => vec![0x81, 0x07, 0x00, 0x04],
+                _ => continue,
+            };
+            let _ = socket.send_to(&reply, from).await;
+        }
+    });
+    own
+}
+
 /// A server over `client`, under `policy`, and an agent connected to it.
 fn serve(client: &Arc<BACnetClient<BipTransport>>, policy: Policy) -> Agent {
     let engine = Arc::new(Engine::new(
@@ -123,6 +154,18 @@ async fn a_missing_peer_entry_is_reported_and_only_reads_go_out() {
         unreachable!("bound to IPv4");
     };
     let (a_at, b_at, node_at) = (at(&a), at(&b), at(&node));
+    // A BBMD of another make whose table lists an unresolved host name
+    // (all zeros), the limited broadcast and a multicast group besides A
+    // and itself: listed, never read.
+    let hostile_at = hostile_bbmd(
+        a_at,
+        &[
+            SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0),
+            SocketAddrV4::new(Ipv4Addr::BROADCAST, 47808),
+            SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 1), 47808),
+        ],
+    )
+    .await;
     set_bdt(
         &a,
         &[
@@ -130,6 +173,7 @@ async fn a_missing_peer_entry_is_reported_and_only_reads_go_out() {
             (b_at, ONES),
             (node_at, ONES),
             (silent_at, ONES),
+            (hostile_at, ONES),
         ],
     );
     set_bdt(&b, &[(b_at, ONES)]);
@@ -191,6 +235,9 @@ async fn a_missing_peer_entry_is_reported_and_only_reads_go_out() {
         ("read-not-supported".to_string(), node_at.to_string()),
         ("no-answer".to_string(), silent_at.to_string()),
         ("foreign-device-expiring".to_string(), a_at.to_string()),
+        ("not-followed".to_string(), hostile_at.to_string()),
+        ("not-followed".to_string(), hostile_at.to_string()),
+        ("not-followed".to_string(), hostile_at.to_string()),
     ];
     expected.sort();
     assert_eq!(found, expected, "{report}");
@@ -210,22 +257,39 @@ async fn a_missing_peer_entry_is_reported_and_only_reads_go_out() {
     assert_eq!(expiring["device"], json!(lapsed.to_string()));
     assert!(expiring["remaining_s"].as_u64().unwrap() < 30, "{expiring}");
     // A's FDT also holds this server's own registration, alive.
+    let reasons: Vec<&Value> = report["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["problem"] == json!("not-followed"))
+        .map(|f| &f["reason"])
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            &json!("unresolved"),
+            &json!("broadcast"),
+            &json!("multicast")
+        ]
+    );
     let a_fdt = &report["bbmds"][0]["fdt"];
     assert_eq!(a_fdt["count"], json!(2), "{a_fdt}");
-    // Four BDT reads and two FDT reads (the BBMDs that gave a BDT), and
+    // Five BDT reads and three FDT reads (the BBMDs that gave a BDT), and
     // one timeout for the silent address, waited out beside the others.
     let cost = &body["cost"];
-    assert_eq!(cost["requests"], json!(6), "{cost}");
+    assert_eq!(cost["requests"], json!(8), "{cost}");
     assert_eq!(cost["timeouts"], json!(1), "{cost}");
-    assert!(cost["elapsed_ms"].as_u64().unwrap() < 6_000, "{cost}");
+    assert!(cost["elapsed_ms"].as_u64().unwrap() < 9_000, "{cost}");
     // The wire: table reads only, no write, registration or delete.
     let mut reads = vec![
         (READ_BDT, a_at),
         (READ_BDT, b_at),
         (READ_BDT, node_at),
         (READ_BDT, silent_at),
+        (READ_BDT, hostile_at),
         (READ_FDT, a_at),
         (READ_FDT, b_at),
+        (READ_FDT, hostile_at),
     ];
     reads.sort_unstable();
     assert_eq!(sent(&mut tap), reads);

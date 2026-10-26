@@ -160,7 +160,18 @@ J.2.3 and J.2.7), and returns them under `bbmd` with a verdict.
   `ip:port` of a device in the discovery table (one the policy allows) or of
   a router heard; any other address is refused (`address-not-known`). From
   there it follows each BDT read to the BBMDs it lists, breadth first, up
-  to 16 BBMDs. With nothing to start from it is refused (`no-bbmd-known`).
+  to 16 BBMDs; those past the limit come back as a count with a few
+  examples (`unread`). With nothing to start from it is refused
+  (`no-bbmd-known`).
+- **Peers are device data, so they are filtered.** A BDT peer is on
+  network 0 by definition, so following it stays within reach, but its
+  address comes from whatever the BBMD holds. An entry that is all zeros
+  (a host name the BBMD couldn't resolve), unspecified or port 0, the
+  limited broadcast, multicast, loopback (unless the server itself is on
+  loopback) or the server's own address is never read: it is reported as a
+  `not-followed` finding with its reason (`unresolved`, `unspecified`,
+  `broadcast`, `multicast`, `loopback`, `own-address`). The TUI's survey
+  applies the same filter.
 - **Reach and charging.** Every BBMD is on the server's own B/IP network,
   so `[mcp] networks` must include 0 (else `network-not-allowed`); a server
   whose link isn't B/IP refuses (`needs-bip`). Like a router query, it needs
@@ -173,9 +184,12 @@ J.2.3 and J.2.7), and returns them under `bbmd` with a verdict.
 - **The verdict.** `inconsistent` when the BDTs disagree, `incomplete` when
   they don't but some BBMD wasn't read, else `consistent`. Each finding
   names its addresses: `one-way-entry` (`from` lists `to`, which doesn't
-  list it back), `missing-own-entry`, `mismatched-masks` (the BBMD and every
-  mask the tables give it), `read-not-supported` (a NAK: the BBMD doesn't
-  support the read, as a node that is no BBMD answers; not an error),
+  list it back), `missing-own-entry` (a non-empty table without the BBMD itself),
+  `no-peers` (an empty table, as a BBMD serving only foreign devices has: a
+  note that leaves the verdict alone), `mismatched-masks` (the BBMD and
+  every mask the tables give it), `read-not-supported` (a NAK: the BBMD
+  refused the read or doesn't support it, as a node that is no BBMD
+  answers; not an error), `not-followed`,
   `no-answer`, and `foreign-device-expiring` (under 30 s left, which is
   inside the BBMD's 30 s grace period: the device is past its time-to-live
   without registering again). Addresses are `ip:port`, masks dotted, with
@@ -183,7 +197,10 @@ J.2.3 and J.2.7), and returns them under `bbmd` with a verdict.
   seconds.
 - **Bounds.** Each table lists its first 24 entries with its `count` (the
   check uses them all), at most 64 findings are listed with
-  `finding_count`, and `truncated` says when anything was cut. The table
+  `finding_count`, and `truncated` says when anything was cut. The
+  consistency check compares only the tables read, so its work is bounded
+  by the 16 reads, not by what the tables list. A survey whose every read
+  the call's budget left unsent gives its minute back. The table
   rows, the survey and the consistency matrix are `bacnet_ops::bbmd`'s,
   shared with the TUI's Network screen.
 
@@ -282,7 +299,7 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   policy's reach, broad discovery (wide ranges, ranges outside the policy,
   parallel calls), network numbers, network-paced Who-Is, cancellation, a
   long indexed Object_List across calls, and output schemas (success and
-  error results of all nine tools, nested values included).
+  error results of all ten tools, nested values included).
 - `crates/bacnet-mcp/src/tests/bbmd.rs`: real BBMDs on loopback. A survey
   from the registration's BBMD reports a missing peer entry, a refused
   read, a silent address (one timeout) and a foreign device near expiry,

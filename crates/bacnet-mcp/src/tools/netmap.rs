@@ -243,8 +243,8 @@ pub(super) async fn run<T: TransportPort + 'static>(
         "networks": networks,
         "limits": ctx.limits(None),
     });
-    if let Some(plan) = plan {
-        body["bbmd"] = bbmd::run(engine, call, plan).await;
+    if let Some(plan) = &plan {
+        body["bbmd"] = bbmd::run(ctx, engine, call, plan).await;
     }
     Ok(body)
 }

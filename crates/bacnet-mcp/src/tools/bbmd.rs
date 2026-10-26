@@ -9,6 +9,9 @@
 //! BBMDs it lists, breadth first, as the TUI's survey does: those are the
 //! site's own peers, named by the BBMDs themselves. Every BBMD is on the
 //! local B/IP network (network 0 from here), so the policy must allow it.
+//! A listed address is device data, so one no read may go to (all zeros,
+//! broadcast, multicast, loopback, our own) is reported, not read
+//! ([`bacnet_ops::bbmd::NotFollowed`]).
 //!
 //! **Charging.** Each table read is one request under the local network's
 //! rate, the global one and the principal's tokens. The survey reads at
@@ -24,8 +27,10 @@ use std::net::SocketAddrV4;
 use std::sync::PoisonError;
 use std::time::Duration;
 
+use std::net::Ipv4Addr;
+
 use bacnet_ops::bbmd::{
-    FdtRow, Finding, MAX_SURVEY, Matrix, NO_ANSWER, Outcome, Probe, SURVEY_AT_ONCE, Surveyed,
+    FdtRow, Finding, MAX_SURVEY, Matrix, NO_ANSWER, Outcome, Probe, SURVEY_AT_ONCE, Survey,
     address_of, survey,
 };
 use bacnet_ops::engine::Engine;
@@ -50,6 +55,9 @@ const LISTED: usize = 24;
 
 /// Findings listed; past it, only the count.
 const MAX_FINDINGS: usize = 64;
+
+/// BBMDs past the survey's limit named as examples; the rest are counted.
+const UNREAD_EXAMPLES: usize = 4;
 
 /// A table's FDT read, when its BDT was read.
 type Fdt = Option<Outcome<Vec<FdtRow>>>;
@@ -165,14 +173,29 @@ async fn known<T: TransportPort + 'static>(
         })
 }
 
-/// Read the tables and judge them.
+/// Read the tables and judge them. A survey whose every read the budget
+/// left unsent gives its minute back.
 pub(super) async fn run<T: TransportPort + 'static>(
+    ctx: &Ctx<T>,
     engine: &Engine<T>,
     call: &Call,
-    plan: Plan,
+    plan: &Plan,
 ) -> Value {
-    let surveyed = survey(&plan.seeds, |bbmd| read(engine, call, bbmd)).await;
-    report(&plan.seeds, &surveyed)
+    // Our own address, so a table listing it isn't read back; a bip()
+    // client always has one.
+    let own = engine
+        .bip()
+        .and_then(|bip| address_of(bip.local_mac()))
+        .unwrap_or(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
+    let found = survey(&plan.seeds, own, |bbmd| read(engine, call, bbmd)).await;
+    if found
+        .read
+        .iter()
+        .all(|s| matches!(s.probe, Outcome::Skipped))
+    {
+        release(ctx, plan);
+    }
+    report(&plan.seeds, &found)
 }
 
 /// One BBMD's BDT, then its FDT when the BDT was read; a read the call's
@@ -205,7 +228,8 @@ async fn within_budget<R>(call: &Call, read: impl Future<Output = Outcome<R>>) -
 }
 
 /// The survey's result: each BBMD's tables, the findings and the verdict.
-fn report(seeds: &[SocketAddrV4], surveyed: &[Surveyed<Fdt>]) -> Value {
+fn report(seeds: &[SocketAddrV4], found: &Survey<Fdt>) -> Value {
+    let surveyed = &found.read;
     let probes: Vec<(SocketAddrV4, Probe)> =
         surveyed.iter().map(|s| (s.bbmd, s.probe.clone())).collect();
     let matrix = Matrix::build(&probes);
@@ -218,6 +242,20 @@ fn report(seeds: &[SocketAddrV4], surveyed: &[Surveyed<Fdt>]) -> Value {
         )
     });
     let mut bbmds = Vec::new();
+    for skip in &found.not_followed {
+        findings.push(json!({
+            "problem": "not-followed",
+            "bbmd": skip.listed_by.to_string(),
+            "address": skip.address.to_string(),
+            "reason": skip.why.as_str(),
+            "message": format!(
+                "{} lists {}, which was not read ({}): no read goes to such an address",
+                skip.listed_by,
+                skip.address,
+                skip.why.as_str()
+            ),
+        }));
+    }
     for entry in surveyed {
         let bdt = table(&entry.probe, &mut truncated, |row| {
             json!({
@@ -227,7 +265,7 @@ fn report(seeds: &[SocketAddrV4], surveyed: &[Surveyed<Fdt>]) -> Value {
             })
         });
         let fdt = match &entry.extra {
-            Some(Some(fdt)) => {
+            Some(fdt) => {
                 if let Outcome::Nak(code) = fdt {
                     findings.push(not_supported(entry.bbmd, "fdt", *code));
                 } else if let Outcome::Unreachable(reason) = fdt {
@@ -265,9 +303,12 @@ fn report(seeds: &[SocketAddrV4], surveyed: &[Surveyed<Fdt>]) -> Value {
         };
         bbmds.push(json!({ "address": entry.bbmd.to_string(), "bdt": bdt, "fdt": fdt }));
     }
-    let unread = surveyed
-        .iter()
-        .any(|s| !matches!(s.probe, Outcome::Table(_)));
+    let unread = !found.unread.is_empty()
+        || !found.not_followed.is_empty()
+        || surveyed
+            .iter()
+            .any(|s| !matches!(s.probe, Outcome::Table(_)));
+    truncated |= !found.unread.is_empty();
     let verdict = if mismatched {
         "inconsistent"
     } else if unread {
@@ -286,6 +327,15 @@ fn report(seeds: &[SocketAddrV4], surveyed: &[Surveyed<Fdt>]) -> Value {
         "findings": findings,
         "finding_count": count,
         "bbmds": bbmds,
+        "unread": {
+            "count": found.unread.len(),
+            "examples": found
+                .unread
+                .iter()
+                .take(UNREAD_EXAMPLES)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+        },
         "truncated": truncated,
         "limits": {
             "max_bbmds": MAX_SURVEY,
@@ -331,8 +381,8 @@ fn not_supported(bbmd: SocketAddrV4, table: &str, code: BvlcResultCode) -> Value
         "table": table,
         "result_code": code_json(code),
         "message": format!(
-            "{bbmd} answered the {} read with a NAK: it doesn't support reading it (it may be \
-             no BBMD)",
+            "{bbmd} answered the {} read with a NAK: it refused the read or doesn't support it \
+             (it may be no BBMD)",
             table.to_uppercase()
         ),
     })
@@ -350,6 +400,11 @@ fn finding(finding: &Finding) -> Value {
         }),
         Finding::MissingSelf(bbmd) => json!({
             "problem": "missing-own-entry",
+            "bbmd": bbmd.to_string(),
+            "message": message,
+        }),
+        Finding::NoPeers(bbmd) => json!({
+            "problem": "no-peers",
             "bbmd": bbmd.to_string(),
             "message": message,
         }),
@@ -433,7 +488,9 @@ pub(super) fn schema() -> Value {
                         "problem": { "enum": [
                             "one-way-entry", "missing-own-entry", "mismatched-masks",
                             "read-not-supported", "no-answer", "foreign-device-expiring",
+                            "not-followed", "no-peers",
                         ] },
+                        "address": { "type": "string" },
                         "bbmd": { "type": "string" },
                         "from": { "type": "string" },
                         "to": { "type": "string" },
@@ -462,10 +519,21 @@ pub(super) fn schema() -> Value {
                     "required": ["address", "bdt", "fdt"],
                 },
             },
+            "unread": {
+                "type": "object",
+                "description": "BBMDs the tables list past the survey's limit, not read",
+                "properties": {
+                    "count": { "type": "integer" },
+                    "examples": strings,
+                },
+                "required": ["count", "examples"],
+            },
             "truncated": { "type": "boolean" },
             "limits": { "type": "object" },
         },
-        "required": ["seeds", "verdict", "findings", "finding_count", "bbmds", "truncated"],
+        "required": [
+            "seeds", "verdict", "findings", "finding_count", "bbmds", "unread", "truncated",
+        ],
     })
 }
 
