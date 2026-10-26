@@ -3,7 +3,7 @@ title: "Support status and evidence"
 description: "What Rusty BACnet supports, and how to read release, development and platform evidence at the scope actually tested."
 ---
 
-Rusty BACnet is pre-1.0, with changing APIs and partial conformance coverage. It makes no BTL certification or full BACnet conformance claim.
+Rusty BACnet is pre-1.0, with changing APIs and partial conformance coverage. It makes no BTL certification or full BACnet conformance claim, and no physical-safety guarantee: writes, device management, time synchronization and file transfers can change real equipment.
 
 ## Choose the version and owner first
 

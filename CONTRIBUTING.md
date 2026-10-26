@@ -13,6 +13,8 @@ Issues, pull requests and CI all live on
   [Rusty BACnet Roadmap](https://github.com/users/jscott3201/projects/4)
   board shows every open issue by track, priority and target release. Its
   **Good first issues** and **Needs decision** views are good places to start.
+  An issue with no milestone is in the backlog, and new issues join the board
+  automatically.
 - **Security vulnerabilities:** report them privately, as the
   [security policy](.github/SECURITY.md) describes, not in a public issue.
 
@@ -44,10 +46,19 @@ cargo test --doc --workspace --exclude rusty-bacnet --locked --features "$FEATUR
 
 For a quicker loop, test only the crate you changed and the crates that
 depend on it (`cargo nextest run -p bacnet-server`). On a Mac,
-`bash scripts/ci/local-macos.sh` runs the whole gate. The Python bindings
-(`crates/rusty-bacnet`) build with maturin; the [README](README.md#contributing)
-has those steps. [docs/ci.md](docs/ci.md#local-checks) lists every check CI
-runs, with the commands.
+`bash scripts/ci/local-macos.sh` runs the whole gate. [docs/ci.md](docs/ci.md#local-checks)
+lists every check CI runs, with the commands.
+
+The Python bindings (`crates/rusty-bacnet`) build with maturin in a virtual
+environment. On Windows, activate it with `.venv\Scripts\activate`; the
+BACnet/SC tests also need the `openssl` command:
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+python -m pip install "maturin>=1,<2"
+maturin develop --manifest-path crates/rusty-bacnet/Cargo.toml --locked
+python -m unittest discover -s crates/rusty-bacnet/tests
+```
 
 Clippy and rustdoc deny warnings, every public item needs a doc comment, and a
 Rust source file may hold at most 700 lines of code

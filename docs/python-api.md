@@ -6,7 +6,11 @@ This reference follows the `dev` branch. At the `v0.14.0` tag it describes the
 [published 0.14.0 package](https://pypi.org/project/rusty-bacnet/0.14.0/), which
 the site's tutorials also target; see the [installation guidance](../README.md#install).
 Changes merged after the release wait in [`changelog.d/`](../changelog.d/); to
-use them, follow [Build from source](../README.md#build-from-source).
+use them, follow [Build from source](https://jscott3201.github.io/rusty-bacnet/development/overview/#build-a-source-checkout).
+
+Python and Rust expose different configuration surfaces: the bindings don't
+wrap every Rust API, so check this reference before assuming a Rust option
+exists in Python.
 
 **Requirements:** Python >= 3.11
 

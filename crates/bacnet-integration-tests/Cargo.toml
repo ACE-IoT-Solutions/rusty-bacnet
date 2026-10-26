@@ -17,7 +17,7 @@ bacnet-endpoint.workspace = true
 bacnet-client.workspace = true
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-std", "io-util", "time", "signal"] }
 # The website's guide programs (the [[bin]] targets below).
 bacnet-network.workspace = true
 bacnet-objects.workspace = true
@@ -55,6 +55,16 @@ path = "../../examples/rust/cov_subscriptions.rs"
 [[example]]
 name = "multi_object_server"
 path = "../../examples/rust/multi_object_server.rs"
+
+# The root README's Rust blocks (#2105): each file is a short header, then
+# the README block byte for byte, which website/tests/python checks.
+[[example]]
+name = "readme_read"
+path = "../../examples/rust/readme_read.rs"
+
+[[example]]
+name = "readme_server"
+path = "../../examples/rust/readme_server.rs"
 
 # Compile the canonical displayed source directly, without a maintained copy.
 [[bin]]
