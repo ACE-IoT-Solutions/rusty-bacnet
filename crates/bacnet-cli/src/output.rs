@@ -10,9 +10,9 @@ use serde::Serialize;
 use bacnet_ops::format::{Datum, StateTexts};
 use bacnet_ops::target::{AddressStyle, routed_station};
 
-/// No state texts: the one-shot commands read one property, so a binary
-/// object's state shows as `active` or `inactive` and a multi-state one as
-/// its number.
+/// No state texts: a binary object's state shows as `active` or
+/// `inactive` and a multi-state one as its number. `read` names states
+/// with texts it reads (#2132); the other one-shot commands use this.
 pub static NO_STATE_TEXTS: StateTexts = StateTexts {
     active: None,
     inactive: None,

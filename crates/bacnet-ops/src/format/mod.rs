@@ -157,6 +157,28 @@ impl StateTexts {
         }
     }
 
+    /// Whether an object of `object_type`'s state texts would name the
+    /// value of `property` (at `index`, for an array): a binary or
+    /// multi-state object's state, in its Present_Value, Priority_Array
+    /// slots, Relinquish_Default and the like. An array's size, index 0,
+    /// never is. A front end reads the texts only when this holds.
+    pub fn name(object_type: ObjectType, property: PropertyIdentifier, index: Option<u32>) -> bool {
+        (is_binary(object_type) || is_multistate(object_type))
+            && holds_state(property)
+            && index != Some(0)
+    }
+
+    /// The same texts cleaned for display ([`clean_name`]): device text
+    /// with its control characters turned to spaces and invisible format
+    /// characters dropped.
+    pub fn cleaned(&self) -> Self {
+        Self {
+            active: self.active.as_deref().map(clean_name),
+            inactive: self.inactive.as_deref().map(clean_name),
+            states: self.states.iter().map(|text| clean_name(text)).collect(),
+        }
+    }
+
     /// The texts among properties as read. A State_Text entry that isn't
     /// a string reads as an empty text, which names nothing, so later
     /// entries keep their state numbers.

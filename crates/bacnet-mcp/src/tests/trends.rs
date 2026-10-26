@@ -485,7 +485,8 @@ async fn state_columns_are_labelled_with_enveloped_state_texts() {
 
 /// A device that goes silent after the reference costs one timeout: the
 /// first state text read times out and no other is sent, and the records
-/// read come back, their states counted without texts.
+/// read come back, their states counted without texts. The cost counts
+/// the timeout (#2131).
 #[tokio::test(start_paused = true)]
 async fn a_device_silent_at_the_state_texts_costs_one_timeout() {
     let mut lab = Lab::start_site(Policy::default(), Duration::ZERO).await;
@@ -508,8 +509,50 @@ async fn a_device_silent_at_the_state_texts_costs_one_timeout() {
         .as_u64()
         .unwrap();
     assert!((1_000..2_000).contains(&elapsed), "{result}");
+    // The call succeeds, but the timeout counts (#2131).
+    assert_eq!(result["structuredContent"]["cost"]["timeouts"], json!(1));
     let columns = &body["summary"]["columns"];
     assert_eq!(columns[0]["state_texts"], Value::Null, "{body}");
     assert_eq!(columns[1]["states"]["active"], json!(2), "{body}");
+    lab.stop().await;
+}
+
+/// A device that goes silent after its first page: the reference read
+/// times out, the page read comes back unnamed, and the cost counts the
+/// timeout (#2131). Read on, the next page times out too and counts again.
+#[tokio::test(start_paused = true)]
+async fn a_device_silent_at_the_reference_counts_its_timeout() {
+    let mut lab = Lab::start_site(Policy::default(), Duration::ZERO).await;
+    lab.agent.initialize().await;
+    // The counts and one page get through.
+    lab.go_silent_after(3 + 1);
+    let before = lab.sends().len();
+    let result = lab
+        .agent
+        .call(
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "trend-log:4", "max_records": 5 }),
+        )
+        .await;
+    let body = ok(&result);
+    assert_eq!(body["pages"], json!(1), "{body}");
+    assert_eq!(lab.sends().len() - before, 3 + 1 + 1, "{body}");
+    assert_eq!(body["records"][1]["values"][0], json!({ "value": 2 }));
+    let cost = &result["structuredContent"]["cost"];
+    assert_eq!(cost["timeouts"], json!(1), "{result}");
+
+    lab.go_silent_after(3 + 1);
+    let result = lab
+        .agent
+        .call(
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "trend-log:4" }),
+        )
+        .await;
+    let body = ok(&result);
+    assert_eq!(body["pages"], json!(1), "{body}");
+    assert_eq!(body["stopped"]["error"], json!("timeout"), "{body}");
+    let cost = &result["structuredContent"]["cost"];
+    assert_eq!(cost["timeouts"], json!(2), "{result}");
     lab.stop().await;
 }
