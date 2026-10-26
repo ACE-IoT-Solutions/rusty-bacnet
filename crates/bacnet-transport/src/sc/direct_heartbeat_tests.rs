@@ -50,12 +50,40 @@ fn start() -> (Link, LoopbackWebSocket) {
     )
 }
 
+/// How a test peer answers a Heartbeat-Request with message ID `id`.
+type Reply = fn(u16) -> bytes::BytesMut;
+
+fn ack(id: u16) -> bytes::BytesMut {
+    bare_control(ScFunction::HeartbeatAck, id)
+}
+
+fn wrong_id_ack(id: u16) -> bytes::BytesMut {
+    bare_control(ScFunction::HeartbeatAck, id ^ 0x8000)
+}
+
+/// A confused peer's reply to a probe: a negative BVLC-Result.
+fn nak(id: u16) -> bytes::BytesMut {
+    let mut bytes = bytes::BytesMut::new();
+    encode_sc_message(
+        &mut bytes,
+        &ScMessage {
+            function: ScFunction::Result,
+            message_id: id,
+            originating_vmac: None,
+            destination_vmac: None,
+            dest_options: Vec::new(),
+            data_options: Vec::new(),
+            payload: bytes::Bytes::from_static(&[0x0a, 0x01, 0x00, 0x00, 0x07, 0x00, 0x2b]),
+        },
+    );
+    bytes
+}
+
 /// A peer that reports every frame it receives with its arrival time and,
-/// when `ack_after` is set, answers each Heartbeat-Request that much later.
+/// when `reply` is set, answers each Heartbeat-Request after its delay.
 fn spawn_peer(
     peer: Arc<LoopbackWebSocket>,
-    ack_after: Option<Duration>,
-    id_xor: u16,
+    reply: Option<(Duration, Reply)>,
 ) -> (
     tokio::task::JoinHandle<()>,
     mpsc::UnboundedReceiver<(TokioInstant, ScMessage)>,
@@ -67,12 +95,11 @@ fn spawn_peer(
             let request = msg.function == ScFunction::HeartbeatRequest;
             let id = msg.message_id;
             let _ = seen_tx.send((TokioInstant::now(), msg));
-            let (true, Some(delay)) = (request, ack_after) else {
+            let (true, Some((delay, reply))) = (request, reply) else {
                 continue;
             };
             tokio::time::sleep(delay).await;
-            let ack = bare_control(ScFunction::HeartbeatAck, id ^ id_xor);
-            if peer.send(&ack).await.is_err() {
+            if peer.send(&reply(id)).await.is_err() {
                 return;
             }
         }
@@ -111,7 +138,7 @@ fn assert_heartbeat(msg: &ScMessage) {
 #[tokio::test(start_paused = true)]
 async fn direct_pool_idle_link_probes_then_closes_at_the_timeout() {
     let (link, peer) = start();
-    let (peer_task, mut seen) = spawn_peer(Arc::new(peer), None, 0);
+    let (peer_task, mut seen) = spawn_peer(Arc::new(peer), None);
     let (at, msg) = next_frame(&mut seen, "first heartbeat").await;
     assert_heartbeat(&msg);
     assert_eq!(at - link.started, INTERVAL, "probe after one idle interval");
@@ -136,7 +163,7 @@ async fn direct_pool_idle_link_probes_then_closes_at_the_timeout() {
 #[tokio::test(start_paused = true)]
 async fn direct_pool_ack_with_the_wrong_message_id_is_ignored() {
     let (link, peer) = start();
-    let (peer_task, mut seen) = spawn_peer(Arc::new(peer), Some(ms(1)), 0x8000);
+    let (peer_task, mut seen) = spawn_peer(Arc::new(peer), Some((ms(1), wrong_id_ack)));
     let (_, msg) = next_frame(&mut seen, "first heartbeat").await;
     assert_heartbeat(&msg);
     advance_to(link.started + TIMEOUT - ms(1)).await;
@@ -157,7 +184,7 @@ async fn direct_pool_ack_with_the_wrong_message_id_is_ignored() {
 #[tokio::test(start_paused = true)]
 async fn direct_pool_answered_heartbeats_survive_late_ticks_until_the_idle_ttl() {
     let (link, peer) = start();
-    let (peer_task, mut seen) = spawn_peer(Arc::new(peer), Some(ms(1)), 0);
+    let (peer_task, mut seen) = spawn_peer(Arc::new(peer), Some((ms(1), ack)));
     let mut previous: Option<TokioInstant> = None;
     for cycle in 0..5 {
         let (h, msg) = next_frame(&mut seen, &format!("cycle {cycle}")).await;
@@ -211,7 +238,7 @@ async fn direct_pool_answered_heartbeats_survive_late_ticks_until_the_idle_ttl()
 async fn direct_pool_received_traffic_defers_the_probe() {
     let (link, peer) = start();
     let peer = Arc::new(peer);
-    let (peer_task, mut seen) = spawn_peer(peer.clone(), None, 0);
+    let (peer_task, mut seen) = spawn_peer(peer.clone(), None);
     // Let the worker start its timers at `started` before the clock moves.
     advance_to(link.started).await;
     advance_to(link.started + ms(2_000)).await;
@@ -239,4 +266,58 @@ async fn direct_pool_received_traffic_defers_the_probe() {
     peer_task.abort();
     link.member.retire();
     link.worker.await.unwrap();
+}
+
+/// AB.6.3 leaves probing to the initiator, but a peer that probes anyway
+/// gets a Heartbeat-ACK echoing its message ID.
+#[tokio::test(start_paused = true)]
+async fn direct_pool_answers_a_peer_heartbeat_request() {
+    let (link, peer) = start();
+    let peer = Arc::new(peer);
+    let (peer_task, mut seen) = spawn_peer(peer.clone(), None);
+    advance_to(link.started).await;
+    advance_to(link.started + ms(1_000)).await;
+    peer.send(&bare_control(ScFunction::HeartbeatRequest, 0x4242))
+        .await
+        .unwrap();
+    let (at, reply) = next_frame(&mut seen, "heartbeat ack").await;
+    assert_eq!(at - link.started, ms(1_000), "answered at once");
+    assert_eq!(reply.function, ScFunction::HeartbeatAck);
+    assert_eq!(reply.message_id, 0x4242, "the ACK echoes the request's ID");
+    assert!(reply.originating_vmac.is_none() && reply.destination_vmac.is_none());
+    assert!(reply.data_options.is_empty() && reply.payload.is_empty());
+    peer_task.abort();
+    link.member.retire();
+    link.worker.await.unwrap();
+}
+
+/// A peer that answers every probe with a BVLC-Result NAK is alive, so the
+/// link survives the heartbeat timeout, but a Result is not use: the idle
+/// TTL still reclaims the link on schedule.
+#[tokio::test(start_paused = true)]
+async fn direct_pool_result_frames_do_not_hold_the_link_past_the_idle_ttl() {
+    let (link, peer) = start();
+    let (peer_task, mut seen) = spawn_peer(Arc::new(peer), Some((ms(1), nak)));
+    let ttl = link.started + DIRECT_POOL_IDLE_TTL;
+    tokio::time::sleep_until(ttl - ms(1)).await;
+    advance_to(ttl - ms(1)).await;
+    assert!(
+        link.member.is_current(),
+        "a NAK still shows the peer is alive"
+    );
+    advance_to(ttl).await;
+    assert!(
+        !link.member.is_current(),
+        "Result frames must not keep an unused link past the idle TTL"
+    );
+    link.worker.await.unwrap();
+    let mut probes = 0;
+    let mut last = None;
+    while let Ok((_, msg)) = seen.try_recv() {
+        probes += usize::from(msg.function == ScFunction::HeartbeatRequest);
+        last = Some(msg.function);
+    }
+    assert!(probes > 5, "probes kept going: {probes}");
+    assert_eq!(last, Some(ScFunction::DisconnectRequest));
+    peer_task.abort();
 }

@@ -347,11 +347,12 @@ impl DirectWs for Recorder {
 
 /// #2127: the accepting side answers each Heartbeat-Request with a
 /// Heartbeat-ACK echoing its message ID and carrying no VMACs, options or
-/// payload (AB.2.15, AB.6.3); a malformed probe gets the control NAK.
+/// payload (AB.2.15, AB.6.3); a malformed probe gets the control NAK, and
+/// one carrying a Destination VMAC gets nothing.
 #[tokio::test(start_paused = true)]
 async fn direct_accept_answers_heartbeat_requests() {
     let (member, route, recv) = route();
-    let probe = |message_id, payload: &'static [u8]| {
+    let probe = |message_id, payload: &'static [u8], destination_vmac| {
         let mut wire = BytesMut::new();
         encode_sc_message(
             &mut wire,
@@ -359,7 +360,7 @@ async fn direct_accept_answers_heartbeat_requests() {
                 function: ScFunction::HeartbeatRequest,
                 message_id,
                 originating_vmac: None,
-                destination_vmac: None,
+                destination_vmac,
                 dest_options: Vec::new(),
                 data_options: Vec::new(),
                 payload: Bytes::from_static(payload),
@@ -367,7 +368,13 @@ async fn direct_accept_answers_heartbeat_requests() {
         );
         Ok(DirectFrame::Binary(wire.to_vec()))
     };
-    let frames = [probe(0x1234, &[]), probe(0xbeef, &[]), probe(0x0042, &[1])];
+    let frames = [
+        probe(0x1234, &[], None),
+        probe(0xbeef, &[], None),
+        probe(0x0042, &[1], None),
+        // An addressed probe is dropped silently, not NAKed or ACKed.
+        probe(0x0043, &[], Some([9; 6])),
+    ];
     let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
     worker(
         member,
@@ -378,7 +385,7 @@ async fn direct_accept_answers_heartbeat_requests() {
     )
     .await;
     let sent = sent.lock().unwrap();
-    assert_eq!(sent.len(), 3, "one reply per probe: {sent:?}");
+    assert_eq!(sent.len(), 3, "one reply per unaddressed probe: {sent:?}");
     for (reply, id) in sent.iter().zip([0x1234, 0xbeef]) {
         assert_eq!(reply.function, ScFunction::HeartbeatAck);
         assert_eq!(reply.message_id, id, "the ACK echoes the request's ID");

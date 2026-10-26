@@ -108,7 +108,13 @@ impl PooledDirect {
                         }
                         let id = owner.egress.next_message.fetch_add(1, Ordering::Relaxed);
                         let request = bare_control(ScFunction::HeartbeatRequest, id);
-                        let sent = tokio::time::timeout(wait, ws.send(&request)).await;
+                        // Retirement mid-write ends the worker the way a
+                        // DirectWrite does.
+                        let sent = tokio::select! {
+                            biased;
+                            _ = retired.changed() => break true,
+                            sent = tokio::time::timeout(wait, ws.send(&request)) => sent,
+                        };
                         if !matches!(sent, Ok(Ok(()))) {
                             break false;
                         }
@@ -194,10 +200,15 @@ impl PooledDirect {
                                 }
                                 continue;
                             }
+                            // Both refresh below only once admitted (a valid
+                            // Disconnect-Request ends the link anyway).
+                            ScFunction::EncapsulatedNpdu | ScFunction::DisconnectRequest => {}
+                            // Anything else, a BVLC-Result included, shows the
+                            // peer is alive but is not use of the link, so a
+                            // peer NAKing every probe cannot pin it open.
                             _ => {
                                 last_received = tokio::time::Instant::now();
                                 pending_heartbeat = None;
-                                touch(&mut idle_deadline);
                             }
                         }
                         if message.function == ScFunction::EncapsulatedNpdu {
@@ -214,6 +225,11 @@ impl PooledDirect {
                                     }
                                 }
                                 DirectMuDecision::Pass => {
+                                    // As on the hub, only admitted traffic
+                                    // counts; a dropped or NAKed NPDU doesn't.
+                                    last_received = tokio::time::Instant::now();
+                                    pending_heartbeat = None;
+                                    touch(&mut idle_deadline);
                                     #[cfg(feature = "sc-tls")]
                                     if let (
                                         Some(intake),
