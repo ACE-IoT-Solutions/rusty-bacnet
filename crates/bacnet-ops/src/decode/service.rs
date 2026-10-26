@@ -106,7 +106,7 @@ pub(super) fn parameters(
     };
     let mut fields = tags(apdu, base, start, apdu.len(), 0);
     if let Some(secret) = secret {
-        hide_passwords(&mut fields, &doc, secret, 0);
+        hide_passwords(&mut fields, &doc, secret);
     }
     if let Some(why) = refused {
         fields.push(Field::leaf(

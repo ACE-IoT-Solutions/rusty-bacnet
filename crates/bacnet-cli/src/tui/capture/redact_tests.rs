@@ -115,11 +115,8 @@ fn odd_charsets_trailing_octets_and_truncation_are_masked() {
     let frame = testing::bip(&npdu(&request(REINIT, &body)), false);
     let masked = redacted(Framing::Bip, &frame).expect("masked");
     assert!(!holds(&masked, b"\0h\0u\0n"), "{masked:?}");
-    assert_eq!(
-        &masked[masked.len() - 2..],
-        &[0xAA, 0xBB],
-        "only the password"
-    );
+    // What follows the password is masked too: nothing after it is trusted.
+    assert_eq!(&masked[masked.len() - 2..], b"**", "the tail too");
     // Invalid UTF-8 under character set 0.
     let body = [&reinit_state[..], &ctx_string(1, 0, b"\xFF\xFEsecret-xyz")].concat();
     let frame = testing::bip(&npdu(&request(REINIT, &body)), false);
@@ -345,6 +342,34 @@ fn the_decode_tree_of_a_masked_frame_names_fields_and_hides_the_password() {
         );
         let all = labels.join("\n");
         for leaked in ["hunter2", "***", "2A2A2A", "68756E74"] {
+            assert!(!all.contains(leaked), "{leaked} in {all}");
+        }
+    }
+}
+
+/// A password tag whose length claims too little leaves the rest of the
+/// password to read as more tags: it is masked from the password on to the
+/// end of the APDU, so neither the ring nor the decode tree holds it.
+#[test]
+fn a_password_that_claims_too_little_is_masked_to_the_end() {
+    // DCC: [1] disable, a [2] of 2 octets ("h"), then "unte" as a [0].
+    let dcc = [0x19, 0x00, 0x2A, 0x00, 0x68, 0x0C, 0x75, 0x6E, 0x74, 0x65];
+    // Reinitialize: [0] coldstart, a [1] of 2 octets, then "unt" as a [0].
+    let reinit = [0x09, 0x00, 0x1A, 0x00, 0x68, 0x0B, 0x75, 0x6E, 0x74];
+    for apdu in [request(DCC, &dcc), request(REINIT, &reinit)] {
+        let frame = testing::bip(&npdu(&apdu), false);
+        let masked = redacted(Framing::Bip, &frame).expect("masked");
+        assert_eq!(masked.len(), frame.len());
+        for secret in [&b"unt"[..], b"h", &[0x75, 0x6E]] {
+            assert!(!holds(&masked[frame.len() - apdu.len() + 4..], secret));
+        }
+        let mut labels = Vec::new();
+        tree_labels(
+            &bacnet_ops::decode::tree::decode_tree(Framing::Bip, &masked),
+            &mut labels,
+        );
+        let all = labels.join("\n");
+        for leaked in ["unt", "756E74", "68756E74", "2A2A"] {
             assert!(!all.contains(leaked), "{leaked} in {all}");
         }
     }

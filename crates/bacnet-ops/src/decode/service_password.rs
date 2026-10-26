@@ -2,7 +2,7 @@
 //! ReinitializeDevice carry one, which the named fields show as hidden and
 //! the tag walk hides wherever it may sit.
 
-use bacnet_encoding::tags::{TagClass, decode_tag};
+use bacnet_encoding::tags::{Tag, TagClass, decode_tag};
 use bacnet_types::enums::ConfirmedServiceChoice as Confirmed;
 
 use super::{Doc, Field, Params};
@@ -12,22 +12,25 @@ use super::{Doc, Field, Params};
 pub(super) struct Secret {
     /// The context tag of the password.
     tag: u8,
-    /// The context tags of its other fields, short primitives (a
-    /// duration, an enumeration) shown as the tag walk writes them.
-    plain: &'static [u8],
+    /// The context tags of the fields that may come before it, in order,
+    /// each with its largest content length: the same fields and sizes the
+    /// capture's redactor walks past.
+    before: &'static [(u8, u32)],
 }
 
 impl Params {
     /// Where a password-bearing request keeps its password.
     pub(super) fn secret(self) -> Option<Secret> {
         match self {
+            // Time duration (leniently up to 4 octets), then enable/disable.
             Self::Request(Confirmed::DEVICE_COMMUNICATION_CONTROL) => Some(Secret {
                 tag: 2,
-                plain: &[0, 1],
+                before: &[(0, 4), (1, 1)],
             }),
+            // The state to reinitialize to.
             Self::Request(Confirmed::REINITIALIZE_DEVICE) => Some(Secret {
                 tag: 1,
-                plain: &[0],
+                before: &[(0, 1)],
             }),
             _ => None,
         }
@@ -41,35 +44,66 @@ pub(super) const PASSWORD: &str = "Password: (hidden)";
 const MAYBE_PASSWORD: &str = "Hidden: may hold a password";
 
 /// On the tag walk of a password-bearing request, whose decoder refused
-/// it or saw only a segment: hide every value at any depth that may hold
-/// the password. Only the request's own short fields at the top level
-/// ([`Secret::plain`]) and the tags of constructed values stay.
-pub(super) fn hide_passwords(fields: &mut [Field], doc: &Doc<'_>, secret: Secret, depth: usize) {
+/// it or saw only a segment: the fields before the password stay, each at
+/// most once, in order and at its expected size ([`Secret::before`]). From
+/// the password tag, or the first field that isn't one of them, to the end
+/// every value at any depth is hidden: a password's length may claim too
+/// little and leave the rest of it to read as more tags.
+pub(super) fn hide_passwords(fields: &mut [Field], doc: &Doc<'_>, secret: Secret) {
+    let mut next = 0;
+    let mut open = true;
     for field in fields {
-        if !field.children.is_empty() {
-            hide_passwords(&mut field.children, doc, secret, depth + 1);
+        let header = header(field, doc);
+        if open
+            && let Some(header) = header
+            && header.class == TagClass::Context
+            && !header.is_opening
+            && !header.is_closing
+            && let Some(skipped) = secret.before[next..]
+                .iter()
+                .position(|&(number, most)| number == header.number && header.length <= most)
+        {
+            next += skipped + 1;
             continue;
         }
-        let header = field
-            .range
-            .start
-            .checked_sub(doc.at)
-            .and_then(|at| decode_tag(doc.data, at).ok())
-            .map(|(header, _)| header);
-        let label = match header {
-            Some(header) if header.is_opening || header.is_closing => continue,
-            Some(header) if depth == 0 && header.class == TagClass::Context => {
-                if header.number == secret.tag {
-                    PASSWORD
-                } else if secret.plain.contains(&header.number) && header.length <= 4 {
-                    continue;
-                } else {
-                    MAYBE_PASSWORD
-                }
-            }
-            _ => MAYBE_PASSWORD,
-        };
-        field.label = label.into();
-        field.device_text = false;
+        open = false;
+        let password = header.is_some_and(|header| {
+            header.class == TagClass::Context
+                && header.number == secret.tag
+                && !header.is_opening
+                && !header.is_closing
+        });
+        if password {
+            field.label = PASSWORD.into();
+            field.device_text = false;
+        } else {
+            hide(field, doc);
+        }
     }
+}
+
+/// The tag header a field starts with, when it reads as one.
+fn header(field: &Field, doc: &Doc<'_>) -> Option<Tag> {
+    field
+        .range
+        .start
+        .checked_sub(doc.at)
+        .and_then(|at| decode_tag(doc.data, at).ok())
+        .map(|(header, _)| header)
+}
+
+/// Hide `field` and every part of it; the opening and closing tags of a
+/// constructed value keep their labels, which quote nothing.
+fn hide(field: &mut Field, doc: &Doc<'_>) {
+    if !field.children.is_empty() {
+        for child in &mut field.children {
+            hide(child, doc);
+        }
+        return;
+    }
+    if header(field, doc).is_some_and(|header| header.is_opening || header.is_closing) {
+        return;
+    }
+    field.label = MAYBE_PASSWORD.into();
+    field.device_text = false;
 }
