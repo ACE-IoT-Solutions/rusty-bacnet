@@ -16,8 +16,10 @@ pub(crate) const LEDGER: &str = "bacnet://ledger";
 /// A resource the server offers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Uri {
-    /// The discovery table.
+    /// The discovery table's first page.
     Devices,
+    /// The discovery table's page of devices above this instance.
+    DevicesAfter(u32),
     /// One device's summary.
     Device(u32),
     /// An object's point facts, or one property.
@@ -41,6 +43,9 @@ pub(crate) fn parse(uri: &str) -> Result<Uri, String> {
         "session" => return Ok(Uri::Session),
         "ledger" => return Ok(Uri::Ledger),
         _ => {}
+    }
+    if let Some(after) = rest.strip_prefix("devices/after/") {
+        return instance(after).map(Uri::DevicesAfter);
     }
     let rest = rest.strip_prefix("device/").ok_or("no such resource")?;
     let parts: Vec<&str> = rest.split('/').collect();
@@ -97,6 +102,11 @@ fn decode(text: &str) -> Result<String, String> {
     }
     out.push_str(rest);
     Ok(out)
+}
+
+/// The URI of the device-list page past `instance`.
+pub(crate) fn devices_after(instance: u32) -> String {
+    format!("{DEVICES}/after/{instance}")
 }
 
 /// A point's canonical URI.
@@ -158,6 +168,43 @@ mod tests {
             "bacnet://device/1/object/ai:1/property",
             "bacnet://device/1/object/ai:1%2F",
             "bacnet://device/1/thing",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// A device-list cursor is an instance, validated as a device's is.
+    #[test]
+    fn device_list_cursors_parse_as_instances() {
+        assert_eq!(
+            parse("bacnet://devices/after/1201"),
+            Ok(Uri::DevicesAfter(1201))
+        );
+        assert_eq!(
+            parse("bacnet://devices/after/4194303"),
+            Ok(Uri::DevicesAfter(4_194_303))
+        );
+        assert_eq!(
+            parse(&devices_after(0)),
+            Ok(Uri::DevicesAfter(0)),
+            "the URI a page names parses back"
+        );
+        let refusal = Err("a device instance is 0 to 4194303".to_string());
+        for bad in [
+            "bacnet://devices/after/4194304",
+            "bacnet://devices/after/+1",
+            "bacnet://devices/after/-1",
+            "bacnet://devices/after/1a",
+            "bacnet://devices/after/",
+            "bacnet://devices/after/1/",
+            "bacnet://devices/after/ 1",
+        ] {
+            assert_eq!(parse(bad), refusal, "{bad}");
+        }
+        for bad in [
+            "bacnet://devices/",
+            "bacnet://devices/after",
+            "bacnet://devices/1",
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }

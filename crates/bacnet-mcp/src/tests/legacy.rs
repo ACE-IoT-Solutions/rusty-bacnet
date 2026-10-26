@@ -350,7 +350,12 @@ async fn a_passive_server_takes_only_session_and_ledger() {
     for uri in ["bacnet://session", "bacnet://ledger"] {
         assert_eq!(agent.subscribe(uri).await, Ok(json!({})), "{uri}");
     }
-    for uri in [AI1, "bacnet://devices", "bacnet://alarms"] {
+    for uri in [
+        AI1,
+        "bacnet://devices",
+        "bacnet://devices/after/5",
+        "bacnet://alarms",
+    ] {
         let error = agent.subscribe(uri).await.unwrap_err();
         assert_eq!(error["code"], json!(-32602), "{uri}: {error}");
         assert_eq!(error["data"]["reason"], json!("passive"), "{uri}: {error}");
@@ -374,5 +379,64 @@ async fn the_device_list_is_announced_to_a_legacy_subscriber() {
     let updates = lab.agent.drain(UPDATED, Duration::from_secs(3)).await;
     assert_eq!(updates.len(), 1, "{updates:?}");
     assert_eq!(updates[0]["params"]["uri"], json!("bacnet://devices"));
+    lab.stop().await;
+}
+
+/// A later page of the device list (#2116) is subscribed as the first is,
+/// and each subscribed page is announced when the list changes; an
+/// unsubscribed one isn't.
+#[tokio::test(start_paused = true)]
+async fn a_device_list_page_is_announced_to_a_legacy_subscriber() {
+    const PAGE: &str = "bacnet://devices/after/302";
+    let mut lab = Lab::start(Policy::default()).await;
+    lab.agent.initialize_legacy().await;
+    for uri in ["bacnet://devices", PAGE] {
+        assert_eq!(lab.agent.subscribe(uri).await, Ok(json!({})), "{uri}");
+    }
+    settle().await;
+    lab.client.clear_devices().await;
+    lab.server.broadcast_i_am().await.unwrap();
+    let updates = lab.agent.drain(UPDATED, Duration::from_secs(3)).await;
+    let mut told: Vec<&str> = updates
+        .iter()
+        .map(|u| u["params"]["uri"].as_str().unwrap())
+        .collect();
+    told.sort_unstable();
+    assert_eq!(told, ["bacnet://devices", PAGE], "{updates:?}");
+    lab.agent.unsubscribe("bacnet://devices").await;
+    settle().await;
+    lab.client.clear_devices().await;
+    lab.server.broadcast_i_am().await.unwrap();
+    let updates = lab.agent.drain(UPDATED, Duration::from_secs(3)).await;
+    assert_eq!(updates.len(), 1, "{updates:?}");
+    assert_eq!(updates[0]["params"]["uri"], json!(PAGE));
+    lab.stop().await;
+}
+
+/// Device-list pages count against the session's URI bound (twice the
+/// point cap) like any other resource.
+#[tokio::test(start_paused = true)]
+async fn device_list_pages_count_against_the_uri_bound() {
+    let policy = Policy {
+        caps: Caps {
+            watches: 2,
+            ..Caps::default()
+        },
+        ..Policy::default()
+    };
+    let mut lab = Lab::start(policy).await;
+    lab.agent.initialize_legacy().await;
+    let pages: Vec<String> = (0..5)
+        .map(|n| format!("bacnet://devices/after/{n}"))
+        .collect();
+    for page in &pages[..4] {
+        assert_eq!(lab.agent.subscribe(page).await, Ok(json!({})), "{page}");
+    }
+    let error = lab.agent.subscribe(&pages[4]).await.unwrap_err();
+    assert_eq!(error["code"], json!(-32602), "{error}");
+    assert_eq!(error["data"]["reason"], json!("principal-cap"), "{error}");
+    // Subscribing again to a page held is still one subscription.
+    assert_eq!(lab.agent.subscribe(&pages[0]).await, Ok(json!({})));
+    assert_eq!(watches(&mut lab).await, (json!(0), json!(4)));
     lab.stop().await;
 }

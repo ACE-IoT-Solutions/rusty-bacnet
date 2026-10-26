@@ -55,7 +55,8 @@ under its own account and budget, and a cancelled read sends nothing more.
 
 | URI | Content | A subscription means |
 |---|---|---|
-| `bacnet://devices` | the discovery table in reach (up to the device page size), no device text; nothing sent | an update when a device arrives or is lost, at most once a second |
+| `bacnet://devices` | the first page of the discovery table in reach, sorted by instance (up to the device page size, 200 by default), no device text; nothing sent. `total` counts every device in reach and `truncated` says more follow; then `next` holds the next page's URI | an update when a device arrives or is lost, at most once a second |
+| `bacnet://devices/after/{instance}` | the next page: the devices whose instance is above `{instance}` (digits only, 0 to 4194303), with the same page size, `total`, `truncated` and its own `next` | the same as `bacnet://devices`: every subscribed page is told when the list changes. A listen stream follows at most 16 device-list pages, the first included and each spelling counted (the acknowledgment leaves out the rest); a legacy session counts them in its 64 URIs |
 | `bacnet://device/{instance}` | `bacnet_describe_device`'s summary, cached five minutes (`cached`) | not honoured: a summary has no updates |
 | `bacnet://device/{instance}/object/{type}:{n}` | the point facts (`bacnet_read`'s `preset: "point"` properties); `source` `read` when read just now, `cov` or `poll` when watched, with `state` (`starting`, `live`, `failed`, `unreachable`, `stopped`), `note` (why it is polled or not live), `seq`, `age_ms` and `updates` (notifications, coalesced, polls, renewals) | a watch on the hub |
 | `.../property/{prop}` | one property (`name` or `name[index]`; `[`, `]` and `:` may be percent-encoded) | a property watch (SubscribeCOVProperty) |
@@ -67,6 +68,13 @@ under its own account and budget, and a cancelled read sends nothing more.
 A watched point is read from the hub, which sends nothing. An unwatched one
 is read once. Each device's alarms are read at most once a minute, whoever
 asks: later reads within the minute come from a cache.
+
+The device list pages by instance, not by position (#2116): `next` names
+the last instance listed, so a device discovered between two page reads
+moves nothing already seen. It lands on a later page if its instance is
+above the cursor, or only in `total` if it is below. MCP's own cursors
+page the `*/list` methods only; `resources/read` has none, so the cursor
+lives in the URI. Under `--passive` the template isn't listed.
 
 A read refused before anything was sent (a bad URI, a device not discovered
 or out of reach, a passive server) is a JSON-RPC -32602 whose `data` is
@@ -369,6 +377,16 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   in the lab device's table; closing the session, and dropping its future,
   releasing every watch; the caps shared with listen streams; refusals as
   -32602 errors with nothing sent; passive mode; the device list announced.
+- `crates/bacnet-mcp/src/tests/paging.rs` (#2116): `next` followed from
+  the first page lists every lab device once, in instance order, at page
+  sizes 3, 5, 10 and 200, with no `next` on the last page even when full;
+  devices found between page reads repeat and skip nothing; bad cursors
+  (non-digits, over 4194303, a leading `+`) refused with nothing sent; no
+  template and no page under `--passive`; every followed page announced
+  when a device arrives (listen streams here, legacy subscriptions in
+  `legacy.rs`); a stream asking for more than 16 pages honoured for 16,
+  with one update per page on a change; legacy pages counted against the
+  session's URI bound.
 - `crates/bacnet-ops/src/watch/tests.rs`: the hub against the device's
   subscription table: sharing and cancel, a refusal polled every 10 s, a
   coalesced storm, renewal before expiry, a silent device and recovery, a
