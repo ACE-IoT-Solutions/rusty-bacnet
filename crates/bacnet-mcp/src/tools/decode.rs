@@ -26,9 +26,13 @@ pub(super) const SPEC: Spec = Spec {
                   link bip (B/IP, starting 81), bip6 (B/IPv6, 82), mstp (MS/TP, preamble 55 \
                   FF), sc (BACnet/SC), npdu (starting with version 01), apdu, or auto (the \
                   default; it can't tell sc). Returns a one-line summary and the decoded \
-                  layers as a tree of fields, each with the octets it came from; service \
-                  parameters are walked tag by tag. Character strings in the frame come back \
-                  as untrusted envelopes. At most 6144 octets. Works in passive mode. Local; \
+                  layers as a tree of fields, each with the octets it came from. Service \
+                  parameters are named, with property values decoded, for ReadProperty, \
+                  ReadPropertyMultiple, WriteProperty, the COV and event notifications, \
+                  GetEventInformation, DeviceCommunicationControl and ReinitializeDevice \
+                  (passwords hidden); any other service, a segment or a damaged frame is \
+                  walked tag by tag. Labels quoting device text (character strings, \
+                  decoded values that may hold one) come back as untrusted envelopes. At most 6144 octets. Works in passive mode. Local; \
                   read-only.",
     input,
     output,

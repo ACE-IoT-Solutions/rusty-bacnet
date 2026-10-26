@@ -25,20 +25,24 @@ fn find(fields: &[Field], prefix: &str) -> Range<usize> {
 /// octet, and the closing tag after it stays the opening node's.
 #[test]
 fn a_boolean_is_one_octet_and_leaves_the_closing_tag_alone() {
-    let frame = bip(&npdu(&rp_ack_with(7, vec![0x11]), false), false);
-    assert_eq!(&frame[frame.len() - 3..], &[0x3E, 0x11, 0x3F]);
+    let frame = bip(&npdu(&unconfirmed(&[0x3E, 0x11, 0x3F]), false), false);
     let fields = decode_tree(Framing::Bip, &frame);
     assert_eq!(
         find(&fields, "Boolean: true"),
         frame.len() - 2..frame.len() - 1
     );
     assert_eq!(find(&fields, "[3] opening"), frame.len() - 3..frame.len());
-    // A false Boolean likewise.
-    let frame = bip(&npdu(&rp_ack_with(7, vec![0x10]), false), false);
+    // False Booleans likewise, here a ReadProperty value of two: the
+    // first is the one octet before the second.
+    let frame = bip(&npdu(&rp_ack_with(7, vec![0x10, 0x10]), false), false);
     let fields = decode_tree(Framing::Bip, &frame);
     assert_eq!(
         find(&fields, "Boolean: false"),
-        frame.len() - 2..frame.len() - 1
+        frame.len() - 3..frame.len() - 2
+    );
+    assert_eq!(
+        find(&fields, "Value: [false, false]"),
+        frame.len() - 4..frame.len()
     );
 }
 
@@ -74,11 +78,11 @@ fn a_bip_read_property_decodes_layer_by_layer_with_its_octets() {
     assert_eq!(find(&fields, "Invoke ID: 7"), 8..9);
     assert_eq!(find(&fields, "Service: read-property"), 9..10);
     assert_eq!(&frame[8], &7);
-    // The parameters: an object identifier [0] and a property [1].
-    let object = find(&fields, "[0] 00000001");
+    // The parameters, named: an object identifier [0] and a property [1].
+    let object = find(&fields, "Object: analog-input 1");
     assert_eq!(frame[object.start], 0x0C);
     assert_eq!(object.len(), 5);
-    assert_eq!(find(&fields, "[1] 55 (85)"), 15..17);
+    assert_eq!(find(&fields, "Property: present-value"), 15..17);
     assert_eq!(frame.len(), 17);
 }
 
@@ -86,11 +90,11 @@ fn a_bip_read_property_decodes_layer_by_layer_with_its_octets() {
 fn an_ack_value_and_an_error_decode_to_their_tags() {
     let frame = bip(&npdu(&rp_ack(7), false), false);
     let fields = decode_tree(Framing::Bip, &frame);
-    let value = find(&fields, "Real: 72.5");
-    assert_eq!(&frame[value.clone()], &[0x44, 0x42, 0x91, 0x00, 0x00]);
-    let opening = find(&fields, "[3] opening");
-    assert_eq!(frame[opening.start], 0x3E);
-    assert_eq!(frame[opening.end - 1], 0x3F);
+    let value = find(&fields, "Value: 72.5");
+    assert_eq!(
+        &frame[value.clone()],
+        &[0x3E, 0x44, 0x42, 0x91, 0x00, 0x00, 0x3F]
+    );
 
     let service = bacnet_types::enums::ConfirmedServiceChoice::READ_PROPERTY;
     let frame = bip(&npdu(&error(9, service), false), false);

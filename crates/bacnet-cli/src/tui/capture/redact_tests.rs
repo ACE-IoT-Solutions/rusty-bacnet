@@ -307,3 +307,45 @@ fn frames_are_scrubbed_whichever_way_they_went() {
         assert!(!holds(&scrubbed.bytes, b"hunter2"));
     }
 }
+
+/// Every label of a decode tree, depth first.
+fn tree_labels(fields: &[bacnet_ops::decode::tree::Field], out: &mut Vec<String>) {
+    for field in fields {
+        out.push(field.label.clone());
+        tree_labels(&field.children, out);
+    }
+}
+
+/// A masked DCC or ReinitializeDevice frame decodes with its fields named
+/// (#2074), and the tree shows the password as hidden: neither the secret
+/// nor its mask, plain or as hex.
+#[test]
+fn the_decode_tree_of_a_masked_frame_names_fields_and_hides_the_password() {
+    let cases = [
+        (
+            testing::bip(&npdu(&dcc(Some("Zq7-hunter2"))), false),
+            "Enable/disable: disable-initiation",
+        ),
+        (
+            testing::bip(&reinit_npdu("Zq7-hunter2"), false),
+            "Reinitialized state: coldstart",
+        ),
+    ];
+    for (frame, named) in cases {
+        let masked = masked_in_place(Framing::Bip, &frame, b"Zq7-hunter2");
+        let mut labels = Vec::new();
+        tree_labels(
+            &bacnet_ops::decode::tree::decode_tree(Framing::Bip, &masked),
+            &mut labels,
+        );
+        assert!(labels.iter().any(|l| l == named), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l == "Password: (hidden)"),
+            "{labels:?}"
+        );
+        let all = labels.join("\n");
+        for leaked in ["hunter2", "***", "2A2A2A", "68756E74"] {
+            assert!(!all.contains(leaked), "{leaked} in {all}");
+        }
+    }
+}
