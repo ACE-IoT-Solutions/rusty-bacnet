@@ -3,7 +3,8 @@
 //!
 //! The check covers the JSON Schema keywords the output schemas use:
 //! `type` (one or a list), `properties`, `required`, `items`, `enum`,
-//! `anyOf` and `additionalProperties: false`.
+//! `anyOf` and `additionalProperties` (`false`, or a schema every other
+//! key's value must fit).
 //! A test asserts the schemas use no other keyword that constrains a
 //! value, so a new one can't pass unchecked.
 
@@ -76,6 +77,16 @@ fn violations(schema: &Value, value: &Value, path: &str, out: &mut Vec<String>) 
             }
         }
     }
+    if let (Some(extra @ Value::Object(_)), Some(object)) =
+        (schema.get("additionalProperties"), value.as_object())
+    {
+        let properties = schema.get("properties");
+        for (key, field) in object {
+            if properties.and_then(|p| p.get(key)).is_none() {
+                violations(extra, field, &format!("{path}.{key}"), out);
+            }
+        }
+    }
     if let Some(Value::Array(allowed)) = schema.get("enum")
         && !allowed.contains(value)
     {
@@ -130,6 +141,13 @@ fn the_check_finds_violations() {
     violations(&either, &json!({ "b": 1 }), "$", &mut out);
     violations(&either, &json!("x"), "$", &mut out);
     assert_eq!(out.len(), 2, "{out:?}");
+    // `additionalProperties` as a schema: every other key's value fits it.
+    let map = json!({ "type": "object", "additionalProperties": { "type": "integer" } });
+    let mut out = Vec::new();
+    violations(&map, &json!({ "x": 1 }), "$", &mut out);
+    assert!(out.is_empty(), "{out:?}");
+    violations(&map, &json!({ "x": "s" }), "$", &mut out);
+    assert_eq!(out.len(), 1, "{out:?}");
 }
 
 /// Calls that succeed and calls that fail, for every tool.
@@ -257,5 +275,99 @@ async fn results_fit_their_output_schemas() {
             "{tool}: {successes} successes, {errors} errors"
         );
     }
+    lab.stop().await;
+}
+
+/// An Event_Parameters value decoded field by field (#2090) fits the read
+/// tool's schema, its element kind stays plain, and the device's alarm
+/// strings among its fields come back enveloped.
+#[tokio::test(start_paused = true)]
+async fn event_parameters_fields_fit_the_schema_and_envelope_device_text() {
+    use bacnet_objects::event_enrollment::EventEnrollmentObject;
+    use bacnet_types::constructed::{
+        BACnetDeviceObjectPropertyReference, BACnetEventParameter, BACnetPropertyStates,
+    };
+    use bacnet_types::enums::{EventType, ObjectType, PropertyIdentifier};
+    use bacnet_types::primitives::ObjectIdentifier;
+
+    let mut lab = Lab::start(Policy::default()).await;
+    let mut enrollment =
+        EventEnrollmentObject::new(1, "EE-1", EventType::CHANGE_OF_CHARACTERSTRING).unwrap();
+    enrollment.set_event_parameters(BACnetEventParameter::ChangeOfCharacterstring {
+        time_delay: 5,
+        list_of_alarm_values: vec!["FIRE".into(), super::hostile()],
+    });
+    let mut states = EventEnrollmentObject::new(2, "EE-2", EventType::CHANGE_OF_STATE).unwrap();
+    states.set_event_parameters(BACnetEventParameter::ChangeOfState {
+        time_delay: 0,
+        list_of_values: vec![BACnetPropertyStates::State(3)],
+    });
+    let mut feedback = EventEnrollmentObject::new(3, "EE-3", EventType::COMMAND_FAILURE).unwrap();
+    feedback.set_event_parameters(BACnetEventParameter::CommandFailure {
+        time_delay: 1,
+        feedback_property_reference: BACnetDeviceObjectPropertyReference::new_local(
+            ObjectIdentifier::new(ObjectType::BINARY_INPUT, 4).unwrap(),
+            PropertyIdentifier::PRESENT_VALUE.to_raw(),
+        ),
+    });
+    {
+        let mut db = lab.server.database().write().await;
+        for object in [enrollment, states, feedback] {
+            db.add(Box::new(object)).unwrap();
+        }
+    }
+    lab.agent.initialize().await;
+    let tools = lab.agent.request("tools/list", json!({})).await;
+    let schema = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "bacnet_read")
+        .unwrap()["outputSchema"]
+        .clone();
+    let read = lab
+        .agent
+        .call(
+            "bacnet_read",
+            json!({ "device": "1201",
+                    "reads": [{ "object": "event-enrollment:1",
+                                "properties": ["event-parameters"] },
+                              { "object": "event-enrollment:2",
+                                "properties": ["event-parameters"] },
+                              { "object": "event-enrollment:3",
+                                "properties": ["event-parameters"] }] }),
+        )
+        .await;
+    let mut out = Vec::new();
+    violations(&schema, &read["structuredContent"], "$", &mut out);
+    assert!(out.is_empty(), "{out:?}");
+
+    let typed = &read["structuredContent"]["results"][0]["value"]["typed"];
+    assert_eq!(typed["element"], json!("event-parameter"));
+    assert!(typed["text"]["untrusted"].is_string(), "{typed}");
+    let fields = &typed["fields"];
+    assert_eq!(
+        fields["algorithm"],
+        json!({"value": 17, "name": "change-of-characterstring"})
+    );
+    assert_eq!(fields["time_delay"], json!(5));
+    let values = fields["list_of_alarm_values"].as_array().unwrap();
+    assert_eq!(values[0]["untrusted"], json!("FIRE"));
+    let hostile = values[1]["untrusted"].as_str().unwrap();
+    assert!(hostile.contains("hxxps://evil.example/x"), "{hostile}");
+    assert!(!hostile.contains('\u{202E}'), "{hostile}");
+
+    // A nested element is a value too: a property state's text (a kind
+    // that may hold a string) is enveloped, a reference's left plain.
+    let results = &read["structuredContent"]["results"];
+    let state = &results[1]["value"]["typed"]["fields"]["list_of_values"][0];
+    assert_eq!(state["element"], json!("property-state"));
+    assert_eq!(state["text"]["untrusted"], json!("high-limit"), "{state}");
+    let reference = &results[2]["value"]["typed"]["fields"]["feedback_property_reference"];
+    assert_eq!(
+        *reference,
+        json!({"element": "device-object-property-reference",
+               "text": "binary-input 4 present-value"})
+    );
     lab.stop().await;
 }

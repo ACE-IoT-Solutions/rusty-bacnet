@@ -1071,9 +1071,10 @@ Text output names what the device sent:
   confirmed, to-offnormal | to-fault | to-normal`), Event_Parameters,
   Active_COV_Subscriptions, Device_Address_Binding, a Command's actions,
   Group and Global Group members, shed levels, Scale and Prescale, and the
-  access control lists. An Event_Parameters algorithm the CLI has no model
-  for lists its fields by context tag, each field's octets as
-  `[raw …]` since their datatype isn't known: `unsigned-range: [0] [raw 1e],
+  access control lists. Event_Parameters name the algorithm and its
+  fields, `unsigned-range: delay 30 s, low 10, high 300`; a value under a tag
+  the standard doesn't assign lists its fields by context tag, each field's
+  octets as `[raw …]` since their datatype isn't known: `30: [0] [raw 1e],
   [1] [raw 0a]`;
 - a list or array whole, every element, in brackets; an indexed read of an
   array as its one element (`weekly-schedule[3]` is Wednesday), and index 0
@@ -1123,8 +1124,28 @@ join it later without removing `text`. The kinds are `access-rule`,
 `shed-level`, `special-event`, `stage-limit-value`, `time-stamp` and
 `value-source`.
 
+An `event-parameter` element also has `fields`, an object of the value's
+members by their snake-case names in wire order, each in the forms above:
+`algorithm` first (an enumerated named as its event type), then the
+algorithm's members, references as `device-object-property-reference`
+elements and change-of-state values as `property-state` elements:
+
+```json
+{
+  "element": "event-parameter",
+  "text": "unsigned-range: delay 30 s, low 10, high 300",
+  "fields": {
+    "algorithm": {"value": 11, "name": "unsigned-range"},
+    "time_delay": 30,
+    "low_limit": 10,
+    "high_limit": 300
+  }
+}
+```
+
 An error result (`readm`) has no `decoded`. `read-range` adds `decoded` beside
-`items` for a list that isn't a log; log records keep their text form.
+`items` for a list that isn't a log; log records keep their text form, and an
+Event Log notification adds its typed `event_values`.
 
 `--position`, `--sequence` and `--time` pick the range, each with `--count`
 (default 100; negative reads backward). `--time` takes the device's local time
@@ -1147,7 +1168,38 @@ and, for a Trend Log, status flags (blank when none is set). JSON output
 lists them under `records`, with `result_flags` and `first_sequence_number`,
 and the hex of anything from the first record that doesn't decode under
 `undecoded`. A logged value prints as a value does; the log doesn't say which
-property it came from, so an enumeration prints as `enum 3`. Other
+property it came from, so an enumeration prints as `enum 3`. An Event Log
+notification ends with its event values in braces, each named for its event
+type:
+
+```text
+ALARM OUT_OF_RANGE ANALOG_INPUT:3 NORMAL -> HIGH_LIMIT "too hot" {exceeding value 101.5, flags in-alarm, deadband 1, limit 100}
+ALARM CHANGE_OF_STATE ANALOG_INPUT:3 NORMAL -> OFFNORMAL {state active, flags in-alarm | out-of-service}
+```
+
+Its JSON record adds `event_values`, a `notification-parameters` element
+whose `fields` hold `event_type` (an enumerated) and each value by its
+snake-case name in the [Value output](#value-output) forms:
+
+```json
+{
+  "element": "notification-parameters",
+  "text": "out-of-range: exceeding value 101.5, flags in-alarm, deadband 1, limit 100",
+  "fields": {
+    "event_type": {"value": 5, "name": "out-of-range"},
+    "exceeding_value": 101.5,
+    "status_flags": {"bits": "1000", "names": ["in-alarm"]},
+    "deadband": 1.0,
+    "exceeded_limit": 100.0
+  }
+}
+```
+
+Every event type the stack decodes has its fields, from
+`change-of-bitstring` to `change-of-timer`. A value the standard leaves open,
+such as a command failure's feedback, is decoded as application values, and
+kept as `{"raw": ...}` when it isn't one; an optional value the device left
+out is `null`. Other
 properties list their elements under `items`, each decoded as above, where
 anything that doesn't decode ends the list as `[raw ..]`.
 

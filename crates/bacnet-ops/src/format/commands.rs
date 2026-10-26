@@ -287,7 +287,8 @@ pub(super) fn port_permission(
     })
 }
 
-fn factor_text(factor: &BACnetAuthenticationFactor) -> String {
+/// An authentication factor: `simple-number16 class 0 value 0x04d2`.
+pub(super) fn factor_text(factor: &BACnetAuthenticationFactor) -> String {
     format!(
         "{} class {} value 0x{}",
         kebab(factor.format_type),

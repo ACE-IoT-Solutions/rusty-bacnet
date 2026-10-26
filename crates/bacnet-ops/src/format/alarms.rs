@@ -144,6 +144,7 @@ fn timestamp(stamp: &BACnetTimeStamp) -> Datum {
     Datum::Constructed {
         element: "time-stamp".into(),
         text: constructed::timestamp_text(stamp),
+        fields: None,
     }
 }
 

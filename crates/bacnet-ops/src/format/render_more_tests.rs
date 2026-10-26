@@ -17,7 +17,8 @@ fn indexed_reads_are_one_element_and_whole_lists_show_every_element() {
         format.data_at(P::EVENT_TIME_STAMPS, Some(2), &stamp),
         Datum::Constructed {
             element: "time-stamp".into(),
-            text: "seq 7".into()
+            text: "seq 7".into(),
+            fields: None,
         }
     );
     // Index 0 is the array's size, an Unsigned.
@@ -61,7 +62,8 @@ fn indexed_schedule_days_are_named_for_their_place_in_the_week() {
             format.data_at(P::WEEKLY_SCHEDULE, Some(index), &day),
             Datum::Constructed {
                 element: "daily-schedule".into(),
-                text: shown
+                text: shown,
+                fields: None,
             }
         );
     }
@@ -89,54 +91,21 @@ fn an_array_size_is_a_plain_count() {
     );
 }
 
-/// An Event_Parameters algorithm with no model shows its fields by context
-/// tag instead of hex, and an empty MAC reads as a broadcast.
+/// An Event_Parameters alternative under a tag the standard doesn't assign
+/// shows its fields by context tag instead of hex, and an empty MAC reads as
+/// a broadcast.
 #[test]
-fn unmodelled_algorithms_show_their_fields() {
-    // unsigned-range [11]: time-delay [0] 30, low [1] 10, high [2] 300.
+fn unassigned_algorithms_show_their_fields() {
+    // Tag 30: [0] 30, [1] 10, [2] 300.
     let parameter = BACnetEventParameter::Opaque {
-        tag: 11,
+        tag: 30,
         data: vec![0x09, 30, 0x19, 10, 0x2A, 0x01, 0x2C],
     };
     let octets = bytes(|buf| encode_event_parameter(buf, &parameter).unwrap());
     assert_eq!(
         text(O::EVENT_ENROLLMENT, P::EVENT_PARAMETERS, &octets),
-        "unsigned-range: [0] [raw 1e], [1] [raw 0a], [2] [raw 01 2c]"
+        "30: [0] [raw 1e], [1] [raw 0a], [2] [raw 01 2c]"
     );
-    // The out-of-range forms read their limits with their datatypes: a
-    // negative signed limit stays negative.
-    for (tag, body, shown) in [
-        (
-            15,
-            vec![0x09, 30, 0x19, 0xFB, 0x29, 40, 0x39, 2],
-            "signed-out-of-range: delay 30 s, low -5, high 40, deadband 2",
-        ),
-        (
-            16,
-            vec![0x09, 5, 0x19, 10, 0x2A, 0x01, 0x2C, 0x39, 1],
-            "unsigned-out-of-range: delay 5 s, low 10, high 300, deadband 1",
-        ),
-        (
-            14,
-            [
-                vec![0x09, 0, 0x1D, 8],
-                (-1.5f64).to_be_bytes().to_vec(),
-                vec![0x2D, 8],
-                99.25f64.to_be_bytes().to_vec(),
-                vec![0x3D, 8],
-                0.5f64.to_be_bytes().to_vec(),
-            ]
-            .concat(),
-            "double-out-of-range: delay 0 s, low -1.5, high 99.25, deadband 0.5",
-        ),
-    ] {
-        let parameter = BACnetEventParameter::Opaque { tag, data: body };
-        let octets = bytes(|buf| encode_event_parameter(buf, &parameter).unwrap());
-        assert_eq!(
-            text(O::EVENT_ENROLLMENT, P::EVENT_PARAMETERS, &octets),
-            shown
-        );
-    }
     let broadcast = bytes(|buf| {
         encode_recipient(
             buf,

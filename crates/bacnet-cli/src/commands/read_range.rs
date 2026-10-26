@@ -15,6 +15,8 @@
 use bacnet_client::client::BACnetClient;
 use bacnet_client::log_reader::{LogCursor, LogGap};
 use bacnet_ops::destination::Destination;
+use bacnet_ops::format::Datum;
+use bacnet_ops::format::notification::EventValues;
 use bacnet_services::read_range::{
     LogRecords, ReadRangeAck, ReadRangeRequest, ReadRangeValidation, ReadRangeViolation,
 };
@@ -272,6 +274,9 @@ struct LogRecordRow {
     datum: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     status_flags: Option<String>,
+    /// An Event Log notification's values, field by field (#2073).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event_values: Option<Datum>,
 }
 
 /// The records read from a log buffer, and the hex of whatever followed the
@@ -318,19 +323,30 @@ fn trend_log_row(record: &BACnetLogRecord) -> LogRecordRow {
         timestamp: timestamp(record.date, record.time),
         datum: log_datum(&record.log_datum),
         status_flags: record.status_flags.map(status_flags),
+        event_values: None,
     }
 }
 
 fn event_log_row(record: &BACnetEventLogRecord) -> LogRecordRow {
+    let mut event_values = None;
     let datum = match &record.log_datum {
         EventLogDatum::LogStatus(status) => log_status(*status),
-        EventLogDatum::Notification(notification) => event_notification(notification),
+        EventLogDatum::Notification(notification) => {
+            let mut text = event_notification(notification);
+            if let Some(parameters) = &notification.event_values {
+                let values = EventValues::new(parameters);
+                text.push_str(&format!(" {{{}}}", values.details));
+                event_values = Some(values.data);
+            }
+            text
+        }
         EventLogDatum::TimeChange(seconds) => time_change(*seconds),
     };
     LogRecordRow {
         timestamp: timestamp(record.date, record.time),
         datum,
         status_flags: None,
+        event_values,
     }
 }
 
@@ -350,6 +366,7 @@ fn trend_log_multiple_row(record: &BACnetLogMultipleRecord) -> LogRecordRow {
         timestamp: timestamp(record.date, record.time),
         datum,
         status_flags: None,
+        event_values: None,
     }
 }
 
@@ -364,6 +381,7 @@ fn audit_log_row(record: &BACnetAuditLogRecord) -> LogRecordRow {
         timestamp: timestamp(date, time),
         datum,
         status_flags: None,
+        event_values: None,
     }
 }
 
@@ -427,7 +445,8 @@ fn log_datum(datum: &LogDatum) -> String {
     formatter(ObjectType::TREND_LOG).element(ANY, &value)
 }
 
-/// Notify type, event type, event object and transition, then the message.
+/// Notify type, event type, event object and transition, then the message;
+/// the caller adds the event values.
 fn event_notification(notification: &EventNotificationRequest) -> String {
     let transition = if notification.notify_type == NotifyType::ACK_NOTIFICATION {
         notification.to_state.to_string()
