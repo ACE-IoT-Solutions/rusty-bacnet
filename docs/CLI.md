@@ -1168,9 +1168,11 @@ and, for a Trend Log, status flags (blank when none is set). JSON output
 lists them under `records`, with `result_flags` and `first_sequence_number`,
 and the hex of anything from the first record that doesn't decode under
 `undecoded`. A logged value prints as a value does. A log record doesn't say
-which property it came from, so before reading a Trend Log or Trend Log
-Multiple's Log_Buffer, `read-range` reads its Log_DeviceObjectProperty once
-(one request more per command, however many pages `--all` reads) and names
+which property it came from, so once the device has answered the first
+ReadRange of a Trend Log or Trend Log Multiple's Log_Buffer, `read-range`
+reads its Log_DeviceObjectProperty once (one request more per command,
+however many pages `--all` reads, and none for a device that doesn't
+answer) and names
 each value by the property it samples: an Event_State log prints
 `offnormal`, a Status_Flags log `in-alarm`, and a binary object's
 Present_Value `active`. A Trend Log Multiple names each member's value by

@@ -2,6 +2,7 @@
 //! ReadRange, paged across the device's answers and across calls.
 
 use bacnet_client::log_reader::{LogCursor, LogPage};
+use bacnet_ops::format::LogColumns;
 use bacnet_ops::parse::parse_object_specifier;
 use bacnet_services::read_range::LogRecords;
 use bacnet_transport::port::TransportPort;
@@ -376,9 +377,7 @@ pub(super) async fn run<T: TransportPort + 'static>(
     let object = object_text(kind, instance);
     let source = format!("device {} {object} log-buffer", device.instance);
     let cap = ctx.policy.caps.text;
-    // What each column samples, to name its values: one charged read a
-    // call, before the first page; a failure names nothing (#2091).
-    let columns = engine.log_columns(device.instance, log).await;
+    let mut columns = LogColumns::default();
     let mut read = Read::default();
     loop {
         if read.count >= limit || read.size >= MAX_STRUCTURED {
@@ -402,6 +401,12 @@ pub(super) async fn run<T: TransportPort + 'static>(
             }
         };
         read.pages += 1;
+        if read.pages == 1 {
+            // What each column samples, to name its values: one charged
+            // read a call, once the device has answered, so a silent one
+            // costs a single timeout; a failure names nothing (#2091).
+            columns = engine.log_columns(device.instance, log).await;
+        }
         if page.result_flags.2 {
             read.more_items += 1;
         }

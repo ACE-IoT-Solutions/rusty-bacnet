@@ -209,6 +209,41 @@ fn columns_follow_the_members_and_fall_back_on_bad_octets() {
     assert_eq!(LogColumns::decode(&[0x91, 0x02]), LogColumns::default());
 }
 
+/// A reference to another device names its column as a local one does,
+/// with its array index; one whose Device member is at the reserved
+/// instance is empty.
+#[test]
+fn device_qualified_references_name_their_column() {
+    let remote = BACnetDeviceObjectPropertyReference {
+        property_array_index: Some(8),
+        device_identifier: Some(ObjectIdentifier::new(ObjectType::DEVICE, 77).unwrap()),
+        ..reference(
+            ObjectType::BINARY_OUTPUT,
+            2,
+            PropertyIdentifier::PRIORITY_ARRAY,
+        )
+    };
+    let unset_device = BACnetDeviceObjectPropertyReference {
+        device_identifier: Some(
+            ObjectIdentifier::new(ObjectType::DEVICE, ObjectIdentifier::WILDCARD_INSTANCE).unwrap(),
+        ),
+        ..reference(ObjectType::ANALOG_INPUT, 1, PropertyIdentifier::EVENT_STATE)
+    };
+    let columns = LogColumns::decode(&encoded(&[remote, unset_device]));
+    let column = columns.column(0);
+    assert_eq!(
+        column,
+        Some(LoggedProperty {
+            object_type: ObjectType::BINARY_OUTPUT,
+            property: PropertyIdentifier::PRIORITY_ARRAY,
+            index: Some(8),
+        })
+    );
+    // A Priority_Array slot of a binary output names its state.
+    assert_eq!(logged(column, &PropertyValue::Enumerated(1)), "active");
+    assert_eq!(columns.column(1), None, "the Device member is unset");
+}
+
 /// Which logs have a Log_DeviceObjectProperty to read.
 #[test]
 fn only_trend_logs_name_their_columns() {

@@ -6,13 +6,15 @@
 mod support;
 
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 use bacnet_encoding::apdu::{Apdu, ComplexAck, decode_apdu, encode_apdu};
 use bacnet_encoding::constructed::encode_log_record;
 use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
+use bacnet_services::read_property::ReadPropertyRequest;
 use bacnet_services::read_range::{RangeSpec, ReadRangeAck, ReadRangeRequest};
 use bacnet_types::constructed::{BACnetLogRecord, LogDatum};
-use bacnet_types::enums::ConfirmedServiceChoice;
+use bacnet_types::enums::{ConfirmedServiceChoice, PropertyIdentifier};
 use bacnet_types::primitives::{Date, Time};
 use bytes::{Bytes, BytesMut};
 use support::run;
@@ -248,4 +250,66 @@ async fn the_minimum_interval_is_at_most_an_hour() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("3600000"), "{stderr}");
+}
+
+/// What a silent device was asked: each confirmed request's service, and
+/// for a ReadProperty the property.
+type Asked = Arc<Mutex<Vec<(ConfirmedServiceChoice, Option<PropertyIdentifier>)>>>;
+
+/// A B/IP device on loopback that answers nothing and keeps what it is
+/// asked.
+async fn silent() -> (String, Asked, JoinHandle<()>) {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let address = socket.local_addr().unwrap().to_string();
+    let asked: Asked = Arc::default();
+    let log = Arc::clone(&asked);
+    let task = tokio::spawn(async move {
+        let mut frame = [0u8; 1500];
+        while let Ok((length, _)) = socket.recv_from(&mut frame).await {
+            let Some(npdu) = frame
+                .get(4..length)
+                .and_then(|npdu| decode_npdu(Bytes::copy_from_slice(npdu)).ok())
+            else {
+                continue;
+            };
+            if let Ok(Apdu::ConfirmedRequest(request)) = decode_apdu(npdu.payload) {
+                let property = (request.service_choice == ConfirmedServiceChoice::READ_PROPERTY)
+                    .then(|| ReadPropertyRequest::decode(&request.service_request).ok())
+                    .flatten()
+                    .map(|read| read.property_identifier);
+                log.lock().unwrap().push((request.service_choice, property));
+            }
+        }
+    });
+    (address, asked, task)
+}
+
+/// A device that doesn't answer costs one timeout: the Trend Log's
+/// Log_DeviceObjectProperty is read only once the device has answered, so
+/// it is never asked for here (#2091).
+#[tokio::test]
+async fn a_silent_device_is_never_asked_for_the_reference() {
+    for flags in [&[][..], &["--all"][..]] {
+        let (target, asked, task) = silent().await;
+        let output = read_range(&target, "json", flags).await;
+        assert!(!output.status.success(), "{flags:?}");
+        let asked = asked.lock().unwrap().clone();
+        assert!(!asked.is_empty(), "{flags:?}");
+        assert!(
+            asked
+                .iter()
+                .all(|(_, property)| *property
+                    != Some(PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY)),
+            "{flags:?}: {asked:?}"
+        );
+        if flags.is_empty() {
+            assert!(
+                asked
+                    .iter()
+                    .all(|(service, _)| *service == ConfirmedServiceChoice::READ_RANGE),
+                "{asked:?}"
+            );
+        }
+        task.abort();
+    }
 }

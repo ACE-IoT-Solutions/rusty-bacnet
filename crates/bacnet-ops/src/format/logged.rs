@@ -5,7 +5,7 @@
 //! from. The log's Log_DeviceObjectProperty does say: one reference for a
 //! Trend Log (Clause 12.25), one per member for a Trend Log Multiple
 //! (Clause 12.30), each in the order of the record's values. Read once
-//! before the log is paged, it lets the formatter name each column's
+//! per read of the log, it lets the formatter name each column's
 //! values as it would name the monitored property itself: `offnormal`
 //! rather than `enum 2`, `in-alarm` rather than `bits(1000)`, and a binary
 //! object's state as `active`.
@@ -109,6 +109,11 @@ impl ValueFormat<'_> {
     /// One logged value as text, named for the property `column` samples.
     /// An enumeration nothing names shows as `enum 3`, so it isn't taken
     /// for a count; a bit string nothing names shows as its bits.
+    ///
+    /// A primitive value is named by its property alone, whether the log
+    /// samples the whole property or one element of it (a Priority_Array
+    /// slot names its state as the property does), so `column.index` only
+    /// matters to the octet forms, which decode one element of a collection.
     pub fn logged(&self, column: Option<LoggedProperty>, value: &PropertyValue) -> String {
         let (format, property) = self.for_column(column);
         let text = format.element(property, value);

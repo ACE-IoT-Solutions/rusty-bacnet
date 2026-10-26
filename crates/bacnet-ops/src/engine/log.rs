@@ -7,9 +7,10 @@
 //! for the first request and each later one takes a slot of its own, so a
 //! page costs what it sends (#2066).
 //!
-//! Before a Trend Log is paged, [`Engine::log_columns`] reads what it
-//! samples, so its values can be named (#2091): one more request, charged
-//! the same way, once per read rather than once per page.
+//! Once a Trend Log's first page is answered, [`Engine::log_columns`]
+//! reads what it samples, so its values can be named (#2091): one more
+//! request, charged the same way, once per read rather than once per page.
+//! Asking only after an answer keeps a silent device to one timeout.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

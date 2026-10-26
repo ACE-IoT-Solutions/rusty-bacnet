@@ -12,11 +12,12 @@
 //! page that left items out says so; `--all` pages through a whole log and
 //! ends with the checkpoint to resume from (#1532).
 //!
-//! A Trend Log's records don't say which property they sample, so before
-//! reading its Log_Buffer the command reads its Log_DeviceObjectProperty
-//! once, and names the logged enumerations and bit strings by the monitored
-//! property: one request more per command, however many pages (#2091).
-//! When that read fails or names nothing, the values print as logged.
+//! A Trend Log's records don't say which property they sample, so once the
+//! device has answered the first ReadRange of its Log_Buffer, the command
+//! reads its Log_DeviceObjectProperty and names the logged enumerations and
+//! bit strings by the monitored property: one request more per command,
+//! however many pages (#2091). When that read fails or names nothing, the
+//! values print as logged.
 
 use bacnet_client::client::BACnetClient;
 use bacnet_client::log_reader::{LogCursor, LogGap};
@@ -64,10 +65,9 @@ pub async fn read_range_cmd<T: TransportPort + 'static>(
         if property != PropertyIdentifier::LOG_BUFFER || index.is_some() {
             return Err("--all pages through a log's Log_Buffer".into());
         }
-        let columns = to.log_columns(client, oid).await;
         // What was read is printed, with the flags that resume the read,
         // before any error that stopped it.
-        let (rows, stopped) = read_all(client, to, oid, range, &columns, &mut heading).await?;
+        let (rows, stopped) = read_all(client, to, oid, range, &mut heading).await?;
         print_records(&heading, &rows, format);
         return stopped.map_or(Ok(()), Err);
     }
@@ -76,11 +76,6 @@ pub async fn read_range_cmd<T: TransportPort + 'static>(
         property_identifier: property,
         property_array_index: index,
         range: range.spec()?,
-    };
-    let columns = if property == PropertyIdentifier::LOG_BUFFER {
-        to.log_columns(client, oid).await
-    } else {
-        LogColumns::default()
     };
     let validation = if range.strict {
         ReadRangeValidation::Strict
@@ -93,6 +88,12 @@ pub async fn read_range_cmd<T: TransportPort + 'static>(
     heading.result_flags = ack.result_flags;
     heading.first_sequence_number = ack.first_sequence_number;
     heading.note_violations(&reply.violations);
+    // Only once the device has answered: a silent one costs one timeout.
+    let columns = if property == PropertyIdentifier::LOG_BUFFER {
+        to.log_columns(client, oid).await
+    } else {
+        LogColumns::default()
+    };
     match log_rows(&ack, &columns) {
         Some(rows) => print_records(&heading, &rows, format),
         None => print_items(&heading, object_type, property, &ack.item_data, format),
@@ -107,18 +108,20 @@ type Stopped = Option<Box<dyn std::error::Error>>;
 /// heading: the records, the last page's flags, the first sequence number,
 /// the rules the device broke, the pages read, any gaps and the checkpoint.
 /// An error after the options are checked stops the read but keeps what it
-/// read, for the caller to print first. `columns` names the logged values.
+/// read, for the caller to print first. The log's columns, which name its
+/// values, are read once, after the first page: a device that doesn't
+/// answer costs one timeout, not two.
 async fn read_all<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     to: &Destination,
     log: ObjectIdentifier,
     range: &RangeOptions,
-    columns: &LogColumns,
     heading: &mut Heading,
 ) -> Result<(LogRows, Stopped), Box<dyn std::error::Error>> {
     let (mut cursor, page_size) = range.pages()?;
     let mut rows = LogRows::default();
     let mut paged = Paged::default();
+    let mut columns = LogColumns::default();
     let stopped = loop {
         let page = match to.read_log_page(client, log, cursor, page_size).await {
             Ok(page) => page,
@@ -127,12 +130,13 @@ async fn read_all<T: TransportPort + 'static>(
         paged.pages += 1;
         if paged.pages == 1 {
             heading.first_sequence_number = page.first_sequence_number;
+            columns = to.log_columns(client, log).await;
         }
         heading.item_count += page.records.len() as u64;
         heading.result_flags = page.result_flags;
         heading.note_violations(&page.violations);
         paged.gaps.extend(page.gap);
-        rows.rows.extend(record_rows(&page.records, columns));
+        rows.rows.extend(record_rows(&page.records, &columns));
         cursor = page.next;
         if page.done {
             break None;
