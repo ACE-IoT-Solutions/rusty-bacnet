@@ -21,6 +21,7 @@ use bacnet_types::error::Error;
 use super::first::first_read;
 use super::options::{Fallback, Reads};
 use super::poll::{self, PollRow, Polled};
+use super::shared::Shared;
 use super::{Inner, Point, Watched};
 use crate::engine::{Halt, network_of, unreachable};
 use crate::format::{RawRow, RowError};
@@ -70,13 +71,13 @@ pub(super) fn poll_row(reads: &Reads, process: u32, point: &Point) -> PollRow<u3
     }
 }
 
-/// Look the device up, read `point` once, and subscribe unless the read
-/// had no answer.
+/// Look `shared`'s device up and note where it is, read the point once,
+/// and subscribe unless the read had no answer.
 pub(super) async fn start<T: TransportPort + 'static>(
     inner: Arc<Inner<T>>,
-    process: u32,
-    point: Point,
+    shared: Arc<Shared>,
 ) -> Started {
+    let (process, point) = (shared.process, shared.point);
     let engine = &inner.engine;
     let Some(device) = engine.device(point.device).await else {
         return Started {
@@ -86,6 +87,10 @@ pub(super) async fn start<T: TransportPort + 'static>(
         };
     };
     let target = CovTarget::of_device(&device);
+    // Before anything is sent: the device may notify as soon as it takes
+    // the subscription, before this job is back with the scheduler, and
+    // the receiver only takes notifications from where the device is.
+    shared.lock().target = Some(target.clone());
     let first = read(&inner, &point).await;
     if let Err(error) = &first
         && unreachable(error)

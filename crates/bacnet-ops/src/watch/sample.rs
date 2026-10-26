@@ -12,7 +12,8 @@ use crate::format::RawRow;
 /// How a sample's values came.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Via {
-    /// The point's first read.
+    /// A start's read: the point's first, or the read before a retried
+    /// subscription.
     First,
     /// A COV notification.
     Notification,
@@ -45,7 +46,7 @@ impl Sample {
 }
 
 /// A lease's samples since it asked ([`Lease::samples`](super::Lease::samples)).
-/// It holds [`WatchOptions::samples`](super::WatchOptions::samples); a
+/// It holds at least [`WatchOptions::samples`](super::WatchOptions::samples); a
 /// reader that falls behind loses the oldest, counted in
 /// [`dropped`](Self::dropped).
 #[derive(Debug)]

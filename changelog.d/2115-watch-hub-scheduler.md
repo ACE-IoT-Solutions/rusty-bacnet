@@ -1,4 +1,4 @@
 ---
 section: Changed
 ---
-- **Wire:** The MCP server's watch hub polls each device's polled points together, in batched ReadPropertyMultiple requests, one request at a time per device; a retried subscription reads the point again first (#2115).
+- **Wire:** The MCP watch hub polls a device's points together in batched ReadPropertyMultiple requests, backs off per device, rereads a point before retrying its subscription; the TUI asks a too-large batch again a row at a time by RPM rather than ReadProperty (#2115).

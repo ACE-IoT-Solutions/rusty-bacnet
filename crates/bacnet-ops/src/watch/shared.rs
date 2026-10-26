@@ -243,6 +243,10 @@ pub(super) struct Registry {
     pub(super) tasks: watch::Sender<usize>,
     /// Cancels queued or running.
     pub(super) cancelling: AtomicUsize,
+    /// Runs once when a scheduler with nothing left is about to take the
+    /// table's lock to end: a test lands an arrival in that window.
+    #[cfg(test)]
+    pub(super) before_end: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl Registry {
@@ -265,6 +269,8 @@ impl Registry {
             object_reads,
             tasks: watch::Sender::new(0),
             cancelling: AtomicUsize::new(0),
+            #[cfg(test)]
+            before_end: Mutex::new(None),
         }
     }
 

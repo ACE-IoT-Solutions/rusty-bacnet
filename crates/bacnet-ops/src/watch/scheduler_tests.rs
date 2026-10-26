@@ -428,6 +428,14 @@ fn the_settings_keep_their_bounds() {
         ..WatchOptions::default()
     };
     assert!(no_wait.validate().is_err());
+    let eager = WatchOptions {
+        retry_cov: Backoff::fixed(Duration::from_secs(5)),
+        ..WatchOptions::default()
+    };
+    assert!(
+        eager.validate().is_err(),
+        "no retry sooner than the poll floor"
+    );
     for samples in [0, MAX_SAMPLES + 1] {
         let options = WatchOptions {
             samples,

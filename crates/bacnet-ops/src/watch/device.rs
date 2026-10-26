@@ -129,6 +129,15 @@ pub(super) async fn run<T: TransportPort + 'static>(
             job = device.launch();
         }
         if job.is_none() && device.rows.is_empty() && device.ops.is_empty() {
+            #[cfg(test)]
+            {
+                let hook = device.inner.registry.before_end.lock().unwrap().take();
+                if let Some(hook) = hook {
+                    hook();
+                }
+            }
+            // An arrival may have come since the inbox was drained; under
+            // the table's lock none can come, so an empty inbox ends it.
             let mut table = device.inner.registry.table();
             if slot.inbox().is_empty() {
                 if table
@@ -268,9 +277,9 @@ impl<T: TransportPort + 'static> Device<T> {
             Some(Op::Start(process)) => {
                 let row = self.rows.get_mut(&process)?;
                 row.mode = Mode::Starting;
-                let point = row.shared.point;
+                let shared = Arc::clone(&row.shared);
                 Some(Box::pin(async move {
-                    let started = charged(account, jobs::start(inner, process, point)).await;
+                    let started = charged(account, jobs::start(inner, shared)).await;
                     Done::Started {
                         process,
                         started: Box::new(started),
@@ -343,10 +352,10 @@ impl<T: TransportPort + 'static> Device<T> {
         };
         let shared = Arc::clone(&row.shared);
         let leaving = row.removing || shared.is_stopped();
-        // A retry can fail before finding the device; keep the address a
-        // cancel of an earlier attempt's subscription needs.
+        // The job noted the address for the receiver. A retry can fail
+        // before finding the device; keep the address a cancel of an
+        // earlier attempt's subscription needs.
         if let Some(target) = &started.target {
-            shared.lock().target = Some(target.clone());
             row.target = Some(target.clone());
         }
         let Some(first) = started.first else {

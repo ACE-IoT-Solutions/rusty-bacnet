@@ -124,12 +124,15 @@ advertises `resources.subscribe` for every version.
   ReadPropertyMultiple requests of up to 16 points and 32 properties (three
   objects' point properties), one point at a time when the answer would be
   too large (#2115). A device that doesn't answer is polled with a backoff
-  up to a minute, and read and subscribed again after five minutes. Each
+  up to a minute, per device rather than per point (a point whose first
+  read went unanswered is polled at once), and read and subscribed again
+  after five minutes. Each
   device has one scheduler, which sends one request at a time. The last listener
   leaving cancels the subscription; a listener joining as the last leaves
   gets a fresh entry with its own subscriber process identifier. A point
   whose device isn't in the discovery table yet says so and is looked up
-  again at each poll, then read and subscribed once it appears. An object
+  again after the poll backoff (10 s, doubling up to a minute), then read
+  and subscribed once it appears. An object
   watch keeps the point properties: a notification can refresh a row but
   adds one only for a point property, and never past 32 rows, so a device
   can't grow it; a property watch keeps its property, at its element.
@@ -377,6 +380,9 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   retries and their cancels, a missing device given up, what a point
   reads, the sample stream, a zero coalescing window, and the routed
   notification match.
+  `lifecycle_tests.rs`: the first notification after subscribing kept,
+  shutdown within its wait with a poll in flight, an arrival as a
+  scheduler ends, and a one-row batch too large to answer.
 - `crates/bacnet-ops`: network rates, accounts and buckets, a trend page
   charged per request, Who-Is through the engine, and the decoder's tests
   (moved from the CLI).

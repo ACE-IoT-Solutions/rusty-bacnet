@@ -552,27 +552,33 @@ impl<T: TransportPort + 'static> Hub<T> {
             .unwrap_or_else(PoisonError::into_inner)
             .drain(..)
             .collect();
+        // Every task is aborted, so the joins below take no time and the
+        // call keeps to `wait`. Once every point is done, cancels included,
+        // a scheduler can only be running a poll of points no longer
+        // watched, which nothing needs; past the deadline, a cancel still
+        // waiting is given up and its subscription lapses with its
+        // lifetime.
+        for handle in &handles {
+            handle.abort();
+        }
         for handle in handles {
-            // A cancel still waiting past the deadline is given up: its
-            // subscription lapses with its lifetime.
-            if !done {
-                handle.abort();
-            }
             let _ = handle.await;
         }
+        // Points an aborted scheduler never took are counted out.
+        let devices: Vec<Arc<DeviceSlot>> = self
+            .inner
+            .registry
+            .table()
+            .devices
+            .drain()
+            .map(|(_, d)| d)
+            .collect();
+        for device in devices {
+            drop(std::mem::take(&mut *device.inbox()));
+        }
         if !done {
-            // Points an aborted scheduler never took are counted out.
-            let devices: Vec<Arc<DeviceSlot>> = self
-                .inner
-                .registry
-                .table()
-                .devices
-                .drain()
-                .map(|(_, d)| d)
-                .collect();
-            for device in devices {
-                drop(std::mem::take(&mut *device.inbox()));
-            }
+            // The aborted cancels never finish to count themselves out.
+            self.inner.registry.cancelling.store(0, Ordering::Relaxed);
             tracing::warn!(
                 "gave up waiting for COV cancels; those subscriptions end with their lifetime"
             );
@@ -581,6 +587,8 @@ impl<T: TransportPort + 'static> Hub<T> {
     }
 }
 
+#[cfg(test)]
+mod lifecycle_tests;
 #[cfg(test)]
 mod scheduler_tests;
 #[cfg(test)]

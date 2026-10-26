@@ -150,7 +150,8 @@ pub struct WatchOptions {
     pub poll_backoff: Backoff,
     /// After a subscription failed for want of an answer (rather than a
     /// refusal), or a renewal failed, how long the point is polled before
-    /// it is read and subscribed again.
+    /// it is read and subscribed again; never sooner than
+    /// [`poll_floor`](Self::poll_floor).
     pub retry_cov: Backoff,
     /// What a point does whose device isn't in the discovery table.
     pub missing: MissingDevice,
@@ -160,7 +161,8 @@ pub struct WatchOptions {
     /// a signal per change.
     pub coalesce: Duration,
     /// Samples a lease's stream ([`Lease::samples`](super::Lease::samples))
-    /// holds before the oldest go.
+    /// holds at least before the oldest go (the channel rounds it up to a
+    /// power of two).
     pub samples: usize,
     /// Points watched at once, those still cancelling included.
     pub max_points: usize,
@@ -213,6 +215,9 @@ impl WatchOptions {
         }
         self.poll_backoff.validate("poll_backoff")?;
         self.retry_cov.validate("retry_cov")?;
+        if self.retry_cov.first < self.poll_floor {
+            return Err("retry_cov waits at least the poll floor".into());
+        }
         if self.max_points == 0 {
             return Err("max_points must be at least 1".into());
         }
