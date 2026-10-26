@@ -2,6 +2,7 @@
 //! ReadRange, paged across the device's answers and across calls.
 
 use bacnet_client::log_reader::{LogCursor, LogPage};
+use bacnet_ops::engine::timed_out;
 use bacnet_ops::format::LogColumns;
 use bacnet_ops::parse::parse_object_specifier;
 use bacnet_services::read_range::LogRecords;
@@ -402,6 +403,9 @@ pub(super) async fn run<T: TransportPort + 'static>(
                 return Err(ToolError::device(device.instance, &error));
             }
             Err(error) => {
+                if timed_out(&error) {
+                    call.timed_out();
+                }
                 read.stopped = Some(ToolError::device(device.instance, &error).json());
                 read.resume = Some(cursor);
                 break;
@@ -412,13 +416,20 @@ pub(super) async fn run<T: TransportPort + 'static>(
             // What each column samples, to name its values: one charged
             // read a call, once the device has answered, so a silent one
             // costs a single timeout; a failure names nothing (#2091).
-            columns = engine.log_columns(device.instance, log).await;
+            let (named, by_reference) = engine.log_columns(device.instance, log).await;
+            columns = named;
             // Then the state texts of the objects whose states columns
             // sample, one charged request an object, skipped once the
             // budget is spent (#2122).
-            engine
+            let by_texts = engine
                 .log_state_texts(device.instance, &mut columns, || call.out_of_time())
                 .await;
+            // Naming never fails the read, but its timeouts count (#2131).
+            for naming in [by_reference, by_texts] {
+                if naming.timed_out() {
+                    call.timed_out();
+                }
+            }
         }
         if page.result_flags.2 {
             read.more_items += 1;
