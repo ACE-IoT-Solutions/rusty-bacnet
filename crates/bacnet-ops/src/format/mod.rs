@@ -23,6 +23,7 @@ mod constructed;
 mod data;
 mod event_parameter;
 mod fields;
+mod logged;
 pub mod notification;
 mod primitive;
 mod recipients;
@@ -31,6 +32,7 @@ mod units;
 mod wire;
 
 pub use data::{Datum, Fields};
+pub use logged::{LogColumns, LoggedProperty};
 pub use wire::format_property_value;
 
 use bacnet_encoding::constructed::{ConstructedElement, ElementShape, property_element};

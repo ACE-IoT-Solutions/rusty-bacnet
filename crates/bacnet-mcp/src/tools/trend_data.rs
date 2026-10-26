@@ -6,10 +6,16 @@
 //! clock change. Records carrying status flags with any flag set, and log
 //! status records, are flagged, since either means the samples around them
 //! may not be what they seem.
+//!
+//! Each column's values are named by the property the log samples there,
+//! from its Log_DeviceObjectProperty ([`LogColumns`], #2091): an
+//! enumeration with its name, a bit string with its set bits' names, and
+//! the summary's state counts by name. A column nothing names keeps the
+//! numbers.
 
 use std::collections::BTreeMap;
 
-use bacnet_ops::format::{Datum, Floats, StateTexts, ValueFormat};
+use bacnet_ops::format::{Datum, Floats, LogColumns, LoggedProperty, StateTexts, ValueFormat};
 use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::{
     BACnetLogMultipleRecord, BACnetLogRecord, LogData, LogDatum, LogValue,
@@ -119,8 +125,15 @@ impl Entry {
     }
 
     /// The record as JSON: `seq` when the log numbered it, `source` naming
-    /// the log for any device text in a value, `cap` capping it.
-    pub(super) fn json(&self, seq: Option<u64>, source: &str, cap: usize) -> Value {
+    /// the log for any device text in a value, `cap` capping it, and
+    /// `columns` naming each column's values.
+    pub(super) fn json(
+        &self,
+        seq: Option<u64>,
+        source: &str,
+        cap: usize,
+        columns: &LogColumns,
+    ) -> Value {
         let mut row = json!({ "time": self.time, "flagged": self.flagged() });
         if let Some(seq) = seq {
             row["seq"] = json!(seq);
@@ -133,7 +146,10 @@ impl Entry {
                 row["kind"] = json!("values");
                 let values: Vec<Value> = samples
                     .iter()
-                    .map(|sample| sample_json(sample, source, cap))
+                    .enumerate()
+                    .map(|(column, sample)| {
+                        sample_json(sample, columns.column(column), source, cap)
+                    })
                     .collect();
                 row["values"] = json!(values);
             }
@@ -192,8 +208,9 @@ fn with_format<R>(f: impl FnOnce(&ValueFormat<'_>) -> R) -> R {
     ))
 }
 
-fn datum(value: &PropertyValue) -> Datum {
-    with_format(|format| format.element_data(PropertyIdentifier::LOG_BUFFER, value))
+/// A sampled value, named for the property `column` samples.
+fn datum(value: &PropertyValue, column: Option<LoggedProperty>) -> Datum {
+    with_format(|format| format.logged_data(column, value))
 }
 
 fn status_flags(flags: StatusFlags) -> Datum {
@@ -229,12 +246,12 @@ fn log_status(status: LogStatus) -> Datum {
     }
 }
 
-fn sample_json(sample: &Sample, source: &str, cap: usize) -> Value {
+fn sample_json(sample: &Sample, column: Option<LoggedProperty>, source: &str, cap: usize) -> Value {
     match sample {
-        Sample::Value(value) => enveloped(&datum(value), source, cap),
+        Sample::Value(value) => enveloped(&datum(value, column), source, cap),
         Sample::Signed(value) => json!(value),
         Sample::Any(octets) => {
-            let decoded = with_format(|format| format.data(PropertyIdentifier::LOG_BUFFER, octets));
+            let decoded = with_format(|format| format.logged_octets_data(column, octets));
             enveloped(&decoded, source, cap)
         }
         Sample::Failure(class, code) => {
@@ -263,14 +280,15 @@ struct Column {
     min: f64,
     max: f64,
     sum: f64,
-    /// Booleans and enumerations, by value.
+    /// Booleans and enumerations, by value: an enumeration by name when
+    /// the column's property names it.
     states: BTreeMap<String, u64>,
     failures: u64,
     other: u64,
 }
 
 impl Column {
-    fn add(&mut self, sample: &Sample) {
+    fn add(&mut self, sample: &Sample, column: Option<LoggedProperty>) {
         let number = match sample {
             Sample::Value(PropertyValue::Real(v)) if v.is_finite() => Some(f64::from(*v)),
             Sample::Value(PropertyValue::Double(v)) if v.is_finite() => Some(*v),
@@ -296,8 +314,14 @@ impl Column {
             Sample::Value(PropertyValue::Boolean(v)) => {
                 *self.states.entry(v.to_string()).or_default() += 1;
             }
-            Sample::Value(PropertyValue::Enumerated(v)) => {
-                *self.states.entry(v.to_string()).or_default() += 1;
+            Sample::Value(value @ PropertyValue::Enumerated(v)) => {
+                let state = match datum(value, column) {
+                    Datum::Enumerated {
+                        name: Some(name), ..
+                    } => name,
+                    _ => v.to_string(),
+                };
+                *self.states.entry(state).or_default() += 1;
             }
             Sample::Failure(..) => self.failures += 1,
             _ => self.other += 1,
@@ -338,7 +362,8 @@ pub(super) struct Summary {
 }
 
 impl Summary {
-    pub(super) fn add(&mut self, entry: &Entry) {
+    /// Count `entry`, its values named by `columns`.
+    pub(super) fn add(&mut self, entry: &Entry, columns: &LogColumns) {
         self.records += 1;
         if entry.flagged() {
             self.flagged += 1;
@@ -352,8 +377,8 @@ impl Summary {
                 if self.columns.len() < samples.len() {
                     self.columns.resize(samples.len(), Column::default());
                 }
-                for (column, sample) in self.columns.iter_mut().zip(samples) {
-                    column.add(sample);
+                for (index, (column, sample)) in self.columns.iter_mut().zip(samples).enumerate() {
+                    column.add(sample, columns.column(index));
                 }
             }
             Kind::LogStatus(_) => self.log_status += 1,
@@ -434,7 +459,7 @@ mod tests {
         let mut summary = Summary::default();
         let entries: Vec<Entry> = records.iter().map(Entry::multiple).collect();
         for entry in &entries {
-            summary.add(entry);
+            summary.add(entry, &LogColumns::default());
         }
         let json = summary.json();
         assert_eq!(json["records"], json!(4));
@@ -448,15 +473,81 @@ mod tests {
         assert_eq!(first["mean"], json!(-1.25));
         assert_eq!(json["columns"][1]["states"], json!({ "1": 1 }));
         assert_eq!(json["columns"][1]["failures"], json!(1));
-        let row = entries[1].json(Some(2), "s", 256);
+        let row = entries[1].json(Some(2), "s", 256, &LogColumns::default());
         assert_eq!(row["values"][0], json!(-4));
         assert_eq!(
             row["values"][1]["error"]["code"],
             json!("operational-problem")
         );
-        let status = entries[2].json(None, "s", 256);
+        let status = entries[2].json(None, "s", 256, &LogColumns::default());
         assert_eq!(status["kind"], json!("log-status"));
         assert_eq!(status["flagged"], json!(true));
         assert_eq!(status["log_status"]["names"], json!(["log-interrupted"]));
+    }
+
+    /// Each column's values are named by the property it samples, in the
+    /// records and in the summary's state counts; a column nothing names,
+    /// and a value its property doesn't name, keep the numbers (#2091).
+    #[test]
+    fn columns_name_values_and_states() {
+        let column = |property| {
+            Some(LoggedProperty {
+                object_type: ObjectType::ANALOG_INPUT,
+                property,
+                index: None,
+            })
+        };
+        let columns: LogColumns = [
+            column(PropertyIdentifier::EVENT_STATE),
+            column(PropertyIdentifier::STATUS_FLAGS),
+            None,
+        ]
+        .into_iter()
+        .collect();
+        let (date, time) = at(0);
+        let record = |values| BACnetLogMultipleRecord {
+            date,
+            time,
+            log_data: LogData::Values(values),
+        };
+        let records = [
+            record(vec![
+                LogValue::EnumValue(2),
+                LogValue::BitstringValue {
+                    unused_bits: 4,
+                    data: vec![0b1000_0000],
+                },
+                LogValue::EnumValue(2),
+            ]),
+            record(vec![
+                LogValue::EnumValue(0),
+                LogValue::EnumValue(2),
+                LogValue::EnumValue(2),
+            ]),
+        ];
+        let entries: Vec<Entry> = records.iter().map(Entry::multiple).collect();
+        let row = entries[0].json(None, "s", 256, &columns);
+        assert_eq!(row["values"][0], json!({ "value": 2, "name": "offnormal" }));
+        assert_eq!(
+            row["values"][1],
+            json!({ "bits": "1000", "names": ["in-alarm"] })
+        );
+        assert_eq!(row["values"][2], json!({ "value": 2 }));
+        let unnamed = entries[0].json(None, "s", 256, &LogColumns::default());
+        assert_eq!(unnamed["values"][0], json!({ "value": 2 }));
+        assert_eq!(unnamed["values"][1], json!({ "bits": "1000" }));
+
+        let mut summary = Summary::default();
+        for entry in &entries {
+            summary.add(entry, &columns);
+        }
+        let json = summary.json();
+        assert_eq!(
+            json["columns"][0]["states"],
+            json!({ "normal": 1, "offnormal": 1 })
+        );
+        // Status_Flags names no enumeration; the third column has no name.
+        assert_eq!(json["columns"][1]["states"], json!({ "2": 1 }));
+        assert_eq!(json["columns"][2]["states"], json!({ "2": 2 }));
     }
 }

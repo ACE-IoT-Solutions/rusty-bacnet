@@ -6,6 +6,10 @@
 //! device's turn throughout, so they still go one at a time; the turn pays
 //! for the first request and each later one takes a slot of its own, so a
 //! page costs what it sends (#2066).
+//!
+//! Before a Trend Log is paged, [`Engine::log_columns`] reads what it
+//! samples, so its values can be named (#2091): one more request, charged
+//! the same way, once per read rather than once per page.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,6 +21,8 @@ use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
+use super::Engine;
+use crate::format::LogColumns;
 use crate::limits::RequestLimits;
 
 /// The requester a page reads through: the device's routed read calls,
@@ -62,5 +68,27 @@ impl<T: TransportPort + 'static> LogRequester for PagedLog<'_, T> {
         self.client
             .read_range_from_device_with(self.device, request, ReadRangeValidation::Lenient)
             .await
+    }
+}
+
+impl<T: TransportPort + 'static> Engine<T> {
+    /// What each column of `log` on `device` samples, from its
+    /// Log_DeviceObjectProperty: one ReadProperty, charged like any other
+    /// read, for a Trend Log or Trend Log Multiple, and none for another
+    /// log. Naming is best effort: a refused, failed or empty read names no
+    /// column, and the values print as the log gives them.
+    pub async fn log_columns(&self, device: u32, log: ObjectIdentifier) -> LogColumns {
+        if !LogColumns::applies(log.object_type()) {
+            return LogColumns::default();
+        }
+        self.read_property(
+            device,
+            log,
+            PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY,
+            None,
+        )
+        .await
+        .map(|data| LogColumns::decode(&data))
+        .unwrap_or_default()
     }
 }

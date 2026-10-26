@@ -15,7 +15,7 @@ use bacnet_services::read_range::LogRecords;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::ReceivedNpdu;
 use bacnet_types::MacAddr;
-use bacnet_types::constructed::{BACnetLogRecord, LogDatum};
+use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetLogRecord, LogDatum};
 use bacnet_types::enums::{
     EngineeringUnits, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
 };
@@ -59,8 +59,19 @@ fn trend(records: u8) -> TrendLogObject {
     log
 }
 
-/// The lab: a device with an analog input, an analog output and a trend
-/// log, an engine over a client paired with it, and the server to stop.
+/// Trend log 2, sampling the analog input's Event_State (#2091).
+fn event_state_trend() -> TrendLogObject {
+    let mut log = TrendLogObject::new(2, "Zone Temp State Log", 10).unwrap();
+    log.set_log_device_object_property(Some(BACnetDeviceObjectPropertyReference::new_local(
+        oid(ObjectType::ANALOG_INPUT, 1),
+        PropertyIdentifier::EVENT_STATE.to_raw(),
+    )))
+    .unwrap();
+    log
+}
+
+/// The lab: a device with an analog input, an analog output and two trend
+/// logs, an engine over a client paired with it, and the server to stop.
 async fn lab() -> (Engine<LoopbackTransport>, BACnetServer<LoopbackTransport>) {
     lab_on(|port| port).await
 }
@@ -77,6 +88,7 @@ async fn lab_on<C: TransportPort + 'static>(
         Box::new(ai),
         Box::new(ao),
         Box::new(trend(3)),
+        Box::new(event_state_trend()),
         Box::new(NotificationClass::new(0, "Alarms").unwrap()),
     ];
     let database = build_database_with_extra(&identity, objects).unwrap();
@@ -435,6 +447,69 @@ async fn a_trend_page_is_charged_per_request() {
     .await
     .unwrap();
     assert_eq!(second.requests(), 1);
+    stop(engine, server).await;
+}
+
+/// A log's columns come from its Log_DeviceObjectProperty in one charged
+/// request; an empty reference, a refused read and a log without the
+/// property name nothing, and the last sends nothing (#2091).
+#[tokio::test(start_paused = true)]
+async fn log_columns_read_the_reference_once_and_fall_back() {
+    use crate::format::LoggedProperty;
+    use crate::limits::{Account, charged};
+    let (engine, server) = lab().await;
+    let account = Arc::new(Account::new(None));
+    let columns = charged(
+        Arc::clone(&account),
+        engine.log_columns(LAB, oid(ObjectType::TREND_LOG, 2)),
+    )
+    .await;
+    assert_eq!(account.requests(), 1);
+    assert_eq!(
+        columns.column(0),
+        Some(LoggedProperty {
+            object_type: ObjectType::ANALOG_INPUT,
+            property: PropertyIdentifier::EVENT_STATE,
+            index: None,
+        })
+    );
+    let texts = StateTexts::default();
+    let format = ValueFormat::new(ObjectType::TREND_LOG, &texts, Floats::Exact);
+    assert_eq!(
+        format.logged(columns.column(0), &PropertyValue::Enumerated(3)),
+        "high-limit"
+    );
+
+    // Trend log 1 has no reference; trend log 9 doesn't exist.
+    for log in [1, 9] {
+        let columns = engine
+            .log_columns(LAB, oid(ObjectType::TREND_LOG, log))
+            .await;
+        assert!(columns.is_empty(), "trend log {log}: {columns:?}");
+    }
+    let account = Arc::new(Account::new(None));
+    let columns = charged(
+        Arc::clone(&account),
+        engine.log_columns(LAB, oid(ObjectType::EVENT_LOG, 1)),
+    )
+    .await;
+    assert!(columns.is_empty());
+    assert_eq!(account.requests(), 0, "an Event Log has no reference");
+
+    // The one-shot CLI's path, by Destination: the same names, and the
+    // same fallback for a refused read.
+    let to = crate::destination::Destination::Device(LAB);
+    let named = to
+        .log_columns(&engine.client, oid(ObjectType::TREND_LOG, 2))
+        .await;
+    assert_eq!(
+        named.column(0).map(|column| column.property),
+        Some(PropertyIdentifier::EVENT_STATE)
+    );
+    let refused = to
+        .log_columns(&engine.client, oid(ObjectType::TREND_LOG, 9))
+        .await;
+    assert!(refused.is_empty(), "{refused:?}");
     stop(engine, server).await;
 }
 
