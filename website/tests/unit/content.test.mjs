@@ -45,6 +45,14 @@ test('MDX expressions are limited to the site constants', async () => {
   await assert.rejects(() => plainBody('<a href="https://example.com/">text</a>', '/tmp/content.mdx', []), /Unprojected/);
 });
 
+test('the export drops comments completely, outside code', async () => {
+  const md = await plainBody('a <!<!-- x -->-- y --> b\n\n```html\n<!-- kept -->\n```\n', '/tmp/content.md', []);
+  assert.doesNotMatch(md.replace(/```html\n<!-- kept -->\n```/, ''), /<!--|-->/);
+  assert.ok(md.includes('<!-- kept -->'), 'a comment in a code fence stays');
+  const mdx = await plainBody('a {{/* x */}/* y */} b\n', '/tmp/content.mdx', []);
+  assert.doesNotMatch(mdx, /\{\/\*|\*\/\}/);
+});
+
 test('guide selection is portable across Windows and POSIX paths', async () => {
   const { isGuideFile } = await import('../../scripts/content.mjs');
   assert.equal(isGuideFile('C:\\website\\docs\\index.mdx'), false);

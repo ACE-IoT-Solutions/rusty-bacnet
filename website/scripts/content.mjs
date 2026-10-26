@@ -43,7 +43,17 @@ export async function plainBody(body, file, downloads) {
   }
   let text = body.replace(/^import .*?;?\r?\n/gm, '');
   // Comments, such as a generated reference page's markers, stay out of the export.
-  text = outsideFences(text, part => part.replace(mdx ? /\{\/\*[\s\S]*?\*\/\}\r?\n?/g : /<!--[\s\S]*?-->\r?\n?/g, ''));
+  // Repeat until nothing changes, so removing one comment can't join the
+  // text around it into another.
+  const comment = mdx ? /\{\/\*[\s\S]*?\*\/\}\r?\n?/g : /<!--[\s\S]*?-->\r?\n?/g;
+  text = outsideFences(text, part => {
+    let previous;
+    do {
+      previous = part;
+      part = part.replace(comment, '');
+    } while (part !== previous);
+    return part;
+  });
   if (mdx) {
     text = text.replace(/<Code\b[^`>]*code=\{(String\.raw)?`([^`]*)`\}[^`>]*\/>/g, (tag, raw, code) =>
       `\n\n\`\`\`${attr(tag, 'lang')}\n${expandTemplate(code, raw, file).trim()}\n\`\`\`\n\n`);

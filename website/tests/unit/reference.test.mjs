@@ -116,7 +116,22 @@ test('the CLI page has every bacnet subcommand, and marks the ones behind a feat
   const args = await readFile(new URL('crates/bacnet-cli/src/args.rs', repo), 'utf8');
   const body = args.slice(args.indexOf('pub(crate) enum Command {'));
   const section = name => region.split(`### bacnet ${name}\n`)[1]?.split('\n### ')[0] ?? '';
-  for (const [, feature, variant] of body.matchAll(/#\[cfg\(feature = "([^"]+)"\)\]\s*(?:(?:#\[[^\]]*\]|\/\/\/[^\n]*)\s*)*([A-Z]\w*)/g)) {
+  // Line by line: a cfg line, then any attributes, doc comments or blank
+  // lines, then the variant.
+  const gated = [];
+  let pending;
+  for (const line of body.split('\n')) {
+    const trimmed = line.trim();
+    const cfg = trimmed.match(/^#\[cfg\(feature = "([^"]+)"\)\]$/);
+    if (cfg) {
+      pending = cfg[1];
+    } else if (pending !== undefined && !(trimmed === '' || trimmed.startsWith('#[') || trimmed.startsWith('///'))) {
+      const variant = trimmed.match(/^([A-Z]\w*)/);
+      if (variant) gated.push([pending, variant[1]]);
+      pending = undefined;
+    }
+  }
+  for (const [feature, variant] of gated) {
     const name = variant.replace(/(?<!^)[A-Z]/g, letter => `-${letter}`).toLowerCase();
     assert.ok(section(name).includes(`Needs the \`${feature}\` feature.`), `cli.md marks bacnet ${name} with the ${feature} feature; ${regenerate.cli}`);
   }
