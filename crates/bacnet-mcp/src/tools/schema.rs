@@ -87,15 +87,31 @@ fn shape(fields: Value, optional: &[&str]) -> Value {
     })
 }
 
+/// How deep elements with `fields` may nest inside one another: an
+/// Event_Parameters value, or an event notification's values whose
+/// property values are elements with fields of their own. The schema has
+/// no recursive references, so the nesting is written out to this depth.
+const FIELDS_DEPTH: usize = 3;
+
 /// One decoded value that isn't a list: the forms of
 /// `bacnet_ops::format::Datum`, with device text as an envelope. A
 /// constructed element may carry `fields` (an Event_Parameters value): an
-/// object of its members by name, each a value of the forms below or a
-/// list of them.
+/// object of its members by name, each a value of the same forms or a list
+/// of them, nested up to [`FIELDS_DEPTH`] elements deep.
 fn datum_leaves() -> Vec<Value> {
+    leaves_with_fields(FIELDS_DEPTH)
+}
+
+/// [`plain_leaves`], with an element's `fields` allowed `depth` levels
+/// deep.
+fn leaves_with_fields(depth: usize) -> Vec<Value> {
+    let mut leaves = plain_leaves();
+    if depth == 0 {
+        return leaves;
+    }
     let text = json!({ "type": "string" });
     let element_text = json!({ "anyOf": [{ "type": "string" }, envelope_object()] });
-    let mut members = member_leaves();
+    let mut members = leaves_with_fields(depth - 1);
     let list = json!({ "type": "array", "items": { "anyOf": members.clone() } });
     members.push(list);
     let fields = json!({
@@ -103,7 +119,6 @@ fn datum_leaves() -> Vec<Value> {
         "additionalProperties": { "anyOf": members },
     });
     let plain_element = shape(json!({ "element": text, "text": element_text }), &[]);
-    let mut leaves = member_leaves();
     leaves.retain(|leaf| *leaf != plain_element);
     leaves.push(shape(
         json!({ "element": text, "text": element_text, "fields": fields }),
@@ -112,9 +127,8 @@ fn datum_leaves() -> Vec<Value> {
     leaves
 }
 
-/// The forms of one decoded value inside an element's `fields`: those of
-/// [`datum_leaves`], an element there having no fields of its own.
-fn member_leaves() -> Vec<Value> {
+/// The forms of one decoded value, an element among them without fields.
+fn plain_leaves() -> Vec<Value> {
     let text = json!({ "type": "string" });
     let element_text = json!({ "anyOf": [{ "type": "string" }, envelope_object()] });
     vec![

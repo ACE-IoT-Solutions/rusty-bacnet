@@ -141,6 +141,13 @@ fn the_check_finds_violations() {
     violations(&either, &json!({ "b": 1 }), "$", &mut out);
     violations(&either, &json!("x"), "$", &mut out);
     assert_eq!(out.len(), 2, "{out:?}");
+    // `additionalProperties` as a schema: every other key's value fits it.
+    let map = json!({ "type": "object", "additionalProperties": { "type": "integer" } });
+    let mut out = Vec::new();
+    violations(&map, &json!({ "x": 1 }), "$", &mut out);
+    assert!(out.is_empty(), "{out:?}");
+    violations(&map, &json!({ "x": "s" }), "$", &mut out);
+    assert_eq!(out.len(), 1, "{out:?}");
 }
 
 /// Calls that succeed and calls that fail, for every tool.
@@ -224,8 +231,11 @@ async fn results_fit_their_output_schemas() {
 #[tokio::test(start_paused = true)]
 async fn event_parameters_fields_fit_the_schema_and_envelope_device_text() {
     use bacnet_objects::event_enrollment::EventEnrollmentObject;
-    use bacnet_types::constructed::BACnetEventParameter;
-    use bacnet_types::enums::EventType;
+    use bacnet_types::constructed::{
+        BACnetDeviceObjectPropertyReference, BACnetEventParameter, BACnetPropertyStates,
+    };
+    use bacnet_types::enums::{EventType, ObjectType, PropertyIdentifier};
+    use bacnet_types::primitives::ObjectIdentifier;
 
     let mut lab = Lab::start(Policy::default()).await;
     let mut enrollment =
@@ -234,12 +244,25 @@ async fn event_parameters_fields_fit_the_schema_and_envelope_device_text() {
         time_delay: 5,
         list_of_alarm_values: vec!["FIRE".into(), super::hostile()],
     });
-    lab.server
-        .database()
-        .write()
-        .await
-        .add(Box::new(enrollment))
-        .unwrap();
+    let mut states = EventEnrollmentObject::new(2, "EE-2", EventType::CHANGE_OF_STATE).unwrap();
+    states.set_event_parameters(BACnetEventParameter::ChangeOfState {
+        time_delay: 0,
+        list_of_values: vec![BACnetPropertyStates::State(3)],
+    });
+    let mut feedback = EventEnrollmentObject::new(3, "EE-3", EventType::COMMAND_FAILURE).unwrap();
+    feedback.set_event_parameters(BACnetEventParameter::CommandFailure {
+        time_delay: 1,
+        feedback_property_reference: BACnetDeviceObjectPropertyReference::new_local(
+            ObjectIdentifier::new(ObjectType::BINARY_INPUT, 4).unwrap(),
+            PropertyIdentifier::PRESENT_VALUE.to_raw(),
+        ),
+    });
+    {
+        let mut db = lab.server.database().write().await;
+        for object in [enrollment, states, feedback] {
+            db.add(Box::new(object)).unwrap();
+        }
+    }
     lab.agent.initialize().await;
     let tools = lab.agent.request("tools/list", json!({})).await;
     let schema = tools["result"]["tools"]
@@ -255,6 +278,10 @@ async fn event_parameters_fields_fit_the_schema_and_envelope_device_text() {
             "bacnet_read",
             json!({ "device": "1201",
                     "reads": [{ "object": "event-enrollment:1",
+                                "properties": ["event-parameters"] },
+                              { "object": "event-enrollment:2",
+                                "properties": ["event-parameters"] },
+                              { "object": "event-enrollment:3",
                                 "properties": ["event-parameters"] }] }),
         )
         .await;
@@ -276,5 +303,18 @@ async fn event_parameters_fields_fit_the_schema_and_envelope_device_text() {
     let hostile = values[1]["untrusted"].as_str().unwrap();
     assert!(hostile.contains("hxxps://evil.example/x"), "{hostile}");
     assert!(!hostile.contains('\u{202E}'), "{hostile}");
+
+    // A nested element is a value too: a property state's text (a kind
+    // that may hold a string) is enveloped, a reference's left plain.
+    let results = &read["structuredContent"]["results"];
+    let state = &results[1]["value"]["typed"]["fields"]["list_of_values"][0];
+    assert_eq!(state["element"], json!("property-state"));
+    assert_eq!(state["text"]["untrusted"], json!("high-limit"), "{state}");
+    let reference = &results[2]["value"]["typed"]["fields"]["feedback_property_reference"];
+    assert_eq!(
+        *reference,
+        json!({"element": "device-object-property-reference",
+               "text": "binary-input 4 present-value"})
+    );
     lab.stop().await;
 }

@@ -4128,8 +4128,8 @@ framing, through the shared `bacnet-encoding` codecs.
   rejected. The server runs five of them (out-of-range, floating-limit,
   change-of-value, change-of-state and change-of-bitstring); the others
   are stored and served but produce no transition, and an unset
-  Time_Delay_Normal reads back their time delay. Event_Parameters never set reads as
-  the context-tagged `none` choice (`F8 14`, tag 20; #1868). Such an
+  Time_Delay_Normal reads back their time delay. Event_Parameters never set
+  reads as the context-tagged `none` choice (`F8 14`, tag 20; #1868). Such an
   enrollment evaluates reliability only (Clause 12.12.7), and one left
   offnormal by earlier parameters returns to NORMAL with a TO_NORMAL. Any
   enrollment with a monitored reference can fault, whatever its parameters,
