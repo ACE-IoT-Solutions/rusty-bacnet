@@ -355,7 +355,8 @@ fn services_match_implementation() {
         .iter()
         .find(|s| s.service_name == "ReadProperty")
         .expect("ReadProperty should be listed");
-    assert!(!rp.initiator);
+    // It initiates ReadProperty too, for a Channel member in another device.
+    assert!(rp.initiator);
     assert!(rp.executor);
 
     // I-Am is initiator only

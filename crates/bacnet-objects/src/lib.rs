@@ -27,6 +27,7 @@ pub mod analog;
 pub mod audit;
 pub mod averaging;
 pub mod binary;
+pub mod catalogue;
 pub mod channel;
 pub mod clock;
 pub mod color;

@@ -2,6 +2,7 @@
 //! ReadRange, paged across the device's answers and across calls.
 
 use bacnet_client::log_reader::{LogCursor, LogPage};
+use bacnet_ops::format::LogColumns;
 use bacnet_ops::parse::parse_object_specifier;
 use bacnet_services::read_range::LogRecords;
 use bacnet_transport::port::TransportPort;
@@ -28,9 +29,11 @@ pub(super) const SPEC: Spec = Spec {
                   values in typed form, and flagged when its status flags show a problem or \
                   it records a change in the log's own status. The result summarises the \
                   records it read: count, first and last time, and for each column min, max \
-                  and mean of numbers and counts of states. summary: true reads the whole \
-                  window on the server (up to 20000 records) and returns only the summary. \
-                  Each request is charged. Read-only.",
+                  and mean of numbers and counts of states. Enumerations and bit strings \
+                  are named by the property the log samples (its Log_DeviceObjectProperty, \
+                  read once a call). summary: true reads the whole window on the server (up \
+                  to 20000 records) and returns only the summary. Each request is charged. \
+                  Read-only.",
     input,
     output,
     idempotent: true,
@@ -374,6 +377,7 @@ pub(super) async fn run<T: TransportPort + 'static>(
     let object = object_text(kind, instance);
     let source = format!("device {} {object} log-buffer", device.instance);
     let cap = ctx.policy.caps.text;
+    let mut columns = LogColumns::default();
     let mut read = Read::default();
     loop {
         if read.count >= limit || read.size >= MAX_STRUCTURED {
@@ -397,6 +401,12 @@ pub(super) async fn run<T: TransportPort + 'static>(
             }
         };
         read.pages += 1;
+        if read.pages == 1 {
+            // What each column samples, to name its values: one charged
+            // read a call, once the device has answered, so a silent one
+            // costs a single timeout; a failure names nothing (#2091).
+            columns = engine.log_columns(device.instance, log).await;
+        }
         if page.result_flags.2 {
             read.more_items += 1;
         }
@@ -423,10 +433,10 @@ pub(super) async fn run<T: TransportPort + 'static>(
                 });
                 break;
             }
-            read.summary.add(entry);
+            read.summary.add(entry, &columns);
             read.count += 1;
             if !args.summary {
-                let row = entry.json(seq, &source, cap);
+                let row = entry.json(seq, &source, cap, &columns);
                 read.size += row.to_string().len();
                 read.rows.push(row);
             }

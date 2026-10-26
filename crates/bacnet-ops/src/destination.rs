@@ -34,6 +34,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 use tokio::sync::broadcast::error::RecvError;
 
 use super::target::{Target, bip6_vmac, parse_target_on};
+use crate::format::LogColumns;
 
 /// Where a service request goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -400,6 +401,29 @@ impl Destination {
                     .await
             }
         }
+    }
+
+    /// What each column of `log` samples, from its
+    /// Log_DeviceObjectProperty: one ReadProperty for a Trend Log or Trend
+    /// Log Multiple, none for another log. A refused, failed or empty read
+    /// names no column, so the values print as the log gives them (#2091).
+    pub async fn log_columns<T: TransportPort + 'static>(
+        &self,
+        client: &BACnetClient<T>,
+        log: ObjectIdentifier,
+    ) -> LogColumns {
+        if !LogColumns::applies(log.object_type()) {
+            return LogColumns::default();
+        }
+        self.read_property(
+            client,
+            log,
+            PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY,
+            None,
+        )
+        .await
+        .map(|ack| LogColumns::decode(&ack.property_value))
+        .unwrap_or_default()
     }
 
     /// ReadProperty.

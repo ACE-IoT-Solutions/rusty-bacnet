@@ -43,6 +43,22 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(used[("shared", "2.0.0")], {"CLI", "Python"})
         self.assertIn(("aarch64-only", "1.0.0"), used)
 
+    def test_targets_match_the_release_build_scripts(self):
+        # The website's capability tables read TARGETS as the CLI's release
+        # features (#1496), so they must be what the build scripts pass.
+        here = Path(__file__).resolve().parent
+
+        def cli_features(script):
+            lines = [line for line in (here / script).read_text().splitlines()
+                     if "cargo build" in line and "-p bacnet-cli" in line]
+            self.assertEqual(len(lines), 1, f"{script} builds the CLI once")
+            args = lines[0].split()
+            return args[args.index("--features") + 1]
+
+        linux, native = cli_features("build_linux.sh"), cli_features("build_native.sh")
+        for target, features in tpn.TARGETS.items():
+            self.assertEqual(features, linux if "-linux-" in target else native, target)
+
     def test_two_sources_for_one_version_are_refused(self):
         packages = [{"name": "a", "version": "1.0.0"}, {"name": "a", "version": "1.0.0"}]
         with self.assertRaisesRegex(tpn.NoticesError, "two sources"):
