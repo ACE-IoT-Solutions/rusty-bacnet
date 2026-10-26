@@ -19,7 +19,7 @@ The draft describes the configuration you built and nothing more. It is not a te
 
 ## Generate one in Rust
 
-This program builds a server with a Device and two objects on 127.0.0.1, drafts its PICS, stops the server and prints the PICS as Markdown. It uses the crates from the [server guide's Cargo.toml](/rusty-bacnet/examples/rust/server-device/Cargo.toml); put it in `src/main.rs` and run `cargo run`. CI compiled it against v{release}; the program in [On `dev` after the release](#protocol-version-and-revision-from-the-device) is the one CI compiles now.
+This program builds a server with a Device and two objects on 127.0.0.1, drafts its PICS, stops the server and prints the PICS as Markdown. It uses the crates from the [server guide's Cargo.toml](/rusty-bacnet/examples/rust/server-device/Cargo.toml); put it in `src/main.rs` and run `cargo run`. CI compiled it against v{release}; the program in [On `dev` after the release](#product-details-from-the-device) is the one CI compiles now.
 
 ```rust
 use bacnet_objects::DeviceIdentity;
@@ -159,10 +159,18 @@ On the `dev` branch the initiator list is public, as `PicsGenerator::INITIATED_S
 
 `PicsConfig` has no `protocol_version` or `protocol_revision` field on `dev` (#2125). Both generators read Protocol_Version and Protocol_Revision from the Device object the PICS describes, so the two can't disagree. Only a database without a Device, or a Device whose value doesn't fit, gets the stack's own values instead: `bacnet_types::PROTOCOL_VERSION` and `bacnet_types::PROTOCOL_REVISION`, 1 and 22 for ASHRAE 135-2020, which the bundled Device object also reports. In v{release} the default revision in `PicsConfig` is 24 while the Device reports 22, which is why the program above reads both values from the Device first.
 
-On `dev` the program skips that step. Remove the two fields from your `PicsConfig`:
+### Product details from the Device
+
+`PicsConfig` has no `vendor_name`, `model_name`, `firmware_revision` or `application_software_version` field on `dev` (#2137). Both generators read Vendor_Name, Model_Name, Firmware_Revision and Application_Software_Version from the same Device as the protocol fields, at the moment you call them, so a value your application changes on its Device appears in the next PICS. A database without a Device, or a value that isn't a character string, leaves the row empty. In v{release} the PICS prints the `PicsConfig` values instead, which default to empty, which is why the program above sets the details in both places.
+
+The Vendor ID comes from the same Device's Vendor_Identifier, read as the server would serve it. For `server.generate_pics` that is normally the server's `DeviceIdentity`, which the server serves as its Device's Vendor_Identifier; if the identity's Device isn't in the database, the selected Device's own value is used. The standalone `generate_pics` reads the selected Device's own value. Either way, the `ServerConfig` identity's Vendor ID is used only when the Device has no Vendor_Identifier, or one that doesn't fit 16 bits, so the vendor block always describes one Device.
+
+The PICS prints these values as plain text. Control characters and line or paragraph separators become spaces, and bidirectional and zero-width characters are dropped, as the CLI and terminal UI drop them. The Markdown also escapes `|` and the characters that start inline formatting. A Device string can't add rows or sections to the document, or hide or reorder its own text.
+
+On `dev` the program sets the details on the Device only and skips the protocol step. Remove all six fields from your `PicsConfig`; if the PICS needs different text, edit the generated document:
 
 ```rust
-// On dev: the PICS takes the protocol version and revision from the Device.
+// On dev: the PICS takes the product and protocol details from the Device.
 use bacnet_objects::DeviceIdentity;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::binary::BinaryOutputObject;
@@ -175,15 +183,15 @@ use std::net::Ipv4Addr;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Your product's details; the Device object and the PICS both carry them.
-    let (vendor, model, version) = ("Example Controls", "AHU-100", "2.1.0");
+    // Your product's details, on the Device object; the PICS reads them there.
+    let version = "2.1.0";
     // Vendor 0 is a placeholder: use the identifier ASHRAE assigned you.
     let identity = DeviceIdentity::new(1001, 0)?.with_name("Example air handler");
     let mut database = ObjectDatabase::new();
     database.add(Box::new(DeviceObject::new(DeviceConfig {
         identity: identity.clone(),
-        vendor_name: vendor.into(),
-        model_name: model.into(),
+        vendor_name: "Example Controls".into(),
+        model_name: "AHU-100".into(),
         firmware_revision: version.into(),
         application_software_version: version.into(),
         ..DeviceConfig::default()
@@ -201,13 +209,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .await?;
 
-    // What the server can't report about itself: the product, the profile
-    // you claim, and the data links and network roles you ship.
+    // What the server can't report about itself: the profile you claim,
+    // and the data links and network roles you ship.
     let pics_config = PicsConfig {
-        vendor_name: vendor.into(),
-        model_name: model.into(),
-        firmware_revision: version.into(),
-        application_software_version: version.into(),
         // Claim an Annex L profile only if the product meets it.
         device_profile: DeviceProfile::Custom("None claimed".into()),
         data_link_layers: vec![DataLinkSupport::BipV4],

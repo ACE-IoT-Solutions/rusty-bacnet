@@ -88,6 +88,11 @@ test('the task page covers each surface and links the sample and the tables', ()
   assert.ok(dev.includes('`PicsConfig` has no `protocol_version` or `protocol_revision` field on `dev` (#2125)'));
   assert.ok(dev.includes('bacnet_types::PROTOCOL_REVISION'));
   assert.ok(!dev.includes('PropertyIdentifier::PROTOCOL_REVISION'));
+  // The product details come from the Device on dev too (#2137): the dev
+  // program sets them on the Device only.
+  assert.ok(dev.includes('`PicsConfig` has no `vendor_name`, `model_name`, `firmware_revision` or `application_software_version` field on `dev` (#2137)'));
+  const devProgram = dev.slice(dev.indexOf('let pics_config = PicsConfig {'));
+  assert.ok(!devProgram.slice(0, devProgram.indexOf('};')).includes('vendor_name'));
   assert.doesNotMatch(task.source, /building block/i);
   assert.ok(task.body.includes(`the bindings have no PICS generator in v${release}`));
   assert.ok(task.body.includes('no `bacnet` command generates a PICS'));
@@ -96,7 +101,9 @@ test('the task page covers each surface and links the sample and the tables', ()
   assert.ok(task.body.includes(`(${repository}/blob/v${release}/docs/rust-api.md#bacnet-server)`));
   // The table names each PicsConfig field once: the generator's on dev, plus
   // the v0.14.0 fields dev removed, which the dev section names.
-  const removedOnDev = ['protocol_revision', 'protocol_version'];
+  const removedOnDev = [
+    'application_software_version', 'firmware_revision', 'model_name', 'protocol_revision', 'protocol_version', 'vendor_name',
+  ];
   return readFile(new URL('../../../crates/bacnet-server/src/pics/mod.rs', import.meta.url), 'utf8').then(generator => {
     const config = generator.slice(generator.indexOf('pub struct PicsConfig {'), generator.indexOf('impl Default for PicsConfig'));
     const fields = [...config.matchAll(/^ {4}pub (\w+):/gm)].map(match => match[1]);
