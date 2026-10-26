@@ -2284,8 +2284,8 @@ permissions it declares (the workflow's default is none):
   `bacnet-mstp-codec`, `bacnet-bip-codec`, `bacnet-mstp-core`,
   `bacnet-bip-core` and `bacnet-router-core`, which a token scoped to
   existing crates couldn't publish, as 0.12.0 was for `bacnet-endpoint` and
-  `bacnet-cli`. 0.15.0 is the first release of `bacnet-ops`, so its token
-  must be able to publish a new crate too.
+  `bacnet-cli`. 0.15.0 is the first release of `bacnet-ops` and
+  `bacnet-mcp`, so its token must be able to publish new crates too.
   crates.io trusted publishing may replace it later.
 - **PyPI trusted publishing.** PyPI accepts the PyPI job's OIDC token for
   `rusty-bacnet` when the project's trusted publisher names owner

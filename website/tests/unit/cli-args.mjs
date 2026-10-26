@@ -1,13 +1,16 @@
-// The CLI's options and subcommands, read from crates/bacnet-cli/src/args.rs,
-// so a page's `bacnet` samples fail a test when a flag or command they use is
-// renamed or removed.
+// The CLI's options and subcommands, read from crates/bacnet-cli/src/args.rs
+// and its submodules (args/*.rs), so a page's `bacnet` samples fail a test
+// when a flag or command they use is renamed or removed.
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 
-/** Read args.rs: `options` maps each long option to whether it takes a value; `commands` holds the subcommands. */
+/** Read args.rs and args/*.rs: `options` maps each long option to whether it takes a value; `commands` holds the subcommands. */
 export async function cliDefinitions() {
   const args = await readFile(new URL('../../../crates/bacnet-cli/src/args.rs', import.meta.url), 'utf8');
-  return { options: cliOptions(args), commands: cliCommands(args) };
+  const dir = new URL('../../../crates/bacnet-cli/src/args/', import.meta.url);
+  const parts = (await readdir(dir)).filter(name => name.endsWith('.rs')).sort();
+  const subs = await Promise.all(parts.map(name => readFile(new URL(name, dir), 'utf8')));
+  return { options: cliOptions([args, ...subs].join('\n')), commands: cliCommands(args) };
 }
 
 // The long options, from the `#[arg(...)]` fields: name (`long = "..."` or

@@ -27,7 +27,7 @@ Open an object in the browser and press `w`.
 ![The write form for an analog output: property, value and priority.](../../../assets/tui/writes-form.webp)
 
 - **Property** defaults to Present_Value.
-- **Value** uses the one-shot `write` syntax: `42`, `72.5`, `true`, `active`, `"text"` or `null`. A number is sent as the datatype the property already holds, and `null` is a relinquish.
+- **Value** uses the one-shot `write` syntax: `42`, `72.5`, `true`, `active`, `"text"` or `null`. A number is sent as the datatype the property already holds, and `null` is a relinquish. Enumerations and bit strings take the names the browser shows (`offnormal`, `in-alarm | fault`), and dates and times the browser's forms, so a value shown can be typed back. A mistyped name is refused with the valid choices.
 - **Priority** defaults to 16 for a commandable object. Leave it blank when the property has no priority array.
 
 Enter reads the object again and shows a preview.

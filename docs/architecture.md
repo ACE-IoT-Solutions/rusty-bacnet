@@ -41,12 +41,15 @@ Runtime and application roles
 Operations core (UI-free, for the front ends)
   bacnet-ops            Target and value grammar, value formatting, request
                         limits, read engine over bacnet-client
+  bacnet-mcp            Read-only MCP server over the bacnet-ops engine
+                        (rmcp SDK; the CLI's `mcp` feature)
 
 Selected direct dependencies
   bacnet-endpoint -> bacnet-client, bacnet-server, bacnet-endpoint-core,
                      bacnet-network, bacnet-objects
   bacnet-ops     -> bacnet-client, bacnet-transport
-  bacnet-cli     -> bacnet-ops, bacnet-client  (CLI application)
+  bacnet-mcp     -> bacnet-ops, rmcp
+  bacnet-cli     -> bacnet-ops, bacnet-client, bacnet-mcp (with `mcp`)  (CLI application)
   rusty-bacnet   -> bacnet-client, bacnet-server, bacnet-endpoint
                                               (PyO3 bindings)
 ```
@@ -54,8 +57,9 @@ Selected direct dependencies
 `bacnet-client`, `bacnet-server` and `bacnet-endpoint` are all workspace
 `default-members`, along with the foundational crates, endpoint-core, `bacnet-ops`,
 integration tests, the MS/TP bus simulator and benchmarks. The CLI
-(`bacnet-cli`) and PyO3 binding (`rusty-bacnet`) are excluded from default
-builds: the CLI pulls in heavier application dependencies, and the Python
+(`bacnet-cli`), the MCP server (`bacnet-mcp`) and PyO3 binding (`rusty-bacnet`)
+are excluded from default builds: the CLI and the MCP server pull in heavier
+application dependencies, and the Python
 extension needs its native Python build context. They remain workspace
 members and can be selected explicitly. So does the unpublished firmware link
 test, `firmware/link`, which links the MS/TP stack (`bacnet-mstp-codec`,

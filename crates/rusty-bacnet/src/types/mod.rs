@@ -142,6 +142,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEventType>()?;
     PyEventType::register_constants(&m.getattr("EventType")?)?;
 
+    m.add_class::<PyNotifyType>()?;
+    PyNotifyType::register_constants(&m.getattr("NotifyType")?)?;
+
     m.add_class::<PyMessagePriority>()?;
     PyMessagePriority::register_constants(&m.getattr("MessagePriority")?)?;
 

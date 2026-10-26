@@ -114,6 +114,21 @@ pub fn unreachable(error: &Error) -> bool {
     }
 }
 
+/// The network `device` is on, for limits that pace networks: its routed
+/// network, or 0 for the local one. `None` when the limits don't pace
+/// networks, so the lookup is skipped, or the device isn't known.
+pub async fn network_of<T: TransportPort + 'static>(
+    client: &BACnetClient<T>,
+    limits: &RequestLimits,
+    device: u32,
+) -> Option<u16> {
+    if !limits.paces_networks() {
+        return None;
+    }
+    let found = client.get_device(device).await?;
+    Some(found.source_network.unwrap_or(0))
+}
+
 /// How an Object_List read went.
 #[derive(Debug)]
 pub struct ListRead {
@@ -150,7 +165,8 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Halt::Cancelled);
         }
-        let turn = self.rate.turn(self.device).await;
+        let network = network_of(self.client, self.rate, self.device).await;
+        let turn = self.rate.turn_on(self.device, network).await;
         if self.cancel.load(Ordering::Relaxed) {
             return Err(Halt::Cancelled);
         }

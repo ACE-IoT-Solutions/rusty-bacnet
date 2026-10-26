@@ -2,7 +2,7 @@
 
 The UI-free operations core of the `bacnet` tool in the
 [Rusty BACnet](https://github.com/jscott3201/rusty-bacnet) workspace. The
-one-shot commands, the terminal UI and the planned MCP server (see
+one-shot commands, the terminal UI and the MCP server (`bacnet-mcp`; see
 [`docs/design/mcp.md`](https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/design/mcp.md)) share it, so they read
 targets, values and devices the same way and obey the same request limits.
 
@@ -15,11 +15,13 @@ targets, values and devices the same way and obey the same request limits.
   `present-value[3]`, `72.5@8`).
 - `format` and `label`: property values as display text, and how objects,
   properties and command priorities are named.
-- `limits`: a global request-rate cap and one outstanding confirmed request
-  per device.
+- `limits`: a global request-rate cap, one outstanding confirmed request
+  per device, optional rates per network, and per-caller accounts with
+  their own token buckets.
 - `engine`: the read operations over a `BACnetClient`: properties (by
   ReadPropertyMultiple, falling back to ReadProperty), the object list, a
-  device summary, trend log pages and alarms.
+  device summary, trend log pages and alarms, and Who-Is with the
+  discovery table.
 
 It is a hosted crate: it needs `std` and Tokio, and has no terminal or MCP
 dependency. Its `sc-tls` feature lets the address formatter recognise a

@@ -106,8 +106,8 @@ Commands that take a `<target>` argument accept several formats:
 
 When using a device instance number, the device must have been previously found via `discover` in the same process. A one-shot command starts with an empty device table, so give it an address, a `bip6:` or `mstp:` target, or a routed `DNET:instance` target, which it looks up itself.
 
-**Routed targets.** `read`, `readm`, `read-range`, `alarms`, `file-read`,
-`file-write`, `write`, `writem`, `subscribe`, `control`, `reinit`, `time-sync`,
+**Routed targets.** `read`, `readm`, `read-range`, `alarms`, `alarm-summary`,
+`enrollment-summary`, `file-read`, `file-write`, `write`, `writem`, `subscribe`, `control`, `reinit`, `time-sync`,
 `create-object`, `delete-object` and `ack-alarm` (`ack`) take
 `DNET:instance` and `DNET:0xMAC`. When the device isn't in the discovery table
 yet, the CLI sends a Who-Is to that network and waits up to three seconds for
@@ -151,7 +151,7 @@ before the CLI binds a socket.
 
 | Class | Commands (aliases) | Needs |
 |---|---|---|
-| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `mstp-ports`, `capture`, `sc-check`, `tui`, `help` | nothing |
+| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `alarm-summary`, `enrollment-summary`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `mstp-ports`, `capture`, `sc-check`, `tui`, `help` | nothing |
 | write | `write` (`wp`), `writem` (`wpm`), `create-object`, `delete-object`, `file-write`, `ack-alarm` (`ack`), `time-sync` (`ts`), `unregister`, `subscribe --lifetime 0` | `--allow-write` |
 | device management | `control` (`dcc`), `reinit` | `--allow-write`, plus `--yes` or the typed confirmation |
 
@@ -1164,6 +1164,9 @@ bacnet --allow-write write 192.168.1.100 av:1 pv enumerated:3       # explicit e
 bacnet --allow-write write 192.168.1.100 sc:1 pv date:2024-03-15    # date value
 bacnet --allow-write write 192.168.1.100 sc:1 pv time:14:30:00      # time value
 bacnet --allow-write write 192.168.1.100 nc:1 pv object:ai:1        # object identifier value
+bacnet --allow-write write 192.168.1.100 ai:1 reliability open-loop  # enumeration by name
+bacnet --allow-write write 192.168.1.100 ai:1 event-enable "to-offnormal | to-normal"  # named bits
+bacnet --allow-write write 192.168.1.100 trend-log:1 start-time "2026-10-25 14:30"   # date-time
 ```
 
 Every `write` needs `--allow-write` (see [Write guard](#write-guard)).
@@ -1198,6 +1201,81 @@ bacnet --allow-write writem 192.168.1.100 av:1 pv=72.5@8,desc='"Zone Temp"' av:2
 
 Inline priority: append `@N` to any value (e.g., `72.5@8`, `null@16`).
 
+**Values by name.** `write` and `writem` know the property they write, so
+a value can be typed as [Value output](#value-output) prints it, and a value
+read pastes back as a write:
+
+- a plain number for an analog or integer object's value (Present_Value,
+  Relinquish_Default, a Priority_Array slot, COV_Increment, High_Limit,
+  Low_Limit, Deadband) is sent as the property's datatype: `72` for an
+  Analog Value is REAL 72.0, Double for a Large Analog Value, INTEGER or
+  Unsigned for the integer objects. A number past the datatype's range is
+  refused. A REAL holds whole numbers exactly only up to 16,777,216 (2^24);
+  past that it keeps about seven significant digits. A number for an
+  enumerated property is sent as ENUMERATED;
+
+- an enumeration by name, in kebab case, UPPER_SNAKE or any case
+  (`open-loop`, `OPEN_LOOP`), or by number; a binary object's state as
+  `active` or `inactive`, with or without the object's text after it
+  (`active (On)`); a multi-state state by number, its text allowed after
+  it (`2 (Heat)`);
+- a named bit string by its set bits, `in-alarm,fault` or `in-alarm |
+  fault` (quote a `|` for the shell; `writem` needs the `|` form, since a
+  comma separates its writes), as 0/1 digits first bit first (`1100`), or
+  `none` for no bit set (an empty value is refused, so a blank field never
+  clears every bit); a bit string without names as `bits(0101)`;
+- a date as `2026-10-19`, with a weekday (`2026-10-19 Mon`), `*` for any
+  field, the special months and days by name (`*-even-months-last-day`),
+  or `any date`; a time as `07:00`, `14:30:05` or `14:30:05.25`, `*` for any
+  field, or `any time`; hundredths are two digits (`.05`, `.50`). The
+  `date:` and `time:` prefixes take the same forms;
+- a date-time as a date then a time, `2026-10-19 Mon 07:00`, or
+  `unspecified`; for a property that holds one (Start_Time, Stop_Time,
+  Modification_Date, a DateTime Value's Present_Value and similar), a date
+  alone leaves the time unspecified;
+- a timestamp (Last_Restore_Time, an `event-time-stamps[N]` element) as
+  `seq 42`, a time, or a date and time.
+
+A mistyped name is refused with the valid names, or the nearest few when
+the enumeration is long:
+
+```text
+Error: unknown BinaryPV 'actve'; expected one of: inactive, active (or a number)
+```
+
+The explicit forms (`enumerated:N`, `date:`, `time:`, `object:`, a quoted
+string, `null`, `true`/`false`) keep their meaning for every property.
+
+**Constructed values as JSON.** A Weekly_Schedule day, an
+Exception_Schedule special event, a Date_List calendar entry and a
+Recipient_List destination are typed as JSON: one element for an indexed
+write (`weekly-schedule[2]`, `exception-schedule[1]`), a JSON list of them
+for the whole property (a Weekly_Schedule is seven days, Monday first). The
+shapes follow the Python bindings' typed constructors, with dates and times
+written as above:
+
+| Element | JSON |
+|---------|------|
+| Day | `[["07:00", 72.5], ["18:00", null]]`; an entry may also be `{"time": "07:00", "value": 72.5}` |
+| Calendar entry | `{"kind": "date", "date": "2026-12-25"}`, `{"kind": "date_range", "start_date": "2026-07-01", "end_date": "2026-07-04"}` or `{"kind": "week_n_day", "month": 12, "week_of_month": 1, "day_of_week": 1}` (`null` or 255 for any) |
+| Special event | `{"period": <calendar entry or "calendar:1">, "time_values": <day>, "priority": 10}` |
+| Destination | `{"recipient": "device:99", "process_identifier": 7}`, optionally with `valid_days` (`["mon", "tue"]` or Python's bit number), `from_time`, `to_time`, `issue_confirmed_notifications` and `transitions` (`["to-offnormal"]` or a number); left out, a destination covers every day, all day, every transition, unconfirmed. A recipient may also be `{"kind": "device", "object_identifier": "device:99"}` or `{"kind": "address", "network_number": 5, "mac_address": "0a:00:00:64:ba:c0"}` |
+
+An entry's value is a JSON null, boolean or number (a whole number is
+Unsigned, or Signed when negative; one with a decimal point or an
+exponent, or too large for either, is a REAL, refused past a REAL's range) or a
+string in the value grammar above (`"active"`, `"enumerated:3"`; a
+CharacterString keeps its inner quotes, `"\"Occupied\""`). A field the
+shape doesn't know is refused, and every error names where it is:
+
+```bash
+bacnet --allow-write write 192.168.1.100 schedule:1 weekly-schedule[2] '[["07:00", 72.5], ["18:00", null]]'
+bacnet --allow-write write 192.168.1.100 calendar:1 date-list '[{"kind": "date", "date": "2026-12-25"}]'
+```
+
+In the TUI, type JSON in the write form's Value field; the `:writem` bar
+splits on spaces and reads a quoted word as a string.
+
 ### COV Subscriptions
 
 ```bash
@@ -1226,7 +1304,12 @@ decodes them; JSON adds their typed forms under `decoded`, keyed by property.
 ### Alarms and Events
 
 ```bash
-bacnet alarms 192.168.1.100                              # get event/alarm summary
+bacnet alarms 192.168.1.100                              # active events and unacknowledged transitions
+bacnet alarms 192.168.1.100 --max 50                     # stop after 50 objects
+bacnet alarm-summary 192.168.1.100                       # objects in alarm (GetAlarmSummary)
+bacnet enrollment-summary 192.168.1.100                  # event-initiating objects (GetEnrollmentSummary)
+bacnet enrollment-summary 192.168.1.100 --acked not-acked --state active
+bacnet enrollment-summary 192.168.1.100 --event-type out-of-range --priority 1-100 --class 5
 
 bacnet --allow-write ack-alarm 192.168.1.100 ai:1 --state 1 \
   --timestamp sequence:417 --ack-time time:14,30,00,00
@@ -1234,6 +1317,61 @@ bacnet --allow-write ack-alarm 192.168.1.100 ai:1 --state 1 --source "operator" 
   --timestamp time:14,29,58,25 \
   --ack-time "datetime:2026,9,2,3;14,30,00,00"
 ```
+
+`alarms` lists every object with an event state other than normal or a
+transition not yet acknowledged (GetEventInformation). A device can answer
+in pages; `alarms` asks for the next page, from the last object, until the
+device says there are no more or `--max` objects (default 10000) have
+arrived. The table shows each object, its event state, the transitions
+acknowledged (`Acked`) and enabled, the notify type, the time of each
+transition's last event (to-offnormal, to-fault, to-normal) and their
+notification priorities (`3/5/200`, in the same order). When `--max` stops
+the reading early, a last line says the device holds more.
+
+`alarm-summary` lists the objects in alarm with their state and
+acknowledged transitions (GetAlarmSummary). `enrollment-summary` lists
+event-initiating objects with their event type, state, notification
+priority and notification class (GetEnrollmentSummary); a device returns
+only the objects that match all the filters given. The standard keeps both
+services only so clients can reach older devices, and advises newer ones
+not to serve them (Clauses 13.10 and 13.11), so a current device may reject
+them; `alarms` works everywhere. The `enrollment-summary` filters:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--acked <F>` | `all` | `all`, `acked`, or `not-acked` (an unacknowledged transition) |
+| `--state <S>` | (any) | `offnormal`, `fault`, `normal`, `all`, or `active` (not normal) |
+| `--event-type <T>` | (any) | An event type by name: `out-of-range`, `change-of-state`, ... |
+| `--priority <P>` | (any) | Notification priority, `MIN-MAX` (0 to 255) or one value |
+| `--class <N>` | (any) | Notification class number |
+
+Names take either spelling, `not-acked` or `NOT_ACKED`. All three commands
+take routed targets.
+
+In JSON, `alarms` prints `{"summaries": [...], "more_events": false}`, and
+`alarm-summary` and `enrollment-summary` print an array. Each field is a
+value in the [Value output](#value-output) forms, keyed in snake case:
+
+```json
+{
+  "object": {"type": "analog-value", "type_number": 2, "instance": 1},
+  "event_state": {"value": 3, "name": "high-limit"},
+  "acknowledged_transitions": {"bits": "011", "names": ["to-fault", "to-normal"]},
+  "event_enable": {"bits": "111", "names": ["to-offnormal", "to-fault", "to-normal"]},
+  "notify_type": {"value": 0, "name": "alarm"},
+  "event_timestamps": {
+    "to_offnormal": {"element": "time-stamp", "text": "2026-10-25 Sun 14:30:05"},
+    "to_fault": {"element": "time-stamp", "text": "seq 42"},
+    "to_normal": {"element": "time-stamp", "text": "07:00"}
+  },
+  "event_priorities": {"to_offnormal": 3, "to_fault": 5, "to_normal": 200}
+}
+```
+
+An `alarm-summary` entry has `object`, `alarm_state` and
+`acknowledged_transitions`; an `enrollment-summary` entry has `object`,
+`event_type`, `event_state`, `priority` and `notification_class` (`null`
+when the device left it out).
 
 **ack-alarm flags:**
 
@@ -1244,10 +1382,15 @@ bacnet --allow-write ack-alarm 192.168.1.100 ai:1 --state 1 --source "operator" 
 | `--ack-time <SPEC>` | (required) | Caller-selected time of acknowledgment |
 | `--source <S>` | `bacnet-cli` | Acknowledgment source string |
 
-Both timestamp flags use the same strict grammar:
+Both timestamp flags take a timestamp as the CLI prints one, so a printed
+timestamp pastes back: `seq 417`, a time (`14:29:58.25`), or a date and time
+(`"2026-10-25 Sun 14:30:05"`; a date alone leaves the time unspecified), with
+the date and time forms of [Writing Properties](#writing-properties). They
+also take the strict grammar:
 
 - `sequence:<0..65535>`
-- `time:<hour>,<minute>,<second>,<hundredths>`
+- `time:<hour>,<minute>,<second>,<hundredths>`, or `time:HH:MM[:SS[.hh]]`
+  as `write` takes it
 - `datetime:<full-year>,<month>,<day>,<day-of-week>;<hour>,<minute>,<second>,<hundredths>`
 
 Date years are `1900..2154`; months are `1..14`, days are `1..34`,
@@ -1257,8 +1400,9 @@ when BACnet's unspecified value is intended (use full-year `255` for an
 unspecified year). Values are preserved exactly and neither timestamp is
 inferred from a clock. Quote `datetime:` values in command shells because the
 grammar contains a semicolon. `--timestamp` must come from the original event
-notification; `--ack-time` is explicitly chosen by the caller. The current
-raw `alarms` response is not a guided source for these values.
+notification; `--ack-time` is explicitly chosen by the caller. `alarms`
+shows each transition's last event time in the printed form, which
+`--timestamp` takes as shown (quote it for the shell).
 
 **Alias:** `ack` = ack-alarm
 

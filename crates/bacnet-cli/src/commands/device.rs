@@ -1,4 +1,4 @@
-//! Device management commands: DeviceCommunicationControl, ReinitializeDevice, GetEventInformation,
+//! Device management commands: DeviceCommunicationControl, ReinitializeDevice,
 //! AcknowledgeAlarm, CreateObject, DeleteObject, TimeSync.
 
 use bacnet_client::client::BACnetClient;
@@ -163,30 +163,6 @@ pub async fn reinit_cmd<T: TransportPort + 'static>(
         .await?;
 
     output::print_success("OK", format);
-    Ok(())
-}
-
-/// Get event/alarm information from a device.
-pub async fn alarms_cmd<T: TransportPort + 'static>(
-    client: &BACnetClient<T>,
-    to: &Destination,
-    format: OutputFormat,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let response = to.get_event_information(client, None).await?;
-
-    // TODO: Decode GetEventInformation-ACK properly.
-    let hex: String = response
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    output::print_success(
-        &format!(
-            "GetEventInformation response ({} bytes, raw — decoding not yet implemented):\n{hex}",
-            response.len()
-        ),
-        format,
-    );
     Ok(())
 }
 

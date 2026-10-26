@@ -137,6 +137,7 @@ py_bacnet_enum!(
     u32
 );
 py_bacnet_enum!("EventType", PyEventType, bacnet_enums::EventType, u32);
+py_bacnet_enum!("NotifyType", PyNotifyType, bacnet_enums::NotifyType, u32);
 py_bacnet_enum!(
     "MessagePriority",
     PyMessagePriority,

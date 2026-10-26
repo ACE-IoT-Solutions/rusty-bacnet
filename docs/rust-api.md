@@ -7529,21 +7529,27 @@ let ack = AcknowledgeAlarmRequest {
     time_of_acknowledgment: now,
 };
 client.acknowledge_alarm_request(&mac, &ack).await?;
-let raw = client.get_event_information(&mac, None).await?;
 ```
 
-GetAlarmSummary and GetEnrollmentSummary have no dedicated client methods.
-Send them with `confirmed_request` and decode the ACK with `bacnet_services`:
+`get_event_information`, `get_alarm_summary` and `get_enrollment_summary`
+send GetEventInformation, GetAlarmSummary and GetEnrollmentSummary and
+return the decoded ACKs; their `_from_device` forms take a discovered
+device instance and route through its router when it has one. While a
+`GetEventInformationAck` has `more_events` set, ask again from its last
+summary's object. For display, `bacnet_ops::format::alarms`
+names the states, bits and timestamps of all three, and its
+`read_event_information` follows the pages.
 
 ```rust
-use bacnet_services::alarm_summary::GetAlarmSummaryAck;
-use bacnet_services::enrollment_summary::{GetEnrollmentSummaryAck, GetEnrollmentSummaryRequest};
-use bacnet_types::enums::{AcknowledgmentFilter, ConfirmedServiceChoice};
-use bytes::BytesMut;
+use bacnet_services::enrollment_summary::GetEnrollmentSummaryRequest;
+use bacnet_types::enums::AcknowledgmentFilter;
 
-// GetAlarmSummary takes no parameters.
-let raw = client.confirmed_request(&mac, ConfirmedServiceChoice::GET_ALARM_SUMMARY, &[]).await?;
-let alarms = GetAlarmSummaryAck::decode(&raw)?;
+let events = client.get_event_information(&mac, None).await?;
+if events.more_events {
+    let after = events.list_of_event_summaries.last().map(|s| s.object_identifier);
+    let next = client.get_event_information(&mac, after).await?;
+}
+let alarms = client.get_alarm_summary(&mac).await?;
 
 let request = GetEnrollmentSummaryRequest {
     acknowledgment_filter: AcknowledgmentFilter::ALL,
@@ -7553,12 +7559,7 @@ let request = GetEnrollmentSummaryRequest {
     priority_filter: None,
     notification_class_filter: None,
 };
-let mut service_data = BytesMut::new();
-request.encode(&mut service_data);
-let raw = client
-    .confirmed_request(&mac, ConfirmedServiceChoice::GET_ENROLLMENT_SUMMARY, &service_data)
-    .await?;
-let enrollments = GetEnrollmentSummaryAck::decode(&raw)?;
+let enrollments = client.get_enrollment_summary(&mac, &request).await?;
 ```
 
 ### Life Safety

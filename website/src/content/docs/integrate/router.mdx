@@ -92,7 +92,7 @@ The router's own application entity can host Python stacks too (#2071). Build th
 
 ### More routed CLI commands and router changes
 
-- `alarms`, `read-range`, `create-object`, `delete-object`, `ack-alarm`, `control`, `reinit`, `time-sync`, `file-read` and `file-write` also take routed targets (#1786), with the same write guards.
+- `alarms`, `alarm-summary`, `enrollment-summary`, `read-range`, `create-object`, `delete-object`, `ack-alarm`, `control`, `reinit`, `time-sync`, `file-read` and `file-write` also take routed targets (#1786, and the two summaries #2077), with the same write guards.
 - The duplicate suppression also covers three messages the router passes on without a hop count, so that nothing else stops them around a loop (#1810): I-Am-Router-To-Network, and Router-Busy-To-Network or Router-Available-To-Network from one sender.
 - `BACnetRouter::originate` sends a global broadcast from the router's own application, such as a Who-Is for every network, on every port (#1809).
 - `RouterPort`'s transport type defaults to `AnyTransport` (#2043), so a router that mixes link types can write `RouterPort` alone.
