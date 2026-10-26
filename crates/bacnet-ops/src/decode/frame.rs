@@ -4,10 +4,11 @@
 //! The link layers each wrap the NPDU differently, so [`link`] finds the
 //! NPDU and what the link says around it; the network and application
 //! layers are the same everywhere and go through [`super::decode_npdu_layer`].
+//! [`summarize_npdu`] reads an NPDU given without its link.
 
 use std::ops::Range;
 
-use bacnet_ops::target::{hex, routed_station};
+use crate::target::{hex, routed_station};
 use bacnet_transport::bip6::{Bvll6, decode_bvll6, format_vmac_text};
 use bacnet_transport::bvll::{self, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_transport::mstp::codec::{FrameType, decode_frame, decode_frame_in_place};
@@ -34,7 +35,6 @@ pub enum Framing {
     Bip6,
     /// A BVLC-SC message, the WebSocket payload (Annex AB). Only an SC
     /// session (`sc-tls`) captures one.
-    #[cfg_attr(not(feature = "sc-tls"), allow(dead_code))]
     Sc,
     /// An MS/TP frame, preamble to CRC (Clause 9.3).
     Mstp,
@@ -106,22 +106,28 @@ pub fn kebab(name: impl std::fmt::Display) -> String {
 }
 
 /// What the link layer says about a frame, and where its NPDU is.
-pub(crate) struct Link {
-    pub(crate) name: String,
-    pub(crate) broadcast: bool,
-    pub(crate) source: Option<String>,
-    pub(crate) destination: Option<String>,
-    pub(crate) problem: Option<String>,
+pub struct Link {
+    /// The link message in kebab case: a BVLC function, an MS/TP frame
+    /// type, or `malformed`.
+    pub name: String,
+    /// A link broadcast.
+    pub broadcast: bool,
+    /// The link's source, where the frame names one.
+    pub source: Option<String>,
+    /// The link's destination, where the frame names one.
+    pub destination: Option<String>,
+    /// A NAK, or why the header doesn't decode.
+    pub problem: Option<String>,
     /// Whether the link header refused to decode, so `npdu` is unknown
     /// rather than absent.
-    pub(crate) malformed: bool,
+    pub malformed: bool,
     /// The NPDU, as a range of the frame's octets, or decoded on its own
     /// for an extended MS/TP frame, whose data is COBS-encoded on the wire.
-    pub(crate) npdu: Option<Npdu>,
+    pub npdu: Option<Npdu>,
 }
 
 /// Where a frame's NPDU is.
-pub(crate) enum Npdu {
+pub enum Npdu {
     /// Inside the frame, as sent.
     At(Range<usize>),
     /// Encoded in `wire`; `data` is the decoded NPDU.
@@ -139,7 +145,7 @@ fn offset_in(frame: &[u8], part: &[u8]) -> usize {
 }
 
 /// Read the link layer of `frame`.
-pub(crate) fn link(framing: Framing, frame: &[u8]) -> Link {
+pub fn link(framing: Framing, frame: &[u8]) -> Link {
     let mut link = Link {
         name: String::new(),
         broadcast: false,
@@ -288,6 +294,20 @@ pub fn summarize_frame(framing: Framing, frame: &[u8]) -> FrameSummary {
         Some(Npdu::Encoded { data, .. }) => Bytes::from(data),
         None => return summary,
     };
+    network_layer(&mut summary, npdu);
+    summary
+}
+
+/// Summarise an NPDU on its own, with no link around it: the network
+/// layer and the APDU's header.
+pub fn summarize_npdu(npdu: &[u8]) -> FrameSummary {
+    let mut summary = FrameSummary::default();
+    network_layer(&mut summary, Bytes::copy_from_slice(npdu));
+    summary
+}
+
+/// What the network layer and the APDU's header add to a summary.
+fn network_layer(summary: &mut FrameSummary, npdu: Bytes) {
     if let Ok(view) = bacnet_npdu::Npdu::decode(&npdu) {
         summary.routed_source = view.source.map(|a| routed(a.network, a.mac));
         summary.routed_destination = view.destination.map(|a| routed(a.network, a.mac));
@@ -310,7 +330,6 @@ pub fn summarize_frame(framing: Framing, frame: &[u8]) -> FrameSummary {
         }
         Err(error) => summary.problem = Some(format!("malformed: {error}")),
     }
-    summary
 }
 
 #[cfg(test)]
