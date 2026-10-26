@@ -24,8 +24,11 @@ targets, values and devices the same way and obey the same request limits.
 - `engine`: the read operations over a `BACnetClient`: properties (by
   ReadPropertyMultiple, falling back to ReadProperty), the object list, a
   device summary, trend log pages, alarms and the alarm and enrollment
-  summaries, and Who-Is and Who-Is-Router-To-Network with the discovery
-  table.
+  summaries, Who-Is and Who-Is-Router-To-Network with the discovery
+  table, and the BBMD table reads.
+- `bbmd`: B/IP broadcast management tables as plain data, the survey that
+  follows each BDT to the BBMDs it lists, and the consistency matrix over
+  them (one-way entries, missing own entries, mismatched masks).
 - `watch`: the watch hub. One managed COV subscription per point (finite
   lifetime, renewed, cancelled when the last listener leaves) or a poll
   every 10 s or slower when the device refuses COV, however many listeners

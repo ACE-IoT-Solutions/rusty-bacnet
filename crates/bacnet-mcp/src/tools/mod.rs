@@ -6,6 +6,7 @@
 //! tools that send nothing. No configuration lists a write tool.
 
 pub(crate) mod alarms;
+mod bbmd;
 mod decode;
 pub(crate) mod describe;
 pub(crate) mod discover;
