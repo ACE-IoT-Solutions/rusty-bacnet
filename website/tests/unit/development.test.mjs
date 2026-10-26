@@ -35,8 +35,8 @@ test('integration navigation resolves task guides with release-pinned source lin
     ['development/build-from-source', 'development/documentation']);
   assert.deepEqual(navigation.find(group => group.label === 'Evaluate and get help').items.map(item => item.slug),
     ['help/troubleshooting', 'project/support', 'project/performance', 'project/upgrading', 'project/upgrading/v0-14']);
-  assert.equal(new Set(navigation.flatMap(group => group.items.map(item => item.slug))).size,
-    navigation.reduce((sum, group) => sum + group.items.length, 0));
+  const pages = navigation.flatMap(group => group.items.flatMap(item => item.items ?? [item]));
+  assert.equal(new Set(pages.map(item => item.slug)).size, pages.length);
   for (const slug of [...slugs, 'connect/overview', 'connect/bacnet-sc', 'reference/transports', 'project/performance']) {
     const path = await guidePath(slug);
     const source = await readFile(path, 'utf8');

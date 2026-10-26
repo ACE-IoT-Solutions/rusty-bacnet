@@ -18,10 +18,14 @@ targets, values and devices the same way and obey the same request limits.
 - `limits`: a global request-rate cap, one outstanding confirmed request
   per device, optional rates per network, and per-caller accounts with
   their own token buckets.
+- `decode`: frames of the tapped links (B/IP, B/IPv6, BACnet/SC, MS/TP),
+  NPDUs and APDUs as one-line summaries and trees of fields with their
+  octet ranges, with no traffic.
 - `engine`: the read operations over a `BACnetClient`: properties (by
   ReadPropertyMultiple, falling back to ReadProperty), the object list, a
-  device summary, trend log pages and alarms, and Who-Is with the
-  discovery table.
+  device summary, trend log pages, alarms and the alarm and enrollment
+  summaries, and Who-Is and Who-Is-Router-To-Network with the discovery
+  table.
 
 It is a hosted crate: it needs `std` and Tokio, and has no terminal or MCP
 dependency. Its `sc-tls` feature lets the address formatter recognise a

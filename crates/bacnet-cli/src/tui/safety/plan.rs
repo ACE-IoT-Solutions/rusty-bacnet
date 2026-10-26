@@ -151,7 +151,7 @@ fn first(data: &[u8]) -> Option<PropertyValue> {
 }
 
 /// Give a typed number the datatype the property already holds:
-/// `parse_value` reads `42` as Unsigned, which an analog Present_Value
+/// `parse_value_for` reads `42` as Unsigned, which an analog Present_Value
 /// would refuse as the wrong datatype.
 pub(crate) fn coerce(value: PropertyValue, like: Option<&PropertyValue>) -> PropertyValue {
     use PropertyValue as V;
@@ -252,7 +252,13 @@ fn plan(
         None => PropertyValue::Null,
         Some(text) => {
             let like = current.or(default).and_then(first);
-            coerce(bacnet_ops::parse::parse_value(text)?, like.as_ref())
+            let typed = bacnet_ops::parse::parse_value_for(
+                spec.object.object_type(),
+                spec.property,
+                spec.index,
+                text,
+            )?;
+            coerce(typed, like.as_ref())
         }
     };
     // A typed `null` is a relinquish too, and is treated as one.

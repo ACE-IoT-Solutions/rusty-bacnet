@@ -1,9 +1,9 @@
 # Design: an MCP server for rusty-bacnet
 
 Status: accepted (2026-10-25). Epic #2064. Phase 0 (#2065) is implemented:
-the `bacnet-ops` crate and this document. Phase 1 (#2066) is in progress: the
-`bacnet-mcp` crate, `bacnet mcp serve`, the safety layer and four of the nine
-read tools; [`../mcp.md`](../mcp.md) describes what exists. Anything marked
+the `bacnet-ops` crate and this document. Phase 1 (#2066) is complete: the
+`bacnet-mcp` crate, `bacnet mcp serve`, the safety layer and the nine read
+tools; [`../mcp.md`](../mcp.md) describes what exists. Anything marked
 **planned** does not exist yet. BACnet references are clause numbers in ANSI/ASHRAE 135-2020,
 paraphrased. MCP references are to the 2026-07-28 revision of the
 specification, linked in §14.
@@ -92,6 +92,7 @@ Layer 6.5: bacnet-ops    the operations core: no UI, no MCP dependency
              destination  a target as a service destination, routed when needed
              parse        object, property and value grammar
              format       property values as display text
+             decode       frames, NPDUs and APDUs as summaries and field trees (phase 1)
              label        object, property and priority names
              limits       RequestLimits: global rate cap, one request per device
              engine       Reader, and the Engine facade over BACnetClient
@@ -138,6 +139,11 @@ From `bacnet-cli` into `bacnet-ops`, without behaviour changes (#2065):
 | `limits` | `RequestLimits` from `tui/worker/browse/limits.rs` (the browser's scheduler stays, as `browse/schedule.rs`) |
 | `engine` | the reader from `tui/worker/browse/read.rs`, `ReadVia`, and the device card's property list |
 
+Phase 1 moved the capture screen's decoder the same way, for
+`bacnet_decode`: `decode/frame.rs`, `decode/tree.rs` and the network and
+application layer reader became `bacnet_ops::decode`, and
+`output::format_property_value` became `bacnet_ops::format::format_property_value`.
+
 Every item the CLI or MCP needs is `pub` and documented; helpers private to
 a module stay private. The TUI's browser, watch list and write previews use
 `engine::Reader` directly with their own stop flags. The new `Engine`
@@ -160,7 +166,9 @@ client's discovery table, so routed devices work through the
 | `list_objects(device)` | the Object_List whole, or element by element when it can't come in one answer |
 | `describe_device(device)` | the Device properties the TUI's device card shows (vendor, model, firmware, revisions, services, object types, APDU size, segmentation, database revision) |
 | `read_trend(device, log, cursor, page_size)` | one page of a Trend Log, Trend Log Multiple, Event Log or Audit Log, with where to read next |
-| `alarms(device, after)` | one decoded GetEventInformation answer |
+| `alarms(device, after)` | one GetEventInformation answer |
+| `alarm_summary(device)`, `enrollment_summary(device, request)` | one GetAlarmSummary or GetEnrollmentSummary answer (phase 1) |
+| `discover_routers(network, wait)` | one Who-Is-Router-To-Network, under the local network's rate, and the routers that answered (phase 1) |
 
 A property the device can't give is a typed `RowError`, not text: the
 device's error (class and code, a structured Error PDU reduced to both),
@@ -245,14 +253,14 @@ openWorldHint: false`.
 | Tool | Phase | Annotations | Inputs (outline) | Result (outline) |
 |---|---|---|---|---|
 | `bacnet_discover` | 1 | RO, idempotent | `send` (default true), `scope` (local, network, directed, global), `network`, `address`, `range`, `wait_s` (1 to 30), `cursor` | devices: instance, address, network, vendor, max APDU, segmentation, last seen; names only on request |
-| `bacnet_find_object` | 1 | RO | `name` or `object`, `range`, `wait_s` | matches: device, object, name (untrusted) |
-| `bacnet_network_map` | 1 | RO | `network`, `bbmd`, `wait_s` | routers and the networks they reach; a BBMD's tables and a consistency verdict |
+| `bacnet_find_object` | 1 | RO | `name`, `description`, `object` or `types`; `range`, `cursor` | matches: device, object, name and description (untrusted); devices incomplete or skipped |
+| `bacnet_network_map` | 1 | RO | `send`, `network`, `wait_s` (a BBMD's tables and a consistency verdict: **planned**) | routers and the networks they reach; networks with routers, speed, rate and devices |
 | `bacnet_read` | 1 | RO, idempotent | `device`, `reads` (up to 100: object, properties or `all`/`required`, index), `preset` (`point`, `device`), `format` (display, typed, both) | results per property: value or BACnet error; `via` rpm or rp |
 | `bacnet_list_objects` | 1 | RO | `device`, `types`, `names`, `cursor` | objects, total, next cursor |
 | `bacnet_describe_device` | 1 | RO, idempotent | `device`, `count_objects` | vendor, model, firmware and software versions, protocol revision, services and object types by name, segmentation, APDU size, database revision, route |
-| `bacnet_read_trend` | 1 | RO | `device`, `object`, `from`, `to`, `max_records` (up to 2,000), `summary`, `cursor` | records, or a server-side summary (count, min, max, mean, gaps); result flags; a cursor wrapping the log reader's checkpoint |
-| `bacnet_alarms` | 1 | RO | `device` or devices, `include_text`, `cursor` | event summaries: object, event state, acknowledgment, timestamps, notify type |
-| `bacnet_decode` | 1 | local, pure | `hex`, `link` (bip, bip6, mstp, sc, auto) | decoded layers and a one-line summary; no traffic, so it works in passive mode |
+| `bacnet_read_trend` | 1 | RO | `device`, `object`, `from`, `to`, `max_records` (up to 2,000), `summary`, `cursor` | records and a summary of them (count, flagged, first and last time; per column min, max, mean and state counts), or the summary alone; pages, cut-short answers and gaps; a cursor holding the log's next sequence number |
+| `bacnet_alarms` | 1 | RO | `device`, `max`, `summaries`, `cursor` | event summaries: object, event state, acknowledgment, timestamps, notify type, priorities; the alarm and enrollment summaries on request |
+| `bacnet_decode` | 1 | local, pure | `hex`, `link` (bip, bip6, mstp, sc, npdu, apdu, auto) | decoded layers as a field tree and a one-line summary; no traffic, so it works in passive mode |
 | `bacnet_write` | 3 | `readOnlyHint: false`, `destructiveHint: true`, `idempotentHint: false` | `device`, `writes` (1 to 20: object, property, index, typed value or null to relinquish, priority), `batch` (WPM), `reason` | outcome per write (ack, error, timeout, not sent), ledger ids, a revert hint |
 | `bacnet_revert` | 3 | destructive | ledger ids, or all of this principal's | outcome per entry |
 
@@ -270,8 +278,11 @@ Notes:
   the reach; and when the profile names its devices, a Who-Is must also ask
   a range inside them, so devices outside the policy are never asked.
 - `bacnet_read_trend` with `summary: true` pages the whole window on the
-  server under the rate limit and returns only statistics, for analysis
-  without flooding the agent's context.
+  server under the rate limit (up to 20,000 records a call) and returns only
+  statistics, for analysis without flooding the agent's context.
+- `bacnet_network_map` with `send: true` broadcasts a
+  Who-Is-Router-To-Network, which every router answers, so it follows the
+  broad-discovery rule: allowed by the policy, and one a minute.
 - A page budget keeps text under about 24 kB and structured content under
   about 64 kB per call. A larger result returns a page and `next_cursor`.
   Default page sizes: 200 devices, 200 objects, 100 property values, 500

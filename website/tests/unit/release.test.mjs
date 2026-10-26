@@ -48,7 +48,7 @@ test('every copy of the release version matches site.mjs', async () => {
   const lab = await read('examples/python/loopback_lab.py');
   expect(`loopback_lab.py names ${versions(lab).join(', ')}`, versions(lab).join() === release
     && lab.match(/^EXPECTED_VERSION = "([^"]+)"$/m)?.[1] === release);
-  const labels = navigation.flatMap(group => [group.label, ...group.items.map(item => item.label)]).join('\n');
+  const labels = navigation.flatMap(group => [group.label, ...group.items.flatMap(item => [item, ...(item.items ?? [])]).map(item => item.label)]).join('\n');
   expect(`navigation.json names v${serieses(labels).join(', v')}`, serieses(labels).join() === series);
   expect(`navigation.json: "Start with v${series}"`, navigation.some(group => group.label === `Start with v${series}`));
   expect(`index.mdx banner: 'Guides for the v${series} release`,

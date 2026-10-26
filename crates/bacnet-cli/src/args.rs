@@ -714,4 +714,7 @@ pub(crate) fn capture_sources(matches: &clap::ArgMatches) -> Result<Vec<String>,
 }
 
 #[cfg(test)]
+mod reference;
+
+#[cfg(test)]
 mod tests;

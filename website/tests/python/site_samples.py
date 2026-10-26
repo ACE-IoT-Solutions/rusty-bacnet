@@ -26,6 +26,10 @@ import shlex
 
 WEBSITE = Path(__file__).resolve().parents[2]
 DOCS = WEBSITE / "src/content/docs"
+# The markers around a generated reference region, as an HTML comment (.md)
+# or an MDX comment (.mdx).
+GENERATED_START = re.compile(r"^(?:<!--|\{/\*) generated:start\b")
+GENERATED_END = re.compile(r"^(?:<!-- generated:end -->|\{/\* generated:end \*/\})$")
 
 
 @dataclass(frozen=True)
@@ -91,14 +95,32 @@ class Block:
 
 
 def blocks(docs: Path = DOCS) -> list[Block]:
-    """Every fenced block and ``<Code>`` component, in page order."""
+    """Every fenced block and ``<Code>`` component, in page order.
+
+    Blocks inside a generated reference region are left out: the CLI,
+    Python and Rust reference pages (``reference/cli.md``,
+    ``reference/python.md``, ``reference/python/*.md`` and
+    ``reference/rust.mdx``) hold usage lines and signatures written by
+    ``website/scripts/reference-*`` between ``generated:start`` and
+    ``generated:end`` markers (#1989). They are not samples to run, and
+    their generators and ``tests/unit/reference.test.mjs`` check them.
+    """
     found = []
     for path in sorted(docs.rglob("*.md*")):
         page = path.relative_to(docs).as_posix()
         lines = path.read_text(encoding="utf-8").splitlines()
         fence = None
+        generated = False
         for number, line in enumerate(lines, 1):
             stripped = line.strip()
+            if fence is None and GENERATED_START.match(stripped):
+                generated = True
+                continue
+            if fence is None and GENERATED_END.match(stripped):
+                generated = False
+                continue
+            if generated:
+                continue
             if fence is not None:
                 if stripped == "```":
                     body = fence[2]
@@ -113,6 +135,8 @@ def blocks(docs: Path = DOCS) -> list[Block]:
                 found.append(Block(page, number, "component", "", stripped, stripped))
         if fence is not None:
             raise ValueError(f"{page}:{fence[0]}: unclosed code fence")
+        if generated:
+            raise ValueError(f"{page}: generated:start without generated:end")
     return found
 
 

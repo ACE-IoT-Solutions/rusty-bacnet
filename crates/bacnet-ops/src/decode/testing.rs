@@ -20,16 +20,12 @@ use bacnet_types::primitives::ObjectIdentifier;
 use bytes::{Bytes, BytesMut};
 
 /// `apdu` in an NPDU without routing.
-pub(crate) fn npdu(apdu: &Apdu, expecting_reply: bool) -> Vec<u8> {
+pub fn npdu(apdu: &Apdu, expecting_reply: bool) -> Vec<u8> {
     routed_npdu(apdu, expecting_reply, None)
 }
 
 /// `apdu` in an NPDU a router relayed from `source`, SNET and SADR.
-pub(crate) fn routed_npdu(
-    apdu: &Apdu,
-    expecting_reply: bool,
-    source: Option<(u16, &[u8])>,
-) -> Vec<u8> {
+pub fn routed_npdu(apdu: &Apdu, expecting_reply: bool, source: Option<(u16, &[u8])>) -> Vec<u8> {
     let mut payload = BytesMut::new();
     encode_apdu(&mut payload, apdu).unwrap();
     let npdu = Npdu {
@@ -51,7 +47,7 @@ pub(crate) fn routed_npdu(
 }
 
 /// A ReadProperty request for analog-input 1's present-value.
-pub(crate) fn rp_request(invoke_id: u8) -> Apdu {
+pub fn rp_request(invoke_id: u8) -> Apdu {
     let mut request = BytesMut::new();
     ReadPropertyRequest {
         object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
@@ -74,12 +70,12 @@ pub(crate) fn rp_request(invoke_id: u8) -> Apdu {
 }
 
 /// Its answer: the value 72.5.
-pub(crate) fn rp_ack(invoke_id: u8) -> Apdu {
+pub fn rp_ack(invoke_id: u8) -> Apdu {
     rp_ack_with(invoke_id, vec![0x44, 0x42, 0x91, 0x00, 0x00])
 }
 
 /// An unconfirmed request whose parameters are `octets`, as given.
-pub(crate) fn unconfirmed(octets: &[u8]) -> Apdu {
+pub fn unconfirmed(octets: &[u8]) -> Apdu {
     Apdu::UnconfirmedRequest(UnconfirmedRequest {
         service_choice: UnconfirmedServiceChoice::UNCONFIRMED_PRIVATE_TRANSFER,
         service_request: Bytes::copy_from_slice(octets),
@@ -87,7 +83,7 @@ pub(crate) fn unconfirmed(octets: &[u8]) -> Apdu {
 }
 
 /// A ReadProperty answer carrying `value`, application-tagged as given.
-pub(crate) fn rp_ack_with(invoke_id: u8, value: Vec<u8>) -> Apdu {
+pub fn rp_ack_with(invoke_id: u8, value: Vec<u8>) -> Apdu {
     let mut ack = BytesMut::new();
     ReadPropertyACK {
         object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
@@ -108,7 +104,7 @@ pub(crate) fn rp_ack_with(invoke_id: u8, value: Vec<u8>) -> Apdu {
 }
 
 /// An Error answering `service`: property, unknown-property.
-pub(crate) fn error(invoke_id: u8, service: ConfirmedServiceChoice) -> Apdu {
+pub fn error(invoke_id: u8, service: ConfirmedServiceChoice) -> Apdu {
     Apdu::Error(ErrorPdu {
         invoke_id,
         service_choice: service,
@@ -119,7 +115,7 @@ pub(crate) fn error(invoke_id: u8, service: ConfirmedServiceChoice) -> Apdu {
 }
 
 /// An I-Am from device `instance`.
-pub(crate) fn i_am(instance: u32) -> Apdu {
+pub fn i_am(instance: u32) -> Apdu {
     let mut request = BytesMut::new();
     IAmRequest {
         object_identifier: ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap(),
@@ -135,7 +131,7 @@ pub(crate) fn i_am(instance: u32) -> Apdu {
 }
 
 /// A B/IP Original-Unicast-NPDU, or Original-Broadcast-NPDU, of `npdu`.
-pub(crate) fn bip(npdu: &[u8], broadcast: bool) -> Vec<u8> {
+pub fn bip(npdu: &[u8], broadcast: bool) -> Vec<u8> {
     let message = if broadcast {
         Bvll::OriginalBroadcastNpdu(npdu)
     } else {
@@ -147,7 +143,7 @@ pub(crate) fn bip(npdu: &[u8], broadcast: bool) -> Vec<u8> {
 }
 
 /// A B/IP BVLC-Result NAK for a refused registration.
-pub(crate) fn bip_nak() -> Vec<u8> {
+pub fn bip_nak() -> Vec<u8> {
     let mut out = BytesMut::new();
     let code = BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK;
     encode_bvll(&mut out, &Bvll::BvlcResult(code)).unwrap();
@@ -155,7 +151,7 @@ pub(crate) fn bip_nak() -> Vec<u8> {
 }
 
 /// A B/IPv6 Original-Broadcast-NPDU from VMAC 0x000102.
-pub(crate) fn bip6_broadcast(npdu: &[u8]) -> Vec<u8> {
+pub fn bip6_broadcast(npdu: &[u8]) -> Vec<u8> {
     let message = Bvll6::OriginalBroadcastNpdu {
         source: Bip6Vmac::new([0, 1, 2]),
         npdu,
@@ -166,7 +162,7 @@ pub(crate) fn bip6_broadcast(npdu: &[u8]) -> Vec<u8> {
 }
 
 /// A BVLC-SC Encapsulated-NPDU to `destination`.
-pub(crate) fn sc_npdu(npdu: &[u8], destination: Option<Vmac>) -> Vec<u8> {
+pub fn sc_npdu(npdu: &[u8], destination: Option<Vmac>) -> Vec<u8> {
     let message = ScMessage {
         function: ScFunction::EncapsulatedNpdu,
         message_id: 0x1234,
@@ -182,7 +178,7 @@ pub(crate) fn sc_npdu(npdu: &[u8], destination: Option<Vmac>) -> Vec<u8> {
 }
 
 /// An MS/TP frame, preamble to CRC.
-pub(crate) fn mstp(frame_type: FrameType, destination: u8, source: u8, data: &[u8]) -> Vec<u8> {
+pub fn mstp(frame_type: FrameType, destination: u8, source: u8, data: &[u8]) -> Vec<u8> {
     let mut wire = vec![0; 16 + data.len() * 2];
     let length = Frame::new(frame_type, destination, source, data)
         .encode_into(&mut wire)

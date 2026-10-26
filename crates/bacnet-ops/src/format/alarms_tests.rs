@@ -273,6 +273,35 @@ async fn paging_follows_more_events_from_the_last_object() {
     assert_eq!(*device.asked.borrow(), [None, Some(2), Some(4)]);
 }
 
+/// A stop asked before each later answer ends the reading with what was
+/// read and "more"; the first answer is always fetched.
+#[tokio::test]
+async fn paging_stops_when_asked_and_says_more_remain() {
+    let device = Pages::new(vec![
+        (vec![1, 2], true),
+        (vec![3, 4], true),
+        (vec![5], false),
+    ]);
+    let asked = std::cell::Cell::new(0);
+    let stop = || {
+        asked.set(asked.get() + 1);
+        asked.get() > 1
+    };
+    let (summaries, more) = read_event_information_until(100, stop, |after| device.answer(after))
+        .await
+        .unwrap();
+    assert_eq!(instances(&summaries), [1, 2, 3, 4]);
+    assert!(more);
+    assert_eq!(*device.asked.borrow(), [None, Some(2)]);
+    let device = Pages::new(vec![(vec![1], true)]);
+    let (summaries, more) =
+        read_event_information_until(100, || true, |after| device.answer(after))
+            .await
+            .unwrap();
+    assert_eq!(instances(&summaries), [1]);
+    assert!(more);
+}
+
 #[tokio::test]
 async fn paging_stops_at_the_cap_and_says_more_remain() {
     let device = Pages::new(vec![(vec![1, 2], true), (vec![3, 4], true)]);

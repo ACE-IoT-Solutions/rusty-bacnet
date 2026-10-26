@@ -61,7 +61,8 @@ pub fn parse_write_multiple(specs: &[String]) -> Result<Vec<ObjectWrites>, Strin
                     .split_once('=')
                     .ok_or_else(|| format!("expected 'property=value', got '{pair}'"))?;
                 let (property, index) = parse::parse_property(property)?;
-                let (value, priority) = parse::parse_value_with_priority(value)?;
+                let (value, priority) =
+                    parse::parse_value_for_with_priority(object_type, property, index, value)?;
                 Ok((property, index, value, priority))
             })
             .collect::<Result<_, String>>()?;

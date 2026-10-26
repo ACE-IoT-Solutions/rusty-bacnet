@@ -292,6 +292,20 @@ artifact or fetch a mutable branch in the deployment job.
   (see "TUI screenshots" above).
 - `reference/` and `project/`: reference entry points, support scope, and the
   upgrade hub (`project/upgrading`) with one guide per release under it.
+- `reference/cli.md`, `reference/python.md` and `reference/rust.mdx` are
+  generated between their `generated:start` and `generated:end` markers by
+  `scripts/reference-cli.mjs` (the clap definitions, through a bacnet-cli
+  test), `scripts/reference-python.py` (the `.pyi` stub) and
+  `scripts/reference-rust.mjs` (`cargo metadata`); the text around the
+  markers is authored. The Python script also writes one page per group under
+  `reference/python/`, all generated. They track `dev`, so each page says so
+  above its generated part. Each script takes `--check`. The release runs them
+  (`docs/ci.md`, "Release"); PR CI doesn't, so a PR that adds an option or a
+  method needn't regenerate them, but one that adds a `bacnet` command or a
+  published crate must. `tests/unit/reference.test.mjs` checks that they
+  parse and link correctly. The sidebar nests the Python pages in a
+  collapsed group, so tests that walk `navigation.json` flatten an item's
+  `items`.
 - `src/data/navigation.json`: sidebar and test route inventory.
 - `src/data/legacy-routes.json`: retained routes and section destinations. Compatibility pages keep old bookmarks and raw URLs usable, stay out of Pagefind, and are omitted from the canonical llms guide list.
 - `scripts/prepare.mjs`: source-derived raw Markdown and version-aware llms index.

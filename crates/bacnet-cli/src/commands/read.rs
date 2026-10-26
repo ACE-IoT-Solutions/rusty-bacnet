@@ -249,7 +249,7 @@ fn format_tag(tag: &BACnetNameValue) -> String {
                 PropertyValue::CharacterString(text) => {
                     serde_json::to_string(text).expect("serialize tag text")
                 }
-                value => output::format_property_value(value),
+                value => bacnet_ops::format::format_property_value(value),
             };
             format!("{name}={value}")
         }

@@ -133,3 +133,34 @@ fn sc_bip6_and_bad_frames_decode_as_far_as_they_go() {
     let fields = decode_tree(Framing::Bip, &[0x81, 0x0A, 0x00, 0x09, 0x01]);
     find(&fields, "malformed");
 }
+
+/// A character string in the parameters marks its field as device text;
+/// the frame's own fields aren't. A bare NPDU and a bare APDU decode with
+/// ranges in their own octets.
+#[test]
+fn a_character_string_is_marked_and_bare_layers_decode() {
+    // An application character string, UTF-8: "Fan".
+    let params = [0x74, 0x00, b'F', b'a', b'n'];
+    let apdu = unconfirmed(&params);
+    let data = npdu(&apdu, false);
+    let fields = decode_tree(Framing::Bip, &bip(&data, false));
+    let mut marked = Vec::new();
+    let mut stack: Vec<&Field> = fields.iter().collect();
+    while let Some(field) = stack.pop() {
+        if field.device_text {
+            marked.push(field.label.clone());
+        }
+        stack.extend(field.children.iter());
+    }
+    assert_eq!(marked, ["Character string: \"Fan\""]);
+
+    let bare = super::decode_npdu_tree(&data);
+    assert_eq!(find(&bare, "NPDU"), 0..2);
+    let at = data.len() - params.len();
+    assert_eq!(find(&bare, "Character string"), at..data.len());
+    let apdu_octets = &data[2..];
+    let tree = super::decode_apdu_tree(apdu_octets);
+    assert_eq!(tree.range, 0..apdu_octets.len());
+    let summary = super::super::frame::summarize_npdu(&data);
+    assert_eq!(summary.pdu.as_deref(), Some("Unconfirmed-Request"));
+}

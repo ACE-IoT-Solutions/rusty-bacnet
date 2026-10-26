@@ -1216,6 +1216,9 @@ bacnet --allow-write write 192.168.1.100 av:1 pv enumerated:3       # explicit e
 bacnet --allow-write write 192.168.1.100 sc:1 pv date:2024-03-15    # date value
 bacnet --allow-write write 192.168.1.100 sc:1 pv time:14:30:00      # time value
 bacnet --allow-write write 192.168.1.100 nc:1 pv object:ai:1        # object identifier value
+bacnet --allow-write write 192.168.1.100 ai:1 reliability open-loop  # enumeration by name
+bacnet --allow-write write 192.168.1.100 ai:1 event-enable "to-offnormal | to-normal"  # named bits
+bacnet --allow-write write 192.168.1.100 trend-log:1 start-time "2026-10-25 14:30"   # date-time
 ```
 
 Every `write` needs `--allow-write` (see [Write guard](#write-guard)).
@@ -1249,6 +1252,81 @@ bacnet --allow-write writem 192.168.1.100 av:1 pv=72.5@8,desc='"Zone Temp"' av:2
 | `object:type:inst` | `object:ai:1` | ObjectIdentifier |
 
 Inline priority: append `@N` to any value (e.g., `72.5@8`, `null@16`).
+
+**Values by name.** `write` and `writem` know the property they write, so
+a value can be typed as [Value output](#value-output) prints it, and a value
+read pastes back as a write:
+
+- a plain number for an analog or integer object's value (Present_Value,
+  Relinquish_Default, a Priority_Array slot, COV_Increment, High_Limit,
+  Low_Limit, Deadband) is sent as the property's datatype: `72` for an
+  Analog Value is REAL 72.0, Double for a Large Analog Value, INTEGER or
+  Unsigned for the integer objects. A number past the datatype's range is
+  refused. A REAL holds whole numbers exactly only up to 16,777,216 (2^24);
+  past that it keeps about seven significant digits. A number for an
+  enumerated property is sent as ENUMERATED;
+
+- an enumeration by name, in kebab case, UPPER_SNAKE or any case
+  (`open-loop`, `OPEN_LOOP`), or by number; a binary object's state as
+  `active` or `inactive`, with or without the object's text after it
+  (`active (On)`); a multi-state state by number, its text allowed after
+  it (`2 (Heat)`);
+- a named bit string by its set bits, `in-alarm,fault` or `in-alarm |
+  fault` (quote a `|` for the shell; `writem` needs the `|` form, since a
+  comma separates its writes), as 0/1 digits first bit first (`1100`), or
+  `none` for no bit set (an empty value is refused, so a blank field never
+  clears every bit); a bit string without names as `bits(0101)`;
+- a date as `2026-10-19`, with a weekday (`2026-10-19 Mon`), `*` for any
+  field, the special months and days by name (`*-even-months-last-day`),
+  or `any date`; a time as `07:00`, `14:30:05` or `14:30:05.25`, `*` for any
+  field, or `any time`; hundredths are two digits (`.05`, `.50`). The
+  `date:` and `time:` prefixes take the same forms;
+- a date-time as a date then a time, `2026-10-19 Mon 07:00`, or
+  `unspecified`; for a property that holds one (Start_Time, Stop_Time,
+  Modification_Date, a DateTime Value's Present_Value and similar), a date
+  alone leaves the time unspecified;
+- a timestamp (Last_Restore_Time, an `event-time-stamps[N]` element) as
+  `seq 42`, a time, or a date and time.
+
+A mistyped name is refused with the valid names, or the nearest few when
+the enumeration is long:
+
+```text
+Error: unknown BinaryPV 'actve'; expected one of: inactive, active (or a number)
+```
+
+The explicit forms (`enumerated:N`, `date:`, `time:`, `object:`, a quoted
+string, `null`, `true`/`false`) keep their meaning for every property.
+
+**Constructed values as JSON.** A Weekly_Schedule day, an
+Exception_Schedule special event, a Date_List calendar entry and a
+Recipient_List destination are typed as JSON: one element for an indexed
+write (`weekly-schedule[2]`, `exception-schedule[1]`), a JSON list of them
+for the whole property (a Weekly_Schedule is seven days, Monday first). The
+shapes follow the Python bindings' typed constructors, with dates and times
+written as above:
+
+| Element | JSON |
+|---------|------|
+| Day | `[["07:00", 72.5], ["18:00", null]]`; an entry may also be `{"time": "07:00", "value": 72.5}` |
+| Calendar entry | `{"kind": "date", "date": "2026-12-25"}`, `{"kind": "date_range", "start_date": "2026-07-01", "end_date": "2026-07-04"}` or `{"kind": "week_n_day", "month": 12, "week_of_month": 1, "day_of_week": 1}` (`null` or 255 for any) |
+| Special event | `{"period": <calendar entry or "calendar:1">, "time_values": <day>, "priority": 10}` |
+| Destination | `{"recipient": "device:99", "process_identifier": 7}`, optionally with `valid_days` (`["mon", "tue"]` or Python's bit number), `from_time`, `to_time`, `issue_confirmed_notifications` and `transitions` (`["to-offnormal"]` or a number); left out, a destination covers every day, all day, every transition, unconfirmed. A recipient may also be `{"kind": "device", "object_identifier": "device:99"}` or `{"kind": "address", "network_number": 5, "mac_address": "0a:00:00:64:ba:c0"}` |
+
+An entry's value is a JSON null, boolean or number (a whole number is
+Unsigned, or Signed when negative; one with a decimal point or an
+exponent, or too large for either, is a REAL, refused past a REAL's range) or a
+string in the value grammar above (`"active"`, `"enumerated:3"`; a
+CharacterString keeps its inner quotes, `"\"Occupied\""`). A field the
+shape doesn't know is refused, and every error names where it is:
+
+```bash
+bacnet --allow-write write 192.168.1.100 schedule:1 weekly-schedule[2] '[["07:00", 72.5], ["18:00", null]]'
+bacnet --allow-write write 192.168.1.100 calendar:1 date-list '[{"kind": "date", "date": "2026-12-25"}]'
+```
+
+In the TUI, type JSON in the write form's Value field; the `:writem` bar
+splits on spaces and reads a quoted word as a string.
 
 ### COV Subscriptions
 
@@ -1356,10 +1434,15 @@ when the device left it out).
 | `--ack-time <SPEC>` | (required) | Caller-selected time of acknowledgment |
 | `--source <S>` | `bacnet-cli` | Acknowledgment source string |
 
-Both timestamp flags use the same strict grammar:
+Both timestamp flags take a timestamp as the CLI prints one, so a printed
+timestamp pastes back: `seq 417`, a time (`14:29:58.25`), or a date and time
+(`"2026-10-25 Sun 14:30:05"`; a date alone leaves the time unspecified), with
+the date and time forms of [Writing Properties](#writing-properties). They
+also take the strict grammar:
 
 - `sequence:<0..65535>`
-- `time:<hour>,<minute>,<second>,<hundredths>`
+- `time:<hour>,<minute>,<second>,<hundredths>`, or `time:HH:MM[:SS[.hh]]`
+  as `write` takes it
 - `datetime:<full-year>,<month>,<day>,<day-of-week>;<hour>,<minute>,<second>,<hundredths>`
 
 Date years are `1900..2154`; months are `1..14`, days are `1..34`,
@@ -1370,8 +1453,8 @@ unspecified year). Values are preserved exactly and neither timestamp is
 inferred from a clock. Quote `datetime:` values in command shells because the
 grammar contains a semicolon. `--timestamp` must come from the original event
 notification; `--ack-time` is explicitly chosen by the caller. `alarms`
-shows each transition's last event time decoded for reading, not in this
-grammar.
+shows each transition's last event time in the printed form, which
+`--timestamp` takes as shown (quote it for the shell).
 
 **Alias:** `ack` = ack-alarm
 
