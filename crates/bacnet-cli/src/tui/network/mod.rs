@@ -17,7 +17,7 @@ use std::net::SocketAddrV4;
 use std::time::Duration;
 
 pub(crate) use bacnet_ops::bbmd::{BdtRow, FdtRow, address_of, mac, probe_error};
-use bacnet_ops::bbmd::{Probe, unreachable_reason};
+use bacnet_ops::bbmd::{Probe, Unfollowed, unreachable_reason};
 use bacnet_transport::bip::{BvlcExchangeError, ForeignRegistrationSnapshot};
 
 /// UI to the network worker.
@@ -89,6 +89,8 @@ pub(crate) enum NetworkEvent {
         seed: SocketAddrV4,
         /// What it read.
         probes: Vec<(SocketAddrV4, Probe)>,
+        /// The BDT entries it did not follow, and why (#2130).
+        not_followed: Vec<Unfollowed>,
     },
     /// The command was not carried out.
     Refused {

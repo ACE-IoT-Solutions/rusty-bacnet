@@ -17,7 +17,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
 use bacnet_client::client::BACnetClient;
-use bacnet_ops::bbmd::{Here, Probe};
+use bacnet_ops::bbmd::{Here, Probe, Unfollowed};
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::port::TransportPort;
 use tokio::sync::mpsc;
@@ -135,26 +135,27 @@ async fn execute(bip: &BipTransport, command: NetworkCommand, local: SocketAddrV
                 fdt,
             }
         }
-        NetworkCommand::Survey { seed } => NetworkEvent::Survey {
-            seed,
-            probes: survey(
-                bip,
+        NetworkCommand::Survey { seed } => {
+            let here = Here {
+                own: local,
+                broadcast: bip.broadcast_address(),
+            };
+            let (probes, not_followed) = survey(bip, seed, here).await;
+            NetworkEvent::Survey {
                 seed,
-                Here {
-                    own: local,
-                    broadcast: bip.broadcast_address(),
-                },
-            )
-            .await,
-        },
+                probes,
+                not_followed,
+            }
+        }
     }
 }
 
 /// Read the BDT of `seed`, then of every BBMD a table read lists, breadth
 /// first, up to [`MAX_SURVEY`](bacnet_ops::bbmd::MAX_SURVEY) reads; the rest
 /// come back skipped. `here` is where this client is: entries no read may
-/// go to are not followed ([`bacnet_ops::bbmd::NotFollowed`]).
-async fn survey(bip: &BipTransport, seed: SocketAddrV4, here: Here) -> Vec<(SocketAddrV4, Probe)> {
+/// go to are not followed ([`bacnet_ops::bbmd::NotFollowed`]), and come
+/// back beside the probes.
+async fn survey(bip: &BipTransport, seed: SocketAddrV4, here: Here) -> Surveyed {
     survey_with(seed, here, |bbmd| async move {
         match bip.read_bdt(&mac(bbmd)).await {
             Ok(rows) => Probe::Table(rows.iter().map(BdtRow::from).collect()),
@@ -166,9 +167,9 @@ async fn survey(bip: &BipTransport, seed: SocketAddrV4, here: Here) -> Vec<(Sock
 
 /// [`survey`] with `read` giving each BBMD's probe: the shared survey
 /// ([`bacnet_ops::bbmd::survey`]) from one seed. The BBMDs past the
-/// survey's limit come back skipped; an entry not followed is a column
-/// whose row couldn't be read.
-async fn survey_with<F, R>(seed: SocketAddrV4, here: Here, read: F) -> Vec<(SocketAddrV4, Probe)>
+/// survey's limit come back skipped, and the entries not followed beside
+/// the probes, for the matrix view to list with their reasons (#2130).
+async fn survey_with<F, R>(seed: SocketAddrV4, here: Here, read: F) -> Surveyed
 where
     F: Fn(SocketAddrV4) -> R,
     R: Future<Output = Probe>,
@@ -178,8 +179,12 @@ where
         bacnet_ops::bbmd::survey(&[seed], here, |bbmd| async move { (read(bbmd).await, ()) }).await;
     let read = found.read.into_iter().map(|s| (s.bbmd, s.probe));
     let unread = found.unread.into_iter().map(|bbmd| (bbmd, Probe::Skipped));
-    read.chain(unread).collect()
+    (read.chain(unread).collect(), found.not_followed)
 }
+
+/// A survey's probes, in the order it found the BBMDs, and the entries it
+/// did not follow.
+type Surveyed = (Vec<(SocketAddrV4, Probe)>, Vec<Unfollowed>);
 
 #[cfg(test)]
 #[path = "network_tests.rs"]
