@@ -151,7 +151,7 @@ pub(crate) struct WriteSpec {
     pub(crate) property: PropertyIdentifier,
     /// Array index, if any.
     pub(crate) index: Option<u32>,
-    /// The value as typed, for `parse::parse_value`; `None` relinquishes.
+    /// The value as typed, for `parse::parse_value_for`; `None` relinquishes.
     pub(crate) value: Option<String>,
     /// The priority asked for.
     pub(crate) priority: Option<u8>,

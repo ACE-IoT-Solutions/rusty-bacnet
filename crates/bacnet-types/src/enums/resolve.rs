@@ -59,6 +59,23 @@ macro_rules! resolved_enum {
                     Self::Unknown(_) => None,
                 }
             }
+
+            /// The enumeration this value belongs to: its type name
+            /// (`"EventState"`) and every named constant with its wire value,
+            /// for parsing a name typed for the same property. `None` for
+            /// [`ResolvedEnum::Unknown`].
+            pub fn enumeration(&self) -> Option<(&'static str, Vec<(&'static str, u32)>)> {
+                match self {
+                    $( Self::$variant(_) => Some((
+                        stringify!($variant),
+                        <$ty>::ALL_NAMED
+                            .iter()
+                            .map(|&(name, value)| (name, u32::from(value.to_raw())))
+                            .collect(),
+                    )), )+
+                    Self::Unknown(_) => None,
+                }
+            }
         }
 
         impl core::fmt::Display for ResolvedEnum {
