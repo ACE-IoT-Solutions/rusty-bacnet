@@ -16,7 +16,7 @@ export default defineConfig({
     favicon: '/favicon.svg',
     social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/jscott3201/rusty-bacnet' }],
     customCss: ['./src/styles/tokens.css', './src/styles/site.css', './src/styles/components.css'],
-    components: { Footer: './src/components/DocsFooter.astro' },
+    components: { Footer: './src/components/DocsFooter.astro', MarkdownContent: './src/components/DocsMarkdownContent.astro' },
     editLink: { baseUrl: 'https://github.com/jscott3201/rusty-bacnet/edit/dev/website/' },
     tableOfContents: { minHeadingLevel: 2, maxHeadingLevel: 3 },
     lastUpdated: false,

@@ -18,3 +18,8 @@ export function sitePath(path = '') {
   }
   return base + path.replace(/^\/+/, '');
 }
+/**
+ * The Pagefind weight of a page body with a generated reference region
+ * (components/DocsMarkdownContent.astro); plain text weighs 1.
+ */
+export const generatedSearchWeight = 0.4;
