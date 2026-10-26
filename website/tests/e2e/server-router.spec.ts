@@ -41,6 +41,8 @@ test('the integration overview links the server and router pages, which show the
     const body = await raw.text();
     for (const [label, source, href, marker, lang] of files) {
       const text = await example(source);
+      // Each program sits in its language's tab; the manifest beside the Rust one.
+      await main.getByRole('tab', { name: lang === 'python' ? 'Python' : 'Rust', exact: true }).click();
       await expect(main.locator('pre code').filter({ hasText: marker }).filter({ hasText: text.split('\n')[0] }))
         .toHaveText(text.trimEnd(), { useInnerText: true });
       await expect(main.getByRole('link', { name: label, exact: true })).toHaveAttribute('href', base + href);

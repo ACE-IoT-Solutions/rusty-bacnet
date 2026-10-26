@@ -25,7 +25,8 @@ npm run verify
 ```
 
 `verify` runs Astro checking, Node unit tests, the production build, and local
-Playwright/axe tests at 320, 390, 768, and 1440 CSS pixels. It does not run Python
+Playwright/axe tests at 320, 360, 768, 1024 and 1440 CSS pixels, each page
+in the light and dark themes. It does not run Python
 tests or publish anything. The `Docs validation` CI job runs the same command on
 native Ubuntu with Node 24 and Chromium. Local results do not prove that a GitHub
 Actions run or Pages deployment succeeded.
@@ -170,6 +171,12 @@ Rerun it after a TUI change that the pages show, and review the new PNGs before
 committing them. A new shot needs an entry in `SHOTS` in `capture.py`, a step
 in one of its scenarios, and a page that uses it.
 
+**Known gap (#2110):** the shots date from before many TUI changes on `dev`,
+and some of the script's scenarios no longer match the TUI. A `--tmux-only`
+run on 2026-10-25 stopped at the watch list (waiting for `polled`) and at a
+`Press Enter again` prompt, so nine shots weren't taken. Fix those scenarios
+before the next full capture.
+
 ## Retained CI and publication reference
 
 `.github/workflows/docs-pages.yml` validates pull requests targeting `dev` or
@@ -265,6 +272,17 @@ artifact or fetch a mutable branch in the deployment job.
 - `ec.config.mjs` applies static keyboard focusability to native code blocks;
   Sätteri wraps tables in focusable scroll regions without replacing table
   semantics. No client-side renderer or extra UI framework is used.
+  Expressive Code drops a hidden block's tabindex, so `src/scripts/tab-code-focus.js`
+  restores it on the overflowing blocks of a tab panel when the panel is shown.
+- A task shown in more than one language uses `<Tabs syncKey="lang">` with the
+  labels `CLI`, `Python` and `Rust`; operating-system tabs use `syncKey="os"`.
+  A reader's choice then follows them from page to page. The sample harness
+  finds fences inside tabs as anywhere else. The axe test selects every tab
+  of each page in both themes.
+- Search: `src/components/DocsMarkdownContent.astro` lowers the Pagefind weight
+  of every page with a generated reference region (`generatedSearchWeight` in
+  `src/lib/site.mjs`), so task phrases rank the guides first while API names
+  still find their reference page; `tests/e2e/site.spec.ts` checks both.
 - Diagram enhancement leaves the original SVG and text available without JS.
   Current pages use each diagram once; add distinct IDs before repeating one
   diagram on a page.

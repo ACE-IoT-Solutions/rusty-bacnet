@@ -12,7 +12,7 @@ import { release, repository } from '../../../lib/site.mjs';
 
 **Choose one path.** Use the CLI to inspect, Python to automate, or Rust to embed. For the [local client/server lab](/rusty-bacnet/start/local-lab/), start with **Python**; the CLI is optional.
 
-<Tabs>
+<Tabs syncKey="lang">
 <TabItem label="CLI">
 
 ## Install a CLI executable
@@ -27,7 +27,7 @@ The release also publishes <a href={`${repository}/releases/download/v${release}
 
 ### Run it from the download directory
 
-<Tabs>
+<Tabs syncKey="os">
 <TabItem label="macOS">
 
 #### CLI on macOS
@@ -143,7 +143,7 @@ Start with one of those interpreters. Free-threaded Python builds, musl-based Li
 
 Every wheel, macOS and Windows included, is built with the MS/TP serial transport, and `rusty_bacnet.list_serial_ports()` shows the ports the operating system reports. Release testing does not drive a serial line, so qualify MS/TP hardware separately.
 
-<Tabs>
+<Tabs syncKey="os">
 <TabItem label="macOS / Linux">
 
 ### Python on macOS or Linux

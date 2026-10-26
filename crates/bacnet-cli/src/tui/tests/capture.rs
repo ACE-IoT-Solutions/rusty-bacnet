@@ -321,7 +321,7 @@ fn the_tree_selects_a_field_and_the_hex_view_marks_its_octets() {
             .selected_field()
             .unwrap()
             .label
-            .starts_with("[1] 55")
+            .starts_with("Property: present-value")
     );
 }
 

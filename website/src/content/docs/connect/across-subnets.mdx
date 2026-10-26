@@ -3,6 +3,7 @@ title: "Reach devices on other subnets"
 description: "Carry BACnet/IP broadcasts between IP subnets using BBMDs and foreign-device registration, from the CLI, Python or Rust."
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
 import { release, repository } from '../../../lib/site.mjs';
 
 [Connect to a network](/rusty-bacnet/connect/overview/) / Across subnets
@@ -33,6 +34,10 @@ bacnet fdt 192.168.1.10
 
 A BDT row is a peer's address, port and broadcast mask; the BBMD's own row is in it too. An FDT row is a registered foreign device with the TTL it asked for and the seconds left, which include a 30-second grace period. A device that isn't a BBMD answers with a BVLC-Result NAK, or stays silent until the request times out; either way the command fails. In Python, `read_bdt` and `read_fdt` return the same rows; see <a href={`${repository}/blob/v${release}/docs/python-api.md#bbmd-management`}>BBMD management</a>.
 
+<Tabs syncKey="lang">
+
+<TabItem label="CLI">
+
 ## Register the CLI as a foreign device
 
 The global `--foreign-bbmd` option makes the CLI's transport a foreign device. It registers when it starts, renews on its own and sends its broadcasts through the BBMD, so `discover` reaches the BBMD's network:
@@ -52,6 +57,9 @@ bacnet --interface 192.168.2.50 --allow-write unregister 192.168.1.10
 ```
 
 `unregister` names the CLI's own local address. On the default `0.0.0.0` bind that may not be the address the BBMD recorded, so give `--interface` with the address you registered from. The BBMD also has to allow the deletion; see [Limit who can change a BBMD](#limit-who-can-change-a-bbmd).
+
+</TabItem>
+<TabItem label="Python">
 
 ## Register from Python
 
@@ -77,9 +85,15 @@ asyncio.run(main())
 
 The client, server or endpoint registers when it starts, and its first broadcasts wait for that registration to be answered. `foreign_registration()` reads the state without sending anything. `registered` and `lease_remaining` describe the lease; `last_outcome` and `last_result` describe the latest attempt. They are separate: a lease can still be live while a renewal is pending, refused or timed out. The totals (`attempts`, `accepted`, `refused`, `lapses`, `renewal_hints`) survive a stop. See <a href={`${repository}/blob/v${release}/docs/python-api.md#bbmd-and-foreign-device-modes`}>BBMD and foreign-device modes</a> for every field.
 
+</TabItem>
+<TabItem label="Rust">
+
 ## Register from Rust
 
 Pass `BipMode::Foreign(ForeignDeviceConfig { bbmd_ip, bbmd_port, ttl, renewal_interval })` to `.mode(..)` on the client, server or endpoint builder. `BACnetClient::foreign_registration()`, `BACnetServer::foreign_registration()` and `EndpointSession::foreign_registration()` return a `ForeignRegistrationSnapshot` with the same fields as Python's. The <a href={`${repository}/blob/v${release}/docs/rust-api.md#bip-modes-on-the-builders`}>B/IP modes on the builders</a> section has a complete example.
+
+</TabItem>
+</Tabs>
 
 ## Choose a TTL and a renewal interval
 
