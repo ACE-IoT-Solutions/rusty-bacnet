@@ -58,6 +58,9 @@ use crate::tsm::{
 use transaction_cleanup::{SegmentedCleanupHook, SegmentedPostWaitCleanupHook};
 use transaction_cleanup::{TransactionCleanup, TransactionGuard};
 
+mod sent_services;
+pub use sent_services::SENT_SERVICES;
+
 /// Default COV notification broadcast channel capacity.
 pub const DEFAULT_COV_CHANNEL_CAPACITY: usize = 64;
 
@@ -983,6 +986,8 @@ mod segmented_response_admission_tests;
 mod segmented_response_capacity_tests;
 #[cfg(test)]
 mod segmented_timeout_tests;
+#[cfg(test)]
+mod sent_services_tests;
 #[cfg(test)]
 mod structured_error_tests;
 #[cfg(test)]

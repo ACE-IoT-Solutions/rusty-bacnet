@@ -1769,6 +1769,22 @@ To release:
    can't rot, and check that the committed page has a section for every
    command. They don't compare the rendered page with the committed one.
 
+   Regenerate the capability tables too (#1496), after `site.mjs` names the
+   new release, since `website/src/data/support.json` records the release
+   the site describes:
+
+   ```bash
+   cargo run -p bacnet-integration-tests --example support-tables  # website/src/data/support.json
+   ```
+
+   Unlike the references, the tables are checked on every PR: the workspace
+   test `bacnet-integration-tests::support_tables` regenerates the file and
+   fails when the committed copy differs. A PR that adds an object type, a
+   service to one of the lists the tables read, a Python client method named
+   after a service, or a `bacnet-transport` feature runs the command above
+   and commits the result. The file changes rarely, so concurrent PRs seldom
+   conflict over it.
+
    **README site links and versions (#2105).** GitHub shows the `dev`
    README, but the website is published from the release, so the README
    links only pages the live site has. In the same PR:

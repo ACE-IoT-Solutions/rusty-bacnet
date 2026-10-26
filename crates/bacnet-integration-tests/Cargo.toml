@@ -66,6 +66,12 @@ path = "../../examples/rust/readme_read.rs"
 name = "readme_server"
 path = "../../examples/rust/readme_server.rs"
 
+# Rewrites the website's capability tables, website/src/data/support.json
+# (#1496); tests/support_tables.rs fails when the committed file is stale.
+[[example]]
+name = "support-tables"
+path = "support_tables_write.rs"
+
 # Compile the canonical displayed source directly, without a maintained copy.
 [[bin]]
 name = "guide-shared-endpoint"

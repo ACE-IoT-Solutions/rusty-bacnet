@@ -5,6 +5,37 @@ use bacnet_server::mutation::DeviceWriteAuthorizer;
 use bacnet_server::server::ReinitializeContext;
 use bacnet_types::enums::ServiceSupported;
 
+/// The services the session's server role, its bounded Device responder,
+/// executes on every session, as `BACnetServicesSupported` bits (Clause 21).
+///
+/// The responder is not the full `bacnet-server` service set: everything not
+/// here or in [`RESPONDER_OPT_IN_SERVICES`] is refused.
+pub const RESPONDER_SERVICES: &[ServiceSupported] = &[ServiceSupported::READ_PROPERTY];
+
+/// A service the session's server role executes only once an
+/// [`EndpointSession`] method enables it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponderOptIn {
+    /// The service, as its `BACnetServicesSupported` bit.
+    pub service: ServiceSupported,
+    /// The name of the [`EndpointSession`] method that enables it.
+    pub method: &'static str,
+}
+
+/// The services the server role executes only once enabled, with the method
+/// that enables each. The local Device and the session identity then
+/// advertise them too.
+pub const RESPONDER_OPT_IN_SERVICES: &[ResponderOptIn] = &[
+    ResponderOptIn {
+        service: ServiceSupported::WRITE_PROPERTY,
+        method: "with_device_writes",
+    },
+    ResponderOptIn {
+        service: ServiceSupported::REINITIALIZE_DEVICE,
+        method: "with_reinitialize",
+    },
+];
+
 impl<T: TransportPort + 'static> EndpointSession<T> {
     /// Enables authorized writes to the local Device's `Description` and installed Audit recipient.
     ///
@@ -79,16 +110,19 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         self
     }
 
-    /// The services the responder executes with the capabilities enabled on this session.
-    fn executed_services(&self) -> Vec<ServiceSupported> {
-        let mut services = vec![ServiceSupported::READ_PROPERTY];
-        if self.device_write_authorizer.is_some() {
-            services.push(ServiceSupported::WRITE_PROPERTY);
-        }
-        if self.reinitialize.is_some() {
-            services.push(ServiceSupported::REINITIALIZE_DEVICE);
-        }
-        services
+    /// The services the responder executes with the capabilities enabled on
+    /// this session: [`RESPONDER_SERVICES`], then each enabled entry of
+    /// [`RESPONDER_OPT_IN_SERVICES`].
+    pub(crate) fn executed_services(&self) -> Vec<ServiceSupported> {
+        let enabled = |service: ServiceSupported| {
+            (service == ServiceSupported::WRITE_PROPERTY && self.device_write_authorizer.is_some())
+                || (service == ServiceSupported::REINITIALIZE_DEVICE && self.reinitialize.is_some())
+        };
+        let opt_in = RESPONDER_OPT_IN_SERVICES
+            .iter()
+            .map(|opt_in| opt_in.service)
+            .filter(|service| enabled(*service));
+        RESPONDER_SERVICES.iter().copied().chain(opt_in).collect()
     }
 
     pub(super) async fn validate_segmentation(&self) -> Result<(), Error> {

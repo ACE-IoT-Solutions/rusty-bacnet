@@ -324,6 +324,14 @@ artifact or fetch a mutable branch in the deployment job.
   parse and link correctly. The sidebar nests the Python pages in a
   collapsed group, so tests that walk `navigation.json` flatten an item's
   `items`.
+- `src/data/support.json`: the capability tables on `project/conformance`
+  (#1496), generated from the code by
+  `crates/bacnet-integration-tests/support_tables.rs`; don't edit it. Run
+  `cargo run -p bacnet-integration-tests --example support-tables` to
+  regenerate it. A workspace test fails when it is stale, so a PR that adds
+  an object type, a listed service or a transport feature regenerates it.
+  `src/lib/support.mjs` turns it into the page's tables, for the
+  `SupportTable` component and the plain-text export alike.
 - `src/data/navigation.json`: sidebar and test route inventory.
 - `src/data/legacy-routes.json`: retained routes and section destinations. Compatibility pages keep old bookmarks and raw URLs usable, stay out of Pagefind, and are omitted from the canonical llms guide list.
 - `scripts/prepare.mjs`: source-derived raw Markdown and version-aware llms index.
