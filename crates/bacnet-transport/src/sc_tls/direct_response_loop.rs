@@ -225,3 +225,7 @@ async fn next_event<R: DirectWsRead>(
 #[cfg(test)]
 #[path = "direct_response_worker_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "direct_accept_idle_tests.rs"]
+mod idle_tests;

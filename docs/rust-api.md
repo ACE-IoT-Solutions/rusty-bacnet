@@ -1512,6 +1512,18 @@ sockets and can therefore reach 2M. Pending/physical saturation drops TCP;
 otherwise a distinct valid Connect at accepted capacity receives the local
 `RESOURCES/OTHER` NAK. Saturation does not guarantee reconnect admission.
 
+An established accepted link closes after `DIRECT_ACCEPT_IDLE_TIMEOUT` (360
+seconds) without an inbound binary (BVLC) frame; WebSocket Ping and Pong don't count.
+Keeping the link alive is the initiator's job (Annex AB.6.3), and its heartbeat
+timeout may be as long as 300 seconds, so the default leaves a minute of margin
+over that. `DirectAcceptConfig::with_idle_timeout` changes it; `start` rejects
+zero or a value too large to schedule. A value under 300 seconds is allowed but
+drops initiators whose heartbeat period is longer, and they must reconnect. An
+idle peer holds its established slot and socket until the bound, within the M
+and 2M caps above. A socket that hasn't finished the Connect handshake is held
+only for the connect timeout (`with_connect_timeout`, default 10 seconds per
+stage: TLS, WebSocket upgrade and Connect-Request), never for the idle bound.
+
 **Pre-1.0 API break:** `with_max_connections` becomes
 `with_max_established_peers`; the former physical-cap semantics and name are
 removed, without aliases. The default constant now describes established

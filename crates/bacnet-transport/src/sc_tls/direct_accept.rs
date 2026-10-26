@@ -24,9 +24,10 @@
 //! [`DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS`] established accepted peers, the
 //! same number of pending handshakes and twice that many physical sockets.
 //! TCP accepts beyond pending/physical capacity are dropped. Each connection must
-//! complete its Connect handshake within the configured connect timeout and
-//! is closed after [`DIRECT_ACCEPT_IDLE_TIMEOUT`] without an inbound frame
-//! by default. No hub, failover, discovery, or dial-out behavior changes.
+//! complete its Connect handshake within the configured connect timeout (a
+//! pending socket never waits on the idle bound) and, once established, is
+//! closed after [`DIRECT_ACCEPT_IDLE_TIMEOUT`] without an inbound frame by
+//! default. No hub, failover, discovery, or dial-out behavior changes.
 
 use std::net::SocketAddr;
 use std::sync::{
@@ -61,12 +62,27 @@ use super::ScNodeTlsConfig;
 /// accepted sockets (including retiring generations) at twice this limit.
 pub const DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS: usize = 16;
 
-/// Idle timeout for an accepted direct connection (owner-local policy).
+/// Default idle bound for an established accepted direct connection
+/// (owner-local policy, #2133): 360 seconds.
 ///
-/// A connection with no inbound WebSocket frame for this long is closed
-/// with a normal Close. Annex AB leaves initiation timing local; this
-/// bound only reclaims idle sockets.
-pub const DIRECT_ACCEPT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// A connection with no inbound binary (BVLC) frame for this long is closed
+/// with a normal Close; WebSocket Ping/Pong frames don't count. Keeping the link
+/// alive is the initiating peer's job (Annex AB.6.3): it probes with
+/// Heartbeat-Request after its heartbeat timeout passes without traffic, and
+/// AB.6.3 lets that timeout be as long as 300 seconds. The default is that
+/// longest period plus 60 seconds, so an initiator configured anywhere in the
+/// allowed range is never dropped. The margin covers the gap between the last
+/// frame we received and the last BVLC message the initiator received (our
+/// reply may leave well after its request), plus scheduling and network delay.
+///
+/// Cost: an idle peer may hold its established slot and its socket for up to
+/// six minutes. The listener's caps still bound that at
+/// [`DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS`] established peers and twice that
+/// many physical sockets by default
+/// ([`DirectAcceptConfig::with_max_established_peers`]). Sockets that haven't
+/// finished the Connect handshake are bounded by the connect timeout instead,
+/// never by this value.
+pub const DIRECT_ACCEPT_IDLE_TIMEOUT: Duration = Duration::from_secs(360);
 
 /// NPDU receive channel capacity for the listener.
 ///
@@ -137,7 +153,22 @@ impl DirectAcceptConfig {
         self
     }
 
-    /// Set the per-connection idle timeout (builder-style).
+    /// Set the idle bound for an established connection (builder-style;
+    /// default [`DIRECT_ACCEPT_IDLE_TIMEOUT`], 360 seconds).
+    ///
+    /// The link closes after this long without an inbound binary (BVLC) frame.
+    /// [`DirectListener::start`] rejects zero, and a value too large to add
+    /// to the current time, before binding.
+    ///
+    /// A value under 300 seconds is allowed as a deliberate local choice
+    /// (for example, to reclaim sockets faster on a small device), but it
+    /// costs interoperability: an initiator whose heartbeat timeout is
+    /// longer than this value, which Annex AB.6.3 permits up to 300
+    /// seconds, gets dropped whenever it goes quiet and must reconnect. A
+    /// longer value keeps idle peers' slots and sockets for longer; the
+    /// established-peer and physical-socket caps still bound the total. The
+    /// Connect handshake has its own bound,
+    /// [`with_connect_timeout`](Self::with_connect_timeout).
     pub fn with_idle_timeout(mut self, timeout: Duration) -> Self {
         self.idle_timeout = timeout;
         self
@@ -249,6 +280,7 @@ impl DirectListener {
             ));
         }
         config.npdu_admission_policy.validate()?;
+        validate_idle_timeout(config.idle_timeout)?;
         let npdu_admission = Arc::new(ScNpduAdmission::new(config.npdu_admission_policy));
         let listener = TcpListener::bind(config.bind_addr)
             .await
@@ -331,6 +363,21 @@ impl Drop for DirectListener {
             task.abort();
         }
     }
+}
+
+/// Zero would close every link at once, and an idle deadline must fit in
+/// a monotonic instant (adding it to "now" would otherwise panic in the
+/// connection task).
+fn validate_idle_timeout(timeout: Duration) -> Result<(), Error> {
+    if timeout.is_zero() {
+        return Err(Error::Encoding("direct accept idle timeout is zero".into()));
+    }
+    if tokio::time::Instant::now().checked_add(timeout).is_none() {
+        return Err(Error::Encoding(
+            "direct accept idle timeout is too large to schedule".into(),
+        ));
+    }
+    Ok(())
 }
 
 struct AcceptGuard {
