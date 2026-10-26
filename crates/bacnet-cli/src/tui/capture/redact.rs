@@ -5,9 +5,9 @@
 //!
 //! Before any frame enters the ring, whichever way it went (sent, received
 //! here, or heard on the wire by libpcap or the monitor), a confirmed
-//! request for either service has its password's content octets
-//! overwritten with `*`, whatever the character set. The masking fails
-//! closed (#2062):
+//! request for either service has its password's content octets, and
+//! everything after them in the APDU, overwritten with `*`, whatever the
+//! character set. The masking fails closed (#2062, #2074):
 //!
 //! - The request's tags are walked over their raw length octets, not
 //!   decoded, so a password too long, cut short, non-canonically encoded or
@@ -175,8 +175,9 @@ fn plausible(apdu: &[u8]) -> bool {
 }
 
 /// Mask the password of a confirmed request for either service: every
-/// content octet of its tag after the character set, as far as the APDU
-/// holds them, and all of a later segment. A located request is also
+/// content octet of its tag after the character set and everything after
+/// it to the end of the APDU, whatever length the tag claims, and all of a
+/// later segment. A located request is also
 /// masked from the first tag that isn't an expected field to the end; a
 /// searched one is then left alone. True when anything was masked. The
 /// walk always moves forward (a tag takes at least its first octet), takes
@@ -206,10 +207,11 @@ fn mask_apdu(apdu: &mut [u8], found: Found) -> bool {
                 if searched && !required {
                     return false;
                 }
-                // The first content octet is the character set.
-                let text = (tag.content + 1).min(end)..end;
-                body[text.clone()].fill(b'*');
-                return !text.is_empty();
+                // The first content octet is the character set. A length
+                // that claims too little would leave the rest of the
+                // password to read as more tags, so everything from the
+                // content on is masked to the end of the APDU.
+                return fill(body, (tag.content + 1).min(body.len()));
             }
             let field = request.before[next..]
                 .iter()
