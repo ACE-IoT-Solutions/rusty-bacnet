@@ -194,11 +194,11 @@ fn newly_decoded_algorithms_stay_unevaluated() {
     use BACnetEventParameter as EP;
     let algorithms = [
         EP::CommandFailure {
-            time_delay: 0,
+            time_delay: 7,
             feedback_property_reference: reference(1),
         },
         EP::ChangeOfLifeSafety {
-            time_delay: 0,
+            time_delay: 7,
             list_of_life_safety_alarm_values: vec![LifeSafetyState::ALARM],
             list_of_alarm_values: vec![LifeSafetyState::PRE_ALARM],
             mode_property_reference: reference(2),
@@ -208,7 +208,7 @@ fn newly_decoded_algorithms_stay_unevaluated() {
             previous_notification_count: 0,
         },
         EP::UnsignedRange {
-            time_delay: 0,
+            time_delay: 7,
             low_limit: 0,
             high_limit: 1,
         },
@@ -217,34 +217,34 @@ fn newly_decoded_algorithms_stay_unevaluated() {
             access_event_time_reference: reference(3),
         },
         EP::DoubleOutOfRange {
-            time_delay: 0,
+            time_delay: 7,
             low_limit: 0.0,
             high_limit: 1.0,
             deadband: 0.0,
         },
         EP::SignedOutOfRange {
-            time_delay: 0,
+            time_delay: 7,
             low_limit: 0,
             high_limit: 1,
             deadband: 0,
         },
         EP::UnsignedOutOfRange {
-            time_delay: 0,
+            time_delay: 7,
             low_limit: 0,
             high_limit: 1,
             deadband: 0,
         },
         EP::ChangeOfCharacterstring {
-            time_delay: 0,
+            time_delay: 7,
             list_of_alarm_values: vec!["85".into()],
         },
         EP::ChangeOfStatusFlags {
-            time_delay: 0,
+            time_delay: 7,
             selected_flags: StatusFlags::all(),
         },
-        EP::ChangeOfDiscreteValue { time_delay: 0 },
+        EP::ChangeOfDiscreteValue { time_delay: 7 },
         EP::ChangeOfTimer {
-            time_delay: 0,
+            time_delay: 7,
             alarm_values: vec![TimerState::EXPIRED],
             update_time_reference: reference(4),
         },
