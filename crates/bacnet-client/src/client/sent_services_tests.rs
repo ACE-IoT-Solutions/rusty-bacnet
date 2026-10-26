@@ -432,7 +432,8 @@ fn every_service_choice_in_the_client_source_is_listed() {
 /// Drops each `#[cfg(test)] mod name { .. }` block, so inline tests don't
 /// count. Everything else stays, including `#[cfg(test)]` on single items
 /// such as a `use` (#1496 review: cutting at the first marker skipped most
-/// of `client/mod.rs`).
+/// of `client/mod.rs`). A copy lives in `bacnet-server`'s
+/// `pics/initiated_tests.rs`; keep the two alike.
 fn strip_test_modules(source: &str) -> String {
     const MARKER: &str = "#[cfg(test)]";
     let mut out = String::with_capacity(source.len());

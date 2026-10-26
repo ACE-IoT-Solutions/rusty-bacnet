@@ -2,10 +2,10 @@
 //! builds for the wire.
 //!
 //! The test reads the crate's non-test source, finds every outbound request
-//! PDU it constructs (`ConfirmedRequestPdu { .. }` and
-//! `UnconfirmedRequestPdu { .. }`), and compares their services with the
-//! list, both ways: a new outbound path can't skip the list, and the list
-//! can't name a service the server never sends.
+//! PDU it constructs (a `ConfirmedRequest { .. }` or `UnconfirmedRequest
+//! { .. }` literal, under those names or their `..Pdu` aliases), and compares
+//! their services with the list, both ways: a new outbound path can't skip
+//! the list, and the list can't name a service the server never sends.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -14,16 +14,40 @@ use bacnet_types::enums::{ConfirmedServiceChoice, ServiceSupported, UnconfirmedS
 
 use super::*;
 
-/// Request literals whose service comes from somewhere other than the
-/// file's own service choices, with why they initiate nothing.
-const FORWARDED: &[(&str, &str, &str)] = &[(
-    "segmented_receive.rs",
-    "first.service_choice",
-    "reassembles a request received in segments",
-)];
+/// The struct names a request literal may use: the encoding crate's names
+/// and the aliases this crate imports them under.
+const REQUEST_TYPES: &[&str] = &[
+    "ConfirmedRequest",
+    "UnconfirmedRequest",
+    "ConfirmedRequestPdu",
+    "UnconfirmedRequestPdu",
+];
+
+/// Request literals whose service isn't a `..ServiceChoice::X` literal:
+/// (file, the `service_choice` expression, the services it can be, why).
+/// Any other non-literal service fails the test.
+const NON_LITERAL: &[(&str, &str, &[ServiceSupported], &str)] = &[
+    (
+        "remote_writes.rs",
+        "service_choice",
+        &[
+            ServiceSupported::WRITE_PROPERTY,
+            ServiceSupported::READ_PROPERTY,
+        ],
+        "a remote write, or the read a Channel makes first",
+    ),
+    (
+        "segmented_receive.rs",
+        "first.service_choice",
+        &[],
+        "reassembles a request received in segments, so initiates nothing",
+    ),
+];
 
 /// Drops each `#[cfg(test)] mod name { .. }` block, so inline tests don't
 /// count. Everything else stays, including `#[cfg(test)]` on single items.
+/// A copy lives in `bacnet-client`'s `client/sent_services_tests.rs`; keep
+/// the two alike.
 pub(crate) fn strip_test_modules(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
     let mut rest = source;
@@ -111,26 +135,24 @@ fn bit_of(expression: &str) -> Option<u8> {
     bit.map(|bit| bit.to_raw())
 }
 
-/// Every service choice a source file names.
-fn named_in(source: &str) -> BTreeSet<u8> {
-    source
-        .match_indices("ServiceChoice::")
-        .filter_map(|(at, _)| {
-            let start = source[..at]
-                .rfind(|c: char| !c.is_alphanumeric())
-                .map_or(0, |i| i + 1);
-            bit_of(&source[start..])
-        })
-        .collect()
-}
-
 /// The services of every outbound request literal in `source`.
 fn outbound_in(file: &str, source: &str) -> BTreeSet<u8> {
     let mut found = BTreeSet::new();
-    for pattern in ["ConfirmedRequestPdu {", "UnconfirmedRequestPdu {"] {
-        for (at, _) in source.match_indices(pattern) {
-            if source[..at].trim_end().ends_with("->") {
-                continue; // A return type, not a literal.
+    for name in REQUEST_TYPES {
+        let pattern = format!("{name} {{");
+        for (at, _) in source.match_indices(&pattern) {
+            // The whole identifier: not `UnconfirmedRequest {` when looking
+            // for `ConfirmedRequest {`, nor `PendingConfirmedRequest {`.
+            if source[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            let before = source[..at].trim_end();
+            if before.ends_with("->") || before.ends_with("struct") || before.ends_with("for") {
+                continue; // A return type or a declaration, not a literal.
             }
             let body = braced(&source[at + pattern.len()..]);
             let field = body
@@ -143,21 +165,23 @@ fn outbound_in(file: &str, source: &str) -> BTreeSet<u8> {
                 .unwrap()
                 .trim_start_matches(':')
                 .trim();
+            // Field shorthand names a local of the same name.
+            let value = if value.is_empty() {
+                "service_choice"
+            } else {
+                value
+            };
             if let Some(bit) = bit_of(value) {
                 found.insert(bit);
-            } else if FORWARDED
-                .iter()
-                .any(|(name, expression, _)| file.ends_with(name) && value == *expression)
-            {
-            } else {
-                // A parameter or a constant: the file's own service choices.
-                let named = named_in(source);
-                assert!(
-                    !named.is_empty(),
-                    "{file}: the request's service {value:?} can't be resolved"
-                );
-                found.extend(named);
+                continue;
             }
+            let Some((_, _, services, _)) = NON_LITERAL
+                .iter()
+                .find(|(name, expression, _, _)| file.ends_with(name) && value == *expression)
+            else {
+                panic!("{file}: add the request's service {value:?} to NON_LITERAL");
+            };
+            found.extend(services.iter().map(|service| service.to_raw()));
         }
     }
     found
