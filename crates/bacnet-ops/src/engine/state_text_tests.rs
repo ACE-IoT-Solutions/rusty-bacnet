@@ -2,6 +2,8 @@
 //! (#2122): a refused RPM is tried once a read, and a reference that names
 //! a device is read only when the discovery table ties the MAC to it.
 
+use std::cell::Cell;
+
 use super::*;
 use crate::destination::Destination;
 use crate::format::{LogColumns, LoggedProperty};
@@ -61,5 +63,38 @@ async fn a_device_qualified_reference_needs_one_device_at_the_mac() {
     to.log_state_texts(&engine.client, &mut columns).await;
     assert_eq!(active(&columns, 0), None, "two devices at the MAC");
     assert_eq!(active(&columns, 2), Some("Open"));
+    stop(engine, server).await;
+}
+
+/// One object's texts for a one-shot read (#2132): a binary value's pair,
+/// even from a device that refuses RPM, which two objects sharing the
+/// caller's memory of the refusal learn once; nothing for a missing
+/// object or a type without texts.
+#[tokio::test(start_paused = true)]
+async fn one_objects_state_texts_fall_back_to_none() {
+    let (engine, server) = lab_on(RefusesRpm::new).await;
+    let to = Destination::Device(LAB);
+    let no_rpm = Cell::new(false);
+    let texts = to
+        .state_texts(&engine.client, oid(ObjectType::BINARY_VALUE, 2), &no_rpm)
+        .await
+        .unwrap();
+    assert_eq!(texts.active.as_deref(), Some("Open"));
+    assert_eq!(texts.inactive.as_deref(), Some("Shut"));
+    assert_eq!(engine.client.transport().rejected(), 1);
+    let texts = to
+        .state_texts(&engine.client, oid(ObjectType::BINARY_VALUE, 1), &no_rpm)
+        .await
+        .unwrap();
+    assert_eq!(texts.active.as_deref(), Some("Running"));
+    assert_eq!(engine.client.transport().rejected(), 1, "one RPM in all");
+    for object in [
+        oid(ObjectType::BINARY_VALUE, 9),
+        oid(ObjectType::MULTI_STATE_VALUE, 9),
+        oid(ObjectType::ANALOG_INPUT, 1),
+    ] {
+        let texts = to.state_texts(&engine.client, object, &no_rpm).await;
+        assert_eq!(texts.ok(), Some(StateTexts::default()), "{object:?}");
+    }
     stop(engine, server).await;
 }

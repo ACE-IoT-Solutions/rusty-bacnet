@@ -82,9 +82,10 @@ async fn writes_take_names_bits_and_date_times_as_read_prints_them() {
         // the device takes; an Unsigned it refuses.
         ("av:1", "present-value", "72", "72"),
         ("av:1", "cov-increment", "2", "2"),
-        // An enumeration by name, in any spelling.
-        ("bv:1", "present-value", "ACTIVE", "active"),
-        ("bv:1", "present-value", "inactive", "inactive"),
+        // An enumeration by name, in any spelling. `read` adds the
+        // object's state text, and that form writes back too (#2132).
+        ("bv:1", "present-value", "ACTIVE", "active (Active)"),
+        ("bv:1", "present-value", "inactive", "inactive (Inactive)"),
         // A named bit string by its bits' names.
         (
             "ai:1",
@@ -125,7 +126,7 @@ async fn writes_take_names_bits_and_date_times_as_read_prints_them() {
         ],
     )
     .await;
-    assert_eq!(read(&target, "bv:1", "pv").await, "active");
+    assert_eq!(read(&target, "bv:1", "pv").await, "active (Active)");
     assert_eq!(
         read(&target, "ai:1", "event-enable").await,
         "to-fault | to-normal"
