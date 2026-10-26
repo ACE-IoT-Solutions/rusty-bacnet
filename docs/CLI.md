@@ -901,7 +901,9 @@ characters (Clauses 16.1.1.1.3 and 16.4.1.1.2), and Esc cancels and clears
 it. The password is held only as `audit::Secret`, which never prints its
 text, and it is dropped once the request is sent or declined. The T3
 confirmation follows: type the device instance, then Enter. The result shows
-the device's acknowledgement or error. Neither request is kept in the
+the device's acknowledgement or error; a refusal by the device's policy
+(SERVICE_REQUEST_DENIED) shows as `DENIED by the device's policy`, as a
+refused write does. Neither request is kept in the
 ledger, because revert can't undo it. The audit record (event `dcc` or
 `reinit`) names the service, the device, the state, the duration, the tier
 and the outcome, with a `password` field written as `[redacted]` when one was

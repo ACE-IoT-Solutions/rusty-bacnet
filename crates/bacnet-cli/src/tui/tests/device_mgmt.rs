@@ -274,3 +274,31 @@ async fn the_password_reaches_no_file_frame_or_log() {
         assert!(!text.contains(PASSWORD), "{}", path.display());
     }
 }
+
+/// #2056: a DCC or reinitialize the device's policy refuses
+/// (SERVICE_REQUEST_DENIED) shows as denied by the device's policy, with no
+/// word of writes. The lab device here has no password, so its DCC policy
+/// denies every DCC, and its mutation policy refuses the reinitialize.
+#[tokio::test(start_paused = true)]
+async fn a_denied_dcc_or_reinitialize_names_the_devices_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = Server {
+        deny_writes: true,
+        ..Server::lab(100, LAB)
+    };
+    let options = options(dir.path(), DANGEROUS, false);
+    let mut site = Site::start_with_options(vec![server], ClientLimits::default(), options).await;
+    site.pump_until(|app| app.safety.policy.is_some()).await;
+    open_device(&mut site).await;
+    arm(&mut site).await;
+    for line in ["dcc disable-initiation 30", "reinit warmstart"] {
+        start(&mut site, line, "").await;
+        confirm(&mut site).await;
+        assert_eq!(outcomes(&site.app), [Outcome::Denied], "{line}");
+        let text = screen(&mut site.app, 80, 24);
+        assert!(text.contains("DENIED by the device's policy"), "{text}");
+        assert!(!text.contains("write"), "{text}");
+        site.press(KeyCode::Esc).await;
+    }
+    site.stop().await;
+}
