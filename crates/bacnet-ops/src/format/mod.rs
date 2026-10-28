@@ -18,6 +18,7 @@
 //! shows it whole ([`ValueFormat::whole_lists`]).
 
 pub mod alarms;
+mod clean;
 mod commands;
 mod constructed;
 mod data;
@@ -31,9 +32,10 @@ mod tagged;
 mod units;
 mod wire;
 
+pub use clean::{HIDDEN, MAX_NAME_CHARS, clean_name, clean_text, is_hidden, is_hidden_on_screen};
 pub(crate) use constructed::timestamp_text;
 pub use data::{Datum, Fields, PLAIN_ELEMENTS};
-pub use logged::{LogColumns, LoggedProperty};
+pub use logged::{LogColumns, LoggedProperty, MAX_STATE_TEXT_OBJECTS};
 pub use wire::format_property_value;
 
 use bacnet_encoding::constructed::{ConstructedElement, ElementShape, property_element};
@@ -155,7 +157,31 @@ impl StateTexts {
         }
     }
 
-    /// The texts among properties as read.
+    /// Whether an object of `object_type`'s state texts would name the
+    /// value of `property` (at `index`, for an array): a binary or
+    /// multi-state object's state, in its Present_Value, Priority_Array
+    /// slots, Relinquish_Default and the like. An array's size, index 0,
+    /// never is. A front end reads the texts only when this holds.
+    pub fn name(object_type: ObjectType, property: PropertyIdentifier, index: Option<u32>) -> bool {
+        (is_binary(object_type) || is_multistate(object_type))
+            && holds_state(property)
+            && index != Some(0)
+    }
+
+    /// The same texts cleaned for display ([`clean_name`]): device text
+    /// with its control characters turned to spaces and invisible format
+    /// characters dropped.
+    pub fn cleaned(&self) -> Self {
+        Self {
+            active: self.active.as_deref().map(clean_name),
+            inactive: self.inactive.as_deref().map(clean_name),
+            states: self.states.iter().map(|text| clean_name(text)).collect(),
+        }
+    }
+
+    /// The texts among properties as read. A State_Text entry that isn't
+    /// a string reads as an empty text, which names nothing, so later
+    /// entries keep their state numbers.
     pub fn from_rows(rows: &[RawRow]) -> Self {
         let values = |property| {
             rows.iter()
@@ -164,14 +190,17 @@ impl StateTexts {
                 .and_then(decode_all)
                 .unwrap_or_default()
                 .into_iter()
-                .filter_map(|value| match value {
-                    PropertyValue::CharacterString(text) => Some(text),
-                    _ => None,
+                // A value that isn't a string holds its place as no text,
+                // so the states after it keep their positions.
+                .map(|value| match value {
+                    PropertyValue::CharacterString(text) => text,
+                    _ => String::new(),
                 })
         };
+        let text = |property| values(property).next().filter(|text| !text.is_empty());
         Self {
-            active: values(PropertyIdentifier::ACTIVE_TEXT).next(),
-            inactive: values(PropertyIdentifier::INACTIVE_TEXT).next(),
+            active: text(PropertyIdentifier::ACTIVE_TEXT),
+            inactive: text(PropertyIdentifier::INACTIVE_TEXT),
             states: values(PropertyIdentifier::STATE_TEXT).collect(),
         }
     }
@@ -477,9 +506,6 @@ pub fn raw_text(data: &[u8]) -> String {
     primitive::raw(data)
 }
 
-/// Longest name kept, in characters; a device's longer name is cut.
-pub const MAX_NAME_CHARS: usize = 128;
-
 /// The Object_Name among properties as read; `None` when the device
 /// answered it with an error or left it out. See [`name_text`].
 pub fn object_name(rows: &[RawRow]) -> Option<String> {
@@ -496,15 +522,6 @@ pub fn name_text(data: &[u8]) -> Option<String> {
         [PropertyValue::CharacterString(text)] => Some(clean_name(text)),
         _ => None,
     }
-}
-
-/// A device's name for display: each control character as a space, so it
-/// can't move the cursor or break a row, and at most [`MAX_NAME_CHARS`].
-pub fn clean_name(text: &str) -> String {
-    text.chars()
-        .take(MAX_NAME_CHARS)
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
-        .collect()
 }
 
 /// The Units among properties as read.

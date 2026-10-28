@@ -438,3 +438,6 @@ async fn csv_logging_writes_samples_to_the_workspace() {
 
 #[path = "watch_initial_retry.rs"]
 mod initial_retry;
+
+#[path = "watch_flags.rs"]
+mod flags;

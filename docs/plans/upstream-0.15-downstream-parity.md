@@ -1,7 +1,12 @@
 # Upstream 0.15 integration: downstream acceptance
 
-The integration merges upstream `dev` at `773c4025e116b27b5d875921faee6290dfd9d565`
-into the ACE migration base `788e4d28e3ec2feb25a906c9320c834948f4d332`.
+The integration merges upstream `dev` through
+`0ac1fc102fd466c7c101f6eef7196c2070a6c6f1` into the ACE migration base
+`788e4d28e3ec2feb25a906c9320c834948f4d332`. The first checkpoint was
+`773c4025e116b27b5d875921faee6290dfd9d565`; the follow-up imports
+upstream SC direct-link heartbeat, accepted-link idle, and hub probe-liveness
+work without replacing the ACE mixed router.
+
 Upstream still declares version `0.14.0`; this branch name is not a release.
 
 ## Integration changes
@@ -59,6 +64,7 @@ cleanup barrier whether startup succeeded or was cancelled.
 | Both Python router APIs | Fresh CPython 3.13 wheel passed `test_router.py`, `test_router_ports.py`, and `test_router_application.py` after repair: 21 tests and 22 subtests. The mixed suite then passed again with UDP-port release and successful restart asserted after concurrent stop. |
 | Runtime and native routing | Runtime 19, network 329 and router-core 14 unit tests passed; recovered/unknown-port traces, hosted reannouncement and routed-RPM helper passed. |
 | Mixed lifecycle failure/cancellation | All six injected native tests passed after repair: cleanup failure/restart fence, cancelled multiport rollback, cancelled stop barrier, lost startup publication, and SC recovery before monitor spawn or first poll. The 13 upstream router unit tests and 12 lifecycle integration tests also passed unchanged. |
+| Follow-up upstream SC integration | `cargo check --locked` passed for runtime, bindings, transport and ops. Transport passed 1,430 tests with one pre-existing local B/IP shared-port test excluded; that test also timed out on the pre-merge checkout. A fresh CPython 3.13 wheel passed 55 router/SC-hub Python tests and 357 subtests. Ops and MCP passed 243 and 129 unit tests. |
 | Runtime failure-state release risk | Resolve and test the pre-existing stop/drain-timeout and reconcile/rollback findings above; the current 19 passing runtime tests do not establish these failure paths. |
 | ACE adaptor migration | Update imports/construction and run adaptor tests against the exact built wheel. Resolve required missing counters and health fields without synthetic values. |
 | SC wire behavior | Run an exact-wheel Python 3.13 SC hub + mixed-router + B/IP device scenario, including read/write, reconnect, teardown and oversized-message handling. Record the wheel hash and fixture configuration. |
@@ -67,11 +73,13 @@ cleanup barrier whether startup succeeded or was cancelled.
 
 Local integration checks used Homebrew Rust 1.98.1 on macOS arm64; upstream
 pins Rust 1.99.0. Cargo test was used because nextest was unavailable.
-The repaired local wheel is
+The follow-up local wheel is
 `ace_rusty_bacnet-0.14.0-cp313-cp313-macosx_11_0_arm64.whl`, SHA-256
-`74a683299296ff7a78b8155d9b8ad0fec4ab8ba890c84988885562d821b76953`.
-Targeted Clippy with `--no-deps -p bacnet-runtime -p rusty-bacnet --all-targets
--- -D warnings` passed after the runtime lint repair.
+`f04970c2d8603e45b5f38162d390e8b818587ac28d56e5ec318192ef00b337d8`.
+Targeted Clippy with `--no-deps` and `-D warnings` passed for runtime,
+bindings, transport, ops and MCP. The prior parallel binding test run exposed
+a timing-sensitive logging assertion; all 214 binding unit tests passed with
+one test thread.
 Dependency Clippy reported unchanged upstream `must_use_candidate` warnings
 in `bacnet-bip-core` (`bbmd/fdt.rs:274`, `bbmd/forward.rs:113`). These local
 checks do not replace pinned-toolchain CI or release approval. No wheel was

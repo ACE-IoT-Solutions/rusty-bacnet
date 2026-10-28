@@ -257,7 +257,7 @@ openWorldHint: false`.
 |---|---|---|---|---|
 | `bacnet_discover` | 1 | RO, idempotent | `send` (default true), `scope` (local, network, directed, global), `network`, `address`, `range`, `wait_s` (1 to 30), `cursor` | devices: instance, address, network, vendor, max APDU, segmentation, last seen; names only on request |
 | `bacnet_find_object` | 1 | RO | `name`, `description`, `object` or `types`; `range`, `cursor` | matches: device, object, name and description (untrusted); devices incomplete or skipped |
-| `bacnet_network_map` | 1 | RO | `send`, `network`, `wait_s` (a BBMD's tables and a consistency verdict: **planned**) | routers and the networks they reach; networks with routers, speed, rate and devices |
+| `bacnet_network_map` | 1 | RO | `send`, `network`, `wait_s`, `bbmd` and `bbmds` (built in #2102) | routers and the networks they reach; networks with routers, speed, rate and devices; with `bbmd`, the BBMDs' BDT and FDT and a consistency verdict |
 | `bacnet_read` | 1 | RO, idempotent | `device`, `reads` (up to 100: object, properties or `all`/`required`, index), `preset` (`point`, `device`), `format` (display, typed, both) | results per property: value or BACnet error; `via` rpm or rp |
 | `bacnet_list_objects` | 1 | RO | `device`, `types`, `names`, `cursor` | objects, total, next cursor |
 | `bacnet_describe_device` | 1 | RO, idempotent | `device`, `count_objects` | vendor, model, firmware and software versions, protocol revision, services and object types by name, segmentation, APDU size, database revision, route |
@@ -287,6 +287,11 @@ Notes:
 - `bacnet_network_map` with `send: true` broadcasts a
   Who-Is-Router-To-Network, which every router answers, so it follows the
   broad-discovery rule: allowed by the policy, and one a minute.
+- `bacnet_network_map` with `bbmd: true` (#2102) reads BDTs and FDTs by
+  the read messages of Annex J only, starting from the registration's BBMD
+  or a known device's or router's address and following the tables (no
+  scan), up to 16 BBMDs, four at once. It follows the same broad rule,
+  with its own minute.
 - A page budget keeps text under about 24 kB and structured content under
   about 64 kB per call. A larger result returns a page and `next_cursor`.
   Default page sizes: 200 devices, 200 objects, 100 property values, 500
@@ -331,7 +336,8 @@ the user.
 
 | URI | Content | A subscription means |
 |---|---|---|
-| `bacnet://devices` | the discovery table | updated on I-Am arrivals and losses, at most once a second |
+| `bacnet://devices` | the discovery table's first page, sorted by instance; `next` names the next page when truncated | updated on I-Am arrivals and losses, at most once a second |
+| `bacnet://devices/after/{instance}` | the page of devices above `{instance}` (#2116) | as `bacnet://devices`; a listen stream follows at most 16 pages |
 | `bacnet://device/{instance}` | the device summary (cached) | none |
 | `bacnet://device/{instance}/object/{type}:{n}` | the point preset | one managed SubscribeCOV per object with a finite lifetime (300 s, renewed), or polling at 10 s or slower when the device refuses COV |
 | `.../property/{prop}` | one property | SubscribeCOVProperty, or polling |
@@ -363,9 +369,21 @@ As built (#2067), and where it differs from the plan above:
 
 - **`rmcp` 3.5.1 already implements `subscriptions/listen`**
   (`accepted_subscription_filter` and `listen`), so no custom request and
-  no SDK bump were needed. The older `resources/subscribe` is not offered:
-  legacy clients use `bacnet_watch`, and the `initialize` answer for a
-  version before 2026-07-28 doesn't advertise subscriptions.
+  no SDK bump were needed.
+- **Legacy sessions subscribe too (#2114).** The SDK still routes the
+  older `resources/subscribe` and `resources/unsubscribe` to sessions on
+  revisions before 2026-07-28, and the server serves them: a subscribe is
+  checked as a listen URI is and holds a hub watch under the same caps
+  (listen streams, legacy subscriptions and `bacnet_watch` share them), a
+  refused one is a -32602 coded as a refused read, a repeat is one
+  subscription, and unsubscribing drops the watch at once. One notifier
+  task a session follows the subscriptions with the listen loop's signal
+  sources (points, the device list, the alarm poll) and sends
+  `notifications/resources/updated` to the peer; it holds no lease, since
+  the watches live in the principal's state, which the session's end
+  clears on every path, a dropped future included. The `initialize`
+  answer advertises `resources.subscribe` for every version again;
+  `bacnet_watch` stays the fallback for hosts that don't subscribe.
 - The SDK asks for the accepted filter synchronously, before the
   acknowledgment. The watches are taken there and held for the stream,
   matched by its URI list; a point URI needs its device in the discovery

@@ -1,6 +1,9 @@
-//! The committed capability tables match a fresh run of their generator (#1496).
+//! The committed capability tables and sample PICS match a fresh run of
+//! their generators (#1496).
 #![forbid(unsafe_code)]
 
+#[path = "../sample_pics.rs"]
+mod sample_pics;
 #[path = "../support_tables.rs"]
 mod support_tables;
 
@@ -10,26 +13,69 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-#[test]
-fn the_committed_support_tables_are_fresh() {
-    let fresh = support_tables::generate(&repo()).unwrap();
-    let committed = std::fs::read_to_string(repo().join(support_tables::OUTPUT))
+/// Each generated file, with its generator.
+type Generator = fn(&Path) -> Result<String, String>;
+const GENERATED: [(&str, Generator); 2] = [
+    (support_tables::OUTPUT, support_tables::generate),
+    (sample_pics::OUTPUT, sample_pics::generate),
+];
+
+fn committed(path: &str) -> String {
+    std::fs::read_to_string(repo().join(path))
         .unwrap_or_default()
-        .replace("\r\n", "\n");
-    assert!(
-        committed == fresh,
-        "{} is stale: run `cargo run -p bacnet-integration-tests --example support-tables` and commit the result",
-        support_tables::OUTPUT
-    );
+        .replace("\r\n", "\n")
 }
 
 #[test]
-fn the_tables_never_claim_conformance() {
-    let committed = std::fs::read_to_string(repo().join(support_tables::OUTPUT))
-        .unwrap()
-        .to_lowercase();
-    for word in support_tables::FORBIDDEN_WORDS {
-        assert!(!committed.contains(word), "support.json says {word:?}");
+fn the_committed_support_tables_and_sample_pics_are_fresh() {
+    for (output, generate) in GENERATED {
+        let fresh = generate(&repo()).unwrap();
+        assert!(
+            committed(output) == fresh,
+            "{output} is stale: run `cargo run -p bacnet-integration-tests --example support-tables` and commit the result"
+        );
+    }
+}
+
+#[test]
+fn the_generated_files_never_claim_conformance() {
+    for (output, _) in GENERATED {
+        let text = committed(output).to_lowercase();
+        assert!(!text.is_empty(), "{output} is missing");
+        for word in support_tables::FORBIDDEN_WORDS {
+            assert!(!text.contains(word), "{output} says {word:?}");
+        }
+        assert!(!text.contains("bibb"), "{output} names a BIBB");
+    }
+}
+
+#[test]
+fn the_sample_pics_carries_its_banner_and_names_its_configuration() {
+    let sample = committed(sample_pics::OUTPUT);
+    let reference = sample_pics::REFERENCE;
+    // The title and the banner name the configuration, and the banner comes
+    // before the generator's output, inside the file the raw export copies.
+    assert!(sample.contains(&format!("title: \"Sample PICS: the {reference}\"")));
+    let banner = sample
+        .find(&format!(
+            ":::caution[Generated sample for the {reference} only]"
+        ))
+        .expect("the banner");
+    let pics = sample
+        .find("\n## BACnet Protocol Implementation Conformance Statement (PICS)\n")
+        .expect("the generator's title, one level down");
+    assert!(banner < pics);
+    assert!(sample.contains("not a claim for any product or device"));
+    // None of the generator's headings stays at the page title's level.
+    assert!(!sample.lines().any(|line| line.starts_with("# ")));
+    // The declared configuration: B/IP and SC, router and BBMD off.
+    for line in [
+        "- BACnet/IP (Annex J)",
+        "- BACnet/SC (Annex AB)",
+        "| Router | false |",
+        "| BBMD | false |",
+    ] {
+        assert!(sample.contains(&format!("\n{line}\n")), "{line}");
     }
 }
 

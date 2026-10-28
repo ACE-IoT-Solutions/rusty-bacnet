@@ -68,7 +68,7 @@ pub use certificate_bindings::{ScHubCertificateBinding, ScHubCertificateBindings
 pub use graceful::{ScHubGracefulTimeouts, ScHubShutdownOutcome};
 pub use outcomes::ScHubOutcomeCounts;
 pub use timeouts::ScHubHandshakeTimeouts;
-pub use timing::ScHubProbePolicy;
+pub use timing::{SC_HUB_PROBE_LIVENESS_BOUND, SC_HUB_PROBE_MAX_LIVENESS_BOUND, ScHubProbePolicy};
 pub use tls_config::ScHubTlsConfig;
 
 use client::HubClient;
@@ -612,6 +612,8 @@ mod resolution_transit_lifecycle_tests;
 #[cfg(test)]
 mod resolution_transit_tests;
 
+#[cfg(test)]
+mod probe_liveness_tests;
 #[cfg(test)]
 mod probe_tests;
 

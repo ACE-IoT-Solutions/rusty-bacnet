@@ -112,10 +112,16 @@ impl BACnetObject for TestDevice {
     }
     fn read_property(
         &self,
-        _property: PropertyIdentifier,
+        property: PropertyIdentifier,
         _array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
-        Ok(PropertyValue::Unsigned(0))
+        // The PICS prints the Device's Vendor_Name. Its Vendor_Identifier
+        // isn't an unsigned value, so the ServerConfig's vendor ID stands in.
+        Ok(match property {
+            PropertyIdentifier::VENDOR_NAME => PropertyValue::CharacterString("Acme Corp".into()),
+            PropertyIdentifier::VENDOR_IDENTIFIER => PropertyValue::Null,
+            _ => PropertyValue::Unsigned(0),
+        })
     }
     fn write_property(
         &mut self,
@@ -178,12 +184,6 @@ fn make_test_db() -> ObjectDatabase {
 
 fn make_pics_config() -> PicsConfig {
     PicsConfig {
-        vendor_name: "Acme Corp".into(),
-        model_name: "BACnet Controller 3000".into(),
-        firmware_revision: "1.0.0".into(),
-        application_software_version: "2.0.0".into(),
-        protocol_version: 1,
-        protocol_revision: 24,
         device_profile: DeviceProfile::BAsc,
         data_link_layers: vec![DataLinkSupport::BipV4],
         network_layer: NetworkLayerSupport {

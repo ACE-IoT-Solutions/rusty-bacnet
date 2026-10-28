@@ -16,6 +16,7 @@
 //! dropping its future: a turn's wait is cancel-safe, and a request
 //! already sent is abandoned to the client's transaction state machine.
 
+mod bbmd;
 mod discover;
 mod log;
 mod read;
@@ -35,9 +36,11 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
 pub use self::discover::WhoIsScope;
+pub use self::log::Naming;
+pub(crate) use self::read::rpm_rows;
 pub use self::read::{
     Halt, ListRead, MAX_OBJECTS, ReadVia, Reader, RpmFailure, Wanted, network_of, rpm_failure,
-    unreachable,
+    timed_out, unreachable,
 };
 use crate::format::{RawRow, object_name};
 use crate::limits::{RequestLimits, Turn};
@@ -141,7 +144,7 @@ impl<T: TransportPort + 'static> Engine<T> {
     }
 
     /// A reader for `device`, by RPM unless the device refused it before.
-    fn reader(&self, device: u32) -> Reader<'_, T> {
+    pub(crate) fn reader(&self, device: u32) -> Reader<'_, T> {
         Reader {
             client: &self.client,
             device,
@@ -152,7 +155,7 @@ impl<T: TransportPort + 'static> Engine<T> {
     }
 
     /// Remember a refusal `reader` met.
-    fn settle(&self, reader: &Reader<'_, T>) {
+    pub(crate) fn settle(&self, reader: &Reader<'_, T>) {
         if !reader.rpm {
             self.no_rpm().insert(reader.device);
         }

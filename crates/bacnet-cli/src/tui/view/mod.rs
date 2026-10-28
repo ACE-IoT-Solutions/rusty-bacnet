@@ -203,10 +203,13 @@ impl Theme {
 }
 
 /// `text` with each control character (a newline, a tab, an escape) as a
-/// space, as the log pane shows them: a device-supplied string must not
-/// move the cursor or break a row.
+/// space, as the log pane shows them, and each invisible format character
+/// (a bidirectional override or isolate, a zero-width one) dropped: a
+/// device-supplied string must not move the cursor, break a row or
+/// reorder what follows it.
 pub(super) fn sanitize(text: &str) -> String {
     text.chars()
+        .filter(|ch| !bacnet_ops::format::is_hidden_on_screen(*ch))
         .map(|ch| if ch.is_control() { ' ' } else { ch })
         .collect()
 }

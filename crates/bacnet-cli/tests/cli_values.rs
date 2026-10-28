@@ -153,10 +153,12 @@ async fn reads_name_enumerations_bits_and_constructed_values() {
             "analog-input 1",
             json!({"type": "analog-input", "type_number": 0, "instance": 1}),
         ),
+        // The state with its object's text (#2132); the typed form
+        // unchanged. More in cli_read_states.rs.
         (
             "bi:1",
             "present-value",
-            "inactive",
+            "inactive (Inactive)",
             json!({"value": 0, "name": "inactive"}),
         ),
         (

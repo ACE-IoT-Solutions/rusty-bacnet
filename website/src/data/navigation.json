@@ -120,6 +120,10 @@
       {
         "label": "Restrict who can change it",
         "slug": "integrate/security"
+      },
+      {
+        "label": "Generate a PICS",
+        "slug": "integrate/pics"
       }
     ]
   },
@@ -249,6 +253,10 @@
       {
         "label": "Capability tables",
         "slug": "project/conformance"
+      },
+      {
+        "label": "Sample PICS",
+        "slug": "project/sample-pics"
       },
       {
         "label": "Performance",

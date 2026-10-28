@@ -34,3 +34,19 @@ pub mod primitives;
 /// keeps every one of them inline. Only with `alloc`.
 #[cfg(feature = "alloc")]
 pub type MacAddr = smallvec::SmallVec<[u8; 6]>;
+
+/// The BACnet protocol version this stack implements: the Device object's
+/// Protocol_Version (Clause 12.11.12).
+///
+/// The Device object and the PICS generator both take it from here, so they
+/// can't disagree (#2125).
+pub const PROTOCOL_VERSION: u16 = 1;
+
+/// The BACnet protocol revision this stack implements: the Device object's
+/// Protocol_Revision (Clause 12.11.13).
+///
+/// The stack implements ASHRAE 135-2020, which the standard's History of
+/// Revisions lists as version 1, revision 22. Later addenda raise the
+/// revision; they are not implemented as a whole, so the stack doesn't claim
+/// them.
+pub const PROTOCOL_REVISION: u16 = 22;

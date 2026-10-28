@@ -385,7 +385,7 @@ async fn serve_with<T: TransportPort + 'static>(
     sc_events: Option<broadcast::Receiver<ScEvent>>,
 ) {
     let client = Arc::new(client);
-    let rate = RequestLimits::new(options.max_rate);
+    let rate = Arc::new(RequestLimits::new(options.max_rate));
     let mut local = style.format(client.local_mac());
     // A B/IPv6 VMAC alone doesn't say where the client is bound.
     if let Some(bound) =

@@ -223,11 +223,11 @@ impl DeviceObject {
         );
         properties.insert(
             PropertyIdentifier::PROTOCOL_VERSION,
-            PropertyValue::Unsigned(1),
+            PropertyValue::Unsigned(u64::from(bacnet_types::PROTOCOL_VERSION)),
         );
         properties.insert(
             PropertyIdentifier::PROTOCOL_REVISION,
-            PropertyValue::Unsigned(22), // Revision 22 (2020)
+            PropertyValue::Unsigned(u64::from(bacnet_types::PROTOCOL_REVISION)),
         );
         properties.insert(
             PropertyIdentifier::MAX_APDU_LENGTH_ACCEPTED,

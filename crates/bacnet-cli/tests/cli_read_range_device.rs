@@ -313,3 +313,89 @@ async fn a_silent_device_is_never_asked_for_the_reference() {
         task.abort();
     }
 }
+
+/// A logged string that holds an override, an escape sequence and a
+/// newline prints cleaned in the table and exactly in JSON (#2144).
+#[tokio::test]
+async fn a_logged_string_prints_cleaned_in_the_table() {
+    let text = "Door\u{202E} open\u{1b}[2J\nnow";
+    let (target, task) = device(move |request| {
+        let mut value = BytesMut::new();
+        bacnet_encoding::primitives::encode_app_character_string(&mut value, text).unwrap();
+        let record = BACnetLogRecord {
+            date: Date {
+                year: 126,
+                month: 10,
+                day: 5,
+                day_of_week: 1,
+            },
+            time: Time {
+                hour: 9,
+                minute: 0,
+                second: 1,
+                hundredths: 0,
+            },
+            log_datum: LogDatum::AnyValue(value.to_vec()),
+            status_flags: None,
+        };
+        let mut item_data = BytesMut::new();
+        encode_log_record(&record, &mut item_data).unwrap();
+        let mut ack = page(request, 1, 1, (true, true, false));
+        ack.item_data = item_data.to_vec();
+        Some(ack)
+    })
+    .await;
+    let range = ["--sequence", "1", "--count", "1"];
+    let output = read_range(&target, "table", &range).await;
+    let table = String::from_utf8(output.stdout).unwrap();
+    assert!(table.contains("\"Door open [2J now\""), "{table:?}");
+    let output = read_range(&target, "json", &range).await;
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["records"][0]["datum"], format!("\"{text}\""), "{json}");
+    task.abort();
+}
+
+/// A list that isn't a log prints one item a line; a string item holding
+/// an override, an escape sequence and a newline prints cleaned, and
+/// exactly in JSON (#2144).
+#[tokio::test]
+async fn a_list_item_string_prints_cleaned() {
+    let text = "Door\u{202E} open\u{1b}[2J\nnow";
+    let (target, task) = device(move |request| {
+        let mut item_data = BytesMut::new();
+        bacnet_encoding::primitives::encode_app_character_string(&mut item_data, text).unwrap();
+        Some(ReadRangeAck {
+            object_identifier: request.object_identifier,
+            property_identifier: request.property_identifier,
+            property_array_index: None,
+            result_flags: (true, true, false),
+            item_count: 1,
+            item_data: item_data.to_vec(),
+            first_sequence_number: None,
+        })
+    })
+    .await;
+    let read = |format: &'static str| {
+        run([
+            "--interface",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--timeout",
+            "100",
+            "--format",
+            format,
+            "read-range",
+            &target,
+            "msv:1",
+            "state-text",
+        ])
+    };
+    let output = read("table").await;
+    let table = String::from_utf8(output.stdout).unwrap();
+    assert!(table.contains("  [1] \"Door open [2J now\""), "{table:?}");
+    let output = read("json").await;
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["items"][0], format!("\"{text}\""), "{json}");
+    task.abort();
+}

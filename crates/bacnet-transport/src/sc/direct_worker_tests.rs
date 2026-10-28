@@ -66,6 +66,7 @@ async fn direct_worker_ready_receive_stream_cannot_starve_queued_sends() {
         #[cfg(feature = "sc-tls")]
         None,
         (1476, 1476),
+        (30_000, 60_000),
     );
     // Enqueue both sends synchronously before the spawned worker's first poll.
     // The peer's receive is also continuously ready. Its finite sentinel ends

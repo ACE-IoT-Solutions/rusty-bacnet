@@ -40,7 +40,7 @@ async fn lists_name_resources_from_identifiers_only() {
         .as_array()
         .unwrap()
         .clone();
-    assert_eq!(templates.len(), 4);
+    assert_eq!(templates.len(), 5);
     for item in resources.iter().chain(&templates) {
         let text = item.to_string();
         assert!(
@@ -49,8 +49,8 @@ async fn lists_name_resources_from_identifiers_only() {
         );
         assert_eq!(item["mimeType"], json!("application/json"));
     }
-    // A 2026-07-28 client learns that it can subscribe; one on an older
-    // revision, which can't, isn't told it can.
+    // A 2026-07-28 client learns that it can subscribe, and so does one on
+    // an older revision, which subscribes with resources/subscribe (#2114).
     let discover = lab.agent.modern("server/discover", json!({})).await;
     let resources = &discover["result"]["capabilities"]["resources"];
     assert_eq!(resources["subscribe"], json!(true), "{discover}");
@@ -65,7 +65,7 @@ async fn lists_name_resources_from_identifiers_only() {
     assert_eq!(hello["result"]["protocolVersion"], json!("2025-06-18"));
     let resources = &hello["result"]["capabilities"]["resources"];
     assert!(resources.is_object(), "{hello}");
-    assert!(resources.get("subscribe").is_none(), "{hello}");
+    assert_eq!(resources["subscribe"], json!(true), "{hello}");
     lab.stop().await;
 }
 

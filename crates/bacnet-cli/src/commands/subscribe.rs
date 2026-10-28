@@ -215,7 +215,7 @@ fn cov_notification_text(received: &ReceivedCOVNotification, format: OutputForma
                 parts.push(format!("  routed-source = {routed_source}"));
             }
             for (prop, val) in &props {
-                parts.push(format!("  {prop} = {val}"));
+                parts.push(format!("  {prop} = {}", crate::output::screen(val)));
             }
             parts.join("\n")
         }

@@ -1769,21 +1769,26 @@ To release:
    can't rot, and check that the committed page has a section for every
    command. They don't compare the rendered page with the committed one.
 
-   Regenerate the capability tables too (#1496), after `site.mjs` names the
-   new release, since `website/src/data/support.json` records the release
-   the site describes:
+   Regenerate the capability tables and the sample PICS too (#1496), after
+   `site.mjs` names the new release, since `website/src/data/support.json`
+   records the release the site describes and the sample PICS
+   (`website/src/content/docs/project/sample-pics.md`) names it in its
+   version fields:
 
    ```bash
-   cargo run -p bacnet-integration-tests --example support-tables  # website/src/data/support.json
+   cargo run -p bacnet-integration-tests --example support-tables  # support.json and sample-pics.md
    ```
 
-   Unlike the references, the tables are checked on every PR: the workspace
-   test `bacnet-integration-tests::support_tables` regenerates the file and
-   fails when the committed copy differs. A PR that adds an object type, a
+   Unlike the references, both files are checked on every PR: the workspace
+   test `bacnet-integration-tests::support_tables` regenerates them and
+   fails when a committed copy differs. A PR that adds an object type, a
    service to one of the lists the tables read, a Python client method named
    after a service, or a `bacnet-transport` feature runs the command above
-   and commits the result. The file changes rarely, so concurrent PRs seldom
-   conflict over it.
+   and commits the result; so does one that changes an object's property
+   metadata or the PICS generator's output, which the sample shows. Check
+   that the sample still opens with its banner naming the reference
+   configuration. The files change rarely, so concurrent PRs seldom
+   conflict over them.
 
    **README site links and versions (#2105).** GitHub shows the `dev`
    README, but the website is published from the release, so the README

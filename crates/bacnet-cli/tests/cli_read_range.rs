@@ -5,9 +5,11 @@ mod support;
 
 use std::net::Ipv4Addr;
 
+use bacnet_objects::binary::BinaryValueObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::event_log::EventLogObject;
+use bacnet_objects::multistate::MultiStateValueObject;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_objects::trend::{TrendLogMultipleObject, TrendLogObject};
 use bacnet_server::server::BACnetServer;
@@ -19,7 +21,9 @@ use bacnet_types::constructed::{
     LogDatum, LogValue, NotificationParameters,
 };
 use bacnet_types::enums::{EventState, EventType, NotifyType, ObjectType, PropertyIdentifier};
-use bacnet_types::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, StatusFlags, Time};
+use bacnet_types::primitives::{
+    BACnetTimeStamp, Date, ObjectIdentifier, PropertyValue, StatusFlags, Time,
+};
 use serde_json::json;
 use support::run;
 
@@ -177,7 +181,10 @@ async fn server() -> BACnetServer<BipTransport> {
         Box::new(event_state_log()),
         Box::new(status_flags_log()),
         Box::new(members_log()),
+        Box::new(state_log(5, ObjectType::MULTI_STATE_VALUE)),
+        Box::new(state_log(6, ObjectType::BINARY_VALUE)),
     ];
+    let objects: Vec<Box<dyn BACnetObject>> = objects.into_iter().chain(state_objects()).collect();
     let mut list = vec![device.object_identifier()];
     list.extend(objects.iter().map(|object| object.object_identifier()));
     device.set_object_list(list);
@@ -289,6 +296,57 @@ fn members_log() -> TrendLogMultipleObject {
         ]),
     })
     .unwrap();
+    log
+}
+
+/// Multi-State Value 1, its State_Text `Off`, `Low` and `High`, and Binary
+/// Value 1, its texts `Running` and `Stopped` (#2122).
+fn state_objects() -> Vec<Box<dyn BACnetObject>> {
+    let text = |text: &str| PropertyValue::CharacterString(text.into());
+    let mut mode = MultiStateValueObject::new(1, "Fan Speed", 3).unwrap();
+    mode.write_property(
+        PropertyIdentifier::STATE_TEXT,
+        None,
+        PropertyValue::List(vec![text("Off"), text("Low"), text("High")]),
+        None,
+    )
+    .unwrap();
+    let mut fan = BinaryValueObject::new(1, "Fan").unwrap();
+    for (property, value) in [
+        (PropertyIdentifier::ACTIVE_TEXT, "Running"),
+        (PropertyIdentifier::INACTIVE_TEXT, "Stopped"),
+    ] {
+        fan.write_property(property, None, text(value), None)
+            .unwrap();
+    }
+    vec![Box::new(mode), Box::new(fan)]
+}
+
+/// Trend Log `instance` samples the Present_Value of `object_type` 1: a
+/// multi-state value's states 1 to 4 (4 past its State_Text), or a binary
+/// value's active and inactive.
+fn state_log(instance: u32, object_type: ObjectType) -> TrendLogObject {
+    let mut log = TrendLogObject::new(instance, format!("TL-{instance}"), 10).unwrap();
+    log.set_log_device_object_property(Some(sampling(
+        object_type,
+        1,
+        PropertyIdentifier::PRESENT_VALUE,
+    )))
+    .unwrap();
+    let data: Vec<LogDatum> = if object_type == ObjectType::BINARY_VALUE {
+        vec![LogDatum::EnumValue(1), LogDatum::EnumValue(0)]
+    } else {
+        (1..=4).map(LogDatum::UnsignedValue).collect()
+    };
+    for (hour, log_datum) in (8..).zip(data) {
+        log.add_record(BACnetLogRecord {
+            date: DATE,
+            time: time(hour),
+            log_datum,
+            status_flags: None,
+        })
+        .unwrap();
+    }
     log
 }
 
@@ -625,6 +683,8 @@ async fn read_range_names_logged_values_by_the_monitored_property() {
         ])
     );
 
+    // Binary Input 1 doesn't exist, so the read of its state texts is
+    // refused and its member keeps `active` (#2122).
     let members = json(read_range(&target, "trend-log-multiple:2", "json").await);
     assert_eq!(
         members["records"],
@@ -643,5 +703,34 @@ async fn read_range_names_logged_values_by_the_monitored_property() {
     );
     assert_eq!(unnamed["records"][0]["datum"], json!("1"));
 
+    server.stop().await.unwrap();
+}
+
+/// A log of a multi-state value's Present_Value shows each state with its
+/// State_Text entry, and one past the array as its number; a binary
+/// value's log shows its Active_Text and Inactive_Text (#2122).
+#[tokio::test]
+async fn read_range_names_logged_states_with_the_objects_state_texts() {
+    let mut server = server().await;
+    let target = target(&server);
+    let datums = |text: String| -> Vec<String> {
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        json["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|record| record["datum"].as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        datums(read_range(&target, "trend-log:5", "json").await),
+        ["1 (Off)", "2 (Low)", "3 (High)", "4"]
+    );
+    let paged = read_range_with(&target, "trend-log:6", "json", &["--all", "--count", "1"]).await;
+    assert_eq!(datums(paged), ["active (Running)", "inactive (Stopped)"]);
+    let table = read_range(&target, "trend-log:5", "table").await;
+    for cell in ["1 (Off)", "2 (Low)", "3 (High)"] {
+        assert!(table.contains(cell), "{cell}: {table}");
+    }
     server.stop().await.unwrap();
 }

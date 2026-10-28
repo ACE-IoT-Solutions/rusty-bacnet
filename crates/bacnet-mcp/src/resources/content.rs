@@ -163,14 +163,24 @@ pub(crate) fn state_name(state: State) -> &'static str {
     match state {
         State::Starting => "starting",
         State::Live => "live",
-        State::Failed => "failed",
+        // The hub gives a point up only under `MissingDevice::Fail`, which
+        // the server doesn't use; it would be a failed watch.
+        State::Failed | State::Gone => "failed",
         State::Unreachable => "unreachable",
         State::Stopped => "stopped",
     }
 }
 
-/// The discovery table, in reach: no device text, nothing sent.
-pub(super) async fn devices<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Result<Value, ToolError> {
+/// A page of the discovery table, in reach: no device text, nothing sent.
+/// Devices are sorted by instance, and `after` starts the page past that
+/// instance. The cursor is an instance, not a position, so a device found
+/// between two reads shifts nothing already listed. `total` counts every
+/// device in reach, `truncated` says whether more follow this page, and
+/// `next` names the page that holds them.
+pub(super) async fn devices<T: TransportPort + 'static>(
+    ctx: &Ctx<T>,
+    after: Option<u32>,
+) -> Result<Value, ToolError> {
     let engine = ctx.engine()?;
     let mut devices = engine.devices().await;
     devices.retain(|found| {
@@ -180,21 +190,30 @@ pub(super) async fn devices<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Result<
                 .allows_device(found.object_identifier.instance_number())
     });
     devices.sort_by_key(|found| found.object_identifier.instance_number());
+    let total = devices.len();
+    let start = after.map_or(0, |after| {
+        devices.partition_point(|found| found.object_identifier.instance_number() <= after)
+    });
     let page = ctx.policy.caps.devices;
-    let rows: Vec<Value> = devices
+    let shown = &devices[start..total.min(start.saturating_add(page))];
+    let rows: Vec<Value> = shown
         .iter()
-        .take(page)
         .map(|found| {
             ctx.remember(found);
             discover::device_row(ctx, found)
         })
         .collect();
-    Ok(json!({
+    let truncated = start + shown.len() < total;
+    let mut body = json!({
         "devices": rows,
-        "total": devices.len(),
-        "truncated": devices.len() > page,
+        "total": total,
+        "truncated": truncated,
         "hint": "bacnet_discover finds more; this lists only devices already heard",
-    }))
+    });
+    if truncated && let Some(last) = shown.last() {
+        body["next"] = json!(uri::devices_after(last.object_identifier.instance_number()));
+    }
+    Ok(body)
 }
 
 /// A device's summary, served from a cache for five minutes.
@@ -341,6 +360,7 @@ pub(super) fn session<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Value {
             "held": ctx.subs.held(),
             "max": caps.watches,
             "streams": *ctx.listening.borrow(),
+            "legacy": ctx.subs.legacy_count(),
         },
     });
     if let Some(engine) = &ctx.engine {

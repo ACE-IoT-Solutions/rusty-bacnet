@@ -8,7 +8,8 @@ use serde_json::{Value, json};
 
 use super::Lab;
 use super::site::{
-    LONG_RECORDS, STATE_RECORDS, TREND_RECORDS, failed, ok, state_value, trend_flagged, trend_value,
+    LONG_RECORDS, STATE_RECORDS, TREND_RECORDS, failed, multi_state, ok, state_value,
+    trend_flagged, trend_value,
 };
 use crate::Policy;
 use crate::policy::{Caps, Rates};
@@ -407,5 +408,151 @@ async fn a_silent_device_costs_one_timeout() {
     assert_eq!(body["cost"]["timeouts"], json!(1), "{result}");
     assert_eq!(body["cost"]["requests"], json!(1), "{result}");
     assert_eq!(lab.sends().len() - before, 1, "one request, one timeout");
+    lab.stop().await;
+}
+
+/// An envelope of `text` from multi-state-value:1 or binary-value:1.
+fn device_text(text: &str, object: &str, property: &str) -> Value {
+    json!({
+        "untrusted": text,
+        "source": format!("device 1201 {object} {property}"),
+        "truncated": false,
+    })
+}
+
+/// A Trend Log Multiple sampling multi-state-value:1, binary-value:1 and
+/// the missing multi-state-value:9: the states are counted by state, and the
+/// first two columns' keys labelled with their objects' state texts in
+/// envelopes, cleaned; the values keep their typed form, and the missing
+/// object's refused read and a state past State_Text leave numbers. The
+/// texts cost one request an object, once a call however many pages it
+/// reads (#2122).
+#[tokio::test(start_paused = true)]
+async fn state_columns_are_labelled_with_enveloped_state_texts() {
+    let mut lab = Lab::start_site(Policy::default(), Duration::ZERO).await;
+    lab.agent.initialize().await;
+    let result = lab
+        .agent
+        .call(
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "trend-log-multiple:1" }),
+        )
+        .await;
+    let body = ok(&result);
+    let pages = body["pages"].as_u64().unwrap();
+    assert!(pages >= 2, "{body}");
+    // The counts, a ReadRange a page, the reference, and the texts of
+    // three objects.
+    assert_eq!(requests(&result), 3 + pages + 1 + 3, "{body}");
+
+    let records = body["records"].as_array().unwrap();
+    assert_eq!(records.len(), usize::try_from(STATE_RECORDS).unwrap());
+    assert_eq!(multi_state(1), 2);
+    assert_eq!(
+        records[1]["values"],
+        json!([2, { "value": 1, "name": "active" }, 1])
+    );
+    let quarter = STATE_RECORDS / 4;
+    let half = STATE_RECORDS / 2;
+    let columns = &body["summary"]["columns"];
+    assert_eq!(
+        columns[0]["states"],
+        json!({ "1": quarter, "2": quarter, "3": quarter, "4": quarter })
+    );
+    assert_eq!(columns[0]["numeric"], Value::Null);
+    let speed = |text: &str| device_text(text, "multi-state-value:1", "state-text");
+    // The text as the device sent it, under the envelope's own cap.
+    let low = "Low".repeat(50);
+    assert_eq!(
+        columns[0]["state_texts"],
+        json!({ "1": speed("Off"), "2": speed(&low), "3": speed("High") })
+    );
+    assert_eq!(
+        columns[1]["states"],
+        json!({ "active": half, "inactive": half })
+    );
+    assert_eq!(
+        columns[1]["state_texts"],
+        json!({
+            "active": device_text("Running", "binary-value:1", "active-text"),
+            "inactive": device_text("Stopped", "binary-value:1", "inactive-text"),
+        })
+    );
+    assert_eq!(columns[2]["states"], json!({ "1": STATE_RECORDS }));
+    assert_eq!(columns[2]["state_texts"], Value::Null, "refused");
+    lab.stop().await;
+}
+
+/// A device that goes silent after the reference costs one timeout: the
+/// first state text read times out and no other is sent, and the records
+/// read come back, their states counted without texts. The cost counts
+/// the timeout (#2131).
+#[tokio::test(start_paused = true)]
+async fn a_device_silent_at_the_state_texts_costs_one_timeout() {
+    let mut lab = Lab::start_site(Policy::default(), Duration::ZERO).await;
+    lab.agent.initialize().await;
+    // The counts, one page and the reference get through.
+    lab.go_silent_after(3 + 1 + 1);
+    let before = lab.sends().len();
+    let result = lab
+        .agent
+        .call(
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "trend-log-multiple:1", "max_records": 5 }),
+        )
+        .await;
+    let body = ok(&result);
+    assert_eq!(body["pages"], json!(1), "{body}");
+    assert_eq!(lab.sends().len() - before, 3 + 1 + 1 + 1, "{body}");
+    // One timeout of the client's 1 s, not one an object.
+    let elapsed = result["structuredContent"]["cost"]["elapsed_ms"]
+        .as_u64()
+        .unwrap();
+    assert!((1_000..2_000).contains(&elapsed), "{result}");
+    // The call succeeds, but the timeout counts (#2131).
+    assert_eq!(result["structuredContent"]["cost"]["timeouts"], json!(1));
+    let columns = &body["summary"]["columns"];
+    assert_eq!(columns[0]["state_texts"], Value::Null, "{body}");
+    assert_eq!(columns[1]["states"]["active"], json!(2), "{body}");
+    lab.stop().await;
+}
+
+/// A device that goes silent after its first page: the reference read
+/// times out, the page read comes back unnamed, and the cost counts the
+/// timeout (#2131). Read on, the next page times out too and counts again.
+#[tokio::test(start_paused = true)]
+async fn a_device_silent_at_the_reference_counts_its_timeout() {
+    let mut lab = Lab::start_site(Policy::default(), Duration::ZERO).await;
+    lab.agent.initialize().await;
+    // The counts and one page get through.
+    lab.go_silent_after(3 + 1);
+    let before = lab.sends().len();
+    let result = lab
+        .agent
+        .call(
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "trend-log:4", "max_records": 5 }),
+        )
+        .await;
+    let body = ok(&result);
+    assert_eq!(body["pages"], json!(1), "{body}");
+    assert_eq!(lab.sends().len() - before, 3 + 1 + 1, "{body}");
+    assert_eq!(body["records"][1]["values"][0], json!({ "value": 2 }));
+    let cost = &result["structuredContent"]["cost"];
+    assert_eq!(cost["timeouts"], json!(1), "{result}");
+
+    lab.go_silent_after(3 + 1);
+    let result = lab
+        .agent
+        .call(
+            "bacnet_read_trend",
+            json!({ "device": 1201, "object": "trend-log:4" }),
+        )
+        .await;
+    let body = ok(&result);
+    assert_eq!(body["pages"], json!(1), "{body}");
+    assert_eq!(body["stopped"]["error"], json!("timeout"), "{body}");
+    let cost = &result["structuredContent"]["cost"];
+    assert_eq!(cost["timeouts"], json!(2), "{result}");
     lab.stop().await;
 }

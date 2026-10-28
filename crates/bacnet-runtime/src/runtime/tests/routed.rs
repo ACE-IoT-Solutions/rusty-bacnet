@@ -1,13 +1,13 @@
 use super::*;
 use crate::batch::{DevicePath, WriteBatch, WriteBatchItem};
-use bacnet_encoding::apdu::{self, encode_apdu, Apdu, ComplexAck, SimpleAck};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
+use bacnet_encoding::apdu::{self, Apdu, ComplexAck, SimpleAck, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu};
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_services::write_property::WritePropertyRequest;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::port::TransportPort;
-use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType};
 use bacnet_types::MacAddr;
+use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType};
 use bytes::{Bytes, BytesMut};
 use std::net::Ipv4Addr;
 

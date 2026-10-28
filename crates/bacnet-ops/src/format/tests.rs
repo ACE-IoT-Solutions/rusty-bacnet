@@ -450,3 +450,69 @@ fn device_text_is_told_apart_from_the_formatters_own() {
         assert!(text.may_hold_device_text(), "{text:?}");
     }
 }
+
+/// A State_Text entry that isn't a string keeps its place, so the states
+/// after it are still named by their own entries (#2122).
+#[test]
+fn state_text_positions_hold_past_a_value_that_is_not_text() {
+    let text = |text: &str| PropertyValue::CharacterString(text.into());
+    let rows = vec![
+        (
+            P::STATE_TEXT,
+            Ok(encoded(&[text("Off"), PropertyValue::Null, text("High")])),
+        ),
+        (P::ACTIVE_TEXT, Ok(encoded(&[PropertyValue::Null]))),
+    ];
+    let texts = StateTexts::from_rows(&rows);
+    assert_eq!(texts.states, ["Off", "", "High"]);
+    assert_eq!(texts.active, None);
+    let msv = ValueFormat::new(ObjectType::MULTI_STATE_VALUE, &texts, Floats::Display);
+    let state = |n| encoded(&[PropertyValue::Unsigned(n)]);
+    assert_eq!(msv.value(P::PRESENT_VALUE, &state(1)), "1 (Off)");
+    assert_eq!(msv.value(P::PRESENT_VALUE, &state(2)), "2");
+    assert_eq!(msv.value(P::PRESENT_VALUE, &state(3)), "3 (High)");
+}
+
+/// State texts name the states of binary and multi-state objects only, in
+/// the properties that hold one, never an array's size (#2132).
+#[test]
+fn state_texts_name_only_state_values() {
+    use ObjectType as O;
+    assert!(StateTexts::name(O::BINARY_VALUE, P::PRESENT_VALUE, None));
+    assert!(StateTexts::name(
+        O::MULTI_STATE_INPUT,
+        P::ALARM_VALUES,
+        None
+    ));
+    assert!(StateTexts::name(
+        O::BINARY_OUTPUT,
+        P::PRIORITY_ARRAY,
+        Some(8)
+    ));
+    assert!(StateTexts::name(
+        O::MULTI_STATE_OUTPUT,
+        P::PRIORITY_ARRAY,
+        None
+    ));
+    assert!(!StateTexts::name(
+        O::BINARY_OUTPUT,
+        P::PRIORITY_ARRAY,
+        Some(0)
+    ));
+    assert!(!StateTexts::name(O::ANALOG_VALUE, P::PRESENT_VALUE, None));
+    assert!(!StateTexts::name(O::BINARY_VALUE, P::OBJECT_NAME, None));
+}
+
+/// Cleaned texts lose their hidden characters, as object names do.
+#[test]
+fn state_texts_clean_like_names() {
+    let texts = StateTexts {
+        active: Some("On\u{202E}".into()),
+        inactive: Some("Off\nline".into()),
+        states: vec!["\u{200B}Low".into()],
+    };
+    let cleaned = texts.cleaned();
+    assert_eq!(cleaned.active.as_deref(), Some("On"));
+    assert_eq!(cleaned.inactive.as_deref(), Some("Off line"));
+    assert_eq!(cleaned.states, ["Low"]);
+}

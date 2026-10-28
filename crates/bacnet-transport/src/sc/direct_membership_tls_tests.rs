@@ -74,7 +74,10 @@ impl Fixture {
                 NPDU,
                 &[],
                 &self.conn,
-                1000,
+                DirectTiming {
+                    connect_timeout_ms: 1000,
+                    heartbeat_ms: (30_000, 60_000),
+                },
             )
             .await
             .map_err(|_| ())

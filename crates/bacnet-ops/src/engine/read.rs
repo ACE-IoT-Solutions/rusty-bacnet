@@ -14,6 +14,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bacnet_client::client::BACnetClient;
+use bacnet_services::rpm::ReadPropertyMultipleACK;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::{AbortReason, ErrorClass, ObjectType, PropertyIdentifier, RejectReason};
@@ -107,9 +108,16 @@ pub fn rpm_failure(error: &Error) -> RpmFailure {
 /// True when `error` says the device, or the way to it, isn't answering: a
 /// timeout or a transport failure. Reading on would only time out again.
 pub fn unreachable(error: &Error) -> bool {
+    timed_out(error) || matches!(error, Error::Transport(_))
+}
+
+/// True when `error` says the request timed out: the client's own timeout,
+/// or the transaction state machine giving up on its retries. A transport
+/// failure is unreachable but not a timeout.
+pub fn timed_out(error: &Error) -> bool {
     match error {
         Error::Remote(RemoteError::Abort { reason }) => *reason == AbortReason::TSM_TIMEOUT,
-        Error::Timeout(_) | Error::Transport(_) => true,
+        Error::Timeout(_) => true,
         _ => false,
     }
 }
@@ -234,21 +242,7 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
             .read_property_multiple_from_device(self.device, vec![spec])
             .await
             .map_err(Halt::Device)?;
-        Ok(ack
-            .list_of_read_access_results
-            .into_iter()
-            .flat_map(|result| result.list_of_results)
-            .map(|element| {
-                let value = match (element.property_value, element.error) {
-                    (Some(value), _) => Ok(value),
-                    (None, Some((class, code))) => {
-                        Err(RowError::Remote(RemoteError::Error { class, code }))
-                    }
-                    (None, None) => Err(RowError::NoValue),
-                };
-                (element.property_identifier, value)
-            })
-            .collect())
+        Ok(rpm_rows(ack))
     }
 
     /// The properties `wanted` of `object`, by RPM or, once the device has
@@ -389,6 +383,25 @@ impl<T: TransportPort + 'static> Reader<'_, T> {
             stopped,
         })
     }
+}
+
+/// The properties an RPM answer holds, each its value or the device's
+/// error for it.
+pub(crate) fn rpm_rows(ack: ReadPropertyMultipleACK) -> Vec<RawRow> {
+    ack.list_of_read_access_results
+        .into_iter()
+        .flat_map(|result| result.list_of_results)
+        .map(|element| {
+            let value = match (element.property_value, element.error) {
+                (Some(value), _) => Ok(value),
+                (None, Some((class, code))) => {
+                    Err(RowError::Remote(RemoteError::Error { class, code }))
+                }
+                (None, None) => Err(RowError::NoValue),
+            };
+            (element.property_identifier, value)
+        })
+        .collect()
 }
 
 /// The object identifiers in an application-tagged value.

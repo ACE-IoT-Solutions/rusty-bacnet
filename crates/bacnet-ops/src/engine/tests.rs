@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use bacnet_client::client::{BACnetClient, ClientConfig};
 use bacnet_client::log_reader::LogCursor;
 use bacnet_objects::analog::{AnalogInputObject, AnalogOutputObject};
+use bacnet_objects::binary::BinaryValueObject;
 use bacnet_objects::device_identity::{DeviceIdentity, build_database_with_extra};
 use bacnet_objects::notification_class::NotificationClass;
 use bacnet_objects::traits::BACnetObject;
@@ -70,8 +71,28 @@ fn event_state_trend() -> TrendLogObject {
     log
 }
 
-/// The lab: a device with an analog input, an analog output and two trend
-/// logs, an engine over a client paired with it, and the server to stop.
+/// Binary Value `instance`, with its Active_Text and Inactive_Text (#2122).
+fn binary_value(instance: u32, active: &str, inactive: &str) -> BinaryValueObject {
+    let mut value = BinaryValueObject::new(instance, format!("BV-{instance}")).unwrap();
+    for (property, text) in [
+        (PropertyIdentifier::ACTIVE_TEXT, active),
+        (PropertyIdentifier::INACTIVE_TEXT, inactive),
+    ] {
+        value
+            .write_property(
+                property,
+                None,
+                PropertyValue::CharacterString(text.into()),
+                None,
+            )
+            .unwrap();
+    }
+    value
+}
+
+/// The lab: a device with an analog input, an analog output, two binary
+/// values and two trend logs, an engine over a client paired with it, and
+/// the server to stop.
 async fn lab() -> (Engine<LoopbackTransport>, BACnetServer<LoopbackTransport>) {
     lab_on(|port| port).await
 }
@@ -90,6 +111,8 @@ async fn lab_on<C: TransportPort + 'static>(
         Box::new(trend(3)),
         Box::new(event_state_trend()),
         Box::new(NotificationClass::new(0, "Alarms").unwrap()),
+        Box::new(binary_value(1, "Running", "Stopped")),
+        Box::new(binary_value(2, "Open", "Shut")),
     ];
     let database = build_database_with_extra(&identity, objects).unwrap();
     let (client_port, server_port) = LoopbackTransport::pair(vec![1], vec![2]);
@@ -459,18 +482,20 @@ async fn log_columns_read_the_reference_once_and_fall_back() {
     use crate::limits::{Account, charged};
     let (engine, server) = lab().await;
     let account = Arc::new(Account::new(None));
-    let columns = charged(
+    let (columns, naming) = charged(
         Arc::clone(&account),
         engine.log_columns(LAB, oid(ObjectType::TREND_LOG, 2)),
     )
     .await;
     assert_eq!(account.requests(), 1);
+    assert_eq!(naming, super::Naming::Answered);
     assert_eq!(
         columns.column(0),
         Some(LoggedProperty {
-            object_type: ObjectType::ANALOG_INPUT,
+            object: oid(ObjectType::ANALOG_INPUT, 1),
             property: PropertyIdentifier::EVENT_STATE,
             index: None,
+            device: None,
         })
     );
     let texts = StateTexts::default();
@@ -482,13 +507,15 @@ async fn log_columns_read_the_reference_once_and_fall_back() {
 
     // Trend log 1 has no reference; trend log 9 doesn't exist.
     for log in [1, 9] {
-        let columns = engine
+        let (columns, naming) = engine
             .log_columns(LAB, oid(ObjectType::TREND_LOG, log))
             .await;
         assert!(columns.is_empty(), "trend log {log}: {columns:?}");
+        // A refusal is an answer, not a timeout (#2131).
+        assert!(!naming.timed_out(), "trend log {log}");
     }
     let account = Arc::new(Account::new(None));
-    let columns = charged(
+    let (columns, _) = charged(
         Arc::clone(&account),
         engine.log_columns(LAB, oid(ObjectType::EVENT_LOG, 1)),
     )
@@ -576,3 +603,44 @@ async fn a_refused_who_is_is_not_charged() {
     assert_eq!(account.requests(), 0);
     stop(engine, server).await;
 }
+
+/// A timeout is the client's own or the state machine's TSM_TIMEOUT abort;
+/// a transport failure is unreachable but no timeout, and a refusal is
+/// neither (#2131).
+#[test]
+fn timeouts_are_a_kind_of_unreachable() {
+    use bacnet_types::error::Error;
+    let cases = [
+        (
+            Error::Timeout(std::time::Duration::from_secs(1)),
+            true,
+            true,
+        ),
+        (
+            Error::Remote(RemoteError::Abort {
+                reason: bacnet_types::enums::AbortReason::TSM_TIMEOUT,
+            }),
+            true,
+            true,
+        ),
+        (
+            Error::Transport(std::io::Error::other("link down")),
+            false,
+            true,
+        ),
+        (
+            Error::Remote(RemoteError::Abort {
+                reason: bacnet_types::enums::AbortReason::OTHER,
+            }),
+            false,
+            false,
+        ),
+    ];
+    for (error, timeout, gone) in cases {
+        assert_eq!(super::timed_out(&error), timeout, "{error}");
+        assert_eq!(super::unreachable(&error), gone, "{error}");
+    }
+}
+
+#[path = "state_text_tests.rs"]
+mod state_text_tests;

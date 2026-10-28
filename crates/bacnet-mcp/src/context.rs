@@ -53,6 +53,9 @@ pub(crate) struct Ctx<T: TransportPort + 'static> {
     /// What Who-Is-Router-To-Network queries found, and when the last one
     /// went; at most one goes a minute.
     pub(crate) routers: Mutex<Routers>,
+    /// When the last BBMD survey of `bacnet_network_map` began; at most
+    /// one goes a minute.
+    pub(crate) bbmd_asked: Mutex<Option<Instant>>,
     /// The watch hub; `None` in passive mode.
     pub(crate) hub: Option<Hub<T>>,
     /// What the principal watches, and the subscriptions waiting for their
@@ -314,13 +317,23 @@ impl<T: TransportPort + 'static> Ctx<T> {
     /// Whether `instance` is a known device the policy lets the server
     /// reach, without waiting for the discovery table.
     pub(crate) fn reach_known(&self, instance: u32) -> bool {
+        self.reach_check(instance).is_ok()
+    }
+
+    /// [`reach_known`](Self::reach_known), saying why not: the device
+    /// isn't in the discovery table, or the policy leaves it out.
+    pub(crate) fn reach_check(&self, instance: u32) -> Result<(), ToolError> {
         let network = self
             .known
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&instance)
             .copied();
-        network.is_some_and(|network| self.allow(instance, network).is_ok())
+        let network = network.ok_or_else(|| ToolError::UnknownDevice {
+            device: instance.to_string(),
+            hint: DISCOVER_HINT.into(),
+        })?;
+        self.allow(instance, network)
     }
 
     /// The known devices in reach, in order.

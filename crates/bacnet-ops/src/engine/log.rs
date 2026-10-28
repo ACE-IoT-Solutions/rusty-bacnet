@@ -11,7 +11,15 @@
 //! reads what it samples, so its values can be named (#2091): one more
 //! request, charged the same way, once per read rather than once per page.
 //! Asking only after an answer keeps a silent device to one timeout.
+//! [`Engine::log_state_texts`] then reads the state texts of the binary
+//! and multi-state objects whose states the columns sample (#2122): one
+//! request an object, at most
+//! [`MAX_STATE_TEXT_OBJECTS`](crate::format::MAX_STATE_TEXT_OBJECTS).
+//! Naming never fails a read, but each says, as a [`Naming`], whether a
+//! request of its timed out, so a caller that counts timeouts counts it
+//! (#2131).
 
+use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bacnet_client::client::BACnetClient;
@@ -22,9 +30,37 @@ use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
-use super::Engine;
-use crate::format::LogColumns;
+use super::{Engine, Wanted, timed_out, unreachable};
+use crate::format::{LogColumns, StateTexts};
 use crate::limits::RequestLimits;
+
+/// How a best-effort naming read ended: it never fails the read it names,
+/// but a request it lost to a timeout is still a timeout (#2131).
+#[must_use = "a timed-out naming request is a timeout the caller may count"]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Naming {
+    /// Every request sent was answered, or refused, or none was sent.
+    #[default]
+    Answered,
+    /// A request timed out ([`timed_out`]), and the
+    /// naming stopped there.
+    TimedOut,
+}
+
+impl Naming {
+    /// Whether a request timed out.
+    pub fn timed_out(self) -> bool {
+        self == Self::TimedOut
+    }
+
+    fn of(error: &Error) -> Self {
+        if timed_out(error) {
+            Self::TimedOut
+        } else {
+            Self::Answered
+        }
+    }
+}
 
 /// The requester a page reads through: the device's routed read calls,
 /// each after a slot (the first under the page's turn).
@@ -77,19 +113,65 @@ impl<T: TransportPort + 'static> Engine<T> {
     /// Log_DeviceObjectProperty: one ReadProperty, charged like any other
     /// read, for a Trend Log or Trend Log Multiple, and none for another
     /// log. Naming is best effort: a refused, failed or empty read names no
-    /// column, and the values print as the log gives them.
-    pub async fn log_columns(&self, device: u32, log: ObjectIdentifier) -> LogColumns {
+    /// column, and the values print as the log gives them. The [`Naming`]
+    /// says whether the read timed out.
+    pub async fn log_columns(&self, device: u32, log: ObjectIdentifier) -> (LogColumns, Naming) {
         if !LogColumns::applies(log.object_type()) {
-            return LogColumns::default();
+            return (LogColumns::default(), Naming::Answered);
         }
-        self.read_property(
-            device,
-            log,
-            PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY,
-            None,
-        )
-        .await
-        .map(|data| LogColumns::decode(&data))
-        .unwrap_or_default()
+        match self
+            .read_property(
+                device,
+                log,
+                PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY,
+                None,
+            )
+            .await
+        {
+            Ok(data) => (LogColumns::decode(&data), Naming::Answered),
+            Err(error) => (LogColumns::default(), Naming::of(&error)),
+        }
+    }
+
+    /// Name the states `columns` sample with their objects' state texts,
+    /// read from `device`: one charged request an object (ReadPropertyMultiple,
+    /// or ReadProperty each once the device has refused it), each object
+    /// once, only objects on `device`, at most
+    /// [`MAX_STATE_TEXT_OBJECTS`](crate::format::MAX_STATE_TEXT_OBJECTS).
+    /// Best effort: a refused read leaves its columns named as before, and
+    /// a device that stops answering, or `out_of_time` turning true, ends
+    /// the reading before the next object. The [`Naming`] says whether the
+    /// read that ended it timed out.
+    pub async fn log_state_texts(
+        &self,
+        device: u32,
+        columns: &mut LogColumns,
+        out_of_time: impl Fn() -> bool,
+    ) -> Naming {
+        let out_of_time = &out_of_time;
+        // Atomic rather than a Cell: the MCP server's futures are Send.
+        let lost = AtomicBool::new(false);
+        let lost = &lost;
+        columns
+            .read_state_texts(Some(device), |object| async move {
+                if out_of_time() {
+                    return ControlFlow::Break(());
+                }
+                let wanted = Wanted::List(StateTexts::properties(object.object_type()));
+                match self.read(device, object, wanted).await {
+                    Ok(read) => ControlFlow::Continue(StateTexts::from_rows(&read.rows)),
+                    Err(error) if unreachable(&error) => {
+                        lost.store(timed_out(&error), Ordering::Relaxed);
+                        ControlFlow::Break(())
+                    }
+                    Err(_) => ControlFlow::Continue(StateTexts::default()),
+                }
+            })
+            .await;
+        if lost.load(Ordering::Relaxed) {
+            Naming::TimedOut
+        } else {
+            Naming::Answered
+        }
     }
 }

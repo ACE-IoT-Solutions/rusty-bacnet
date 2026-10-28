@@ -18,15 +18,16 @@ mod tls_config;
 pub use tls_config::ScNodeTlsConfig;
 
 pub(crate) mod direct_accept;
-pub use direct_accept::{DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS, DirectAcceptConfig, DirectListener};
+pub use direct_accept::{
+    DIRECT_ACCEPT_IDLE_TIMEOUT, DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS, DirectAcceptConfig,
+    DirectListener,
+};
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::{net::TcpStream, sync::Mutex};
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::Error as TungsteniteError;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Error as TungsteniteError, Message};
 
 use bacnet_types::error::Error;
 

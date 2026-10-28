@@ -226,6 +226,8 @@ LAB_A = Covered(("website/tests/python/test_loopback_lab.py",))
 PY_FIRST_READ_A = Covered(("crates/rusty-bacnet/tests/test_website_first_read.py",))
 README_READ_RS = "examples/rust/readme_read.rs"
 README_SERVER_RS = "examples/rust/readme_server.rs"
+# The PICS task page's program (#1496), a Cargo example like the README's.
+PICS_RS = "examples/rust/generate_pics.rs"
 # The README quickstart server: test_site_samples runs this block as the
 # "readme" server, and checks that scripts/release/cli_smoke.sh, which runs
 # it at release time, holds the same text.
@@ -299,6 +301,14 @@ SAMPLES: dict[str, object] = {
         Run(DEVICE, (REFUSED, ok(r'"value": "0"'))),
     "guides/safe-writes.md::bacnet --allow-write write 192.168.1.100 av:1 pv 72.5 --priority 8":
         Run(DEVICE, (WRITTEN, WRITTEN)),
+    # The release program sets PicsConfig's protocol and product fields, which
+    # dev removed (#2125, #2137); the dev section's program is the Cargo
+    # example, and replaces it at the next release.
+    "integrate/pics.mdx::use bacnet_objects::DeviceIdentity;": Skip(
+        "E", "the v0.14.0 program; CI compiled it until #2125 and #2137 removed the PicsConfig fields it sets"
+    ),
+    "integrate/pics.mdx::// On dev: the PICS takes the product and protocol details from the Device.":
+        Example(PICS_RS),
     "integrate/router.mdx::bacnet whois-router": Parse(),
     'integrate/router.mdx::<Code code={routerManifest} lang="toml" title="Cargo.toml" />': ROUTER_A,
     'integrate/router.mdx::<Code code={routerSource} lang="rust" title="src/main.rs" />': ROUTER_A,

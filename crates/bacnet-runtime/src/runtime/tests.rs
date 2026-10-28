@@ -314,11 +314,11 @@ async fn stop_aborts_and_joins_an_inflight_batch() {
 
 #[tokio::test]
 async fn direct_read_batch_round_trips_through_bip() {
-    use bacnet_encoding::apdu::{self, encode_apdu, Apdu, ComplexAck};
+    use bacnet_encoding::apdu::{self, Apdu, ComplexAck, encode_apdu};
     use bacnet_network::layer::NetworkLayer;
+    use bacnet_npdu::NetworkPriority;
     use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
     use bacnet_transport::bip::BipTransport;
-    use bacnet_npdu::NetworkPriority;
     use bacnet_types::enums::ConfirmedServiceChoice;
     use bytes::{Bytes, BytesMut};
     use std::net::Ipv4Addr;

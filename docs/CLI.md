@@ -84,6 +84,17 @@ macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 
 Output auto-detects: tables in TTY, JSON when piped.
 
+**Device text:** strings a device supplies (values, object names, state
+texts, event messages) are cleaned in table and text output, as the terminal
+UI shows them: control characters (an escape sequence, a bell, a tab, a
+newline) and line or paragraph separators print as spaces, and invisible
+format characters (a bidirectional override, a zero-width space) are
+dropped, so a device can't move the cursor, break a row or reorder what
+follows. A zero width joiner stays, keeping an emoji sequence one picture.
+Nothing marks a cleaned string. JSON output keeps the device's exact text,
+with control characters escaped as JSON requires; a script that prints a
+JSON string to a terminal should clean it first.
+
 **Interface selection:** A one-shot command without `--interface` binds `0.0.0.0`. The terminal UI on BACnet/IP without `-i` lists the available network interfaces in a dialog; named B/IP profiles use their saved interface.
 
 ## Target Resolution
@@ -548,7 +559,8 @@ its subscription on the device; the status bar's `COV` counter is how many
 subscriptions the session holds. A renewal that fails turns the row to
 polling and it subscribes again later, waiting longer each time it fails.
 A device that refuses COV, or a routed one, is polled instead: one
-ReadPropertyMultiple per device for up to 16 rows, a point at most every
+ReadPropertyMultiple per device for up to 16 rows (asked again a row at a
+time when the answer would be too large), a point at most every
 `--poll-interval` seconds (default 10) counted from the end of its last
 poll, and within the shared `--max-rate`; a device that stops answering is
 polled again after a wait that doubles up to a minute. The watch list keeps
@@ -561,10 +573,11 @@ keep up with count in the `drop` counter. With a profile, `:csv on` logs every
 value to `watch-<time>.csv` in the profile's workspace and `:csv off` stops.
 Its columns are `unix_ms,device,object,property,value,status_flags,source,network`:
 `device` is the plain instance and `network` a routed device's network,
-empty on the local network.
+empty on the local network. The list runs on the same watch hub as the MCP server
+(`bacnet_ops::watch`).
 
-**Network screen.** Its BBMD tabs are for B/IP, and its Networks tab
-(below) works on every transport. `4` shows the foreign-device panel and one BBMD's
+**Network screen.** Its BBMD tabs are for B/IP, and its Networks tab (below)
+works on every transport. `4` shows the foreign-device panel and one BBMD's
 tables. With `--foreign-bbmd` (or a profile with a BBMD) the panel shows the
 BBMD, the TTL, the last BVLC-Result, a countdown to the next registration and
 the lease left; a refused registration raises a red banner on every screen.
@@ -572,16 +585,19 @@ Once the BBMD accepts, the TUI reads its FDT and shows the entry the BBMD
 recorded for us, the address it forwards broadcasts to; when no entry has our
 address, a NAT router may have rewritten it. `:bbmd ADDRESS` reads any other
 BBMD, and `:bbmd` alone goes back to ours, as the footer says meanwhile. Tab
-switches between the BDT, with what each entry's mask means for
-forwarding, the FDT, with each entry's seconds left, and the consistency
-matrix; `r` reads again. `m` reads the BDT of every BBMD the tables lead to (up
-to 16) and shows which lists which: a peer listed one way only, a BDT without
-its own entry, a BBMD listed with different masks, and BBMDs that refuse the
-read or don't answer are flagged. Every read is a BVLC request; nothing is
-written. The matrix matches BBMDs by address, so a BBMD reached at an address
-other than its own BDT entry (behind NAT, its global address in peers' tables
-and its private one in its own) shows as two rows, one flagged with no entry
-for itself.
+switches between the BDT, with what each entry's mask means for forwarding,
+the FDT, with each entry's seconds left (`!` and `expiring` under 30 s), and
+the consistency matrix; `r` reads again. `m` reads the BDT of every BBMD the
+tables lead to (up to 16) and shows which lists which: a peer listed one way
+only, a BDT without its own entry, a BBMD listed with different masks, and
+BBMDs that refuse the read or don't answer are flagged. Entries the survey
+never reads (unresolved, unspecified, broadcast, directed broadcast,
+multicast, loopback or our own address) are listed under the findings with the
+BBMD that listed them and the reason, and BBMDs past the grid's limit of 32
+are counted. Every read is a BVLC request; nothing is written. The matrix
+matches BBMDs by address, so a BBMD reached at an address other than its own
+BDT entry (behind NAT, its global address in peers' tables and its private one
+in its own) shows as two rows, one flagged with no entry for itself.
 
 **Who-Has and the Networks tab.** `:find NAME` broadcasts a Who-Has for the
 object named NAME (the rest of the line, exactly as typed, apostrophes and
@@ -1061,6 +1077,23 @@ Text output names what the device sent:
 - enumerations by name in kebab case: `offnormal`, `open-loop`,
   `degrees-fahrenheit`; a binary object's state as `active` or `inactive`. A
   number the property's enumeration doesn't name prints as the number;
+- with `read` and `readm`, a binary or multi-state object's state (its
+  Present_Value, Relinquish_Default, a Priority_Array slot and the like)
+  followed by the object's own text: `active (Running)`, `2 (Low)`. The
+  texts are the object's Active_Text and Inactive_Text, or its State_Text,
+  read once the value has been read with one more request an object (a
+  ReadPropertyMultiple for a binary object's pair), unless the read already
+  holds them (`read bv:1 all`). On a device without ReadPropertyMultiple,
+  after one refused RPM a command, each text goes by its own ReadProperty.
+  A refused read, an empty text or a state past the end of State_Text keeps
+  the plain form, `active` or `2`, and a device that stops answering then
+  keeps it for the rest of the command without failing it. The texts come
+  from the device: control characters in them print as spaces and
+  invisible format characters are dropped. The JSON `value` text changes
+  for every such state (`inactive` becomes `inactive (Inactive)`); scripts
+  should read `decoded`, unchanged: the number for a multi-state state,
+  `{"value": 0, "name": "inactive"}` for a binary one. A single state
+  printed this way writes back unchanged, whatever its text holds;
 - bit strings with names as the set bits, `in-alarm | fault`, or `none`;
   other bit strings as their bits, `bits(0101)`;
 - objects as `analog-input 1`, dates as `2026-10-19`, times as `07:00`
@@ -1179,7 +1212,18 @@ Present_Value `active`. A Trend Log Multiple names each member's value by
 its own reference. When that read fails or names nothing, when a member's
 reference is empty, or when a value's type doesn't fit the property (a REAL
 where an enumeration was expected), the value prints as logged: an
-enumeration as `enum 3` and a bit string as its bits. An Event Log
+enumeration as `enum 3` and a bit string as its bits. When a column samples
+the state of a binary or multi-state object on the same device (its
+Present_Value, Relinquish_Default, a Priority_Array slot and the like),
+`read-range` then reads that object's Active_Text and Inactive_Text, or its
+State_Text, and shows each state with its text: `active (Running)`, `2
+(Low)`. That is one request more an object, once per command, for at most 8
+objects (the rest of a large Trend Log Multiple keeps plain states). A
+refused read, an empty text or a state past the end of State_Text keeps the
+plain form, `active` or `2`. The texts come from the device: control
+characters in them print as spaces, and invisible format characters
+(bidirectional overrides and isolates, zero-width characters) are dropped,
+as they are from object names. An Event Log
 notification ends with its event values in braces, each named for its event
 type:
 

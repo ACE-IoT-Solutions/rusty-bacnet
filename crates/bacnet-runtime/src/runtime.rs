@@ -3,15 +3,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
-use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, watch};
 use tokio::task::AbortHandle;
 
-use crate::attachment::{start_attachment, ManagedAttachment};
+use crate::attachment::{ManagedAttachment, start_attachment};
 use crate::batch::{
     DevicePath, OperationId, ReadBatch, ReadBatchOperation, ReadOutcome, WriteBatch,
     WriteBatchOperation, WriteOutcome,
 };
-use crate::config::{validate_attachments, AttachmentConfig, AttachmentId, RuntimeConfig};
+use crate::config::{AttachmentConfig, AttachmentId, RuntimeConfig, validate_attachments};
 use crate::error::RuntimeError;
 use crate::health::{AttachmentState, ReconcileReport, RuntimeHealth, StopReport};
 

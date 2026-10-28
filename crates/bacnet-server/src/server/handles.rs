@@ -179,7 +179,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// Standalone [`PicsGenerator`](crate::pics::PicsGenerator) keeps raw-object semantics.
     ///
     /// The caller must supply a [`PicsConfig`](crate::pics::PicsConfig) for fields not available from the server
-    /// (vendor name, model, firmware revision, etc.).
+    /// (device profile, data links, network roles, etc.). The vendor and model names, the firmware and
+    /// application versions, and the protocol version and revision come from the served Device object,
+    /// so the PICS can't contradict what the device reports.
     pub async fn generate_pics(&self, pics_config: &crate::pics::PicsConfig) -> crate::pics::Pics {
         let db = self.db.read().await;
         crate::pics::PicsGenerator::new(&db, &self.config, pics_config)

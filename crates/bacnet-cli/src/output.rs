@@ -10,14 +10,25 @@ use serde::Serialize;
 use bacnet_ops::format::{Datum, StateTexts};
 use bacnet_ops::target::{AddressStyle, routed_station};
 
-/// No state texts: the one-shot commands read one property, so a binary
-/// object's state shows as `active` or `inactive` and a multi-state one as
-/// its number.
+/// No state texts: a binary object's state shows as `active` or
+/// `inactive` and a multi-state one as its number. `read` names states
+/// with texts it reads (#2132); the other one-shot commands use this.
 pub static NO_STATE_TEXTS: StateTexts = StateTexts {
     active: None,
     inactive: None,
     states: Vec::new(),
 };
+
+/// Text that may hold device strings (a value, a name, a message) as the
+/// table and text output prints it (#2144): each control character and
+/// line or paragraph separator as a space and each invisible format
+/// character dropped ([`clean_text`](bacnet_ops::format::clean_text)), as
+/// the TUI shows them, so a device can't move the cursor, break a row,
+/// send an escape sequence or reorder what follows. Applied as the text is
+/// printed, before any colour; JSON output keeps the device's text exactly.
+pub fn screen(text: &str) -> String {
+    bacnet_ops::format::clean_text(text)
+}
 
 /// Output format for CLI results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,7 +163,11 @@ pub fn print_read_result(
         OutputFormat::Table => {
             let mut table = comfy_table::Table::new();
             table.set_header(vec!["Object", "Property", "Value"]);
-            table.add_row(vec![object, &prop_display, &format!("{}", value.green())]);
+            table.add_row(vec![
+                object,
+                &prop_display,
+                &format!("{}", screen(value).green()),
+            ]);
             println!("{table}");
         }
         OutputFormat::Json => {
@@ -197,10 +212,11 @@ pub fn print_rpm_table(entries: &[RpmEntry], format: OutputFormat) {
             let mut table = comfy_table::Table::new();
             table.set_header(vec!["Object", "Property", "Value"]);
             for entry in entries {
+                let value = screen(&entry.value);
                 let colored_val = if entry.data.is_none() {
-                    format!("{}", entry.value.red())
+                    format!("{}", value.red())
                 } else {
-                    format!("{}", entry.value.green())
+                    format!("{}", value.green())
                 };
                 table.add_row(vec![entry.object.as_str(), &property(entry), &colored_val]);
             }
