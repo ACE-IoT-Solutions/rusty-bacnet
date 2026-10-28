@@ -7,10 +7,10 @@
 //! there it fails if the probe does not get through; elsewhere it skips.
 
 use bacnet_encoding::apdu::{
-    decode_apdu, encode_apdu, Apdu, ConfirmedRequest as ConfirmedRequestPdu, SimpleAck,
-    UnconfirmedRequest,
+    Apdu, ConfirmedRequest as ConfirmedRequestPdu, SimpleAck, UnconfirmedRequest, decode_apdu,
+    encode_apdu,
 };
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_encoding::primitives::encode_app_real;
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::database::ObjectDatabase;
@@ -19,15 +19,16 @@ use bacnet_server::server::BACnetServer;
 use bacnet_services::who_is::WhoIsRequest;
 use bacnet_services::write_property::WritePropertyRequest;
 use bacnet_transport::bip::BipTransport;
-use bacnet_transport::bvll::{decode_bip_mac, decode_bvll, BvlcFunction};
+use bacnet_transport::bvll::{BvlcFunction, decode_bip_mac, decode_bvll};
 use bacnet_types::enums::{
-    ConfirmedServiceChoice, ObjectType, PropertyIdentifier, UnconfirmedServiceChoice,
+    ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier,
+    UnconfirmedServiceChoice,
 };
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bytes::BytesMut;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use tokio::net::UdpSocket;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 const DEVICE: u32 = 6301;
 const LOOPBACK_BROADCAST: Ipv4Addr = Ipv4Addr::new(127, 255, 255, 255);
@@ -125,22 +126,27 @@ async fn loopback_broadcast_is_delivered() -> bool {
 }
 
 async fn server() -> BACnetServer<BipTransport> {
+    let identity = bacnet_objects::DeviceIdentity::new(DEVICE, 0)
+        .expect("valid Device identity")
+        .with_name("B/IP server");
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: DEVICE,
-            name: "B/IP server".into(),
+            identity: identity.clone(),
             ..DeviceConfig::default()
         })
         .unwrap(),
     ))
     .unwrap();
-    db.add(Box::new(AnalogValueObject::new(1, "AV-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     BACnetServer::bip_builder()
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .broadcast_address(LOOPBACK_BROADCAST)
+        .device(identity)
         .database(db)
         .build()
         .await
@@ -190,7 +196,7 @@ async fn an_original_unicast_sent_to_the_broadcast_address_is_not_answered() {
                 Some(Apdu::UnconfirmedRequest(request))
                     if request.service_choice == UnconfirmedServiceChoice::I_AM =>
                 {
-                    break
+                    break;
                 }
                 Some(Apdu::UnconfirmedRequest(_)) | None => {}
                 Some(answer) => panic!("the broadcast request drew an answer: {answer:?}"),

@@ -1,11 +1,12 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     accumulator::{AccumulatorObject, PulseConverterObject},
     traits::BACnetObject,
 };
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 // Shared RP-vs-RPM parity plus budget parity over one case table.
 type ExpectedRead = Result<&'static [u8], ErrorCode>;
@@ -72,13 +73,15 @@ fn assert_cases(
             Err(expected) => {
                 assert!(result.property_value.is_none());
                 assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
-                assert!(matches!(rp, Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32));
+                assert!(
+                    matches!(rp, Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == ErrorClass::PROPERTY && code == expected)
+                );
                 assert!(response.is_empty());
             }
         }
     }
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+    use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
     let budget = crate::server::ReadPropertyMultipleBudget {
         max_result_elements: cases.len(),
         max_service_ack_bytes: legacy.len(),
@@ -137,7 +140,7 @@ fn write_common(object: &mut dyn BACnetObject, configured: bool) {
 #[test]
 fn rpm_accumulator_indexed_reads_and_bytes_are_unchanged() {
     for configured in [false, true] {
-        let mut object = AccumulatorObject::new(7, "ACC-7", 95).unwrap();
+        let mut object = AccumulatorObject::new(7, "ACC-7", EngineeringUnits::NO_UNITS).unwrap();
         if configured {
             // Application-level count plus the three routed Unsigned/Real arms.
             object.set_present_value(42);
@@ -343,7 +346,8 @@ fn rpm_accumulator_indexed_reads_and_bytes_are_unchanged() {
 #[test]
 fn rpm_pulse_converter_indexed_reads_and_bytes_are_unchanged() {
     for configured in [false, true] {
-        let mut object = PulseConverterObject::new(7, "PC-7", 62).unwrap();
+        let mut object =
+            PulseConverterObject::new(7, "PC-7", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         write_common(&mut object, configured);
         if configured {
             // The Present_Value gate needs Out_Of_Service TRUE first.

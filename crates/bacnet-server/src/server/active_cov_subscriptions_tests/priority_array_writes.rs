@@ -2,11 +2,14 @@
 use super::*;
 use bacnet_objects::analog::AnalogOutputObject;
 use bacnet_objects::traits::BACnetObject;
+use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::error::RemoteError;
 
 #[tokio::test]
 async fn priority_array_wire_wp_must_not_ack_direct_slot_write() {
     let mut wire = Wire::start(ServerConfig::default()).await;
-    let object = AnalogOutputObject::new(842, "read-only-array", 62).unwrap();
+    let object =
+        AnalogOutputObject::new(842, "read-only-array", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     let oid = object.object_identifier();
     wire.server
         .database()
@@ -45,9 +48,10 @@ const PA: PropertyIdentifier = PropertyIdentifier::PRIORITY_ARRAY;
 
 fn objects() -> Vec<Box<dyn BACnetObject>> {
     use bacnet_objects::{analog::*, binary::*, lighting::*, multistate::*, value_types::*};
+    use bacnet_types::enums::EngineeringUnits;
     vec![
-        Box::new(AnalogOutputObject::new(842, "AO", 62).unwrap()),
-        Box::new(AnalogValueObject::new(842, "AV", 62).unwrap()),
+        Box::new(AnalogOutputObject::new(842, "AO", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
+        Box::new(AnalogValueObject::new(842, "AV", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
         Box::new(BinaryOutputObject::new(842, "BO").unwrap()),
         Box::new(BinaryValueObject::new(842, "BV").unwrap()),
         Box::new(MultiStateOutputObject::new(842, "MSO", 3).unwrap()),
@@ -71,9 +75,9 @@ fn objects() -> Vec<Box<dyn BACnetObject>> {
 
 fn denied(result: Result<(), Error>) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-        if class == u32::from(ErrorClass::PROPERTY.to_raw())
-        && code == u32::from(ErrorCode::WRITE_ACCESS_DENIED.to_raw())),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+        if class == ErrorClass::PROPERTY
+        && code == ErrorCode::WRITE_ACCESS_DENIED),
         "{result:?}"
     );
 }
@@ -108,7 +112,20 @@ fn priority_array_all_twenty_profiles_trait_metadata_and_pics_are_read_only() {
                 &crate::command_source::test_origin(),
             )
             .unwrap();
-        assert_eq!(object.read_property(PA, Some(8)).unwrap(), default);
+        // A date-time slot is the BACnetPriorityValue [1] choice (#2098);
+        // every other slot carries Present_Value's own form.
+        let slot = match &default {
+            PropertyValue::List(pair) => match pair.as_slice() {
+                [PropertyValue::Date(date), PropertyValue::Time(time)] => {
+                    let mut buf = BytesMut::new();
+                    bacnet_encoding::primitives::encode_priority_date_time(&mut buf, date, time);
+                    PropertyValue::ApplicationData(buf.to_vec())
+                }
+                _ => default.clone(),
+            },
+            _ => default.clone(),
+        };
+        assert_eq!(object.read_property(PA, Some(8)).unwrap(), slot, "{oid:?}");
         assert_eq!(
             object.read_property(PA, Some(0)).unwrap(),
             PropertyValue::Unsigned(16)
@@ -348,8 +365,10 @@ async fn priority_array_wpm_denial_keeps_prefix_and_reports_failed_coordinate() 
 #[tokio::test]
 async fn priority_array_denial_preserves_existing_wire_preflight() {
     use crate::mutation::MutationPolicy;
+    use bacnet_types::enums::EngineeringUnits;
     let mut wire = Wire::start(ServerConfig::default()).await;
-    let object = AnalogOutputObject::new(842, "preflight", 62).unwrap();
+    let object =
+        AnalogOutputObject::new(842, "preflight", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     let oid = object.object_identifier();
     wire.server
         .database()

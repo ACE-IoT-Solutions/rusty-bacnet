@@ -1,20 +1,20 @@
 //! The Tokio adapter that drives the portable master core.
 //!
-//! The transport's task owns the [`MasterCore`], its receive storage and a
-//! boxed [`ExtendedActionBuffers`]; the core borrows the two buffers for as
-//! long as the task's future lives, so they go away with the task, whether
-//! it ends or is aborted. The core's queues are shared with the send calls
-//! (see the `queues` module).
+//! The transport's task owns the [`MasterCore`] and a boxed [`Storage`]
+//! bundle, which the core borrows for as long as the task's future lives,
+//! so it goes away with the task, whether it ends or is aborted. The
+//! bundle's queues are the core's handle on the queues it shares with the
+//! send calls (see the `queues` module).
 //!
 //! # Extended frames
 //!
-//! The action buffers and the core's NPDU scratch are always sized for
-//! extended frames, whatever the configuration: on a host they cost only
+//! The bundle, and so the core's `NPDU` parameter, is always sized for
+//! extended frames, whatever the configuration: on a host it costs only
 //! memory, and one core type serves both settings. What changes behaviour
 //! follows [`MstpConfig::extended_frames`](super::MstpConfig::extended_frames):
-//! the core's flag, the receive storage (a standard frame's, or an extended
-//! one's), and the queues' slot size, which is what refuses an NPDU too long
-//! to send at the send call.
+//! the core's flag, the receive storage the core uses (a standard frame's,
+//! or an extended one's), and the queues' slot size, which is what refuses
+//! an NPDU too long to send at the send call.
 //!
 //! # Input: the octet path
 //!
@@ -31,11 +31,15 @@
 //!
 //! # Deadlines
 //!
-//! The task sleeps until [`MasterCore::next_deadline`], mapped onto Tokio
-//! time from the moment the transport started, and stamps
-//! [`MasterCore::on_deadline`] with the time it actually woke. A deadline
-//! serviced a millisecond or more late counts in the core's
-//! `deadline_misses`, published in [`MstpDiagnosticsSnapshot::mac`](super::MstpDiagnosticsSnapshot::mac).
+//! The task sleeps until the earliest of [`MasterCore::next_deadline`]
+//! (mapped onto Tokio time from the moment the transport started), the echo
+//! filter's next deadline and the first expiry in the deferred reply set
+//! (see below). It stamps [`MasterCore::on_deadline`] with the time it
+//! actually woke. The core puts each deadline's lateness in its histogram,
+//! and counts it in `late_deadlines` from
+//! [`HOST_LATE_DEADLINE`](super::HOST_LATE_DEADLINE) (5 ms): Tokio's timer
+//! alone wakes up to 2 ms late. Both are published in
+//! [`MstpDiagnosticsSnapshot::mac`](super::MstpDiagnosticsSnapshot::mac).
 //! Reads are served first when both are ready, and a deadline that is
 //! already due is serviced right after each read, so a port that is always
 //! readable cannot hold a deadline back.
@@ -60,7 +64,17 @@
 //! requester, to go out when this station holds the token, as Clause
 //! 9.5.6.9 has a deferred reply do. It keeps its request's expiry (arrival
 //! plus the queue's maximum age) in the queue. The `replies` module bounds
-//! the set.
+//! the set; the task wakes at each channel's expiry to drop it, so an idle
+//! station holds no channel past its age.
+//!
+//! # End of file
+//!
+//! A read that returns no octets is the port's end of file (see
+//! [`SerialPort::read`]). The task lets other work run after one, and ends
+//! at the [`END_OF_FILE_READS`]th in a row, as it does at a read error: it
+//! counts it in `serial_read_errors` and logs it, and its end closes the
+//! NPDU channel and refuses later sends. Reads that return octets in
+//! between start the count again.
 
 use std::future::Future;
 use std::ops::Range;
@@ -69,41 +83,56 @@ use std::task::Poll;
 use std::time::Duration;
 
 use bacnet_mstp_codec::{
-    FrameType, BROADCAST_MAC, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
-    MAX_STANDARD_FRAME_LENGTH,
+    BROADCAST_MAC, FrameType, MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA,
 };
 use bacnet_mstp_core::{
-    Action, CoreError, Direction, ExtendedActionBuffers, MasterCore, MasterState, MstpCoreConfig,
-    QueueRejectReason, ReplyDecision, RequestId, TransmitId,
+    Action, DEFAULT_DELIVERY_SLOTS, Direction, MasterCore, MasterState, MstpCoreConfig,
+    QueueRefusal, ReplyDecision, RequestError, RequestId, Storage, TransmitId,
 };
-use bacnet_types::error::Error;
+use bacnet_time::{HostClock, earliest};
 use bacnet_types::MacAddr;
+use bacnet_types::error::Error;
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use super::diagnostics::{increment, Counters};
+use super::diagnostics::{Counters, increment};
 use super::echo::{EchoFilter, Ended, Pushed};
-use super::queues::{CoreClock, EnqueueError, SharedQueues};
+use super::queues::{CoreQueues, EnqueueError, SharedQueues};
 use super::replies::{Finished, Late, Replies, Resolved};
 use super::{Echo, SerialPort};
 use crate::port::{ReceivedNpdu, TransportProvenance};
+use crate::tap::FrameTap;
 
+mod tap;
 mod transmit;
 
 /// Octets asked for in one serial read.
 const READ_CHUNK: usize = 512;
 
-type Core<'a> = MasterCore<'a, SharedQueues, MAX_EXTENDED_MPDU_DATA>;
+/// Reads in a row that return no octets after which the task takes the
+/// port to be at its end of file. More than one, so that a single empty read
+/// from a port that breaks the contract does not end it.
+pub(super) const END_OF_FILE_READS: u32 = 3;
+
+/// What the core borrows, sized for extended frames.
+type CoreStorage =
+    Storage<CoreQueues, DEFAULT_DELIVERY_SLOTS, MAX_EXTENDED_MPDU_DATA, MAX_EXTENDED_FRAME_LENGTH>;
+
+type Core<'a> = MasterCore<'a, &'a mut CoreQueues, MAX_EXTENDED_MPDU_DATA>;
 
 /// The transport's task: everything it needs, moved in at start.
 pub(super) struct Task<S> {
     pub(super) serial: S,
     pub(super) config: MstpCoreConfig,
     pub(super) queues: SharedQueues,
-    pub(super) clock: CoreClock,
+    pub(super) clock: HostClock,
     pub(super) npdus: mpsc::Sender<ReceivedNpdu>,
     pub(super) counts: Arc<Counters>,
+    /// [`MstpConfig::transmit_latency_pad`](super::MstpConfig::transmit_latency_pad).
+    pub(super) transmit_pad: Duration,
+    /// The transport's frame tap (the `tap` module).
+    pub(super) tap: FrameTap,
 }
 
 impl<S: SerialPort> Task<S> {
@@ -116,40 +145,38 @@ impl<S: SerialPort> Task<S> {
             clock,
             npdus,
             counts,
+            transmit_pad,
+            tap,
         } = self;
         let _closed = CloseOnExit(queues.clone());
-        let mut rx_storage = vec![
-            0u8;
-            if config.extended_frames {
-                MAX_EXTENDED_FRAME_LENGTH
-            } else {
-                MAX_STANDARD_FRAME_LENGTH
+        let mut storage = Box::new(CoreStorage::with_queues(queues.for_core()));
+        let mut core = match MasterCore::new(config, &mut *storage, clock.now()) {
+            Ok(core) => core,
+            Err(error) => {
+                warn!(?error, "MS/TP core refused its configuration");
+                return;
             }
-        ];
-        let mut buffers: Box<ExtendedActionBuffers> = Box::default();
-        let shared = queues.clone();
-        let mut core =
-            match MasterCore::new(config, queues, &mut rx_storage, &mut buffers, clock.now()) {
-                Ok(core) => core,
-                Err(error) => {
-                    warn!(?error, "MS/TP core refused its configuration");
-                    return;
-                }
-            };
-        let max_age = Duration::from_micros(config.queue_max_age.as_micros());
+        };
+        let max_age = Duration::from(config.queue_max_age);
+        // Allocated at every start, subscribed or not: the tap's decoder
+        // borrows it for the task's life, as the core borrows `storage`.
+        let mut tap_storage = vec![0; MAX_EXTENDED_FRAME_LENGTH];
         let mut mac = Mac {
             echo: serial.echo(),
             serial,
             clock,
             npdus,
             counts,
-            queues: shared,
-            octet_time: Duration::from_micros(config.octet_time().as_micros()),
+            queues,
+            octet_time: Duration::from(config.octet_time()),
+            transmit_pad,
             read_buf: vec![0; READ_CHUNK],
-            tx_frame: Vec::with_capacity(MAX_EXTENDED_FRAME_LENGTH),
             outgoing: None,
             replies: Replies::new(max_age),
             filter: EchoFilter::new(Duration::from_millis(super::HOST_FRAME_ABORT_MS)),
+            empty_reads: 0,
+            tap,
+            tap_decoder: tap::TapDecoder::new(&mut tap_storage),
         };
         mac.run(&mut core).await;
     }
@@ -164,7 +191,8 @@ impl Drop for CloseOnExit {
     }
 }
 
-/// The serial port failed a read; the task ends.
+/// The serial port failed a read, or reached its end of file; the task
+/// ends.
 struct ReadFailed;
 
 /// What a frame being sent counts as in the diagnostics.
@@ -178,22 +206,21 @@ enum SentKind {
 }
 
 impl SentKind {
-    /// Classify an encoded frame; `answering` says the core is answering a
-    /// request, so a data frame is that answer.
-    fn of(frame: &[u8], answering: bool) -> Self {
-        match frame.get(2).copied().map(FrameType::from_raw) {
-            Some(
-                FrameType::BACnetDataExpectingReply | FrameType::BACnetExtendedDataExpectingReply,
-            ) => Self::DataExpectingReply,
-            Some(
-                FrameType::BACnetDataNotExpectingReply
-                | FrameType::BACnetExtendedDataNotExpectingReply,
-            ) if answering => Self::DirectAnswer,
-            Some(
-                FrameType::BACnetDataNotExpectingReply
-                | FrameType::BACnetExtendedDataNotExpectingReply,
-            ) => Self::QueuedData,
-            Some(FrameType::ReplyPostponed) => Self::ReplyPostponed,
+    /// Classify a frame by its type; `answering` says the core is answering
+    /// a request, so a data frame is that answer.
+    fn of(frame_type: FrameType, answering: bool) -> Self {
+        match frame_type {
+            FrameType::BACNET_DATA_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY => Self::DataExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
+                if answering =>
+            {
+                Self::DirectAnswer
+            }
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+            | FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY => Self::QueuedData,
+            FrameType::REPLY_POSTPONED => Self::ReplyPostponed,
             _ => Self::Other,
         }
     }
@@ -220,7 +247,7 @@ enum Polled {
 }
 
 /// The adapter's state besides the core.
-struct Mac<S> {
+struct Mac<'t, S> {
     /// First, so that it drops first: fields drop in declaration order, and
     /// when the task ends or is aborted, an application holding a reply
     /// sender must find its channel closed by the time it can see the NPDU
@@ -228,21 +255,25 @@ struct Mac<S> {
     replies: Replies,
     serial: S,
     echo: Echo,
-    clock: CoreClock,
+    clock: HostClock,
     npdus: mpsc::Sender<ReceivedNpdu>,
     counts: Arc<Counters>,
-    /// The core's queues, for late answers (queued as a send call queues)
-    /// and for publishing their counters.
+    /// The core's queues, for late answers (queued as a send call queues).
     queues: SharedQueues,
     octet_time: Duration,
+    /// Added to a frame's wire time when the port has no drain.
+    transmit_pad: Duration,
     read_buf: Vec<u8>,
-    /// The octets of the frame handed over last.
-    tx_frame: Vec<u8>,
     outgoing: Option<Outgoing>,
     filter: EchoFilter,
+    /// Reads in a row that returned no octets.
+    empty_reads: u32,
+    tap: FrameTap,
+    /// Finds the frames in what the core is fed, for the tap.
+    tap_decoder: tap::TapDecoder<'t>,
 }
 
-impl<S: SerialPort> Mac<S> {
+impl<S: SerialPort> Mac<'_, S> {
     async fn run(&mut self, core: &mut Core<'_>) {
         loop {
             self.settle(core);
@@ -252,11 +283,14 @@ impl<S: SerialPort> Mac<S> {
                 }
                 continue;
             }
-            let deadline = core.next_deadline().map(|at| self.clock.instant(at));
-            let wake = match (deadline, self.filter.deadline()) {
-                (Some(core), Some(filter)) => Some(core.min(filter)),
-                (core, filter) => core.or(filter),
-            };
+            // A core deadline past the host clock's range never comes.
+            let wake = earliest([
+                core.next_deadline()
+                    .and_then(|at| self.clock.to_std(at))
+                    .map(tokio::time::Instant::from_std),
+                self.filter.deadline(),
+                self.replies.next_expiry(),
+            ]);
             let sleep =
                 wake.unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(3_600));
             // Input before a deadline at the same moment: the core judges
@@ -268,18 +302,15 @@ impl<S: SerialPort> Mac<S> {
                     Resolved::Late(late) => self.late(late),
                 },
                 read = self.serial.read(&mut self.read_buf) => {
-                    match read {
-                        // Nothing read: let other work, an abort included,
-                        // run before the next read.
+                    match self.outcome(read) {
+                        // Nothing read, short of the end of file: let other
+                        // work, an abort included, run before the next read.
                         Ok(0) => tokio::task::yield_now().await,
                         Ok(count) => {
                             let now = self.clock.now();
                             self.receive(core, 0..count, now);
                         }
-                        Err(error) => {
-                            self.read_failed(&error);
-                            return;
-                        }
+                        Err(ReadFailed) => return,
                     }
                     self.timers(core);
                 }
@@ -289,7 +320,8 @@ impl<S: SerialPort> Mac<S> {
     }
 
     /// Carry out the core's actions, defer a finished request's reply
-    /// channel, and publish the counters.
+    /// channel, and add the core's counters to the diagnostics' totals and
+    /// publish its state.
     fn settle(&mut self, core: &mut Core<'_>) {
         self.drain_actions(core);
         let finished = self
@@ -303,7 +335,8 @@ impl<S: SerialPort> Mac<S> {
         for _ in 0..expired {
             increment(&self.counts.late_answers_expired);
         }
-        self.counts.publish(core.counters(), &self.queues);
+        self.counts.publish(|| core.take_counters());
+        self.counts.publish_node(core.snapshot());
     }
 
     /// Poll the core until it has nothing left.
@@ -344,10 +377,10 @@ impl<S: SerialPort> Mac<S> {
                 // Every SerialPort switches its transceiver as it writes,
                 // and writes only once the start is confirmed.
                 Action::SetDirection(Direction::Transmit) => continue,
-                Action::Transmit { id, frame } => {
-                    self.tx_frame.clear();
-                    self.tx_frame.extend_from_slice(frame);
-                    Polled::Transmit(id, SentKind::of(frame, answering))
+                // The octets come with the confirmed start (the `transmit`
+                // module); the header says what the frame counts as.
+                Action::Transmit { id, header, .. } => {
+                    Polled::Transmit(id, SentKind::of(header.frame_type, answering))
                 }
                 Action::DeliverNpdu {
                     source,
@@ -427,15 +460,18 @@ impl<S: SerialPort> Mac<S> {
         let now = self.clock.now();
         let Some(answer) = answer else {
             if let Err(error) = core.complete_request(current.id, ReplyDecision::Postponed, now) {
+                // The core finished the request already.
                 debug!(?error, "MS/TP request already finished");
             }
             return;
         };
         match core.complete_request(current.id, ReplyDecision::Data(&answer), now) {
             Ok(()) => {}
-            Err(CoreError::ReplyOversize { length, maximum }) => {
+            Err(RequestError::Oversize { length, maximum }) => {
                 increment(&self.counts.outbound_oversize);
-                warn!("MS/TP application reply length {length} exceeds the port's maximum NPDU {maximum}");
+                warn!(
+                    "MS/TP application reply length {length} exceeds the port's maximum NPDU {maximum}"
+                );
                 // No answer can be sent, so the request is postponed.
                 let _ = core.complete_request(current.id, ReplyDecision::Postponed, now);
             }
@@ -451,16 +487,16 @@ impl<S: SerialPort> Mac<S> {
     /// its request's arrival plus the queue's maximum age, not that age
     /// after now.
     fn enqueue_late_answer(&mut self, requester: u8, answer: &[u8], expires: tokio::time::Instant) {
-        let expires = self.clock.at(expires);
+        let expires = self.clock.instant(expires.into_std());
         let result = self
             .queues
             .enqueue_until(requester, answer, self.clock.now(), expires);
         match result {
             Ok(()) => increment(&self.counts.late_answers_queued),
-            Err(EnqueueError::Rejected(QueueRejectReason::Oversize)) => {
+            Err(EnqueueError::Rejected(QueueRefusal::Oversize)) => {
                 increment(&self.counts.outbound_oversize);
             }
-            Err(EnqueueError::Rejected(QueueRejectReason::Full)) => {
+            Err(EnqueueError::Rejected(QueueRefusal::Full)) => {
                 increment(&self.counts.outbound_queue_full);
             }
             Err(error) => debug!(?error, "MS/TP late answer not queued"),
@@ -527,9 +563,8 @@ impl<S: SerialPort> Mac<S> {
 
     /// Feed one octet to the core and carry out the actions.
     fn feed(&mut self, core: &mut Core<'_>, octet: u8, now: bacnet_mstp_core::Instant) {
-        if let Err(error) = core.on_octet(octet, now) {
-            debug!(?error, "MS/TP core refused an octet");
-        }
+        self.tap_decoder.push(octet, &self.tap);
+        core.on_octet(octet, now);
         self.drain_actions(core);
     }
 
@@ -555,22 +590,43 @@ impl<S: SerialPort> Mac<S> {
     fn deadline(&mut self, core: &mut Core<'_>) {
         let before = core.state();
         let invalid = (before == MasterState::WaitForReply).then(|| core.counters().parser_errors);
-        if let Err(error) = core.on_deadline(self.clock.now()) {
-            debug!(?error, "MS/TP core refused a deadline");
-        }
+        core.on_deadline(self.clock.now());
         // Leaving WAIT_FOR_REPLY at a deadline without an invalid frame (a
         // timed-out partial one) is the reply timeout.
-        if let Some(invalid) = invalid {
-            if core.state() != MasterState::WaitForReply && core.counters().parser_errors == invalid
-            {
-                increment(&self.counts.wait_for_reply_timeouts);
-            }
+        if let Some(invalid) = invalid
+            && core.state() != MasterState::WaitForReply
+            && core.counters().parser_errors == invalid
+        {
+            increment(&self.counts.wait_for_reply_timeouts);
         }
     }
 
-    fn read_failed(&self, error: &Error) {
-        increment(&self.counts.serial_read_errors);
-        warn!("MS/TP serial read error: {error}");
+    /// Take what a read returned: the count of octets read, zero for an
+    /// empty read short of the end of file, or [`ReadFailed`] for an error
+    /// or the end of file, counted and logged.
+    fn outcome(&mut self, read: Result<usize, Error>) -> Result<usize, ReadFailed> {
+        match read {
+            Ok(0) => {
+                self.empty_reads = self.empty_reads.saturating_add(1);
+                if self.empty_reads < END_OF_FILE_READS {
+                    return Ok(0);
+                }
+                increment(&self.counts.serial_read_errors);
+                warn!(
+                    "MS/TP serial port at end of file: {END_OF_FILE_READS} reads in a row returned nothing"
+                );
+                Err(ReadFailed)
+            }
+            Ok(count) => {
+                self.empty_reads = 0;
+                Ok(count)
+            }
+            Err(error) => {
+                increment(&self.counts.serial_read_errors);
+                warn!("MS/TP serial read error: {error}");
+                Err(ReadFailed)
+            }
+        }
     }
 }
 
@@ -594,19 +650,18 @@ mod tests {
 
     #[test]
     fn sent_frames_are_classified_by_type_and_answering() {
-        let frame = |kind: u8| [0x55, 0xFF, kind, 1, 2, 0, 0, 0];
-        assert_eq!(SentKind::of(&frame(5), false), SentKind::DataExpectingReply);
-        assert_eq!(SentKind::of(&frame(6), true), SentKind::DirectAnswer);
-        assert_eq!(SentKind::of(&frame(6), false), SentKind::QueuedData);
-        assert_eq!(SentKind::of(&frame(7), true), SentKind::ReplyPostponed);
+        let frame = FrameType::from_raw;
+        assert_eq!(SentKind::of(frame(5), false), SentKind::DataExpectingReply);
+        assert_eq!(SentKind::of(frame(6), true), SentKind::DirectAnswer);
+        assert_eq!(SentKind::of(frame(6), false), SentKind::QueuedData);
+        assert_eq!(SentKind::of(frame(7), true), SentKind::ReplyPostponed);
         assert_eq!(
-            SentKind::of(&frame(0x20), false),
+            SentKind::of(frame(0x20), false),
             SentKind::DataExpectingReply
         );
-        assert_eq!(SentKind::of(&frame(0x21), true), SentKind::DirectAnswer);
-        assert_eq!(SentKind::of(&frame(0x21), false), SentKind::QueuedData);
-        assert_eq!(SentKind::of(&frame(0), false), SentKind::Other);
-        assert_eq!(SentKind::of(&[0x55], false), SentKind::Other);
+        assert_eq!(SentKind::of(frame(0x21), true), SentKind::DirectAnswer);
+        assert_eq!(SentKind::of(frame(0x21), false), SentKind::QueuedData);
+        assert_eq!(SentKind::of(frame(0), false), SentKind::Other);
     }
 
     #[tokio::test]

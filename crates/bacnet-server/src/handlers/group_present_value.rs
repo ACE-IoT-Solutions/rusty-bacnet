@@ -166,8 +166,5 @@ pub(super) fn members(group: &dyn BACnetObject) -> Result<Vec<ReadAccessSpecific
 }
 
 fn other() -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY.to_raw() as u32,
-        code: ErrorCode::OTHER.to_raw() as u32,
-    }
+    Error::protocol(ErrorClass::PROPERTY, ErrorCode::OTHER)
 }

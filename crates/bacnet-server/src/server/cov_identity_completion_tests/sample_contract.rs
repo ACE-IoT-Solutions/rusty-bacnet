@@ -39,20 +39,20 @@ impl BACnetObject for Probe {
             let mut s = self.0.lock().unwrap();
             s.reads += 1;
             if s.fail {
-                return Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY.to_raw() as u32,
-                    code: ErrorCode::READ_ACCESS_DENIED.to_raw() as u32,
-                });
+                return Err(Error::protocol(
+                    ErrorClass::PROPERTY,
+                    ErrorCode::READ_ACCESS_DENIED,
+                ));
             }
             if s.changing {
                 return Ok(PropertyValue::Unsigned(s.reads as u64));
             }
             return Ok(s.value.clone());
         }
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::UNKNOWN_PROPERTY,
+        ))
     }
     fn write_property(
         &mut self,

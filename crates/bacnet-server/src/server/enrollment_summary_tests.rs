@@ -1,5 +1,6 @@
 use super::*;
 use crate::server::test_transport::TestTransport;
+use bacnet_types::error::RemoteError;
 
 #[tokio::test]
 async fn enrollment_summary_defaults_and_all_builders_validate_before_start() {
@@ -77,6 +78,7 @@ async fn enrollment_summary_defaults_and_all_builders_validate_before_start() {
 async fn enrollment_summary_segmented_complete_ack_or_whole_abort() {
     use bacnet_client::client::BACnetClient;
     use bacnet_objects::{analog::AnalogValueObject, notification_class::NotificationClass};
+    use bacnet_types::enums::EngineeringUnits;
     for (objects, bytes, expected) in [
         (21, 260, None),
         (21, 259, Some(AbortReason::BUFFER_OVERFLOW)),
@@ -86,7 +88,12 @@ async fn enrollment_summary_segmented_complete_ack_or_whole_abort() {
         for instance in 1..=20 {
             database
                 .add(Box::new(
-                    AnalogValueObject::new(instance, format!("summary-{instance}"), 62).unwrap(),
+                    AnalogValueObject::new(
+                        instance,
+                        format!("summary-{instance}"),
+                        EngineeringUnits::DEGREES_CELSIUS,
+                    )
+                    .unwrap(),
                 ))
                 .unwrap();
         }
@@ -97,7 +104,7 @@ async fn enrollment_summary_segmented_complete_ack_or_whole_abort() {
             .interface(Ipv4Addr::LOCALHOST)
             .port(0)
             .database(database)
-            .segmentation_supported(Segmentation::BOTH)
+            .device(bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH))
             .get_enrollment_summary_budget(GetEnrollmentSummaryBudget {
                 max_objects: objects,
                 max_service_ack_bytes: bytes,
@@ -123,7 +130,7 @@ async fn enrollment_summary_segmented_complete_ack_or_whole_abort() {
         server.stop().await.unwrap();
         match expected {
             Some(expected) => assert!(
-                matches!(result, Err(Error::Abort { reason }) if reason == expected.to_raw()),
+                matches!(result, Err(Error::Remote(RemoteError::Abort { reason })) if reason == expected),
                 "{result:?}"
             ),
             None => {
@@ -154,13 +161,19 @@ async fn enrollment_summary_default_noncandidate_budget_wire() {
 async fn default_object_budget_wire(candidate: bool) {
     use bacnet_client::client::BACnetClient;
     use bacnet_objects::analog::AnalogValueObject;
+    use bacnet_types::enums::EngineeringUnits;
 
     let mut database = ObjectDatabase::new();
     for instance in 1..=4097 {
         if candidate {
             database
                 .add(Box::new(
-                    AnalogValueObject::new(instance, format!("summary-{instance}"), 62).unwrap(),
+                    AnalogValueObject::new(
+                        instance,
+                        format!("summary-{instance}"),
+                        EngineeringUnits::DEGREES_CELSIUS,
+                    )
+                    .unwrap(),
                 ))
                 .unwrap();
         } else {
@@ -198,8 +211,8 @@ async fn default_object_budget_wire(candidate: bool) {
     client.stop().await.unwrap();
     server.stop().await.unwrap();
     assert!(
-        matches!(result, Err(Error::Abort { reason })
-        if reason == AbortReason::OUT_OF_RESOURCES.to_raw()),
+        matches!(result, Err(Error::Remote(RemoteError::Abort { reason }))
+        if reason == AbortReason::OUT_OF_RESOURCES),
         "{result:?}"
     );
 }

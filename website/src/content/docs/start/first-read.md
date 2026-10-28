@@ -16,7 +16,7 @@ bacnet --version
 bacnet --help
 ```
 
-Confirm that you are using the intended binary. This guide targets v0.12.0; a newer or source-built version may have different options.
+Confirm that you are using the intended binary. This guide targets v0.14.0; a newer or source-built version may have different options.
 
 ## 2. Confirm one known target
 
@@ -73,14 +73,14 @@ The CLI also chooses JSON when output is piped. Explicit `--json` makes intent v
 
 `--port` selects the local BACnet UDP port; a target such as `192.168.1.100:47809` specifies a remote port. They are different settings.
 
-A standalone `bacnet discover` process does not establish a documented persistent discovery cache for a later process. Use explicit IP/port targets for one-shot commands. In the interactive shell, discovery and subsequent commands can share the session cache.
+A standalone `bacnet discover` process does not establish a documented persistent discovery cache for a later process. Use explicit IP/port targets for one-shot commands. The terminal UI (plain `bacnet` on a terminal) keeps its discoveries for its session; the interactive shell of earlier releases is gone.
 
 ## Continue
 
-[Configure the network deliberately](/rusty-bacnet/guides/configuration/), [automate the read in Python](/rusty-bacnet/start/python/), or [learn about subscriptions](/rusty-bacnet/guides/observe-changes/). Keep writes separate until you have a reviewed operational procedure.
+[Configure the network deliberately](/rusty-bacnet/connect/bacnet-ip/), [automate the read in Python](/rusty-bacnet/start/python/), or [learn about subscriptions](/rusty-bacnet/guides/observe-changes/). Keep writes separate until you have a reviewed operational procedure.
 
 ## Sources and release scope
 
-These instructions target **v0.12.0**. Source review is not a claim of hardware qualification.
+These instructions target **v0.14.0**. Source review is not a claim of hardware qualification.
 
-[CLI guide](https://github.com/jscott3201/rusty-bacnet/blob/v0.12.0/docs/CLI.md) · [CLI argument definitions](https://github.com/jscott3201/rusty-bacnet/blob/v0.12.0/crates/bacnet-cli/src/args.rs) · [One-shot target resolution](https://github.com/jscott3201/rusty-bacnet/blob/v0.12.0/crates/bacnet-cli/src/main.rs).
+[CLI guide](https://github.com/jscott3201/rusty-bacnet/blob/v0.14.0/docs/CLI.md) · [CLI argument definitions](https://github.com/jscott3201/rusty-bacnet/blob/v0.14.0/crates/bacnet-cli/src/args.rs) · [One-shot target resolution](https://github.com/jscott3201/rusty-bacnet/blob/v0.14.0/crates/bacnet-cli/src/main.rs).

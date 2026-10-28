@@ -13,7 +13,7 @@
 use std::net::Ipv4Addr;
 
 use bacnet_endpoint::bip::BipEndpointBuilder;
-use bacnet_endpoint::identity::{build_database_with_extra, DeviceIdentity};
+use bacnet_endpoint::identity::{DeviceIdentity, build_database_with_extra};
 use bacnet_endpoint::mstp::MstpEndpointBuilder;
 use bacnet_endpoint::sc::ScEndpointBuilder;
 use bacnet_endpoint::session::{EndpointSession, SessionConfig, SessionRole};
@@ -46,7 +46,7 @@ fn migrate_bip_server(
     BipEndpointBuilder::new(interface, port, broadcast)
         .role(SessionRole::ServerOnly)
         .database(db)
-        .identity(identity)
+        .device(identity)
         .build_session()
 }
 

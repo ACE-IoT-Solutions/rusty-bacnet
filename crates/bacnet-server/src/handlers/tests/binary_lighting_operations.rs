@@ -4,6 +4,7 @@ use super::*;
 use bacnet_encoding::constructed::encode_bacnet_property_value;
 use bacnet_objects::lighting::BinaryLightingOutputObject;
 use bacnet_services::common::BACnetPropertyValue;
+use bacnet_types::error::RemoteError;
 use std::time::Duration;
 
 fn encode_value(value: PropertyValue) -> Vec<u8> {
@@ -37,7 +38,7 @@ fn wp(
     };
     let mut bytes = BytesMut::new();
     request.encode(&mut bytes).unwrap();
-    handle_write_property(db, &bytes).map(|_| ())
+    sourced_wp(db, &bytes).map(|_| ())
 }
 
 fn wpm(
@@ -62,7 +63,7 @@ fn wpm(
         );
     }
     bacnet_encoding::tags::encode_closing_tag(&mut bytes, 1);
-    handle_write_property_multiple(db, &bytes).map(|_| ())
+    sourced_wpm(db, &bytes).map(|_| ())
 }
 
 fn read(
@@ -87,9 +88,9 @@ fn advance(db: &mut ObjectDatabase, oid: ObjectIdentifier, elapsed: Duration) ->
 
 fn assert_property_error(error: Error, expected: ErrorCode) {
     match error {
-        Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32);
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected);
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }
@@ -97,9 +98,9 @@ fn assert_property_error(error: Error, expected: ErrorCode) {
 
 fn assert_priority_range_error(error: Error) {
     assert!(
-        matches!(error, Error::Protocol { class, code }
-        if class == ErrorClass::SERVICES.to_raw() as u32
-            && code == ErrorCode::PARAMETER_OUT_OF_RANGE.to_raw() as u32),
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
+        if class == ErrorClass::SERVICES
+            && code == ErrorCode::PARAMETER_OUT_OF_RANGE),
         "{error:?}"
     );
 }
@@ -221,7 +222,7 @@ fn write_property_priority_errors_are_atomic_and_wpm_keeps_prior_prefix() {
         .encode(&mut bytes)
         .unwrap();
         bacnet_encoding::primitives::encode_ctx_unsigned(&mut bytes, 4, u64::from(priority));
-        assert_priority_range_error(handle_write_property(&mut db, &bytes).unwrap_err());
+        assert_priority_range_error(sourced_wp(&mut db, &bytes).unwrap_err());
         assert_eq!(
             read(&db, oid, PropertyIdentifier::EGRESS_ACTIVE, None),
             PropertyValue::Boolean(true)

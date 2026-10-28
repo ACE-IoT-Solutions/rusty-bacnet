@@ -2,11 +2,12 @@
 
 #[path = "object_storage.rs"]
 mod object_storage;
+use crate::prelude::*;
 pub(crate) use object_storage::ObjectStorageAccess;
 
-use std::borrow::Cow;
-use std::sync::Arc;
-use std::time::Duration;
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
+use core::time::Duration;
 
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::calendar::SpecificDate;
@@ -198,10 +199,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         _priorities: bacnet_types::bitstring::BACnetPriorityFilter,
         _maximum_send_delay: Option<crate::audit::AuditSendDelay>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// The object's identifier (type + instance).
@@ -228,7 +229,7 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
     /// holding the element's position, from 1, in the list `value` carries.
     /// The server's AddListElement handler then reports the request element
     /// at that position in its ChangeList-Error (#1048); a plain
-    /// `Error::Protocol` there names the first element the list would gain.
+    /// `Error::protocol` there names the first element the list would gain.
     ///
     /// Make the checks that don't depend on the value (the property exists,
     /// it is writable now, the array index is in range) before judging the
@@ -305,6 +306,15 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
     /// so the server's task looks again sooner than its next routine pass.
     #[doc(hidden)]
     fn bind_deadline_waker_internal(&mut self, _waker: Option<Arc<DeadlineWaker>>) {}
+
+    /// The device is starting: drive the object's output as a start does.
+    ///
+    /// The server calls this once for every object in the database as it
+    /// starts, before the database is shared. The Color and Color
+    /// Temperature objects drive an output nothing has driven yet to its
+    /// default (#1526); other objects ignore it.
+    #[doc(hidden)]
+    fn start_output_internal(&mut self) {}
 
     /// Advance operations to an absolute process-local monotonic instant.
     #[doc(hidden)]
@@ -470,10 +480,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         _property: PropertyIdentifier,
         _value: PropertyValue,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
     /// Whether this object type can be deleted at runtime via DeleteObject.
@@ -852,11 +862,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         &mut self,
         _transition_bit: EventTransitionBits,
     ) -> Result<(), bacnet_types::error::Error> {
-        Err(bacnet_types::error::Error::Protocol {
-            class: bacnet_types::enums::ErrorClass::OBJECT.to_raw() as u32,
-            code: bacnet_types::enums::ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw()
-                as u32,
-        })
+        Err(bacnet_types::error::Error::protocol(
+            bacnet_types::enums::ErrorClass::OBJECT,
+            bacnet_types::enums::ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Correlate an acknowledgment with the latest committed transition.
@@ -866,10 +875,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         _event_state: EventState,
         _timestamp: &BACnetTimeStamp,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::NO_ALARM_CONFIGURED,
+        ))
     }
 
     /// Correlate an acknowledgment and report exact object-owned history.
@@ -903,10 +912,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         &mut self,
         _operation: LifeSafetyOperation,
     ) -> Result<LifeSafetyOperationOutcome, Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Set the next LifeSafetyOperation expected by trusted local logic.
@@ -917,10 +926,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         &mut self,
         _operation: LifeSafetyOperation,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Apply an internally-detected `Event_State` transition.
@@ -944,10 +953,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
     /// not here. Implementations must leave `Event_State` unchanged when they
     /// return `Err`.
     fn set_event_state_internal(&mut self, _state: EventState) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Snapshot this object's Event Enrollment evaluation state, if it models one.
@@ -988,10 +997,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         &mut self,
         _state: EventEnrollmentEvalState,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Snapshot the monitored source that owns Event Enrollment private state.
@@ -1009,10 +1018,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         &mut self,
         _source: Option<EventEnrollmentMonitoredSource>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Set or clear one `Acked_Transitions` bit on a received event-state
@@ -1041,10 +1050,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         _transition_bit: EventTransitionBits,
         _acknowledged: bool,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Evaluate and, when necessary, mutate this object's `Reliability`.
@@ -1088,10 +1097,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
     /// The default rejects the operation, so object types without an internal
     /// reliability-evaluation process remain unaffected.
     fn set_reliability_internal(&mut self, _reliability: Reliability) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Apply the logical `Present_Value` supplied by the local application.
@@ -1118,10 +1127,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
     /// The default fails closed so commandable and other object families do not
     /// acquire privileged `Present_Value` write authority through this hook.
     fn set_present_value_internal(&mut self, _value: PropertyValue) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// [`set_present_value_internal`](Self::set_present_value_internal) on
@@ -1150,10 +1159,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
     /// default fails closed with the same error as
     /// [`set_present_value_internal`](Self::set_present_value_internal).
     fn set_tracking_value_internal(&mut self, _value: PropertyValue) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Apply an input the application reports for an access-control object
@@ -1174,10 +1183,36 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         &mut self,
         _input: crate::access_control::AccessControlInput,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
+    }
+
+    /// Whether this object opts in to atomic completed-authorization event batches.
+    /// An implementation returning true must implement the all-or-nothing contract
+    /// of [`Self::record_access_event_batch_internal`]. The default refuses admission.
+    #[doc(hidden)]
+    fn supports_access_event_batch_internal(&self) -> bool {
+        false
+    }
+
+    /// Install at most four ordered authorization event reports atomically.
+    /// Validate every report and timestamp before changing any served state. On
+    /// error, leave all event fields untouched. On success, retain each installed
+    /// intermediate state and its clock frame for post-commit COV preparation.
+    /// The native Access Point refuses out-of-service or faulty operation and
+    /// timestamps omitted times. Custom objects must opt in explicitly; callers
+    /// must never replace this operation with a fallible per-report loop.
+    #[doc(hidden)]
+    fn record_access_event_batch_internal(
+        &mut self,
+        _reports: &[crate::access_control::AccessEventReport],
+    ) -> Result<Vec<crate::access_control::CommittedAccessEvent>, Error> {
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Apply the Controlled_Variable_Value measured by the local application.
@@ -1190,10 +1225,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         &mut self,
         _value: PropertyValue,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Record one sample for an Averaging object.
@@ -1210,10 +1245,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         &mut self,
         _sample: Option<PropertyValue>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Claim the Averaging sample the object's schedule has due at the
@@ -1301,10 +1336,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
         &mut self,
         _parent: bacnet_types::constructed::BACnetDeviceObjectReference,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Mutably borrow this object's Audit notification receiver capability.
@@ -1411,10 +1446,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
     /// ordinary record. Timestamp failures return an error without mutation.
     /// Objects without trend insertion return OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
     fn add_trend_record(&mut self, _record: BACnetLogRecord) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Submit a Trend Log Multiple record, one value per monitored member, to
@@ -1424,10 +1459,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
     /// Objects without Trend Log Multiple insertion return
     /// OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
     fn add_trend_multiple_record(&mut self, _record: BACnetLogMultipleRecord) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Submit an Event Log record to an object's log lifecycle.
@@ -1439,10 +1474,10 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
     /// Objects without Event Log insertion return
     /// OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
     fn add_event_log_record(&mut self, _record: BACnetEventLogRecord) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// Look at a log's Start_Time / Stop_Time window against the bound
@@ -1457,6 +1492,17 @@ pub trait BACnetObject: Send + Sync + object_storage::StoredObject {
     #[doc(hidden)]
     fn refresh_log_window_internal(&mut self) -> bool {
         false
+    }
+
+    /// Whether a log keeps the ordinary records it is given now: Enable is
+    /// TRUE and its Start_Time / Stop_Time window admitted the local time at
+    /// the last look. A Trend Log logging by COV starts over from the
+    /// current value when collection resumes, so the trend poller asks this
+    /// before each look (#1480). The default, for objects that aren't logs,
+    /// says yes and leaves the gate to the insertion hook.
+    #[doc(hidden)]
+    fn log_collecting_internal(&self) -> bool {
+        true
     }
 
     /// Whether this Event Log takes the event notifications the device

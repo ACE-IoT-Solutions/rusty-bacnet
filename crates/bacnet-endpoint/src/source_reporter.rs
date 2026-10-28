@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use bacnet_objects::access_control::AccessControlInput;
+use bacnet_objects::access_control::{AccessControlInput, AccessEventReport, CommittedAccessEvent};
 use bacnet_objects::audit::{
     AuditLogForwarding, AuditLogNotificationSink, AuditLogStorage, AuditReporterObject,
 };
@@ -154,10 +154,10 @@ impl BACnetObject for SourceReporter {
         priority: Option<u8>,
     ) -> Result<(), Error> {
         if self.active() && property == PropertyIdentifier::AUDIT_SOURCE_REPORTER {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::WRITE_ACCESS_DENIED,
+            ));
         }
         self.wrapped
             .write_property(property, array_index, value, priority)
@@ -172,10 +172,10 @@ impl BACnetObject for SourceReporter {
         origin: &bacnet_objects::command_source::CommandOrigin,
     ) -> Result<(), Error> {
         if self.active() && property == PropertyIdentifier::AUDIT_SOURCE_REPORTER {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::WRITE_ACCESS_DENIED,
+            ));
         }
         self.wrapped
             .write_property_from(property, array_index, value, priority, origin)
@@ -203,6 +203,10 @@ impl BACnetObject for SourceReporter {
 
     fn bind_deadline_waker_internal(&mut self, waker: Option<Arc<DeadlineWaker>>) {
         self.wrapped.bind_deadline_waker_internal(waker)
+    }
+
+    fn start_output_internal(&mut self) {
+        self.wrapped.start_output_internal()
     }
 
     fn advance_monotonic_time_internal(&mut self, now: Duration) -> bool {
@@ -492,6 +496,16 @@ impl BACnetObject for SourceReporter {
         self.wrapped.set_tracking_value_internal(value)
     }
 
+    fn supports_access_event_batch_internal(&self) -> bool {
+        self.wrapped.supports_access_event_batch_internal()
+    }
+    fn record_access_event_batch_internal(
+        &mut self,
+        reports: &[AccessEventReport],
+    ) -> Result<Vec<CommittedAccessEvent>, Error> {
+        self.wrapped.record_access_event_batch_internal(reports)
+    }
+
     fn report_access_input_internal(&mut self, input: AccessControlInput) -> Result<(), Error> {
         self.wrapped.report_access_input_internal(input)
     }
@@ -595,6 +609,10 @@ impl BACnetObject for SourceReporter {
 
     fn refresh_log_window_internal(&mut self) -> bool {
         self.wrapped.refresh_log_window_internal()
+    }
+
+    fn log_collecting_internal(&self) -> bool {
+        self.wrapped.log_collecting_internal()
     }
 
     fn logs_received_event_notifications_internal(&self) -> bool {

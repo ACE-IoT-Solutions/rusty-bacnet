@@ -12,6 +12,10 @@ use bacnet_types::{
 };
 use bytes::BytesMut;
 
+/// The state Last_Command_Time follows, taken before and after a command.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CommandEffect<T>(T, Option<usize>, BACnetValueSource);
+
 #[derive(Debug, Clone)]
 pub(crate) struct ValueSourceTracking {
     sources: [BACnetValueSource; 16],
@@ -21,8 +25,8 @@ pub(crate) struct ValueSourceTracking {
 impl Default for ValueSourceTracking {
     fn default() -> Self {
         Self {
-            sources: std::array::from_fn(|_| BACnetValueSource::None),
-            owners: std::array::from_fn(|_| None),
+            sources: core::array::from_fn(|_| BACnetValueSource::None),
+            owners: core::array::from_fn(|_| None),
             sequence: 0,
         }
     }
@@ -63,26 +67,52 @@ impl ValueSourceTracking {
         priority: Option<u8>,
         origin: &CommandOrigin,
     ) -> Result<(), Error> {
-        let index = priority_index(priority)?;
-        origin.validate()?;
-        let before = (
-            common::recalculate_from_priority_array(slots, fallback),
-            active(slots),
-            self.current(slots),
-        );
+        let index = Self::admit(priority, origin)?;
+        let before = self.effect(slots, fallback);
         slots[index] = value;
         // A relinquishment is a command: retain its writer at this inactive slot.
-        self.sources[index] = origin.published_source();
-        self.owners[index] = Some(origin.clone());
-        let after = (
+        self.record(index, origin);
+        let after = self.effect(slots, fallback);
+        self.settle(before, after);
+        Ok(())
+    }
+    /// The slot index a command at `priority` (16 when absent) acts on, once
+    /// its origin is a well-formed writer. Nothing changes before this passes.
+    pub(crate) fn admit(priority: Option<u8>, origin: &CommandOrigin) -> Result<usize, Error> {
+        let index = priority_index(priority)?;
+        origin.validate()?;
+        Ok(index)
+    }
+    /// What Last_Command_Time follows in `slots`: the effective value, the
+    /// active slot and the published source.
+    pub(crate) fn effect<T: Copy>(&self, slots: &[Option<T>; 16], fallback: T) -> CommandEffect<T> {
+        CommandEffect(
             common::recalculate_from_priority_array(slots, fallback),
             active(slots),
             self.current(slots),
-        );
+        )
+    }
+    /// Record `origin` as the writer of slot `index`.
+    pub(crate) fn record(&mut self, index: usize, origin: &CommandOrigin) {
+        self.sources[index] = origin.published_source();
+        self.owners[index] = Some(origin.clone());
+    }
+    /// Clear slot `index`'s writer for an application command that names
+    /// none: the slot's source reads NONE and no one may correct it.
+    pub(crate) fn record_unsourced(&mut self, index: usize) {
+        self.sources[index] = BACnetValueSource::None;
+        self.owners[index] = None;
+    }
+    /// Move Last_Command_Time on when a command, or the deferred end of one
+    /// (a lighting egress), changed what [`Self::effect`] sees.
+    pub(crate) fn settle<T: PartialEq>(
+        &mut self,
+        before: CommandEffect<T>,
+        after: CommandEffect<T>,
+    ) {
         if before != after {
             self.sequence = self.sequence.wrapping_add(1);
         }
-        Ok(())
     }
     pub(crate) fn correct(
         &mut self,
@@ -154,7 +184,7 @@ impl ValueSourceTracking {
 
 // Family-specific extraction validates the value before the shared state changes.
 macro_rules! write_sourced_priority {
-    ($self:expr, $value:expr, $priority:expr, $origin:expr, $extract:expr) => {{
+    ($self:expr_2021, $value:expr_2021, $priority:expr_2021, $origin:expr_2021, $extract:expr_2021) => {{
         let prio = $priority.unwrap_or(16);
         if !(1..=16).contains(&prio) {
             return Err($crate::common::value_out_of_range_error());

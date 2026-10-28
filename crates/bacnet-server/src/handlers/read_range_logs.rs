@@ -283,10 +283,10 @@ pub(super) fn log_buffer<'a>(
         return Ok(None);
     };
     if request.property_array_index.is_some() {
-        return Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32,
-        });
+        return Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
+        ));
     }
     Ok(Some(resolved))
 }

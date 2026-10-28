@@ -6,10 +6,11 @@ mod dcc_mtls_tests;
 
 impl BACnetServer<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>> {
     /// Create an SC-specific builder that connects to a BACnet/SC hub.
+    #[cfg_attr(docsrs, doc(cfg(feature = "sc-tls")))]
     pub fn sc_builder() -> ScServerBuilder {
         ScServerBuilder {
             config: ServerConfig::default(),
-            db: ObjectDatabase::new(),
+            db: None,
             configured_device_bindings: Vec::new(),
             hub_url: String::new(),
             tls_config: None,
@@ -27,9 +28,10 @@ impl BACnetServer<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::Tl
 /// Created by [`BACnetServer::sc_builder()`]. Requires the `sc-tls` feature.
 /// A caller-provisioned, nonzero [`device_uuid`](Self::device_uuid) and validated
 /// [`tls_config`](Self::tls_config) are required before `build` can connect.
+#[cfg_attr(docsrs, doc(cfg(feature = "sc-tls")))]
 pub struct ScServerBuilder {
     pub(super) config: ServerConfig,
-    db: ObjectDatabase,
+    db: Option<ObjectDatabase>,
     pub(super) configured_device_bindings: Vec<DeviceBinding>,
     hub_url: String,
     tls_config: Option<bacnet_transport::sc_tls::ScNodeTlsConfig>,
@@ -44,18 +46,6 @@ impl ScServerBuilder {
     /// Set the hub WebSocket URL (e.g. `wss://hub.example.com/bacnet`).
     pub fn hub_url(mut self, url: &str) -> Self {
         self.hub_url = url.to_string();
-        self
-    }
-
-    /// Sets the segment timeout in milliseconds for receive and response transfers.
-    pub fn apdu_segment_timeout_ms(mut self, timeout_ms: u64) -> Self {
-        self.config.apdu_segment_timeout_ms = timeout_ms;
-        self
-    }
-
-    /// Set the segmentation support this device advertises and enforces.
-    pub fn segmentation_supported(mut self, segmentation: Segmentation) -> Self {
-        self.config.segmentation_supported = segmentation;
         self
     }
 
@@ -100,9 +90,16 @@ impl ScServerBuilder {
         self
     }
 
+    /// Set the one Device identity. With no supplied database, startup creates
+    /// a stock Device after resolving the owned transport's receive capacity.
+    pub fn device(mut self, identity: bacnet_objects::DeviceIdentity) -> Self {
+        self.config.device = identity;
+        self
+    }
+
     /// Set the object database (transfers ownership).
     pub fn database(mut self, db: ObjectDatabase) -> Self {
-        self.db = db;
+        self.db = Some(db);
         self
     }
 
@@ -157,36 +154,9 @@ impl ScServerBuilder {
         self
     }
 
-    /// Set the policy that authorizes inbound LifeSafetyOperation requests.
-    pub fn life_safety_operation_authorizer<F>(mut self, authorizer: F) -> Self
-    where
-        F: Fn(&LifeSafetyOperationAuthorizationContext) -> bool + Send + Sync + 'static,
-    {
-        self.config.life_safety_operation_authorizer = Some(Arc::new(authorizer));
-        self
-    }
-
     /// Select the only local Audit Log that receives authorized notifications.
     pub fn audit_notification_sink(mut self, sink: ObjectIdentifier) -> Self {
         self.config.audit_notification_sink = Some(sink);
-        self
-    }
-
-    /// Set the fail-closed ConfirmedAuditNotification authorization policy.
-    pub fn audit_notification_authorizer<F>(mut self, authorizer: F) -> Self
-    where
-        F: Fn(&AuditNotificationAuthorizationContext) -> bool + Send + Sync + 'static,
-    {
-        self.config.audit_notification_authorizer = Some(Arc::new(authorizer));
-        self
-    }
-
-    /// Set the fail-closed UnconfirmedAuditNotification authorization policy.
-    pub fn unconfirmed_audit_notification_authorizer<F>(mut self, authorizer: F) -> Self
-    where
-        F: Fn(&UnconfirmedAuditNotificationAuthorizationContext) -> bool + Send + Sync + 'static,
-    {
-        self.config.unconfirmed_audit_notification_authorizer = Some(Arc::new(authorizer));
         self
     }
 
@@ -225,7 +195,7 @@ impl ScServerBuilder {
     /// still consumes this builder and drops its inputs; this does not promise
     /// generic endpoint rollback.
     pub async fn build(
-        self,
+        mut self,
     ) -> Result<
         BACnetServer<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>,
         Error,
@@ -258,21 +228,36 @@ impl ScServerBuilder {
         self.config.read_range_budget.validate()?;
         self.config.get_event_information_budget.validate()?;
         self.config.cov_policy.validate()?;
-        super::segmented_receive::validate_segment_timeout(&self.config, &self.db)?;
+        let db = crate::local_device::prepare_database(
+            &mut self.config, self.db,
+            bacnet_transport::sc::ScTransport::<bacnet_transport::sc_tls::TlsWebSocket>::LOCAL_RECEIVE_APDU_CAPACITY,
+        )?;
+        super::segmented_receive::validate_segment_timeout(&self.config)?;
 
-        let sc_config = bacnet_transport::sc_tls::ScTlsTransportConfig::new(
-            self.hub_url,
-            self.vmac,
-            self.device_uuid,
-        )
-        .with_heartbeat(self.heartbeat_interval_ms, self.heartbeat_timeout_ms)
-        .with_reconnect(self.reconnect);
-        let transport =
-            bacnet_transport::sc_tls::connect_sc_transport(sc_config, tls_config).await?;
+        let ws = bacnet_transport::sc_tls::TlsWebSocket::connect(&self.hub_url, tls_config.clone())
+            .await?;
+
+        let mut transport = bacnet_transport::sc::ScTransport::new(ws, self.vmac)
+            .with_device_uuid(self.device_uuid)
+            .with_heartbeat_interval_ms(self.heartbeat_interval_ms)
+            .with_heartbeat_timeout_ms(self.heartbeat_timeout_ms);
+        if let Some(rc) = self.reconnect {
+            let hub_url = self.hub_url.clone();
+            let tls_config = tls_config.clone();
+            transport = transport
+                .with_connector(move || {
+                    let hub_url = hub_url.clone();
+                    let tls_config = tls_config.clone();
+                    async move {
+                        bacnet_transport::sc_tls::TlsWebSocket::connect(&hub_url, tls_config).await
+                    }
+                })
+                .with_reconnect(rc);
+        }
 
         BACnetServer::start_with_clock_mode_and_bindings(
             self.config,
-            self.db,
+            db,
             transport,
             Some(ClockConfig::default()),
             self.configured_device_bindings,
@@ -404,7 +389,6 @@ mod tests {
                         initial_delay_ms,
                         max_delay_ms,
                         max_retries,
-                        retry_forever: false,
                     });
                     if broadcast_binding {
                         let device = ObjectIdentifier::new(ObjectType::DEVICE, 46).unwrap();
@@ -438,13 +422,11 @@ mod tests {
                 initial_delay_ms: 1,
                 max_delay_ms: 1,
                 max_retries: 0,
-                retry_forever: false,
             }),
             Some(ScReconnectConfig {
                 initial_delay_ms: 1,
                 max_delay_ms: 2,
                 max_retries: u32::MAX,
-                retry_forever: false,
             }),
         ] {
             let mut builder = BACnetServer::sc_builder().device_uuid(TEST_DEVICE_UUID);

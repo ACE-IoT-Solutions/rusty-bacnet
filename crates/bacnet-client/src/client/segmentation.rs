@@ -56,6 +56,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             mac: source_mac,
             network: source_network,
             provenance,
+            warning,
         } = source;
         let seq = ack.sequence_number.unwrap_or(0);
         let coordinator_apdu = Apdu::ComplexAck(ack.clone());
@@ -70,15 +71,16 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             &coordinator_apdu,
         )
         .await;
-        let key = (tsm_mac.clone(), ack.invoke_id, provenance);
+        let key = (tsm_mac.clone(), ack.invoke_id, provenance.clone());
         if let Some(conflict) = super::response_admission::find_provenance_conflict(
             seg_state,
             &tsm_mac,
             ack.invoke_id,
-            provenance,
+            &provenance,
         ) {
             if let Some(state) = seg_state.remove(&conflict) {
-                warn!(
+                warn_throttled!(
+                    warning,
                     invoke_id = ack.invoke_id,
                     "Aborting segmented reassembly on provenance mismatch (fail-closed)"
                 );
@@ -175,7 +177,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         // draws the Clause 5.4.4.1 Abort even when every slot is occupied.
         const MAX_CONCURRENT_SEG_SESSIONS: usize = 64;
         if !seg_state.contains_key(&key) && seg_state.len() >= MAX_CONCURRENT_SEG_SESSIONS {
-            warn!(
+            warn_throttled!(
+                warning,
                 invoke_id = ack.invoke_id,
                 sessions = seg_state.len(),
                 "Max concurrent segmented sessions reached, aborting newcomer"
@@ -202,7 +205,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             .or_insert_with(|| SegmentedReceiveState {
                 receiver: SegmentReceiver::new(),
                 owner: owner.clone(),
-                provenance,
+                provenance: provenance.clone(),
                 reply_mac: MacAddr::from_slice(source_mac),
                 reply_network: source_network.clone(),
                 expected_next_seq: 0,
@@ -255,14 +258,17 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 
             if is_duplicate {
                 state.duplicate_count = 0;
-                warn!(
+                warn_throttled!(
+                    warning,
                     invoke_id = ack.invoke_id,
-                    seq, "Duplicate allowance exhausted, sending negative SegmentAck"
+                    seq,
+                    "Duplicate allowance exhausted, sending negative SegmentAck"
                 );
             } else {
                 state.initial_sequence_number = state.last_sequence_number;
                 state.duplicate_count = 0;
-                warn!(
+                warn_throttled!(
+                    warning,
                     invoke_id = ack.invoke_id,
                     expected = state.expected_next_seq,
                     received = seq,
@@ -293,7 +299,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         // treated as an error, so a cap that duplicates could trip would abort
         // healthy transfers on retransmission.
         if state.accepted_segments >= limits.max_reassembly_segments {
-            warn!(
+            warn_throttled!(
+                warning,
                 invoke_id = ack.invoke_id,
                 accepted = state.accepted_segments,
                 limit = limits.max_reassembly_segments,
@@ -349,7 +356,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             // This is another local failure to retain the segment, so
             // Clause 5.4.4.4 wants the same Abort rather than leaving the
             // caller to time out on a session that can no longer complete.
-            warn!(error = %e, "Rejecting oversized segment");
+            warn_throttled!(warning, error = %e, "Rejecting oversized segment");
             let reply_mac = state.reply_mac.clone();
             let reply_network = state.reply_network.clone();
             let owner = state.owner.clone();
@@ -431,7 +438,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     if let CompletionOutcome::ServiceChoiceMismatch { expected, observed } = outcome
                     {
                         tsm.reset_segmented_response(&tsm_mac, ack.invoke_id, &state.owner);
-                        warn!(
+                        warn_throttled!(
+                            warning,
                             invoke_id = ack.invoke_id,
                             expected = expected.to_raw(),
                             observed = observed.to_raw(),
@@ -445,7 +453,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         ack.invoke_id,
                         &state.owner,
                     );
-                    warn!(error = %e, "Failed to reassemble segmented ComplexAck");
+                    warn_throttled!(
+                        warning,
+                        error = %e,
+                        "Failed to reassemble segmented ComplexAck"
+                    );
                 }
             }
         }
@@ -472,13 +484,14 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let segments = split_payload(service_data, max_seg_size)?;
         let total_segments = segments.len();
 
-        if let Some(max_seg) = remote_max_segments {
-            if total_segments > max_seg as usize {
-                return Err(Error::Segmentation(format!(
-                    "request requires {} segments but remote accepts at most {}",
-                    total_segments, max_seg
-                )));
+        if let Some(max_seg) = remote_max_segments
+            && total_segments > max_seg as usize
+        {
+            return Err(bacnet_types::error::SegmentationError::PeerSegmentLimit {
+                segments: total_segments,
+                max: max_seg,
             }
+            .into());
         }
 
         debug!(
@@ -606,15 +619,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                     Error::Encoding("TSM response channel closed".into())
                                 });
                             }
-                            changed = progress_rx.changed() => {
-                                if changed.is_err() {
-                                    owns_tsm_cleanup = false;
-                                    return (&mut response_rx).await.map_err(|_| {
-                                        Error::Encoding("TSM response channel closed".into())
-                                    });
-                                }
+                            // A transaction that left the TSM resolves the
+                            // response arm above; progress stays silent.
+                            () = progress_rx.changed() => {
                                 if matches!(
-                                    *progress_rx.borrow_and_update(),
+                                    progress_rx.borrow_and_update(),
                                     TransactionProgress::SegmentedResponse { .. }
                                 ) {
                                     segmented_response_started = true;
@@ -673,9 +682,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                             _ = &mut segment_timer => {
                                 ack_retries += 1;
                                 if ack_retries > max_ack_retries {
-                                    return Err(Error::Abort {
-                                        reason: bacnet_types::enums::AbortReason::TSM_TIMEOUT.to_raw(),
-                                    });
+                                    return Err(Error::abort(bacnet_types::enums::AbortReason::TSM_TIMEOUT));
                                 }
                                 warn!(
                                     attempt = ack_retries,
@@ -735,9 +742,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 if ack.negative_ack {
                     neg_ack_retries += 1;
                     if neg_ack_retries > MAX_NEG_ACK_RETRIES {
-                        return Err(Error::Segmentation(
-                            "too many negative SegmentAck retransmissions".into(),
-                        ));
+                        return Err(
+                            bacnet_types::error::SegmentationError::NegativeAckRetriesExhausted
+                                .into(),
+                        );
                     }
                 } else {
                     neg_ack_retries = 0;

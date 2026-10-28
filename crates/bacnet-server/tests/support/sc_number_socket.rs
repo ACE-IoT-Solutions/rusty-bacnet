@@ -1,13 +1,13 @@
 //! Deterministic single-writer SC boundary; this is not TLS/backpressure proof.
 use bacnet_transport::{
     sc::{LoopbackWebSocket, ScTransport, WebSocketPort},
-    sc_frame::{decode_sc_message, encode_sc_message, ScFunction, ScMessage, BROADCAST_VMAC},
+    sc_frame::{BROADCAST_VMAC, ScFunction, ScMessage, decode_sc_message, encode_sc_message},
 };
 use bacnet_types::{error::Error, primitives::ObjectIdentifier};
 use bytes::{Bytes, BytesMut};
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use tokio::sync::{Mutex, Semaphore};
 
@@ -162,7 +162,11 @@ pub fn fixture() -> (ScTransport<GateSocket>, Peer, Arc<Observed>) {
         writer: Mutex::new(()),
     };
     (
-        ScTransport::new(socket, [0x20; 6]).with_device_uuid([0x21; 16]),
+        // These tests fill the network-control queue from one peer, so the
+        // per-source control-message rate limit (#518) mustn't bind first.
+        ScTransport::new(socket, [0x20; 6])
+            .with_device_uuid([0x21; 16])
+            .with_control_rate_limit(bacnet_transport::sc::ScControlRateLimit::new(4096, 4096)),
         Peer(peer),
         observed,
     )
@@ -174,8 +178,9 @@ pub fn database() -> bacnet_objects::database::ObjectDatabase {
     let mut db = bacnet_objects::database::ObjectDatabase::new();
     db.add(Box::new(
         bacnet_objects::device::DeviceObject::new(bacnet_objects::device::DeviceConfig {
-            instance: 7,
-            name: "progress".into(),
+            identity: bacnet_objects::DeviceIdentity::new(7, 0)
+                .expect("valid Device identity")
+                .with_name("progress"),
             ..Default::default()
         })
         .unwrap(),
@@ -184,7 +189,7 @@ pub fn database() -> bacnet_objects::database::ObjectDatabase {
     db
 }
 pub fn write_npdu() -> Vec<u8> {
-    use bacnet_encoding::apdu::{encode_apdu, Apdu, ConfirmedRequest};
+    use bacnet_encoding::apdu::{Apdu, ConfirmedRequest, encode_apdu};
     use bacnet_types::enums::{ConfirmedServiceChoice, PropertyIdentifier};
     let mut value = BytesMut::new();
     bacnet_encoding::primitives::encode_app_character_string(&mut value, "handled while held")

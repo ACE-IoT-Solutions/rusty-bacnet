@@ -2,8 +2,8 @@
 //! time: quitting, Ctrl-C, release events, and redrawing only when dirty.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures_util::stream::{self, Stream};
@@ -11,8 +11,8 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModif
 use tokio::sync::mpsc;
 
 use super::*;
-use crate::tui::event_loop::{run, LoopIo, LoopStats, INTERNAL_ERROR, WORKER_STOPPED};
-use crate::tui::terminal::{chain_panic_hook, PanicHook, Signals};
+use crate::tui::event_loop::{INTERNAL_ERROR, LoopIo, LoopStats, WORKER_STOPPED, run};
+use crate::tui::terminal::{PanicHook, Signals, chain_panic_hook};
 
 type Input = std::pin::Pin<Box<dyn Stream<Item = io::Result<Event>>>>;
 
@@ -230,4 +230,29 @@ async fn a_panic_in_another_task_stops_drawing_and_ends_the_loop() {
         stats.frames, 1,
         "nothing drawn after the terminal was restored"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_full_command_channel_does_not_falsely_admit_disconnect() {
+    let mut h = harness();
+    for op in 0..16 {
+        h.io.commands.try_send(Command::Cancel { op }).unwrap();
+    }
+    h.keys.send(press_event(KeyCode::Char('x'))).unwrap();
+    h.keys.send(press_event(KeyCode::Char('q'))).unwrap();
+    let mut app = connected_app();
+    let prior = app.link.clone();
+    run_app(&mut app, &mut h.io).await;
+    assert_eq!(app.link, prior);
+    assert!(
+        app.flash
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("Command not admitted")
+    );
+    assert!(matches!(
+        h.commands.try_recv().unwrap(),
+        Command::Cancel { .. }
+    ));
 }

@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::error::RemoteError;
 
 use bacnet_types::primitives::{Date, Time};
 
@@ -61,9 +62,9 @@ fn commit(
 fn assert_service_error(result: Result<(), Error>, expected: ErrorCode) {
     assert!(matches!(
         result,
-        Err(Error::Protocol { class, code })
-            if class == ErrorClass::SERVICES.to_raw() as u32
-                && code == expected.to_raw() as u32
+        Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::SERVICES
+                && code == expected
     ));
 }
 

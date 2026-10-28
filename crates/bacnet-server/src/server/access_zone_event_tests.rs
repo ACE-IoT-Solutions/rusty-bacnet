@@ -10,6 +10,7 @@ use super::event_notifications_tests::{
 };
 use super::*;
 use crate::server::test_transport::{SendLog, TestTransport};
+use PropertyIdentifier as P;
 use bacnet_encoding::constructed::decode_bacnet_property_value;
 use bacnet_objects::access_control::AccessZoneObject;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
@@ -23,7 +24,6 @@ use bacnet_types::enums::{
 };
 use bacnet_types::primitives::StatusFlags;
 use bytes::Bytes;
-use PropertyIdentifier as P;
 
 /// The zone's Notification Class; class 0 doesn't exist here, so a
 /// notification can reach the wire only by following the zone's own one.
@@ -69,8 +69,7 @@ async fn start(zone: AccessZoneObject) -> (BACnetServer<TestTransport>, ObjectId
     db.add(Box::new(class)).unwrap();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Dev".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
             ..DeviceConfig::default()
         })
         .unwrap(),

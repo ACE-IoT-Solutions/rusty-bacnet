@@ -5,15 +5,14 @@
 //! compares the whole snapshot, so a drop counted twice, or under another
 //! reason, fails it.
 
-use super::groups::{BipGroups, GroupSources};
-use super::ingress::{receive_failed, AfterReceiveError};
+use super::ingress::{AfterReceiveError, receive_failed};
 use super::rate_limit::MANAGEMENT_RATE_PER_SOURCE_IP;
 use super::receive_counters::ReceiveDrops;
 use super::*;
 use crate::udp_metadata::ReceivedDatagram;
 use crate::warn_throttle::WARNING_INTERVAL;
 use std::io;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 const LOCAL: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 10);
 const SUBNET_BROADCAST: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 255);
@@ -39,30 +38,23 @@ impl Node {
     /// A node at 192.0.2.10, a BBMD with `bbmd` if given, whose channel to
     /// the network layer holds `capacity` NPDUs.
     async fn new(bbmd: Option<BbmdState>, capacity: usize) -> Self {
+        Self::with_broadcast(bbmd, capacity, SUBNET_BROADCAST).await
+    }
+
+    /// [`Node::new`] with `broadcast` as its subnet's broadcast IP.
+    async fn with_broadcast(bbmd: Option<BbmdState>, capacity: usize, broadcast: Ipv4Addr) -> Self {
         let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap();
         let (npdu_tx, rx) = mpsc::channel(capacity);
-        let ctx = RecvContext {
-            local_mac: encode_bip_mac(OWN.0, OWN.1),
-            socket: Arc::new(super::BipSocket::new(socket, None)),
+        let ctx = RecvContext::for_test(
+            Arc::new(super::BipSocket::new(socket, None)),
             npdu_tx,
-            bbmd: bbmd.map(|state| Arc::new(std::sync::Mutex::new(state))),
-            broadcast_addr: SUBNET_BROADCAST,
-            broadcast_port: OWN.1,
-            client_management: Arc::default(),
-            management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-            fanout: None,
-            group_sources: GroupSources::new(
-                BipGroups::new(SUBNET_BROADCAST, OWN.1, LOCAL),
-                Arc::default(),
-                Arc::default(),
-            ),
-            drops: Arc::default(),
-            force_dbtn_forward_failure: false,
-        };
+            SocketAddrV4::new(Ipv4Addr::from(OWN.0), OWN.1),
+            SocketAddrV4::new(broadcast, OWN.1),
+            bbmd.map(|state| Arc::new(std::sync::Mutex::new(state))),
+        );
         let local = IngressAddresses {
-            local_ip: LOCAL,
             unicast_ips: vec![LOCAL],
             wildcard_bind: false,
             listener_interface: Some(LISTENER_INTERFACE),
@@ -93,6 +85,7 @@ impl Node {
             destination: to.into(),
             arrival_index: index,
             os_group_delivery: None,
+            arrival_stamp: None,
         };
         handle_datagram(datagram, &received, arrival, &self.local, &self.ctx).await;
     }
@@ -222,10 +215,10 @@ async fn a_broadcast_listener_drops_what_is_not_this_links_broadcast() {
 
     // Where the broadcast address is the interface's own, as in a loopback
     // test, a unicast sent to it is still not the listener's to keep.
-    node.ctx.broadcast_addr = LOCAL;
+    let mut node = Node::with_broadcast(None, 8, LOCAL).await;
     node.feed_on(listener, None, &unicast, PEER, LOCAL).await;
     node.nothing_handed_up();
-    assert_eq!(node.counters(), only(|c| c.listener_mismatch = 4));
+    assert_eq!(node.counters(), only(|c| c.listener_mismatch = 1));
 }
 
 #[tokio::test]
@@ -418,6 +411,7 @@ async fn each_failed_read_counts_as_a_receive_error() {
         destination: LOCAL.into(),
         arrival_index: None,
         os_group_delivery: None,
+        arrival_stamp: None,
     };
     let (local, ctx) = (&node.local, &node.ctx);
     handle_datagram(&unicast, &received, Arrival::Primary, local, ctx).await;

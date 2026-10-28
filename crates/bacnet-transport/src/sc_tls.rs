@@ -4,25 +4,34 @@
 //! with `rustls` TLS.  This is the production WebSocket driver used by
 //! [`crate::sc::ScTransport`] when connecting to a real BACnet/SC hub.
 
+pub mod inspection;
+mod peer_info;
+pub mod pem;
+pub use peer_info::{ScCertificateMetadata, ScHandshakeKind, ScPeerCertificate, ScTlsPeerInfo};
+mod subject_alt_name;
+pub use subject_alt_name::ScSubjectAltName;
+mod attempt_capture;
+mod tls_failure;
+mod untrusted_peer;
+pub use untrusted_peer::ScUntrustedPeerInfo;
 mod tls_config;
 pub use tls_config::ScNodeTlsConfig;
-mod transport;
-pub use transport::{connect_sc_transport, ScTlsTransportConfig};
 
 pub(crate) mod direct_accept;
-pub use direct_accept::{DirectAcceptConfig, DirectListener, DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS};
+pub use direct_accept::{
+    DIRECT_ACCEPT_IDLE_TIMEOUT, DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS, DirectAcceptConfig,
+    DirectListener,
+};
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::{net::TcpStream, sync::Mutex};
 use tokio_rustls::rustls::pki_types::ServerName;
-use tokio_tungstenite::tungstenite::Error as TungsteniteError;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::{Error as TungsteniteError, Message};
 
 use bacnet_types::error::Error;
 
-use crate::sc::{ScConnectError, ScWebSocketErrorKind, WebSocketPort};
+use crate::sc::{ScConnectError, ScDialStage, ScWebSocketErrorKind, WebSocketPort};
 use crate::sc_frame::{BACNET_SC_DIRECT_SUBPROTOCOL, BACNET_SC_HUB_SUBPROTOCOL};
 
 type WsStream = WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>;
@@ -46,30 +55,25 @@ pub(crate) fn disable_nagle(stream: &TcpStream) {
 /// WebSocket upgrade in one step.
 pub struct TlsWebSocket {
     pub(crate) verified_leaf: [u8; 32],
+    peer_info: std::sync::Arc<ScTlsPeerInfo>,
     pub(crate) peer_address: std::net::SocketAddr,
-    inner: TlsWebSocketInner,
-}
-
-enum TlsWebSocketInner {
-    Connected {
-        write: Mutex<futures_util::stream::SplitSink<WsStream, Message>>,
-        read: Mutex<futures_util::stream::SplitStream<WsStream>>,
-    },
-    Unavailable(Mutex<Option<Error>>),
+    write: Mutex<futures_util::stream::SplitSink<WsStream, Message>>,
+    read: Mutex<futures_util::stream::SplitStream<WsStream>>,
 }
 
 impl TlsWebSocket {
+    /// Immutable certificate information from this physical TLS/WebSocket connection.
+    /// This alone does not establish BACnet/SC admission. No I/O is performed.
+    pub fn peer_info(&self) -> &std::sync::Arc<ScTlsPeerInfo> {
+        &self.peer_info
+    }
+
     // One physical WebSocket frame per worker turn, including controls. The
     // worker owns application/control writes; this adapter never takes write.
     pub(crate) async fn direct_frame(
         &self,
     ) -> Result<crate::sc::direct_socket::DirectFrame, Error> {
-        match &self.inner {
-            TlsWebSocketInner::Connected { read, .. } => {
-                direct_frame(&mut *read.lock().await).await
-            }
-            TlsWebSocketInner::Unavailable(error) => Err(Self::unavailable_error(error).await),
-        }
+        direct_frame(&mut *self.read.lock().await).await
     }
 
     /// Connect to a WebSocket endpoint with TLS.
@@ -94,6 +98,14 @@ impl TlsWebSocket {
     /// ```
     pub async fn connect(url: &str, tls_config: ScNodeTlsConfig) -> Result<Self, Error> {
         boxed(|| Self::connect_with_subprotocol(url, tls_config, BACNET_SC_HUB_SUBPROTOCOL)).await
+    }
+
+    /// Check a `wss` URL the way [`Self::connect`] parses it (scheme, host,
+    /// TLS server name), without any I/O.
+    pub fn validate_url(url: &str) -> Result<(), Error> {
+        let uri = parse_wss_uri(url)?;
+        tcp_addr_from_uri(&uri)?;
+        tls_server_name_from_uri(&uri).map(drop)
     }
 
     /// Dial a direct-connection peer `wss` URI with node operational credentials.
@@ -124,13 +136,31 @@ impl TlsWebSocket {
         let uri = parse_wss_uri(url)?;
         let addr = tcp_addr_from_uri(&uri)?;
         let server_name = tls_server_name_from_uri(&uri)?;
+        let intended_server_name = server_name.to_str().into_owned();
         let request = tokio_tungstenite::tungstenite::ClientRequestBuilder::new(uri)
             .with_sub_protocol(subprotocol);
 
-        let socket = boxed(|| crate::tcp_connect::connect(&addr))
+        crate::sc::enter_dial_stage(ScDialStage::HostLookup);
+        let resolved = boxed(|| crate::tcp_connect::resolve(&addr))
             .await
             .map_err(|e| {
                 ScConnectError::WebSocket {
+                    http_status: None,
+                    untrusted_peer: None,
+                    tls: None,
+                    kind: ScWebSocketErrorKind::HostLookup,
+                    message: format!("WebSocket host lookup for {addr} failed: {e}"),
+                }
+                .into_bacnet_error_with_io_kind(e.kind())
+            })?;
+        crate::sc::enter_dial_stage(ScDialStage::TcpConnect);
+        let socket = boxed(|| crate::tcp_connect::connect_resolved(&resolved))
+            .await
+            .map_err(|e| {
+                ScConnectError::WebSocket {
+                    http_status: None,
+                    untrusted_peer: None,
+                    tls: None,
                     kind: ScWebSocketErrorKind::TcpDial,
                     message: format!("WebSocket TCP dial to {addr} failed: {e}"),
                 }
@@ -139,21 +169,42 @@ impl TlsWebSocket {
 
         disable_nagle(&socket);
         let peer_address = socket.peer_addr().map_err(Error::Transport)?;
-        let tls_stream = boxed(|| tls_config.into_connector().connect(server_name, socket))
-            .await
-            .map_err(|e| {
-                ScConnectError::WebSocket {
-                    kind: ScWebSocketErrorKind::TlsHandshake,
-                    message: format!("WebSocket TLS handshake with {addr} failed: {e}"),
-                }
-                .into_bacnet_error()
-            })?;
+        crate::sc::enter_dial_stage(ScDialStage::Tls);
+        // Both constructing and polling Rustls's handshake future happen in
+        // this attempt's observation scope. The shared verifier stays stable.
+        let (result, observed) = attempt_capture::capture(async move {
+            boxed(|| tls_config.into_connector().connect(server_name, socket)).await
+        })
+        .await;
+        let tls_stream = result.map_err(|e| {
+            ScConnectError::WebSocket {
+                http_status: None,
+                untrusted_peer: observed.map(|chain| {
+                    std::sync::Arc::new(ScUntrustedPeerInfo::new(
+                        peer_address,
+                        intended_server_name.clone(),
+                        chain,
+                    ))
+                }),
+                tls: tls_failure::classify(&e),
+                kind: ScWebSocketErrorKind::TlsHandshake,
+                message: format!("WebSocket TLS handshake with {addr} failed: {e}"),
+            }
+            .into_bacnet_error()
+        })?;
 
         let verified_leaf =
             direct_accept::verified_leaf_sha256(tls_stream.get_ref().1.peer_certificates())
                 .ok_or_else(|| {
                     Error::Encoding("verified TLS peer has no leaf certificate".into())
                 })?;
+        let peer_info = std::sync::Arc::new(ScTlsPeerInfo::capture(
+            tls_stream.get_ref().1,
+            peer_address,
+            intended_server_name,
+            verified_leaf,
+        ));
+        crate::sc::enter_dial_stage(ScDialStage::WebSocketUpgrade);
         let (ws_stream, response) = boxed(|| {
             tokio_tungstenite::client_async_with_config(
                 request,
@@ -174,26 +225,10 @@ impl TlsWebSocket {
         let (write, read) = ws_stream.split();
         Ok(Self {
             verified_leaf,
+            peer_info,
             peer_address,
-            inner: TlsWebSocketInner::Connected {
-                write: Mutex::new(write),
-                read: Mutex::new(read),
-            },
-        })
-    }
-
-    /// Preserve an initial dial failure so SC startup can try its failover path.
-    pub fn from_initial_error(error: Error) -> Self {
-        Self {
-            verified_leaf: [0; 32],
-            peer_address: "0.0.0.0:0".parse().expect("valid unspecified socket"),
-            inner: TlsWebSocketInner::Unavailable(Mutex::new(Some(error))),
-        }
-    }
-
-    async fn unavailable_error(error: &Mutex<Option<Error>>) -> Error {
-        error.lock().await.take().unwrap_or_else(|| {
-            Error::Encoding("initial BACnet/SC WebSocket remains unavailable".into())
+            write: Mutex::new(write),
+            read: Mutex::new(read),
         })
     }
 }
@@ -224,40 +259,16 @@ where
     }
 }
 
-fn parse_wss_uri(url: &str) -> Result<tokio_tungstenite::tungstenite::http::Uri, Error> {
-    let uri: tokio_tungstenite::tungstenite::http::Uri = url.parse().map_err(|e| {
-        ScConnectError::WebSocket {
-            kind: ScWebSocketErrorKind::InvalidUrl,
-            message: format!("Invalid WebSocket URL: {e}"),
-        }
-        .into_bacnet_error()
-    })?;
-
-    if !uri
-        .scheme_str()
-        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("wss"))
-    {
-        return Err(ScConnectError::WebSocket {
-            kind: ScWebSocketErrorKind::UnsupportedScheme,
-            message: "BACnet/SC WebSocket URI must use wss scheme".into(),
-        }
-        .into_bacnet_error());
-    }
-
-    if uri.host().map(str::is_empty).unwrap_or(true) {
-        return Err(ScConnectError::WebSocket {
-            kind: ScWebSocketErrorKind::MissingHubHost,
-            message: "BACnet/SC WebSocket URI must include a hub host".into(),
-        }
-        .into_bacnet_error());
-    }
-
-    Ok(uri)
-}
+mod validate;
+use validate::parse_wss_uri;
+pub use validate::validate_wss_uri;
 
 fn tcp_addr_from_uri(uri: &tokio_tungstenite::tungstenite::http::Uri) -> Result<String, Error> {
     let host = uri.host().filter(|host| !host.is_empty()).ok_or_else(|| {
         ScConnectError::WebSocket {
+            http_status: None,
+            untrusted_peer: None,
+            tls: None,
             kind: ScWebSocketErrorKind::MissingHubHost,
             message: "BACnet/SC WebSocket URI must include a hub host".into(),
         }
@@ -277,6 +288,9 @@ fn tls_server_name_from_uri(
 ) -> Result<ServerName<'static>, Error> {
     let host = uri.host().filter(|host| !host.is_empty()).ok_or_else(|| {
         ScConnectError::WebSocket {
+            http_status: None,
+            untrusted_peer: None,
+            tls: None,
             kind: ScWebSocketErrorKind::MissingHubHost,
             message: "BACnet/SC WebSocket URI must include a hub host".into(),
         }
@@ -290,6 +304,9 @@ fn tls_server_name_from_uri(
 
     ServerName::try_from(host.to_owned()).map_err(|e| {
         ScConnectError::WebSocket {
+            http_status: None,
+            untrusted_peer: None,
+            tls: None,
             kind: ScWebSocketErrorKind::InvalidUrl,
             message: format!("Invalid WebSocket TLS server name: {e}"),
         }
@@ -308,6 +325,19 @@ fn map_websocket_upgrade_error(error: TungsteniteError) -> Error {
         _ => ScWebSocketErrorKind::WebSocketHandshake,
     };
     ScConnectError::WebSocket {
+        // A server that answers the upgrade with another status, such as a
+        // proxy's 502, keeps that status for diagnosis (#1839).
+        http_status: match &error {
+            TungsteniteError::Http(response) => Some(response.status().as_u16()),
+            _ => None,
+        },
+        untrusted_peer: None,
+        // A TLS 1.3 server refuses a client certificate after the client has
+        // finished its side of the handshake, so the alert surfaces here.
+        tls: match &error {
+            TungsteniteError::Io(io) => tls_failure::classify(io),
+            _ => None,
+        },
         kind,
         message: format!("WebSocket upgrade failed: {error}"),
     }
@@ -326,6 +356,9 @@ fn map_websocket_handshake_error(error: TungsteniteError) -> Error {
         _ => ScWebSocketErrorKind::WebSocketHandshake,
     };
     ScConnectError::WebSocket {
+        http_status: None,
+        untrusted_peer: None,
+        tls: None,
         kind,
         message: format!("WebSocket connect failed: {error}"),
     }
@@ -369,6 +402,9 @@ fn verify_selected_subprotocol(
         Ok(())
     } else {
         Err(ScConnectError::WebSocket {
+            http_status: None,
+            untrusted_peer: None,
+            tls: None,
             kind,
             message: format!("BACnet/SC {role} WebSocket subprotocol {expected} was not accepted"),
         }
@@ -378,18 +414,15 @@ fn verify_selected_subprotocol(
 
 impl WebSocketPort for TlsWebSocket {
     async fn send(&self, data: &[u8]) -> Result<(), Error> {
-        let write = match &self.inner {
-            TlsWebSocketInner::Connected { write, .. } => write,
-            TlsWebSocketInner::Unavailable(error) => {
-                return Err(Self::unavailable_error(error).await)
-            }
-        };
-        let mut write = write.lock().await;
+        let mut write = self.write.lock().await;
         write
             .send(Message::Binary(data.to_vec().into()))
             .await
             .map_err(|e| {
                 ScConnectError::WebSocket {
+                    http_status: None,
+                    untrusted_peer: None,
+                    tls: None,
                     kind: ScWebSocketErrorKind::Send,
                     message: format!("WebSocket send failed: {e}"),
                 }
@@ -398,23 +431,20 @@ impl WebSocketPort for TlsWebSocket {
     }
 
     async fn recv(&self) -> Result<Vec<u8>, Error> {
-        let (read, write) = match &self.inner {
-            TlsWebSocketInner::Connected { read, write } => (read, write),
-            TlsWebSocketInner::Unavailable(error) => {
-                return Err(Self::unavailable_error(error).await)
-            }
-        };
         loop {
             // Read one message under the read lock, then drop it before
             // acquiring write (avoids read→write lock ordering deadlock).
             let msg = {
-                let mut read = read.lock().await;
+                let mut read = self.read.lock().await;
                 read.next().await
             };
             match msg {
                 Some(Ok(Message::Binary(data))) => return Ok(data.to_vec()),
                 Some(Ok(Message::Close(_))) => {
                     return Err(ScConnectError::WebSocket {
+                        http_status: None,
+                        untrusted_peer: None,
+                        tls: None,
                         kind: ScWebSocketErrorKind::Closed,
                         message: "WebSocket closed".into(),
                     }
@@ -425,7 +455,7 @@ impl WebSocketPort for TlsWebSocket {
                 }
                 Some(Ok(_)) => {
                     // Non-binary data frames: close with 1003
-                    let mut w = write.lock().await;
+                    let mut w = self.write.lock().await;
                     let _ = w
                         .send(Message::Close(Some(
                             tokio_tungstenite::tungstenite::protocol::CloseFrame {
@@ -435,6 +465,9 @@ impl WebSocketPort for TlsWebSocket {
                         )))
                         .await;
                     return Err(ScConnectError::WebSocket {
+                        http_status: None,
+                        untrusted_peer: None,
+                        tls: None,
                         kind: ScWebSocketErrorKind::NonBinaryFrame,
                         message: "non-binary WebSocket frame received".into(),
                     }
@@ -442,6 +475,9 @@ impl WebSocketPort for TlsWebSocket {
                 }
                 Some(Err(e)) => {
                     return Err(ScConnectError::WebSocket {
+                        http_status: None,
+                        untrusted_peer: None,
+                        tls: None,
                         kind: ScWebSocketErrorKind::Receive,
                         message: format!("WebSocket recv error: {e}"),
                     }
@@ -449,6 +485,9 @@ impl WebSocketPort for TlsWebSocket {
                 }
                 None => {
                     return Err(ScConnectError::WebSocket {
+                        http_status: None,
+                        untrusted_peer: None,
+                        tls: None,
                         kind: ScWebSocketErrorKind::StreamEnded,
                         message: "WebSocket stream ended".into(),
                     }
@@ -473,9 +512,9 @@ mod tests {
     use crate::port_ownership::connect_loopback;
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_rustls::TlsAcceptor;
     use tokio_rustls::rustls::pki_types::pem::PemObject;
     use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
-    use tokio_rustls::TlsAcceptor;
 
     #[tokio::test]
     async fn disable_nagle_sets_tcp_nodelay_on_both_ends() {
@@ -492,6 +531,7 @@ mod tests {
     #[test]
     fn parse_wss_uri_accepts_secure_websocket_scheme() {
         assert!(parse_wss_uri("wss://hub.example.com:443").is_ok());
+        assert!(validate_wss_uri("wss://hub.example.com:443").is_ok());
     }
 
     #[test]
@@ -514,8 +554,11 @@ mod tests {
         assert_eq!(
             ScConnectError::from_error(&err),
             Some(&ScConnectError::WebSocket {
+                http_status: None,
                 kind: ScWebSocketErrorKind::UnsupportedScheme,
                 message: "BACnet/SC WebSocket URI must use wss scheme".into(),
+                untrusted_peer: None,
+                tls: None,
             })
         );
     }
@@ -687,6 +730,24 @@ mod tests {
         ));
     }
 
+    /// A name that does not resolve is a host lookup failure, not a TCP one.
+    #[tokio::test]
+    async fn tls_websocket_connect_lookup_failure_is_typed() {
+        // `.invalid` never resolves (RFC 6761).
+        let err = match TlsWebSocket::connect("wss://hub.invalid:443", test_tls_config()).await {
+            Ok(_) => panic!("expected a host lookup failure"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            ScConnectError::from_error(&err),
+            Some(ScConnectError::WebSocket {
+                kind: ScWebSocketErrorKind::HostLookup,
+                tls: None,
+                ..
+            })
+        ));
+    }
+
     #[tokio::test]
     async fn tls_websocket_connect_tls_failure_is_typed() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -700,13 +761,20 @@ mod tests {
             Err(err) => err,
         };
 
+        // The peer closed mid-handshake: the TLS library gave no reason, so
+        // none is attached and the cause stays the plain handshake kind.
         assert!(matches!(
             ScConnectError::from_error(&err),
             Some(ScConnectError::WebSocket {
                 kind: ScWebSocketErrorKind::TlsHandshake,
+                tls: None,
                 ..
             })
         ));
+        assert_eq!(
+            crate::sc::ScDisconnectCause::from_error(&err),
+            crate::sc::ScDisconnectCause::WebSocket(ScWebSocketErrorKind::TlsHandshake)
+        );
         accept_task.await.unwrap();
     }
 

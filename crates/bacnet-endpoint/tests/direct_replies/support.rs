@@ -1,7 +1,7 @@
 //! Real TLS admission; only scheduling between listener and network is synthetic.
 use bacnet_encoding::{
-    apdu::{decode_apdu, encode_apdu, Apdu, ConfirmedRequest},
-    npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress},
+    apdu::{Apdu, ConfirmedRequest, decode_apdu, encode_apdu},
+    npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu},
 };
 use bacnet_objects::{database::ObjectDatabase, value_types::CharacterStringValueObject};
 use bacnet_services::read_property::ReadPropertyRequest;
@@ -350,6 +350,7 @@ pub fn received_apdu(envelope: ReceivedNpdu) -> bacnet_network::layer::ReceivedA
         global_broadcast: false,
         data_attributes: envelope.data_attributes,
         provenance: envelope.provenance,
+        router_response: None,
         direct_response: envelope.direct_response,
         reply_tx: envelope.reply_tx,
     }

@@ -1,5 +1,5 @@
 use super::LoopObject;
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
@@ -58,13 +58,14 @@ pub(super) fn for_object(_object: &LoopObject) -> Cow<'_, [PropertyMetadata]> {
 mod tests {
     use super::*;
     use crate::traits::BACnetObject;
+    use bacnet_types::enums::EngineeringUnits;
     use bacnet_types::enums::{ErrorClass, ErrorCode};
-    use bacnet_types::error::Error;
+    use bacnet_types::error::{Error, RemoteError};
     use bacnet_types::primitives::PropertyValue;
 
     #[test]
     fn property_metadata_loop_exact_sets_and_indexed_list() {
-        let object = LoopObject::new(1, "LOOP-1", 62).unwrap();
+        let object = LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         let all = [
             P::OBJECT_IDENTIFIER,
             P::OBJECT_NAME,
@@ -160,8 +161,8 @@ mod tests {
 
     fn assert_error(error: Error, expected: ErrorCode) {
         assert!(
-            matches!(error, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32),
+            matches!(error, Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::PROPERTY && code == expected),
             "expected {expected:?}, got {error:?}"
         );
     }
@@ -169,7 +170,8 @@ mod tests {
     #[test]
     fn property_metadata_loop_write_capabilities_match_dispatch() {
         for out_of_service in [false, true] {
-            let mut object = LoopObject::new(1, "LOOP-1", 62).unwrap();
+            let mut object =
+                LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
             object
                 .write_property(
                     P::OUT_OF_SERVICE,

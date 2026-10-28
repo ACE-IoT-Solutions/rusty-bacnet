@@ -105,10 +105,10 @@ pub trait AuditLogNotificationSink: Send + Sync {
         staged: StagedAuditBatch,
     ) -> Result<(ConfirmedAuditNotificationOutcome, bool), Error> {
         let _ = staged;
-        Err(Error::Protocol {
-            class: ErrorClass::DEVICE.to_raw() as u32,
-            code: ErrorCode::OPERATIONAL_PROBLEM.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::DEVICE,
+            ErrorCode::OPERATIONAL_PROBLEM,
+        ))
     }
 }
 
@@ -119,10 +119,10 @@ impl AuditLogObject {
         apdu_timeout_ms: u32,
     ) -> Result<bool, Error> {
         if !self.log_enable {
-            return Err(Error::Protocol {
-                class: ErrorClass::SERVICES.to_raw() as u32,
-                code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::SERVICES,
+                ErrorCode::SERVICE_REQUEST_DENIED,
+            ));
         }
         if notifications.is_empty() {
             return Err(Error::OutOfRange(
@@ -146,10 +146,10 @@ impl AuditLogObject {
         receipt: CompletedAuditReceipt,
     ) -> Result<(ConfirmedAuditNotificationOutcome, bool), Error> {
         if !self.log_enable {
-            return Err(Error::Protocol {
-                class: ErrorClass::SERVICES.to_raw() as u32,
-                code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::SERVICES,
+                ErrorCode::SERVICE_REQUEST_DENIED,
+            ));
         }
         if notifications.is_empty() {
             return Err(Error::OutOfRange(

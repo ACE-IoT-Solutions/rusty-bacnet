@@ -7,15 +7,12 @@ use bytes::BytesMut;
 use pyo3::exceptions::{PyDeprecationWarning, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
-use tokio::sync::Mutex;
 
 use bacnet_client::client;
 use bacnet_client::client::WriteGroupDestination;
 use bacnet_encoding::primitives::encode_property_value;
 use bacnet_services::alarm_event::AcknowledgeAlarmRequest;
 use bacnet_services::alarm_summary::GetAlarmSummaryAck;
-type ClientInner =
-    Arc<Mutex<Option<Arc<client::BACnetClient<AnyTransport<crate::mstp_py::PySerial>>>>>>;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::cov_multiple::{
     COVReference, COVSubscriptionSpecification, SubscribeCOVPropertyMultipleRequest,
@@ -36,21 +33,24 @@ use bacnet_services::who_has::WhoHasObject;
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_services::write_group::{GroupChannelValue, WriteGroupRequest};
 use bacnet_transport::any::AnyTransport;
-use bacnet_transport::bip::BipTransport;
-use bacnet_transport::bip6::Bip6Transport;
 use bacnet_types::enums::{AcknowledgmentFilter, ConfirmedServiceChoice, UnconfirmedServiceChoice};
 use bacnet_types::primitives::BACnetTimeStamp;
 
+use crate::app_transport::AppTransport;
 use crate::errors::to_py_err;
 use crate::types::{
-    audit_log_query_ack_to_py, audit_log_query_request_from_py, audit_notification_request_from_py,
-    decode_read_ack, parse_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py,
-    PyAcknowledgmentFilter, PyBACnetTimeStamp, PyCovNotificationIterator, PyDeviceWrite,
-    PyDiscoveredDevice, PyEnableDisable, PyEnrollmentSummaryEventStateFilter, PyEventState,
-    PyEventType, PyLifeSafetyOperation, PyMessagePriority, PyObjectIdentifier, PyObjectType,
-    PyPropertyIdentifier, PyPropertyValue, PyPropertyWrite, PyReadAccessSpec, PyReinitializedState,
-    PyWriteAccessSpec,
+    PeerAddresses, PyAcknowledgmentFilter, PyBACnetTimeStamp, PyCovNotificationIterator,
+    PyDeviceWrite, PyDiscoveredDevice, PyEnableDisable, PyEnrollmentSummaryEventStateFilter,
+    PyEventState, PyEventType, PyLifeSafetyOperation, PyMessagePriority, PyObjectIdentifier,
+    PyObjectType, PyPropertyIdentifier, PyPropertyValue, PyPropertyWrite, PyReadAccessSpec,
+    PyReinitializedState, PyWriteAccessSpec, audit_log_query_ack_to_py,
+    audit_log_query_request_from_py, audit_notification_request_from_py, decode_read_ack,
+    parse_bip6_address, py_to_rpm_specs, py_to_wpm_specs, rpm_ack_to_py,
 };
+use state::started;
+
+type CoreClient = client::BACnetClient<AppTransport>;
+type ClientInner = Arc<state::ClientState>;
 
 fn validate_write_priority(priority: Option<u8>) -> PyResult<()> {
     bacnet_services::write_property::validate_priority(priority)
@@ -81,6 +81,9 @@ fn device_range(
 ) -> PyResult<Option<DeviceInstanceRange>> {
     DeviceInstanceRange::from_limits(low_limit, high_limit).map_err(|error| match error {
         bacnet_types::error::Error::OutOfRange(message) => PyValueError::new_err(message),
+        bacnet_types::error::Error::Range(refused) => {
+            PyValueError::new_err(refused.message().to_string())
+        }
         other => PyValueError::new_err(other.to_string()),
     })
 }
@@ -96,10 +99,17 @@ fn device_range(
 ///
 /// Supports multiple transports via the `transport` parameter:
 /// - `"bip"` (default): BACnet/IP over UDP
-/// - `"ipv6"`: BACnet/IPv6 over UDP multicast
+/// - `"ipv6"`: BACnet/IPv6 over UDP multicast. Peers are named by VMAC
+///   (`"bip6:1234"`); `resolve_vmac` finds the VMAC at an `"[ip]:port"`.
+///   `foreign_device=` with a B/IPv6 BBMD, and `ipv6_device_instance`,
+///   registers it as a foreign device (#1941).
 /// - `"sc"`: BACnet/SC over TLS WebSocket (requires `sc_hub`, `sc_vmac`,
 ///   `sc_ca_cert`, `sc_client_cert`, `sc_client_key`, and persistent `sc_device_uuid`)
 /// - `"mstp"`: BACnet MS/TP over RS-485 (requires `serial_port`)
+/// - `"router"`: the application entity of `router=`, a `BACnetRouter`
+///   built with `application=` (#2071). Address devices by network, through
+///   discovery and the `_from_device`/`_to_device` methods: an `ip:port`
+///   names no network, so a send to one fails.
 ///
 /// SC credential paths must be nonempty at construction (ValueError otherwise).
 /// Files are loaded on async entry; invalid TLS configuration raises RuntimeError
@@ -114,40 +124,58 @@ pub struct BACnetClient {
     broadcast_address: String,
     /// See `BipTransport::set_share_port_by_address` (#1538).
     share_port_by_address: bool,
+    /// The B/IP mode `bbmd=` or `foreign_device=` asked for (#938).
+    bip_mode: bacnet_transport::bip::BipMode,
+    /// The B/IPv6 foreign-device registration `foreign_device=` asked for
+    /// (#1941).
+    bip6_foreign: Option<bacnet_transport::bip6::Bip6ForeignDeviceConfig>,
+    /// The B/IP multicast group `multicast=` asked for (#941).
+    multicast: Option<bacnet_transport::bip::BipMulticast>,
     apdu_timeout_ms: u64,
     // SC config
     sc_hub: Option<String>,
     sc_vmac: Option<Vec<u8>>,
     sc_device_uuid: [u8; 16],
+    sc_npdu_admission_policy: bacnet_transport::sc::ScNpduAdmissionPolicy,
     sc_ca_cert: Option<String>,
     sc_client_cert: Option<String>,
     sc_client_key: Option<String>,
     sc_heartbeat_interval_ms: Option<u64>,
     sc_heartbeat_timeout_ms: Option<u64>,
+    reconnect: Option<bacnet_transport::sc::ScReconnectConfig>,
+    /// The failover hub's URL (#1829); requires `reconnect`.
+    sc_failover_hub: Option<String>,
+    /// The bound on each hub dial and Connect-Request (#1829).
+    sc_connect_timeout_ms: Option<u64>,
     // IPv6 config
     ipv6_interface: Option<String>,
-    // MS/TP config
-    serial_port: Option<String>,
-    mstp_baud: u32,
-    mstp_mac: u8,
-    mstp_max_master: u8,
-    mstp_max_info_frames: u8,
-    /// Extended MS/TP frames (Types 32 and 33), off by default (#1611).
-    mstp_extended_frames: bool,
+    /// The device instance whose VMAC an ipv6 client uses (H.7.2); `None`
+    /// picks a random VMAC at each start.
+    ipv6_device_instance: Option<u32>,
+    /// The MS/TP keywords, `serial_port` included.
+    mstp: crate::mstp_py::MstpOptions,
+    /// The router whose application entity `transport="router"` runs on
+    /// (#2071).
+    router: Option<crate::router::application::RouterApplication>,
     /// Least time between confirmed requests to one destination (#1535).
     min_request_interval_ms: u64,
 }
 
 mod client_methods {
+    mod bbmd_management;
     mod cov_discovery;
+    mod discovery_streams;
     mod enrollment_alarm_covmulti_who_writegroup;
     mod file_list_private_text_life;
+    mod foreign_registration;
     mod lifecycle;
     mod log_read;
     mod object_device_alarm;
     mod read_write;
+    mod sc_peer;
     mod vt_audit_time_directed;
 }
+mod state;
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -4,23 +4,37 @@
 // argument count is part of the Python API; a Rust parameter struct would
 // change what Python callers write (#902).
 #![allow(clippy::too_many_arguments)]
+#![forbid(unsafe_code)]
 
 use pyo3::prelude::*;
 
+mod ace_mixed_router;
+mod app_transport;
 mod bip_options;
 mod client;
+mod discovery;
 mod endpoint;
 mod errors;
+mod event_stream;
 mod group_members;
 mod hub;
 mod hub_bindings;
 mod log_records;
+mod logging_bridge;
 mod mstp_py;
+mod mutation_policy;
 mod object_audit_policy;
+mod object_options;
 mod py_async;
 mod read_range;
+mod reinitialize;
 mod router;
+mod sc_events;
 mod sc_identity;
+mod sc_inspection;
+mod sc_npdu;
+mod sc_peer;
+mod sc_reconnect;
 mod server;
 mod tls;
 mod types;
@@ -38,8 +52,13 @@ async fn unit_result(
 /// The `rusty_bacnet` Python module.
 #[pymodule]
 fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // `logging` first, so that its atexit shutdown runs after the gate's hook.
+    logging_bridge::import_logging(m.py())?;
     // Keep binding threads out of the interpreter once it starts exiting (#1002).
     py_async::register(m)?;
+    // Forward the stack's tracing events to `logging` (#1724), and flush them
+    // at exit before the gate closes.
+    logging_bridge::register(m)?;
 
     // Register exception types
     errors::register(m)?;
@@ -50,14 +69,25 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Register client and server classes
     m.add_class::<client::BACnetClient>()?;
     m.add_class::<server::BACnetServer>()?;
-    m.add_class::<router::PyBACnetRouter>()?;
-    m.add_class::<router::PyRouterBipPort>()?;
-    m.add_class::<router::PyRouterScPort>()?;
-    m.add_class::<router::PyRouterPortHealth>()?;
-    m.add_class::<router::PyRouterRouteEntry>()?;
     m.add_class::<hub::PyScHub>()?;
     m.add_class::<hub_bindings::PyScHubCertificateBinding>()?;
+    m.add_class::<bip_options::PyForeignDevice>()?;
+    m.add_class::<bip_options::PyBbmd>()?;
+    m.add_class::<bip_options::PyMulticast>()?;
+    m.add_class::<sc_reconnect::PyScReconnect>()?;
+    m.add_class::<ace_mixed_router::PyRouterBipPort>()?;
+    m.add_class::<ace_mixed_router::PyRouterScPort>()?;
+    m.add_class::<ace_mixed_router::PyRouterPortHealth>()?;
+    m.add_class::<ace_mixed_router::PyRouterRouteEntry>()?;
+    m.add_class::<ace_mixed_router::PyAceMixedRouter>()?;
+    router::register(m)?;
+    sc_peer::register(m)?;
+    sc_events::register(m)?;
+    discovery::register(m)?;
+    sc_inspection::register(m)?;
     endpoint::register(m)?;
+    reinitialize::register(m)?;
+    mutation_policy::register(m)?;
     m.add_function(wrap_pyfunction!(mstp_py::list_serial_ports, m)?)?;
     m.add_function(wrap_pyfunction!(log_records::decode_log_records, m)?)?;
 

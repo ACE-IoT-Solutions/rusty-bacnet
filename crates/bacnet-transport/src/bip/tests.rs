@@ -1,6 +1,6 @@
 use super::*;
 use bytes::Bytes;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 fn test_bvll_message(function: BvlcFunction, payload: &[u8]) -> BvllMessage {
     BvllMessage {
@@ -102,32 +102,20 @@ async fn pending_bvlc_response_requires_sender_and_expected_function() {
         None,
     ));
     let (npdu_tx, _npdu_rx) = mpsc::channel(1);
-    let management = Arc::new(client_management::ManagementClient::default());
-    management.start();
-    let (guard, mut rx) = management
+    let own = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 9), 47808);
+    let broadcast = SocketAddrV4::new(Ipv4Addr::BROADCAST, 47808);
+    let link = test_support::test_link(own, broadcast, bacnet_bip_core::node::Mode::Normal);
+    let ctx = RecvContext::on_link(socket, npdu_tx, link, None);
+    let peer = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 47808);
+    let (exchange, mut rx) = ctx
+        .node
         .begin(
-            ([127, 0, 0, 1], 47808),
-            BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE,
-            BvlcResponseKind::ReadBroadcastDistributionTableAck,
-            None,
+            peer,
+            Bvll::ReadBroadcastDistributionTable,
+            Duration::from_secs(3),
         )
         .unwrap();
-    guard.sent(Duration::from_secs(3));
-
-    let ctx = RecvContext {
-        local_mac: [0; 6],
-        socket,
-        npdu_tx,
-        bbmd: None,
-        broadcast_addr: Ipv4Addr::BROADCAST,
-        broadcast_port: 47808,
-        client_management: management.clone(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
-    };
+    exchange.sent();
 
     let result = test_bvll_message(BvlcFunction::BVLC_RESULT, &[0x00, 0x00]);
     handle_bvll_message(&result, ([127, 0, 0, 2], 47808), Delivery::Unicast, &ctx).await;
@@ -145,9 +133,9 @@ async fn pending_bvlc_response_requires_sender_and_expected_function() {
         &ctx,
     )
     .await;
-    assert_eq!(management.snapshot().read_bdt.acknowledgements, 1);
+    assert_eq!(ctx.node.snapshot().read_bdt.acknowledgements, 1);
     assert_eq!(
-        rx.await.unwrap().function,
+        rx.await.unwrap().unwrap().function,
         BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK
     );
 }
@@ -248,9 +236,10 @@ async fn read_bdt_from_bbmd() {
     // Read the BDT — includes the configured entry plus the auto-inserted self entry
     let bdt = client_transport.read_bdt(&bbmd_mac).await.unwrap();
     assert_eq!(bdt.len(), 2);
-    assert!(bdt
-        .iter()
-        .any(|e| e.ip == [10, 0, 0, 1] && e.port == 0xBAC0));
+    assert!(
+        bdt.iter()
+            .any(|e| e.ip == [10, 0, 0, 1] && e.port == 0xBAC0)
+    );
     // Self entry is also present (auto-inserted by set_bdt)
     assert!(bdt.len() >= 2);
 
@@ -309,9 +298,14 @@ async fn read_bdt_from_non_bbmd_surfaces_typed_nak() {
     let _client_rx = client_transport.start().await.unwrap();
 
     let err = client_transport.read_bdt(&server_mac).await.unwrap_err();
-    assert!(
-        format!("{err}").contains("READ_BROADCAST_DISTRIBUTION_TABLE_NAK"),
+    assert_eq!(
+        err.nak(),
+        Some(BvlcResultCode::READ_BROADCAST_DISTRIBUTION_TABLE_NAK),
         "unexpected error: {err}"
+    );
+    assert_eq!(
+        err.to_string(),
+        "BVLC-Result NAK READ_BROADCAST_DISTRIBUTION_TABLE_NAK (0x0020)"
     );
 
     client_transport.stop().await.unwrap();
@@ -329,7 +323,10 @@ async fn read_fdt_from_non_bbmd_surfaces_typed_nak() {
 
     let err = client_transport.read_fdt(&server_mac).await.unwrap_err();
     assert!(
-        format!("{err}").contains("READ_FOREIGN_DEVICE_TABLE_NAK"),
+        matches!(
+            err,
+            BvlcExchangeError::Nak(BvlcResultCode::READ_FOREIGN_DEVICE_TABLE_NAK)
+        ),
         "unexpected error: {err}"
     );
 
@@ -359,13 +356,13 @@ async fn write_bdt_to_bbmd_always_naks_and_preserves_table() {
         port: 0xBAC0,
         broadcast_mask: [255, 255, 255, 255],
     }];
-    let result = client_transport
-        .write_bdt(&bbmd_mac, &new_bdt)
-        .await
-        .unwrap();
     assert_eq!(
-        result,
-        BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK
+        client_transport
+            .write_bdt(&bbmd_mac, &new_bdt)
+            .await
+            .unwrap_err()
+            .nak(),
+        Some(BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK)
     );
 
     // Verify memory is unchanged: prior entry remains, replacement absent.
@@ -428,10 +425,13 @@ async fn write_bdt_to_non_bbmd_surfaces_typed_nak() {
     let mut client_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _client_rx = client_transport.start().await.unwrap();
 
-    let result = client_transport.write_bdt(&server_mac, &[]).await.unwrap();
     assert_eq!(
-        result,
-        BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK
+        client_transport
+            .write_bdt(&server_mac, &[])
+            .await
+            .unwrap_err()
+            .nak(),
+        Some(BvlcResultCode::WRITE_BROADCAST_DISTRIBUTION_TABLE_NAK)
     );
 
     // A malformed payload to a non-BBMD answers the same not-supported result.
@@ -461,11 +461,10 @@ async fn register_foreign_device_via_bvlc() {
     let mut client_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _client_rx = client_transport.start().await.unwrap();
 
-    let result = client_transport
+    client_transport
         .register_foreign_device_bvlc(&bbmd_mac, 60)
         .await
         .unwrap();
-    assert_eq!(result, BvlcResultCode::SUCCESSFUL_COMPLETION);
 
     client_transport.stop().await.unwrap();
     bbmd_transport.stop().await.unwrap();
@@ -482,11 +481,14 @@ async fn register_foreign_device_rejects_zero_ttl() {
     let mut client_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _client_rx = client_transport.start().await.unwrap();
 
-    let result = client_transport
-        .register_foreign_device_bvlc(&bbmd_mac, 0)
-        .await
-        .unwrap();
-    assert_eq!(result, BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK);
+    assert_eq!(
+        client_transport
+            .register_foreign_device_bvlc(&bbmd_mac, 0)
+            .await
+            .unwrap_err()
+            .nak(),
+        Some(BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK)
+    );
 
     {
         let state = bbmd_transport.bbmd_state().unwrap();
@@ -538,11 +540,10 @@ async fn register_foreign_device_accepts_max_ttl_and_caps_remaining() {
     let mut client_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _client_rx = client_transport.start().await.unwrap();
 
-    let result = client_transport
+    client_transport
         .register_foreign_device_bvlc(&bbmd_mac, u16::MAX)
         .await
         .unwrap();
-    assert_eq!(result, BvlcResultCode::SUCCESSFUL_COMPLETION);
 
     let fdt = client_transport.read_fdt(&bbmd_mac).await.unwrap();
     assert_eq!(fdt.len(), 1);
@@ -562,11 +563,14 @@ async fn register_foreign_device_to_non_bbmd_surfaces_typed_nak() {
     let mut client_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _client_rx = client_transport.start().await.unwrap();
 
-    let result = client_transport
-        .register_foreign_device_bvlc(&server_mac, 60)
-        .await
-        .unwrap();
-    assert_eq!(result, BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK);
+    assert_eq!(
+        client_transport
+            .register_foreign_device_bvlc(&server_mac, 60)
+            .await
+            .unwrap_err()
+            .nak(),
+        Some(BvlcResultCode::REGISTER_FOREIGN_DEVICE_NAK)
+    );
 
     client_transport.stop().await.unwrap();
     server_transport.stop().await.unwrap();
@@ -581,13 +585,13 @@ async fn delete_fdt_entry_to_non_bbmd_surfaces_typed_nak() {
     let mut client_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _client_rx = client_transport.start().await.unwrap();
 
-    let result = client_transport
-        .delete_fdt_entry(&server_mac, [127, 0, 0, 1], 47808)
-        .await
-        .unwrap();
     assert_eq!(
-        result,
-        BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK
+        client_transport
+            .delete_fdt_entry(&server_mac, [127, 0, 0, 1], 47808)
+            .await
+            .unwrap_err()
+            .nak(),
+        Some(BvlcResultCode::DELETE_FOREIGN_DEVICE_TABLE_ENTRY_NAK)
     );
 
     client_transport.stop().await.unwrap();
@@ -606,18 +610,16 @@ async fn delete_fdt_entry_via_bvlc() {
     let mut client_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _client_rx = client_transport.start().await.unwrap();
 
-    let result = client_transport
+    client_transport
         .register_foreign_device_bvlc(&bbmd_mac, 60)
         .await
         .unwrap();
-    assert_eq!(result, BvlcResultCode::SUCCESSFUL_COMPLETION);
 
     let (fd_ip, fd_port) = decode_bip_mac(client_transport.local_mac()).unwrap();
-    let result = client_transport
+    client_transport
         .delete_fdt_entry(&bbmd_mac, fd_ip, fd_port)
         .await
         .unwrap();
-    assert_eq!(result, BvlcResultCode::SUCCESSFUL_COMPLETION);
 
     let fdt = client_transport.read_fdt(&bbmd_mac).await.unwrap();
     assert!(fdt.is_empty());
@@ -638,11 +640,10 @@ async fn delete_fdt_entry_rejects_malformed_payload_and_preserves_entry() {
     let mut client_transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _client_rx = client_transport.start().await.unwrap();
 
-    let result = client_transport
+    client_transport
         .register_foreign_device_bvlc(&bbmd_mac, 60)
         .await
         .unwrap();
-    assert_eq!(result, BvlcResultCode::SUCCESSFUL_COMPLETION);
 
     let (fd_ip, fd_port) = decode_bip_mac(client_transport.local_mac()).unwrap();
     let mut payload_with_trailing_byte = Vec::from(fd_ip);
@@ -761,14 +762,15 @@ async fn bvlc_request_rejects_concurrent_calls() {
     let _rx = transport.start().await.unwrap();
 
     // Admit and retain the first request to exercise the shared slot owner.
-    let target = decode_bip_mac(transport.local_mac()).unwrap();
+    let target = codec::address_from_slice(transport.local_mac()).unwrap();
     let (_guard, _rx) = transport
-        .client_management
+        .node
+        .as_ref()
+        .unwrap()
         .begin(
             target,
-            BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE,
-            BvlcResponseKind::ReadBroadcastDistributionTableAck,
-            None,
+            Bvll::ReadBroadcastDistributionTable,
+            Duration::from_secs(3),
         )
         .unwrap();
 

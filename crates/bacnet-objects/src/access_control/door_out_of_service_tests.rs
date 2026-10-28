@@ -1,6 +1,7 @@
 //! Door_Status, Lock_Status and Door_Alarm_State writes while Out_Of_Service
 //! is TRUE (Clause 12.26.9, Table 12-30 footnote 1, #1131).
 
+use bacnet_types::error::RemoteError;
 use std::time::Duration;
 
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
@@ -63,9 +64,9 @@ fn served(door: &AccessDoorObject) -> [PropertyValue; 3] {
 
 fn assert_property_error(result: Result<(), Error>, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code: actual })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && actual == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code: actual }))
+            if class == ErrorClass::PROPERTY
+                && actual == code),
         "expected PROPERTY / {code:?}, got {result:?}"
     );
 }

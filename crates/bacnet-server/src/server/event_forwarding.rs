@@ -37,13 +37,13 @@
 //! route naming it into a local route ([`RecipientRoute::localize`]). The loop
 //! rules see that local route, and the copy goes with no DNET.
 
-use super::event_recipient_route::{system_utc_recipient_filter_time, RecipientRoute};
+use super::event_recipient_route::{RecipientRoute, system_utc_recipient_filter_time};
 use super::event_send::OutboundNotification;
 use super::event_suppression::EventSuppression;
 use super::*;
 use bacnet_encoding::constructed::encode_event_notification;
 use bacnet_objects::notification_class::MAX_RECIPIENT_LIST_DESTINATIONS;
-use bacnet_objects::notification_forwarder::{forwarding_targets, ForwardingInput};
+use bacnet_objects::notification_forwarder::{ForwardingInput, forwarding_targets};
 use bacnet_objects::subscribed_recipients::MAX_SUBSCRIBED_RECIPIENTS;
 use bacnet_services::alarm_event::ForwardedEventNotification;
 use bacnet_types::constructed::BACnetRecipient;
@@ -64,38 +64,6 @@ const RECEIVING_PORT: u8 = 0;
 /// past the cap count in [`EventNotificationCounters::forwarding_cap_dropped`].
 pub const MAX_FORWARDED_DESTINATIONS: usize =
     MAX_RECIPIENT_LIST_DESTINATIONS + MAX_SUBSCRIBED_RECIPIENTS;
-
-/// How often a capped notification is logged at warn level, process-wide;
-/// the ones in between log at debug and still count.
-pub(super) const CAP_WARNING_INTERVAL: Duration = Duration::from_secs(60);
-
-/// The process-wide throttle on the forwarding-cap warning.
-static CAP_WARNINGS: WarnThrottle = WarnThrottle::new();
-
-/// Lets a warning through once per [`CAP_WARNING_INTERVAL`].
-pub(super) struct WarnThrottle(std::sync::Mutex<Option<Instant>>);
-
-impl WarnThrottle {
-    pub(super) const fn new() -> Self {
-        Self(std::sync::Mutex::new(None))
-    }
-
-    /// Whether a warning at `now` goes out: the first one does, and then one
-    /// whenever the interval has passed since the last that did.
-    pub(super) fn due(&self, now: Instant) -> bool {
-        let mut last = self
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match *last {
-            Some(at) if now.saturating_duration_since(at) < CAP_WARNING_INTERVAL => false,
-            _ => {
-                *last = Some(now);
-                true
-            }
-        }
-    }
-}
 
 /// What is left of one notification's [`MAX_FORWARDED_DESTINATIONS`],
 /// shared by every copy it makes. The send path takes room for a copy only
@@ -119,10 +87,9 @@ impl ForwardingBudget {
     /// that waited for its device's I-Am taking room from its own task
     /// included (#1368).
     pub(super) fn take(&self) -> bool {
-        #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
         let taken = self
             .remaining
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
             .is_ok();
         if !taken {
             self.dropped.fetch_add(1, Ordering::Relaxed);
@@ -375,22 +342,16 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         }
         // A copy still waiting for its device's I-Am draws on the cap later;
         // one dropped then is counted but not in this warning.
+        // One warning per interval for this server, with the capped
+        // notifications since the last; the rest log at debug (#1950).
         let dropped = budget.dropped();
         if dropped > 0 {
-            if CAP_WARNINGS.due(Instant::now()) {
-                warn!(
-                    dropped,
-                    cap = MAX_FORWARDED_DESTINATIONS,
-                    "Event notification reached the forwarding cap; destinations dropped \
-                     (further cap drops log at debug for a minute)"
-                );
-            } else {
-                debug!(
-                    dropped,
-                    cap = MAX_FORWARDED_DESTINATIONS,
-                    "Event notification reached the forwarding cap; destinations dropped"
-                );
-            }
+            warn_throttled!(
+                ctx.suppressions.cap_warning,
+                dropped,
+                cap = MAX_FORWARDED_DESTINATIONS,
+                "Event notification reached the forwarding cap; destinations dropped"
+            );
         }
     }
 }

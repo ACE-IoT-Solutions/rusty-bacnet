@@ -31,6 +31,7 @@ async fn small_fixture() -> (
     fixture_with_config(
         "admission",
         ServerConfig {
+            device: bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH),
             request_admission_policy: RequestAdmissionPolicy {
                 max_confirmed_in_flight: 1,
                 confirmed_recovery_reserve: 0,
@@ -38,7 +39,6 @@ async fn small_fixture() -> (
                 ..Default::default()
             },
             discovery_policy: DiscoveryPolicy::unlimited(),
-            segmentation_supported: Segmentation::BOTH,
             ..ServerConfig::default()
         },
     )
@@ -56,6 +56,7 @@ async fn dispatch(
         &[1],
         apdu,
         bacnet_network::layer::ReceivedApdu {
+            router_response: None,
             direct_response: None,
             apdu: Bytes::new(),
             source_mac: MacAddr::from_slice(&[1]),
@@ -198,12 +199,16 @@ async fn admission_independent_handlers_and_eight_owned_abort_workers_never_queu
             completed.try_recv(),
             Ok(match kind {
                 0 => CovAckResult::Ack,
-                1 => CovAckResult::Error(Refusal::Error {
+                1 => CovAckResult::Error(RemoteError::Error {
                     class: ErrorClass::SERVICES,
                     code: ErrorCode::OTHER,
                 }),
-                2 => CovAckResult::Error(Refusal::Reject(RejectReason::OTHER)),
-                _ => CovAckResult::Error(Refusal::Abort(AbortReason::OTHER)),
+                2 => CovAckResult::Error(RemoteError::Reject {
+                    reason: RejectReason::OTHER
+                }),
+                _ => CovAckResult::Error(RemoteError::Abort {
+                    reason: AbortReason::OTHER
+                }),
             })
         );
         drop(operation);

@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_encoding::constructed::encode_device_object_reference;
+use bacnet_types::error::RemoteError;
 
 fn reference(object_type: ObjectType, instance: u32) -> BACnetDeviceObjectReference {
     BACnetDeviceObjectReference {
@@ -20,7 +21,7 @@ fn config() -> StagingConfig {
     StagingConfig {
         present_value: 5.0,
         min_present_value: -1.0,
-        units: 62,
+        units: EngineeringUnits::DEGREES_CELSIUS,
         priority_for_writing: 8,
         stages: vec![
             stage(10.0, &[false, true], 1.0),
@@ -37,12 +38,12 @@ fn config() -> StagingConfig {
 
 fn assert_protocol_error(error: Error, class: ErrorClass, code: ErrorCode) {
     match error {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class: actual_class,
             code: actual_code,
-        } => {
-            assert_eq!(actual_class, class.to_raw() as u32);
-            assert_eq!(actual_code, code.to_raw() as u32);
+        }) => {
+            assert_eq!(actual_class, class);
+            assert_eq!(actual_code, code);
         }
         other => panic!("expected {class:?} / {code:?}, got {other:?}"),
     }
@@ -91,9 +92,11 @@ fn fresh_stage_is_uninitialized_and_present_value_is_real() {
 fn wrong_present_value_type_and_nonfinite_values_do_not_mutate() {
     let mut object = StagingObject::new(1, "STG-1", config()).unwrap();
     for value in [PropertyValue::Unsigned(10), PropertyValue::Real(f32::NAN)] {
-        assert!(object
-            .write_property(PropertyIdentifier::PRESENT_VALUE, None, value, None)
-            .is_err());
+        assert!(
+            object
+                .write_property(PropertyIdentifier::PRESENT_VALUE, None, value, None)
+                .is_err()
+        );
         assert_eq!(
             object
                 .read_property(PropertyIdentifier::PRESENT_VALUE, None)
@@ -392,14 +395,16 @@ fn supported_configuration_writes_revalidate_atomically_and_reevaluate() {
     let invalid = stage(9.0, &[false, false], 2.0);
     let mut encoded = BytesMut::new();
     encode_stage_limit_value(&mut encoded, &invalid);
-    assert!(object
-        .write_property(
-            PropertyIdentifier::STAGES,
-            Some(2),
-            PropertyValue::ApplicationData(encoded.to_vec()),
-            None,
-        )
-        .is_err());
+    assert!(
+        object
+            .write_property(
+                PropertyIdentifier::STAGES,
+                Some(2),
+                PropertyValue::ApplicationData(encoded.to_vec()),
+                None,
+            )
+            .is_err()
+    );
     assert_eq!(
         object
             .read_property(PropertyIdentifier::STAGES, None)
@@ -680,9 +685,11 @@ fn metadata_and_property_list_are_truthful_and_non_intrinsic() {
     let mut unnamed = config();
     unnamed.stage_names = None;
     let unnamed = StagingObject::new(2, "unnamed", unnamed).unwrap();
-    assert!(!unnamed
-        .property_list()
-        .contains(&PropertyIdentifier::STAGE_NAMES));
+    assert!(
+        !unnamed
+            .property_list()
+            .contains(&PropertyIdentifier::STAGE_NAMES)
+    );
     assert_protocol_error(
         unnamed
             .read_property(PropertyIdentifier::STAGE_NAMES, None)

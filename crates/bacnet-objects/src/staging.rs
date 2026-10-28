@@ -4,12 +4,14 @@
 //! local target-write plans for the server, which executes them after releasing
 //! the source-object database mutation lock.
 
-use std::borrow::Cow;
+use crate::prelude::*;
+use alloc::borrow::Cow;
 
 use bacnet_encoding::constructed::{decode_stage_limit_value, encode_stage_limit_value};
 use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetStageLimitValue};
 use bacnet_types::enums::{
-    ErrorClass, ErrorCode, EventState, ObjectType, PropertyIdentifier, Reliability,
+    EngineeringUnits, ErrorClass, ErrorCode, EventState, ObjectType, PropertyIdentifier,
+    Reliability,
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
@@ -18,7 +20,7 @@ use bytes::BytesMut;
 use crate::common::{self, read_common_properties};
 use crate::device_reference;
 use crate::property_metadata::{
-    property_list_from_metadata, PropertyConformance, PropertyMetadata, PropertyWriteCapability,
+    PropertyConformance, PropertyMetadata, PropertyWriteCapability, property_list_from_metadata,
 };
 use crate::traits::BACnetObject;
 
@@ -38,7 +40,7 @@ pub struct StagingConfig {
     /// `Min_Pres_Value`, strictly below the first stage's lower deadband edge.
     pub min_present_value: f32,
     /// Engineering-units enumeration stored by `Units`.
-    pub units: u32,
+    pub units: EngineeringUnits,
     /// Command priority used for local target writes (1..=16).
     pub priority_for_writing: u8,
     /// At least two ordered stage-limit values.
@@ -85,7 +87,7 @@ pub struct StagingObject {
     target_references: Vec<BACnetDeviceObjectReference>,
     priority_for_writing: u8,
     min_present_value: f32,
-    units: u32,
+    units: EngineeringUnits,
     cov_increment: f32,
     status_flags: StatusFlags,
     out_of_service: bool,
@@ -407,7 +409,7 @@ impl BACnetObject for StagingObject {
             PropertyIdentifier::EVENT_STATE => {
                 Ok(PropertyValue::Enumerated(EventState::NORMAL.to_raw()))
             }
-            PropertyIdentifier::UNITS => Ok(PropertyValue::Enumerated(self.units)),
+            PropertyIdentifier::UNITS => Ok(PropertyValue::Enumerated(self.units.to_raw())),
             PropertyIdentifier::PRIORITY_FOR_WRITING => {
                 Ok(PropertyValue::Unsigned(self.priority_for_writing.into()))
             }
@@ -584,10 +586,10 @@ fn validate_config(config: &StagingConfig) -> Result<(), Error> {
     if !(1..=16).contains(&config.priority_for_writing) {
         return Err(common::value_out_of_range_error());
     }
-    if let Some(names) = &config.stage_names {
-        if names.len() != config.stages.len() {
-            return Err(common::value_out_of_range_error());
-        }
+    if let Some(names) = &config.stage_names
+        && names.len() != config.stages.len()
+    {
+        return Err(common::value_out_of_range_error());
     }
     validate_target_references(&config.target_references)?;
     validate_ladder(
@@ -654,10 +656,7 @@ fn validate_min_present_value(
 }
 
 fn protocol_error(class: ErrorClass, code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: class.to_raw() as u32,
-        code: code.to_raw() as u32,
-    }
+    Error::protocol(class, code)
 }
 
 #[cfg(test)]

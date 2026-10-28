@@ -75,8 +75,8 @@ async fn congestion(mode: u8) {
     let env = receive(&mut received).await;
     let (invoke, rpm) = request(&env);
     entered.notified().await; // consume the request's transport-entry marker
-                              // Fill the default16-slot queue behind one held unrelated transport send.
-                              // This deterministically forces the summary itself to encounter QueueFull.
+    // Fill the default16-slot queue behind one held unrelated transport send.
+    // This deterministically forces the summary itself to encounter QueueFull.
     let egress = session.egress.as_ref().unwrap();
     let enqueue = || {
         egress
@@ -86,7 +86,7 @@ async fn congestion(mode: u8) {
                     destination_mac: MacAddr::from_slice(&peer_mac),
                 },
                 false,
-                NetworkPriority::NORMAL,
+                NetworkPriority::Normal,
                 Vec::new(),
                 None,
             )
@@ -97,7 +97,7 @@ async fn congestion(mode: u8) {
     unrelated.extend((0..16).map(|_| enqueue()));
     let mut encoded = BytesMut::new();
     encode_apdu(&mut encoded, &response(invoke, &success(&rpm))).unwrap();
-    peer.send_apdu(&encoded, &source_mac, false, NetworkPriority::NORMAL)
+    peer.send_apdu(&encoded, &source_mac, false, NetworkPriority::Normal)
         .await
         .unwrap();
     assert!(read.await.unwrap().is_ok());
@@ -134,9 +134,11 @@ async fn congestion(mode: u8) {
     if mode == 1 {
         let db = Arc::clone(session.database.as_ref().unwrap());
         let guard = db.write().await;
-        assert!(timeout(Duration::from_millis(20), session.stop())
-            .await
-            .is_err());
+        assert!(
+            timeout(Duration::from_millis(20), session.stop())
+                .await
+                .is_err()
+        );
         drop(guard);
         timeout(WAIT, session.stop()).await.unwrap().unwrap();
         assert_eq!(session.active_leases(), 0);
@@ -179,7 +181,7 @@ async fn congestion(mode: u8) {
         let (invoke, rpm) = request(&env);
         let mut bytes = BytesMut::new();
         encode_apdu(&mut bytes, &response(invoke, &success(&rpm))).unwrap();
-        peer.send_apdu(&bytes, &source_mac, false, NetworkPriority::NORMAL)
+        peer.send_apdu(&bytes, &source_mac, false, NetworkPriority::Normal)
             .await
             .unwrap();
         read.await.unwrap().unwrap();

@@ -1,6 +1,6 @@
 //! Python boundary for `BACnetDeviceObjectPropertyReference` values: the
-//! members of a Channel (#1262) and of a Trend Log Multiple (#1235), and an
-//! access rule's time range (#1316).
+//! members of a Channel (#1262) and of a Trend Log Multiple (#1235), a Trend
+//! Log's reference (#1480), and an access rule's time range (#1316).
 //!
 //! A member list takes, per element, either a tuple naming a property in this
 //! device, `(object, property)` or `(object, property, array_index)`, or a
@@ -10,17 +10,17 @@
 //! `door_members`, #1285); the object taking the references decides the
 //! rest, such as how many it holds.
 
-use bacnet_types::constructed::{device_identifier_is_device, BACnetDeviceObjectPropertyReference};
+use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, device_identifier_is_device};
 use bacnet_types::enums::ObjectType;
 use bacnet_types::primitives::ObjectIdentifier;
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyMapping, PyTuple};
 
+use super::PyPropertyIdentifier;
 use super::mapping::{
     fixed_integer, mapping, object_identifier, optional_item, required_item, validate_keys,
 };
-use super::PyPropertyIdentifier;
 
 const REQUIRED: &[&str] = &["object_identifier", "property_identifier"];
 const OPTIONAL: &[&str] = &["property_array_index", "device_identifier"];
@@ -39,6 +39,15 @@ pub(crate) fn property_references_from_py(
         .enumerate()
         .map(|(index, item)| tuple_or_mapping(item, &format!("{name}[{index}]")))
         .collect()
+}
+
+/// Read one reference, a tuple or a mapping as each element of
+/// [`property_references_from_py`] is. `name` labels the errors.
+pub(crate) fn property_reference_from_py(
+    value: &Bound<'_, PyAny>,
+    name: &str,
+) -> PyResult<BACnetDeviceObjectPropertyReference> {
+    tuple_or_mapping(value, name)
 }
 
 fn tuple_or_mapping(

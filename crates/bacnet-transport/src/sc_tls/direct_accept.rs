@@ -24,14 +24,15 @@
 //! [`DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS`] established accepted peers, the
 //! same number of pending handshakes and twice that many physical sockets.
 //! TCP accepts beyond pending/physical capacity are dropped. Each connection must
-//! complete its Connect handshake within the configured connect timeout and
-//! is closed after [`DIRECT_ACCEPT_IDLE_TIMEOUT`] without an inbound frame
-//! by default. No hub, failover, discovery, or dial-out behavior changes.
+//! complete its Connect handshake within the configured connect timeout (a
+//! pending socket never waits on the idle bound) and, once established, is
+//! closed after [`DIRECT_ACCEPT_IDLE_TIMEOUT`] without a BVLC frame in either
+//! direction by default. No hub, failover, discovery, or dial-out behavior changes.
 
 use std::net::SocketAddr;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
 
@@ -45,11 +46,14 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::port::ReceivedNpdu;
-use crate::sc::npdu_admission::{ScNpduAdmission, ScNpduAdmissionPolicy, ScNpduDropCounts};
-use crate::sc_frame::{
-    decode_sc_message, encode_sc_message, validate_connect_request, ScFunction, ScMessage, Vmac,
-    BACNET_SC_DIRECT_SUBPROTOCOL,
+use crate::sc::npdu_admission::{
+    SC_NPDU_QUEUE_CAPACITY, ScNpduAdmission, ScNpduAdmissionPolicy, ScNpduDropCounts,
 };
+use crate::sc_frame::{
+    BACNET_SC_DIRECT_SUBPROTOCOL, ScFunction, ScMessage, Vmac, decode_sc_message,
+    encode_sc_message, validate_connect_request,
+};
+use crate::warn_throttle::WarnThrottle;
 
 use super::ScNodeTlsConfig;
 
@@ -58,21 +62,47 @@ use super::ScNodeTlsConfig;
 /// accepted sockets (including retiring generations) at twice this limit.
 pub const DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS: usize = 16;
 
-/// Idle timeout for an accepted direct connection (owner-local policy).
+/// Default idle bound for an established accepted direct connection
+/// (owner-local policy, #2133): 360 seconds.
 ///
-/// A connection with no inbound WebSocket frame for this long is closed
-/// with a normal Close. Annex AB leaves initiation timing local; this
-/// bound only reclaims idle sockets.
-pub const DIRECT_ACCEPT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// A connection that neither receives nor sends a binary (BVLC) frame for
+/// this long is closed with a normal Close; WebSocket Ping/Pong frames don't
+/// count. Keeping the link alive is the initiating peer's job (Annex AB.6.3):
+/// it probes with Heartbeat-Request once its heartbeat timeout passes without
+/// a BVLC message from us. AB.6.3 holds a fixed heartbeat timeout to at most
+/// 300 seconds and requires a configurable one to support at least 3 to 300
+/// seconds, so this default covers every fixed value and the whole range a
+/// configurable timer must offer, plus 60 seconds of margin. The margin covers
+/// the gap between the last frame we handled and the last one the initiator
+/// handled, plus scheduling and network delay. For an initiator configured
+/// above 300 seconds, raise it with [`DirectAcceptConfig::with_idle_timeout`].
+///
+/// Cost: an idle peer may hold its established slot and its socket for up to
+/// six minutes. The listener's caps still bound that at
+/// [`DIRECT_ACCEPT_MAX_ESTABLISHED_PEERS`] established peers and twice that
+/// many physical sockets by default
+/// ([`DirectAcceptConfig::with_max_established_peers`]). Sockets that haven't
+/// finished the Connect handshake are bounded by the connect timeout instead,
+/// never by this value.
+pub const DIRECT_ACCEPT_IDLE_TIMEOUT: Duration = Duration::from_secs(360);
 
 /// NPDU receive channel capacity for the listener.
 ///
-/// Matches the hub transport's bounded channel; delivery uses `try_send`
-/// and drops on full with a diagnostic, never blocking the accept loop.
-const DIRECT_ACCEPT_NPDU_CHANNEL_CAPACITY: usize = 64;
+/// The hub transport's capacity, which the shared admission checks; delivery
+/// uses `try_send` and drops on full with a throttled warning, never blocking
+/// the accept loop.
+const DIRECT_ACCEPT_NPDU_CHANNEL_CAPACITY: usize = SC_NPDU_QUEUE_CAPACITY;
 
 /// Default Connect-handshake wait for an accepted peer (owner-local).
 const DIRECT_ACCEPT_DEFAULT_CONNECT_TIMEOUT_MS: u64 = 10_000;
+
+/// Largest connect wait `start` accepts, as for the hub's handshake stages.
+const DIRECT_ACCEPT_MAX_CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Largest idle bound `start` accepts. Deadlines are later computed as
+/// "now + bound", so a cap far below the clock's range keeps that from
+/// overflowing however long the process runs.
+const DIRECT_ACCEPT_MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Opt-in direct-listener configuration (default off: no listener exists).
 ///
@@ -127,13 +157,34 @@ impl DirectAcceptConfig {
         }
     }
 
-    /// Set the Connect-handshake wait (builder-style).
+    /// Set the Connect-handshake wait (builder-style; default 10 seconds).
+    ///
+    /// Each handshake stage (TLS, WebSocket upgrade, Connect-Request) gets
+    /// this long, and it also bounds each send on an established link.
+    /// [`DirectListener::start`] rejects zero and values above 300 seconds
+    /// before binding.
     pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
         self.connect_timeout = timeout;
         self
     }
 
-    /// Set the per-connection idle timeout (builder-style).
+    /// Set the idle bound for an established connection (builder-style;
+    /// default [`DIRECT_ACCEPT_IDLE_TIMEOUT`], 360 seconds).
+    ///
+    /// The link closes after this long without a binary (BVLC) frame in
+    /// either direction. [`DirectListener::start`] rejects zero and values
+    /// above one day before binding.
+    ///
+    /// Raise it for an initiator whose heartbeat timeout is set above 300
+    /// seconds, which Annex AB.6.3 doesn't forbid for a configurable timer.
+    /// A value under 300 seconds is allowed as a deliberate local choice
+    /// (for example, to reclaim sockets faster on a small device), but it
+    /// costs interoperability: an initiator whose heartbeat timeout is longer
+    /// gets dropped whenever the link goes quiet and must reconnect. A longer
+    /// value keeps idle peers' slots and sockets for longer; the
+    /// established-peer and physical-socket caps still bound the total. The
+    /// Connect handshake has its own bound,
+    /// [`with_connect_timeout`](Self::with_connect_timeout).
     pub fn with_idle_timeout(mut self, timeout: Duration) -> Self {
         self.idle_timeout = timeout;
         self
@@ -153,15 +204,24 @@ impl DirectAcceptConfig {
 
     /// Set the per-origin queued-NPDU quota (builder-style).
     ///
-    /// Defaults to the network-layer 16/256 ratio scaled to the 64-item
-    /// listener queue (4 per peer VMAC). [`DirectListener::start`] validates
+    /// Defaults to 32 per peer VMAC in the 256-item listener queue, as on the
+    /// hub path (#1712). [`DirectListener::start`] validates
     /// the limit before binding and rejects zero or above-capacity values;
     /// the aggregate cap stays the fixed channel capacity. The peer VMAC is
     /// a scheduling key, never identity.
     pub fn with_npdu_per_origin_limit(mut self, limit: usize) -> Self {
-        self.npdu_admission_policy = ScNpduAdmissionPolicy {
-            per_origin_limit: limit,
-        };
+        self.npdu_admission_policy.per_origin_limit = limit;
+        self
+    }
+
+    /// Set the per-peer limit on inbound network-layer messages
+    /// (builder-style; default [`ScControlRateLimit::default`](crate::sc::ScControlRateLimit::default), #518).
+    /// Each verified peer certificate has one budget, whatever VMAC it uses
+    /// and however often it reconnects. A message over budget is dropped silently and counted in
+    /// `control_rate_drops`; APDUs are never charged. [`DirectListener::start`]
+    /// validates it before binding.
+    pub fn with_control_rate_limit(mut self, limit: crate::sc::ScControlRateLimit) -> Self {
+        self.npdu_admission_policy.control_rate = limit;
         self
     }
 }
@@ -236,6 +296,12 @@ impl DirectListener {
             ));
         }
         config.npdu_admission_policy.validate()?;
+        validate_timeout(
+            "connect",
+            config.connect_timeout,
+            DIRECT_ACCEPT_MAX_CONNECT_TIMEOUT,
+        )?;
+        validate_timeout("idle", config.idle_timeout, DIRECT_ACCEPT_MAX_IDLE_TIMEOUT)?;
         let npdu_admission = Arc::new(ScNpduAdmission::new(config.npdu_admission_policy));
         let listener = TcpListener::bind(config.bind_addr)
             .await
@@ -250,13 +316,16 @@ impl DirectListener {
         let task = tokio::spawn(accept_loop(AcceptLoop {
             listener,
             config,
-            npdu_tx,
             shutdown: shutdown_rx,
             active: Arc::clone(&active),
             stopped: ListenerStopped(shutdown.clone()),
-            npdu_admission: Arc::clone(&npdu_admission),
             pending: Arc::clone(&pending),
-            membership: Arc::clone(&membership),
+            shared: ListenerShared {
+                npdu_tx,
+                npdu_admission: Arc::clone(&npdu_admission),
+                membership: Arc::clone(&membership),
+                warnings: Arc::default(),
+            },
         }));
         debug!("BACnet/SC direct listener on {local_addr}");
         Ok((
@@ -315,6 +384,18 @@ impl Drop for DirectListener {
             task.abort();
         }
     }
+}
+
+/// A zero connect wait would refuse every peer and a zero idle bound would
+/// close every link at once; the caps keep "now + timeout" deadlines,
+/// computed in every connection task, far from overflowing.
+fn validate_timeout(name: &str, timeout: Duration, max: Duration) -> Result<(), Error> {
+    if timeout.is_zero() || timeout > max {
+        return Err(Error::Encoding(format!(
+            "direct accept {name} timeout must be above zero and at most {max:?}"
+        )));
+    }
+    Ok(())
 }
 
 struct AcceptGuard {
@@ -389,27 +470,23 @@ fn direct_subprotocol_response(
 struct AcceptLoop {
     listener: TcpListener,
     config: DirectAcceptConfig,
-    npdu_tx: mpsc::Sender<ReceivedNpdu>,
     shutdown: watch::Receiver<bool>,
     active: Arc<AtomicUsize>,
     /// Signals listener stop to the handle when the loop ends.
     stopped: ListenerStopped,
-    npdu_admission: Arc<ScNpduAdmission>,
     pending: Arc<AtomicUsize>,
-    membership: Arc<DirectMembership>,
+    shared: ListenerShared,
 }
 
 async fn accept_loop(state: AcceptLoop) {
     let AcceptLoop {
         listener,
         config,
-        npdu_tx,
         mut shutdown,
         active,
         stopped: _stopped,
-        npdu_admission,
         pending,
-        membership,
+        shared,
     } = state;
     let mut peers = tokio::task::JoinSet::new();
     loop {
@@ -427,7 +504,10 @@ async fn accept_loop(state: AcceptLoop) {
             }
         };
         let Some(_guard) = AcceptGuard::acquire(&active, config.max_established_peers * 2) else {
-            warn!("direct accept at cap, refusing {peer_addr}");
+            crate::warn_throttled!(
+                shared.warnings.connection,
+                "direct accept at cap, refusing {peer_addr}"
+            );
             drop(tcp);
             continue;
         };
@@ -439,18 +519,16 @@ async fn accept_loop(state: AcceptLoop) {
         let guard = _guard;
         crate::sc_tls::disable_nagle(&tcp);
         let peer_config = config.clone();
-        let peer_tx = npdu_tx.clone();
+        let peer_shared = shared.clone();
         let mut peer_shutdown = shutdown.clone();
         let peer_active = Arc::clone(&active);
-        let peer_admission = Arc::clone(&npdu_admission);
-        let peer_membership = Arc::clone(&membership);
         peers.spawn(async move {
             let _guard = guard;
             let _active = peer_active;
             tokio::select! {
                 biased;
                 _ = async { if !*peer_shutdown.borrow_and_update() { let _ = peer_shutdown.changed().await; } } => {},
-                _ = serve_connection(tcp, peer_addr, peer_config, peer_tx, peer_admission, peer_membership, pending_guard) => {},
+                _ = serve_connection(tcp, peer_addr, peer_config, peer_shared, pending_guard) => {},
             }
         });
     }
@@ -471,6 +549,20 @@ pub(super) fn verified_leaf_sha256(
     )
 }
 
+/// The verified leaf certificate, parsed once per connection for the
+/// provenance of everything the peer sends (#1965).
+fn verified_leaf_certificate(
+    chain: Option<&[rustls::pki_types::CertificateDer<'_>]>,
+) -> crate::port::LeafCertificate {
+    chain
+        .and_then(<[_]>::first)
+        .map_or_else(Default::default, |leaf| {
+            crate::port::LeafCertificate::verified(Arc::new(super::ScPeerCertificate::new(
+                leaf.as_ref(),
+            )))
+        })
+}
+
 // Each stage's future is boxed, once per connection, as in the hub's
 // serve_connection: unboxed, the TLS accept, the tokio-tungstenite upgrade and
 // the peer loop all put their whole futures in this debug-build frame (#953).
@@ -478,11 +570,15 @@ async fn serve_connection(
     tcp: tokio::net::TcpStream,
     peer_addr: SocketAddr,
     config: DirectAcceptConfig,
-    npdu_tx: mpsc::Sender<ReceivedNpdu>,
-    npdu_admission: Arc<ScNpduAdmission>,
-    membership: Arc<DirectMembership>,
+    shared: ListenerShared,
     pending: AcceptGuard,
 ) {
+    let ListenerShared {
+        npdu_tx,
+        npdu_admission,
+        membership,
+        warnings,
+    } = shared;
     let tls_deadline = tokio::time::Instant::now() + config.connect_timeout;
     let tls_stream = match super::boxed(|| {
         let accept = config.tls.acceptor().accept(tcp).into_fallible();
@@ -492,7 +588,10 @@ async fn serve_connection(
     {
         Ok(Ok(s)) => s,
         Ok(Err((e, tcp))) => {
-            warn!("direct TLS handshake failed for {peer_addr}: {e}");
+            crate::warn_throttled!(
+                warnings.connection,
+                "direct TLS handshake failed for {peer_addr}: {e}"
+            );
             crate::tls_reject::close_after_alert(tcp, tls_deadline).await;
             return;
         }
@@ -505,6 +604,7 @@ async fn serve_connection(
         warn!("direct TLS peer has no verified leaf certificate");
         return;
     };
+    let certificate = verified_leaf_certificate(tls_stream.get_ref().1.peer_certificates());
     let ws_stream = match super::boxed(|| {
         tokio::time::timeout(
             config.connect_timeout,
@@ -519,7 +619,10 @@ async fn serve_connection(
     {
         Ok(Ok(ws)) => ws,
         Ok(Err(e)) => {
-            warn!("direct WebSocket upgrade failed for {peer_addr}: {e}");
+            crate::warn_throttled!(
+                warnings.connection,
+                "direct WebSocket upgrade failed for {peer_addr}: {e}"
+            );
             return;
         }
         Err(_) => {
@@ -531,7 +634,14 @@ async fn serve_connection(
     let (member, _limits) = match super::boxed(|| {
         tokio::time::timeout(
             config.connect_timeout,
-            serve_handshake(&mut write, &mut read, &config, peer_addr, &membership),
+            serve_handshake(
+                &mut write,
+                &mut read,
+                &config,
+                peer_addr,
+                &membership,
+                &warnings,
+            ),
         )
     })
     .await
@@ -545,6 +655,7 @@ async fn serve_connection(
     // another strong reference. Capabilities themselves keep only a Weak.
     let _retire = RetireMember(&member);
     let response = crate::port::DirectResponse::new(&member, identity);
+    let provenance = crate::port::TransportProvenance::verified_direct_peer(identity, certificate);
     let mut responses = member.take_writes();
     super::boxed(|| {
         serve_npdu_loop(
@@ -554,8 +665,9 @@ async fn serve_connection(
             AdmittedDirectPeer {
                 address: peer_addr,
                 member: &member,
-                identity,
+                provenance,
                 response,
+                warnings: &warnings,
             },
             &npdu_tx,
             &npdu_admission,
@@ -571,6 +683,7 @@ async fn serve_handshake<W>(
     config: &DirectAcceptConfig,
     peer_addr: SocketAddr,
     membership: &Arc<DirectMembership>,
+    warnings: &DirectWarnings,
 ) -> Option<(Arc<Membership>, (u16, u16))>
 where
     W: DirectWs,
@@ -578,7 +691,10 @@ where
     let data = match tokio::time::timeout(config.connect_timeout, read.next_data()).await {
         Ok(Some(Ok(data))) => data,
         Ok(Some(Err(e))) => {
-            warn!("direct handshake recv error from {peer_addr}: {e}");
+            crate::warn_throttled!(
+                warnings.connection,
+                "direct handshake recv error from {peer_addr}: {e}"
+            );
             return None;
         }
         Ok(None) => return None,
@@ -588,13 +704,19 @@ where
         }
     };
     if data.len() > config.max_bvlc_length as usize {
-        warn!("direct handshake frame exceeds local Max-BVLC-Length, closing {peer_addr}");
+        crate::warn_throttled!(
+            warnings.connection,
+            "direct handshake frame exceeds local Max-BVLC-Length, closing {peer_addr}"
+        );
         return None;
     }
     let msg = match decode_sc_message(&data) {
         Ok(msg) => msg,
         Err(e) => {
-            warn!("direct handshake decode error from {peer_addr}: {e}");
+            crate::warn_throttled!(
+                warnings.connection,
+                "direct handshake decode error from {peer_addr}: {e}"
+            );
             return None;
         }
     };
@@ -703,8 +825,32 @@ fn admission_nak(message_id: u16, refusal: Refusal) -> ScMessage {
 struct AdmittedDirectPeer<'a> {
     address: SocketAddr,
     member: &'a Membership,
-    identity: crate::port::DirectScIdentity,
+    /// Verified identity and leaf certificate, built once for the connection.
+    provenance: crate::port::TransportProvenance,
     response: crate::port::DirectResponse,
+    warnings: &'a DirectWarnings,
+}
+
+/// The throttles on one listener's warnings about its peers (#1950), shared
+/// by all its connections, so a peer that floods bad frames or reconnects
+/// over and over warns once per
+/// [`WARNING_INTERVAL`](crate::warn_throttle::WARNING_INTERVAL) for each,
+/// and the rest log at debug.
+#[derive(Debug, Default)]
+pub(super) struct DirectWarnings {
+    /// Connections refused, or lost before the handshake completed.
+    pub(super) connection: WarnThrottle,
+    /// Frames dropped, and reads failed, on established connections.
+    pub(super) frame: WarnThrottle,
+}
+
+/// What every connection of one listener shares.
+#[derive(Clone)]
+struct ListenerShared {
+    npdu_tx: mpsc::Sender<ReceivedNpdu>,
+    npdu_admission: Arc<ScNpduAdmission>,
+    membership: Arc<DirectMembership>,
+    warnings: Arc<DirectWarnings>,
 }
 
 struct RetireMember<'a>(&'a Membership);
@@ -714,7 +860,7 @@ impl Drop for RetireMember<'_> {
     }
 }
 
-use crate::sc::direct_receive::{direct_must_understand_decision, DirectMuDecision};
+use crate::sc::direct_receive::{DirectMuDecision, direct_must_understand_decision};
 fn direct_npdu(msg: &ScMessage, config: &DirectAcceptConfig) -> Option<Bytes> {
     crate::sc::direct_receive::direct_npdu(msg, config.max_apdu_length)
 }

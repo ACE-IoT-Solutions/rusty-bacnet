@@ -1,8 +1,12 @@
 mod audit_recipient;
+mod backup;
+mod database_revision;
 mod description;
+mod identity;
 
 use super::*;
 use crate::clock::{ClockFrame, ClockReader};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, Time};
 use std::sync::{Arc, Mutex};
 
@@ -50,8 +54,9 @@ fn bind_clock(device: &mut DeviceObject, clock: FakeClock) {
 
 fn make_device() -> DeviceObject {
     DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "Test Device".into(),
+        identity: crate::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("Test Device"),
         ..DeviceConfig::default()
     })
     .unwrap()
@@ -104,81 +109,6 @@ fn read_max_apdu_length() {
 }
 
 #[test]
-fn mode_derived_max_segments_accepted() {
-    let cases = [
-        ("none", Segmentation::NONE, None),
-        ("transmit", Segmentation::TRANSMIT, Some(1)),
-        ("receive", Segmentation::RECEIVE, Some(65)),
-        ("both", Segmentation::BOTH, Some(65)),
-        ("unknown", Segmentation::from_raw(64), Some(65)),
-    ];
-
-    for (name, segmentation, expected_max_segments) in cases {
-        let dev = DeviceObject::new(DeviceConfig {
-            segmentation_supported: segmentation,
-            ..DeviceConfig::default()
-        })
-        .unwrap();
-
-        assert_eq!(
-            dev.read_property(PropertyIdentifier::SEGMENTATION_SUPPORTED, None)
-                .unwrap(),
-            PropertyValue::Enumerated(segmentation.to_raw() as u32),
-            "{name} segmentation readback"
-        );
-
-        let PropertyValue::List(property_list) = dev
-            .read_property(PropertyIdentifier::PROPERTY_LIST, None)
-            .unwrap()
-        else {
-            panic!("{name} Property_List was not a list");
-        };
-        assert_eq!(
-            property_list.contains(&PropertyValue::Enumerated(
-                PropertyIdentifier::MAX_SEGMENTS_ACCEPTED.to_raw(),
-            )),
-            expected_max_segments.is_some(),
-            "{name} Property_List presence"
-        );
-
-        let max_segments = dev.read_property(PropertyIdentifier::MAX_SEGMENTS_ACCEPTED, None);
-        match expected_max_segments {
-            Some(expected) => assert_eq!(
-                max_segments.unwrap(),
-                PropertyValue::Unsigned(expected),
-                "{name} Max_Segments_Accepted"
-            ),
-            None => assert!(matches!(
-                max_segments,
-                Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32
-                        && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
-            )),
-        }
-    }
-}
-
-#[test]
-fn segment_timeout_is_present_for_segmented_devices() {
-    for segmentation in [
-        Segmentation::TRANSMIT,
-        Segmentation::RECEIVE,
-        Segmentation::BOTH,
-    ] {
-        let dev = DeviceObject::new(DeviceConfig {
-            segmentation_supported: segmentation,
-            ..DeviceConfig::default()
-        })
-        .unwrap();
-        assert_eq!(
-            dev.read_property(PropertyIdentifier::APDU_SEGMENT_TIMEOUT, None)
-                .unwrap(),
-            PropertyValue::Unsigned(5000)
-        );
-    }
-}
-
-#[test]
 fn read_unknown_property_fails() {
     let dev = make_device();
     // Use a property that Device doesn't have
@@ -221,9 +151,10 @@ fn device_set_description_convenience() {
 #[test]
 fn device_description_in_property_list() {
     let dev = make_device();
-    assert!(dev
-        .property_list()
-        .contains(&PropertyIdentifier::DESCRIPTION));
+    assert!(
+        dev.property_list()
+            .contains(&PropertyIdentifier::DESCRIPTION)
+    );
 }
 
 #[test]
@@ -287,6 +218,47 @@ fn set_object_list() {
         .read_property(PropertyIdentifier::OBJECT_LIST, Some(0))
         .unwrap();
     assert_eq!(count, PropertyValue::Unsigned(3));
+}
+
+/// The Device held as a `dyn BACnetObject`, as a database holds it.
+#[test]
+fn set_object_list_through_the_device_authority() {
+    let mut dev: Box<dyn BACnetObject> = Box::new(make_device());
+    let dev_oid = dev.object_identifier();
+    let ai1 = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
+
+    dev.device_authority_internal()
+        .expect("the Device has an authority")
+        .set_object_list(vec![dev_oid, ai1]);
+
+    assert_eq!(
+        dev.read_property(PropertyIdentifier::OBJECT_LIST, None)
+            .unwrap(),
+        PropertyValue::List(vec![
+            PropertyValue::ObjectIdentifier(dev_oid),
+            PropertyValue::ObjectIdentifier(ai1),
+        ])
+    );
+}
+
+#[test]
+fn set_system_status_through_the_device_authority() {
+    let mut dev: Box<dyn BACnetObject> = Box::new(make_device());
+    assert_eq!(
+        dev.read_property(PropertyIdentifier::SYSTEM_STATUS, None)
+            .unwrap(),
+        PropertyValue::Enumerated(DeviceStatus::OPERATIONAL.to_raw())
+    );
+
+    dev.device_authority_internal()
+        .expect("the Device has an authority")
+        .set_system_status(DeviceStatus::BACKUP_IN_PROGRESS);
+
+    assert_eq!(
+        dev.read_property(PropertyIdentifier::SYSTEM_STATUS, None)
+            .unwrap(),
+        PropertyValue::Enumerated(DeviceStatus::BACKUP_IN_PROGRESS.to_raw())
+    );
 }
 
 #[test]
@@ -384,9 +356,9 @@ fn clockless_device_omits_clock_properties_and_sync_services() {
         assert!(!props.contains(&property));
         assert!(matches!(
             dev.read_property(property, None),
-            Err(Error::Protocol { class, code })
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
+            Err(Error::Remote(RemoteError::Error { class, code }))
+                if class == ErrorClass::PROPERTY
+                    && code == ErrorCode::UNKNOWN_PROPERTY
         ));
     }
 
@@ -473,9 +445,10 @@ fn active_cov_subscriptions_default_empty() {
 #[test]
 fn active_cov_subscriptions_in_property_list() {
     let dev = make_device();
-    assert!(dev
-        .property_list()
-        .contains(&PropertyIdentifier::ACTIVE_COV_SUBSCRIPTIONS));
+    assert!(
+        dev.property_list()
+            .contains(&PropertyIdentifier::ACTIVE_COV_SUBSCRIPTIONS)
+    );
 }
 
 #[test]
@@ -517,9 +490,11 @@ fn active_cov_multiple_subscriptions_standalone_optional_read_only_list() {
         PropertyValue::ApplicationData(Vec::new()),
         None,
     );
-    assert!(matches!(denied, Err(Error::Protocol { class, code })
-        if class == ErrorClass::PROPERTY.to_raw() as u32
-            && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32));
+    assert!(
+        matches!(denied, Err(Error::Remote(RemoteError::Error { class, code }))
+        if class == ErrorClass::PROPERTY
+            && code == ErrorCode::WRITE_ACCESS_DENIED)
+    );
 }
 
 #[test]
@@ -545,8 +520,7 @@ fn compute_object_types_supported_old_bits_preserved() {
 #[test]
 fn device_protocol_object_types_has_new_bits() {
     let dev = DeviceObject::new(DeviceConfig {
-        instance: 1,
-        name: "Test".into(),
+        identity: crate::DeviceIdentity::default().with_name("Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -578,10 +552,9 @@ fn device_property_metadata_preserves_dynamic_list_and_write_dispatch() {
         Segmentation::TRANSMIT,
         Segmentation::RECEIVE,
         Segmentation::BOTH,
-        Segmentation::from_raw(64),
     ] {
         let mut device = DeviceObject::new(DeviceConfig {
-            segmentation_supported,
+            identity: crate::DeviceIdentity::default().with_segmentation(segmentation_supported),
             ..DeviceConfig::default()
         })
         .unwrap();
@@ -649,8 +622,8 @@ fn device_property_metadata_preserves_dynamic_list_and_write_dispatch() {
             }
             assert!(
                 matches!(device.read_property(P::PROPERTY_LIST, Some(wire.len() as u32 + 1)),
-                Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == ErrorCode::INVALID_ARRAY_INDEX.to_raw() as u32)
+                Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::PROPERTY
+                    && code == ErrorCode::INVALID_ARRAY_INDEX)
             );
             let metadata = metadata.into_owned();
             for row in metadata {
@@ -669,67 +642,14 @@ fn device_property_metadata_preserves_dynamic_list_and_write_dispatch() {
                 if p == P::DESCRIPTION {
                     result.unwrap();
                 } else {
-                    assert!(matches!(result, Err(Error::Protocol { class, code })
-                        if class == ErrorClass::PROPERTY.to_raw() as u32
-                            && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32));
+                    assert!(
+                        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+                        if class == ErrorClass::PROPERTY
+                            && code == ErrorCode::WRITE_ACCESS_DENIED)
+                    );
                 }
                 assert_eq!(device.read_property(p, None).unwrap(), before);
             }
         }
-    }
-}
-
-#[test]
-fn segment_timeout_absence_custom_value_and_zero_validation() {
-    let none = DeviceObject::new(DeviceConfig {
-        apdu_segment_timeout: 0,
-        ..Default::default()
-    })
-    .unwrap();
-    assert!(
-        matches!(none.read_property(PropertyIdentifier::APDU_SEGMENT_TIMEOUT, None),
-        Err(Error::Protocol { code, .. }) if code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
-    );
-    assert!(!none
-        .property_list()
-        .contains(&PropertyIdentifier::APDU_SEGMENT_TIMEOUT));
-    for mode in [
-        Segmentation::TRANSMIT,
-        Segmentation::RECEIVE,
-        Segmentation::BOTH,
-    ] {
-        assert!(DeviceObject::new(DeviceConfig {
-            segmentation_supported: mode,
-            apdu_segment_timeout: 0,
-            ..Default::default()
-        })
-        .is_err());
-        let device = DeviceObject::new(DeviceConfig {
-            segmentation_supported: mode,
-            apdu_segment_timeout: 7300,
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(
-            device
-                .read_property(PropertyIdentifier::APDU_SEGMENT_TIMEOUT, None)
-                .unwrap(),
-            PropertyValue::Unsigned(7300)
-        );
-        assert_eq!(
-            device
-                .read_property(PropertyIdentifier::APDU_TIMEOUT, None)
-                .unwrap(),
-            PropertyValue::Unsigned(6000)
-        );
-        assert_eq!(
-            device
-                .read_property(PropertyIdentifier::NUMBER_OF_APDU_RETRIES, None)
-                .unwrap(),
-            PropertyValue::Unsigned(3)
-        );
-        assert!(device
-            .property_list()
-            .contains(&PropertyIdentifier::APDU_SEGMENT_TIMEOUT));
     }
 }

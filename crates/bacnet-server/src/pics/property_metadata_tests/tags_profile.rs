@@ -3,14 +3,15 @@
 //! read-only, the local choice their O code allows. Unprovisioned objects
 //! list none.
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::color::{ColorObject, ColorTemperatureObject};
 use bacnet_objects::lighting::{BinaryLightingOutputObject, LightingOutputObject};
 use bacnet_objects::object_profile::ObjectProfile;
 use bacnet_objects::object_profile::{TagsPersistence, TagsSnapshot};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::constructed::BACnetNameValue;
+use bacnet_types::error::RemoteError;
 use std::sync::Arc;
-use PropertyIdentifier as P;
 
 fn profile() -> ObjectProfile {
     ObjectProfile {
@@ -55,10 +56,12 @@ fn pics_lists_provisioned_tags_and_read_only_profile_rows() {
     let provisioned = pics(true);
     assert_eq!(provisioned.supported_object_types.len(), 4);
     for support in &unprovisioned.supported_object_types {
-        assert!(support
-            .supported_properties
-            .iter()
-            .all(|row| rows.iter().all(|(p, _)| row.property_id != *p)));
+        assert!(
+            support
+                .supported_properties
+                .iter()
+                .all(|row| rows.iter().all(|(p, _)| row.property_id != *p))
+        );
     }
     for support in &provisioned.supported_object_types {
         for (property, writable) in rows {
@@ -124,7 +127,7 @@ fn saved_tags_do_not_provision_rows_and_each_profile_row_remains_independent() {
                 let read = object.read_property(property, None);
                 if mask & bit == 0 {
                     assert!(
-                        matches!(read, Err(bacnet_types::error::Error::Protocol { code, .. }) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
+                        matches!(read, Err(bacnet_types::error::Error::Remote(RemoteError::Error { code, .. })) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY)
                     );
                 } else if property == P::TAGS {
                     assert_eq!(read.unwrap(), PropertyValue::List(vec![]));
@@ -136,7 +139,7 @@ fn saved_tags_do_not_provision_rows_and_each_profile_row_remains_independent() {
                         None,
                     );
                     assert!(
-                        matches!(result, Err(bacnet_types::error::Error::Protocol { code, .. }) if code == bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32)
+                        matches!(result, Err(bacnet_types::error::Error::Remote(RemoteError::Error { code, .. })) if code == bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED)
                     );
                 }
             }
@@ -165,6 +168,7 @@ fn value_profile_masks_and_saved_empty_are_independent_of_present_value_mode() {
     use bacnet_objects::binary::BinaryValueObject;
     use bacnet_objects::multistate::MultiStateValueObject;
     use bacnet_objects::present_value_access::PresentValueAccess as Access;
+    use bacnet_types::enums::EngineeringUnits;
     for access in [Access::Commandable, Access::Writable, Access::ReadOnly] {
         for mask in 0..8 {
             let configured = ObjectProfile {
@@ -173,7 +177,7 @@ fn value_profile_masks_and_saved_empty_are_independent_of_present_value_mode() {
                 profile_name: (mask & 4 != 0).then(|| "555-value".into()),
             };
             macro_rules! build {
-                ($ctor:expr) => {{
+                ($ctor:expr_2021) => {{
                     let mut object = $ctor.unwrap();
                     object.set_profile(configured.clone()).unwrap();
                     object.set_profile(ObjectProfile::default()).unwrap();
@@ -187,7 +191,7 @@ fn value_profile_masks_and_saved_empty_are_independent_of_present_value_mode() {
                 build!(AnalogValueObject::with_tags_persistence(
                     1,
                     "AV",
-                    95,
+                    EngineeringUnits::NO_UNITS,
                     access,
                     Arc::new(SavedEmpty)
                 )),
@@ -212,7 +216,7 @@ fn value_profile_masks_and_saved_empty_are_independent_of_present_value_mode() {
                     let read = object.read_property(property, None);
                     if mask & bit == 0 {
                         assert!(
-                            matches!(read, Err(bacnet_types::error::Error::Protocol { code, .. }) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
+                            matches!(read, Err(bacnet_types::error::Error::Remote(RemoteError::Error { code, .. })) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY)
                         );
                     } else if property == P::TAGS {
                         assert_eq!(read.unwrap(), PropertyValue::List(vec![]));
@@ -247,6 +251,7 @@ fn input_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
     use bacnet_objects::analog::AnalogInputObject;
     use bacnet_objects::binary::BinaryInputObject;
     use bacnet_objects::multistate::MultiStateInputObject;
+    use bacnet_types::enums::EngineeringUnits;
     for out_of_service in [false, true] {
         for mask in 0..8 {
             let configured = ObjectProfile {
@@ -255,7 +260,7 @@ fn input_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                 profile_name: (mask & 4 != 0).then(|| "555-input".into()),
             };
             macro_rules! build {
-                ($ctor:expr) => {{
+                ($ctor:expr_2021) => {{
                     let mut object = $ctor.unwrap();
                     object.set_profile(configured.clone()).unwrap();
                     object.set_profile(ObjectProfile::default()).unwrap();
@@ -276,7 +281,7 @@ fn input_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                 build!(AnalogInputObject::with_tags_persistence(
                     1,
                     "AI",
-                    95,
+                    EngineeringUnits::NO_UNITS,
                     Arc::new(SavedEmpty)
                 )),
                 build!(BinaryInputObject::with_tags_persistence(
@@ -298,7 +303,7 @@ fn input_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                     let read = object.read_property(property, None);
                     if mask & bit == 0 {
                         assert!(
-                            matches!(read, Err(bacnet_types::error::Error::Protocol { code, .. }) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
+                            matches!(read, Err(bacnet_types::error::Error::Remote(RemoteError::Error { code, .. })) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY)
                         );
                     } else if property == P::TAGS {
                         assert_eq!(read.unwrap(), PropertyValue::List(vec![]));
@@ -333,6 +338,7 @@ fn output_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
     use bacnet_objects::analog::AnalogOutputObject;
     use bacnet_objects::binary::BinaryOutputObject;
     use bacnet_objects::multistate::MultiStateOutputObject;
+    use bacnet_types::enums::EngineeringUnits;
     for out_of_service in [false, true] {
         for mask in 0..8 {
             let configured = ObjectProfile {
@@ -341,7 +347,7 @@ fn output_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                 profile_name: (mask & 4 != 0).then(|| "555-input".into()),
             };
             macro_rules! build {
-                ($ctor:expr) => {{
+                ($ctor:expr_2021) => {{
                     let mut object = $ctor.unwrap();
                     object.set_profile(configured.clone()).unwrap();
                     object.set_profile(ObjectProfile::default()).unwrap();
@@ -362,7 +368,7 @@ fn output_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                 build!(AnalogOutputObject::with_tags_persistence(
                     1,
                     "AO",
-                    95,
+                    EngineeringUnits::NO_UNITS,
                     Arc::new(SavedEmpty)
                 )),
                 build!(BinaryOutputObject::with_tags_persistence(
@@ -384,7 +390,7 @@ fn output_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                     let read = object.read_property(property, None);
                     if mask & bit == 0 {
                         assert!(
-                            matches!(read, Err(bacnet_types::error::Error::Protocol { code, .. }) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
+                            matches!(read, Err(bacnet_types::error::Error::Remote(RemoteError::Error { code, .. })) if code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY)
                         );
                     } else if property == P::TAGS {
                         assert_eq!(read.unwrap(), PropertyValue::List(vec![]));
@@ -454,9 +460,11 @@ fn device_profile_masks_and_saved_empty_retain_optional_pics_rows() {
                 assert_eq!(row.access.writable, p == P::TAGS);
             }
         }
-        assert!(!device
-            .supported_properties
-            .iter()
-            .any(|r| r.property_id == P::DEPLOYED_PROFILE_LOCATION));
+        assert!(
+            !device
+                .supported_properties
+                .iter()
+                .any(|r| r.property_id == P::DEPLOYED_PROFILE_LOCATION)
+        );
     }
 }

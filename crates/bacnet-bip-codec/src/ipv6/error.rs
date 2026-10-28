@@ -10,8 +10,10 @@ use crate::SinkFull;
 /// The variants mirror [`BvllError`](crate::BvllError)'s, for Annex U's
 /// type octet, address length and functions; B/IPv6 messages carry no
 /// tables. Each one names the direction it comes from. None of them
-/// allocates, so the type is `Copy`.
+/// allocates, so the type is `Copy`. Later releases may add variants, so a
+/// match outside this crate needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Bvll6Error {
     /// Decode: the datagram is shorter than the 4-octet BVLL header.
     TooShort {

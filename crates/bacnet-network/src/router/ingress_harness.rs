@@ -7,9 +7,9 @@
 //! sockets or shared port numbers.
 
 use super::*;
-use bacnet_encoding::npdu::{decode_npdu, NpduAddress};
+use bacnet_encoding::npdu::{NpduAddress, decode_npdu};
+use bacnet_npdu::RejectMessageReason;
 use bacnet_transport::port::ReceivedNpdu;
-use bacnet_types::enums::RejectMessageReason;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
@@ -18,7 +18,6 @@ pub(super) struct IngressTransport {
     incoming: Option<mpsc::Receiver<ReceivedNpdu>>,
     outgoing: mpsc::Sender<SendRequest>,
     mac: [u8; 1],
-    max_npdu_length: Option<usize>,
 }
 
 impl TransportPort for IngressTransport {
@@ -51,6 +50,9 @@ impl TransportPort for IngressTransport {
                 npdu: Bytes::copy_from_slice(npdu),
                 mac: MacAddr::from_slice(mac),
                 data_attributes: data_attributes.to_vec(),
+
+                response: None,
+                reject_origin: None,
             })
             .map_err(|_| Error::Encoding("test wire queue unavailable".into()))
     }
@@ -64,16 +66,14 @@ impl TransportPort for IngressTransport {
             .try_send(SendRequest::Broadcast {
                 npdu: Bytes::copy_from_slice(npdu),
                 data_attributes: data_attributes.to_vec(),
+
+                reject_origin: None,
             })
             .map_err(|_| Error::Encoding("test wire queue unavailable".into()))
     }
 
     fn local_receive_apdu_capacity(&self) -> u16 {
         1476
-    }
-
-    fn max_npdu_length(&self) -> Option<usize> {
-        self.max_npdu_length
     }
 
     fn local_mac(&self) -> &[u8] {
@@ -92,13 +92,6 @@ pub(super) fn network(port: usize) -> u16 {
 }
 
 pub(super) fn fixture(count: usize) -> (Vec<RouterPort<IngressTransport>>, Vec<Peer>) {
-    fixture_with_limits(vec![None; count])
-}
-
-pub(super) fn fixture_with_limits(
-    limits: Vec<Option<usize>>,
-) -> (Vec<RouterPort<IngressTransport>>, Vec<Peer>) {
-    let count = limits.len();
     (0..count)
         .map(|port| {
             // Only injected transport backlog is larger than the production
@@ -111,7 +104,6 @@ pub(super) fn fixture_with_limits(
                         incoming: Some(rx),
                         outgoing,
                         mac: [port as u8 + 1],
-                        max_npdu_length: limits[port],
                     },
                     network_number: network(port),
                 },
@@ -209,15 +201,30 @@ pub(super) async fn wire(peer: &mut Peer) -> SendRequest {
         .expect("wire closed")
 }
 
+/// Take the startup announcements off each peer's wire, in order: the
+/// port's Network-Number-Is, configured (R3), then, with another port, its
+/// I-Am-Router.
 pub(super) async fn drain_announcements(peers: &mut [Peer]) {
-    for peer in peers {
-        let SendRequest::Broadcast { npdu, .. } = wire(peer).await else {
-            panic!("expected startup announcement")
-        };
-        assert_eq!(
-            decode_npdu(npdu).unwrap().message_type,
-            Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK.to_raw())
-        );
+    let ports = peers.len();
+    for (port, peer) in peers.iter_mut().enumerate() {
+        let mut number = network(port).to_be_bytes().to_vec();
+        number.push(1);
+        let mut expected = vec![(NetworkMessageType::NETWORK_NUMBER_IS, number)];
+        if ports > 1 {
+            let beyond = (0..ports)
+                .filter(|&other| other != port)
+                .flat_map(|other| network(other).to_be_bytes())
+                .collect();
+            expected.push((NetworkMessageType::I_AM_ROUTER_TO_NETWORK, beyond));
+        }
+        for (message_type, data) in expected {
+            let SendRequest::Broadcast { npdu, .. } = wire(peer).await else {
+                panic!("expected startup announcement")
+            };
+            let npdu = decode_npdu(npdu).unwrap();
+            assert_eq!(npdu.message_type, Some(message_type));
+            assert_eq!(npdu.payload[..], data[..]);
+        }
     }
 }
 
@@ -238,12 +245,13 @@ pub(super) async fn barrier(peer: &mut Peer) {
                 npdu,
                 mac,
                 data_attributes,
+                ..
             } => break (npdu, mac, data_attributes),
             SendRequest::Broadcast { npdu, .. } => {
                 let decoded = decode_npdu(npdu).unwrap();
                 assert_eq!(
                     decoded.message_type,
-                    Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw()),
+                    Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK),
                     "barrier expected reject, got unexpected broadcast"
                 );
                 assert_eq!(decoded.payload.as_ref(), 9000u16.to_be_bytes());
@@ -255,7 +263,7 @@ pub(super) async fn barrier(peer: &mut Peer) {
     assert_eq!(mac.as_slice(), &[0xA0]);
     assert_eq!(
         npdu.message_type,
-        Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw())
+        Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
     );
     assert_eq!(
         npdu.payload.as_ref(),
@@ -283,10 +291,10 @@ pub(super) async fn branch_forward(peers: &mut [Peer], branch: LocalBranch, port
             SendRequest::Broadcast {
                 npdu,
                 data_attributes,
+                ..
             } => {
                 let decoded = decode_npdu(npdu.clone()).unwrap();
-                if decoded.message_type
-                    == Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw())
+                if decoded.message_type == Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK)
                     && decoded.payload.as_ref() == 9000u16.to_be_bytes()
                 {
                     continue;
@@ -315,7 +323,7 @@ pub(super) async fn forwarding_progress(peers: &mut [Peer], port: usize) {
                 let decoded = decode_npdu(npdu).unwrap();
                 assert_eq!(
                     decoded.message_type,
-                    Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw())
+                    Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK)
                 );
                 assert_eq!(decoded.payload.as_ref(), 9000u16.to_be_bytes());
                 continue;
@@ -337,7 +345,7 @@ pub(super) fn assert_quiet(peers: &mut [Peer]) {
                     let decoded = decode_npdu(npdu).unwrap();
                     assert_eq!(
                         decoded.message_type,
-                        Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw())
+                        Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK)
                     );
                     assert_eq!(decoded.payload.as_ref(), 9000u16.to_be_bytes());
                 }
@@ -378,9 +386,11 @@ pub(super) async fn dropped_arrival(peers: &mut [Peer], branch: LocalBranch, por
     peers[port].tx.send(arrival).await.unwrap();
     branch_forward(peers, branch, port, 256).await;
     forwarding_progress(peers, port).await;
-    assert!(timeout(Duration::from_secs(2), reply_rx)
-        .await
-        .expect("dropped reply sender retained")
-        .is_err());
+    assert!(
+        timeout(Duration::from_secs(2), reply_rx)
+            .await
+            .expect("dropped reply sender retained")
+            .is_err()
+    );
     assert_quiet(peers); // No wire rejection for the local admission drop.
 }

@@ -9,14 +9,15 @@
 
 use std::time::Instant;
 
-use bacnet_encoding::apdu::{self, encode_apdu, Apdu, SimpleAck};
-use bacnet_network::layer::{NetworkLayer, ReceivedApdu};
+use bacnet_encoding::apdu::{self, Apdu, SimpleAck, encode_apdu};
+use bacnet_network::layer::NetworkLayer;
+use bacnet_npdu::NetworkPriority;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_types::enums::{ConfirmedServiceChoice, NetworkPriority, ObjectType, Segmentation};
-use bacnet_types::primitives::ObjectIdentifier;
 use bacnet_types::MacAddr;
+use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, Segmentation};
+use bacnet_types::primitives::ObjectIdentifier;
 use bytes::BytesMut;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use crate::discovery::DiscoveredDevice;
 
@@ -30,7 +31,7 @@ async fn client_with_peer_advertising(
     BACnetClient<LoopbackTransport>,
     Vec<u8>,
     NetworkLayer<LoopbackTransport>,
-    tokio::sync::mpsc::Receiver<ReceivedApdu>,
+    bacnet_network::layer::ApduReceiver,
 ) {
     let client_mac = vec![0x01];
     let remote_mac = vec![0x02];
@@ -198,7 +199,7 @@ async fn confirmed_request_at_minimum_message_size_is_sent_unsegmented() {
         let mut buf = BytesMut::new();
         encode_apdu(&mut buf, &ack).unwrap();
         remote_network
-            .send_apdu(&buf, &received.source_mac, false, NetworkPriority::NORMAL)
+            .send_apdu(&buf, &received.source_mac, false, NetworkPriority::Normal)
             .await
             .unwrap();
         remote_network.stop().await.unwrap();

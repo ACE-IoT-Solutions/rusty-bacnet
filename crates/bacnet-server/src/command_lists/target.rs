@@ -33,7 +33,7 @@ use std::fmt;
 use bacnet_objects::command::{CommandRun, RunPlan, WriteFailure};
 use bacnet_types::constructed::BACnetActionCommand;
 use bacnet_types::enums::{ErrorCode, RejectReason};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::ObjectIdentifier;
 use tracing::debug;
 
@@ -126,9 +126,11 @@ fn log_failure(
 }
 
 /// The error code `error` carries, if it's an Error answer.
-fn code(error: &Error) -> Option<u32> {
+fn code(error: &Error) -> Option<ErrorCode> {
     match error {
-        Error::Protocol { code, .. } | Error::Structured { code, .. } => Some(*code),
+        Error::Remote(RemoteError::Error { code, .. }) | Error::Structured { code, .. } => {
+            Some(*code)
+        }
         _ => None,
     }
 }
@@ -137,10 +139,10 @@ fn code(error: &Error) -> Option<u32> {
 /// of INVALID_DATA_TYPE or a Reject for an invalid parameter datatype, the
 /// two answers Clause 12.53.7 names for a NULL.
 pub(super) fn refuses_datatype(error: &Error) -> bool {
-    let invalid = u32::from(ErrorCode::INVALID_DATA_TYPE.to_raw());
+    let invalid = ErrorCode::INVALID_DATA_TYPE;
     code(error) == Some(invalid)
-        || matches!(error, Error::Reject { reason }
-            if *reason == RejectReason::INVALID_PARAMETER_DATA_TYPE.to_raw())
+        || matches!(error, Error::Remote(RemoteError::Reject { reason })
+            if *reason == RejectReason::INVALID_PARAMETER_DATA_TYPE)
 }
 
 /// How a write the target refused with `error` failed.
@@ -152,12 +154,8 @@ fn refused(error: &Error) -> WriteFailure {
         ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
         ErrorCode::DATATYPE_NOT_SUPPORTED,
     ];
-    let configuration = refuses_datatype(error)
-        || code(error).is_some_and(|code| {
-            CONFIGURATION
-                .iter()
-                .any(|known| u32::from(known.to_raw()) == code)
-        });
+    let configuration =
+        refuses_datatype(error) || code(error).is_some_and(|code| CONFIGURATION.contains(&code));
     if configuration {
         WriteFailure::Configuration
     } else {
@@ -197,11 +195,11 @@ fn unmade(error: RemoteRequestError) -> WriteFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::Refusal;
     use bacnet_types::enums::{AbortReason, ErrorClass};
+    use bacnet_types::error::RemoteError;
 
     fn error(code: ErrorCode) -> Error {
-        Refusal::Error {
+        RemoteError::Error {
             class: ErrorClass::PROPERTY,
             code,
         }
@@ -224,13 +222,21 @@ mod tests {
                 "{code:?}"
             );
         }
-        let datatype = Refusal::Reject(RejectReason::INVALID_PARAMETER_DATA_TYPE);
+        let datatype = RemoteError::Reject {
+            reason: RejectReason::INVALID_PARAMETER_DATA_TYPE,
+        };
         assert_eq!(refused(&datatype.into()), WriteFailure::Configuration);
         for answer in [
             error(ErrorCode::WRITE_ACCESS_DENIED),
             error(ErrorCode::VALUE_OUT_OF_RANGE),
-            Refusal::Reject(RejectReason::OTHER).into(),
-            Refusal::Abort(AbortReason::OTHER).into(),
+            RemoteError::Reject {
+                reason: RejectReason::OTHER,
+            }
+            .into(),
+            RemoteError::Abort {
+                reason: AbortReason::OTHER,
+            }
+            .into(),
         ] {
             assert_eq!(refused(&answer), WriteFailure::Process, "{answer:?}");
         }
@@ -267,7 +273,7 @@ mod tests {
         ] {
             assert!(!silent(unasked), "{unasked:?}");
         }
-        let busy = Refusal::Error {
+        let busy = RemoteError::Error {
             class: ErrorClass::OBJECT,
             code: ErrorCode::BUSY,
         };
@@ -278,11 +284,17 @@ mod tests {
     fn only_an_invalid_datatype_error_or_reject_refuses_the_datatype() {
         assert!(refuses_datatype(&error(ErrorCode::INVALID_DATA_TYPE)));
         assert!(refuses_datatype(
-            &Refusal::Reject(RejectReason::INVALID_PARAMETER_DATA_TYPE).into()
+            &RemoteError::Reject {
+                reason: RejectReason::INVALID_PARAMETER_DATA_TYPE
+            }
+            .into()
         ));
         assert!(!refuses_datatype(&error(ErrorCode::DATATYPE_NOT_SUPPORTED)));
         assert!(!refuses_datatype(
-            &Refusal::Reject(RejectReason::OTHER).into()
+            &RemoteError::Reject {
+                reason: RejectReason::OTHER
+            }
+            .into()
         ));
     }
 }

@@ -8,11 +8,14 @@ enum Read {
     Binary,
     Pending,
     Controls(Arc<AtomicUsize>),
+    /// These reads, then the end of the stream.
+    Frames(std::collections::VecDeque<Result<DirectFrame, String>>),
 }
 impl DirectWsRead for Read {
     async fn next_frame(&mut self) -> Option<Result<DirectFrame, String>> {
         match self {
             Self::Binary => Some(Ok(DirectFrame::Binary(vec![0xff]))),
+            Self::Frames(frames) => frames.pop_front(),
             Self::Pending => std::future::pending().await,
             Self::Controls(count) => {
                 count.fetch_add(1, Ordering::AcqRel);
@@ -90,9 +93,22 @@ async fn direct_response_ready_read_and_queue_have_bounded_alternating_progress(
 async fn worker(
     member: Arc<Membership>,
     route: DirectResponse,
+    recv: mpsc::Receiver<crate::direct_response::ResponseWrite>,
+    write: impl DirectWs<Read = Read>,
+    read: Read,
+) {
+    let warnings = DirectWarnings::default();
+    worker_warning_to(member, route, recv, write, read, &warnings).await;
+}
+
+/// [`worker`], warning through `warnings`.
+async fn worker_warning_to(
+    member: Arc<Membership>,
+    route: DirectResponse,
     mut recv: mpsc::Receiver<crate::direct_response::ResponseWrite>,
-    mut write: Write,
+    mut write: impl DirectWs<Read = Read>,
     mut read: Read,
+    warnings: &DirectWarnings,
 ) {
     let ca = super::super::direct_accept_tests::TestCa::generate();
     let config = DirectAcceptConfig::new(
@@ -113,8 +129,12 @@ async fn worker(
         AdmittedDirectPeer {
             address: "127.0.0.1:1".parse().unwrap(),
             member: &member,
-            identity: route.identity(),
+            provenance: crate::port::TransportProvenance::verified_direct_peer(
+                route.identity(),
+                Default::default(),
+            ),
             response: route,
+            warnings,
         },
         &tx,
         &admission,
@@ -206,11 +226,13 @@ async fn direct_response_ready_websocket_controls_return_a_scheduling_turn() {
     let mut read = futures_util::stream::iter(frames).inspect(|_| {
         if count.fetch_add(1, Ordering::AcqRel) == 0 {
             // Enqueue while the adapter is already polling its ready input.
-            assert!(std::future::Future::poll(
-                send.as_mut(),
-                &mut std::task::Context::from_waker(std::task::Waker::noop()),
-            )
-            .is_pending());
+            assert!(
+                std::future::Future::poll(
+                    send.as_mut(),
+                    &mut std::task::Context::from_waker(std::task::Waker::noop()),
+                )
+                .is_pending()
+            );
         }
     });
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -263,4 +285,118 @@ async fn direct_response_websocket_controls_preserve_connect_and_idle_deadlines(
         !member.is_current(),
         "controls cannot extend binary-activity idle deadline"
     );
+}
+
+/// #1950: a burst of bad frames on an established connection, undecodable
+/// and oversized, then a failed read, warns once through the listener's
+/// frame throttle; the rest log at debug and are counted for the next one.
+#[tokio::test(start_paused = true)]
+async fn a_burst_of_bad_frames_warns_once_per_interval() {
+    use crate::warn_throttle::WARNING_INTERVAL;
+    let (member, route, recv) = route();
+    let oversized = vec![0; usize::from(crate::sc_limits::DEFAULT_MAX_BVLC_LENGTH) + 1];
+    let mut frames: std::collections::VecDeque<_> =
+        std::iter::repeat_with(|| Ok(DirectFrame::Binary(vec![0xff])))
+            .take(3)
+            .collect();
+    frames.extend([
+        Ok(DirectFrame::Binary(oversized.clone())),
+        Ok(DirectFrame::Binary(oversized)),
+        Err("connection reset".to_string()),
+    ]);
+    let warnings = DirectWarnings::default();
+    let write = Write {
+        writes: Arc::new(AtomicUsize::new(0)),
+        entered: None,
+        release: None,
+    };
+    worker_warning_to(member, route, recv, write, Read::Frames(frames), &warnings).await;
+    assert_eq!(
+        warnings.frame.note(),
+        None,
+        "the first bad frame warned; the rest, and this, are held back"
+    );
+    tokio::time::advance(WARNING_INTERVAL).await;
+    assert_eq!(
+        warnings.frame.note(),
+        Some(7),
+        "five held back, the check above, and this one"
+    );
+    assert_eq!(
+        warnings.connection.note(),
+        Some(1),
+        "an established connection's frames don't touch the connection throttle"
+    );
+}
+
+/// Records every data frame the loop writes.
+struct Recorder(Arc<std::sync::Mutex<Vec<ScMessage>>>);
+impl DirectWs for Recorder {
+    type Read = Read;
+    async fn send_data(&mut self, data: &[u8]) -> Result<(), ()> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(decode_sc_message(data).unwrap());
+        Ok(())
+    }
+    async fn send_close(&mut self) -> Result<(), ()> {
+        Ok(())
+    }
+}
+
+/// #2127: the accepting side answers each Heartbeat-Request with a
+/// Heartbeat-ACK echoing its message ID and carrying no VMACs, options or
+/// payload (AB.2.15, AB.6.3); a malformed probe gets the control NAK, and
+/// one carrying a Destination VMAC gets nothing.
+#[tokio::test(start_paused = true)]
+async fn direct_accept_answers_heartbeat_requests() {
+    let (member, route, recv) = route();
+    let probe = |message_id, payload: &'static [u8], destination_vmac| {
+        let mut wire = BytesMut::new();
+        encode_sc_message(
+            &mut wire,
+            &ScMessage {
+                function: ScFunction::HeartbeatRequest,
+                message_id,
+                originating_vmac: None,
+                destination_vmac,
+                dest_options: Vec::new(),
+                data_options: Vec::new(),
+                payload: Bytes::from_static(payload),
+            },
+        );
+        Ok(DirectFrame::Binary(wire.to_vec()))
+    };
+    let frames = [
+        probe(0x1234, &[], None),
+        probe(0xbeef, &[], None),
+        probe(0x0042, &[1], None),
+        // An addressed probe is dropped silently, not NAKed or ACKed.
+        probe(0x0043, &[], Some([9; 6])),
+    ];
+    let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+    worker(
+        member,
+        route,
+        recv,
+        Recorder(sent.clone()),
+        Read::Frames(frames.into_iter().collect()),
+    )
+    .await;
+    let sent = sent.lock().unwrap();
+    assert_eq!(sent.len(), 3, "one reply per unaddressed probe: {sent:?}");
+    for (reply, id) in sent.iter().zip([0x1234, 0xbeef]) {
+        assert_eq!(reply.function, ScFunction::HeartbeatAck);
+        assert_eq!(reply.message_id, id, "the ACK echoes the request's ID");
+        assert!(reply.originating_vmac.is_none() && reply.destination_vmac.is_none());
+        assert!(reply.dest_options.is_empty() && reply.data_options.is_empty());
+        assert!(reply.payload.is_empty());
+    }
+    assert_eq!(
+        sent[2].function,
+        ScFunction::Result,
+        "a malformed probe is NAKed"
+    );
+    assert_eq!(sent[2].message_id, 0x0042);
 }

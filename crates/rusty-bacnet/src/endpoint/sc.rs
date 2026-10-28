@@ -12,10 +12,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::endpoint::common::{
-    build_database, build_identity, build_pending_boxes, lifecycle_error, make_analog_input,
-    make_analog_value, make_binary_input, make_binary_value, parse_device_uuid,
+    PendingObject, build_database, build_identity, build_pending_boxes, lifecycle_error,
+    make_analog_input, make_analog_value, make_binary_input, make_binary_value, parse_device_uuid,
     parse_read_work_limit, parse_segmentation, parse_services, pending_group, with_sc_port,
-    PendingObject,
 };
 use crate::endpoint::lifecycle::Lifecycle;
 use crate::endpoint::roles::{PyEndpointClient, PyEndpointServer};
@@ -40,6 +39,9 @@ struct ScEndpointConfig {
     queue_capacity: usize,
     read_work_limit: usize,
     min_request_interval_ms: u64,
+    reinitialize: crate::reinitialize::EndpointReinitialize,
+    /// The `device_write_policy` callable, if any (#2033).
+    device_writes: crate::mutation_policy::DeviceWritePolicy,
 }
 
 impl ScEndpointConfig {
@@ -63,10 +65,11 @@ impl ScEndpointConfig {
             .min_request_interval_ms(config.min_request_interval_ms)
             .heartbeat(config.heartbeat_interval_ms, config.heartbeat_timeout_ms)
             .database(db)
-            .identity(config.identity.clone())
+            .device(config.identity.clone())
             .build_hub_session(ws)
             .map_err(to_py_err)?;
-        Ok(session)
+        let session = config.device_writes.install(session);
+        Ok(config.reinitialize.install(session))
     }
 }
 
@@ -121,7 +124,8 @@ impl PyScEndpoint {
     ///     network_number / network_port_instance: SC port entry (instance 2
     ///         by convention, VIRTUAL type).
     ///     max_apdu / segmentation / services / device name: Identity knobs
-    ///         (same narrow defaults as BIP).
+    ///         (same narrow defaults as BIP). The raw receive ceiling resolves
+    ///         against the SC link before Device construction or dialing.
     ///     queue_capacity: Bounded queue capacity (must be >0). Client timers
     ///         stay at the session default; the SC builder exposes no timer
     ///         override by design.
@@ -132,6 +136,15 @@ impl PyScEndpoint {
     ///     min_request_interval_ms: Least time between the client role's
     ///         confirmed requests to one destination (default 0, no pacing;
     ///         at most 3600000), as for `BACnetClient`.
+    ///     on_reinitialize / after_reinitialize / reinit_password: Execute
+    ///         ReinitializeDevice, as `BACnetServer`'s keywords of the same
+    ///         names do (#1566).
+    ///     device_write_policy: Keyword-only (default None). A callable that
+    ///         decides each WriteProperty to the local Device's Description
+    ///         or installed Audit recipient (#2033). It gets a
+    ///         `MutationContext` and returns a bool, with the fail-closed
+    ///         rules of `BACnetServer`'s `mutation_policy` callable. Without
+    ///         it the endpoint executes no WriteProperty.
     #[new]
     #[pyo3(signature = (
         device_instance,
@@ -153,7 +166,11 @@ impl PyScEndpoint {
         services=None,
         queue_capacity=16,
         read_work_limit=256,
-        min_request_interval_ms=0
+        min_request_interval_ms=0,
+        on_reinitialize=None,
+        after_reinitialize=None,
+        reinit_password=None,
+        device_write_policy=None
     ))]
     fn new(
         device_instance: u32,
@@ -175,7 +192,17 @@ impl PyScEndpoint {
         queue_capacity: usize,
         read_work_limit: usize,
         min_request_interval_ms: u64,
+        on_reinitialize: Option<&Bound<'_, PyAny>>,
+        after_reinitialize: Option<&Bound<'_, PyAny>>,
+        reinit_password: Option<String>,
+        device_write_policy: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        let reinitialize = crate::reinitialize::EndpointReinitialize::parse(
+            on_reinitialize,
+            after_reinitialize,
+            reinit_password,
+        )?;
+        let device_writes = crate::mutation_policy::DeviceWritePolicy::parse(device_write_policy)?;
         if queue_capacity == 0 {
             return Err(PyValueError::new_err(
                 "queue_capacity must be greater than zero",
@@ -224,7 +251,13 @@ impl PyScEndpoint {
             segmentation,
             &service_list,
             uuid,
-        )?;
+        )?
+        .resolve(
+            bacnet_transport::sc::ScTransport::<
+                bacnet_transport::sc_tls::TlsWebSocket,
+            >::LOCAL_RECEIVE_APDU_CAPACITY,
+        )
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let identity = with_sc_port(identity, network_port_instance, network_number, vmac)?;
         Ok(Self {
             lifecycle: Lifecycle::new(),
@@ -241,6 +274,8 @@ impl PyScEndpoint {
                 queue_capacity,
                 read_work_limit,
                 min_request_interval_ms,
+                reinitialize,
+                device_writes,
             },
         })
     }
@@ -347,8 +382,10 @@ impl PyScEndpoint {
 
     /// Start after lifecycle admission. A second explicit start fails.
     fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        crate::logging_bridge::refresh_at_start(py);
         let lifecycle = self.lifecycle.clone();
         let config = self.config.clone();
+        config.reinitialize.bind_event_loop(py)?;
         crate::py_async::future_into_py(py, async move {
             lifecycle
                 .start(false, |objects| config.prepare(objects))
@@ -369,11 +406,13 @@ impl PyScEndpoint {
 
     /// Start on context entry, or reuse the already running session.
     fn __aenter__<'py>(slf: Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        crate::logging_bridge::refresh_at_start(py);
         let self_ref = slf.clone().unbind();
         let (lifecycle, config) = {
             let borrowed = slf.borrow();
             (borrowed.lifecycle.clone(), borrowed.config.clone())
         };
+        config.reinitialize.bind_event_loop(py)?;
         crate::py_async::future_into_py(py, async move {
             lifecycle
                 .start(true, |objects| config.prepare(objects))
@@ -419,6 +458,8 @@ impl PyScEndpoint {
     /// Clone the server role.
     fn server<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.lifecycle.session.clone();
+        let reinitialize = self.config.reinitialize.enabled();
+        let device_writes = self.config.device_writes.enabled();
         crate::py_async::future_into_py(py, async move {
             let handle = {
                 let guard = inner.lock().await;
@@ -433,7 +474,7 @@ impl PyScEndpoint {
                     )
                 })?
             };
-            Ok(PyEndpointServer::new(handle))
+            Ok(PyEndpointServer::new(handle, reinitialize, device_writes))
         })
     }
 

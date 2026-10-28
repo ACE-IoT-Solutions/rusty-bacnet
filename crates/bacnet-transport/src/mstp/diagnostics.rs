@@ -4,20 +4,22 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use bacnet_mstp_core::MstpCounters;
+use bacnet_mstp_core::{MasterSnapshot, MasterState, MstpCounters as CoreCounters};
 
+use super::MstpExecutionStatus;
 use super::queues::SharedQueues;
+use super::totals::MstpCounters;
 
 /// Owned, redacted MS/TP counts. All fields start at zero, and there is no
-/// reset; use before/after snapshots for a run. The transport-boundary
-/// fields saturate at `u64::MAX` and the core's at `u32::MAX`; a saturated
-/// counter cannot provide an exact delta.
+/// reset; use before/after snapshots for a run. Every count saturates at
+/// `u64::MAX`; a saturated counter cannot provide an exact delta.
 ///
 /// The transport-boundary fields are each loaded atomically with relaxed
-/// ordering, and [`Self::mac`] is the core's counters as the transport's
-/// task last published them (after each event it handles; the queue
-/// counters also after each send). The collection is **not a globally
-/// coherent snapshot**, nor does it synchronize application state.
+/// ordering, and [`Self::mac`] is the core's counters added up as the
+/// transport's task last published them: it takes them from the core after
+/// each event it handles, and a send takes its queue's. The collection is
+/// **not a globally coherent snapshot**, nor does it synchronize
+/// application state.
 ///
 /// Transmit counts are of frames the core saw complete on the wire. No
 /// timestamps, payloads, identities, paths, or per-peer state are retained.
@@ -53,8 +55,10 @@ pub struct MstpDiagnosticsSnapshot {
     pub ingress_full: u64,
     /// Ingress NPDUs dropped because the receive channel was closed.
     pub ingress_closed: u64,
-    /// Serial read calls that completed with an error. The transport's task
-    /// ends at the first one.
+    /// Serial reads that failed: a read that completed with an error, or
+    /// the port's end of file, three reads in a row that returned no octets
+    /// (see [`SerialPort::read`](super::SerialPort::read)). The transport's
+    /// task ends at the first one.
     pub serial_read_errors: u64,
     /// Serial write or drain calls that completed with an error. The frame
     /// is reported to the core as aborted.
@@ -88,7 +92,8 @@ pub struct MstpDiagnosticsSnapshot {
     /// arrival plus the queue's maximum age, answered after it or not at
     /// all.
     pub late_answers_expired: u64,
-    /// The master core's counters ([`MstpCounters`]), with its queues'.
+    /// The master core's counters, with its queues', added up since the
+    /// transport started ([`MstpCounters`]).
     pub mac: MstpCounters,
 }
 
@@ -117,6 +122,58 @@ impl MstpDiagnostics {
     pub fn snapshot(&self) -> MstpDiagnosticsSnapshot {
         self.counters.snapshot()
     }
+
+    /// What the master node was doing when the transport's task last
+    /// published its counters; `None` before the task first handled an
+    /// event. It is published with the counters, after every event the task
+    /// handles, and keeps its last value once the transport stops.
+    pub fn node_state(&self) -> Option<MstpNodeState> {
+        *self
+            .counters
+            .node
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// How the transport's MAC loop runs: on which runtime, and on Linux
+    /// whether its thread got the real-time priority and CPU affinity asked
+    /// for. `None` until [`start`](crate::port::TransportPort::start)
+    /// succeeds; a start that couldn't apply a setting fails and leaves it
+    /// `None`. It keeps its value once the transport stops.
+    pub fn execution_status(&self) -> Option<MstpExecutionStatus> {
+        self.counters
+            .execution
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// The master node's place in the token ring, as last published by the
+/// transport's task ([`MstpDiagnostics::node_state`]). Like the counters it
+/// is a sample, not a coherent view of the line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MstpNodeState {
+    /// The master node's state (Clause 9.5.6).
+    pub state: MasterState,
+    /// The station this one passes the token to.
+    pub next_station: u8,
+    /// The station this one polls next for a new master.
+    pub poll_station: u8,
+    /// This station believes it is the only master on the line.
+    pub sole_master: bool,
+}
+
+impl From<MasterSnapshot> for MstpNodeState {
+    fn from(snapshot: MasterSnapshot) -> Self {
+        Self {
+            state: snapshot.state,
+            next_station: snapshot.next_station,
+            poll_station: snapshot.poll_station,
+            sole_master: snapshot.sole_master,
+        }
+    }
 }
 
 // Keep the storage and loads together; no event log or per-frame allocation.
@@ -127,6 +184,10 @@ macro_rules! counters {
             $(pub(super) $field: AtomicU64,)+
             /// The core's counters as last published by the task.
             mac: Mutex<MstpCounters>,
+            /// The node's state as last published by the task.
+            node: Mutex<Option<MstpNodeState>>,
+            /// How the loop runs, set once by a successful start.
+            pub(super) execution: Mutex<Option<MstpExecutionStatus>>,
         }
 
         impl Counters {
@@ -173,33 +234,46 @@ counters!(
 
 pub(super) fn increment(counter: &AtomicU64) {
     // Statistics only: never used for decisions or state publication.
-    #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+    let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(1))
     });
 }
 
 impl Counters {
-    /// Publish the core's counters. The queue counters are read from the
-    /// queues while the published copy is locked, as [`Self::publish_queues`]
-    /// reads them, so whichever of the two publishes last has the newest,
-    /// and they never go backwards.
-    pub(super) fn publish(&self, mac: MstpCounters, queues: &SharedQueues) {
-        let mut published = self.mac.lock().unwrap_or_else(PoisonError::into_inner);
-        let (unicast, broadcast) = queues.stats();
-        *published = MstpCounters {
-            unicast,
-            broadcast,
-            ..mac
-        };
+    /// Add the core's counters to the totals: `take` takes them, its
+    /// queues' with them ([`MasterCore::take_counters`]).
+    ///
+    /// `take` runs while the totals are locked, as [`Self::publish_queues`]
+    /// takes the queues' counters, so takes reach the totals in the order
+    /// they were made and the queue depth is always the newest. The lock
+    /// order is always the totals, then the queues, and neither is held
+    /// across an await.
+    ///
+    /// [`MasterCore::take_counters`]: bacnet_mstp_core::MasterCore::take_counters
+    pub(super) fn publish(&self, take: impl FnOnce() -> CoreCounters) {
+        let mut totals = self.mac.lock().unwrap_or_else(PoisonError::into_inner);
+        totals.add(take());
     }
 
-    /// Publish the queues' counters after a send changed them.
+    /// Record how the loop runs, at a successful start.
+    pub(super) fn publish_execution(&self, status: MstpExecutionStatus) {
+        *self
+            .execution
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(status);
+    }
+
+    /// Publish the node's state, after the counters of the same event.
+    pub(super) fn publish_node(&self, snapshot: MasterSnapshot) {
+        *self.node.lock().unwrap_or_else(PoisonError::into_inner) = Some(snapshot.into());
+    }
+
+    /// Add the queues' counters to the totals after a send changed them.
     pub(super) fn publish_queues(&self, queues: &SharedQueues) {
-        let mut published = self.mac.lock().unwrap_or_else(PoisonError::into_inner);
-        let (unicast, broadcast) = queues.stats();
-        published.unicast = unicast;
-        published.broadcast = broadcast;
+        let mut totals = self.mac.lock().unwrap_or_else(PoisonError::into_inner);
+        let (unicast, broadcast) = queues.take_counters();
+        totals.unicast.add(unicast);
+        totals.broadcast.add(broadcast);
     }
 
     pub(super) fn delivery<T>(
@@ -238,25 +312,45 @@ fn cloned_handles_share_concurrent_saturating_updates() {
     assert_eq!(handle.snapshot().serial_read_errors, u64::MAX);
 }
 
+/// Each publish adds what was counted since the one before: a send's
+/// enqueue is taken once, by whichever publish comes first, and the core's
+/// counts add up.
 #[cfg(test)]
 #[test]
-fn published_core_counters_appear_in_snapshots() {
-    use bacnet_mstp_core::{Duration, Instant};
+fn published_core_counters_add_up_in_snapshots() {
+    use bacnet_mstp_core::{Duration, Instant, QueueKind, QueueStorage};
 
     let handle = MstpDiagnostics::new();
     let queues = SharedQueues::new(false);
-    let mac = MstpCounters {
-        frames_received: 3,
-        ..MstpCounters::default()
-    };
-    handle.counters.publish(mac, &queues);
+    let mut core_queues = queues.for_core();
+    let mut mac = CoreCounters::default();
+    mac.frames_received = 3;
+    handle.counters.publish(|| mac);
     let age = Duration::from_secs(1);
     queues.enqueue(5, &[1, 0], Instant::ZERO, age).unwrap();
     handle.counters.publish_queues(&queues);
     let snapshot = handle.snapshot();
     assert_eq!(snapshot.mac.frames_received, 3);
-    assert_eq!(snapshot.mac.unicast.enqueued, 1);
-    // A later publish of older core counters keeps the queues' newest.
-    handle.counters.publish(mac, &queues);
-    assert_eq!(handle.snapshot().mac.unicast.enqueued, 1);
+    assert_eq!(
+        (snapshot.mac.unicast.enqueued, snapshot.mac.unicast.depth),
+        (1, 1)
+    );
+
+    // The core's next take, its queues' with it, adds to the totals.
+    queues.enqueue(5, &[1, 0], Instant::ZERO, age).unwrap();
+    handle.counters.publish(|| {
+        let mut taken = mac;
+        taken.unicast = core_queues.take_counters(QueueKind::Unicast);
+        taken
+    });
+    let totals = handle.snapshot().mac;
+    assert_eq!(totals.frames_received, 6);
+    assert_eq!(
+        (
+            totals.unicast.enqueued,
+            totals.unicast.depth,
+            totals.unicast.high_water
+        ),
+        (2, 2, 2)
+    );
 }

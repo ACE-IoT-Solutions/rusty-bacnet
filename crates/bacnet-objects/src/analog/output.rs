@@ -4,8 +4,10 @@ use crate::common::{
     write_generic_event_properties,
 };
 use crate::object_profile::{ObjectProfile, ProfileState, TagsPersistence};
+use crate::prelude::*;
 use crate::property_metadata::PropertyMetadata;
-use std::sync::Arc;
+use alloc::sync::Arc;
+use bacnet_types::enums::EngineeringUnits;
 
 mod metadata;
 
@@ -20,7 +22,7 @@ pub struct AnalogOutputObject {
     name: String,
     description: String,
     present_value: f32,
-    units: u32,
+    units: EngineeringUnits,
     out_of_service: bool,
     status_flags: StatusFlags,
     priority_array: [Option<f32>; 16],
@@ -45,7 +47,11 @@ pub struct AnalogOutputObject {
 
 impl AnalogOutputObject {
     /// Create a new Analog Output object.
-    pub fn new(instance: u32, name: impl Into<String>, units: u32) -> Result<Self, Error> {
+    pub fn new(
+        instance: u32,
+        name: impl Into<String>,
+        units: EngineeringUnits,
+    ) -> Result<Self, Error> {
         let oid = ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, instance)?;
         Ok(Self {
             profile: ProfileState::default(),
@@ -77,7 +83,7 @@ impl AnalogOutputObject {
     pub fn with_tags_persistence(
         instance: u32,
         name: impl Into<String>,
-        units: u32,
+        units: EngineeringUnits,
         persistence: Arc<dyn TagsPersistence>,
     ) -> Result<Self, Error> {
         let mut object = Self::new(instance, name, units)?;
@@ -190,7 +196,9 @@ impl BACnetObject for AnalogOutputObject {
             p if p == PropertyIdentifier::PRESENT_VALUE => {
                 Ok(PropertyValue::Real(self.present_value))
             }
-            p if p == PropertyIdentifier::UNITS => Ok(PropertyValue::Enumerated(self.units)),
+            p if p == PropertyIdentifier::UNITS => {
+                Ok(PropertyValue::Enumerated(self.units.to_raw()))
+            }
             p if p == PropertyIdentifier::PRIORITY_ARRAY => {
                 common::read_priority_array!(self, array_index, PropertyValue::Real)
             }
@@ -354,7 +362,7 @@ impl BACnetObject for AnalogOutputObject {
         self.profile.capability()
     }
 
-    fn advance_monotonic_time_internal(&mut self, now: std::time::Duration) -> bool {
+    fn advance_monotonic_time_internal(&mut self, now: core::time::Duration) -> bool {
         self.profile.expire(now);
         false
     }
@@ -399,10 +407,10 @@ impl BACnetObject for AnalogOutputObject {
         timestamp: &BACnetTimeStamp,
     ) -> Result<(), Error> {
         if !self.event_detection_enable {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::NO_ALARM_CONFIGURED,
+            ));
         }
         self.event_history.acknowledge_correlated(
             &mut self.event_detector.acked_transitions,
@@ -451,7 +459,7 @@ mod detection_enable_reset_tests {
     /// disabling event detection must still restore their Clause 13.2.2.1 initial conditions.
     #[test]
     fn ao_disabling_detection_resets_event_history() {
-        let mut ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
+        let mut ao = AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         assert_eq!(
             ao.read_property(PropertyIdentifier::EVENT_DETECTION_ENABLE, None)
                 .unwrap(),

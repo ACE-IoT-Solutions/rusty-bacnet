@@ -8,7 +8,7 @@ use bacnet_server::server::ServerConfig;
 use bacnet_services::who_is::IAmRequest;
 use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy};
 use bacnet_transport::bvll::{
-    decode_bip_mac, decode_bvll, encode_bvll, BvlcFunction, BvlcResultCode, Bvll,
+    BvlcFunction, BvlcResultCode, Bvll, decode_bip_mac, decode_bvll, encode_bvll,
 };
 use bacnet_types::enums::UnconfirmedServiceChoice;
 use std::net::SocketAddrV4;
@@ -44,15 +44,23 @@ async fn bbmd_own_i_am_reaches_bdt_peer_device_and_foreign_device() {
     transport.enable_foreign_device_registration(ForeignDevicePolicy::default());
     let mut db = ObjectDatabase::new();
     let device = DeviceObject::new(DeviceConfig {
-        instance: BBMD_DEVICE,
-        name: "BBMD Device".into(),
+        identity: bacnet_objects::DeviceIdentity::new(BBMD_DEVICE, 0)
+            .expect("valid Device identity")
+            .with_name("BBMD Device"),
         ..DeviceConfig::default()
     })
     .unwrap();
     db.add(Box::new(device)).unwrap();
-    let mut server = BACnetServer::start(ServerConfig::default(), db, transport)
-        .await
-        .unwrap();
+    let mut server = BACnetServer::start(
+        ServerConfig {
+            device: bacnet_objects::DeviceIdentity::new(BBMD_DEVICE, 0).unwrap(),
+            ..Default::default()
+        },
+        db,
+        transport,
+    )
+    .await
+    .unwrap();
     let bbmd_mac = server.local_mac().to_vec();
     let (bbmd_ip, bbmd_port) = decode_bip_mac(&bbmd_mac).unwrap();
 

@@ -1,25 +1,26 @@
 use super::*;
 use crate::bip::BipEndpointBuilder;
 use bacnet_encoding::apdu::{
-    decode_apdu, encode_apdu, AbortPdu, ComplexAck, ErrorPdu, RejectPdu, SimpleAck,
+    AbortPdu, ComplexAck, ErrorPdu, RejectPdu, SimpleAck, decode_apdu, encode_apdu,
 };
 use bacnet_network::layer::NetworkLayer;
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::audit::AuditReporterObject;
 use bacnet_services::audit::AuditNotificationRequest;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bvll::{decode_bip_mac, encode_bip_mac};
+use bacnet_types::MacAddr;
 use bacnet_types::bitstring::{AuditOperationFlags, BACnetPriorityFilter};
 use bacnet_types::constructed::{BACnetAuditNotification, BACnetObjectSelector, BACnetRecipient};
 use bacnet_types::enums::{
     AbortReason, AuditLevel, AuditOperation, ConfirmedServiceChoice, ErrorClass, ErrorCode,
-    NetworkPriority, RejectReason, Reliability, UnconfirmedServiceChoice,
+    RejectReason, Reliability, UnconfirmedServiceChoice,
 };
 use bacnet_types::primitives::BACnetTimeStamp;
-use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 use std::net::{Ipv4Addr, SocketAddrV4};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 const WAIT: Duration = Duration::from_secs(2);
 fn oid(kind: ObjectType, instance: u32) -> ObjectIdentifier {
@@ -50,7 +51,10 @@ fn database(confirmed: bool) -> ObjectDatabase {
     db.add(Box::new(reporter)).unwrap();
     db
 }
-async fn network() -> (NetworkLayer<BipTransport>, mpsc::Receiver<ReceivedApdu>) {
+async fn network() -> (
+    NetworkLayer<BipTransport>,
+    bacnet_network::layer::ApduReceiver,
+) {
     let mut network = NetworkLayer::new(BipTransport::new(
         Ipv4Addr::LOCALHOST,
         0,
@@ -88,14 +92,14 @@ fn session(
         session
     }
 }
-async fn receive(receiver: &mut mpsc::Receiver<ReceivedApdu>) -> ReceivedApdu {
+async fn receive(receiver: &mut bacnet_network::layer::ApduReceiver) -> ReceivedApdu {
     timeout(WAIT, receiver.recv()).await.unwrap().unwrap()
 }
 async fn send(network: &NetworkLayer<BipTransport>, mac: &[u8], pdu: Apdu) {
     let mut bytes = BytesMut::new();
     encode_apdu(&mut bytes, &pdu).unwrap();
     network
-        .send_apdu(&bytes, mac, false, NetworkPriority::NORMAL)
+        .send_apdu(&bytes, mac, false, NetworkPriority::Normal)
         .await
         .unwrap();
 }
@@ -420,9 +424,11 @@ async fn source_read_dropped_waiter_retries_once_per_logical_request() {
         record.source_timestamp,
         Some(BACnetTimeStamp::SequenceNumber(0))
     );
-    assert!(timeout(Duration::from_millis(30), records.recv())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(30), records.recv())
+            .await
+            .is_err()
+    );
     session.stop().await.unwrap();
     peer.stop().await.unwrap();
     sink.stop().await.unwrap();
@@ -474,16 +480,18 @@ async fn source_read_selector_preflight_is_atomic_and_adapter_rejects_mutation()
         {
             let mut db = session.database.as_ref().unwrap().write().await;
             let object = db.get_mut(&selected()).unwrap();
-            assert!(object
-                .configure_audit_reporter_internal(
-                    AuditLevel::NONE,
-                    AuditOperationFlags::empty(),
-                    true,
-                    Some(vec![]),
-                    BACnetPriorityFilter::empty(),
-                    None
-                )
-                .is_err());
+            assert!(
+                object
+                    .configure_audit_reporter_internal(
+                        AuditLevel::NONE,
+                        AuditOperationFlags::empty(),
+                        true,
+                        Some(vec![]),
+                        BACnetPriorityFilter::empty(),
+                        None
+                    )
+                    .is_err()
+            );
             assert_eq!(
                 object
                     .read_property(PropertyIdentifier::AUDIT_LEVEL, None)
@@ -521,6 +529,7 @@ mod rpm;
 async fn source_read_ignores_remote_and_same_oid_local_value_object_policy() {
     use bacnet_objects::{analog::AnalogValueObject, audit::ObjectAuditPolicy};
     use bacnet_server::server::{BACnetServer, ServerConfig};
+    use bacnet_types::enums::EngineeringUnits;
     let (mut sink, mut records) = network().await;
     let policy = ObjectAuditPolicy {
         level: Some(AuditLevel::NONE),
@@ -531,18 +540,23 @@ async fn source_read_ignores_remote_and_same_oid_local_value_object_policy() {
         .unwrap()
         .build_database()
         .unwrap();
-    let mut remote = AnalogValueObject::new(7, "remote", 62).unwrap();
+    let mut remote =
+        AnalogValueObject::new(7, "remote", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     remote.set_audit_policy(policy);
     remote_db.add(Box::new(remote)).unwrap();
     let mut remote_server = BACnetServer::start_clockless(
-        ServerConfig::default(),
+        ServerConfig {
+            device: bacnet_objects::DeviceIdentity::new(456, 42).unwrap(),
+            ..Default::default()
+        },
         remote_db,
         BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST),
     )
     .await
     .unwrap();
     let mut db = database(false);
-    let mut local = AnalogValueObject::new(7, "unrelated same OID", 62).unwrap();
+    let mut local =
+        AnalogValueObject::new(7, "unrelated same OID", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     local.set_audit_policy(policy);
     db.add(Box::new(local)).unwrap();
     let mut session = session(db, SessionRole::ClientOnly, &sink);
@@ -579,3 +593,6 @@ mod delay_rejection;
 
 #[path = "source_write_tests.rs"]
 mod write;
+
+#[path = "source_reinitialize_tests.rs"]
+mod reinitialize;

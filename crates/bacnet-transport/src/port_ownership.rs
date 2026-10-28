@@ -35,31 +35,11 @@ use tokio::sync::mpsc;
 /// Sets SO_EXCLUSIVEADDRUSE, which refuses every other bind to the port while
 /// this socket is open.
 #[cfg(windows)]
-#[allow(unsafe_code)]
 pub(crate) fn claim_exclusive(socket: &socket2::Socket) -> io::Result<()> {
-    use std::os::windows::io::AsRawSocket;
-    use windows_sys::Win32::Networking::WinSock::{
-        setsockopt, WSAGetLastError, SOCKET, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
-    };
+    use std::os::windows::io::AsSocket;
+    use windows_sys::Win32::Networking::WinSock::{SO_EXCLUSIVEADDRUSE, SOL_SOCKET};
 
-    let enabled: i32 = 1;
-    // SAFETY: the socket handle is open for the call's duration, and the
-    // option value points to a live BOOL (i32) of the length passed.
-    let result = unsafe {
-        setsockopt(
-            socket.as_raw_socket() as SOCKET,
-            SOL_SOCKET,
-            SO_EXCLUSIVEADDRUSE,
-            (&enabled as *const i32).cast(),
-            std::mem::size_of::<i32>() as i32,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        // SAFETY: reads the calling thread's last Winsock error; no arguments.
-        Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() }))
-    }
+    crate::sys::winsock::set_int_option(socket.as_socket(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE, 1)
 }
 
 /// Keep an unshared socket's port to itself. Call it before `bind`.
@@ -233,7 +213,7 @@ mod tests {
 
 #[cfg(test)]
 mod connect_loopback_tests {
-    use super::{connect_loopback, local_port_collision, retry_local_port, CONNECT_ATTEMPTS};
+    use super::{CONNECT_ATTEMPTS, connect_loopback, local_port_collision, retry_local_port};
     use std::io::{Error, ErrorKind};
     use std::sync::atomic::{AtomicUsize, Ordering};
 

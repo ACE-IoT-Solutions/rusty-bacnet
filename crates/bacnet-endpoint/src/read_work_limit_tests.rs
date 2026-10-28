@@ -2,6 +2,7 @@
 //! `read_work_limit` (#1215): a Group's Present_Value counts its own row plus
 //! each member row, and a read past the limit is aborted with
 //! OUT_OF_RESOURCES, as the full server aborts it.
+use bacnet_types::error::RemoteError;
 use std::net::Ipv4Addr;
 
 use bacnet_objects::group::GroupObject;
@@ -59,7 +60,7 @@ async fn read_groups(limit: Option<usize>) -> Vec<Result<(), Error>> {
     let mut builder = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
         .role(SessionRole::ServerOnly)
         .database(database(&identity))
-        .identity(identity);
+        .device(identity);
     if let Some(limit) = limit {
         builder = builder.read_work_limit(limit);
     }
@@ -98,7 +99,7 @@ async fn endpoint_group_read_past_the_read_work_limit_aborts_out_of_resources() 
     assert!(
         matches!(
             results[0],
-            Err(Error::Abort { reason }) if reason == AbortReason::OUT_OF_RESOURCES.to_raw()
+            Err(Error::Remote(RemoteError::Abort { reason })) if reason == AbortReason::OUT_OF_RESOURCES
         ),
         "{results:?}"
     );
@@ -123,7 +124,7 @@ fn endpoint_read_work_limit_defaults_to_256_and_refuses_zero() {
     assert!(
         BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
             .database(database(&identity))
-            .identity(identity)
+            .device(identity)
             .read_work_limit(0)
             .build_session()
             .is_err()

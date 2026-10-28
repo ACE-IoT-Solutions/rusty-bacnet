@@ -43,10 +43,10 @@ impl BACnetObject for Forwarder {
                 ObjectType::NOTIFICATION_FORWARDER.to_raw(),
             )),
             SUBSCRIBED_RECIPIENTS => Ok(self.subscribed_recipients.read()),
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -59,10 +59,10 @@ impl BACnetObject for Forwarder {
     ) -> Result<(), Error> {
         match property {
             SUBSCRIBED_RECIPIENTS => self.subscribed_recipients.write(value),
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::WRITE_ACCESS_DENIED,
+            )),
         }
     }
 
@@ -187,11 +187,7 @@ async fn forwarder_subscribed_recipients_list_services_and_reads_reach_the_clien
             detail,
         }) => {
             assert_eq!(
-                (
-                    ErrorClass::from_raw(class as u16),
-                    ErrorCode::from_raw(code as u16),
-                    *detail
-                ),
+                (class, code, *detail),
                 (
                     ErrorClass::SERVICES,
                     ErrorCode::LIST_ELEMENT_NOT_FOUND,

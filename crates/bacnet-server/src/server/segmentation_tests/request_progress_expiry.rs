@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::server::segmented_receive::{
-    expire_segmented_requests, tests::observe_payload_drops, RequestPayload,
+    RequestPayload, expire_segmented_requests, tests::observe_payload_drops,
 };
 use bacnet_transport::port::TransportProvenance;
 use std::sync::atomic::AtomicUsize;
@@ -27,7 +27,7 @@ fn saved_state(last_progress: Instant, last_activity: Instant) -> SegmentedReque
     SegmentedRequestState {
         source_mac: MacAddr::new(),
         source_network: None,
-        direct_response: None,
+        route: bacnet_network::response_route::ResponseRoute::unverified(),
         payload,
         provenance: TransportProvenance::unverified(),
         last_activity,

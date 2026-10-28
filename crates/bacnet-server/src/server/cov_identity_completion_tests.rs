@@ -1,7 +1,8 @@
 use super::*;
-use crate::server::test_transport::{SendMode, SentFrame, TestTransport, BIP_LOCAL_MAC};
+use crate::server::test_transport::{BIP_LOCAL_MAC, SendMode, SentFrame, TestTransport};
 use bacnet_encoding::{apdu::decode_apdu, npdu::decode_npdu};
 use bacnet_objects::analog::AnalogValueObject;
+use bacnet_types::enums::EngineeringUnits;
 use bytes::Bytes;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::Notify;
@@ -99,7 +100,7 @@ struct Fixture {
 impl Fixture {
     fn new(hold: bool) -> Self {
         let mut db = clocked_test_database();
-        let mut av = AnalogValueObject::new(3, "value", 95).unwrap();
+        let mut av = AnalogValueObject::new(3, "value", EngineeringUnits::NO_UNITS).unwrap();
         av.set_relinquish_default(10.0).unwrap();
         db.add(Box::new(av)).unwrap();
         let sent = Arc::new(StdMutex::new(Vec::new()));
@@ -230,12 +231,14 @@ async fn stale_completion(
 ) {
     let fixture = Fixture::new(!confirmed);
     let original = proposal(kind, confirmed, property);
-    let mut snapshots = vec![fixture
-        .table
-        .write()
-        .await
-        .admit_for_test(original.clone(), 0)
-        .unwrap()];
+    let mut snapshots = vec![
+        fixture
+            .table
+            .write()
+            .await
+            .admit_for_test(original.clone(), 0)
+            .unwrap(),
+    ];
     if kind == CovNotificationKind::Multiple {
         snapshots.push(
             fixture
@@ -301,7 +304,23 @@ async fn stale_completion(
         if matches!(change, Change::Remove) {
             assert!(table.get_subscription(snapshots[0].key()).is_none());
         } else {
-            assert_eq!(table.get_subscription(snapshots[0].key()).unwrap().last_notified_observation,Some(crate::cov::CovObservation::new(crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(99.0)).unwrap(), None).unwrap()),"stale completion initial={initial} kind={kind:?} confirmed={confirmed} change={change:?}");
+            assert_eq!(
+                table
+                    .get_subscription(snapshots[0].key())
+                    .unwrap()
+                    .last_notified_observation,
+                Some(
+                    crate::cov::CovObservation::new(
+                        crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(
+                            99.0
+                        ))
+                        .unwrap(),
+                        None
+                    )
+                    .unwrap()
+                ),
+                "stale completion initial={initial} kind={kind:?} confirmed={confirmed} change={change:?}"
+            );
         }
         if kind == CovNotificationKind::Multiple {
             assert_eq!(
@@ -385,3 +404,7 @@ mod value_source_contract;
 mod completion_order;
 
 mod noncommandable_value_source;
+
+mod single_source_value_source;
+
+mod lighting_value_source;

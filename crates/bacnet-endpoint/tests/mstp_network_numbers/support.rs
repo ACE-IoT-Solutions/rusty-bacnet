@@ -1,5 +1,5 @@
 //! One real serial/MAC owner; gates observe admission without replacing transport behavior.
-use crate::mstp_wire::{decode_frame, encode_frame, FrameType, MstpFrame};
+use crate::mstp_wire::{FrameType, MstpFrame, decode_frame, encode_frame};
 use bacnet_client::client::{BACnetClient, ClientConfig};
 use bacnet_endpoint::session::{EndpointSession, SessionRole};
 use bacnet_objects::{analog::AnalogInputObject, database::ObjectDatabase};
@@ -9,10 +9,11 @@ use bacnet_transport::{
     mstp::{LoopbackSerial, MstpConfig, MstpExecutionMode, MstpTransport, SerialPort},
     port::{ReceivedNpdu, TransportPort},
 };
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::error::Error;
 use bytes::{Bytes, BytesMut};
 use std::{future::Future, sync::Arc, time::Duration};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 
 pub const NODE: u8 = 3;
 pub const PEER: u8 = 7;
@@ -102,7 +103,7 @@ impl SerialPort for ObservedSerial {
 }
 
 pub struct GatedTransport {
-    inner: AnyTransport<ObservedSerial>,
+    inner: AnyTransport,
     gates: Arc<Gates>,
 }
 impl TransportPort for GatedTransport {
@@ -168,7 +169,8 @@ pub enum Owner {
 impl Owner {
     async fn start(role: Role, transport: GatedTransport) -> Self {
         let mut db = ObjectDatabase::new();
-        let mut analog = AnalogInputObject::new(1, "number-progress", 0).unwrap();
+        let mut analog =
+            AnalogInputObject::new(1, "number-progress", EngineeringUnits::SQUARE_METERS).unwrap();
         analog.set_present_value(42.0);
         db.add(Box::new(analog)).unwrap();
         match role {
@@ -232,13 +234,17 @@ impl Peer {
         self.serial.write(&wire).await
     }
     pub async fn control(&self, destination: u8, data: &[u8]) {
-        bounded(self.frame(FrameType::BACnetDataNotExpectingReply, destination, data))
-            .await
-            .unwrap();
+        bounded(self.frame(
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+            destination,
+            data,
+        ))
+        .await
+        .unwrap();
     }
     pub async fn number(&mut self, number: u16) {
         let frame = self.data().await;
-        assert_eq!(frame.frame_type, FrameType::BACnetDataNotExpectingReply);
+        assert_eq!(frame.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
         assert_eq!(frame.destination, BROADCAST);
         assert_eq!(
             frame.data.as_ref(),
@@ -252,22 +258,22 @@ impl Peer {
     /// be an unexpected frame there (Clause 9.5.6.8) and cost the token.
     pub async fn data(&mut self) -> MstpFrame {
         bounded(async {
-            self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+            self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
             loop {
                 let frame = self.writes.recv().await.expect("serial owner disappeared");
                 assert_eq!(frame.source, NODE);
                 match frame.frame_type {
-                    FrameType::BACnetDataNotExpectingReply
-                    | FrameType::BACnetDataExpectingReply => return frame,
-                    FrameType::PollForMaster if frame.destination == PEER => {
-                        self.frame(FrameType::ReplyToPollForMaster, NODE, &[])
+                    FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+                    | FrameType::BACNET_DATA_EXPECTING_REPLY => return frame,
+                    FrameType::POLL_FOR_MASTER if frame.destination == PEER => {
+                        self.frame(FrameType::REPLY_TO_POLL_FOR_MASTER, NODE, &[])
                             .await
                             .unwrap();
                     }
-                    FrameType::Token if frame.destination == PEER => {
-                        self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+                    FrameType::TOKEN if frame.destination == PEER => {
+                        self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
                     }
-                    FrameType::PollForMaster | FrameType::ReplyPostponed => {}
+                    FrameType::POLL_FOR_MASTER | FrameType::REPLY_POSTPONED => {}
                     other => panic!("unexpected frame {other:?}"),
                 }
             }
@@ -283,12 +289,12 @@ impl Peer {
                 let frame = self.writes.recv().await.expect("serial owner disappeared");
                 assert_eq!(frame.source, NODE);
                 match frame.frame_type {
-                    FrameType::PollForMaster if frame.destination == PEER => {
-                        self.frame(FrameType::ReplyToPollForMaster, NODE, &[])
+                    FrameType::POLL_FOR_MASTER if frame.destination == PEER => {
+                        self.frame(FrameType::REPLY_TO_POLL_FOR_MASTER, NODE, &[])
                             .await
                             .unwrap();
                     }
-                    FrameType::Token if frame.destination == PEER => return,
+                    FrameType::TOKEN if frame.destination == PEER => return,
                     _ => {}
                 }
             }
@@ -305,17 +311,17 @@ impl Peer {
                 let frame = self.writes.recv().await.expect("serial owner disappeared");
                 assert_eq!(frame.source, NODE);
                 match frame.frame_type {
-                    FrameType::BACnetDataNotExpectingReply => return frame,
-                    FrameType::ReplyPostponed => {
-                        self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+                    FrameType::BACNET_DATA_NOT_EXPECTING_REPLY => return frame,
+                    FrameType::REPLY_POSTPONED => {
+                        self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
                     }
-                    FrameType::PollForMaster if frame.destination == PEER => {
-                        self.frame(FrameType::ReplyToPollForMaster, NODE, &[])
+                    FrameType::POLL_FOR_MASTER if frame.destination == PEER => {
+                        self.frame(FrameType::REPLY_TO_POLL_FOR_MASTER, NODE, &[])
                             .await
                             .unwrap();
                     }
-                    FrameType::Token if frame.destination == PEER => {
-                        self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+                    FrameType::TOKEN if frame.destination == PEER => {
+                        self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
                     }
                     _ => {}
                 }
@@ -330,7 +336,7 @@ impl Peer {
             .unwrap()
             .forget();
         assert!(
-            bounded(self.frame(FrameType::Token, NODE, &[]))
+            bounded(self.frame(FrameType::TOKEN, NODE, &[]))
                 .await
                 .is_err(),
             "no receive owner after stop/drop"
@@ -359,7 +365,7 @@ pub async fn transport(mode: MstpExecutionMode, gates: Arc<Gates>) -> (GatedTran
         },
     )
     .with_execution_mode(mode);
-    let inner = AnyTransport::Mstp(transport);
+    let inner = AnyTransport::from(transport);
     assert_eq!(inner.local_receive_apdu_capacity(), 480);
     assert_eq!(inner.egress_apdu_limit(), 480);
     assert!(inner.bip_port().is_none(), "no configured B/IP authority");

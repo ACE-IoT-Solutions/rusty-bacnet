@@ -1,6 +1,6 @@
 //! Complete target recipient mutation owner: preparation, commit and owned delivery.
 use super::audit_reporter::{
-    deliver, deliver_global_broadcast, encode_notification, DeliveryCompletion,
+    DeliveryCompletion, deliver, deliver_global_broadcast, encode_notification,
 };
 use super::*;
 use bacnet_objects::traits::BACnetObject;
@@ -30,10 +30,7 @@ pub(super) struct TargetAudit<T: TransportPort> {
 }
 
 pub(super) fn denied() -> Error {
-    Error::Protocol {
-        class: ErrorClass::SERVICES.to_raw() as u32,
-        code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
-    }
+    Error::protocol(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED)
 }
 
 /// Validate before transport startup and before installing any capability.
@@ -99,7 +96,7 @@ pub(super) fn validate(
             &status.configuration(),
             device,
             route.as_ref(),
-            config.max_apdu_length,
+            u32::from(config.device.max_apdu_length()),
         )?;
         // Set here, at prepare and finish, only. A local network number learned
         // later can make a routed binding at the link broadcast MAC unusable
@@ -164,7 +161,7 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
             sequence: db.event_sequence_internal(),
             network: Arc::clone(network),
             transactions: Arc::clone(transactions),
-            max_apdu: config.max_apdu_length,
+            max_apdu: u32::from(config.device.max_apdu_length()),
         });
         let sink: Arc<dyn AuditRecipientChangeSink> = runtime.clone();
         db.get_mut(&device)
@@ -184,10 +181,12 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
         db.protect_audit_internal(&runtime.owner)?;
         assert!(transactions.audit_routes.set(routes).is_ok());
         transactions.set_audit_owner(&runtime.owner);
-        assert!(transactions
-            .audit_batch
-            .set(Arc::downgrade(&runtime.batches))
-            .is_ok());
+        assert!(
+            transactions
+                .audit_batch
+                .set(Arc::downgrade(&runtime.batches))
+                .is_ok()
+        );
         super::audit_batch_runtime::start(
             Arc::clone(&runtime.batches),
             Arc::clone(network),

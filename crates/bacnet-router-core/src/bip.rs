@@ -1,256 +1,238 @@
-//! Borrowed BACnet/IPv4 BVLL framing for ESP-IDF and other UDP adapters.
+//! B/IP ports: the router's adapter over `bacnet-bip-core`'s port driver
+//! (feature `bip`).
+//!
+//! The port itself is bip-core's ([`bacnet_bip_core::port`]),
+//! one type per mode, since a link is never both a BBMD and a foreign
+//! device: a [`NodePort`] for a node in normal or foreign-device mode, and a
+//! [`BbmdPort`] for a BBMD, which forwards broadcasts and answers the
+//! management requests from its tables. It sends what its node asks (the
+//! NAKs, a foreign device's registrations, the broadcasts it holds until
+//! the first registration resolves) through the caller's [`Datagrams`].
+//!
+//! To the router a B/IP port is data, the [`PortConfig`] that
+//! [`BipPort::config`] reads from the node's [`Link`]. [`BipPort`] is a
+//! thin translator that keeps no state: the caller owns the bip-core port,
+//! which owns its node, and lends it to each call.
+//!
+//! Wiring a port to the router:
+//!
+//! - **Receive:** hand each datagram to the bip-core port's `receive`. For
+//!   [`Ingress::Npdu`], pass [`BipPort::arrived`]'s frame to
+//!   [`Router::receive`](crate::Router::receive). Its source is the B/IP
+//!   address the node delivered from, which for a Forwarded-NPDU is the
+//!   origin (Annex J.2.5), so the SADR the router adds names the origin
+//!   (#1678). A datagram the node drops never reaches the router, and
+//!   neither does a management request a BBMD port answered.
+//! - **Send:** hand each [`Send`] for the port to [`BipPort::send`], and an
+//!   error to [`Router::refused`](crate::Router::refused). A unicast goes
+//!   to the B/IP address its MAC spells, and a group address is refused
+//!   (#1677); a broadcast is held while a foreign device's first
+//!   registration is outstanding, and also forwarded by a BBMD.
+//! - **Start:** call [`NodePort::start`] once, before anything else: a
+//!   foreign device's first registration is due at once, and its response
+//!   timeout is the port's first deadline. A [`BbmdPort`] registers
+//!   nowhere, and needs no start.
+//! - **Timers:** sleep until the earliest of the router's and the ports'
+//!   `next_deadline`, and call each one's `on_deadline`.
+//! - **Groups:** [`BipPort::config`] installs the link's rules in the
+//!   router, including the UDP port its local broadcast reaches.
+//!
+//! [`Ingress::Npdu`]: bacnet_bip_core::port::Ingress::Npdu
+//!
+//! # Annex J and Clause 6, for a router's B/IP port
+//!
+//! | Obligation, in our words | Clause | Test |
+//! | --- | --- | --- |
+//! | A Forwarded-NPDU's originating address is the source of its NPDU, so a router names it in the SADR it adds, and the network priority travels with the message | J.2.5, 6.2.2, 6.5.4 | `tests/glue_bip_mstp.rs`: `forwarded_origin_and_priority_survive_bip_to_mstp_composition` |
+//! | A port that is a foreign-device registration registers before the router announces its networks there | J.7.2, J.7.4 | `tests/glue_bip_foreign.rs`: `foreign_port_announces_after_registration`, `foreign_port_announces_after_the_response_timeout`, `held_broadcasts_leave_before_a_later_one` |
+//! | A BBMD port hands the router the broadcasts its subnet, its peers and its foreign devices send, and forwards them, and forwards the router's own broadcasts too | J.4.5, J.7.1 | `tests/glue_bip.rs`: `bbmd_port_delivers_and_forwards` |
+//! | A BBMD port answers the management requests itself, so none reaches the router | J.4.4.1, J.5.2 | `tests/glue_bip.rs`: `bbmd_port_delivers_and_forwards` |
+//! | A directed message goes to one node's own address, never to a group address | J.2.11, J.3 | `tests/glue_bip.rs`: `unicast_group_destinations_are_rejected_before_encoding_or_send` |
+//!
+//! Local rules: a datagram the node drops, a malformed one included,
+//! changes no router or queue state (`tests/glue_bip_mstp.rs`:
+//! `strict_bip_failure_precedes_router_or_queue_mutation`); each refusal of
+//! a router send maps to one [`SendRefusal`] and is counted once
+//! (`real_bip_success_and_admission_failures_are_observed_once`,
+//! `tests/glue_bip.rs`: `refusals_map_to_the_routers`). The port's own
+//! rules are bip-core's ([`bacnet_bip_core::port`]).
 
-use crate::LinkAddress;
+use core::net::SocketAddrV4;
 
-/// BACnet/IPv4 BVLC type octet.
-pub const BVLL_TYPE_BACNET_IP: u8 = 0x81;
-/// Common BVLL header length.
-pub const BVLL_HEADER_LENGTH: usize = 4;
-const FORWARDED_ADDRESS_LENGTH: usize = 6;
+use bacnet_bip_core::codec::{address_from_slice, address_to_octets};
+use bacnet_bip_core::node::{self, Cast, Delivery, Link};
+use bacnet_bip_core::port::{BbmdPort, Datagrams, NodePort};
 
-/// IPv4 address and UDP port used as a BACnet/IP MAC.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct Ipv4SocketAddress {
-    /// IPv4 octets.
-    pub ip: [u8; 4],
-    /// UDP port without default-port substitution.
-    pub port: u16,
+use crate::npdu::NpduLimits;
+use crate::router::{Dest, Groups, PortConfig, Send, SendRefusal};
+use crate::{Arrived, Instant, MAX_NPDU, Mac, PortId};
+
+/// A router port on a B/IP link, by its index: the translator between the
+/// router and a bip-core [`NodePort`] or [`BbmdPort`], which the caller owns
+/// and lends to each call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BipPort {
+    port: PortId,
 }
 
-/// UDP metadata that the platform adapter must preserve for one datagram.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct UdpDatagramMeta {
-    /// Actual immediate UDP sender.
-    pub peer: Ipv4SocketAddress,
-    /// Actual local IPv4 destination, when supplied by packet metadata.
-    pub destination: Option<[u8; 4]>,
-    /// Whether the destination address was multicast or broadcast.
-    pub destination_is_group: bool,
-    /// Whether the socket reported a truncated datagram.
-    pub truncated: bool,
-}
+impl BipPort {
+    /// Port `port`.
+    #[must_use]
+    pub const fn new(port: PortId) -> Self {
+        Self { port }
+    }
 
-/// NPDU-carrying BVLC functions admitted by the portable adapter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BvlcFunction {
-    /// Forwarded-NPDU (`0x04`).
-    ForwardedNpdu,
-    /// Original-Unicast-NPDU (`0x0a`).
-    OriginalUnicastNpdu,
-    /// Original-Broadcast-NPDU (`0x0b`).
-    OriginalBroadcastNpdu,
-}
+    /// The port's index.
+    #[must_use]
+    pub const fn port(&self) -> PortId {
+        self.port
+    }
 
-impl BvlcFunction {
-    /// Return the wire function octet.
-    pub const fn to_raw(self) -> u8 {
-        match self {
-            Self::ForwardedNpdu => 0x04,
-            Self::OriginalUnicastNpdu => 0x0a,
-            Self::OriginalBroadcastNpdu => 0x0b,
+    /// The [`PortConfig`] of a B/IP port on `network` over `link`: the
+    /// router's MAC is the link's own B/IP address, and its limits are
+    /// [`Link::max_npdu`] for each cast, at most [`MAX_NPDU`] (Table 6-1).
+    #[must_use]
+    pub fn config(link: &Link, network: u16) -> PortConfig {
+        // At most MAX_NPDU, so the casts are exact.
+        let limit = |cast| link.max_npdu(cast).min(MAX_NPDU) as u16;
+        PortConfig::new(
+            network,
+            Mac::from_array(address_to_octets(link.address)),
+            NpduLimits {
+                unicast: limit(Cast::Unicast),
+                broadcast: limit(Cast::Broadcast),
+            },
+            Groups::Bip {
+                destinations: link.groups(),
+                port: link.address.port(),
+            },
+        )
+    }
+
+    /// The router's view of an NPDU the port delivered
+    /// ([`Ingress::Npdu`](bacnet_bip_core::port::Ingress::Npdu)): from its
+    /// source B/IP address, a link broadcast when it reached more than this
+    /// node.
+    #[must_use]
+    pub fn arrived<'d>(&self, delivery: &Delivery<'d>) -> Arrived<'d> {
+        Arrived {
+            port: self.port,
+            source: Mac::from_array(address_to_octets(delivery.source)),
+            link_group: delivery.group,
+            npdu: delivery.npdu,
         }
     }
-}
 
-/// Borrowed B/IP ingress preserving both immediate and logical origin.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BipIngress<'a> {
-    /// Admitted BVLC function.
-    pub function: BvlcFunction,
-    /// Actual UDP sender used for peer policy and diagnostics.
-    pub immediate_peer: Ipv4SocketAddress,
-    /// Logical NPDU source; differs for Forwarded-NPDU.
-    pub logical_source: Ipv4SocketAddress,
-    /// Actual local destination supplied by the UDP adapter.
-    pub local_destination: [u8; 4],
-    /// Whether the datagram arrived through a group destination.
-    pub link_layer_group: bool,
-    /// Borrowed complete NPDU bytes.
-    pub npdu: &'a [u8],
-}
-
-impl BipIngress<'_> {
-    /// Return the logical BACnet/IP source as a six-byte link address.
+    /// Carry out one of the router's sends on `link`, the bip-core port of
+    /// this router port: a unicast to the B/IP address its MAC spells,
+    /// which must be six octets and no group address, or a broadcast. A
+    /// send for another port is refused.
     ///
-    /// For Forwarded-NPDU this is the embedded origin, not the immediate BBMD.
-    pub fn logical_source_mac(&self) -> LinkAddress {
-        socket_address_mac(self.logical_source)
-    }
-
-    /// Return the actual UDP sender as a six-byte link address for peer policy.
-    pub fn immediate_peer_mac(&self) -> LinkAddress {
-        socket_address_mac(self.immediate_peer)
-    }
-}
-
-/// Strict portable BVLL ingress failure.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BipDecodeError {
-    /// Platform reported datagram truncation.
-    DatagramTruncated,
-    /// Destination packet metadata was unavailable.
-    MissingDestinationMetadata,
-    /// Fewer than four header octets were supplied.
-    HeaderTruncated,
-    /// The BVLC type was not BACnet/IPv4.
-    WrongType(u8),
-    /// The declared BVLL length did not exactly equal the UDP datagram length.
-    LengthMismatch {
-        /// Declared BVLL length.
-        declared: usize,
-        /// Actual UDP payload length.
-        actual: usize,
-    },
-    /// The BVLC function is not an NPDU-carrying function supported here.
-    UnsupportedFunction(u8),
-    /// Forwarded-NPDU omitted its embedded origin.
-    ForwardedAddressTruncated,
-    /// Original unicast/broadcast framing contradicted actual UDP destination class.
-    DestinationClassMismatch,
-    /// Caller output storage is too small.
-    OutputTooSmall {
-        /// Required bytes.
-        needed: usize,
-        /// Available bytes.
-        available: usize,
-    },
-    /// Complete BVLL frame exceeds the 16-bit length field.
-    FrameTooLong(usize),
-}
-
-/// Strictly decode one complete UDP datagram carrying an NPDU.
-pub fn decode_bip_datagram<'a>(
-    data: &'a [u8],
-    meta: UdpDatagramMeta,
-) -> Result<BipIngress<'a>, BipDecodeError> {
-    if meta.truncated {
-        return Err(BipDecodeError::DatagramTruncated);
-    }
-    let Some(local_destination) = meta.destination else {
-        return Err(BipDecodeError::MissingDestinationMetadata);
-    };
-    if data.len() < BVLL_HEADER_LENGTH {
-        return Err(BipDecodeError::HeaderTruncated);
-    }
-    if data[0] != BVLL_TYPE_BACNET_IP {
-        return Err(BipDecodeError::WrongType(data[0]));
-    }
-    let declared = u16::from_be_bytes([data[2], data[3]]) as usize;
-    if declared != data.len() {
-        return Err(BipDecodeError::LengthMismatch {
-            declared,
-            actual: data.len(),
-        });
-    }
-
-    let (function, logical_source, npdu) = match data[1] {
-        0x04 => {
-            if data.len() < BVLL_HEADER_LENGTH + FORWARDED_ADDRESS_LENGTH {
-                return Err(BipDecodeError::ForwardedAddressTruncated);
-            }
-            let origin = Ipv4SocketAddress {
-                ip: [data[4], data[5], data[6], data[7]],
-                port: u16::from_be_bytes([data[8], data[9]]),
-            };
-            (
-                BvlcFunction::ForwardedNpdu,
-                origin,
-                &data[BVLL_HEADER_LENGTH + FORWARDED_ADDRESS_LENGTH..],
-            )
+    /// Each refusal maps to the router's: an NPDU too long for the link, or
+    /// for a held broadcast's slot, is [`SendRefusal::TooLong`]; a full
+    /// hold or socket is [`SendRefusal::Full`]; anything else, a group
+    /// destination included, [`SendRefusal::Other`].
+    pub fn send(
+        &self,
+        link: &mut impl Port,
+        send: &Send<'_>,
+        now: Instant,
+        out: &mut impl Datagrams,
+    ) -> Result<(), SendRefusal> {
+        if send.port != self.port {
+            return Err(SendRefusal::Other);
         }
-        0x0a => {
-            if meta.destination_is_group {
-                return Err(BipDecodeError::DestinationClassMismatch);
+        match send.to {
+            Dest::Unicast(mac) => {
+                let to = address_from_slice(mac).map_err(|_| SendRefusal::Other)?;
+                link.unicast_to(to, send.npdu, now, out)
             }
-            (
-                BvlcFunction::OriginalUnicastNpdu,
-                meta.peer,
-                &data[BVLL_HEADER_LENGTH..],
-            )
+            Dest::Broadcast => link.broadcast_all(send.npdu, now, out),
         }
-        0x0b => {
-            if !meta.destination_is_group {
-                return Err(BipDecodeError::DestinationClassMismatch);
-            }
-            (
-                BvlcFunction::OriginalBroadcastNpdu,
-                meta.peer,
-                &data[BVLL_HEADER_LENGTH..],
-            )
+        .map_err(refusal)
+    }
+}
+
+/// A bip-core port the router sends through: a [`NodePort`] or a
+/// [`BbmdPort`]. It is sealed: only those two implement it.
+pub trait Port: sealed::Sealed {}
+
+impl<const X: usize, const N: usize> Port for NodePort<'_, X, N> {}
+
+impl<const B: usize, const F: usize> Port for BbmdPort<'_, B, F> {}
+
+mod sealed {
+    use super::{BbmdPort, Datagrams, Instant, NodePort, SocketAddrV4};
+    use bacnet_bip_core::node::SendRefusal;
+
+    /// What [`BipPort::send`](super::BipPort::send) asks of a port.
+    pub trait Sealed {
+        /// The port's unicast.
+        fn unicast_to(
+            &mut self,
+            to: SocketAddrV4,
+            npdu: &[u8],
+            now: Instant,
+            out: &mut impl Datagrams,
+        ) -> Result<(), SendRefusal>;
+
+        /// The port's broadcast, held or sent.
+        fn broadcast_all(
+            &mut self,
+            npdu: &[u8],
+            now: Instant,
+            out: &mut impl Datagrams,
+        ) -> Result<(), SendRefusal>;
+    }
+
+    impl<const X: usize, const N: usize> Sealed for NodePort<'_, X, N> {
+        fn unicast_to(
+            &mut self,
+            to: SocketAddrV4,
+            npdu: &[u8],
+            now: Instant,
+            out: &mut impl Datagrams,
+        ) -> Result<(), SendRefusal> {
+            self.unicast(to, npdu, now, out)
         }
-        other => return Err(BipDecodeError::UnsupportedFunction(other)),
-    };
 
-    Ok(BipIngress {
-        function,
-        immediate_peer: meta.peer,
-        logical_source,
-        local_destination,
-        link_layer_group: meta.destination_is_group,
-        npdu,
-    })
-}
-
-/// Encode Original-Unicast or Original-Broadcast into caller storage.
-pub fn encode_bvll(
-    output: &mut [u8],
-    function: BvlcFunction,
-    npdu: &[u8],
-) -> Result<usize, BipDecodeError> {
-    if function == BvlcFunction::ForwardedNpdu {
-        return Err(BipDecodeError::UnsupportedFunction(function.to_raw()));
+        fn broadcast_all(
+            &mut self,
+            npdu: &[u8],
+            now: Instant,
+            out: &mut impl Datagrams,
+        ) -> Result<(), SendRefusal> {
+            self.broadcast(npdu, now, out).map(|_| ())
+        }
     }
-    encode_parts(output, function, &[], npdu)
-}
 
-/// Encode Forwarded-NPDU while preserving the original B/IP source.
-pub fn encode_forwarded_npdu(
-    output: &mut [u8],
-    origin: Ipv4SocketAddress,
-    npdu: &[u8],
-) -> Result<usize, BipDecodeError> {
-    let mut address = [0; FORWARDED_ADDRESS_LENGTH];
-    address[..4].copy_from_slice(&origin.ip);
-    address[4..].copy_from_slice(&origin.port.to_be_bytes());
-    encode_parts(output, BvlcFunction::ForwardedNpdu, &address, npdu)
-}
+    impl<const B: usize, const F: usize> Sealed for BbmdPort<'_, B, F> {
+        fn unicast_to(
+            &mut self,
+            to: SocketAddrV4,
+            npdu: &[u8],
+            now: Instant,
+            out: &mut impl Datagrams,
+        ) -> Result<(), SendRefusal> {
+            self.unicast(to, npdu, now, out)
+        }
 
-fn encode_parts(
-    output: &mut [u8],
-    function: BvlcFunction,
-    prefix: &[u8],
-    npdu: &[u8],
-) -> Result<usize, BipDecodeError> {
-    let total = BVLL_HEADER_LENGTH
-        .checked_add(prefix.len())
-        .and_then(|length| length.checked_add(npdu.len()))
-        .ok_or(BipDecodeError::FrameTooLong(usize::MAX))?;
-    if total > u16::MAX as usize {
-        return Err(BipDecodeError::FrameTooLong(total));
+        fn broadcast_all(
+            &mut self,
+            npdu: &[u8],
+            now: Instant,
+            out: &mut impl Datagrams,
+        ) -> Result<(), SendRefusal> {
+            self.broadcast(npdu, now, out)
+        }
     }
-    if output.len() < total {
-        return Err(BipDecodeError::OutputTooSmall {
-            needed: total,
-            available: output.len(),
-        });
-    }
-    output[0] = BVLL_TYPE_BACNET_IP;
-    output[1] = function.to_raw();
-    output[2..4].copy_from_slice(&(total as u16).to_be_bytes());
-    output[4..4 + prefix.len()].copy_from_slice(prefix);
-    output[4 + prefix.len()..total].copy_from_slice(npdu);
-    Ok(total)
 }
 
-fn socket_address_mac(address: Ipv4SocketAddress) -> LinkAddress {
-    let port = address.port.to_be_bytes();
-    LinkAddress::try_from_slice(&[
-        address.ip[0],
-        address.ip[1],
-        address.ip[2],
-        address.ip[3],
-        port[0],
-        port[1],
-    ])
-    .expect("a six-byte B/IP MAC always fits")
+/// The router's refusal for the port's.
+fn refusal(why: node::SendRefusal) -> SendRefusal {
+    match why {
+        node::SendRefusal::TooLong { .. } => SendRefusal::TooLong,
+        node::SendRefusal::HoldFull | node::SendRefusal::SocketFull => SendRefusal::Full,
+        _ => SendRefusal::Other,
+    }
 }

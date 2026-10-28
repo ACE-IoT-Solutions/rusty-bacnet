@@ -191,27 +191,38 @@ mod tests {
             port: 0,
             broadcast_address: "255.255.255.255".into(),
             share_port_by_address: false,
+            bip_mode: Default::default(),
+            bip6_foreign: None,
+            multicast: None,
             sc_hub: None,
             sc_vmac: None,
             sc_device_uuid: [0; 16],
+            sc_npdu_admission_policy: Default::default(),
             sc_ca_cert: None,
             sc_client_cert: None,
             sc_client_key: None,
             sc_heartbeat_interval_ms: None,
             sc_heartbeat_timeout_ms: None,
             ipv6_interface: None,
-            serial_port: None,
-            mstp_baud: 38_400,
-            mstp_mac: 1,
-            mstp_max_master: 127,
-            mstp_max_info_frames: 1,
-            mstp_extended_frames: false,
+            mstp: crate::mstp_py::MstpOptions {
+                serial_port: None,
+                baud: 38_400,
+                mac: 1,
+                max_master: 127,
+                max_info_frames: 1,
+                extended_frames: false,
+                echo: false,
+                echo_grace_ms: None,
+                timing: crate::mstp_py::MstpTiming::default(),
+            },
             dcc_password: None,
             mutation_policy: bacnet_server::mutation::MutationPolicy::default(),
+            mutation_callback: None,
             dcc_policy: server::DccPolicy::default(),
             dcc_source_restriction: None,
             dcc_disable_rate_limit: None,
             reinit_password: None,
+            reinitialize: None,
             request_admission_policy: server::RequestAdmissionPolicy::default(),
             read_property_multiple_budget: server::ReadPropertyMultipleBudget::default(),
             get_alarm_summary_budget: server::GetAlarmSummaryBudget::default(),
@@ -231,6 +242,7 @@ mod tests {
             pending_objects: std::sync::Mutex::new(Vec::new()),
             pending_forwarder_save_counters: std::sync::Mutex::new(Vec::new()),
             forwarder_save_counters: Arc::new(std::sync::Mutex::new(Vec::new())),
+            router: None,
         }
     }
 
@@ -364,7 +376,7 @@ mod tests {
                     .unwrap()
                     .extract::<u32>()
                     .unwrap(),
-                ErrorClass::SERVICES.to_raw() as u32
+                u32::from(ErrorClass::SERVICES.to_raw())
             );
             assert_eq!(
                 mismatch
@@ -373,7 +385,7 @@ mod tests {
                     .unwrap()
                     .extract::<u32>()
                     .unwrap(),
-                ErrorCode::INVALID_FILE_ACCESS_METHOD.to_raw() as u32
+                u32::from(ErrorCode::INVALID_FILE_ACCESS_METHOD.to_raw())
             );
             assert_eq!(
                 server

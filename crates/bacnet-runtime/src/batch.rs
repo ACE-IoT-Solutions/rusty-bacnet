@@ -1,173 +1,249 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use tokio::sync::oneshot;
+use bacnet_types::enums::PropertyIdentifier;
+use bacnet_types::primitives::ObjectIdentifier;
+use tokio::task::JoinHandle;
 
-use crate::{
-    DeviceKey, DevicePath, OperationId, OutcomeError, PropertyRead, RuntimeError, WorkPriority,
-};
+use crate::{AttachmentId, RuntimeError};
 
-/// Policy controlling whether a runtime cache may satisfy a read.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FreshnessPolicy {
-    /// Always issue BACnet wire I/O.
-    WireOnly,
-    /// Accept an observed value no older than this duration.
-    MaxAge(Duration),
+/// Runtime operation identifier.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct OperationId(pub(crate) u64);
+
+/// Exact path to one BACnet device from an attachment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DevicePath {
+    /// Device on the attachment's directly connected B/IP network.
+    Direct {
+        /// Six-octet B/IP MAC (IPv4 address followed by UDP port).
+        mac: Vec<u8>,
+    },
+    /// Device on a remote BACnet network reached through a B/IP router.
+    Routed {
+        /// Six-octet B/IP MAC of the immediate-hop router.
+        ingress_mac: Vec<u8>,
+        /// Remote BACnet network number, in 1..=65534.
+        dnet: u16,
+        /// Destination MAC on the remote network, preserved byte-for-byte.
+        dadr: Vec<u8>,
+    },
 }
 
-/// Provenance for one returned read value.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReadSource {
-    /// Value came from this operation's BACnet wire exchange.
-    Wire,
-    /// Value came from the runtime observation cache.
-    Cache,
+/// Exact device path and property coordinates.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PropertyTarget {
+    /// Direct or routed device path.
+    pub path: DevicePath,
+    /// Object identifier.
+    pub object_identifier: ObjectIdentifier,
+    /// Property identifier.
+    pub property_identifier: PropertyIdentifier,
+    /// Optional array index.
+    pub property_array_index: Option<u32>,
 }
 
-/// One property in an ordered native read batch.
+impl PropertyTarget {
+    /// Creates a direct B/IP property target.
+    pub fn new(
+        destination_mac: impl Into<Vec<u8>>,
+        object_identifier: ObjectIdentifier,
+        property_identifier: PropertyIdentifier,
+        property_array_index: Option<u32>,
+    ) -> Self {
+        Self {
+            path: DevicePath::Direct {
+                mac: destination_mac.into(),
+            },
+            object_identifier,
+            property_identifier,
+            property_array_index,
+        }
+    }
+
+    /// Creates a property target on a remote network through a B/IP router.
+    pub fn routed(
+        ingress_mac: impl Into<Vec<u8>>,
+        dnet: u16,
+        dadr: impl Into<Vec<u8>>,
+        object_identifier: ObjectIdentifier,
+        property_identifier: PropertyIdentifier,
+        property_array_index: Option<u32>,
+    ) -> Self {
+        Self {
+            path: DevicePath::Routed {
+                ingress_mac: ingress_mac.into(),
+                dnet,
+                dadr: dadr.into(),
+            },
+            object_identifier,
+            property_identifier,
+            property_array_index,
+        }
+    }
+}
+
+/// One ordered read input.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadBatchItem {
-    /// Stable caller position.
+    /// Original caller position, preserved in the outcome.
     pub input_index: usize,
-    /// Exact attachment-qualified device.
-    pub device: DeviceKey,
-    /// Property coordinates and planning category.
-    pub read: PropertyRead,
-    /// Cache acceptance policy.
-    pub freshness: FreshnessPolicy,
+    /// Attachment to use.
+    pub attachment_id: AttachmentId,
+    /// Direct or routed B/IP property target.
+    pub target: PropertyTarget,
 }
 
-/// Coarse read-batch request.
-#[derive(Clone, Debug)]
+/// An ordered bounded read batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadBatch {
-    /// Ordered inputs, possibly spanning devices and attachments.
+    /// Inputs in caller order.
     pub items: Vec<ReadBatchItem>,
-    /// Absolute operation deadline.
-    pub deadline: Instant,
-    /// Runtime scheduling lane.
-    pub priority: WorkPriority,
+    /// Maximum time allowed for the whole batch.
+    pub timeout: Duration,
 }
 
-/// One ordered read result with path and cache/wire provenance.
+impl ReadBatch {
+    /// Creates a read batch with a ten-second deadline.
+    pub fn new(items: Vec<ReadBatchItem>) -> Self {
+        Self {
+            items,
+            timeout: Duration::from_secs(10),
+        }
+    }
+}
+
+/// One ordered read outcome. A failed item does not discard later outcomes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadOutcome {
-    /// Original input position.
+    /// Original caller position.
     pub input_index: usize,
-    /// Exact device used.
-    pub device: DeviceKey,
-    /// Exact selected path, when device resolution succeeded.
+    /// Attachment used by the input.
+    pub attachment_id: AttachmentId,
+    /// Exact requested path, or `None` when attachment resolution failed.
     pub path: Option<DevicePath>,
-    /// Raw application-tagged BACnet value.
+    /// Raw application-tagged property value on success.
     pub raw_value: Option<Vec<u8>>,
-    /// Wire or cache provenance for a successful value.
-    pub source: Option<ReadSource>,
-    /// Structured per-item failure.
-    pub error: Option<OutcomeError>,
+    /// Typed error on item failure.
+    pub error: Option<RuntimeError>,
 }
 
-/// One authorized property write.
+/// One ordered write input.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WriteBatchItem {
-    /// Stable caller position.
+    /// Original caller position, preserved in the outcome.
     pub input_index: usize,
-    /// Exact attachment-qualified device.
-    pub device: DeviceKey,
-    /// Property coordinates; `value_category` is ignored for writes.
-    pub target: PropertyRead,
-    /// Raw application-tagged value; application Null relinquishes a priority.
+    /// Attachment to use.
+    pub attachment_id: AttachmentId,
+    /// Direct or routed B/IP property target.
+    pub target: PropertyTarget,
+    /// Raw application-tagged value.
     pub raw_value: Vec<u8>,
-    /// Optional BACnet command priority, 1 through 16.
-    pub bacnet_priority: Option<u8>,
-    /// Python authorization decision identifier retained for audit correlation.
-    pub authorization_id: String,
-    /// Read the property back and compare exact raw bytes after a successful write.
-    pub verify_readback: bool,
+    /// Optional BACnet write priority.
+    pub priority: Option<u8>,
 }
 
-/// Coarse ordered write-batch request.
-#[derive(Clone, Debug)]
+/// An ordered bounded write batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WriteBatch {
-    /// Pre-authorized writes.
+    /// Inputs in caller order.
     pub items: Vec<WriteBatchItem>,
-    /// Absolute operation deadline.
-    pub deadline: Instant,
-    /// Runtime scheduling lane.
-    pub priority: WorkPriority,
+    /// Maximum time allowed for the whole batch.
+    pub timeout: Duration,
 }
 
-/// One ordered write result.
+impl WriteBatch {
+    /// Creates a write batch with a ten-second deadline.
+    pub fn new(items: Vec<WriteBatchItem>) -> Self {
+        Self {
+            items,
+            timeout: Duration::from_secs(10),
+        }
+    }
+}
+
+/// One ordered write outcome. A failed item does not discard later outcomes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WriteOutcome {
-    /// Original input position.
+    /// Original caller position.
     pub input_index: usize,
-    /// Exact device used.
-    pub device: DeviceKey,
-    /// Exact selected path, when device resolution succeeded.
+    /// Attachment used by the input.
+    pub attachment_id: AttachmentId,
+    /// Exact requested path, or `None` when attachment resolution failed.
     pub path: Option<DevicePath>,
-    /// Authorization correlation value copied from the request.
-    pub authorization_id: String,
-    /// Whether the BACnet write completed successfully.
+    /// Whether BACnet acknowledged the write.
     pub written: bool,
-    /// Raw readback when requested and successful.
-    pub readback: Option<Vec<u8>>,
-    /// Structured per-item failure.
-    pub error: Option<OutcomeError>,
+    /// Typed error on item failure.
+    pub error: Option<RuntimeError>,
 }
 
-/// Submitted read operation whose ID is available before awaiting completion.
-#[derive(Debug)]
+/// Future-like handle for one scheduled read batch.
 pub struct ReadBatchOperation {
-    /// ID accepted by `BacnetRuntime::cancel`.
+    /// Operation identifier.
     pub id: OperationId,
-    receiver: oneshot::Receiver<Result<Vec<ReadOutcome>, RuntimeError>>,
+    task: Option<JoinHandle<Result<Vec<ReadOutcome>, RuntimeError>>>,
 }
 
 impl ReadBatchOperation {
     pub(crate) fn new(
         id: OperationId,
-        receiver: oneshot::Receiver<Result<Vec<ReadOutcome>, RuntimeError>>,
+        task: JoinHandle<Result<Vec<ReadOutcome>, RuntimeError>>,
     ) -> Self {
-        Self { id, receiver }
+        Self {
+            id,
+            task: Some(task),
+        }
     }
 
-    /// Awaits the final ordered batch result.
-    pub async fn result(self) -> Result<Vec<ReadOutcome>, RuntimeError> {
-        self.receiver
-            .await
-            .unwrap_or_else(|_| Err(RuntimeError::internal("read operation task ended")))
+    /// Waits for the ordered batch result.
+    pub async fn result(mut self) -> Result<Vec<ReadOutcome>, RuntimeError> {
+        match self.task.take().expect("operation task present").await {
+            Ok(result) => result,
+            Err(error) if error.is_cancelled() => Err(RuntimeError::stopped()),
+            Err(error) => Err(RuntimeError::internal(error.to_string())),
+        }
     }
 }
 
-/// Submitted write operation whose ID is available before awaiting completion.
-#[derive(Debug)]
+impl Drop for ReadBatchOperation {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+/// Future-like handle for one scheduled write batch.
 pub struct WriteBatchOperation {
-    /// ID accepted by `BacnetRuntime::cancel`.
+    /// Operation identifier.
     pub id: OperationId,
-    receiver: oneshot::Receiver<Result<Vec<WriteOutcome>, RuntimeError>>,
+    task: Option<JoinHandle<Result<Vec<WriteOutcome>, RuntimeError>>>,
 }
 
 impl WriteBatchOperation {
     pub(crate) fn new(
         id: OperationId,
-        receiver: oneshot::Receiver<Result<Vec<WriteOutcome>, RuntimeError>>,
+        task: JoinHandle<Result<Vec<WriteOutcome>, RuntimeError>>,
     ) -> Self {
-        Self { id, receiver }
+        Self {
+            id,
+            task: Some(task),
+        }
     }
 
-    /// Awaits the final ordered batch result.
-    pub async fn result(self) -> Result<Vec<WriteOutcome>, RuntimeError> {
-        self.receiver
-            .await
-            .unwrap_or_else(|_| Err(RuntimeError::internal("write operation task ended")))
+    /// Waits for the ordered batch result.
+    pub async fn result(mut self) -> Result<Vec<WriteOutcome>, RuntimeError> {
+        match self.task.take().expect("operation task present").await {
+            Ok(result) => result,
+            Err(error) if error.is_cancelled() => Err(RuntimeError::stopped()),
+            Err(error) => Err(RuntimeError::internal(error.to_string())),
+        }
     }
 }
 
-pub(crate) fn outcome_error(error: &RuntimeError) -> OutcomeError {
-    OutcomeError {
-        code: error.code,
-        retryable: error.retryable,
-        bacnet_class: None,
-        bacnet_code: None,
-        message: error.message.clone(),
+impl Drop for WriteBatchOperation {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 }

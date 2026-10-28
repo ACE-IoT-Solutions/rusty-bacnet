@@ -7,9 +7,11 @@ use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::trend::TrendLogMultipleObject;
 use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, LogData, LogValue};
+use bacnet_types::error::RemoteError;
 use std::sync::Arc;
 
 use PropertyIdentifier as P;
+use bacnet_types::enums::EngineeringUnits;
 
 fn tlm1() -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::TREND_LOG_MULTIPLE, 1).unwrap()
@@ -19,7 +21,7 @@ fn tlm1() -> ObjectIdentifier {
 /// clocks bound.
 fn database() -> ObjectDatabase {
     let mut db = crate::server::clocked_test_database();
-    let mut av = AnalogValueObject::new(1, "AV-1", 95).unwrap();
+    let mut av = AnalogValueObject::new(1, "AV-1", EngineeringUnits::NO_UNITS).unwrap();
     av.set_relinquish_default(21.5).unwrap();
     db.add(Box::new(av)).unwrap();
     let mut tlm = TrendLogMultipleObject::new(1, "TLM-1", 8).unwrap();
@@ -64,8 +66,8 @@ fn rp(db: &ObjectDatabase, property: P) -> Vec<u8> {
 
 fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class: c, code: e })
-            if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class: c, code: e }))
+            if c == class && e == code),
         "expected {class:?} / {code:?}, got {result:?}"
     );
 }

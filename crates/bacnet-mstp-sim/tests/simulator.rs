@@ -22,10 +22,10 @@ fn two_answers(config: SimConfig) -> Sim {
         sim.add_scripted(
             station,
             move |frame: &SeenFrame, sends: &mut Vec<ScriptSend>| {
-                if frame.destination == 2 && frame.frame_type == FrameType::PollForMaster {
+                if frame.destination == 2 && frame.frame_type == FrameType::POLL_FOR_MASTER {
                     sends.push(ScriptSend::frame(
                         millis(1),
-                        FrameType::ReplyToPollForMaster,
+                        FrameType::REPLY_TO_POLL_FOR_MASTER,
                         frame.source,
                         station,
                         &[],
@@ -61,7 +61,7 @@ fn overlapping_drivers_collide_and_receivers_hear_garbage() {
     assert_eq!(collided, [Driver::Station(2), Driver::Station(4)]);
     // The master heard eight garbled characters, not a reply, and polled on.
     let after = sim.frames()[4].clone();
-    assert!(after.is(FrameType::PollForMaster, 0, 3), "{after}");
+    assert!(after.is(FrameType::POLL_FOR_MASTER, 0, 3), "{after}");
     assert!(sim.perturbed());
 }
 
@@ -94,15 +94,16 @@ fn the_trace_records_octets_actions_and_state_changes() {
     );
     assert!(has("    500.000ms st000  SetDirection(Transmit)"));
     assert!(has(
-        "    500.000ms st000  TX start PollForMaster 0->1 (8 octets)"
+        "    500.000ms st000  TX start FrameType::POLL_FOR_MASTER 0->1 (8 octets)"
     ));
     assert!(has("    500.000ms st000  octet[0] 55"));
     assert!(has("    500.261ms st000  octet[1] FF"));
     assert!(has("st003  state Idle -> NoToken"));
-    assert!(sim
-        .trace()
-        .entries()
-        .any(|entry| matches!(entry.kind, TraceKind::FrameEnd(_))));
+    assert!(
+        sim.trace()
+            .entries()
+            .any(|entry| matches!(entry.kind, TraceKind::FrameEnd(_)))
+    );
     let dump = sim.dump(5);
     assert!(dump.starts_with("trace at     560.000ms:\n"), "{dump}");
     assert_eq!(dump.lines().count(), 7);
@@ -117,7 +118,7 @@ fn collide_with_the_second_token(config: SimConfig, adapter: AdapterSpec) -> Sim
     sim.add_master(MasterSpec::new(0, 3, BAUD))
         .add_master(MasterSpec::new(3, 3, BAUD));
     run_until_frame(&mut sim, ms(1_500), ms(3_000), |frame| {
-        frame.is(FrameType::Token, 0, 3)
+        frame.is(FrameType::TOKEN, 0, 3)
     });
     let now = sim.now();
     sim.inject(
@@ -155,11 +156,12 @@ fn a_slow_adapter_collision_fails_a_strict_run() {
     config.tolerance.slow_adapter_collisions = true;
     let sim = collide_with_the_second_token(config, slow);
     assert_eq!(sim.report().collisions_of(CollisionClass::SlowAdapter), 1);
-    assert!(sim
-        .report()
-        .violations
-        .iter()
-        .all(|violation| violation.kind != ViolationKind::Collision));
+    assert!(
+        sim.report()
+            .violations
+            .iter()
+            .all(|violation| violation.kind != ViolationKind::Collision)
+    );
 }
 
 /// Station 3's adapter serves deadlines 19 ms late, so its core hands its
@@ -184,11 +186,12 @@ fn a_late_core_that_dispatches_before_hearing_the_frame_is_the_adapters() {
     config.tolerance.slow_adapter_collisions = true;
     let sim = collide_with_the_second_token(config, late);
     assert_eq!(sim.report().collisions_of(CollisionClass::SlowAdapter), 1);
-    assert!(sim
-        .report()
-        .violations
-        .iter()
-        .all(|violation| violation.kind != ViolationKind::Collision));
+    assert!(
+        sim.report()
+            .violations
+            .iter()
+            .all(|violation| violation.kind != ViolationKind::Collision)
+    );
 }
 
 /// Every adapter here starts frames 4 ms after its core hands them over,

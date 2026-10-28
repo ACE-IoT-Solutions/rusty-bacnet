@@ -22,7 +22,6 @@ fn config(retries: u32) -> ScReconnectConfig {
         initial_delay_ms: 40,
         max_delay_ms: 40,
         max_retries: retries,
-        retry_forever: false,
     }
 }
 
@@ -108,8 +107,8 @@ async fn rejection_deadline_fresh_redial_validates_probe_identity_limits_and_pub
 }
 
 #[tokio::test(start_paused = true)]
-async fn empty_npdu_rejection_deadline_fresh_redial_validates_probe_identity_limits_and_publication(
-) {
+async fn empty_npdu_rejection_deadline_fresh_redial_validates_probe_identity_limits_and_publication()
+ {
     fresh_redial_validates_probe(3).await;
 }
 
@@ -154,7 +153,7 @@ async fn fresh_redial_validates_probe(wire_index: usize) {
         // commit its UUID or advertised 32/40 limits into that fresh state.
         assert_eq!(conn.hub_device_uuid, None);
         assert_eq!(conn.hub_max_bvlc_length, 1476);
-        assert_eq!(conn.hub_max_apdu_length, 1476);
+        assert_eq!(conn.hub_max_npdu_length, 1476);
     }
     accept(&fresh, [0x11; 6], 32, 40).await;
     wait_for_state(&transport, ScConnectionState::Connected)
@@ -207,8 +206,8 @@ async fn fresh_redial_validates_probe(wire_index: usize) {
 }
 
 #[tokio::test(start_paused = true)]
-async fn unknown_function_rejection_deadline_fresh_redial_validates_probe_identity_limits_and_publication(
-) {
+async fn unknown_function_rejection_deadline_fresh_redial_validates_probe_identity_limits_and_publication()
+ {
     fresh_redial_validates_probe(4).await;
 }
 
@@ -322,7 +321,6 @@ async fn rejection_deadline_active_failover_expiry_does_not_reuse_or_change_reco
                 initial_delay_ms: 500,
                 max_delay_ms: 500,
                 max_retries: 1,
-                retry_forever: false,
             });
     let (rx, ()) = tokio::join!(
         transport.start(),

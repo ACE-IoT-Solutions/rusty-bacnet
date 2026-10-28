@@ -8,7 +8,7 @@ use bacnet_objects::traits::BACnetObject;
 use bacnet_types::bitstring::{AuditOperationFlags, BACnetPriorityFilter};
 use bacnet_types::constructed::BACnetObjectSelector;
 use bacnet_types::enums::{AuditLevel, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 struct CustomReporter {
@@ -151,10 +151,12 @@ fn custom_reporter_configuration_replaces_every_setting_through_trait_object() {
         read(object, PropertyIdentifier::MONITORED_OBJECTS),
         PropertyValue::List(vec![])
     );
-    assert!(!object
-        .audit_reporter_internal()
-        .unwrap()
-        .monitors_object_internal(target));
+    assert!(
+        !object
+            .audit_reporter_internal()
+            .unwrap()
+            .monitors_object_internal(target)
+    );
     assert_eq!(
         read(object, PropertyIdentifier::AUDIT_LEVEL),
         PropertyValue::Enumerated(AuditLevel::AUDIT_CONFIG.to_raw())
@@ -185,19 +187,23 @@ fn custom_reporter_configuration_replaces_every_setting_through_trait_object() {
             None,
         )
         .unwrap();
-    assert!(!object
-        .property_list()
-        .contains(&PropertyIdentifier::MONITORED_OBJECTS));
+    assert!(
+        !object
+            .property_list()
+            .contains(&PropertyIdentifier::MONITORED_OBJECTS)
+    );
     assert!(
         matches!(object.read_property(PropertyIdentifier::MONITORED_OBJECTS, None),
-        Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
+        Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::UNKNOWN_PROPERTY)
     );
-    assert!(object
-        .audit_reporter_internal()
-        .unwrap()
-        .monitors_object_internal(target));
+    assert!(
+        object
+            .audit_reporter_internal()
+            .unwrap()
+            .monitors_object_internal(target)
+    );
     assert_eq!(custom.configurations, 3);
 }
 
@@ -255,9 +261,9 @@ fn non_reporter_rejects_complete_configuration_without_mutation() {
         assert!(matches!(object.configure_audit_reporter_internal(
             AuditLevel::AUDIT_ALL, AuditOperationFlags::from_bits(2).unwrap(), true,
             selectors, priorities,
-         None,), Err(Error::Protocol { class, code })
-            if class == ErrorClass::OBJECT.to_raw() as u32
-                && code == ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32));
+         None,), Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::OBJECT
+                && code == ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED));
         assert_eq!(snapshot(object), before);
     }
 }

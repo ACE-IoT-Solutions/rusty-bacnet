@@ -224,9 +224,11 @@ async fn a_change_away_from_a_device_with_no_route_is_still_refused() {
     .await
     .unwrap();
     publish(&fixture, THIS_NETWORK);
-    assert!(change_recipient(&fixture, &address(0, &NEW_STATION))
-        .await
-        .is_err());
+    assert!(
+        change_recipient(&fixture, &address(0, &NEW_STATION))
+            .await
+            .is_err()
+    );
     settle().await;
     assert!(sends(&fixture).is_empty());
     fixture.server.stop().await.unwrap();
@@ -315,7 +317,7 @@ async fn an_address_off_a_number_known_at_startup_also_starts_unresolved() {
     let mut capture = bip_capture();
     capture.normal_bip = Some(std::net::SocketAddrV4::new(port_ip.into(), 0xBAC0));
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 10,
+        identity: bacnet_objects::DeviceIdentity::new(10, 0).expect("valid Device identity"),
         ..Default::default()
     })
     .unwrap();
@@ -340,6 +342,7 @@ async fn an_address_off_a_number_known_at_startup_also_starts_unresolved() {
     .unwrap();
     let mut server = BACnetServer::start_with_clock_mode_and_bindings(
         ServerConfig {
+            device: bacnet_objects::DeviceIdentity::new(10, 0).unwrap(),
             audit_reporters: Some(AuditReportersConfig {
                 reporters: vec![oid(ObjectType::AUDIT_REPORTER, 1)],
             }),

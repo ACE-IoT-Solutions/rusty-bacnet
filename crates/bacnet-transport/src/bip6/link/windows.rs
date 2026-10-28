@@ -1,12 +1,12 @@
 //! Windows adapter discovery, from the shared `GetAdaptersAddresses` walk.
 
 use std::{io, net::IpAddr};
-use windows_sys::Win32::Networking::WinSock::{IpDadStatePreferred, AF_INET6};
+use windows_sys::Win32::Networking::WinSock::{AF_INET6, IpDadStatePreferred};
 
 use super::{Candidate, SelectedLink};
 
 pub(super) fn enumerate() -> io::Result<Vec<Candidate>> {
-    Ok(crate::windows_adapters::unicast_addresses(AF_INET6)?
+    Ok(crate::sys::win_adapters::unicast_addresses(AF_INET6)?
         .into_iter()
         .filter(|address| address.dad_state == IpDadStatePreferred)
         .filter_map(|address| match address.ip {

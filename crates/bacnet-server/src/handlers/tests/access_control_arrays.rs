@@ -8,6 +8,7 @@
 //! filled and empty.
 
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::access_control::{
     AccessDoorObject, AccessPointObject, CredentialDataInputObject,
 };
@@ -16,7 +17,7 @@ use bacnet_types::constructed::{
     ReadAccessSpecification,
 };
 use bacnet_types::enums::AuthenticationFactorType;
-use PropertyIdentifier as P;
+use bacnet_types::error::RemoteError;
 
 pub(super) type Expected = Result<Vec<u8>, ErrorCode>;
 
@@ -80,9 +81,9 @@ pub(super) fn assert_reads(
                     "{property:?} {index:?}"
                 );
                 assert!(
-                    matches!(rp, Err(Error::Protocol { class, code: actual })
-                        if class == ErrorClass::PROPERTY.to_raw() as u32
-                            && actual == code.to_raw() as u32),
+                    matches!(rp, Err(Error::Remote(RemoteError::Error { class, code: actual }))
+                        if class == ErrorClass::PROPERTY
+                            && actual == *code),
                     "{property:?} {index:?}: {rp:?}"
                 );
             }
@@ -241,8 +242,8 @@ fn access_point_access_doors_read_per_index() {
     .unwrap();
     assert!(matches!(
         handle_write_property(&mut db, &request),
-        Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+        Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::WRITE_ACCESS_DENIED
     ));
 }

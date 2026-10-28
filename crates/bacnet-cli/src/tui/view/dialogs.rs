@@ -1,16 +1,15 @@
 //! The Who-Is form and the interface picker.
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Padding, Paragraph, Wrap};
-use ratatui::Frame;
 
-use super::{centered, Theme};
+use super::{Theme, centered};
+use crate::tui::app::App;
 use crate::tui::app::picker::Picker;
 use crate::tui::app::whois::{Field, ScopeChoice, WhoIsForm};
-use crate::tui::app::App;
-use crate::tui::message::AddressStyle;
 
 /// The Who-Is form.
 pub(super) fn who_is(frame: &mut Frame, area: Rect, app: &App, form: &WhoIsForm, theme: &Theme) {
@@ -18,12 +17,10 @@ pub(super) fn who_is(frame: &mut Frame, area: Rect, app: &App, form: &WhoIsForm,
     let box_area = centered(area, width, 11);
     frame.render_widget(Clear, box_area);
 
-    let target_hint = match (form.scope.needs_target(), form.scope, app.style) {
-        (false, ..) => "not used for this scope",
-        (true, ScopeChoice::Network, _) => "network number, 1-65534",
-        (true, _, AddressStyle::Hex) => "VMAC as 12 hex digits",
-        (true, _, AddressStyle::Bip6) => "[IPv6]:port",
-        (true, _, AddressStyle::Bip) => "IP or IP:port",
+    let target_hint = match (form.scope.needs_target(), form.scope) {
+        (false, _) => "not used for this scope",
+        (true, ScopeChoice::Network) => "network number, 1-65534",
+        (true, _) => crate::tui::app::whois::directed_forms(app.style),
     };
     let mut lines = vec![
         field(

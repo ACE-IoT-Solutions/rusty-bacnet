@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use bacnet_types::MacAddr;
 use bacnet_types::enums::Segmentation;
 use bacnet_types::primitives::ObjectIdentifier;
-use bacnet_types::MacAddr;
 
 /// Information about a discovered BACnet device.
 #[derive(Debug, Clone)]
@@ -28,42 +28,6 @@ pub struct DiscoveredDevice {
     pub source_network: Option<u16>,
     /// If this device is behind a router, its MAC address on the remote network.
     pub source_address: Option<MacAddr>,
-}
-
-/// One raw I-Am observation, emitted before discovery-table de-duplication.
-///
-/// A client broadcasts one event for every valid I-Am APDU it receives, so
-/// repeated direct and BBMD-forwarded copies remain independently visible.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IAmEvent {
-    /// Device instance extracted from `object_identifier`.
-    pub device_instance: u32,
-    /// Device object identifier carried by the I-Am.
-    pub object_identifier: ObjectIdentifier,
-    /// Maximum APDU length accepted by the device.
-    pub max_apdu_length: u32,
-    /// Segmentation capability advertised by the device.
-    pub segmentation_supported: Segmentation,
-    /// Vendor identifier advertised by the device.
-    pub vendor_id: u16,
-    /// Actual UDP sender address for BACnet/IP, otherwise `None`.
-    pub udp_source_ip: Option<[u8; 4]>,
-    /// Actual UDP sender port for BACnet/IP, otherwise `None`.
-    pub udp_source_port: Option<u16>,
-    /// Immediate data-link source MAC, byte-for-byte as delivered upstream.
-    pub source_mac: MacAddr,
-    /// NPDU SNET, when present.
-    pub source_network: Option<u16>,
-    /// NPDU SADR, when present, preserved as raw MAC bytes.
-    pub source_address: Option<MacAddr>,
-    /// Raw BVLC function code for BACnet/IP, otherwise `None`.
-    pub bvlc_function: Option<u8>,
-    /// Forwarded-NPDU originator IPv4 address, when present.
-    pub forwarded_from_ip: Option<[u8; 4]>,
-    /// Forwarded-NPDU originator UDP port, when present.
-    pub forwarded_from_port: Option<u16>,
-    /// Monotonic observation timestamp in this process.
-    pub timestamp: Instant,
 }
 
 impl DiscoveredDevice {
@@ -640,9 +604,11 @@ mod tests {
         table.upsert(partial);
 
         assert!(table.get_by_mac(&[192, 168, 1, 100, 0xBA, 0xC0]).is_none());
-        assert!(table
-            .get_by_network_address(100, &[192, 168, 1, 100, 0xBA, 0xC0])
-            .is_none());
+        assert!(
+            table
+                .get_by_network_address(100, &[192, 168, 1, 100, 0xBA, 0xC0])
+                .is_none()
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_server::server::DccState;
+use bacnet_types::error::RemoteError;
 
 async fn make_server() -> BACnetServer<BipTransport> {
     make_server_with_dcc_policy(bacnet_server::server::DccPolicy::LegacyPermissive).await
@@ -23,9 +24,9 @@ async fn dcc_disable_rejected_without_changing_comm_state() {
         .device_communication_control(&server_mac, EnableDisable::DISABLE, None, None)
         .await;
     assert!(
-        matches!(result, Err(bacnet_types::error::Error::Protocol { class, code })
-        if class == bacnet_types::enums::ErrorClass::SERVICES.to_raw() as u32
-            && code == bacnet_types::enums::ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32)
+        matches!(result, Err(bacnet_types::error::Error::Remote(RemoteError::Error { class, code }))
+        if class == bacnet_types::enums::ErrorClass::SERVICES
+            && code == bacnet_types::enums::ErrorCode::SERVICE_REQUEST_DENIED)
     );
     assert_eq!(server.comm_state(), DccState::Enable);
 
@@ -82,21 +83,24 @@ async fn dcc_disable_initiation_allows_re_enable() {
 async fn dcc_disable_initiation_allows_rp_blocks_cov() {
     use bacnet_objects::analog::AnalogOutputObject;
     use bacnet_types::enums::EnableDisable;
+    use bacnet_types::enums::EngineeringUnits;
     use tokio::time::Duration;
 
     // Build a server with an AnalogOutput (writable present-value)
     let mut db = ObjectDatabase::new();
-    let ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
+    let ao = AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     db.add(Box::new(ao)).unwrap();
     let dev = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "DCC-Test-Dev".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("DCC-Test-Dev"),
         ..DeviceConfig::default()
     })
     .unwrap();
     db.add(Box::new(dev)).unwrap();
 
     let mut server = BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 0).unwrap())
         .dcc_policy(bacnet_server::server::DccPolicy::LegacyPermissive)
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
@@ -196,21 +200,24 @@ async fn dcc_disable_initiation_allows_rp_blocks_cov() {
 async fn dcc_enable_restores_normal_operation() {
     use bacnet_objects::analog::AnalogOutputObject;
     use bacnet_types::enums::EnableDisable;
+    use bacnet_types::enums::EngineeringUnits;
     use tokio::time::Duration;
 
     // Build a server with an AnalogOutput
     let mut db = ObjectDatabase::new();
-    let ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
+    let ao = AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     db.add(Box::new(ao)).unwrap();
     let dev = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "DCC-Restore-Dev".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("DCC-Restore-Dev"),
         ..DeviceConfig::default()
     })
     .unwrap();
     db.add(Box::new(dev)).unwrap();
 
     let mut server = BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 0).unwrap())
         .dcc_policy(bacnet_server::server::DccPolicy::LegacyPermissive)
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)

@@ -1,6 +1,6 @@
 [package]
 name = "firmware-link"
-description = "Firmware link test and size budget for the MS/TP, B/IP and APDU stacks"
+description = "Firmware link test and size budget for the MS/TP, B/IP, router, device and APDU stacks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -26,6 +26,36 @@ path = "src/bin/bip.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "node"
+path = "src/bin/node.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "bbmd"
+path = "src/bin/bbmd.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "mstp-extended"
+path = "src/bin/mstp_extended.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "router"
+path = "src/bin/router.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "device"
+path = "src/bin/device.rs"
+test = false
+bench = false
+
 # Named for its scenario, not its feature: a crate named `alloc` would share
 # the sysroot crate's name in the size check's per-crate list.
 [[bin]]
@@ -41,18 +71,19 @@ path = "tests/apdu.rs"
 required-features = ["alloc"]
 
 # `alloc`: the apdu image and its scenario, which link bacnet-encoding and
-# bacnet-services with `alloc`, and on bare-metal targets
+# bacnet-services with `alloc` (the device image links them without it),
+# and on bare-metal targets
 # the image's allocator and critical section, and the atomics backend where
 # the target has no compare-and-swap. On by default, so host builds, clippy,
-# rustdoc and tests cover it. The mstp and bip images build without it
+# rustdoc and tests cover it. The other images build without it
 # (`--no-default-features`): with it, the lib links `alloc`, and an image
 # without a global allocator fails to link.
 [features]
 default = ["alloc"]
 alloc = [
-    "dep:bacnet-types",
-    "dep:bacnet-encoding",
-    "dep:bacnet-services",
+    "bacnet-types/alloc",
+    "bacnet-encoding/alloc",
+    "bacnet-services/alloc",
     "dep:bytes",
     "dep:embedded-alloc",
     "dep:portable-atomic",
@@ -81,17 +112,24 @@ board-netduinoplus2 = ["emulate"]
 # QEMU's SiFive E board, an E31 core (RV32IMAC): riscv32imc-unknown-none-elf.
 board-sifive-e = ["emulate"]
 
-# Default features, so no allocator, plus each crate's heapless storage: the
-# core's queues and the BVLL codec's sink. The alloc stack is `no_std` with
-# `alloc`, as the libraries document.
+# Default features, so no allocator, plus the BVLL codec's heapless sink
+# and the router core's B/IP and MS/TP glue, which need neither std nor an
+# allocator. The MS/TP core's FixedQueues need no feature, and
+# bacnet-bip-core has none. bacnet-types, bacnet-encoding and
+# bacnet-services without default features are their allocation-free
+# profile (#1614), which the device image links; the `alloc` feature turns
+# on their `alloc` profile for the apdu image.
 [dependencies]
 bacnet-mstp-codec = { workspace = true }
-bacnet-mstp-core = { workspace = true, features = ["heapless"] }
+bacnet-mstp-core = { workspace = true }
 bacnet-bip-codec = { workspace = true, features = ["heapless"] }
+bacnet-bip-core = { workspace = true }
+bacnet-router-core = { workspace = true, features = ["bip", "mstp"] }
 heapless = { workspace = true }
-bacnet-types = { workspace = true, features = ["alloc"], optional = true }
-bacnet-encoding = { workspace = true, features = ["alloc"], optional = true }
-bacnet-services = { workspace = true, features = ["alloc"], optional = true }
+bacnet-npdu = { workspace = true }
+bacnet-types = { workspace = true }
+bacnet-encoding = { workspace = true }
+bacnet-services = { workspace = true }
 bytes = { workspace = true, optional = true }
 
 # The host test runs the alloc scenario in the image's allocator, a

@@ -13,6 +13,7 @@ use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference,
     BACnetObjectPropertyReference, PropertyReference, ReadAccessSpecification,
 };
+use bacnet_types::error::RemoteError;
 
 fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(object_type, instance).unwrap()
@@ -91,9 +92,9 @@ fn event_enrollment_object_property_reference_is_served_framed() {
     .unwrap();
     assert!(matches!(
         sourced_wp(&mut db, &request),
-        Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+        Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::WRITE_ACCESS_DENIED
     ));
     assert_eq!(
         read(&db, ee, PropertyIdentifier::OBJECT_PROPERTY_REFERENCE),
@@ -203,9 +204,9 @@ fn access_zone_entry_and_exit_points_are_served_framed() {
     .unwrap();
     assert!(matches!(
         sourced_wp(&mut db, &request),
-        Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+        Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::WRITE_ACCESS_DENIED
     ));
     assert_eq!(read(&db, az, PropertyIdentifier::ENTRY_POINTS), entry);
 }
@@ -268,9 +269,9 @@ fn access_user_reference_lists_are_served_framed() {
     let mut ack = BytesMut::new();
     assert!(matches!(
         handle_read_property(&db, &request, &mut ack),
-        Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32
+        Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY
     ));
     let mut request = BytesMut::new();
     WritePropertyRequest {
@@ -284,9 +285,9 @@ fn access_user_reference_lists_are_served_framed() {
     .unwrap();
     assert!(matches!(
         sourced_wp(&mut db, &request),
-        Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+        Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::WRITE_ACCESS_DENIED
     ));
     assert_eq!(read(&db, au, PropertyIdentifier::CREDENTIALS), credentials);
 }

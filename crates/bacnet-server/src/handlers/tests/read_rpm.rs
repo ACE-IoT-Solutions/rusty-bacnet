@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::error::RemoteError;
 
 mod access_identity;
 mod access_topology;
@@ -62,8 +63,7 @@ fn active_cov_subscriptions_low_level_handlers_read_standalone_empty_list() {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "COV Device".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("COV Device"),
             ..Default::default()
         })
         .unwrap(),
@@ -78,10 +78,12 @@ fn active_cov_subscriptions_low_level_handlers_read_standalone_empty_list() {
     request.encode(&mut request_buf);
     let mut response_buf = BytesMut::new();
     handle_read_property(&db, &request_buf, &mut response_buf).unwrap();
-    assert!(ReadPropertyACK::decode(&response_buf)
-        .unwrap()
-        .property_value
-        .is_empty());
+    assert!(
+        ReadPropertyACK::decode(&response_buf)
+            .unwrap()
+            .property_value
+            .is_empty()
+    );
 
     let request = ReadPropertyMultipleRequest {
         list_of_read_access_specs: vec![ReadAccessSpecification {
@@ -140,9 +142,9 @@ fn read_property_handler_rejects_multistate_event_time_stamps_out_of_bounds_inde
 
     let mut ack_buf = BytesMut::new();
     match handle_read_property(&db, &buf, &mut ack_buf).unwrap_err() {
-        Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, ErrorCode::INVALID_ARRAY_INDEX.to_raw() as u32);
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, ErrorCode::INVALID_ARRAY_INDEX);
         }
         other => panic!("expected Protocol error, got: {other:?}"),
     }
@@ -577,10 +579,10 @@ fn read_property_serves_derived_services_supported() {
 
 #[test]
 fn rpm_multistate_indexed_state_text_and_list_gating_preserve_bytes() {
+    use PropertyIdentifier as P;
     use bacnet_services::rpm::ReadPropertyMultipleACK;
     use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
     use bacnet_types::primitives::PropertyValue;
-    use PropertyIdentifier as P;
 
     for mut object in super::property_metadata::multistate_objects() {
         let oid = object.object_identifier();

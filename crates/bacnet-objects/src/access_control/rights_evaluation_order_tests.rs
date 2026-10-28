@@ -4,6 +4,7 @@
 //! read.
 
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 use super::tests::*;
 use super::*;
@@ -98,9 +99,9 @@ fn an_unreadable_assignment_list_is_passed_back() {
             .unwrap_or_default();
         db.add(Stub::new(credential(1), values)).unwrap();
         match evaluate_access_rights(&db, credential(1), point(1)) {
-            Err(Error::Protocol { class, code }) => {
-                assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-                assert_eq!(code, expected.to_raw() as u32, "{expected:?}");
+            Err(Error::Remote(RemoteError::Error { class, code })) => {
+                assert_eq!(class, ErrorClass::PROPERTY);
+                assert_eq!(code, expected, "{expected:?}");
             }
             other => panic!("expected PROPERTY / {expected:?}, got {other:?}"),
         }

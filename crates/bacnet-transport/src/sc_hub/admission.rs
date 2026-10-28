@@ -32,8 +32,8 @@
 
 use std::net::SocketAddr;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bacnet_types::error::Error;
 
@@ -184,7 +184,7 @@ impl super::HubClientRegistrationDecision {
 ///
 /// Only requests that already passed shape validation (nonzero UUID,
 /// nonzero limits) and reserved-VMAC screening reach the policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScHubAdmissionInput {
     /// Current registry relationship, classified before this policy executes
     /// under the same lock as the eventual registration decision. An Allow
@@ -271,6 +271,12 @@ pub(super) struct AdmissionRuntime {
     pub(super) bindings: Option<super::ScHubCertificateBindings>,
     pub(super) policy: Option<ScHubAdmissionPolicy>,
     pub(super) denied: AtomicU64,
+    /// The throttle on the warnings for connections a peer ends badly, with
+    /// a failed read or a frame that isn't binary (#1950). It is hub-wide,
+    /// not per connection, since each such warning ends its connection: a
+    /// peer that reconnects over and over warns once per
+    /// [`WARNING_INTERVAL`](crate::warn_throttle::WARNING_INTERVAL).
+    pub(super) connection_warning: crate::warn_throttle::WarnThrottle,
     /// WebSocket-upgrade deadlines armed, one per TLS success. Paused-clock
     /// tests wait for it before advancing, since the hub finishes TLS after
     /// the peer does (#1042).
@@ -285,6 +291,7 @@ impl AdmissionRuntime {
             bindings: None,
             policy,
             denied: AtomicU64::new(0),
+            connection_warning: Default::default(),
             #[cfg(test)]
             upgrade_deadlines_armed: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -313,10 +320,9 @@ impl AdmissionRuntime {
     /// Record one admin denial (saturating; statistics only, never an
     /// input to limiting decisions).
     pub(super) fn note_denied(&self) {
-        #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
         let _ = self
             .denied
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 Some(value.saturating_add(1))
             });
     }

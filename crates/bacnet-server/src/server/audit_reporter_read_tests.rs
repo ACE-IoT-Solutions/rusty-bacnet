@@ -264,7 +264,7 @@ async fn audit_reporter_rp_execution_errors_map_result_but_unknown_outcomes_are_
     type ExecutionCase = (fn() -> Error, Option<(ErrorClass, ErrorCode)>);
     let cases: [ExecutionCase; 5] = [
         (
-            || Error::Protocol { class: 2, code: 32 },
+            || Error::protocol(ErrorClass::PROPERTY, ErrorCode::UNKNOWN_PROPERTY),
             Some((ErrorClass::PROPERTY, ErrorCode::UNKNOWN_PROPERTY)),
         ),
         (
@@ -272,18 +272,8 @@ async fn audit_reporter_rp_execution_errors_map_result_but_unknown_outcomes_are_
             Some((ErrorClass::SERVICES, ErrorCode::OTHER)),
         ),
         (|| Error::Timeout(Duration::from_secs(1)), None),
-        (
-            || Error::Reject {
-                reason: RejectReason::OTHER.to_raw(),
-            },
-            None,
-        ),
-        (
-            || Error::Abort {
-                reason: AbortReason::OTHER.to_raw(),
-            },
-            None,
-        ),
+        (|| Error::reject(RejectReason::OTHER), None),
+        (|| Error::abort(AbortReason::OTHER), None),
     ];
     for (error, result) in cases {
         let mut fixture = server(read_reporter()).await;

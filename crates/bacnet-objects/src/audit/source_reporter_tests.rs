@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::error::RemoteError;
 
 #[test]
 fn ordinary_reporter_has_no_source_role_even_after_local_configuration() {
@@ -25,9 +26,9 @@ fn ordinary_reporter_has_no_source_role_even_after_local_configuration() {
         assert!(!reporter.is_writable_property(PropertyIdentifier::AUDIT_SOURCE_REPORTER));
         assert!(matches!(reporter.write_property(
             PropertyIdentifier::AUDIT_SOURCE_REPORTER, None, PropertyValue::Boolean(true), None,
-        ), Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32));
+        ), Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::WRITE_ACCESS_DENIED));
         assert_eq!(
             reporter
                 .read_property(PropertyIdentifier::AUDIT_SOURCE_REPORTER, None)

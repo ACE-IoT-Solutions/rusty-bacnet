@@ -1,7 +1,6 @@
 //! Real TLS accepted sockets with an independently retained registered listener.
 use super::*;
 use crate::port::DirectResponseScope;
-use crate::sc_tls::TlsWebSocketInner;
 
 #[tokio::test]
 async fn direct_response_registered_transport_stop_abort_drop_seal_retained_listener() {
@@ -85,9 +84,6 @@ async fn direct_response_real_tls_ping_pong_preserves_handshake_and_response() {
     )
     .await
     .unwrap();
-    let TlsWebSocketInner::Connected { write, read } = &peer.inner else {
-        panic!("connected TLS peer is unavailable")
-    };
     let mut connection = ScConnection::new(DIAL_VMAC, DIAL_UUID);
     let mut bytes = BytesMut::new();
     encode_sc_message(&mut bytes, &connection.build_connect_request());
@@ -96,14 +92,14 @@ async fn direct_response_real_tls_ping_pong_preserves_handshake_and_response() {
         Message::Pong(vec![2].into()),
         Message::Binary(bytes.to_vec().into()),
     ] {
-        write.lock().await.send(message).await.unwrap();
+        peer.write.lock().await.send(message).await.unwrap();
     }
     // Actual tungstenite TLS frames establish that Ping handling still emits
     // Pong and that controls before Connect do not become handshake data.
     let mut got_pong = false;
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            match read.lock().await.next().await.unwrap().unwrap() {
+            match peer.read.lock().await.next().await.unwrap().unwrap() {
                 Message::Pong(data) => {
                     assert_eq!(data.as_ref(), &[1]);
                     got_pong = true;
@@ -134,7 +130,7 @@ async fn direct_response_real_tls_ping_pong_preserves_handshake_and_response() {
         Message::Pong(vec![4].into()),
         Message::Binary(bytes.to_vec().into()),
     ] {
-        write.lock().await.send(message).await.unwrap();
+        peer.write.lock().await.send(message).await.unwrap();
     }
     let received = tokio::time::timeout(Duration::from_secs(5), rx.recv())
         .await
@@ -151,7 +147,7 @@ async fn direct_response_real_tls_ping_pong_preserves_handshake_and_response() {
     let mut got_pong = false;
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            match read.lock().await.next().await.unwrap().unwrap() {
+            match peer.read.lock().await.next().await.unwrap().unwrap() {
                 Message::Pong(data) => {
                     assert_eq!(data.as_ref(), &[3]);
                     got_pong = true;

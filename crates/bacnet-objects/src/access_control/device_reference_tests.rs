@@ -6,6 +6,7 @@
 
 use bacnet_types::constructed::{BACnetAssignedAccessRights, BACnetDeviceObjectReference};
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::RemoteError;
 
 use super::credential_data_input_out_of_service_tests::stamp;
 use super::*;
@@ -33,9 +34,9 @@ fn not_devices() -> [ObjectIdentifier; 3] {
 
 fn assert_value_out_of_range<T: std::fmt::Debug>(result: Result<T, Error>) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::VALUE_OUT_OF_RANGE),
         "expected PROPERTY / VALUE_OUT_OF_RANGE, got {result:?}"
     );
 }

@@ -1,11 +1,11 @@
 use super::*;
 use crate::server::test_transport::{SentFrame, TestTransport};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_objects::device::DeviceObject;
 use bacnet_transport::port::ReceivedNpdu;
 use bacnet_transport::port::TransportProvenance;
 use bytes::Bytes;
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 #[path = "segmented_worker_tests.rs"]
 mod segmented_worker_tests;
@@ -107,7 +107,7 @@ async fn fixture_with_name(
     fixture_with_config(
         name,
         ServerConfig {
-            segmentation_supported: Segmentation::BOTH,
+            device: bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH),
             ..ServerConfig::default()
         },
     )
@@ -143,9 +143,10 @@ async fn fixture_with_config(
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(bacnet_objects::device::DeviceConfig {
-            name: name.into(),
-            segmentation_supported: config.segmentation_supported,
-            apdu_segment_timeout: config.apdu_segment_timeout_ms,
+            identity: bacnet_objects::DeviceIdentity::default()
+                .with_name(name)
+                .with_segmentation(config.device.segmentation())
+                .with_apdu_segment_timeout_ms(config.device.apdu_segment_timeout_ms()),
             ..Default::default()
         })
         .unwrap(),

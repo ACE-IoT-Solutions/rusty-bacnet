@@ -7,6 +7,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         &self.local_mac
     }
 
+    /// The transport the server's network layer runs on, for its
+    /// transport-specific state: a B/IPv6 server's `local_address()`, which
+    /// a peer turns into this server's VMAC with `resolve_virtual_address`,
+    /// or a transport's counters. `None` once the server no longer holds its
+    /// network layer.
+    pub fn transport(&self) -> Option<&T> {
+        self.network.as_deref().map(NetworkLayer::transport)
+    }
+
     /// Get a reference to the shared object database.
     ///
     /// Objects read through this handle return raw standalone data. A built-in
@@ -28,9 +37,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
 
     /// Read one local property through the server's ReadProperty evaluator.
     ///
-    /// With multiple Device objects, the lowest instance is selected for Device
-    /// wildcard reads and the live COV lists, independent of insertion order.
-    /// Other Device objects receive empty COV lists. Every served Device uses
+    /// Device wildcard reads target the configured identity; removal returns
+    /// UNKNOWN_OBJECT even if another Device is present. The database's lowest
+    /// Device instance still owns the live COV lists, independent of insertion
+    /// order; other Device objects receive empty lists. Every served Device uses
     /// the executor's services, COV presence and property definitions, even after
     /// public profile mutation, replacement or custom object installation.
     ///
@@ -57,7 +67,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// against the ReadPropertyMultiple work limit
     /// ([`ReadPropertyMultipleBudget::max_result_elements`](crate::server::ReadPropertyMultipleBudget))
     /// as for network ReadProperty; past it the read fails with
-    /// [`Error::Abort`] carrying OUT_OF_RESOURCES.
+    /// [`Error::abort`] carrying OUT_OF_RESOURCES.
     pub async fn read_local(
         &self,
         oid: &ObjectIdentifier,
@@ -65,24 +75,29 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
         let db = self.db.read().await;
-        let lookup_oid =
-            handlers::resolve_read_target(&db, oid, self.config.registered_network_port);
         let view = crate::device_view::DeviceReadContext::new(
             &db,
             crate::device_view::DeviceExecution::FullServer,
         )
+        .with_identity(Some(&self.config.device))
         .with_work_limit(
             self.config
                 .read_property_multiple_budget
                 .max_result_elements,
         );
+        let lookup_oid = handlers::resolve_read_target(
+            &db,
+            oid,
+            self.config.registered_network_port,
+            view.device_oid(),
+        );
         let plan =
             handlers::plan_read_property(&db, Some(&view), lookup_oid, property, array_index)
                 .map_err(|failure| match failure {
                     handlers::ReadFailure::Service(error) => error,
-                    handlers::ReadFailure::Work | handlers::ReadFailure::Bytes => Error::Abort {
-                        reason: AbortReason::OUT_OF_RESOURCES.to_raw(),
-                    },
+                    handlers::ReadFailure::Work | handlers::ReadFailure::Bytes => {
+                        Error::abort(AbortReason::OUT_OF_RESOURCES)
+                    }
                 })?;
         use super::requests::confirmed_response::{active_cov_snapshot, address_bindings};
         let live = match plan.live_cov(&db) {
@@ -135,10 +150,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         self.active_network()?;
         let value = {
             let db = self.db.read().await;
-            let object = db.get(oid).ok_or_else(|| Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_OBJECT.to_raw() as u32,
-            })?;
+            let object = db.get(oid).ok_or(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::UNKNOWN_OBJECT,
+            ))?;
             handlers::gate_and_decode_write(object, property, array_index, value)?
         };
         self.write_local(oid, property, array_index, value, priority, source)
@@ -164,12 +179,31 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// Standalone [`PicsGenerator`](crate::pics::PicsGenerator) keeps raw-object semantics.
     ///
     /// The caller must supply a [`PicsConfig`](crate::pics::PicsConfig) for fields not available from the server
-    /// (vendor name, model, firmware revision, etc.).
+    /// (device profile, data links, network roles, etc.). The vendor and model names, the firmware and
+    /// application versions, and the protocol version and revision come from the served Device object,
+    /// so the PICS can't contradict what the device reports.
     pub async fn generate_pics(&self, pics_config: &crate::pics::PicsConfig) -> crate::pics::Pics {
         let db = self.db.read().await;
         crate::pics::PicsGenerator::new(&db, &self.config, pics_config)
             .for_server()
             .generate()
+    }
+}
+
+impl<T: TransportPort + bacnet_transport::bip::AsBip + 'static> BACnetServer<T> {
+    /// How this server's foreign-device registration is going (#938):
+    /// whether it holds a live lease, the time left on it, and the last
+    /// attempt's result and outcome, a BBMD's refusal included. It reads
+    /// [`BipTransport::bvlc_client_snapshot`] and sends nothing. Fails on a
+    /// transport that isn't B/IP, and once the server has stopped.
+    pub fn foreign_registration(
+        &self,
+    ) -> Result<bacnet_transport::bip::ForeignRegistrationSnapshot, Error> {
+        let transport = self.transport().ok_or_else(broadcaster::stopped)?;
+        Ok(transport
+            .as_bip()?
+            .bvlc_client_snapshot()
+            .foreign_registration)
     }
 }
 

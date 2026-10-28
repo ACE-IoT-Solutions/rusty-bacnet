@@ -36,21 +36,21 @@ impl AtomicHistoryObject {
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
         let Some(index @ 1..=3) = array_index else {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_ARRAY_INDEX.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_ARRAY_INDEX,
+            ));
         };
         match &values[index as usize - 1] {
             IndexedHistoryRead::Value(value) => Ok(value.clone()),
-            IndexedHistoryRead::Missing => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
-            IndexedHistoryRead::Unreadable => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::READ_ACCESS_DENIED.to_raw() as u32,
-            }),
+            IndexedHistoryRead::Missing => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
+            IndexedHistoryRead::Unreadable => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::READ_ACCESS_DENIED,
+            )),
         }
     }
 }
@@ -83,12 +83,9 @@ impl BACnetObject for AtomicHistoryObject {
             p if p == PropertyIdentifier::NOTIFY_TYPE => {
                 Ok(PropertyValue::Enumerated(NotifyType::ALARM.to_raw()))
             }
-            p if p == PropertyIdentifier::EVENT_TYPE => {
-                self.event_type.clone().ok_or_else(|| Error::Protocol {
-                    class: ErrorClass::PROPERTY.to_raw() as u32,
-                    code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-                })
-            }
+            p if p == PropertyIdentifier::EVENT_TYPE => self.event_type.clone().ok_or(
+                Error::protocol(ErrorClass::PROPERTY, ErrorCode::UNKNOWN_PROPERTY),
+            ),
             p if p == PropertyIdentifier::EVENT_TIME_STAMPS => {
                 Self::indexed(&self.timestamps, array_index)
             }
@@ -96,20 +93,17 @@ impl BACnetObject for AtomicHistoryObject {
                 Self::indexed(&self.messages, array_index)
             }
             p if p == PropertyIdentifier::PRESENT_VALUE => Ok(PropertyValue::Real(50.0)),
-            p if p == PropertyIdentifier::STATUS_FLAGS => {
-                self.status_flags.clone().ok_or_else(|| Error::Protocol {
-                    class: ErrorClass::PROPERTY.to_raw() as u32,
-                    code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-                })
-            }
+            p if p == PropertyIdentifier::STATUS_FLAGS => self.status_flags.clone().ok_or(
+                Error::protocol(ErrorClass::PROPERTY, ErrorCode::UNKNOWN_PROPERTY),
+            ),
             p if p == PropertyIdentifier::RELIABILITY => Ok(PropertyValue::Enumerated(0)),
             p if p == PropertyIdentifier::HIGH_LIMIT => Ok(PropertyValue::Real(80.0)),
             p if p == PropertyIdentifier::LOW_LIMIT => Ok(PropertyValue::Real(20.0)),
             p if p == PropertyIdentifier::DEADBAND => Ok(PropertyValue::Real(2.0)),
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -120,10 +114,10 @@ impl BACnetObject for AtomicHistoryObject {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
     fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
@@ -188,8 +182,7 @@ fn atomic_history_database(
     .unwrap();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "History Device".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("History Device"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -305,38 +298,63 @@ fn committed_enrollment_reliability(oid: ObjectIdentifier) -> CommittedEventEnro
     }
 }
 
+/// An Event Enrollment's committed Event_Message_Texts entry is its
+/// notification's message text: none for the empty entry it commits by
+/// default, the configured text otherwise (#1507). An object that doesn't
+/// serve the property sends no text, while a malformed entry or a refused
+/// read suppresses the notification.
 #[test]
-fn event_enrollment_projection_accepts_intentionally_absent_message_without_mutation() {
-    let oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 77).unwrap();
-    let mut db = ObjectDatabase::new();
-    db.add(Box::new(AtomicHistoryObject {
-        oid,
-        event_type: Some(PropertyValue::Enumerated(EventType::OUT_OF_RANGE.to_raw())),
-        timestamps: repeated_timestamp_reads(BACnetTimeStamp::SequenceNumber(19)),
-        messages: std::array::from_fn(|_| IndexedHistoryRead::Missing),
-        status_flags: Some(PropertyValue::BitString {
-            unused_bits: 4,
-            data: vec![0],
-        }),
-        commits: Arc::new(AtomicUsize::new(0)),
-    }))
-    .unwrap();
+fn event_enrollment_projection_reads_committed_message_without_mutation() {
+    let configured = IndexedHistoryRead::Value(PropertyValue::CharacterString("high".into()));
+    for (instance, (message, expected)) in [
+        (empty_message_read(), Some(None)),
+        (configured, Some(Some("high".to_owned()))),
+        (IndexedHistoryRead::Missing, Some(None)),
+        (IndexedHistoryRead::Value(PropertyValue::Unsigned(7)), None),
+        (IndexedHistoryRead::Unreadable, None),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 77 + instance as u32).unwrap();
+        let mut db = ObjectDatabase::new();
+        let mut messages = empty_message_reads();
+        messages[0] = message;
+        db.add(Box::new(AtomicHistoryObject {
+            oid,
+            event_type: Some(PropertyValue::Enumerated(EventType::OUT_OF_RANGE.to_raw())),
+            timestamps: repeated_timestamp_reads(BACnetTimeStamp::SequenceNumber(19)),
+            messages,
+            status_flags: Some(PropertyValue::BitString {
+                unused_bits: 4,
+                data: vec![0],
+            }),
+            commits: Arc::new(AtomicUsize::new(0)),
+        }))
+        .unwrap();
 
-    let before = db.reserve_event_sequence_number().number();
-    let resolved =
-        crate::server::event_notifications::resolve_committed_event_enrollment_transition(
-            &db,
-            committed_enrollment_normal(
-                oid,
-                EventStateChange {
-                    from: EventState::NORMAL,
-                    to: EventState::HIGH_LIMIT,
-                },
-            ),
-        );
-
-    assert!(resolved.is_some());
-    assert_eq!(db.reserve_event_sequence_number().number(), before);
+        let before = db.reserve_event_sequence_number().number();
+        let resolved =
+            crate::server::event_notifications::resolve_committed_event_enrollment_transition(
+                &db,
+                committed_enrollment_normal(
+                    oid,
+                    EventStateChange {
+                        from: EventState::NORMAL,
+                        to: EventState::HIGH_LIMIT,
+                    },
+                ),
+            );
+        let message_text = resolved.map(|(_, _, transition)| match transition.history_source {
+            crate::server::event_notifications::NotificationHistorySource::Committed {
+                snapshot,
+                ..
+            } => snapshot.message_text,
+            _ => panic!("an enrollment projects its committed history"),
+        });
+        assert_eq!(message_text, expected, "{instance}");
+        assert_eq!(db.reserve_event_sequence_number().number(), before);
+    }
 }
 
 #[test]
@@ -404,7 +422,7 @@ fn committed_reliability_effective_type_does_not_reread_configured_event_type() 
             oid,
             event_type,
             timestamps: repeated_timestamp_reads(BACnetTimeStamp::SequenceNumber(23)),
-            messages: std::array::from_fn(|_| IndexedHistoryRead::Missing),
+            messages: empty_message_reads(),
             status_flags: Some(PropertyValue::BitString {
                 unused_bits: 4,
                 data: vec![0],

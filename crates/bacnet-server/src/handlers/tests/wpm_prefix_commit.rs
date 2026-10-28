@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_encoding::constructed::encode_bacnet_property_value;
+use bacnet_types::error::RemoteError;
 
 use bacnet_objects::analog::{AnalogOutputObject, AnalogValueObject};
 use bacnet_objects::binary::{BinaryInputObject, BinaryOutputObject, BinaryValueObject};
@@ -13,6 +14,7 @@ use bacnet_services::wpm::{
     WriteAccessSpecification, WritePropertyAttempt, WritePropertyMultipleRequest,
 };
 use bacnet_types::constructed::BACnetObjectPropertyReference;
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::primitives::BACnetTimeStamp;
 
 fn encode_value(value: &PropertyValue) -> Vec<u8> {
@@ -47,15 +49,15 @@ fn detailed(db: &mut ObjectDatabase, request: &[u8]) -> WritePropertyMultipleOut
 }
 
 fn assert_protocol(error: Error, class: ErrorClass, code: ErrorCode) {
-    let Error::Protocol {
+    let Error::Remote(RemoteError::Error {
         class: actual_class,
         code: actual_code,
-    } = error
+    }) = error
     else {
         panic!("expected protocol error, got {error:?}");
     };
-    assert_eq!(actual_class, class.to_raw() as u32);
-    assert_eq!(actual_code, code.to_raw() as u32);
+    assert_eq!(actual_class, class);
+    assert_eq!(actual_code, code);
 }
 
 fn assert_reference(
@@ -124,9 +126,9 @@ fn event_enrollment_prefix_commits_before_read_only_first_failure() {
 fn acked_transitions_objects() -> Vec<Box<dyn BACnetObject>> {
     let source = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
     vec![
-        Box::new(AnalogInputObject::new(1, "AI", 62).unwrap()),
-        Box::new(AnalogOutputObject::new(1, "AO", 62).unwrap()),
-        Box::new(AnalogValueObject::new(1, "AV", 62).unwrap()),
+        Box::new(AnalogInputObject::new(1, "AI", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
+        Box::new(AnalogOutputObject::new(1, "AO", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
+        Box::new(AnalogValueObject::new(1, "AV", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
         Box::new(BinaryInputObject::new(1, "BI").unwrap()),
         Box::new(BinaryOutputObject::new(1, "BO").unwrap()),
         Box::new(BinaryValueObject::new(1, "BV").unwrap()),
@@ -554,6 +556,7 @@ mod state_ownership;
 #[test]
 fn unknown_writes_wpm_reports_coordinate_and_retains_successful_prefix() {
     use bacnet_objects::schedule::ScheduleObject;
+    use bacnet_types::enums::EngineeringUnits;
     for value in [PropertyValue::Null, PropertyValue::Unsigned(17)] {
         for (property, expected) in [
             (
@@ -566,7 +569,9 @@ fn unknown_writes_wpm_reports_coordinate_and_retains_successful_prefix() {
             ),
         ] {
             let objects: Vec<Box<dyn BACnetObject>> = vec![
-                Box::new(AnalogInputObject::new(1, "AI", 62).unwrap()),
+                Box::new(
+                    AnalogInputObject::new(1, "AI", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+                ),
                 Box::new(ScheduleObject::new(1, "Schedule", PropertyValue::Real(0.0)).unwrap()),
             ];
             for object in objects {

@@ -1,8 +1,8 @@
 //! Private injection: exercises the actual MS/TP Python wrapper and session.
 //! Darwin PTYs reject the serial backend's ioctl; this is no hardware claim.
 use super::*;
-use bacnet_encoding::apdu::{decode_apdu, encode_apdu, Apdu, ConfirmedRequest};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::apdu::{Apdu, ConfirmedRequest, decode_apdu, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_services::read_property::ReadPropertyRequest;
 use bacnet_transport::mstp::codec::{self, FrameType};
 use bacnet_transport::mstp::{LoopbackSerial, SerialPort};
@@ -12,8 +12,8 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 use bytes::{Bytes, BytesMut};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 pub(super) type SerialOpener = Arc<dyn Fn(&SerialConfig) -> PyResult<TestSerial> + Send + Sync>;
@@ -28,13 +28,36 @@ pub(super) struct TrackedSerial {
     serial: LoopbackSerial,
     _peer: LoopbackSerial,
     live: Arc<AtomicUsize>,
+    /// The echo declared for it; the injected port itself returns nothing.
+    echo: Echo,
 }
 impl Drop for TrackedSerial {
     fn drop(&mut self) {
         self.live.fetch_sub(1, Ordering::SeqCst);
     }
 }
+impl TestSerial {
+    /// Declare the echo, as `TokioSerialPort::with_echo` does. A peer
+    /// loopback then hears its own writes.
+    pub(super) fn with_echo(self, echo: Echo) -> Self {
+        match self {
+            Self::Real(port) => Self::Real(port.with_echo(echo)),
+            Self::Injected(mut port) => {
+                port.echo = echo;
+                Self::Injected(port)
+            }
+            Self::Peer(port) => Self::Peer(port.with_echo(echo)),
+        }
+    }
+}
 impl SerialPort for TestSerial {
+    fn echo(&self) -> Echo {
+        match self {
+            Self::Real(port) => port.echo(),
+            Self::Injected(port) => port.echo,
+            Self::Peer(port) => port.echo(),
+        }
+    }
     async fn write(&self, data: &[u8]) -> Result<(), Error> {
         match self {
             Self::Real(port) => port.write(data).await,
@@ -81,6 +104,16 @@ fn mstp_python_wrapper_owns_one_serial_and_returns_none() {
         0,
         256,
         0,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
     )
     .unwrap();
     endpoint.config.serial_opener = Some(Arc::new({
@@ -94,6 +127,7 @@ fn mstp_python_wrapper_owns_one_serial_and_returns_none() {
                 serial,
                 _peer: peer,
                 live: live.clone(),
+                echo: Echo::None,
             })))
         }
     }));
@@ -175,7 +209,7 @@ fn group_read_frame(invoke_id: u8, instance: u32) -> MstpFrame {
     )
     .unwrap();
     MstpFrame {
-        frame_type: FrameType::BACnetDataExpectingReply,
+        frame_type: FrameType::BACNET_DATA_EXPECTING_REPLY,
         destination: SESSION_MAC,
         source: PEER_MAC,
         data: npdu.freeze(),
@@ -235,16 +269,16 @@ async fn read_group(peer: &LoopbackSerial, invoke_id: u8, instance: u32) -> Apdu
                 continue;
             }
             match frame.frame_type {
-                FrameType::ReplyPostponed => {
+                FrameType::REPLY_POSTPONED => {
                     let token = MstpFrame {
-                        frame_type: FrameType::Token,
+                        frame_type: FrameType::TOKEN,
                         destination: SESSION_MAC,
                         source: PEER_MAC,
                         data: Bytes::new(),
                     };
                     peer_send(peer, &token).await;
                 }
-                FrameType::BACnetDataNotExpectingReply => {
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY => {
                     let npdu = decode_npdu(frame.data).unwrap();
                     let apdu = decode_apdu(npdu.payload).unwrap();
                     let answered = match &apdu {
@@ -291,6 +325,16 @@ fn mstp_python_wrapper_applies_its_read_work_limit() {
         0,
         2,
         0,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
     )
     .unwrap();
     assert_eq!(endpoint.config.read_work_limit, 2);

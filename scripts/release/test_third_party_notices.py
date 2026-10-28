@@ -29,7 +29,7 @@ class ParseTests(unittest.TestCase):
         def cargo(*args):
             calls.append(args)
             target = args[args.index("--target") + 1]
-            crate = "pcap" if "sc-tls,pcap" in args else "rusty" if "rusty-bacnet" in args else "cli"
+            crate = "pcap" if "sc-tls,pcap,serial" in args else "rusty" if "rusty-bacnet" in args else "cli"
             return f"{crate} v1.0.0\n{target.split('-')[0]}-only v1.0.0\nshared v2.0.0\n"
 
         with mock.patch.object(tpn, "cargo", cargo):
@@ -38,10 +38,26 @@ class ParseTests(unittest.TestCase):
         cli_features = {c[c.index("--target") + 1]: c[c.index("--features") + 1] for c in calls if "bacnet-cli" in c}
         self.assertEqual(cli_features, tpn.TARGETS)
         self.assertEqual(cli_features["x86_64-pc-windows-msvc"], "sc-tls")
-        self.assertEqual(cli_features["aarch64-unknown-linux-gnu"], "sc-tls,pcap")
+        self.assertEqual(cli_features["aarch64-unknown-linux-gnu"], "sc-tls,pcap,serial")
         self.assertEqual(used[("pcap", "1.0.0")], {"CLI"})
         self.assertEqual(used[("shared", "2.0.0")], {"CLI", "Python"})
         self.assertIn(("aarch64-only", "1.0.0"), used)
+
+    def test_targets_match_the_release_build_scripts(self):
+        # The website's capability tables read TARGETS as the CLI's release
+        # features (#1496), so they must be what the build scripts pass.
+        here = Path(__file__).resolve().parent
+
+        def cli_features(script):
+            lines = [line for line in (here / script).read_text().splitlines()
+                     if "cargo build" in line and "-p bacnet-cli" in line]
+            self.assertEqual(len(lines), 1, f"{script} builds the CLI once")
+            args = lines[0].split()
+            return args[args.index("--features") + 1]
+
+        linux, native = cli_features("build_linux.sh"), cli_features("build_native.sh")
+        for target, features in tpn.TARGETS.items():
+            self.assertEqual(features, linux if "-linux-" in target else native, target)
 
     def test_two_sources_for_one_version_are_refused(self):
         packages = [{"name": "a", "version": "1.0.0"}, {"name": "a", "version": "1.0.0"}]
@@ -102,6 +118,16 @@ class LicenseFilesTests(unittest.TestCase):
                 (root / path).unlink()
                 with self.assertRaisesRegex(tpn.NoticesError, f"no longer has {path}"):
                     tpn.license_files(self.package(root, name="aws-lc-sys"))
+
+    def test_vendored_licence_for_its_pinned_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            files = tpn.license_files(self.package(root, name="tui-tree-widget", version="0.24.1"))
+            self.assertEqual(len(files), 1)
+            self.assertTrue(files[0][0].startswith("tui-tree-widget-0.24.1-LICENSE: "))
+            self.assertIn("Copyright (c) EdJoPaTo", files[0][1])
+            with self.assertRaisesRegex(tpn.NoticesError, "vendored licence is for 0.24.1"):
+                tpn.license_files(self.package(root, name="tui-tree-widget", version="0.25.0"))
 
     def test_licence_comment_must_still_be_a_licence(self):
         with tempfile.TemporaryDirectory() as tmp:

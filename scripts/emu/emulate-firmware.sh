@@ -6,8 +6,9 @@
 #
 #   emulate-firmware.sh [--native] [--suggest] [--timeout <seconds>] [<board>...]
 #
-# For each board (all four unless some are named), this builds the mstp,
-# bip and apdu images for the board's target with the `emulate` feature and
+# For each board (all four unless some are named), this builds the
+# firmware link test's eight images (mstp, mstp-extended, bip, node, bbmd,
+# router, device and apdu) for the board's target with the `emulate` feature and
 # the board's, with the pinned toolchain, on the host: clippy first, as
 # check-firmware-link.sh does, then the `emulate` profile, which is the link
 # test's `firmware` profile under its own name. Then scripts/emu/run-qemu.sh
@@ -16,7 +17,9 @@
 # Dockerfile's hash; with --native, on the QEMU on PATH instead (Homebrew's
 # `qemu`, say), whose version may differ. Each image checks its scenario's
 # summary against the one its host test asserts, reports its stack's
-# high-water mark, and exits through semihosting. Then
+# high-water mark, and exits through semihosting; an image whose statics
+# leave a board too little RAM for its stack, the router on the two
+# 16 KiB boards, is built for it but not run. Then
 # scripts/ci/firmware_size.py --stack checks each passing image's peak
 # against its budget in firmware/link/stack-budget.toml (#1660). The script
 # exits non-zero if anything fails to build, an image fails or runs past
@@ -36,17 +39,21 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-# board, target, QEMU system (qemu-system-<it>), and the board's cargo feature.
+# board, target, QEMU system (qemu-system-<it>), the board's cargo feature,
+# and the images that don't fit its RAM, comma-separated ("-" for none).
+# The router image's statics, 15.5 KB, leave the 16 KiB boards less than
+# 1 KB of stack, under a quarter of what it needs: it builds for them, but
+# doesn't run there (docs/ci.md, "Emulation (manual)").
 all_boards=(
-  "microbit thumbv6m-none-eabi arm board-microbit"
-  "lm3s6965evb thumbv7m-none-eabi arm board-lm3s6965evb"
-  "netduinoplus2 thumbv7em-none-eabihf arm board-netduinoplus2"
-  "sifive_e riscv32imc-unknown-none-elf riscv32 board-sifive-e"
+  "microbit thumbv6m-none-eabi arm board-microbit router"
+  "lm3s6965evb thumbv7m-none-eabi arm board-lm3s6965evb -"
+  "netduinoplus2 thumbv7em-none-eabihf arm board-netduinoplus2 -"
+  "sifive_e riscv32imc-unknown-none-elf riscv32 board-sifive-e router"
 )
-# One cargo run per feature set, as in check-firmware-link.sh: mstp and bip
-# without the crate's default `alloc` feature, then apdu with it.
+# One cargo run per feature set, as in check-firmware-link.sh: every image
+# but apdu without the crate's default `alloc` feature, then apdu with it.
 builds=("--no-default-features" "--lib --bin apdu")
-images=(mstp bip apdu)
+images=(mstp mstp-extended bip node bbmd router device apdu)
 stack_budget=firmware/link/stack-budget.toml
 
 usage() {
@@ -116,7 +123,7 @@ target_dir=$(cargo metadata --format-version 1 --no-deps --locked \
 jobs=()
 machines=()
 for board in "${boards[@]}"; do
-  read -r machine triple qemu feature <<<"$board"
+  read -r machine triple qemu feature unfit <<<"$board"
   machines+=("$machine")
   for build in "${builds[@]}"; do
     read -ra args <<<"$build"
@@ -125,6 +132,12 @@ for board in "${boards[@]}"; do
     cargo build -p firmware-link --locked --target "$triple" --profile emulate --features "$feature" "${args[@]}"
   done
   for image in "${images[@]}"; do
+    case ",$unfit," in
+      *",$image,"*)
+        echo "--> $image skipped on $machine: its statics leave too little RAM for its stack"
+        continue
+        ;;
+    esac
     jobs+=("$image:$triple:$qemu:$machine:$triple/emulate/$image")
   done
 done

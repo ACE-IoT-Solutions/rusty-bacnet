@@ -1,7 +1,9 @@
 use std::borrow::Cow;
 
 use bacnet_objects::traits::BACnetObject;
-use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{
+    EngineeringUnits, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
+};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
@@ -35,10 +37,10 @@ impl BACnetObject for TestAnalogInput {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
         static PROPS: [PropertyIdentifier; 8] = [
@@ -110,10 +112,16 @@ impl BACnetObject for TestDevice {
     }
     fn read_property(
         &self,
-        _property: PropertyIdentifier,
+        property: PropertyIdentifier,
         _array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
-        Ok(PropertyValue::Unsigned(0))
+        // The PICS prints the Device's Vendor_Name. Its Vendor_Identifier
+        // isn't an unsigned value, so the ServerConfig's vendor ID stands in.
+        Ok(match property {
+            PropertyIdentifier::VENDOR_NAME => PropertyValue::CharacterString("Acme Corp".into()),
+            PropertyIdentifier::VENDOR_IDENTIFIER => PropertyValue::Null,
+            _ => PropertyValue::Unsigned(0),
+        })
     }
     fn write_property(
         &mut self,
@@ -122,10 +130,10 @@ impl BACnetObject for TestDevice {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
         static PROPS: [PropertyIdentifier; 6] = [
@@ -176,12 +184,6 @@ fn make_test_db() -> ObjectDatabase {
 
 fn make_pics_config() -> PicsConfig {
     PicsConfig {
-        vendor_name: "Acme Corp".into(),
-        model_name: "BACnet Controller 3000".into(),
-        firmware_revision: "1.0.0".into(),
-        application_software_version: "2.0.0".into(),
-        protocol_version: 1,
-        protocol_revision: 24,
         device_profile: DeviceProfile::BAsc,
         data_link_layers: vec![DataLinkSupport::BipV4],
         network_layer: NetworkLayerSupport {
@@ -200,7 +202,7 @@ fn make_pics_config() -> PicsConfig {
 fn generate_pics_basic() {
     let db = make_test_db();
     let server_config = ServerConfig {
-        vendor_id: 999,
+        device: bacnet_objects::DeviceIdentity::new(1, 999).expect("valid Device identity"),
         ..ServerConfig::default()
     };
     let pics_config = make_pics_config();
@@ -297,8 +299,7 @@ fn real_device_and_network_port_overrides_not_createable_or_deleteable() {
     use bacnet_objects::network_port::NetworkPortObject;
 
     let device = DeviceObject::new(DeviceConfig {
-        instance: 1,
-        name: "Dev".into(),
+        identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
         ..Default::default()
     })
     .unwrap();
@@ -354,7 +355,8 @@ fn services_match_implementation() {
         .iter()
         .find(|s| s.service_name == "ReadProperty")
         .expect("ReadProperty should be listed");
-    assert!(!rp.initiator);
+    // It initiates ReadProperty too, for a Channel member in another device.
+    assert!(rp.initiator);
     assert!(rp.executor);
 
     // I-Am is initiator only
@@ -371,7 +373,7 @@ fn services_match_implementation() {
 fn text_output_contains_key_sections() {
     let db = make_test_db();
     let server_config = ServerConfig {
-        vendor_id: 42,
+        device: bacnet_objects::DeviceIdentity::new(1, 42).expect("valid Device identity"),
         ..ServerConfig::default()
     };
     let pics_config = make_pics_config();
@@ -500,15 +502,17 @@ use bacnet_objects::multistate::{
     MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject,
 };
 
+const NO_UNITS: EngineeringUnits = EngineeringUnits::NO_UNITS;
+
 /// Build a database with one of each of the 9 core I/O/V object types.
 fn make_real_objects_db() -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
-    db.add(Box::new(AnalogInputObject::new(1, "ai-1", 95).unwrap()))
-        .unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "ao-1", 95).unwrap()))
-        .unwrap();
-    db.add(Box::new(AnalogValueObject::new(1, "av-1", 95).unwrap()))
-        .unwrap();
+    let ai = AnalogInputObject::new(1, "ai-1", NO_UNITS).unwrap();
+    db.add(Box::new(ai)).unwrap();
+    let ao = AnalogOutputObject::new(1, "ao-1", NO_UNITS).unwrap();
+    db.add(Box::new(ao)).unwrap();
+    let av = AnalogValueObject::new(1, "av-1", NO_UNITS).unwrap();
+    db.add(Box::new(av)).unwrap();
     db.add(Box::new(BinaryInputObject::new(1, "bi-1").unwrap()))
         .unwrap();
     db.add(Box::new(BinaryOutputObject::new(1, "bo-1").unwrap()))
@@ -748,7 +752,7 @@ fn pics_writability_matches_runtime_write_property() {
     use bacnet_objects::traits::BACnetObject;
     use bacnet_types::bitstring::LimitEnable;
 
-    let mut ai = AnalogInputObject::new(1, "ai-1", 95).unwrap();
+    let mut ai = AnalogInputObject::new(1, "ai-1", NO_UNITS).unwrap();
     // PICS (via the trait method) must report it writable.
     assert!(
         ai.is_writable_property(PropertyIdentifier::LIMIT_ENABLE),

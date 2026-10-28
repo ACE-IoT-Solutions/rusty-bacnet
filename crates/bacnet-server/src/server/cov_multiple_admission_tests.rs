@@ -10,6 +10,7 @@ use crate::cov::{CovRecipient, MultipleContextKey};
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
 use bacnet_types::constructed::BACnetObjectPropertyReference;
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::error::ErrorDetail;
 
 const OOS: PropertyIdentifier = PropertyIdentifier::OUT_OF_SERVICE;
@@ -20,8 +21,10 @@ fn av(instance: u32) -> ObjectIdentifier {
 }
 
 fn with_av2(db: &mut ObjectDatabase) {
-    db.add(Box::new(AnalogValueObject::new(2, "AV-2", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogValueObject::new(2, "AV-2", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
 }
 
 /// `(object, [property])` specifications, none timestamped.
@@ -200,13 +203,14 @@ async fn a_failure_at_the_second_or_third_reference_keeps_and_reports_the_ones_b
     assert_eq!(reported(&initial), [(1, OOS), (1, PV), (1, SF)]);
     h.no_notification().await;
     assert_eq!(kept(&h, 62).await, [(1, OOS), (1, PV)]);
-    assert!(h
-        .server
-        .cov_table
-        .write()
-        .await
-        .subscriptions_for(&av(2))
-        .is_empty());
+    assert!(
+        h.server
+            .cov_table
+            .write()
+            .await
+            .subscriptions_for(&av(2))
+            .is_empty()
+    );
     h.server.stop().await.unwrap();
 }
 

@@ -89,10 +89,10 @@ impl FramedElement {
 }
 
 fn unsplittable() -> Error {
-    Error::Protocol {
-        class: ErrorClass::SERVICES.to_raw() as u32,
-        code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-    }
+    Error::protocol(
+        ErrorClass::SERVICES,
+        ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+    )
 }
 
 /// The items of a property already known to be a BACnetLIST.

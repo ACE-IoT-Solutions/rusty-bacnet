@@ -3,7 +3,7 @@
 
 use super::fixtures::{address, clock, day, monotonic, noon, oid, schedule_write, waker};
 use super::probe::{CUSTOM, CUSTOM_LIST};
-use bacnet_objects::access_control::{AccessControlInput, DoorStateReport};
+use bacnet_objects::access_control::{AccessControlInput, AccessEventReport, DoorStateReport};
 use bacnet_objects::accumulator::InputReading;
 use bacnet_objects::command::WriteFailure;
 use bacnet_objects::command_source::CommandOrigin;
@@ -19,8 +19,8 @@ use bacnet_types::constructed::{
     EventLogDatum, LogData, LogDatum, LogValue,
 };
 use bacnet_types::enums::{
-    AuditLevel, DoorStatus, EventState, LifeSafetyOperation, ObjectType, PropertyIdentifier as P,
-    Reliability,
+    AccessEvent, AuditLevel, DoorStatus, EventState, LifeSafetyOperation, ObjectType,
+    PropertyIdentifier as P, Reliability,
 };
 use bacnet_types::primitives::{BACnetTimeStamp, Date, PropertyValue};
 use std::time::Duration;
@@ -162,6 +162,9 @@ pub const QUERIES: &[(&str, Query)] = &[
     ("required_properties", |o| {
         format!("{:?}", o.required_properties())
     }),
+    ("supports_access_event_batch_internal", |o| {
+        o.supports_access_event_batch_internal().to_string()
+    }),
     ("supports_cov", |o| o.supports_cov().to_string()),
     // Rendered beside `supports_cov`: the probe's false must differ both from
     // an all-default object (false, false) and from an adapter that kept the
@@ -236,6 +239,9 @@ pub const QUERIES: &[(&str, Query)] = &[
     }),
     ("logs_received_event_notifications_internal", |o| {
         o.logs_received_event_notifications_internal().to_string()
+    }),
+    ("log_collecting_internal", |o| {
+        o.log_collecting_internal().to_string()
     }),
     ("buffer_ready_report_internal", |o| {
         format!("{:?}", o.buffer_ready_report_internal())
@@ -319,6 +325,9 @@ pub const COMMANDS: &[(&str, Command)] = &[
     }),
     ("bind_deadline_waker_internal", |o| {
         format!("{:?}", o.bind_deadline_waker_internal(Some(waker())))
+    }),
+    ("start_output_internal", |o| {
+        format!("{:?}", o.start_output_internal())
     }),
     ("advance_monotonic_time_internal", |o| {
         o.advance_monotonic_time_internal(Duration::from_secs(33))
@@ -463,6 +472,34 @@ pub const COMMANDS: &[(&str, Command)] = &[
         format!(
             "{:?}",
             o.set_tracking_value_internal(PropertyValue::Unsigned(4))
+        )
+    }),
+    ("record_access_event_batch_internal", |o| {
+        let reports = [
+            AccessEventReport {
+                time: Some(BACnetTimeStamp::SequenceNumber(12)),
+                ..AccessEventReport::new(AccessEvent::GRANTED, 41)
+            },
+            AccessEventReport {
+                time: Some(BACnetTimeStamp::SequenceNumber(13)),
+                ..AccessEventReport::new(AccessEvent::DENIED_OTHER, 42)
+            },
+        ];
+        format!(
+            "{:?}",
+            o.record_access_event_batch_internal(&reports)
+                .map(|events| events
+                    .into_iter()
+                    .map(|event| (
+                        event.report,
+                        event.snapshot.object_name().to_owned(),
+                        event
+                            .snapshot
+                            .read_property(P::ACCESS_EVENT_TAG, None)
+                            .unwrap(),
+                        event.clock_frame
+                    ))
+                    .collect::<Vec<_>>())
         )
     }),
     ("report_access_input_internal", |o| {

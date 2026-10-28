@@ -1,13 +1,18 @@
 use bacnet_mstp_codec::BROADCAST_MAC;
-use bacnet_mstp_core::{Duration as CoreDuration, QueueRejectReason};
+use bacnet_mstp_core::{Duration as CoreDuration, QueueRefusal};
+use bacnet_time::HostClock;
 use bacnet_types::error::Error;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 
 use super::adapter::Task;
 use super::diagnostics::increment;
-use super::queues::{CoreClock, EnqueueError, SharedQueues};
-use super::{DedicatedRuntime, Echo, MstpConfig, MstpDiagnostics, MstpExecutionMode, SerialPort};
+use super::queues::{EnqueueError, SharedQueues};
+use super::{
+    BoxedSerial, DedicatedRuntime, Echo, MstpConfig, MstpDiagnostics, MstpExecutionMode,
+    MstpExecutionStatus, SerialPort,
+};
 use crate::port::{ReceivedNpdu, TransportPort};
+use crate::runtime_clock::tokio_clock;
 
 // ---------------------------------------------------------------------------
 // MS/TP Transport
@@ -34,12 +39,14 @@ pub struct MstpTransport<S: SerialPort> {
     execution_mode: MstpExecutionMode,
     dedicated_runtime: Option<DedicatedRuntime>,
     diagnostics: MstpDiagnostics,
+    /// See [`Self::frame_tap`].
+    frame_tap: crate::tap::FrameTap,
 }
 
 /// What a send needs from a started transport.
 struct Link {
     queues: SharedQueues,
-    clock: CoreClock,
+    clock: HostClock,
     queue_max_age: CoreDuration,
 }
 
@@ -56,6 +63,7 @@ impl<S: SerialPort> MstpTransport<S> {
             execution_mode: MstpExecutionMode::default(),
             dedicated_runtime: None,
             diagnostics: MstpDiagnostics::new(),
+            frame_tap: crate::tap::FrameTap::new(),
         }
     }
 
@@ -64,7 +72,10 @@ impl<S: SerialPort> MstpTransport<S> {
     /// settings change, and an already-running loop is not migrated.
     ///
     /// Dedicated execution isolates MAC polling and backend blocking work from
-    /// the application pool, not from OS scheduling delays. Async serial resources
+    /// the application pool. On its own it does not shorten OS scheduling
+    /// delays; on Linux its [`MstpThreadConfig`](super::MstpThreadConfig)
+    /// can ask for `SCHED_FIFO` and CPU affinity, which `start` applies or
+    /// fails on, and [`Self::execution_status`] reports. Async serial resources
     /// opened on another reactor still require that reactor to remain running.
     /// `stop` waits for teardown; `abort`/drop request cancellation without waiting.
     /// Neither can interrupt an in-progress blocking syscall or undo queued bytes.
@@ -94,6 +105,27 @@ impl<S: SerialPort> MstpTransport<S> {
         self.diagnostics.clone()
     }
 
+    /// How the MAC loop runs, once [`start`](TransportPort::start) has
+    /// succeeded: whether on a thread of its own, and the real-time
+    /// priority and CPU affinity that thread reads back. `None` before
+    /// then. The [diagnostics handle](Self::diagnostics) reports the same,
+    /// after the transport has moved
+    /// ([`MstpDiagnostics::execution_status`]).
+    pub fn execution_status(&self) -> Option<MstpExecutionStatus> {
+        self.diagnostics.execution_status()
+    }
+
+    /// This transport's frame tap: every frame this station sends and
+    /// every frame it hears on the line, preamble to CRC, for whoever
+    /// subscribes: data frames and the control frames the master node
+    /// handles itself (the token, polls, postponed replies) alike. Like
+    /// [`Self::diagnostics`], the tap outlives a move of the transport:
+    /// clone it, or subscribe, before handing the transport over. See
+    /// [`crate::tap`].
+    pub fn frame_tap(&self) -> &crate::tap::FrameTap {
+        &self.frame_tap
+    }
+
     /// The configuration the next `start` uses: what [`Self::new`] was
     /// given, with extended frames on if a router prepared the port
     /// ([`TransportPort::prepare_for_routing`]).
@@ -106,6 +138,26 @@ impl<S: SerialPort> MstpTransport<S> {
     /// ([`MstpConfig::max_npdu_length`]).
     pub fn max_npdu_length(&self) -> usize {
         self.config.max_npdu_length()
+    }
+
+    /// This transport with its serial port boxed, the form
+    /// [`AnyTransport`](crate::any::AnyTransport)'s MS/TP variant holds;
+    /// `From<MstpTransport<S>> for AnyTransport` calls it. Its
+    /// configuration, execution mode, diagnostics and frame tap carry over,
+    /// and so does a running task: the port it owns stays unboxed.
+    pub fn into_boxed(mut self) -> MstpTransport<BoxedSerial> {
+        MstpTransport {
+            serial: self.serial.take().map(BoxedSerial::new),
+            config: self.config.clone(),
+            local_mac: self.local_mac,
+            link: self.link.take(),
+            task: self.task.take(),
+            execution_mode: std::mem::take(&mut self.execution_mode),
+            dedicated_runtime: self.dedicated_runtime.take(),
+            diagnostics: std::mem::replace(&mut self.diagnostics, MstpDiagnostics::new()),
+            frame_tap: std::mem::replace(&mut self.frame_tap, crate::tap::FrameTap::new()),
+        }
+        // `self` now holds nothing its `Drop` would release.
     }
 
     fn abort_task_and_release_state(&mut self) {
@@ -136,7 +188,7 @@ impl<S: SerialPort> MstpTransport<S> {
                 std::io::ErrorKind::NotConnected,
                 "MS/TP transport is no longer running",
             ))),
-            Err(EnqueueError::Rejected(QueueRejectReason::Oversize)) => {
+            Err(EnqueueError::Rejected(QueueRefusal::Oversize)) => {
                 increment(&counts.outbound_oversize);
                 let class = if self.config.extended_frames {
                     "extended"
@@ -149,7 +201,7 @@ impl<S: SerialPort> MstpTransport<S> {
                     self.config.max_npdu_length()
                 )))
             }
-            Err(EnqueueError::Rejected(QueueRejectReason::Full)) => {
+            Err(EnqueueError::Rejected(QueueRefusal::Full)) => {
                 increment(&counts.outbound_queue_full);
                 Err(Error::Transport(std::io::Error::new(
                     std::io::ErrorKind::WouldBlock,
@@ -168,31 +220,33 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
         true
     }
 
-    fn transport_kind(&self) -> &'static str {
-        "mstp"
-    }
-
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
         /// NPDU receive channel capacity — smaller than BIP/Ethernet for low-bandwidth serial.
         const NPDU_CHANNEL_CAPACITY: usize = 64;
 
         let config = self.config.core_config()?;
-        if let Some(serial) = &self.serial {
-            serial.echo().validate()?;
-        }
-        let serial = self
-            .serial
-            .take()
-            .ok_or_else(|| Error::Encoding("MS/TP transport already started".into()))?;
+        self.execution_mode.validate()?;
+        let not_started = || Error::Encoding("MS/TP transport already started".into());
+        self.serial
+            .as_ref()
+            .ok_or_else(not_started)?
+            .echo()
+            .validate()?;
 
-        let dedicated_runtime = match self.execution_mode {
-            MstpExecutionMode::Tokio => None,
-            MstpExecutionMode::DedicatedThread => Some(DedicatedRuntime::new().await?),
+        // The thread and its settings come first: if they fail, the serial
+        // port stays here for another try.
+        let (dedicated_runtime, status) = match &self.execution_mode {
+            MstpExecutionMode::Tokio => (None, MstpExecutionStatus::default()),
+            MstpExecutionMode::DedicatedThread(thread) => {
+                let (runtime, status) = DedicatedRuntime::new(thread.clone()).await?;
+                (Some(runtime), status)
+            }
         };
+        let serial = self.serial.take().ok_or_else(not_started)?;
 
         let (npdu_tx, npdu_rx) = mpsc::channel(NPDU_CHANNEL_CAPACITY);
         let queues = SharedQueues::new(self.config.extended_frames);
-        let clock = CoreClock::new();
+        let clock = tokio_clock();
         let task = Task {
             serial,
             config,
@@ -200,12 +254,15 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
             clock,
             npdus: npdu_tx,
             counts: self.diagnostics.counters.clone(),
+            transmit_pad: self.config.transmit_latency_pad,
+            tap: self.frame_tap.clone(),
         };
         let task = match &dedicated_runtime {
             Some(runtime) => runtime.handle.spawn(task.run()),
             None => tokio::spawn(task.run()),
         };
         self.dedicated_runtime = dedicated_runtime;
+        self.diagnostics.counters.publish_execution(status);
         self.task = Some(task);
         self.link = Some(Link {
             queues,
@@ -269,6 +326,13 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
         self.config.max_apdu_length()
     }
 
+    /// [`MstpConfig::max_npdu_length`] both ways: 1497 octets with extended
+    /// frames, 501 without.
+    fn max_npdu(&self) -> bacnet_npdu::NpduLimits {
+        let octets = u16::try_from(self.config.max_npdu_length()).unwrap_or(u16::MAX);
+        bacnet_npdu::NpduLimits::both(octets)
+    }
+
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {
         mac == [BROADCAST_MAC]
     }
@@ -291,8 +355,9 @@ impl<S: SerialPort> Drop for MstpTransport<S> {
 /// In-memory loopback serial port for unit testing.
 ///
 /// [`Self::pair`] connects two ports: what one writes, the other reads, in
-/// whole writes. Writes are delivered at once, so a frame takes no time on
-/// this "wire"; the transport times it by the baud rate (see the
+/// whole writes (an empty write delivers nothing, and a read always returns
+/// at least one octet). Writes are delivered at once, so a frame takes no
+/// time on this "wire"; the transport times it by the baud rate (see the
 /// [module docs](super)). By default a port does not hear its own writes;
 /// [`Self::with_echo`] makes it hear them, as a transceiver whose receiver
 /// stays on does.
@@ -343,12 +408,12 @@ impl LoopbackSerial {
 
 impl SerialPort for LoopbackSerial {
     async fn write(&self, data: &[u8]) -> Result<(), Error> {
-        if matches!(self.echo, Echo::Full { .. }) {
-            if let Some(own) = self.own.upgrade() {
-                own.send(data.to_vec())
-                    .await
-                    .map_err(|_| Error::Encoding("loopback echo failed".into()))?;
-            }
+        if matches!(self.echo, Echo::Full { .. })
+            && let Some(own) = self.own.upgrade()
+        {
+            own.send(data.to_vec())
+                .await
+                .map_err(|_| Error::Encoding("loopback echo failed".into()))?;
         }
         self.tx
             .send(data.to_vec())
@@ -373,15 +438,20 @@ impl SerialPort for LoopbackSerial {
             return Ok(len);
         }
         let mut rx = self.rx.lock().await;
-        match rx.recv().await {
-            Some(data) => {
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                // Keep what did not fit for the next read.
-                leftover.extend_from_slice(&data[len..]);
-                Ok(len)
+        loop {
+            match rx.recv().await {
+                // An empty write puts nothing on the line, and a read that
+                // returns nothing would mean the end of it.
+                Some(data) if data.is_empty() => {}
+                Some(data) => {
+                    let len = data.len().min(buf.len());
+                    buf[..len].copy_from_slice(&data[..len]);
+                    // Keep what did not fit for the next read.
+                    leftover.extend_from_slice(&data[len..]);
+                    return Ok(len);
+                }
+                None => return Err(Error::Encoding("loopback channel closed".into())),
             }
-            None => Err(Error::Encoding("loopback channel closed".into())),
         }
     }
 
@@ -390,31 +460,11 @@ impl SerialPort for LoopbackSerial {
     }
 }
 
-// ---------------------------------------------------------------------------
-// NoSerial: zero-sized SerialPort for non-MS/TP contexts
-// ---------------------------------------------------------------------------
-
-/// A serial port implementation that always errors.
-///
-/// Used to satisfy the `AnyTransport<S>` generic when MS/TP is not needed
-/// (e.g., in Python bindings where serial access isn't exposed).
-pub struct NoSerial;
-
-impl SerialPort for NoSerial {
-    async fn write(&self, _data: &[u8]) -> Result<(), Error> {
-        Err(Error::Encoding("NoSerial: MS/TP not available".into()))
-    }
-
-    async fn read(&self, _buf: &mut [u8]) -> Result<usize, Error> {
-        Err(Error::Encoding("NoSerial: MS/TP not available".into()))
-    }
-}
-
 #[cfg(test)]
 mod abort_tests {
     use std::future::pending;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use super::*;

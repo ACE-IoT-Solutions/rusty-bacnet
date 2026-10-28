@@ -8,42 +8,18 @@
 //! asks for. Its records are the [`ReceivedNetworkControl`] a non-router
 //! [`NetworkLayer`](crate::layer::NetworkLayer) hands its own consumer.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use bacnet_encoding::npdu::NpduAddress;
+use bacnet_encoding::npdu::Npdu;
+use bacnet_transport::port::ReceivedNpdu;
 
-use super::{BACnetRouter, IngressContext};
-use crate::layer::{next_ingress_sequence, AdmissionSender, ReceivedNetworkControl};
-
-/// The router's own address on each port, by port index: the network the
-/// port is attached to, with the router's MAC on that link.
-#[derive(Debug, Default)]
-pub(super) struct OwnAddresses(Vec<NpduAddress>);
-
-impl OwnAddresses {
-    pub(super) fn new(addresses: Vec<NpduAddress>) -> Self {
-        Self(addresses)
-    }
-
-    /// Whether `address` is this router: the network of one of its ports,
-    /// paired with the router's own MAC on that port.
-    pub(super) fn contains(&self, address: &NpduAddress) -> bool {
-        self.0.contains(address)
-    }
-
-    /// The port attached to `network`, if that network is one of the
-    /// router's own.
-    pub(super) fn port_on(&self, network: u16) -> Option<usize> {
-        self.0.iter().position(|own| own.network == network)
-    }
-}
+use super::BACnetRouter;
+use crate::layer::{AdmissionSender, ReceivedNetworkControl, next_ingress_sequence};
 
 /// Where network controls addressed to this router go.
 #[derive(Default)]
 pub(super) struct LocalControl {
-    /// The router's own address on each port.
-    addresses: OwnAddresses,
     /// The opted-in consumer, if any.
     tx: Option<AdmissionSender<ReceivedNetworkControl>>,
     /// Source of [`ReceivedNetworkControl::ingress_sequence`].
@@ -52,42 +28,38 @@ pub(super) struct LocalControl {
 
 impl LocalControl {
     pub(super) fn new(
-        addresses: OwnAddresses,
         tx: Option<AdmissionSender<ReceivedNetworkControl>>,
         ingress_sequence: Arc<AtomicU64>,
     ) -> Self {
         Self {
-            addresses,
             tx,
             ingress_sequence,
         }
     }
 
-    /// The router's own address on each port, which also tells the reject
-    /// path which networks are directly connected.
-    pub(super) fn addresses(&self) -> &OwnAddresses {
-        &self.addresses
+    /// Whether a consumer asked for these controls, so the dispatch reads
+    /// the control's header only for one.
+    pub(super) fn wanted(&self) -> bool {
+        self.tx.is_some()
     }
 
-    /// Whether `dest` is this router: its network is one of the router's
-    /// ports and its MAC is the router's own MAC on that port.
-    pub(super) fn is_own_address(&self, dest: &NpduAddress) -> bool {
-        self.addresses.contains(dest)
-    }
-
-    /// Offer the control in `ctx` to the consumer. Like the router's local
-    /// APDU queue, a full or closed consumer drops the arriving control and
-    /// never holds up routing.
-    pub(super) fn deliver(&self, ctx: &IngressContext) {
+    /// Offer the control `received` carries to the consumer: `header` is
+    /// its control information, which the dispatch read from the engine's
+    /// view with [`Npdu::header_from`], and its data starts at `offset` in
+    /// the frame. The frame isn't decoded again, and the data shares its
+    /// buffer. Like the router's local APDU queue, a full or closed
+    /// consumer drops the arriving control and never holds up routing.
+    pub(super) fn deliver(&self, mut header: Npdu, offset: usize, received: &ReceivedNpdu) {
         let Some(tx) = self.tx.as_ref() else {
             return;
         };
+        header.payload = received.npdu.slice(offset..);
         let _ = tx.try_send(ReceivedNetworkControl {
-            npdu: ctx.npdu.clone(),
-            source_mac: ctx.source_mac.clone(),
-            link_layer_group: ctx.link_layer_group,
-            data_attributes: ctx.data_attributes.clone(),
-            provenance: ctx.provenance,
+            npdu: header,
+            source_mac: received.source_mac.clone(),
+            link_layer_group: received.link_layer_group,
+            data_attributes: received.data_attributes.clone(),
+            provenance: received.provenance.clone(),
             ingress_sequence: next_ingress_sequence(&self.ingress_sequence),
         });
     }

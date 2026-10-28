@@ -20,17 +20,14 @@
 
 use arbitrary::Arbitrary;
 use bacnet_mstp_codec::{
-    decode_frame, decode_frame_in_place, Frame, FrameError, FrameSink, FrameType,
+    Frame, FrameError, FrameSink, FrameType, decode_frame, decode_frame_in_place,
 };
 use libfuzzer_sys::fuzz_target;
-use mstp_codec_fuzz::{self as wire, SinkKnobs, MAX_COBS_LENGTH, MAX_DATA, MIN_COBS_LENGTH};
+use mstp_codec_fuzz::{self as wire, MAX_COBS_LENGTH, MAX_DATA, MIN_COBS_LENGTH, SinkKnobs};
 
 #[derive(Debug, Arbitrary)]
 struct Input {
     frame_type: u8,
-    /// Build the type as `FrameType::Unknown(raw)` even for a named type,
-    /// which the codec must treat by its raw value.
-    hand_built_type: bool,
     destination: u8,
     source: u8,
     /// The data length: modulo 640 for a standard type, past the 501-octet
@@ -79,12 +76,12 @@ fuzz_target!(
         let raw = input.frame_type;
         let modulus = if wire::is_cobs(raw) { 2100 } else { 640 };
         let data = wire::fill(usize::from(input.length) % modulus, &input.pattern);
-        let frame_type = if input.hand_built_type {
-            FrameType::Unknown(raw)
-        } else {
-            FrameType::from_raw(raw)
-        };
-        let frame = Frame::new(frame_type, input.destination, input.source, &data);
+        let frame = Frame::new(
+            FrameType::from_raw(raw),
+            input.destination,
+            input.source,
+            &data,
+        );
         let wire_length = wire::wire_length(wire::length_field(raw, &data));
         let expected = match refusal(raw, input.source, &data) {
             Some(error) => Err(error),
@@ -120,9 +117,7 @@ fuzz_target!(
             assert_eq!(decoded.header.destination, input.destination);
             assert_eq!(decoded.header.source, input.source);
             assert_eq!(decoded.data, data);
-            if !input.hand_built_type {
-                assert_eq!(decoded, frame);
-            }
+            assert_eq!(decoded, frame);
         }
     }
 );

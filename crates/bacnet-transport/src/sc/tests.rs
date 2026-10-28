@@ -283,7 +283,7 @@ fn connect_accept_with_payload_sets_hub_max_bvlc_and_apdu() {
     assert_eq!(conn.state, ScConnectionState::Connected);
     assert_eq!(conn.hub_vmac, Some([0x10; 6]));
     assert_eq!(conn.hub_max_bvlc_length, 1200);
-    assert_eq!(conn.hub_max_apdu_length, 480);
+    assert_eq!(conn.hub_max_npdu_length, 480);
 }
 
 #[test]
@@ -628,7 +628,13 @@ async fn transport_send_unicast_rejects_peer_max_npdu() {
         .await
         .unwrap_err();
 
-    assert!(format!("{err}").contains("Max-NPDU-Length"));
+    assert!(matches!(
+        err,
+        Error::SendTooLong {
+            length: 3,
+            limit: 2
+        }
+    ));
     assert!(
         tokio::time::timeout(Duration::from_millis(50), ws_hub.recv())
             .await
@@ -654,7 +660,13 @@ async fn transport_send_unicast_rejects_peer_max_bvlc() {
         .await
         .unwrap_err();
 
-    assert!(format!("{err}").contains("Max-BVLC-Length"));
+    assert!(matches!(
+        err,
+        Error::SendTooLong {
+            length: 14,
+            limit: 13
+        }
+    ));
     assert!(
         tokio::time::timeout(Duration::from_millis(50), ws_hub.recv())
             .await
@@ -812,5 +824,5 @@ fn connect_accept_parses_device_uuid() {
     assert!(conn.handle_connect_accept(&accept));
     assert_eq!(conn.hub_vmac, Some([0x02; 6]));
     assert_eq!(conn.hub_device_uuid, Some([0xAB; 16]));
-    assert_eq!(conn.hub_max_apdu_length, 1400);
+    assert_eq!(conn.hub_max_npdu_length, 1400);
 }

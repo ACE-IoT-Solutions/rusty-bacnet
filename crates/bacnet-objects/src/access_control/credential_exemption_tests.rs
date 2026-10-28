@@ -3,6 +3,7 @@
 //! over the network; the setter's refusals.
 
 use bacnet_types::enums::{AuthorizationExemption as Exemption, ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 use super::*;
 use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
@@ -11,9 +12,9 @@ const AE: PropertyIdentifier = PropertyIdentifier::AUTHORIZATION_EXEMPTIONS;
 
 fn assert_property_error<T: std::fmt::Debug>(result: Result<T, Error>, code: ErrorCode) {
     match result {
-        Err(Error::Protocol { class, code: got }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(got, code.to_raw() as u32, "expected {code:?}");
+        Err(Error::Remote(RemoteError::Error { class, code: got })) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(got, code, "expected {code:?}");
         }
         other => panic!("expected PROPERTY / {code:?}, got {other:?}"),
     }

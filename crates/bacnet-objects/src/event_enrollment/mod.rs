@@ -1,5 +1,7 @@
 //! EventEnrollment (type 9) object per ASHRAE 135-2020 Clause 12.12.
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetEventParameter, FaultParameters,
@@ -10,7 +12,6 @@ use bacnet_types::enums::{
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier, PropertyValue, StatusFlags};
-use std::borrow::Cow;
 
 use crate::common::{self, read_common_properties};
 use crate::event::history::EventHistory;
@@ -39,7 +40,9 @@ pub struct EventEnrollmentObject {
     oid: ObjectIdentifier,
     name: String,
     description: String,
-    event_type: EventType,
+    /// The algorithm the legacy octet layout of Event_Parameters runs, which
+    /// names none itself; every other alternative names its own (#1868).
+    legacy_event_type: EventType,
     notify_type: NotifyType,
     event_parameters: BACnetEventParameter,
     object_property_reference: Option<BACnetDeviceObjectPropertyReference>,
@@ -71,23 +74,27 @@ pub struct EventEnrollmentObject {
 }
 
 impl EventEnrollmentObject {
-    /// Create a new EventEnrollment object whose Event_Type is `event_type`.
+    /// Create a new EventEnrollment object.
+    ///
+    /// Event_Type follows Event_Parameters (Clause 12.12.5): it reads NONE
+    /// while the parameters are the unset `none` alternative and the
+    /// matching type once parameters are set. `legacy_event_type` only
+    /// matters for the pre-framing octet layout of Event_Parameters, which
+    /// carries no algorithm of its own: it is the algorithm that layout runs
+    /// and the Event_Type served while it is held.
     pub fn new(
         instance: u32,
         name: impl Into<String>,
-        event_type: EventType,
+        legacy_event_type: EventType,
     ) -> Result<Self, Error> {
         let oid = ObjectIdentifier::new(ObjectType::EVENT_ENROLLMENT, instance)?;
         Ok(Self {
             oid,
             name: name.into(),
             description: String::new(),
-            event_type,
+            legacy_event_type,
             notify_type: NotifyType::ALARM,
-            event_parameters: BACnetEventParameter::Opaque {
-                tag: 0xFF,
-                data: Vec::new(),
-            },
+            event_parameters: Self::UNSET_EVENT_PARAMETERS,
             object_property_reference: None,
             event_state: EventState::NORMAL,
             event_enable: EventTransitionBits::all(),
@@ -117,6 +124,12 @@ impl EventEnrollmentObject {
     /// the value a flag holds until its transition kind first occurs on the
     /// object (ASHRAE 135-2020 Clause 12.12).
     const RESET_ACKED_TRANSITIONS: EventTransitionBits = EventTransitionBits::all();
+
+    /// `Event_Parameters` before anything sets them: the `none` alternative
+    /// of the BACnetEventParameter CHOICE (context tag 20, a NULL; Clause
+    /// 21), so an unset enrollment serves a member of the property's
+    /// datatype (#1868). The evaluator has no algorithm to run for it.
+    const UNSET_EVENT_PARAMETERS: BACnetEventParameter = BACnetEventParameter::None;
 
     /// Put the object in the state ASHRAE 135-2020 Clause 13.2.2.1 prescribes
     /// for disabled detection (`Event_Detection_Enable` FALSE): Event_State
@@ -217,11 +230,12 @@ impl EventEnrollmentObject {
     }
 
     /// The pTimeDelay the stored `Event_Parameters` supply: the `time_delay`
-    /// field every evaluated algorithm carries (Table 12-15). Unmodeled
-    /// alternatives — including the `0xFF` legacy octet layout, which has no
-    /// time-delay slot — contribute zero, so their TDN fallback reads as 0
-    /// and their evaluation fires immediately, exactly as they did before
-    /// delay honoring existed.
+    /// member of every algorithm that has one (Table 12-15), so an unset
+    /// Time_Delay_Normal reads back the algorithm's delay (#2090), whether
+    /// or not the server runs it. The alternatives with no time-delay slot
+    /// (`none`, buffer-ready, access-event, extended, an unassigned tag and
+    /// the `0xFF` legacy octet layout) contribute zero, so their evaluation
+    /// fires immediately, exactly as it did before delay honoring existed.
     fn event_parameters_time_delay(&self) -> u32 {
         use BACnetEventParameter as P;
         match &self.event_parameters {
@@ -229,8 +243,30 @@ impl EventEnrollmentObject {
             | P::ChangeOfState { time_delay, .. }
             | P::ChangeOfValue { time_delay, .. }
             | P::FloatingLimit { time_delay, .. }
-            | P::OutOfRange { time_delay, .. } => *time_delay,
+            | P::OutOfRange { time_delay, .. }
+            | P::CommandFailure { time_delay, .. }
+            | P::ChangeOfLifeSafety { time_delay, .. }
+            | P::UnsignedRange { time_delay, .. }
+            | P::DoubleOutOfRange { time_delay, .. }
+            | P::SignedOutOfRange { time_delay, .. }
+            | P::UnsignedOutOfRange { time_delay, .. }
+            | P::ChangeOfCharacterstring { time_delay, .. }
+            | P::ChangeOfStatusFlags { time_delay, .. }
+            | P::ChangeOfDiscreteValue { time_delay }
+            | P::ChangeOfTimer { time_delay, .. } => *time_delay,
             _ => 0,
+        }
+    }
+
+    /// Event_Type as Event_Parameters gives it (Clause 12.12.5): each
+    /// framed alternative's tag is its event type (`none`, tag 20, is NONE).
+    /// The legacy octet layout uses the constructor's type, and so does an
+    /// opaque alternative at tag 64 or above: such a tag names no event type
+    /// the standard reserves (0 to 63), so nothing is derived from it.
+    fn event_type(&self) -> EventType {
+        match &self.event_parameters {
+            BACnetEventParameter::Opaque { tag, .. } if *tag >= 64 => self.legacy_event_type,
+            parameters => EventType::from_raw(u32::from(parameters.tag())),
         }
     }
 
@@ -251,20 +287,18 @@ impl BACnetObject for EventEnrollmentObject {
     }
 
     fn enrollment_summary_capability_internal(&self) -> Option<EnrollmentSummaryCapability> {
-        let supported_parameters = match &self.event_parameters {
-            BACnetEventParameter::Extended { .. } => false,
-            BACnetEventParameter::Opaque { tag, .. } => *tag == 0xFF,
-            _ => true,
-        } || matches!(
-            self.effective_fault_parameters(),
-            FaultParameters::FaultStatusFlags { .. } | FaultParameters::FaultOutOfRange { .. }
-        );
-        (self.object_property_reference.is_some() && supported_parameters).then_some(
-            EnrollmentSummaryCapability {
-                event_type: self.event_type,
+        // Any enrollment with a monitored reference can fault: the monitored
+        // object's fault and the configuration checks run before the
+        // parameters are looked at, so whatever Event_Parameters hold (`none`,
+        // an unmodeled alternative, Extended) its TO_FAULT is listed and
+        // acknowledged (#1868). Event_Detection_Enable FALSE is left to the
+        // summary and acknowledgment paths.
+        self.object_property_reference
+            .is_some()
+            .then(|| EnrollmentSummaryCapability {
+                event_type: self.event_type(),
                 last_transition: self.event_history.last_transition(),
-            },
-        )
+            })
     }
 
     fn read_property(
@@ -288,16 +322,18 @@ impl BACnetObject for EventEnrollmentObject {
         {
             return result;
         }
+        // Event_Time_Stamps, Event_Message_Texts and the reporting options
+        // (Event_Message_Texts_Config and the Event_Algorithm_Inhibit pair,
+        // #1507), all optional or required rows of Table 12-14.
+        if let Some(result) = self.event_history.read(property, array_index) {
+            return result;
+        }
         match property {
-            p if p == PropertyIdentifier::EVENT_TIME_STAMPS => self
-                .event_history
-                .read(p, array_index)
-                .expect("EventHistory handles Event_Time_Stamps"),
             p if p == PropertyIdentifier::OBJECT_TYPE => Ok(PropertyValue::Enumerated(
                 ObjectType::EVENT_ENROLLMENT.to_raw(),
             )),
             p if p == PropertyIdentifier::EVENT_TYPE => {
-                Ok(PropertyValue::Enumerated(self.event_type.to_raw()))
+                Ok(PropertyValue::Enumerated(self.event_type().to_raw()))
             }
             p if p == PropertyIdentifier::NOTIFY_TYPE => {
                 Ok(PropertyValue::Enumerated(self.notify_type.to_raw()))
@@ -366,7 +402,7 @@ impl BACnetObject for EventEnrollmentObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
@@ -445,6 +481,12 @@ impl BACnetObject for EventEnrollmentObject {
             }
             return Err(common::invalid_data_type_error());
         }
+        if let Some(result) =
+            self.event_history
+                .write(property, array_index, &value, self.event_detection_enable)
+        {
+            return result;
+        }
         if let Some(result) = common::write_object_name(&mut self.name, property, &value) {
             return result;
         }
@@ -454,7 +496,7 @@ impl BACnetObject for EventEnrollmentObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            _array_index,
+            array_index,
         ))
     }
 
@@ -536,10 +578,10 @@ impl BACnetObject for EventEnrollmentObject {
         transition_bit: EventTransitionBits,
     ) -> Result<(), bacnet_types::error::Error> {
         if !self.event_detection_enable {
-            return Err(bacnet_types::error::Error::Protocol {
-                class: bacnet_types::enums::ErrorClass::OBJECT.to_raw() as u32,
-                code: bacnet_types::enums::ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
-            });
+            return Err(bacnet_types::error::Error::protocol(
+                bacnet_types::enums::ErrorClass::OBJECT,
+                bacnet_types::enums::ErrorCode::NO_ALARM_CONFIGURED,
+            ));
         }
         self.acked_transitions |= transition_bit & EventTransitionBits::all();
         Ok(())
@@ -551,10 +593,10 @@ impl BACnetObject for EventEnrollmentObject {
         timestamp: &BACnetTimeStamp,
     ) -> Result<(), Error> {
         if !self.event_detection_enable || self.enrollment_summary_capability_internal().is_none() {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::NO_ALARM_CONFIGURED,
+            ));
         }
         self.event_history.acknowledge_correlated(
             &mut self.acked_transitions,
@@ -569,10 +611,10 @@ impl BACnetObject for EventEnrollmentObject {
         timestamp: &BACnetTimeStamp,
     ) -> Result<Option<crate::event::EventStateChange>, Error> {
         if !self.event_detection_enable || self.enrollment_summary_capability_internal().is_none() {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::NO_ALARM_CONFIGURED,
+            ));
         }
         self.event_history.acknowledge_correlated_detailed(
             &mut self.acked_transitions,
@@ -633,7 +675,20 @@ impl BACnetObject for EventEnrollmentObject {
                 | PropertyIdentifier::EVENT_PARAMETERS
                 | PropertyIdentifier::FAULT_PARAMETERS
                 | PropertyIdentifier::TIME_DELAY_NORMAL
+                | PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG
+                | PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF
+                | PropertyIdentifier::EVENT_ALGORITHM_INHIBIT
         )
+    }
+
+    fn event_algorithm_inhibit_reference_internal(
+        &self,
+    ) -> Option<bacnet_types::constructed::BACnetObjectPropertyReference> {
+        self.event_history.options.inhibit_reference().cloned()
+    }
+
+    fn follow_event_algorithm_inhibit_internal(&mut self, inhibit: bool) -> bool {
+        self.event_history.options.follow(inhibit)
     }
 
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {

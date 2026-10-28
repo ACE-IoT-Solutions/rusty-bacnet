@@ -4,6 +4,7 @@
 //! dispatch, retained-storage filtering, ACK encode, and client decode —
 //! including the segmented-ACK path under a small max-APDU.
 
+use bacnet_types::error::RemoteError;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
@@ -13,6 +14,7 @@ use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
 use bacnet_services::audit::{AuditLogQueryRequest, BACnetAuditLogQueryParameters};
+use bacnet_types::MacAddr;
 use bacnet_types::constructed::{
     BACnetAddress, BACnetAuditLogDatum, BACnetAuditLogRecord, BACnetAuditLogRecordResult,
     BACnetAuditNotification, BACnetRecipient,
@@ -22,7 +24,6 @@ use bacnet_types::enums::{
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
-use bacnet_types::MacAddr;
 
 #[derive(Default)]
 struct MemoryPersistence(Mutex<Option<AuditLogSnapshot>>);
@@ -257,9 +258,10 @@ fn database() -> ObjectDatabase {
 
     let mut db = ObjectDatabase::new();
     let device_object = DeviceObject::new(DeviceConfig {
-        instance: 4321,
-        name: "Audit E2E Device".into(),
-        segmentation_supported: Segmentation::BOTH,
+        identity: bacnet_objects::DeviceIdentity::new(4321, 0)
+            .expect("valid Device identity")
+            .with_name("Audit E2E Device")
+            .with_segmentation(Segmentation::BOTH),
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -279,7 +281,11 @@ async fn started() -> (
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .database(database())
-        .segmentation_supported(Segmentation::BOTH)
+        .device(
+            bacnet_objects::DeviceIdentity::new(4321, 0)
+                .unwrap()
+                .with_segmentation(Segmentation::BOTH),
+        )
         .build()
         .await
         .unwrap();
@@ -602,9 +608,9 @@ async fn audit_query_matches_address_recipient_and_unknown_audit_log_errors() {
     assert!(
         matches!(
             error,
-            Error::Protocol { class, code }
-                if class == u32::from(ErrorClass::OBJECT.to_raw())
-                    && code == u32::from(ErrorCode::UNKNOWN_OBJECT.to_raw())
+            Error::Remote(RemoteError::Error { class, code })
+                if class == ErrorClass::OBJECT
+                    && code == ErrorCode::UNKNOWN_OBJECT
         ),
         "unexpected error: {error}"
     );

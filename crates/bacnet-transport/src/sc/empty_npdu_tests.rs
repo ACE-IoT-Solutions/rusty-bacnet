@@ -134,7 +134,7 @@ fn unchanged(conn: &ScConnection, before: &ScConnection) {
     assert_eq!(conn.max_bvlc_length, before.max_bvlc_length);
     assert_eq!(conn.max_apdu_length, before.max_apdu_length);
     assert_eq!(conn.hub_max_bvlc_length, before.hub_max_bvlc_length);
-    assert_eq!(conn.hub_max_apdu_length, before.hub_max_apdu_length);
+    assert_eq!(conn.hub_max_npdu_length, before.hub_max_npdu_length);
     assert_eq!(conn.next_message_id, before.next_message_id);
     assert_eq!(
         conn.pending_connect_message_id,
@@ -189,7 +189,7 @@ fn empty_npdu_direct_connection_is_pure_in_all_states_and_codec_stays_permissive
 
 #[tokio::test]
 async fn empty_npdu_silent_and_other_empty_functions_never_consult_expired_budget() {
-    use super::rejection::{reject, RejectionBudget};
+    use super::rejection::{RejectionBudget, reject};
     let (client, hub) = LoopbackWebSocket::pair();
     let budget = RejectionBudget::new(tokio::time::Instant::now() - Duration::from_secs(1), 1);
     for destination in [Some(BROADCAST_VMAC), Some([1; 6]), Some([0x44; 6])] {
@@ -205,9 +205,11 @@ async fn empty_npdu_silent_and_other_empty_functions_never_consult_expired_budge
         assert!(!crate::sc_frame::missing_npdu_payload(&msg));
         assert_eq!(reject(&msg, &raw, &client, budget).await, Ok(false));
     }
-    assert!(timeout(Duration::from_millis(20), hub.recv())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(20), hub.recv())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

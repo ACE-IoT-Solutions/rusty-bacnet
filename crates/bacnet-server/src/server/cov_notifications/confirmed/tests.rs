@@ -3,9 +3,10 @@
 use super::*;
 use crate::cov::{CovNotificationKind, CovSample, CovSubscription};
 use crate::server::cov_notify_context::CovNotifyContext;
-use crate::server::test_transport::{SendLog, SendMode, TestTransport, BIP_LOCAL_MAC};
+use crate::server::test_transport::{BIP_LOCAL_MAC, SendLog, SendMode, TestTransport};
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
+use bacnet_types::enums::EngineeringUnits;
 use std::collections::HashSet;
 
 struct Fixture {
@@ -54,15 +55,18 @@ impl Fixture {
         let mut db = crate::server::clock::clocked_test_database();
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance: 896,
-                name: "Confirmed COV".into(),
+                identity: bacnet_objects::DeviceIdentity::new(896, 0)
+                    .expect("valid Device identity")
+                    .with_name("Confirmed COV"),
                 ..DeviceConfig::default()
             })
             .unwrap(),
         ))
         .unwrap();
-        db.add(Box::new(AnalogValueObject::new(1, "AV-1", 62).unwrap()))
-            .unwrap();
+        db.add(Box::new(
+            AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+        ))
+        .unwrap();
         let transport = TestTransport::builder()
             .local_mac(&BIP_LOCAL_MAC)
             .broadcast(SendMode::Ignore)
@@ -376,10 +380,10 @@ impl bacnet_objects::traits::BACnetObject for PanicsOnce {
         _array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
         if property != PropertyIdentifier::PRESENT_VALUE {
-            return Err(Error::Protocol {
-                class: bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32,
-                code: bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                bacnet_types::enums::ErrorClass::PROPERTY,
+                bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY,
+            ));
         }
         assert!(
             self.panicked.swap(true, Ordering::SeqCst),
@@ -395,10 +399,10 @@ impl bacnet_objects::traits::BACnetObject for PanicsOnce {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32,
-            code: bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            bacnet_types::enums::ErrorClass::PROPERTY,
+            bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 }
 

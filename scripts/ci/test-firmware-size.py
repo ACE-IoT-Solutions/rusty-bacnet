@@ -44,6 +44,10 @@ DIV64_ROUTINES = ("__aeabi_uldivmod", "__udivdi3", "__umoddi3")
 # 32-bit division, which a part without a divide instruction links too.
 U32_DIV_REM = "_RNvNtNtCs3_17compiler_builtins3int19specialized_div_rem11u32_div_rem.llvm.1"
 DIV32_ROUTINES = ("__aeabi_uidivmod", "__udivsi3")
+# memmove: compiler-builtins' Rust implementation and a C-ABI entry point in
+# front of it; memcpy, which every image links, isn't counted.
+MEMMOVE = "_RNvNtCs3_17compiler_builtins3mem7memmove"
+MEMCPY = "_RNvNtCs3_17compiler_builtins3mem6memcpy"
 # A static in .bss.
 CORE = "_RNvNtCs1_13firmware_link5image4CORE"
 
@@ -112,6 +116,7 @@ flash = 4240   # vector table, text, rodata and data
 ram = 416
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 """
 
 
@@ -171,7 +176,8 @@ class FirmwareSizeTests(unittest.TestCase):
         self.assertEqual(totals[".data"], ("flash", "ram"))
         self.assertEqual(totals[".text.dummy"], ())
         self.assertEqual(totals[".stack"], ())
-        self.assertEqual(listed, {"fmt_functions": [], "div64_functions": []})
+        self.assertEqual(
+            listed, {"fmt_functions": [], "div64_functions": [], "memmove_functions": []})
 
     def test_heap_and_uninit_count_toward_ram(self):
         # riscv-rt's .heap is `_heap_size` octets reserved on purpose, and
@@ -270,6 +276,25 @@ class FirmwareSizeTests(unittest.TestCase):
         status, _, err = self.run_main(image, self.write("budget.toml", BUDGET), "target.image")
         self.assertEqual(status, 0, err)
 
+    def test_memmove_fails_and_memcpy_does_not(self):
+        symbols = [(SCENARIO, 100, FUNC, ".text"), (MEMCPY, 538, FUNC, ".text"),
+                   ("__aeabi_memcpy", 10, FUNC, ".text")]
+        image = self.write("image", elf(symbols))
+        status, _, err = self.run_main(image, self.write("a.toml", BUDGET), "target.image")
+        self.assertEqual((status, err), (0, ""))
+        symbols += [(MEMMOVE, 1286, FUNC, ".text"), ("__aeabi_memmove8", 10, FUNC, ".text")]
+        image = self.write("image", elf(symbols))
+        status, out, err = self.run_main(image, self.write("b.toml", BUDGET), "target.image")
+        self.assertEqual(status, 1)
+        self.assertIn("memmove function: compiler_builtins::mem::memmove", out)
+        self.assertIn("memmove function: __aeabi_memmove8", out)
+        self.assertIn("memmove_functions is 2, over its budget of 0", err)
+        self.assertIn("copy field by field or swap instead", err)
+        # A limit at the count passes, as the images that need one have.
+        budget = BUDGET.replace("memmove_functions = 0", "memmove_functions = 2")
+        status, _, err = self.run_main(image, self.write("c.toml", budget), "target.image")
+        self.assertEqual((status, err), (0, ""))
+
     def test_missing_symtab_fails_closed(self):
         status, _, err = self.run_main(
             self.write("image", elf(symtab=False)), self.write("budget.toml", BUDGET),
@@ -300,7 +325,8 @@ class FirmwareSizeTests(unittest.TestCase):
         self.assertEqual(
             out.splitlines(),
             ["[target.image]", "text = 3360", "rodata = 224", "data = 32", "bss = 448",
-             "flash = 4752", "ram = 480", "fmt_functions = 0", "div64_functions = 0"],
+             "flash = 4752", "ram = 480", "fmt_functions = 0", "div64_functions = 0",
+             "memmove_functions = 0"],
         )
 
     def run_stack(self, budget, log=RUN_LOG, boards=("microbit",)):
@@ -313,6 +339,18 @@ class FirmwareSizeTests(unittest.TestCase):
         rows = out.splitlines()[2:]
         self.assertEqual([row.split() for row in rows],
                          [["microbit", "mstp", "4664", "5840"], ["microbit", "bip", "2220", "2784"]])
+
+    def test_stack_image_names_may_hold_hyphens(self):
+        # A bare TOML key, as the mstp-extended image's name is.
+        log = RUN_LOG + (
+            "PASS mstp-extended on microbit (thumbv6m-none-eabi): summary as expected;"
+            " stack peak 5000 of 6000 octets\n")
+        status, out, err = self.run_stack(STACK_BUDGET + "mstp-extended = 6256\n", log=log)
+        self.assertEqual((status, err), (0, ""))
+        self.assertIn(["microbit", "mstp-extended", "5000", "6256"],
+                      [row.split() for row in out.splitlines()])
+        status, out, _ = self.run_main("--stack-suggest", self.write("run.log", log))
+        self.assertEqual((status, out.splitlines()[-1]), (0, "mstp-extended = 6256"))
 
     def test_stack_over_budget_fails_and_suggests(self):
         status, out, err = self.run_stack(STACK_BUDGET.replace("mstp = 5840", "mstp = 4663"))

@@ -22,7 +22,7 @@ test('docs run automatically only for relevant pull requests, and publish defaul
   assert.deepEqual(Object.keys(workflow.on).sort(), ['pull_request', 'workflow_dispatch']);
   assert.deepEqual(workflow.on.pull_request, {
     branches: ['dev', 'main'],
-    paths: ['website/**', '.github/workflows/docs-pages.yml'],
+    paths: ['website/**', '.github/workflows/docs-pages.yml', 'firmware/link/*-budget.toml'],
   });
   // The website/** filter covers this guard as well as the lockfile and site.
   assert.deepEqual(workflow.on.workflow_dispatch.inputs, {
@@ -61,7 +61,7 @@ test('validation uses the event SHA without persisted checkout credentials or re
 test('native Ubuntu validation installs the lockfile, Chromium and runs the complete verify script', () => {
   assert.equal(validate.name, 'Docs validation');
   assert.equal(validate['runs-on'], 'ubuntu-latest');
-  assert.equal(validate['timeout-minutes'], 20);
+  assert.equal(validate['timeout-minutes'], 35);
   assert.deepEqual(validate.defaults, { run: { 'working-directory': 'website', shell: 'bash' } });
   assert.deepEqual(validate.env, { DOCS_TEST_PORT: '46329' });
   assert.equal(validate.if, undefined);

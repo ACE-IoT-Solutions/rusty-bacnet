@@ -2,8 +2,19 @@
 //!
 //! Supply `RB_IPV6_TEST_ADDRESS` and `RB_IPV6_TEST_INDEX` from a task-owned
 //! internal Docker bridge. These tests must not discover or use a host LAN.
+// The packet-info oracle (wire.rs) needs nix's decoded IPV6_PKTINFO, which
+// it gives only on these targets.
+#![cfg(all(
+    feature = "ipv6",
+    any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "freebsd",
+        target_vendor = "apple"
+    )
+))]
+#![forbid(unsafe_code)]
 #![allow(clippy::print_stderr)] // opt-in checks report skipped setups outside a test function
-#![cfg(all(feature = "ipv6", unix))]
 
 #[path = "ipv6_selected_link/controls.rs"]
 mod controls;
@@ -11,6 +22,9 @@ mod controls;
 mod foreign;
 #[path = "ipv6_selected_link/lifecycle.rs"]
 mod lifecycle;
+// A closing rebind can lose the freed port to another process (#1419).
+#[path = "../../bacnet-endpoint/tests/support/port_retry.rs"]
+mod port_retry;
 #[path = "ipv6_selected_link/support.rs"]
 mod support;
 use support::*;
@@ -19,7 +33,7 @@ mod wire;
 
 use std::net::{Ipv6Addr, SocketAddrV6};
 
-use bacnet_transport::bip6::{decode_bip6_mac, Bip6Transport};
+use bacnet_transport::bip6::{Bip6Transport, Bip6Vmac};
 use bacnet_transport::port::TransportPort;
 use tokio::net::UdpSocket;
 
@@ -38,7 +52,8 @@ async fn actual_transport_selected_link(automatic: bool) {
         .await
         .expect("actual transport startup exceeded its bounded probe")
         .expect("actual transport random-VMAC startup must succeed");
-    let (announced, published) = decode_bip6_mac(transport.local_mac()).unwrap();
+    let local = transport.local_address().unwrap();
+    let (announced, published) = (*local.ip(), local.port());
     assert_eq!(
         published, port,
         "the transport must publish its actual bound port"
@@ -116,9 +131,13 @@ async fn actual_transport_selected_link(automatic: bool) {
         assert_eq!((*reply.source.ip(), reply.source.port()), (selected, port));
         assert_eq!(reply.destination, selected);
 
+        // The source MAC is the peer's VMAC (U.1.3), learned at its address.
+        assert_eq!(npdu.source_mac.as_slice(), [0x40, 0x88, 0x70]);
         assert_eq!(
-            decode_bip6_mac(&npdu.source_mac).unwrap(),
-            (selected, peer_address.port())
+            transport
+                .lookup_vmac(Bip6Vmac::new([0x40, 0x88, 0x70]))
+                .map(|peer| (*peer.ip(), peer.port())),
+            Some((selected, peer_address.port()))
         );
     } else {
         failures.push("raw peer multicast reached observer but not actual transport intake".into());

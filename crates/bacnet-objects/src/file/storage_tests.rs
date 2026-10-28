@@ -4,40 +4,29 @@
 
 use super::*;
 use bacnet_types::enums::ErrorCode;
+use bacnet_types::error::RemoteError;
 
-fn protocol_pair(err: Error) -> (u32, u32) {
+fn protocol_pair(err: Error) -> (ErrorClass, ErrorCode) {
     match err {
-        Error::Protocol { class, code } => (class, code),
+        Error::Remote(RemoteError::Error { class, code }) => (class, code),
         other => panic!("expected protocol error, got {other:?}"),
     }
 }
 
-fn file_full_pair() -> (u32, u32) {
-    (
-        ErrorClass::OBJECT.to_raw() as u32,
-        ErrorCode::FILE_FULL.to_raw() as u32,
-    )
+fn file_full_pair() -> (ErrorClass, ErrorCode) {
+    (ErrorClass::OBJECT, ErrorCode::FILE_FULL)
 }
 
-fn invalid_method_pair() -> (u32, u32) {
-    (
-        ErrorClass::SERVICES.to_raw() as u32,
-        ErrorCode::INVALID_FILE_ACCESS_METHOD.to_raw() as u32,
-    )
+fn invalid_method_pair() -> (ErrorClass, ErrorCode) {
+    (ErrorClass::SERVICES, ErrorCode::INVALID_FILE_ACCESS_METHOD)
 }
 
-fn invalid_start_pair() -> (u32, u32) {
-    (
-        ErrorClass::SERVICES.to_raw() as u32,
-        ErrorCode::INVALID_FILE_START_POSITION.to_raw() as u32,
-    )
+fn invalid_start_pair() -> (ErrorClass, ErrorCode) {
+    (ErrorClass::SERVICES, ErrorCode::INVALID_FILE_START_POSITION)
 }
 
-fn access_denied_pair() -> (u32, u32) {
-    (
-        ErrorClass::SERVICES.to_raw() as u32,
-        ErrorCode::FILE_ACCESS_DENIED.to_raw() as u32,
-    )
+fn access_denied_pair() -> (ErrorClass, ErrorCode) {
+    (ErrorClass::SERVICES, ErrorCode::FILE_ACCESS_DENIED)
 }
 
 fn stream_file() -> FileObject {
@@ -442,12 +431,15 @@ fn storage_default_methods_are_file_access_denied() {
 fn payload_setters_follow_the_access_method() {
     let mut file = stream_file();
     file.set_records(vec![vec![1, 2, 3], vec![4, 5]]);
-    assert!(!file
-        .property_list()
-        .contains(&PropertyIdentifier::RECORD_COUNT));
-    assert!(file
-        .read_property(PropertyIdentifier::RECORD_COUNT, None)
-        .is_err());
+    assert!(
+        !file
+            .property_list()
+            .contains(&PropertyIdentifier::RECORD_COUNT)
+    );
+    assert!(
+        file.read_property(PropertyIdentifier::RECORD_COUNT, None)
+            .is_err()
+    );
     assert_eq!(file.file_size(), 8, "File_Size stays with the stream data");
     assert_eq!(
         file.read_stream(0, 8).unwrap().data,
@@ -470,9 +462,10 @@ fn payload_setters_follow_the_access_method() {
     );
     file.set_file_access_method(FileAccessMethod::STREAM_ACCESS.to_raw());
     assert_eq!(file.file_size(), 20);
-    assert!(file
-        .read_property(PropertyIdentifier::RECORD_COUNT, None)
-        .is_err());
+    assert!(
+        file.read_property(PropertyIdentifier::RECORD_COUNT, None)
+            .is_err()
+    );
 
     // An unrecognised raw value is the stream channel for both setters, as
     // it is for set_file_access_method's own recomputation.
@@ -485,9 +478,10 @@ fn payload_setters_follow_the_access_method() {
     );
     file.set_records(vec![vec![1], vec![2]]);
     assert_eq!(file.file_size(), 3, "records are inert under raw 99");
-    assert!(file
-        .read_property(PropertyIdentifier::RECORD_COUNT, None)
-        .is_err());
+    assert!(
+        file.read_property(PropertyIdentifier::RECORD_COUNT, None)
+            .is_err()
+    );
 }
 
 struct NoStorageFile;
@@ -538,10 +532,12 @@ fn storage_hooks_default_to_none_and_file_object_opts_in() {
     assert!(file.file_storage_internal_mut().is_some());
     // 65 was the fabricated "File Data" property the old handler read (it
     // is Max_Pres_Value); Table 12-16 defines no such property.
-    assert!(!file
-        .property_list()
-        .iter()
-        .any(|p| *p == PropertyIdentifier::from_raw(65)));
+    assert!(
+        !file
+            .property_list()
+            .iter()
+            .any(|p| *p == PropertyIdentifier::from_raw(65))
+    );
 }
 
 #[test]

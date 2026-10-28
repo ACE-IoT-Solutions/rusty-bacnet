@@ -9,11 +9,16 @@ const TEST_DATA: [u8; 3] = [0xA5, 0x5A, 0x00];
 
 /// The frames on the line, in order.
 const FRAMES: [Frame<'static>; 5] = [
-    Frame::new(FrameType::Token, 0x02, 0x01, &[]),
-    Frame::new(FrameType::PollForMaster, 0x03, 0x01, &[]),
-    Frame::new(FrameType::BACnetDataNotExpectingReply, 0xFF, 0x02, &WHO_IS),
-    Frame::new(FrameType::TestRequest, 0x01, 0x02, &TEST_DATA),
-    Frame::new(FrameType::ReplyToPollForMaster, 0x01, 0x03, &[]),
+    Frame::new(FrameType::TOKEN, 0x02, 0x01, &[]),
+    Frame::new(FrameType::POLL_FOR_MASTER, 0x03, 0x01, &[]),
+    Frame::new(
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        0xFF,
+        0x02,
+        &WHO_IS,
+    ),
+    Frame::new(FrameType::TEST_REQUEST, 0x01, 0x02, &TEST_DATA),
+    Frame::new(FrameType::REPLY_TO_POLL_FOR_MASTER, 0x01, 0x03, &[]),
 ];
 
 /// Index of the frame sent a second time with a corrupted data octet.
@@ -30,7 +35,7 @@ const CHUNK: usize = 5;
 /// [`CORRUPTED`] one whose data CRC fails just before the original.
 pub(crate) fn run(storage: &mut [u8], wire: &mut [u8], summary: &mut Summary) {
     // A Token never carries data, so the encoder refuses this one.
-    if Frame::new(FrameType::Token, 0x02, 0x01, &WHO_IS)
+    if Frame::new(FrameType::TOKEN, 0x02, 0x01, &WHO_IS)
         .encode_into(wire)
         .is_err()
     {

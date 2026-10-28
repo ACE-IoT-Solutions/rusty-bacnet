@@ -6,12 +6,13 @@
 use super::super::*;
 use crate::command_source::test_origin;
 use PropertyIdentifier as P;
+use bacnet_types::error::RemoteError;
 
 fn code(result: Result<(), Error>) -> ErrorCode {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            ErrorCode::from_raw(code as u16)
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            code
         }
         other => panic!("expected a PROPERTY refusal, got {other:?}"),
     }

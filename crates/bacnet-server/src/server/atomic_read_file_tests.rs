@@ -3,6 +3,7 @@ use crate::server::test_transport::TestTransport;
 use bacnet_client::client::BACnetClient;
 use bacnet_objects::file::FileObject;
 use bacnet_services::file::{AtomicReadFileRequest, FileAccessMethod};
+use bacnet_types::error::RemoteError;
 
 #[tokio::test]
 async fn atomic_read_file_all_builders_validate_before_start_or_dial() {
@@ -103,7 +104,9 @@ async fn atomic_read_file_within_budget_segmented_complete_ack() {
                 .interface(Ipv4Addr::LOCALHOST)
                 .port(0)
                 .database(database)
-                .segmentation_supported(Segmentation::BOTH)
+                .device(
+                    bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH),
+                )
                 .atomic_read_file_budget(AtomicReadFileBudget {
                     max_service_ack_bytes: size - usize::from(over),
                     ..Default::default()
@@ -145,7 +148,7 @@ async fn atomic_read_file_within_budget_segmented_complete_ack() {
             server.stop().await.unwrap();
             if over {
                 assert!(
-                    matches!(result, Err(Error::Abort { reason }) if reason == AbortReason::BUFFER_OVERFLOW.to_raw())
+                    matches!(result, Err(Error::Remote(RemoteError::Abort { reason })) if reason == AbortReason::BUFFER_OVERFLOW)
                 );
             } else {
                 let bytes = result.unwrap();
@@ -231,7 +234,7 @@ async fn default_count_wire(record: bool) {
     client.stop().await.unwrap();
     server.stop().await.unwrap();
     assert!(
-        matches!(result, Err(Error::Abort { reason }) if reason == AbortReason::OUT_OF_RESOURCES.to_raw()),
+        matches!(result, Err(Error::Remote(RemoteError::Abort { reason })) if reason == AbortReason::OUT_OF_RESOURCES),
         "{result:?}"
     );
 }

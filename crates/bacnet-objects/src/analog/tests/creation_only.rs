@@ -4,12 +4,13 @@
 
 use super::super::*;
 use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::error::RemoteError;
 
 fn code(result: Result<(), Error>) -> ErrorCode {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            ErrorCode::from_raw(code as u16)
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            code
         }
         other => panic!("expected a PROPERTY refusal, got {other:?}"),
     }
@@ -18,8 +19,8 @@ fn code(result: Result<(), Error>) -> ErrorCode {
 #[test]
 fn analog_input_and_output_take_units_only_at_creation() {
     let objects: [Box<dyn BACnetObject>; 2] = [
-        Box::new(AnalogInputObject::new(1, "AI-1", 95).unwrap()),
-        Box::new(AnalogOutputObject::new(1, "AO-1", 95).unwrap()),
+        Box::new(AnalogInputObject::new(1, "AI-1", EngineeringUnits::NO_UNITS).unwrap()),
+        Box::new(AnalogOutputObject::new(1, "AO-1", EngineeringUnits::NO_UNITS).unwrap()),
     ];
     for mut object in objects {
         let kind = object.object_identifier().object_type();
@@ -84,7 +85,7 @@ fn analog_input_and_output_take_units_only_at_creation() {
 
 #[test]
 fn analog_value_is_not_createable_and_takes_nothing_at_creation() {
-    let mut value = AnalogValueObject::new(1, "AV-1", 95).unwrap();
+    let mut value = AnalogValueObject::new(1, "AV-1", EngineeringUnits::NO_UNITS).unwrap();
     assert!(!value.is_createable());
     assert!(value.creation_only_properties().is_empty());
     assert_eq!(

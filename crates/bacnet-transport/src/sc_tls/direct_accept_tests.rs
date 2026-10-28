@@ -7,8 +7,8 @@ use super::{DirectAcceptConfig, DirectListener};
 use crate::port::TransportPort;
 use crate::sc::{ScConnection, ScTransport, WebSocketPort};
 use crate::sc_frame::{
-    decode_sc_bvlc_result, decode_sc_message, encode_sc_message, ScBvlcResult, ScFunction,
-    ScMessage, ScOption,
+    ScBvlcResult, ScFunction, ScMessage, ScOption, decode_sc_bvlc_result, decode_sc_message,
+    encode_sc_message,
 };
 use crate::sc_tls::ScNodeTlsConfig;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
@@ -534,7 +534,7 @@ async fn registered_listener(
 
 async fn assert_accept_direct(hub: &crate::sc::LoopbackWebSocket, expected: u8) {
     // Independent AB.2.8.1 wire vector: no addresses/options, fresh ID,
-    // primary-hub status, live accept flag, unchanged 5705/1497 maxima.
+    // primary-hub status, live accept flag, unchanged 5705/1478 maxima.
     hub.send(&[5, 0, 0x22, 0x34]).await.unwrap();
     let reply = tokio::time::timeout(Duration::from_secs(5), hub.recv())
         .await
@@ -544,7 +544,9 @@ async fn assert_accept_direct(hub: &crate::sc::LoopbackWebSocket, expected: u8) 
     assert_ne!(&reply[2..4], &[0x22, 0x34]);
     assert_eq!(
         reply,
-        [4, 0, reply[2], reply[3], 1, expected, 0x16, 0x49, 0x05, 0xD9]
+        [
+            4, 0, reply[2], reply[3], 1, expected, 0x16, 0x49, 0x05, 0xC6
+        ]
     );
     // Address-Resolution must agree with Advertisement's live capability,
     // including after accept-task cancellation or application-intake closure.

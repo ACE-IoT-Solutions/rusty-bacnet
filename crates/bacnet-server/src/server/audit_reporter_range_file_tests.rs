@@ -177,7 +177,7 @@ async fn audit_reporter_range_file_execution_errors_exact_result_and_silent_unkn
     type Case = (fn() -> Error, Option<(ErrorClass, ErrorCode)>);
     let cases: [Case; 5] = [
         (
-            || Error::Protocol { class: 5, code: 5 },
+            || Error::protocol(ErrorClass::SERVICES, ErrorCode::FILE_ACCESS_DENIED),
             Some((ErrorClass::SERVICES, ErrorCode::FILE_ACCESS_DENIED)),
         ),
         (
@@ -185,18 +185,8 @@ async fn audit_reporter_range_file_execution_errors_exact_result_and_silent_unkn
             Some((ErrorClass::SERVICES, ErrorCode::OTHER)),
         ),
         (|| Error::Timeout(Duration::from_secs(1)), None),
-        (
-            || Error::Reject {
-                reason: RejectReason::OTHER.to_raw(),
-            },
-            None,
-        ),
-        (
-            || Error::Abort {
-                reason: AbortReason::OTHER.to_raw(),
-            },
-            None,
-        ),
+        (|| Error::reject(RejectReason::OTHER), None),
+        (|| Error::abort(AbortReason::OTHER), None),
     ];
     for kind in [Kind::Range, Kind::Stream, Kind::Record] {
         for (failure, result) in cases {

@@ -2,6 +2,7 @@ use super::*;
 use crate::cov::MultipleRefusal;
 use bacnet_services::cov_multiple::{COVReference, COVSubscriptionSpecification};
 use bacnet_types::constructed::PropertyReference;
+use bacnet_types::error::RemoteError;
 
 fn encode_unchecked(
     specs: &[COVSubscriptionSpecification],
@@ -67,8 +68,8 @@ fn subscribe_cov_property_multiple_rejects_invalid_service_parameters() {
             .error;
         assert!(matches!(
             err,
-            Error::Reject { reason }
-                if reason == RejectReason::INCONSISTENT_PARAMETERS.to_raw()
+            Error::Remote(RemoteError::Reject { reason })
+                if reason == RejectReason::INCONSISTENT_PARAMETERS
         ));
         assert!(table.is_empty());
     }
@@ -83,9 +84,9 @@ fn subscribe_cov_property_multiple_rejects_invalid_service_parameters() {
             .unwrap_err()
             .error;
         match err {
-            Error::Protocol { class, code } => {
-                assert_eq!(class, ErrorClass::SERVICES.to_raw() as u32);
-                assert_eq!(code, expected_code.to_raw() as u32);
+            Error::Remote(RemoteError::Error { class, code }) => {
+                assert_eq!(class, ErrorClass::SERVICES);
+                assert_eq!(code, expected_code);
             }
             other => panic!("expected service parameter protocol error, got {other:?}"),
         }
@@ -132,9 +133,11 @@ fn subscribe_cov_property_multiple_context_delay_is_last_write_wins_per_form() {
     let pv = PropertyIdentifier::PRESENT_VALUE;
     let flags = PropertyIdentifier::STATUS_FLAGS;
     let accepted = subscribe(1, false, 300, 10, &[pv, flags]).unwrap();
-    assert!(accepted
-        .iter()
-        .all(|sub| sub.max_notification_delay() == Some(10)));
+    assert!(
+        accepted
+            .iter()
+            .all(|sub| sub.max_notification_delay() == Some(10))
+    );
     subscribe(1, true, 600, 20, &[pv]).unwrap();
     // An empty-spec finite request succeeds with no new reference and
     // refreshes only its own form's context; for an unknown context it
@@ -150,8 +153,8 @@ fn subscribe_cov_property_multiple_context_delay_is_last_write_wins_per_form() {
         let buf = encode_unchecked(&specs, Some(lifetime), Some(delay));
         assert!(matches!(
             handle_subscribe_cov_property_multiple_with_initial(&mut table, &db, &mac, &buf),
-            Err(MultipleRefusal { error: Error::Protocol { code, .. }, refused: None, .. })
-                if code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32
+            Err(MultipleRefusal { error: Error::Remote(RemoteError::Error { code, .. }), refused: None, .. })
+                if code == ErrorCode::VALUE_OUT_OF_RANGE
         ));
     }
     let mut delays: Vec<_> = table
@@ -218,11 +221,8 @@ fn clockless_timestamped_first_reference_is_refused_by_name_but_can_cancel() {
             code,
             detail,
         } => {
-            assert_eq!(class, ErrorClass::SERVICES.to_raw() as u32);
-            assert_eq!(
-                code,
-                ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32
-            );
+            assert_eq!(class, ErrorClass::SERVICES);
+            assert_eq!(code, ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED);
             assert_eq!(
                 *detail,
                 ErrorDetail::FirstFailedSubscription(BACnetObjectPropertyReference::new(

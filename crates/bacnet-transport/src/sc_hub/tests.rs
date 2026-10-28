@@ -1,6 +1,6 @@
 use super::*;
 use crate::sc_frame::{
-    decode_sc_bvlc_result, ScBvlcResult, ScOption, BACNET_SC_HUB_SUBPROTOCOL, BROADCAST_VMAC,
+    BACNET_SC_HUB_SUBPROTOCOL, BROADCAST_VMAC, ScBvlcResult, ScOption, decode_sc_bvlc_result,
 };
 
 #[test]
@@ -22,13 +22,6 @@ fn bvlc_result_nak_uses_standard_error_values() {
             error_details: String::new(),
         }
     );
-}
-
-#[test]
-fn connect_accept_uses_configured_router_receive_limits() {
-    let accept = connect_accept_message(7, [0x11; 6], [0x22; 16], 6208, 2000);
-    assert_eq!(accept.function, ScFunction::ConnectAccept);
-    assert_eq!(&accept.payload[22..], &[0x18, 0x40, 0x07, 0xd0]);
 }
 
 #[test]
@@ -428,11 +421,13 @@ fn websocket_subprotocol_error_response_is_bad_request() {
         response.status(),
         tokio_tungstenite::tungstenite::http::StatusCode::BAD_REQUEST
     );
-    assert!(response
-        .body()
-        .as_ref()
-        .unwrap()
-        .contains(BACNET_SC_HUB_SUBPROTOCOL));
+    assert!(
+        response
+            .body()
+            .as_ref()
+            .unwrap()
+            .contains(BACNET_SC_HUB_SUBPROTOCOL)
+    );
 }
 
 fn minimum_size_options(count: usize) -> Vec<ScOption> {

@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::error::RemoteError;
 
 #[tokio::test]
 async fn mandatory_policy_send_capacity_denial_is_atomic() {
@@ -41,8 +42,8 @@ async fn mandatory_policy_send_capacity_denial_is_atomic() {
         )
         .await;
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-        if class == ErrorClass::SERVICES.to_raw() as u32 && code == ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+        if class == ErrorClass::SERVICES && code == ErrorCode::SERVICE_REQUEST_DENIED),
         "{result:?}"
     );
     let db = f.server.db.read().await;
@@ -62,8 +63,8 @@ async fn mandatory_policy_send_capacity_denial_is_atomic() {
 
 fn denied(result: Result<(), Error>) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-        if class == ErrorClass::SERVICES.to_raw() as u32 && code == ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+        if class == ErrorClass::SERVICES && code == ErrorCode::SERVICE_REQUEST_DENIED),
         "{result:?}"
     );
 }
@@ -347,7 +348,7 @@ async fn mandatory_policy_invalid_noop_null_and_ordinary_writes_keep_their_contr
             .await
             .unwrap_err();
         assert!(
-            matches!(error, Error::Protocol { class: c, code: e } if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+            matches!(error, Error::Remote(RemoteError::Error { class: c, code: e }) if c == class && e == code),
             "{error:?}"
         );
     }
@@ -528,10 +529,7 @@ async fn mandatory_policy_stop_between_capture_and_commit_denies_without_assignm
     denied(audit.commit_policy(&mut db, target, &value).unwrap());
     audit.failed(
         &mut db,
-        &Error::Protocol {
-            class: ErrorClass::SERVICES.to_raw() as u32,
-            code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
-        },
+        &Error::protocol(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED),
     );
     assert_eq!(
         db.get(&target.oid).unwrap().audit_object_policy_internal(),
@@ -600,12 +598,14 @@ async fn mandatory_policy_admitted_worker_is_joined_after_cancelled_stop() {
     f.server.stop().await.unwrap();
     f.server.stop().await.unwrap();
     assert!(f.server.notification_transactions.workers_empty());
-    assert!(database
-        .write()
-        .await
-        .remove(&oid(ObjectType::DEVICE, 10))
-        .unwrap()
-        .is_some());
+    assert!(
+        database
+            .write()
+            .await
+            .remove(&oid(ObjectType::DEVICE, 10))
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[path = "audit_policy_precommit_edge_tests.rs"]

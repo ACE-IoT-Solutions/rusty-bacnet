@@ -1,3 +1,4 @@
+use bacnet_types::error::RemoteError;
 use std::borrow::Cow;
 
 use bacnet_encoding::apdu::decode_apdu;
@@ -39,10 +40,10 @@ impl BACnetObject for MalformedAlarmObject {
                 unused_bits: 5,
                 data: vec![0xe0],
             }),
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -53,10 +54,10 @@ impl BACnetObject for MalformedAlarmObject {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
@@ -270,7 +271,7 @@ async fn alarm_summary_within_budget_segmented_bip_roundtrip() {
             .interface(Ipv4Addr::LOCALHOST)
             .port(0)
             .database(database)
-            .segmentation_supported(Segmentation::BOTH)
+            .device(bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH))
             .get_alarm_summary_budget(GetAlarmSummaryBudget {
                 max_objects: work,
                 max_service_ack_bytes: bytes,
@@ -295,9 +296,11 @@ async fn alarm_summary_within_budget_segmented_bip_roundtrip() {
         client.stop().await.unwrap();
         server.stop().await.unwrap();
         match expected {
-            Some(reason) => assert!(
-                matches!(result, Err(Error::Abort { reason: actual }) if actual == reason.to_raw())
-            ),
+            Some(reason) => {
+                assert!(
+                    matches!(result, Err(Error::Remote(RemoteError::Abort { reason: actual })) if actual == reason)
+                )
+            }
             None => {
                 let response = result.unwrap();
                 assert_eq!(

@@ -6,6 +6,7 @@ use super::*;
 use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
 use crate::traits::BACnetObject;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::RemoteError;
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -13,9 +14,9 @@ use PropertyConformance::{Optional, RequiredRead, RequiredWrite};
 
 fn assert_error(error: Error, expected: ErrorCode) {
     assert!(
-        matches!(error, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == expected.to_raw() as u32),
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::PROPERTY
+                && code == expected),
         "expected {expected:?}, got {error:?}"
     );
 }

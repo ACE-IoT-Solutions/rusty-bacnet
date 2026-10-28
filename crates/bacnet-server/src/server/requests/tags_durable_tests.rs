@@ -2,10 +2,10 @@
 
 use super::durable_stop_tests::{send, stop_then_release};
 use super::durable_write_wire_tests::{
-    while_saving, HeldStorage, SIMPLE_ACK_WPM, SIMPLE_ACK_WRITE, WAIT,
+    HeldStorage, SIMPLE_ACK_WPM, SIMPLE_ACK_WRITE, WAIT, while_saving,
 };
 use super::mutation_list_wire_tests::wire;
-use super::mutation_tests::{apdu, wpm, Fixture};
+use super::mutation_tests::{Fixture, apdu, wpm};
 use super::*;
 use crate::server::test_transport::TestTransport;
 use bacnet_objects::analog::{AnalogInputObject, AnalogOutputObject, AnalogValueObject};
@@ -24,6 +24,7 @@ use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_services::write_property::WritePropertyRequest;
 use bacnet_types::constructed::BACnetNameValue;
+use bacnet_types::enums::EngineeringUnits;
 use std::sync::atomic::Ordering;
 
 #[derive(Default)]
@@ -104,14 +105,14 @@ fn object(kind: Case, storage: &Arc<Storage>) -> Box<dyn BACnetObject> {
         ..ObjectProfile::default()
     };
     macro_rules! build {
-        ($ty:ty $(, $extra:expr)?) => {{
+        ($ty:ty $(, $extra:expr_2021)?) => {{
             let mut object = <$ty>::with_tags_persistence(1, "tags", $($extra,)? storage.clone()).unwrap();
             object.set_profile(profile).unwrap();
             Box::new(object)
         }};
     }
     macro_rules! value {
-        ($ty:ty $(, $extra:expr)?) => {{
+        ($ty:ty $(, $extra:expr_2021)?) => {{
             let mut object = <$ty>::with_tags_persistence(1, "tags", $($extra,)? kind.access, storage.clone()).unwrap();
             object.set_profile(profile).unwrap();
             Box::new(object)
@@ -125,13 +126,13 @@ fn object(kind: Case, storage: &Arc<Storage>) -> Box<dyn BACnetObject> {
             object.set_profile(profile).unwrap();
             Box::new(object)
         }
-        ObjectType::ANALOG_OUTPUT => build!(AnalogOutputObject, 95),
+        ObjectType::ANALOG_OUTPUT => build!(AnalogOutputObject, EngineeringUnits::NO_UNITS),
         ObjectType::BINARY_OUTPUT => build!(BinaryOutputObject),
         ObjectType::MULTI_STATE_OUTPUT => build!(MultiStateOutputObject, 3),
-        ObjectType::ANALOG_INPUT => build!(AnalogInputObject, 95),
+        ObjectType::ANALOG_INPUT => build!(AnalogInputObject, EngineeringUnits::NO_UNITS),
         ObjectType::BINARY_INPUT => build!(BinaryInputObject),
         ObjectType::MULTI_STATE_INPUT => build!(MultiStateInputObject, 3),
-        ObjectType::ANALOG_VALUE => value!(AnalogValueObject, 95),
+        ObjectType::ANALOG_VALUE => value!(AnalogValueObject, EngineeringUnits::NO_UNITS),
         ObjectType::BINARY_VALUE => value!(BinaryValueObject),
         ObjectType::MULTI_STATE_VALUE => value!(MultiStateValueObject, 3),
         ObjectType::COLOR => build!(ColorObject),
@@ -419,8 +420,9 @@ async fn server(
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 100,
-            name: "Tags device".into(),
+            identity: bacnet_objects::DeviceIdentity::new(100, 0)
+                .expect("valid Device identity")
+                .with_name("Tags device"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -434,6 +436,17 @@ async fn server(
         );
     }
     let server = BACnetServer::generic_builder()
+        .device(
+            bacnet_objects::DeviceIdentity::new(
+                if kind.kind == ObjectType::DEVICE {
+                    1
+                } else {
+                    100
+                },
+                0,
+            )
+            .unwrap(),
+        )
         .transport(transport)
         .database(db)
         .enable_event_enrollment(false)
@@ -503,9 +516,11 @@ async fn write_local_waits_off_the_database_lock_and_survives_rebuild() {
             .await
             .unwrap()
             .unwrap();
-        assert!(tokio::time::timeout(WAIT, server.database().write())
-            .await
-            .is_ok());
+        assert!(
+            tokio::time::timeout(WAIT, server.database().write())
+                .await
+                .is_ok()
+        );
         drop(go);
         writing.await.unwrap().unwrap();
         let mut server = Arc::into_inner(server).expect("writer released server");

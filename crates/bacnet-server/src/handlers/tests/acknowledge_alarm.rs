@@ -1,8 +1,9 @@
 use super::*;
 use bacnet_types::bitstring::EventTransitionBits;
+use bacnet_types::error::RemoteError;
 
 use bacnet_encoding::primitives;
-use bacnet_encoding::tags::{encode_tag, TagClass};
+use bacnet_encoding::tags::{TagClass, encode_tag};
 use bacnet_objects::analog::{AnalogOutputObject, AnalogValueObject};
 use bacnet_objects::binary::{BinaryInputObject, BinaryOutputObject, BinaryValueObject};
 use bacnet_objects::event::{EnrollmentSummaryCapability, EventStateChange, EventTransitionCommit};
@@ -12,7 +13,7 @@ use bacnet_objects::multistate::{
 };
 use bacnet_services::alarm_event::AcknowledgeAlarmRequest;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetEventParameter};
-use bacnet_types::enums::EventType;
+use bacnet_types::enums::{EngineeringUnits, EventType};
 
 fn add_committed<O: BACnetObject + 'static>(
     db: &mut ObjectDatabase,
@@ -110,8 +111,8 @@ fn snapshot(
 fn assert_protocol(error: Error, class: ErrorClass, code: ErrorCode) {
     assert!(matches!(
         error,
-        Error::Protocol { class: actual_class, code: actual_code }
-            if actual_class == class.to_raw() as u32 && actual_code == code.to_raw() as u32
+        Error::Remote(RemoteError::Error { class: actual_class, code: actual_code })
+            if actual_class == class && actual_code == code
     ));
 }
 
@@ -288,7 +289,7 @@ fn supported_families_acknowledge_only_the_correlated_transition() {
         (
             add_committed(
                 &mut db,
-                AnalogInputObject::new(1, "AI-ack", 62).unwrap(),
+                AnalogInputObject::new(1, "AI-ack", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
                 EventState::HIGH_LIMIT,
                 stamp.clone(),
             ),
@@ -297,7 +298,7 @@ fn supported_families_acknowledge_only_the_correlated_transition() {
         (
             add_committed(
                 &mut db,
-                AnalogOutputObject::new(1, "AO-ack", 62).unwrap(),
+                AnalogOutputObject::new(1, "AO-ack", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
                 EventState::HIGH_LIMIT,
                 stamp.clone(),
             ),
@@ -306,7 +307,7 @@ fn supported_families_acknowledge_only_the_correlated_transition() {
         (
             add_committed(
                 &mut db,
-                AnalogValueObject::new(1, "AV-ack", 62).unwrap(),
+                AnalogValueObject::new(1, "AV-ack", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
                 EventState::HIGH_LIMIT,
                 stamp.clone(),
             ),
@@ -394,7 +395,8 @@ fn supported_families_acknowledge_only_the_correlated_transition() {
 
 #[test]
 fn fault_recovery_acknowledgment_uses_historical_change_of_reliability() {
-    let mut object = AnalogInputObject::new(2, "AI-fault-recovery", 62).unwrap();
+    let mut object =
+        AnalogInputObject::new(2, "AI-fault-recovery", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     object
         .commit_event_transition_internal(EventTransitionCommit {
             change: EventStateChange {
@@ -445,7 +447,7 @@ fn state_and_timestamp_mismatches_return_exact_errors_without_mutation() {
     let mut db = ObjectDatabase::new();
     let oid = add_committed(
         &mut db,
-        AnalogInputObject::new(1, "AI-invalid", 62).unwrap(),
+        AnalogInputObject::new(1, "AI-invalid", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
         EventState::LOW_LIMIT,
         BACnetTimeStamp::SequenceNumber(42),
     );
@@ -526,8 +528,10 @@ fn unknown_uninitialized_and_unsupported_objects_fail_closed() {
     }
 
     let oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 8).unwrap();
-    db.add(Box::new(AnalogInputObject::new(8, "AI-empty", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogInputObject::new(8, "AI-empty", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     let before = snapshot(&db, oid);
     let error = handle_acknowledge_alarm(
         &mut db,
@@ -564,7 +568,7 @@ fn disabled_analog_input_returns_no_alarm_configured_before_correlation() {
     let mut db = ObjectDatabase::new();
     let oid = add_committed(
         &mut db,
-        AnalogInputObject::new(1, "AI-disabled", 62).unwrap(),
+        AnalogInputObject::new(1, "AI-disabled", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
         EventState::HIGH_LIMIT,
         BACnetTimeStamp::SequenceNumber(42),
     );
@@ -597,7 +601,7 @@ fn invalid_source_text_is_sanitized_but_malformed_source_framing_is_rejected() {
     let mut db = ObjectDatabase::new();
     let oid = add_committed(
         &mut db,
-        AnalogInputObject::new(1, "AI-source", 62).unwrap(),
+        AnalogInputObject::new(1, "AI-source", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
         EventState::HIGH_LIMIT,
         BACnetTimeStamp::SequenceNumber(42),
     );
@@ -614,6 +618,9 @@ fn invalid_source_text_is_sanitized_but_malformed_source_framing_is_rejected() {
 
     let before = snapshot(&db, oid);
     let error = handle_acknowledge_alarm(&mut db, &encode_request_with_raw_source(oid, &[]));
-    assert!(matches!(error, Err(Error::Reject { .. })), "{error:?}");
+    assert!(
+        matches!(error, Err(Error::Remote(RemoteError::Reject { .. }))),
+        "{error:?}"
+    );
     assert_eq!(snapshot(&db, oid), before);
 }

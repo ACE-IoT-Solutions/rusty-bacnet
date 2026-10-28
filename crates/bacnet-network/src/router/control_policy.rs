@@ -11,13 +11,88 @@
 //! Init queries, What-Is/Number-Is, Establish/Disconnect no-ops, security
 //! ack-only, proprietary explicit-reject, directed opaque forwarding.
 //! Deny is a silent local drop: no mutation, relay, ACK, or Reject emission.
-//! Validation precedes policy; policy runs lock-free on immutable data.
+//! Validation precedes policy. The router's engine asks for each decision
+//! under its lock, with the message's claims, before anything changes.
+//!
+//! ## Who may change routes (#518)
+//!
+//! [`ControlAuthContext::sending_peer_principal`] is the verified leaf
+//! certificate of the direct BACnet/SC peer that handed the message to this
+//! router: the last hop, even when the message carries an SNET. Trusting a
+//! principal trusts everything that peer forwards, and allowing it binds the
+//! routes it announces to the VMAC it sent them from, not to the certificate.
+//!
+//! It is only there for **unicast** controls: Initialize-Routing-Table and its
+//! Ack, Reject-Message-To-Network, and a directed I-Could-Be-Router-To-Network.
+//! The route announcements are broadcasts (Clauses 6.6.3.2, 6.6.3.3):
+//! I-Am-Router-To-Network, and the ones marking a route busy or available
+//! again,
+//! and on BACnet/SC a broadcast always goes through the hub, which relays it
+//! with its own registration of the sender's VMAC and never the sender's
+//! certificate. So a conforming SC router's announcements carry no principal:
+//! a limit of BACnet/SC, not of this router. B/IP, B/IPv6, MS/TP and Ethernet
+//! senders have none either.
+//!
+//! A `Hardened` gate can still require configured router certificates for
+//! the unicast controls on SC ports, and give announcements and other ports
+//! their own rule. On this router ports 0 and 1 are BACnet/SC and port 2 is
+//! B/IP:
+//!
+//! ```
+//! use std::sync::Arc;
+//! use bacnet_network::router::control_policy::{
+//!     ControlAuthContext, ControlAuthorizer, ControlPolicy,
+//! };
+//! use bacnet_npdu::NetworkMessageType as Message;
+//! use bacnet_transport::port::ScPrincipal;
+//! use bacnet_types::MacAddr;
+//!
+//! fn site(routers: Vec<ScPrincipal>, announcers: Vec<MacAddr>) -> (ControlPolicy, ControlAuthorizer) {
+//!     const SC_PORTS: [usize; 2] = [0, 1];
+//!     let authorizer: ControlAuthorizer = Arc::new(move |context: &ControlAuthContext| {
+//!         if !SC_PORTS.contains(&context.port_idx) {
+//!             // B/IP has no certificates: keep the standard behaviour.
+//!             return true;
+//!         }
+//!         let unicast = [
+//!             Message::INITIALIZE_ROUTING_TABLE,
+//!             Message::INITIALIZE_ROUTING_TABLE_ACK,
+//!             Message::REJECT_MESSAGE_TO_NETWORK,
+//!             Message::I_COULD_BE_ROUTER_TO_NETWORK,
+//!         ]
+//!         .contains(&context.message_type);
+//!         if unicast {
+//!             context
+//!                 .sending_peer_principal()
+//!                 .is_some_and(|peer| routers.contains(&peer))
+//!         } else {
+//!             // Announcements arrive hub-relayed, with no principal: gate
+//!             // them on the hub-registered VMAC, a claim the hub vouches for.
+//!             announcers.contains(&context.source_mac)
+//!         }
+//!     });
+//!     (ControlPolicy::Hardened, authorizer)
+//! }
+//! # let _ = site(Vec::new(), Vec::new());
+//! ```
+//!
+//! A VMAC is only as good as the hub's registration: hub certificate bindings
+//! (#800) tie a VMAC to the certificates allowed to register it. SC mutual TLS
+//! authenticates a connection; it doesn't authorize route changes. The router
+//! stays `Permissive` unless a policy is configured, for interoperability
+//! with routers that announce themselves as the standard expects.
+//!
+//! Repeated advertisements circulating in a looped topology are a separate
+//! problem, tracked as #1810 in `bacnet-router-core`. Each SC node also
+//! limits how many network-layer messages one source may hand in
+//! (`ScControlRateLimit` in `bacnet-transport`).
 
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bacnet_transport::port::TransportProvenance;
+use tracing::debug;
 
 /// Wire-control authorization mode. Permissive preserves today's behavior.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -46,7 +121,7 @@ pub enum ControlTrust {
 impl ControlTrust {
     /// Map transport provenance to a trust scope: direct-peer or hub channels are
     /// `VerifiedChannel`, relayed origins are `VerifiedRelay`, everything else is `Unverified`.
-    pub fn from_provenance(p: TransportProvenance) -> Self {
+    pub fn from_provenance(p: &TransportProvenance) -> Self {
         if p.is_direct_peer() || p.is_hub_channel() {
             Self::VerifiedChannel
         } else if p.is_relayed_origin() {
@@ -71,8 +146,8 @@ pub struct ControlAuthContext {
     /// Channel-level trust derived from `provenance`; says nothing about the leaf sender's
     /// identity.
     pub trust: ControlTrust,
-    /// Network-layer message type code of the control (`0xFF` when the NPDU carries none).
-    pub message_type: u8,
+    /// The control's network-layer message type, as received.
+    pub message_type: bacnet_npdu::NetworkMessageType,
     /// Vendor ID from a proprietary network message, if present.
     pub vendor_id: Option<u16>,
     /// Source network number claimed in the NPDU, if any.
@@ -85,6 +160,17 @@ pub struct ControlAuthContext {
     pub targets_omitted: bool,
 }
 
+impl ControlAuthContext {
+    /// The verified leaf certificate of the direct BACnet/SC peer that
+    /// handed this message to the router: the last hop, even when the message
+    /// carries an SNET. `None` for a hub-relayed message, which every SC
+    /// broadcast is, and for any other data link; see the
+    /// [module documentation](self) for which controls can carry one.
+    pub fn sending_peer_principal(&self) -> Option<bacnet_transport::port::ScPrincipal> {
+        self.provenance.principal()
+    }
+}
+
 impl std::fmt::Debug for ControlAuthContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ControlAuthContext")
@@ -92,6 +178,10 @@ impl std::fmt::Debug for ControlAuthContext {
             .field("port_network", &self.port_network)
             .field("source_mac_len", &self.source_mac.len())
             .field("provenance", &self.provenance)
+            .field(
+                "sending_peer_principal",
+                &self.sending_peer_principal().is_some(),
+            )
             .field("trust", &self.trust)
             .field("message_type", &self.message_type)
             .field("vendor_id", &self.vendor_id)
@@ -106,41 +196,29 @@ impl std::fmt::Debug for ControlAuthContext {
 /// Fast, nonblocking, side-effect-free control authorizer.
 ///
 /// Consulted for protected controls only; read-only discovery never calls it.
-/// Do not block, reenter the router/table, or perform side effects; callbacks
-/// may run concurrently while no table lock is held. Returning `false` or
-/// panicking denies fail-closed (silent drop, no mutation/relay/ACK/Reject).
+/// Do not block, reenter the router/table, or perform side effects. It runs
+/// under the router's engine lock (#1679), one call at a time per router:
+/// every port's routing waits while it runs, and calling into the router
+/// from it ([`BACnetRouter::table`](super::BACnetRouter::table) included)
+/// deadlocks. Returning `false` or panicking denies fail-closed (silent
+/// drop, no mutation/relay/ACK/Reject).
 pub type ControlAuthorizer = Arc<dyn Fn(&ControlAuthContext) -> bool + Send + Sync>;
 
-/// Protected control class. One counter row each.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ControlClass {
-    /// I-Am-Router-To-Network announcement.
-    IAm,
-    /// Initialize-Routing-Table-Ack response.
-    InitAck,
-    /// Initialize-Routing-Table request that would update or purge entries.
-    InitMgmt,
-    /// Router-Busy-To-Network mark.
-    Busy,
-    /// Router-Available-To-Network mark.
-    Available,
-    /// Reject-Message-To-Network transition.
-    Reject,
-    /// I-Could-Be-Router-To-Network insert.
-    ICouldBe,
-}
+/// Protected control class, `bacnet-router-core`'s. One counter row each.
+pub use bacnet_router_core::router::ControlClass;
 
-impl ControlClass {
-    fn index(self) -> usize {
-        match self {
-            Self::IAm => 0,
-            Self::InitAck => 1,
-            Self::InitMgmt => 2,
-            Self::Busy => 3,
-            Self::Available => 4,
-            Self::Reject => 5,
-            Self::ICouldBe => 6,
-        }
+/// The counter row of `class`; `None` for a class a later engine adds,
+/// which has no row yet and isn't counted.
+fn index(class: ControlClass) -> Option<usize> {
+    match class {
+        ControlClass::IAm => Some(0),
+        ControlClass::InitAck => Some(1),
+        ControlClass::InitMgmt => Some(2),
+        ControlClass::Busy => Some(3),
+        ControlClass::Available => Some(4),
+        ControlClass::Reject => Some(5),
+        ControlClass::ICouldBe => Some(6),
+        _ => None,
     }
 }
 
@@ -204,7 +282,15 @@ impl ControlDecisions {
                 policy_deny_total: p,
             }
         });
-        let [i_am, init_ack, init_mgmt, busy, available, reject, i_could_be] = rows;
+        let [
+            i_am,
+            init_ack,
+            init_mgmt,
+            busy,
+            available,
+            reject,
+            i_could_be,
+        ] = rows;
         ControlDecisionCounters {
             i_am,
             init_ack,
@@ -217,13 +303,17 @@ impl ControlDecisions {
     }
 
     fn record(&self, class: ControlClass, decision: Decision) {
-        let inc = |col: usize| {
-            #[allow(deprecated, reason = "try_update needs Rust 1.95; the MSRV is 1.93")]
-            let _ = self.0[class.index()][col].fetch_update(
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                |n| Some(n.saturating_add(1)),
+        let Some(row) = index(class) else {
+            debug!(
+                ?class,
+                "No decision counters for this control class; not counted"
             );
+            return;
+        };
+        let inc = |col: usize| {
+            let _ = self.0[row][col].try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                Some(n.saturating_add(1))
+            });
         };
         match decision {
             Decision::Allow => inc(0),
@@ -301,7 +391,10 @@ impl ControlGate {
         self.decisions.snapshot()
     }
 
-    fn decide(&self, ctx: &ControlAuthContext, class: ControlClass) -> bool {
+    /// Decide `class` for the redacted context `ctx`, counting the
+    /// decision. The engine's host calls it after validation, before any
+    /// change.
+    pub(super) fn decide(&self, ctx: &ControlAuthContext, class: ControlClass) -> bool {
         match (&self.policy, &self.authorizer) {
             (ControlPolicy::Permissive, None) => {
                 self.decisions.record(class, Decision::Allow);
@@ -325,31 +418,5 @@ impl ControlGate {
                 allowed
             }
         }
-    }
-
-    /// Build redacted context from immutable ingress + validated targets and
-    /// decide. Call after validation, before any table lock. `targets_omitted`
-    /// marks Busy/Available omitted-list scope (all served via peer).
-    pub(super) fn authorize(
-        &self,
-        ingress: &super::IngressContext,
-        class: ControlClass,
-        targets: &[u16],
-        targets_omitted: bool,
-    ) -> bool {
-        let ctx = ControlAuthContext {
-            port_idx: ingress.port_idx,
-            port_network: ingress.port_network,
-            source_mac: ingress.source_mac.clone(),
-            provenance: ingress.provenance,
-            trust: ControlTrust::from_provenance(ingress.provenance),
-            message_type: ingress.npdu.message_type.unwrap_or(0xFF),
-            vendor_id: ingress.npdu.vendor_id,
-            source_net: ingress.npdu.source.as_ref().map(|s| s.network),
-            dest_net: ingress.npdu.destination.as_ref().map(|d| d.network),
-            target_nets: targets.to_vec(),
-            targets_omitted,
-        };
-        self.decide(&ctx, class)
     }
 }

@@ -17,6 +17,7 @@ use bacnet_types::constructed::{
     BACnetActionCommand, BACnetActionList, BACnetDeviceObjectReference, PropertyReference,
     ReadAccessSpecification,
 };
+use bacnet_types::error::RemoteError;
 use std::net::Ipv4Addr;
 
 fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
@@ -70,9 +71,9 @@ fn command() -> CommandObject {
 }
 
 fn is_invalid_array_index(error: &Error) -> bool {
-    matches!(error, Error::Protocol { class, code }
-        if *class == ErrorClass::PROPERTY.to_raw() as u32
-            && *code == ErrorCode::INVALID_ARRAY_INDEX.to_raw() as u32)
+    matches!(error, Error::Remote(RemoteError::Error { class, code })
+        if *class == ErrorClass::PROPERTY
+            && *code == ErrorCode::INVALID_ARRAY_INDEX)
 }
 
 #[tokio::test]

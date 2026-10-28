@@ -1,7 +1,7 @@
 //! Device-owned recipient state and the synchronous runtime mutation capability.
 use super::*;
+use alloc::sync::Weak;
 use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};
-use std::sync::Weak;
 
 /// Actual remote requester context, supplied only after service authorization.
 #[doc(hidden)]
@@ -32,10 +32,7 @@ pub(super) struct RecipientState {
 }
 
 fn property_error(code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY.to_raw() as u32,
-        code: code.to_raw() as u32,
-    }
+    Error::protocol(ErrorClass::PROPERTY, code)
 }
 
 /// A scoped operation capability for the built-in Device. It deliberately does
@@ -49,6 +46,24 @@ impl DeviceAuthority<'_> {
     }
     pub fn set_services_supported(&mut self, services: &[ServiceSupported]) {
         self.0.set_services_supported(services);
+    }
+    pub fn set_object_list(&mut self, oids: Vec<ObjectIdentifier>) {
+        self.0.set_object_list(oids);
+    }
+    pub fn set_system_status(&mut self, status: DeviceStatus) {
+        self.0.set_system_status(status);
+    }
+    pub fn set_database_revision(&mut self, revision: u32) {
+        self.0.set_database_revision(revision);
+    }
+    pub fn set_backup_and_restore_state(&mut self, state: BackupAndRestoreState) {
+        self.0.set_backup_and_restore_state(state);
+    }
+    pub fn set_last_restore_time(&mut self, time: BACnetTimeStamp) {
+        self.0.set_last_restore_time(time);
+    }
+    pub fn set_configuration_files(&mut self, files: Vec<ObjectIdentifier>) {
+        self.0.set_configuration_files(files);
     }
     pub fn write_property(
         &mut self,
@@ -175,10 +190,10 @@ impl DeviceObject {
             return Err(property_error(ErrorCode::PROPERTY_IS_NOT_AN_ARRAY));
         }
         if priority.is_some_and(|p| !(1..=16).contains(&p)) {
-            return Err(Error::Protocol {
-                class: ErrorClass::SERVICES.to_raw() as u32,
-                code: ErrorCode::PARAMETER_OUT_OF_RANGE.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::SERVICES,
+                ErrorCode::PARAMETER_OUT_OF_RANGE,
+            ));
         }
         if value == PropertyValue::Null {
             return Ok(());

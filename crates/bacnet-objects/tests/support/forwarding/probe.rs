@@ -7,8 +7,8 @@ use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::fixtures::{address, day, noon, oid, property_error, schedule_write, METADATA};
-use bacnet_objects::access_control::AccessControlInput;
+use super::fixtures::{METADATA, address, day, noon, oid, property_error, schedule_write};
+use bacnet_objects::access_control::{AccessControlInput, AccessEventReport, CommittedAccessEvent};
 use bacnet_objects::accumulator::InputReading;
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::audit::{
@@ -46,11 +46,14 @@ use bacnet_types::constructed::{
     BACnetObjectPropertyReference, BACnetObjectSelector,
 };
 use bacnet_types::enums::{
-    AuditLevel, ErrorClass, ErrorCode, EventState, EventType, LifeSafetyOperation, ObjectType,
-    PropertyIdentifier as P, Reliability,
+    AuditLevel, EngineeringUnits, ErrorClass, ErrorCode, EventState, EventType,
+    LifeSafetyOperation, ObjectType, PropertyIdentifier as P, Reliability,
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, PropertyValue, Time};
+
+#[path = "access_batch.rs"]
+mod access_batch;
 
 pub const CUSTOM: P = P::from_raw(5000);
 pub const CUSTOM_LIST: P = P::from_raw(5001);
@@ -97,7 +100,8 @@ impl Probe {
             device_identifier: None,
             object_identifier: oid(ObjectType::AUDIT_LOG, 9),
         }));
-        let mut value = AnalogValueObject::new(7, "Probe value", 62).unwrap();
+        let mut value =
+            AnalogValueObject::new(7, "Probe value", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         value.set_audit_policy(ObjectAuditPolicy {
             level: Some(AuditLevel::NONE),
             ..ObjectAuditPolicy::default()
@@ -106,7 +110,8 @@ impl Probe {
             oid: oid(object_type, 1),
             log,
             device: DeviceObject::new(DeviceConfig {
-                instance: 77,
+                identity: bacnet_objects::DeviceIdentity::new(77, 0)
+                    .expect("valid Device identity"),
                 ..DeviceConfig::default()
             })
             .unwrap(),
@@ -233,6 +238,9 @@ impl BACnetObject for Probe {
     fn bind_deadline_waker_internal(&mut self, waker: Option<Arc<DeadlineWaker>>) {
         let waker = waker.as_deref().map(address);
         self.called("bind_deadline_waker_internal", (waker,));
+    }
+    fn start_output_internal(&mut self) {
+        self.called("start_output_internal", ());
     }
     fn advance_monotonic_time_internal(&mut self, now: Duration) -> bool {
         self.called("advance_monotonic_time_internal", (now,));
@@ -560,6 +568,16 @@ impl BACnetObject for Probe {
         self.called("set_tracking_value_internal", (value,));
         Ok(())
     }
+    fn supports_access_event_batch_internal(&self) -> bool {
+        self.called("supports_access_event_batch_internal", ());
+        true
+    }
+    fn record_access_event_batch_internal(
+        &mut self,
+        reports: &[AccessEventReport],
+    ) -> Result<Vec<CommittedAccessEvent>, Error> {
+        access_batch::record(self, reports)
+    }
     fn report_access_input_internal(&mut self, input: AccessControlInput) -> Result<(), Error> {
         self.called("report_access_input_internal", (input,));
         Ok(())
@@ -672,6 +690,10 @@ impl BACnetObject for Probe {
         self.called("refresh_log_window_internal", ());
         true
     }
+    fn log_collecting_internal(&self) -> bool {
+        self.called("log_collecting_internal", ());
+        false
+    }
     fn logs_received_event_notifications_internal(&self) -> bool {
         self.called("logs_received_event_notifications_internal", ());
         true
@@ -700,8 +722,5 @@ impl BACnetObject for Probe {
 /// What the probe's log-record hooks answer: an error of the wrapped
 /// object's own, unlike the default's OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
 fn own_record_error() -> Error {
-    Error::Protocol {
-        class: ErrorClass::DEVICE.to_raw() as u32,
-        code: ErrorCode::OPERATIONAL_PROBLEM.to_raw() as u32,
-    }
+    Error::protocol(ErrorClass::DEVICE, ErrorCode::OPERATIONAL_PROBLEM)
 }

@@ -16,10 +16,10 @@
 //! case, so a label built in its branch would show. The other tests check
 //! each label in an error that names it, so its text is what it was.
 
-#![allow(unsafe_code)]
+// Most of these services need alloc; tests/no_alloc_subset.rs covers the
+// allocation-free ones in every profile.
+#![cfg(feature = "alloc")]
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
 use std::fmt::Debug;
 
 use bacnet_encoding::constructed::encode_audit_notification;
@@ -37,6 +37,7 @@ use bacnet_services::virtual_terminal::VTDataRequest;
 use bacnet_services::who_am_i::{WhoAmIRequest, YouAreRequest};
 use bacnet_services::who_has::{WhoHasObject, WhoHasRequest};
 use bacnet_services::who_is::{DeviceInstanceRange, WhoIsRequest};
+use bacnet_types::MacAddr;
 use bacnet_types::bitstring::AuditOperationFlags;
 use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};
 use bacnet_types::enums::{
@@ -44,41 +45,11 @@ use bacnet_types::enums::{
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
-use bacnet_types::MacAddr;
 use bytes::BytesMut;
 
-std::thread_local! {
-    static THREAD_ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-}
-
-/// Counts every allocation on the thread that makes it. `realloc` and
-/// `alloc_zeroed` keep their default bodies, which call `alloc`, so a buffer
-/// that grows counts once per growth.
-struct CountingAllocator;
-
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        THREAD_ALLOCATIONS.with(|count| count.set(count.get().saturating_add(1)));
-        // SAFETY: forwarded unchanged to the platform allocator.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: forwarded unchanged to the platform allocator.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = CountingAllocator;
-
-/// Run `f`; return what it returned and the allocations it made on this
-/// thread.
-fn counted<T>(f: impl FnOnce() -> T) -> (T, usize) {
-    let before = THREAD_ALLOCATIONS.with(Cell::get);
-    let value = f();
-    (value, THREAD_ALLOCATIONS.with(Cell::get) - before)
-}
+#[path = "support/counting_alloc.rs"]
+mod counting_alloc;
+use counting_alloc::counted;
 
 /// The allocations `decode` makes reading `value`'s encoding by `encode`,
 /// after checking that it reads `value` back.
@@ -542,7 +513,9 @@ fn limit_labels() {
         );
         assert_eq!(
             refusal(&high, decode),
-            format!("decoding error at offset 2: {service} high limit: [1] value 4294967296 exceeds u32"),
+            format!(
+                "decoding error at offset 2: {service} high limit: [1] value 4294967296 exceeds u32"
+            ),
         );
     }
 }
@@ -563,7 +536,9 @@ fn identity_labels() {
     ] {
         assert_eq!(
             refusal(&vendor, decode),
-            format!("decoding error at offset 0: {service} vendor-id: expected application-tagged Unsigned"),
+            format!(
+                "decoding error at offset 0: {service} vendor-id: expected application-tagged Unsigned"
+            ),
         );
         assert_eq!(
             refusal(&model, decode),

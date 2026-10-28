@@ -1,7 +1,8 @@
-use super::value_source::{decoded, FIELDS};
+use super::value_source::{FIELDS, decoded};
 use super::*;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
+use bacnet_types::enums::EngineeringUnits;
 use std::borrow::Cow;
 
 #[derive(Default)]
@@ -61,7 +62,7 @@ async fn fixture(
 ) -> (Fixture, Arc<StdMutex<State>>, CovSubscriptionSnapshot) {
     let f = Fixture::new(false);
     let state = Arc::new(StdMutex::new(State::default()));
-    let mut av = AnalogValueObject::new(3, "probe", 95).unwrap();
+    let mut av = AnalogValueObject::new(3, "probe", EngineeringUnits::NO_UNITS).unwrap();
     av.set_relinquish_default(10.0).unwrap();
     let mut db = clocked_test_database();
     db.add(Box::new(Probe {
@@ -265,12 +266,16 @@ async fn multiple_dedup_qualification_and_timestamps(noncommandable: bool) {
     }
     if noncommandable {
         let state = state.lock().unwrap();
-        assert!(!state
-            .reads
-            .contains_key(&PropertyIdentifier::LAST_COMMAND_TIME));
-        assert!(!state
-            .reads
-            .contains_key(&PropertyIdentifier::CURRENT_COMMAND_PRIORITY));
+        assert!(
+            !state
+                .reads
+                .contains_key(&PropertyIdentifier::LAST_COMMAND_TIME)
+        );
+        assert!(
+            !state
+                .reads
+                .contains_key(&PropertyIdentifier::CURRENT_COMMAND_PRIORITY)
+        );
     }
     let pv = snapshots
         .iter()
@@ -452,10 +457,12 @@ async fn value_source_cov_multiple_timestamped_sibling_merges_flags_only_when_qu
         .collect();
     assert_eq!(pv_times, vec![Some(prepared.local_time)]);
     assert_eq!(baseline(&f, &pv).await, pv_before);
-    assert!(baseline(&f, &source)
-        .await
-        .unwrap()
-        .source_companions()
-        .is_some());
+    assert!(
+        baseline(&f, &source)
+            .await
+            .unwrap()
+            .source_companions()
+            .is_some()
+    );
     f.finish(false).await;
 }

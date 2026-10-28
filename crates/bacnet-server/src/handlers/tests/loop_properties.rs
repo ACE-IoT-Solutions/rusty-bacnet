@@ -8,9 +8,10 @@ use super::*;
 use bacnet_objects::command::CommandObject;
 use bacnet_objects::loop_obj::LoopObject;
 use bacnet_types::enums::{Action, EngineeringUnits};
+use bacnet_types::error::RemoteError;
 
 fn loop_db() -> (ObjectDatabase, ObjectIdentifier) {
-    let mut lo = LoopObject::new(1, "LOOP-1", 62).unwrap();
+    let mut lo = LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     lo.set_controlled_variable_units(EngineeringUnits::DEGREES_CELSIUS)
         .unwrap();
     lo.set_proportional_constant_units(EngineeringUnits::PERCENT)
@@ -67,9 +68,9 @@ fn read_wire(
 
 fn assert_property_error<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == expected.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == expected),
         "expected PROPERTY/{expected:?}, got {result:?}"
     );
 }

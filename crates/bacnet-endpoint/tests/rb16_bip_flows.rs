@@ -17,25 +17,26 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use bacnet_encoding::apdu::{
-    decode_apdu, encode_apdu, AbortPdu, Apdu, ConfirmedRequest as ConfirmedPdu, RejectPdu,
+    AbortPdu, Apdu, ConfirmedRequest as ConfirmedPdu, RejectPdu, decode_apdu, encode_apdu,
 };
 use bacnet_encoding::npdu::NpduAddress;
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
-use bacnet_endpoint::bip::BipEndpointBuilder;
-use bacnet_endpoint::identity::{build_database_with_extra, DeviceIdentity};
-use bacnet_endpoint::session::SessionRole;
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_endpoint::EndpointApduDestination;
+use bacnet_endpoint::bip::BipEndpointBuilder;
+use bacnet_endpoint::identity::{DeviceIdentity, build_database_with_extra};
+use bacnet_endpoint::session::SessionRole;
 use bacnet_network::layer::NetworkLayer;
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::bip::BipTransport;
-use bacnet_transport::bvll::{decode_bvll, encode_bvll, Bvll};
+use bacnet_transport::bvll::{Bvll, decode_bvll, encode_bvll};
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{
-    AbortReason, ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier,
+    AbortReason, ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier,
     RejectReason, Segmentation, ServiceSupported,
 };
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
-use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -58,7 +59,12 @@ fn db_with_analog(
     instance: u32,
     value: f32,
 ) -> bacnet_objects::database::ObjectDatabase {
-    let mut o = AnalogInputObject::new(instance, format!("bip-ai-{instance}"), 0).unwrap();
+    let mut o = AnalogInputObject::new(
+        instance,
+        format!("bip-ai-{instance}"),
+        EngineeringUnits::SQUARE_METERS,
+    )
+    .unwrap();
     o.set_present_value(value);
     build_database_with_extra(id, vec![Box::new(o)]).unwrap()
 }
@@ -72,7 +78,7 @@ async fn bip_same_id_opposite_directions_routed_and_wrong_peer() {
     let mut endpoint = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
         .role(SessionRole::Both)
         .database(db)
-        .identity(id)
+        .device(id)
         .build_session()
         .unwrap();
     endpoint.start().await.unwrap();
@@ -134,7 +140,7 @@ async fn bip_same_id_opposite_directions_routed_and_wrong_peer() {
     let mut enc_in = BytesMut::new();
     encode_apdu(&mut enc_in, &inbound_req).unwrap();
     net_a
-        .send_apdu(&enc_in, &endpoint_mac, true, NetworkPriority::NORMAL)
+        .send_apdu(&enc_in, &endpoint_mac, true, NetworkPriority::Normal)
         .await
         .unwrap();
 
@@ -163,7 +169,7 @@ async fn bip_same_id_opposite_directions_routed_and_wrong_peer() {
     let mut enc_resp = BytesMut::new();
     encode_apdu(&mut enc_resp, &resp).unwrap();
     net_a
-        .send_apdu(&enc_resp, &endpoint_mac, false, NetworkPriority::NORMAL)
+        .send_apdu(&enc_resp, &endpoint_mac, false, NetworkPriority::Normal)
         .await
         .unwrap();
 
@@ -177,15 +183,18 @@ async fn bip_same_id_opposite_directions_routed_and_wrong_peer() {
     let mut saw_inbound_ack = false;
     let deadline = tokio::time::Instant::now() + WAIT;
     while tokio::time::Instant::now() < deadline && !saw_inbound_ack {
-        if let Ok(recv) = tokio::time::timeout(Duration::from_millis(200), rx_a.recv()).await {
-            let msg = recv.expect("closed");
-            if let Ok(Apdu::ComplexAck(a)) = decode_apdu(msg.apdu) {
-                if a.invoke_id == 0 {
+        match tokio::time::timeout(Duration::from_millis(200), rx_a.recv()).await {
+            Ok(recv) => {
+                let msg = recv.expect("closed");
+                if let Ok(Apdu::ComplexAck(a)) = decode_apdu(msg.apdu)
+                    && a.invoke_id == 0
+                {
                     saw_inbound_ack = true;
                 }
             }
-        } else {
-            break;
+            _ => {
+                break;
+            }
         }
     }
     assert!(
@@ -245,7 +254,7 @@ async fn bip_same_id_opposite_directions_routed_and_wrong_peer() {
     encode_apdu(&mut fenc, &forged).unwrap();
     // B sends the forged ack (wrong peer MAC) directly to the endpoint.
     net_b
-        .send_apdu(&fenc, &endpoint_mac, false, NetworkPriority::NORMAL)
+        .send_apdu(&fenc, &endpoint_mac, false, NetworkPriority::Normal)
         .await
         .unwrap();
     // Give dispatch a chance to classify the forgery as unclaimed (no hang).
@@ -275,7 +284,7 @@ async fn bip_same_id_opposite_directions_routed_and_wrong_peer() {
     let mut genc = BytesMut::new();
     encode_apdu(&mut genc, &good).unwrap();
     net_a
-        .send_apdu(&genc, &endpoint_mac, false, NetworkPriority::NORMAL)
+        .send_apdu(&genc, &endpoint_mac, false, NetworkPriority::Normal)
         .await
         .unwrap();
     let done = tokio::time::timeout(WAIT, pending)
@@ -299,7 +308,7 @@ async fn bip_routed_and_confirmed_cov_event_flows() {
     let mut endpoint = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
         .role(SessionRole::Both)
         .database(db)
-        .identity(id)
+        .device(id)
         .build_session()
         .unwrap();
     endpoint.start().await.unwrap();
@@ -371,9 +380,8 @@ async fn bip_routed_and_confirmed_cov_event_flows() {
     encode_npdu(
         &mut rnpdu,
         &Npdu {
-            is_network_message: false,
             expecting_reply: false,
-            priority: NetworkPriority::NORMAL,
+            priority: NetworkPriority::Normal,
             destination: None,
             source: None,
             payload: rapdu.freeze(),
@@ -455,9 +463,8 @@ async fn bip_routed_and_confirmed_cov_event_flows() {
     encode_npdu(
         &mut n2,
         &Npdu {
-            is_network_message: false,
             expecting_reply: false,
-            priority: NetworkPriority::NORMAL,
+            priority: NetworkPriority::Normal,
             destination: None,
             source: Some(NpduAddress {
                 network: 77,
@@ -506,9 +513,8 @@ async fn bip_routed_and_confirmed_cov_event_flows() {
         encode_npdu(
             &mut cn,
             &Npdu {
-                is_network_message: false,
                 expecting_reply: true,
-                priority: NetworkPriority::NORMAL,
+                priority: NetworkPriority::Normal,
                 destination: None,
                 source: None,
                 payload: ce.freeze(),
@@ -563,9 +569,8 @@ async fn bip_routed_and_confirmed_cov_event_flows() {
     encode_npdu(
         &mut sn,
         &Npdu {
-            is_network_message: false,
             expecting_reply: true,
-            priority: NetworkPriority::NORMAL,
+            priority: NetworkPriority::Normal,
             destination: None,
             source: None,
             payload: se.freeze(),

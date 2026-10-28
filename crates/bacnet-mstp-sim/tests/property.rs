@@ -2,7 +2,10 @@
 //! masters take extended frames, drives traffic through it and injects
 //! noise, damaged octets, power cuts, joins and a slow adapter for most of a
 //! run, then leaves it quiet; every invariant must hold throughout, and the
-//! ring must be whole again at the end.
+//! ring must be whole again at the end. Each seed runs with octet delivery,
+//! then actual buffered host delivery on every master and on every other
+//! master. Physical failures caused by input not yet readable during faults
+//! remain in the report with exact causal timestamps; settled runs are strict.
 //!
 //! Run it alone with `cargo nextest run -p bacnet-mstp-sim -E 'binary(property)'`.
 //! `MSTP_SIM_SEEDS=<n>` runs more seeds; `MSTP_SIM_SEED=<seed>` runs one;
@@ -14,7 +17,8 @@ use bacnet_mstp_codec::FrameType;
 use bacnet_mstp_core::{Duration, Instant};
 use bacnet_mstp_sim::analysis::token_users;
 use bacnet_mstp_sim::{
-    AdapterSpec, CollisionClass, Corruption, Fault, MasterSpec, ReplyPolicy, Sim, SimConfig, SimRng,
+    AdapterSpec, CollisionClass, Corruption, Fault, HostSpec, MasterSpec, ReplyPolicy, Sim,
+    SimConfig, SimRng, ViolationKind,
 };
 
 use common::*;
@@ -66,7 +70,19 @@ fn reply_policy(rng: &mut SimRng, extended: bool) -> ReplyPolicy {
     }
 }
 
-fn plan(seed: u64) -> Plan {
+/// The input adapter and timeout defaults each run uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Timing {
+    /// The baud-rate constructors' values: the shortest T_frame_abort,
+    /// T_reply_timeout and T_usage_timeout Clause 9.5.3 allows.
+    Standard,
+    /// Buffered reads with seeded chunks and host timeouts: 100, 300 and 35 ms.
+    Host,
+    /// Host reads on every other master, in address order, beside octet-driven devices.
+    Mixed,
+}
+
+fn plan(seed: u64, timing: Timing) -> Plan {
     let mut rng = SimRng::new(seed);
     let baud = if rng.chance(30) { SLOW_BAUD } else { BAUD };
     let mut config = SimConfig::new(baud);
@@ -94,7 +110,7 @@ fn plan(seed: u64) -> Plan {
     // About half the masters take extended frames (Types 32 and 33); the
     // rest count them as invalid frames, as nodes without COBS support do.
     let extended: Vec<bool> = stations.iter().map(|_| rng.chance(50)).collect();
-    for (&station, &extended) in stations.iter().zip(&extended) {
+    for (index, (&station, &extended)) in stations.iter().zip(&extended).enumerate() {
         let mut adapter = AdapterSpec {
             deadline_jitter: Duration::from_micros(rng.range(0, 900)),
             echo: rng.chance(20),
@@ -107,12 +123,20 @@ fn plan(seed: u64) -> Plan {
             .max_info_frames(rng.range(1, 4) as u8)
             .queues(8, 8)
             .adapter(adapter)
-            .reply(reply_policy(&mut rng, extended));
+            .application(reply_policy(&mut rng, extended));
         if station == joiner {
             spec = spec.unpowered();
         }
         if extended {
             spec = spec.extended_frames();
+        }
+        if timing == Timing::Host || (timing == Timing::Mixed && index % 2 == 0) {
+            spec = spec.host(HostSpec {
+                max_chunk: 31,
+                random_chunks: true,
+                echo_grace: adapter.echo.then_some(Duration::from_millis(40)),
+                ..HostSpec::default()
+            });
         }
         sim.add_master(spec);
     }
@@ -213,7 +237,7 @@ fn settle_after_a_clean_rotation(sim: &mut Sim, limit: Instant, seed: u64) {
         for frame in &sim.frames()[seen..] {
             if !frame.is_clean() {
                 lap = None;
-            } else if frame.frame_type() == Some(FrameType::Token) {
+            } else if frame.frame_type() == Some(FrameType::TOKEN) {
                 match lap {
                     None => lap = frame.source(),
                     Some(first) if frame.destination() == Some(first) => closed = true,
@@ -229,8 +253,9 @@ fn settle_after_a_clean_rotation(sim: &mut Sim, limit: Instant, seed: u64) {
     }
 }
 
-fn check(seed: u64) {
-    let Plan { mut sim, stations } = plan(seed);
+#[allow(clippy::print_stdout)] // Retain negative qualification counts in successful test logs.
+fn check(seed: u64, timing: Timing) {
+    let Plan { mut sim, stations } = plan(seed, timing);
     // The faults stop at 12 s and every node is powered again at 13 s. From
     // 14 s, once the bus has settled, every listening master must count every
     // clean frame again for the rest of the run.
@@ -243,7 +268,24 @@ fn check(seed: u64) {
     );
     let report = sim.report();
     assert!(
-        report.violations.is_empty(),
+        report.violations.iter().all(|violation| {
+            // An injected burst can finish less than a host read latency
+            // before transmit admission. Its unread characters are unknowable
+            // to the adapter. Retain that physical failure in the report and
+            // require its specific diagnosis; clean traffic gets no waiver.
+            timing != Timing::Standard
+                && matches!(
+                    violation.kind,
+                    ViolationKind::Turnaround | ViolationKind::Collision
+                )
+                && violation.at >= ms(FAULTS_FROM)
+                && violation.at < ms(FAULTS_UNTIL)
+                && violation.host_timing.is_some_and(|evidence| {
+                    evidence.start == violation.at
+                        && evidence.readable_at > evidence.start
+                        && evidence.start - evidence.wire_activity < evidence.turnaround
+                })
+        }),
         "seed {seed}: invariant violations\n{}",
         sim.dump(200)
     );
@@ -254,7 +296,14 @@ fn check(seed: u64) {
             matches!(
                 collision.class,
                 CollisionClass::Noise | CollisionClass::GenerationRace
-            ),
+            ) || (timing != Timing::Standard
+                && collision.at >= ms(FAULTS_FROM)
+                && collision.at < ms(FAULTS_UNTIL)
+                && collision.host_timing.is_some_and(|evidence| {
+                    evidence.start == collision.at
+                        && evidence.readable_at > evidence.start
+                        && evidence.start - evidence.wire_activity < evidence.turnaround
+                })),
             "seed {seed}: {collision:?}"
         );
     }
@@ -282,6 +331,67 @@ fn check(seed: u64) {
         .into_iter()
         .collect();
     assert_eq!(users, stations, "seed {seed}\n{}", sim.dump(60));
+    if !report.violations.is_empty() {
+        println!(
+            "seed {seed} {timing:?}: {} retained physical failures, all during injected faults",
+            report.violations.len()
+        );
+    }
+}
+
+/// Seed 0's delayed noise reports a physical failure, not a clean run.
+#[test]
+fn unread_noise_retains_the_wire_turnaround_failure() {
+    let mut plan = plan(0, Timing::Host);
+    plan.sim.run_until(us(10_447_232));
+    let evidence = plan
+        .sim
+        .report()
+        .violations
+        .iter()
+        .find_map(|violation| violation.host_timing)
+        .expect("the seeded failure");
+    assert_eq!(evidence.station, 23);
+    assert_eq!(evidence.start, us(10_447_232));
+    assert_eq!(
+        evidence.start - evidence.wire_activity,
+        Duration::from_micros(912)
+    );
+    assert_eq!(evidence.turnaround, Duration::from_micros(1042));
+    assert!(evidence.readable_at > evidence.start);
+}
+
+/// The two seed-17 overlaps retain their Unexplained collision classification
+/// and share the exact typed evidence of the admission-time wire failures.
+#[test]
+#[allow(clippy::print_stdout)] // This negative-evidence trace is part of the qualification record.
+fn unavailable_input_collisions_remain_reported_failures() {
+    let mut plan = plan(17, Timing::Host);
+    plan.sim.run_until(us(11_774_105));
+    let collisions: Vec<_> = plan
+        .sim
+        .report()
+        .collisions
+        .iter()
+        .filter(|collision| collision.class == CollisionClass::Unexplained)
+        .collect();
+    assert_eq!(collisions.len(), 2);
+    for collision in collisions {
+        let evidence = collision.host_timing.expect("observed unavailable input");
+        assert_eq!(evidence.station, 5);
+        assert_eq!(evidence.start, collision.at);
+        assert!(evidence.readable_at > evidence.start);
+        assert!(evidence.start - evidence.wire_activity < evidence.turnaround);
+        assert!(
+            plan.sim
+                .report()
+                .violations
+                .iter()
+                .any(|violation| violation.kind == ViolationKind::Collision
+                    && violation.host_timing == Some(evidence))
+        );
+    }
+    println!("{}", plan.sim.dump(120));
 }
 
 fn seeds() -> Vec<u64> {
@@ -303,24 +413,49 @@ fn seeds() -> Vec<u64> {
 #[test]
 fn random_faults_never_break_the_invariants_or_the_ring() {
     for seed in seeds() {
-        check(seed);
+        check(seed, Timing::Standard);
     }
 }
 
-/// Every seed replays exactly: the same frames at the same instants.
+/// Actual buffered hosts diagnose unavailable-input physical failures during
+/// faults, recover the ring and pass strict checks after settling. Every
+/// accepted negative outcome carries typed evidence; it is not erased.
+#[test]
+fn buffered_host_faults_are_diagnosed_and_the_ring_recovers() {
+    for seed in seeds() {
+        check(seed, Timing::Host);
+        check(seed, Timing::Mixed);
+    }
+}
+
+/// Every seed replays exactly: wire frames, host read counts and deliveries.
 #[test]
 fn a_seed_replays_exactly() {
-    let run = |seed| {
-        let mut plan = plan(seed);
+    let run = |seed, timing| {
+        let mut plan = plan(seed, timing);
         plan.sim.run_until(ms(6_000));
-        plan.sim
+        let frames = plan
+            .sim
             .frames()
             .iter()
             .map(|frame| (frame.start, frame.end, frame.octets.clone()))
-            .collect::<Vec<(Instant, Instant, Vec<u8>)>>()
+            .collect::<Vec<(Instant, Instant, Vec<u8>)>>();
+        let hosts = plan
+            .stations
+            .iter()
+            .map(|&station| plan.sim.host_stats(station).copied())
+            .collect::<Vec<_>>();
+        let deliveries = plan
+            .stations
+            .iter()
+            .map(|&station| plan.sim.deliveries(station).to_vec())
+            .collect::<Vec<_>>();
+        (frames, hosts, deliveries)
     };
-    let first = run(3);
-    assert!(first.len() > 50);
-    assert_eq!(first, run(3));
-    assert_ne!(first, run(4));
+    for timing in [Timing::Standard, Timing::Host, Timing::Mixed] {
+        let first = run(3, timing);
+        assert!(first.0.len() > 50);
+        assert_eq!(first, run(3, timing));
+        assert_ne!(first, run(4, timing));
+    }
 }

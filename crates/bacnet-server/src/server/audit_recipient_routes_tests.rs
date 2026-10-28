@@ -107,7 +107,7 @@ async fn audit_target_routes_use_actual_bound_bip_broadcast_port() {
     let logger = oid(ObjectType::DEVICE, 20);
     let target = oid(ObjectType::DEVICE, 10);
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 10,
+        identity: bacnet_objects::DeviceIdentity::new(10, 0).expect("valid Device identity"),
         ..Default::default()
     })
     .unwrap();
@@ -120,6 +120,7 @@ async fn audit_target_routes_use_actual_bound_bip_broadcast_port() {
     let transport = bacnet_transport::bip::BipTransport::new(Ipv4Addr::LOCALHOST, 0, broadcast);
     let mut server = BACnetServer::start_with_clock_mode_and_bindings(
         ServerConfig {
+            device: bacnet_objects::DeviceIdentity::new(10, 0).unwrap(),
             audit_reporters: Some(AuditReportersConfig {
                 reporters: vec![oid(ObjectType::AUDIT_REPORTER, 1)],
             }),
@@ -160,17 +161,19 @@ async fn audit_target_routes_use_actual_bound_bip_broadcast_port() {
     let mut bytes = BytesMut::new();
     bacnet_encoding::constructed::encode_recipient(&mut bytes, &recipient(endpoint.port()))
         .unwrap();
-    assert!(server
-        .write_local(
-            &target,
-            PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT,
-            None,
-            PropertyValue::ApplicationData(bytes.to_vec()),
-            None,
-            crate::LocalCommandSource::ServerDevice,
-        )
-        .await
-        .is_err());
+    assert!(
+        server
+            .write_local(
+                &target,
+                PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT,
+                None,
+                PropertyValue::ApplicationData(bytes.to_vec()),
+                None,
+                crate::LocalCommandSource::ServerDevice,
+            )
+            .await
+            .is_err()
+    );
     assert_eq!(
         server
             .db
@@ -196,7 +199,8 @@ async fn audit_target_routes_revalidate_generic_next_hops_after_startup() {
             let target = oid(ObjectType::DEVICE, 10);
             let initial = BACnetRecipient::Device(if initially_unresolved { bad } else { good });
             let mut device = DeviceObject::new(DeviceConfig {
-                instance: 10,
+                identity: bacnet_objects::DeviceIdentity::new(10, 0)
+                    .expect("valid Device identity"),
                 ..Default::default()
             })
             .unwrap();
@@ -212,6 +216,7 @@ async fn audit_target_routes_revalidate_generic_next_hops_after_startup() {
             assert_eq!(transport.bip_broadcast_endpoint(), None);
             let mut server = BACnetServer::start_with_clock_mode_and_bindings(
                 ServerConfig {
+                    device: bacnet_objects::DeviceIdentity::new(10, 0).unwrap(),
                     audit_reporters: Some(AuditReportersConfig {
                         reporters: vec![oid(ObjectType::AUDIT_REPORTER, 1)],
                     }),
@@ -253,12 +258,14 @@ async fn audit_target_routes_revalidate_generic_next_hops_after_startup() {
                 notifications(&transport.sent).len(),
                 usize::from(!initially_unresolved)
             );
-            assert!(transport
-                .destinations
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|mac| mac.as_slice() == NEW_LOGGER));
+            assert!(
+                transport
+                    .destinations
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|mac| mac.as_slice() == NEW_LOGGER)
+            );
             let sequence = server
                 .db
                 .read()
@@ -272,17 +279,19 @@ async fn audit_target_routes_revalidate_generic_next_hops_after_startup() {
             )
             .unwrap();
             if initially_unresolved {
-                assert!(server
-                    .write_local(
-                        &target,
-                        PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT,
-                        None,
-                        PropertyValue::ApplicationData(bytes.to_vec()),
-                        None,
-                        crate::LocalCommandSource::ServerDevice,
-                    )
-                    .await
-                    .is_err());
+                assert!(
+                    server
+                        .write_local(
+                            &target,
+                            PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT,
+                            None,
+                            PropertyValue::ApplicationData(bytes.to_vec()),
+                            None,
+                            crate::LocalCommandSource::ServerDevice,
+                        )
+                        .await
+                        .is_err()
+                );
             } else {
                 assert!(matches!(
                     dispatch(
@@ -345,7 +354,7 @@ async fn audit_source_correlation_uses_post_start_generic_route_eligibility() {
         let observed = oid(ObjectType::DEVICE, 32);
         let mut db = ObjectDatabase::new();
         let mut device = DeviceObject::new(DeviceConfig {
-            instance: 10,
+            identity: bacnet_objects::DeviceIdentity::new(10, 0).expect("valid Device identity"),
             ..Default::default()
         })
         .unwrap();
@@ -360,6 +369,7 @@ async fn audit_source_correlation_uses_post_start_generic_route_eligibility() {
         transport.learned_broadcast = Some(MacAddr::from_slice(&[0x42]));
         let mut server = BACnetServer::start_with_clock_mode_and_bindings(
             ServerConfig {
+                device: bacnet_objects::DeviceIdentity::new(10, 0).unwrap(),
                 audit_reporters: Some(AuditReportersConfig {
                     reporters: vec![oid(ObjectType::AUDIT_REPORTER, 1)],
                 }),

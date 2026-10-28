@@ -160,7 +160,7 @@ async fn success(role: SessionRole) {
     let (session, peer, observed) = session(role);
     let mut session = session
         .with_database(database())
-        .with_identity(crate::identity::DeviceIdentity::new(123, 42).unwrap())
+        .device(crate::identity::DeviceIdentity::new(123, 42).unwrap())
         .with_source_audit_reporter(selected());
     assert!(!source(
         &*session.database.as_ref().unwrap().read().await,
@@ -343,7 +343,7 @@ async fn device_validation_is_atomic_and_correctable() {
                 .unwrap();
         let mut session = session
             .with_database(db)
-            .with_identity(identity)
+            .device(identity)
             .with_source_audit_reporter(selected());
         rejected(
             &mut session,
@@ -351,13 +351,13 @@ async fn device_validation_is_atomic_and_correctable() {
             if case == "missing" {
                 "concrete local Device"
             } else {
-                "does not match session identity"
+                "must match identity"
             },
         )
         .await;
         session = session
             .with_database(database())
-            .with_identity(crate::identity::DeviceIdentity::new(123, 42).unwrap());
+            .device(crate::identity::DeviceIdentity::new(123, 42).unwrap());
         session.start().await.unwrap();
         session.stop().await.unwrap();
     }
@@ -383,10 +383,10 @@ impl BACnetObject for ForeignReporter {
             .map_or("Foreign Reporter", |reporter| reporter.object_name())
     }
     fn read_property(&self, p: PropertyIdentifier, _: Option<u32>) -> Result<PropertyValue, Error> {
-        if p == PropertyIdentifier::AUDIT_SOURCE_REPORTER {
-            if let Some(source) = self.source {
-                return Ok(PropertyValue::Boolean(source));
-            }
+        if p == PropertyIdentifier::AUDIT_SOURCE_REPORTER
+            && let Some(source) = self.source
+        {
+            return Ok(PropertyValue::Boolean(source));
         }
         Err(Error::Encoding("unsupported property".into()))
     }
@@ -571,7 +571,7 @@ async fn selected_source_requires_typed_recipient_before_start() {
     db.remove(&oid(ObjectType::DEVICE, 123)).unwrap();
     db.add(Box::new(
         bacnet_objects::device::DeviceObject::new(bacnet_objects::device::DeviceConfig {
-            instance: 123,
+            identity: bacnet_objects::DeviceIdentity::new(123, 0).expect("valid Device identity"),
             ..Default::default()
         })
         .unwrap(),

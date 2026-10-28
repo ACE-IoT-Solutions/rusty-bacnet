@@ -1,5 +1,5 @@
 use super::*;
-use bacnet_transport::bip6::Bip6ForeignDeviceConfig;
+use bacnet_transport::bip6::{Bip6ForeignDeviceConfig, Bip6Vmac};
 
 async fn foreign_source(automatic: bool) {
     let (selected, index) = fixture();
@@ -17,7 +17,8 @@ async fn foreign_source(automatic: bool) {
         ttl: 60,
     });
     let mut incoming = transport.start().await.unwrap();
-    let (announced, port) = decode_bip6_mac(transport.local_mac()).unwrap();
+    let local = transport.local_address().unwrap();
+    let (announced, port) = (*local.ip(), local.port());
     let registration = tokio::time::timeout(DEADLINE, wire::receive(&bbmd))
         .await
         .unwrap()
@@ -46,9 +47,13 @@ async fn foreign_source(automatic: bool) {
         .unwrap();
     assert_eq!(received.npdu.as_ref(), NPDU);
     assert!(received.link_layer_group);
+    // The origin's VMAC is the source MAC; its carried address is learned.
+    assert_eq!(received.source_mac.as_slice(), [0x40, 0x88, 0x71]);
     assert_eq!(
-        decode_bip6_mac(&received.source_mac).unwrap(),
-        (selected, bbmd_port)
+        transport
+            .lookup_vmac(Bip6Vmac::new([0x40, 0x88, 0x71]))
+            .map(|origin| (*origin.ip(), origin.port())),
+        Some((selected, bbmd_port))
     );
     transport
         .send_unicast(NPDU, &received.source_mac)
@@ -60,7 +65,9 @@ async fn foreign_source(automatic: bool) {
         .unwrap();
     assert_eq!(
         unicast.bytes,
-        [0x82, 1, 0, 14, 0x12, 0x34, 0x56, 0x40, 0x88, 0x71, 1, 0, 0x10, 8]
+        [
+            0x82, 1, 0, 14, 0x12, 0x34, 0x56, 0x40, 0x88, 0x71, 1, 0, 0x10, 8
+        ]
     );
     // A byte-identical Forwarded-NPDU from an unconfigured port is rejected.
     // The later trusted marker establishes receive progress without sleeps.
@@ -79,14 +86,16 @@ async fn foreign_source(automatic: bool) {
         .unwrap()
         .unwrap();
     assert_eq!(admitted.npdu.as_ref(), marker);
-    eprintln!("foreign requested={requested} announced=[{announced}]:{port} registration={registration:?} dbtn={dbtn:?}");
+    eprintln!(
+        "foreign requested={requested} announced=[{announced}]:{port} registration={registration:?} dbtn={dbtn:?}"
+    );
     transport.stop().await.unwrap();
     assert_eq!(
         announced, selected,
         "foreign advertised identity must be a real BBMD-usable local source"
     );
     assert!(incoming.recv().await.is_none());
-    assert_eq!(transport.local_mac(), &[0; 18]);
+    assert_eq!(transport.local_mac(), &[0; 3]);
     for frame in [registration, dbtn, unicast] {
         assert_eq!((*frame.source.ip(), frame.source.port()), (announced, port));
         assert_eq!(frame.destination, selected);

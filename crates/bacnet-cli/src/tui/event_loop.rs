@@ -9,18 +9,18 @@
 //! draw per frame however many events it holds.
 
 use std::io;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures_util::{Stream, StreamExt};
+use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{Event, KeyEventKind};
-use ratatui::Terminal;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
-use super::app::{update, Action, App};
+use super::app::{Action, App, update};
 use super::keymap::map_key;
 use super::message::{Command, WorkerEvent};
 use super::terminal::Signals;
@@ -142,9 +142,13 @@ where
 }
 
 fn apply(app: &mut App, action: Action, commands: &mpsc::Sender<Command>) {
+    let prior_link = app.link.clone();
     for command in update(app, action) {
         if let Err(error) = commands.try_send(command) {
-            tracing::warn!("worker command not sent: {error}");
+            let message =
+                format!("Command not admitted: {error}; retry after the worker catches up.");
+            tracing::warn!("{message}");
+            app.command_rejected(error.into_inner(), prior_link.clone(), message);
         }
     }
 }

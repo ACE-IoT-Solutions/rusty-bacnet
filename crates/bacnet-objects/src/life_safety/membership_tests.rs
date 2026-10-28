@@ -2,6 +2,7 @@
 
 use super::*;
 use bacnet_types::enums::ErrorCode;
+use bacnet_types::error::RemoteError;
 
 fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(object_type, instance).unwrap()
@@ -16,9 +17,9 @@ fn remote(object_type: ObjectType, instance: u32) -> BACnetDeviceObjectReference
 
 fn assert_out_of_range(result: Result<(), Error>) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::VALUE_OUT_OF_RANGE),
         "expected PROPERTY / VALUE_OUT_OF_RANGE, got {result:?}"
     );
 }
@@ -104,8 +105,8 @@ fn member_lists_stay_read_only_over_the_network() {
         assert!(object.is_list_property(property));
         assert!(matches!(
             object.write_property(property, None, served.clone(), None),
-            Err(Error::Protocol { code, .. })
-                if code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+            Err(Error::Remote(RemoteError::Error { code, .. }))
+                if code == ErrorCode::WRITE_ACCESS_DENIED
         ));
     }
 }

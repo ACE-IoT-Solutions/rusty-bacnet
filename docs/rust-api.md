@@ -1,13 +1,13 @@
 # Rust API Reference
 
-Rusty BACnet is a workspace of library crates implementing the BACnet protocol stack (ASHRAE 135-2020). The [README crate table](../README.md#crates) lists which are on crates.io.
+Rusty BACnet is a workspace of library crates implementing the BACnet protocol stack (ASHRAE 135-2020). The [installation guide](https://jscott3201.github.io/rusty-bacnet/start/installation/#add-the-rust-crates) lists the crates each release publishes to crates.io.
 
-This reference follows the `dev` branch. At the `v0.12.0` tag it describes the
-published 0.12.0 crates, which the site's tutorials also target; see
-[docs.rs](https://docs.rs/bacnet-client/0.12.0/bacnet_client/) and the
+This reference follows the `dev` branch. At the `v0.14.0` tag it describes the
+published 0.14.0 crates, which the site's tutorials also target; see
+[docs.rs](https://docs.rs/bacnet-client/0.14.0/bacnet_client/) and the
 [installation guidance](../README.md#install). Changes merged after the release
 wait in [`changelog.d/`](../changelog.d/); to use them, follow
-[Build from source](../README.md#build-from-source).
+[Build from source](https://jscott3201.github.io/rusty-bacnet/development/overview/#build-a-source-checkout).
 
 ## Crate Dependency Order
 
@@ -19,6 +19,171 @@ bacnet-types → bacnet-encoding → bacnet-services → bacnet-transport → ba
                                                                    bacnet-server
 ```
 
+The portable `no_std` crates sit apart, below `bacnet-transport` and
+`bacnet-network`: `bacnet-time`, `bacnet-npdu` and the two codecs depend on
+nothing, `bacnet-mstp-core` and `bacnet-bip-core` take `bacnet-time`,
+`bacnet-npdu` and their codec, and `bacnet-router-core` takes all of them.
+`bacnet-npdu` is the network-layer vocabulary every layer shares, one
+definition of each: the borrowed NPDU view (`Npdu::decode`,
+`Npdu::encoded_len`, `Npdu::encode_into`), `NetworkMessageType`,
+`RejectMessageReason`, the closed `NetworkPriority`, `NpduLimits`, `Mac`,
+`MAX_NPDU` (1,497) and `MAX_MAC_LEN` (18). `bacnet-types` takes it for
+`BACnetAddress::MAX_MAC_LEN`, and `bacnet-encoding`'s owned `Npdu` decodes and
+encodes through its view. The Tokio MS/TP and B/IP transports
+run on the MS/TP and B/IP cores, and `BACnetRouter` on the router core.
+
+The website's [Run on a microcontroller](../website/src/content/docs/start/embedded.md)
+page says which of these crates each product needs, with the sizes the
+firmware images measure. The four sections below cover the vocabulary the
+cores share.
+
+---
+
+## bacnet-time
+
+The time every portable core takes: a monotonic `Instant` and a `Duration`,
+both nanoseconds on a `u64` from an epoch the caller chooses (about 584
+years of range). `no_std`, no allocator, no dependencies; it versions on
+its own, taking a new version only when its API changes (#1768).
+
+- **Construction.** `Instant::from_nanos`, `from_micros`, `from_millis` and
+  `from_secs`, and the same on `Duration`, are `const` and saturate. The
+  `as_*` accessors round toward zero.
+- **Arithmetic.** `+` and `-` saturate; every operation has a `checked_*`
+  form that returns `None` instead, and nothing panics.
+  `saturating_duration_since` measures between two instants.
+- **No 64-bit division.** The accessors, `checked_rem`, the conversion to
+  `core::time::Duration` and `Debug` use binary long division, so a 32-bit
+  target doesn't link the division routine.
+- **`earliest`** merges optional deadlines, skipping `None`. Use it where
+  several cores report `next_deadline()`: `Option::min` orders `None`
+  first, so one core with nothing due would hide every other deadline.
+- **`HostClock`** (feature `std`) maps the standard library's monotonic
+  clock onto the timeline and back: `HostClock::new(origin)` puts `origin`
+  at `Instant::ZERO`, `HostClock::centred(origin)` at 2^63 ns so earlier
+  host instants map too, `now()` reads the clock, `instant(at)` maps a host
+  instant, and `to_std(at)` maps a deadline back for a sleep (`None` when
+  the host can't represent it). `reading(source)` swaps the clock it
+  reads, for an async runtime's paused test time.
+
+```rust
+use bacnet_time::{earliest, Duration, Instant};
+
+// A microsecond tick from a hardware timer.
+let now = Instant::from_micros(1_250_000);
+let mstp = Some(now + Duration::from_millis(5));
+let router = None; // nothing due
+let wake = earliest([mstp, router]).unwrap_or(now + Duration::from_secs(1));
+assert_eq!(wake, now + Duration::from_millis(5));
+assert_eq!(Option::min(mstp, router), None); // the trap earliest avoids
+```
+
+Every core takes a `now` earlier than the latest it has seen as that latest
+one, so a clock that steps back holds its timers still instead of failing.
+
+---
+
+## bacnet-npdu
+
+The network-layer vocabulary of Clause 6, one definition of each, shared
+by the cores, the hosted transports and network layer, and
+`bacnet-encoding`'s owned NPDU (#1770). `no_std`, no allocator, no
+dependencies.
+
+- **`Npdu`** is a borrowed view of an NPDU's control information and
+  payload: `Npdu::decode(frame)` reads one in place; `Npdu::apdu(payload)`
+  and `Npdu::message(kind, payload)` build one for the local network, whose
+  public fields (`destination`, `source`, `hop_count`, `priority`,
+  `expecting_reply`) a caller then sets; `encoded_len()` and
+  `encode_into(out)` write it, refusing before writing an octet anything
+  `decode` would refuse. `is_network_message()` and `is_global()` classify
+  it.
+- **`Address`** is a network number and a borrowed MAC: a DNET and DADR, or
+  an SNET and SADR. An empty MAC is a broadcast on that network, and
+  `GLOBAL_NETWORK` (0xFFFF) is every network.
+- **`DecodeError`** reports an address too long for any data link apart
+  from every other fault, with what a router needs to address its reject.
+- **`NetworkMessageType`** and **`RejectMessageReason`** are open sets of
+  wire codes with named constants, so a `match` needs a wildcard arm;
+  **`NetworkPriority`** is the closed two-bit priority.
+- **`NpduLimits`**, **`MAX_NPDU`** (1,497 octets), **`Mac`** and
+  **`MAX_MAC_LEN`** (18 octets) bound what a link carries.
+
+```rust
+use bacnet_npdu::{Address, Npdu};
+
+// A request relayed by a router from station 7 on network 5.
+let request = [0x01, 0x0C, 0x00, 0x05, 0x01, 0x07, 0x00, 0x03, 0x01, 0x0C];
+let npdu = Npdu::decode(&request).expect("an NPDU");
+assert!(npdu.expecting_reply);
+assert_eq!(npdu.source, Some(Address { network: 5, mac: &[7] }));
+
+// The reply goes back through the router: DNET 5, DADR 7.
+let apdu = [0x30, 0x01, 0x0C];
+let mut reply = Npdu::apdu(&apdu);
+reply.destination = npdu.source;
+let mut out = [0u8; 16];
+let length = reply.encode_into(&mut out).expect("room");
+assert_eq!(out[..length], [0x01, 0x20, 0x00, 0x05, 0x01, 0x07, 0xFF, 0x30, 0x01, 0x0C]);
+```
+
+---
+
+## bacnet-mstp-codec
+
+The MS/TP frame format of Clause 9, and nothing above it: token passing,
+timers and line control are `bacnet-mstp-core`'s, which re-exports this
+crate as `codec`. `no_std`, no allocator and no dependencies by default.
+
+- **`Frame`** borrows its data; `Frame::new(frame_type, destination,
+  source, data)` and `encode_into(out)` write it into caller storage, and
+  `decode_frame(wire)` reads one in a single pass. Extended data frames
+  (types 32 and 33) go on the wire COBS-encoded with a CRC-32K;
+  `decode_frame_in_place` decodes one over its own encoded form.
+- **`StreamDecoder`** decodes a serial byte stream octet by octet in a
+  buffer the caller lends it. It skips a frame too long for that buffer by
+  count, and reports every candidate it drops with the destination a
+  receiver needs to judge it.
+- **`FrameType`** is an open set: constants for the types the standard
+  defines and `from_raw` for any other octet, so proprietary and reserved
+  types pass through.
+- **CRCs** (the `crc` module): the header CRC-8, the data CRC-16 and the
+  CRC-32K.
+- **Checks.** Decoding is a raw link-level check; encoding is strict. The
+  crate documentation lists the checks in the order each direction runs
+  them.
+- **Features**, none on by default and none needing `std`: `alloc`,
+  `bytes` and `heapless` each add a `FrameSink` for that buffer type, and
+  `crc32k-table` swaps the 16-entry CRC-32K table for a 256-entry one,
+  about 1 KiB more flash for half the lookups.
+
+---
+
+## bacnet-bip-codec
+
+The BVLL format of Annex J (B/IP) at the crate root and Annex U (B/IPv6)
+in its `ipv6` module, and nothing above it: sockets, BBMD forwarding and
+foreign-device registration are `bacnet-bip-core`'s, which re-exports this
+crate as `codec`. `no_std`, no allocator and no dependencies by default.
+
+- **`Bvll`** and **`Bvll6`** are the twelve messages of each, borrowing
+  their NPDU or table from the datagram; `encode_into(out)` writes one
+  into caller storage and `decode(datagram)` reads one.
+- **`BvllFrame`** reads the header alone, so a receiver can see which
+  function arrived before it refuses one it doesn't know.
+- **`BvlcFunction`** and **`BvlcResultCode`** (and their B/IPv6
+  counterparts) are open sets of wire codes with named constants.
+- **Tables.** BDT and FDT entries read through iterators straight from the
+  wire; `BdtEntries::from_entries` builds a table to send.
+- **Addresses.** A B/IP address is a plain `SocketAddrV4`, since all of it
+  travels; a B/IPv6 address is a `Bip6Address`, the 18 octets that travel.
+- **Checks.** Decoding is strict about shape (the BVLC type, a Length
+  field equal to the datagram, a payload the function's layout allows) and
+  lenient about values; encoding refuses what the Length field can't state
+  and a BVLC-Result with an undefined code.
+- **Features**, none on by default and none needing `std`: `alloc`,
+  `bytes` and `heapless` each add a `BvllSink` for that buffer type.
+
 ---
 
 ## bacnet-types
@@ -28,17 +193,25 @@ Core BACnet types, enums, and error definitions.
 ### `no_std` builds
 
 `bacnet-types`, `bacnet-encoding` and `bacnet-services` also build without
-the standard library, for firmware that has a global allocator. Depend on them
-with `default-features = false, features = ["alloc"]`. Each crate needs `std`
-(the default) or `alloc`, and refuses to build with neither. Without `std`,
-`bacnet_types::bip_port` and `Error::Transport` don't exist, and
-`bacnet-encoding` logs nothing. `bytes` has to build for the target too: on
-one without atomic compare-and-swap, such as ARMv6-M, that takes its
-`extra-platforms` feature and a `portable-atomic` backend the firmware
-chooses. CI builds all three for ARMv6-M, ARMv7E-M and RISC-V
+the standard library. With `default-features = false, features = ["alloc"]`
+they keep everything but the hosted parts, for firmware that has a global
+allocator: without `std`, `bacnet_types::bip_port` and `Error::Transport`
+don't exist, and `bacnet-encoding` logs nothing. `bytes` has to build for the
+target too: on one without atomic compare-and-swap, such as ARMv6-M, that
+takes its `extra-platforms` feature and a `portable-atomic` backend the
+firmware chooses.
+
+With `default-features = false` and neither feature they build without an
+allocator (#1614), for firmware with no heap, and without `bytes`. That
+profile has the enums and identifiers, the error type's static variants, tag
+and primitive decoding, the `_to_sink` encoders, borrowed views of strings and
+application-tagged values, the tagged-field readers, the APDU header
+(`bacnet_encoding::apdu::header`), and Who-Is, I-Am and ReadProperty (request
+and `ReadPropertyAckRef`). Each crate's README lists what needs `alloc`. CI
+builds all three profiles for ARMv6-M, ARMv7E-M and RISC-V
 (`scripts/ci/check-no-std.sh`), on ARMv6-M with `portable-atomic`'s
-`critical-section` backend, and runs their tests and doctests with `alloc`
-and without `std` ([CI](ci.md#no_std-checks)).
+`critical-section` backend where `bytes` is in the graph, and runs their tests
+with `alloc` and without `std`, and without either ([CI](ci.md#no_std-checks)).
 
 ### Enums (`bacnet_enum!` macro)
 
@@ -77,22 +250,45 @@ let val = PropertyValue::Null;
 ### Error
 
 ```rust
-use bacnet_types::error::{Error, ErrorDetail};
+use bacnet_types::enums::{ErrorClass, ErrorCode, RejectReason};
+use bacnet_types::error::{Error, ErrorDetail, RemoteError};
 
-// Protocol error from a remote device
-let e = Error::Protocol { class: 2, code: 31 }; // ErrorClass(2)=PROPERTY, ErrorCode(31)=UNKNOWN_PROPERTY
+// A remote device's Error, Reject or Abort PDU is one RemoteError, held by
+// Error::Remote; the class, code and reasons are typed.
+let e = Error::protocol(ErrorClass::PROPERTY, ErrorCode::UNKNOWN_OBJECT);
+assert!(matches!(
+    e,
+    Error::Remote(RemoteError::Error { code: ErrorCode::UNKNOWN_OBJECT, .. })
+));
+let e = Error::reject(RejectReason::INVALID_TAG);
+assert_eq!(e.remote(), Some(RemoteError::Reject { reason: RejectReason::INVALID_TAG }));
 
 // A structured error body: here an AddListElement/RemoveListElement
-// ChangeList-Error naming the failed element. Error::protocol builds
-// Error::Structured with a detail, Error::Protocol without one.
-let e = Error::protocol(5, 81, Some(ErrorDetail::FirstFailedElementNumber(2))); // SERVICES / LIST_ELEMENT_NOT_FOUND
+// ChangeList-Error naming the failed element. Error::with_detail builds
+// Error::Structured with a detail, Error::Remote without one.
+let e = Error::with_detail(
+    ErrorClass::SERVICES,
+    ErrorCode::LIST_ELEMENT_NOT_FOUND,
+    Some(ErrorDetail::FirstFailedElementNumber(2)),
+);
 if let Error::Structured { detail, .. } = &e {
     assert_eq!(**detail, ErrorDetail::FirstFailedElementNumber(2));
 }
 
-// Other variants: Timeout, Reject, Abort, RoutedPathTooLong,
-// RoutedPathCapacityExceeded, UnsupportedTransport, Encoding, etc.
+// Other variants: Timeout, RoutedPathTooLong, RoutedPathCapacityExceeded,
+// UnsupportedTransport, Encoding, etc.
 ```
+
+`RemoteError` has three arms, one per PDU: `Error { class, code }`,
+`Reject { reason }` and `Abort { reason }`. The same value travels from the
+wire to the API (#1815): the client TSM completes a transaction with
+`TsmResponse::Remote { error, detail }`, a client request fails with
+`Error::Remote(error)` (or `Error::Structured` when the Error PDU's body
+carried a detail), and a server keeps a peer's answer to its own confirmed
+request as `CovAckResult::Error(error)`. `Error::remote()` reads the
+`RemoteError` of either error variant. `Error::protocol`, `Error::reject` and
+`Error::abort` build `Error::Remote`, and `RemoteError` converts into `Error`
+with `From`. It displays as the error that holds it does.
 
 `ErrorDetail` has one variant per shape of structured error body (Clause 21):
 
@@ -105,7 +301,7 @@ if let Error::Structured { detail, .. } = &e {
 | `VtSessionIdentifiers(Vec<u8>)` | VTClose-Error with its list | Local identifiers of the sessions that could not be closed |
 
 A body with nothing beyond the error (SubscribeCOVPropertyMultiple's general
-choice, VTClose-Error without its list) is `Error::Protocol`.
+choice, VTClose-Error without its list) is `Error::Remote`.
 `bacnet_services::structured_error::detail(&error_pdu)` reads the detail of any
 Error PDU, and each body has its own type for encoding and decoding:
 `list_manipulation::ChangeListError`, `object_mgmt::CreateObjectError`,
@@ -113,9 +309,14 @@ Error PDU, and each body has its own type for encoding and decoding:
 `cov_multiple::SubscribeCOVPropertyMultipleError`,
 `private_transfer::PrivateTransferError` and `virtual_terminal::VTCloseError`.
 
-`Error::Decoding { offset, kind, message }` carries the `DecodingKind` of the
-fault a decoder found, and `Error::reject_reason()` names the Reject reason
-it draws when it refuses a confirmed request (#1446):
+A decoding error carries the `DecodingKind` of the fault a decoder found, and
+`Error::reject_reason()` names the Reject reason it draws when it refuses a
+confirmed request (#1446). Every decoder reports it as
+`Error::Decoding(DecodeError)`, which holds the offset, the kind, a static
+context and label and up to two numbers, and builds its text only when
+displayed, so firmware that never displays it links no formatting code
+(#1646, #1776). `Error::decode_fault()` reads its offset and kind. A checked constructor's refusal, such as
+`ObjectIdentifier::new`'s, is likewise static: `Error::Range(RangeError)`.
 
 | Fault | Reported as | Reject reason |
 |---|---|---|
@@ -129,9 +330,9 @@ it draws when it refuses a confirmed request (#1446):
 | A character set the decoder doesn't convert | `Decoding`, `Unsupported` | OTHER |
 
 `Error::into_request_reject()` turns a request's decode error into that
-`Error::Reject`. The bundled server answers every confirmed request it can't
+Reject, `Error::reject(reason)`. The bundled server answers every confirmed request it can't
 decode that way. A decoder that names a fault the table doesn't, such as
-GetEnrollmentSummary's undefined enumerations, returns its `Error::Reject`
+GetEnrollmentSummary's undefined enumerations, returns its `Error::reject(reason)`
 itself. A decoding error met once a service runs keeps its Error PDU.
 
 `Error::UnsupportedTransport { required, actual }` reports an operation the
@@ -148,14 +349,32 @@ state is protected by a held/waiting gate or configured/learned evidence, so a
 new path was rejected before transaction registration or frame emission.
 `Error` is `#[non_exhaustive]`, so a `match` on it outside `bacnet-types`
 needs a wildcard arm. `Error::Transport` exists only with the `std` feature,
-and any crate in a build can turn that on, so a match written against the
-`alloc` build could otherwise stop compiling.
+and the variants holding a `String` or a `Box` only with `alloc`; any crate in
+a build can turn those on, so a match written against a smaller build could
+otherwise stop compiling.
 
 ---
 
 ## bacnet-encoding
 
 ASN.1/BER tag encoding, APDU/NPDU codecs, property value serialization, and segmentation.
+
+### Tag header output
+
+`tags::encode_tag_to_sink`, `encode_opening_tag_to_sink` and
+`encode_closing_tag_to_sink` append a complete header through `sink::EncodeSink`
+and return its length. Caller slices and `heapless::Vec<u8, N>` (with the
+`heapless` feature) have bounded capacity; `Vec<u8>` and `BytesMut` can grow.
+A failed header append preserves previous output. The existing `BytesMut`
+entrypoints use the same implementation and keep their signatures and bytes.
+
+The bounded scalar, timestamp and reference encoders, the CharacterString,
+OCTET STRING and BIT STRING encoders, the APDU header writer and the
+allocation-free services use the same contract; a variable-length value goes
+out through `EncodeSink::write_parts`, whole or not at all. None of them needs
+an allocator, and they do not add tag-number or datatype validation. See
+[the sink design](encoding-sinks.md) for append semantics, capacity errors
+and the limits on multi-write atomicity.
 
 ### Property Value Encoding
 
@@ -197,7 +416,7 @@ identifier; it replaces the earlier bare ObjectIdentifier payload.
 `bacnet_encoding::constructed::encode_value_source(&mut BytesMut, &BACnetValueSource)`
 returns `Result<(), Error>` and appends one framed CHOICE. Object-identifier widths
 are validated at construction. An address MAC longer than
-`BACnetAddress::MAX_MAC_LEN` (18) octets is refused with `Error::Encoding` before
+`BACnetAddress::MAX_MAC_LEN` (18) octets is refused with `Error::Encode` before
 the buffer changes, and the decoder refuses one as malformed (#1156).
 `decode_value_source(&[u8], offset)` returns `Result<(BACnetValueSource, usize), Error>`;
 the second value is the next absolute offset, and suffix bytes remain available.
@@ -231,6 +450,21 @@ contract described below and do not require command provenance.
 `set_relinquish_default` for a fallback or submit a sourced priority command.
 Input measurement setters keep their separate contract. Priority_Array stays
 read-only; a sourced Present_Value NULL relinquishes the specified priority.
+
+Lighting Output and Binary Lighting Output serve the same three rows (Tables
+12-64 and 12-69, #1866), and their context-free `write_property` denies
+Present_Value, and on a Lighting Output Lighting_Command, the same way. A
+Lighting_Command is its writer's command at the priority it acts at. A command
+that acts on its slot (a level, a fade, ramp or step, WARN_RELINQUISH,
+WARN_OFF, or a STOP that ends something) records its writer there; WARN, an
+ignored step and a STOP with nothing to stop leave the slot's source as it was.
+`LightingOutputObject::set_lighting_command` names no writer, so the slot it
+acts on reads source NONE that no one may correct; an application that wants
+its commands sourced (Clause 19.5.1.3) uses `BACnetServer::write_local` with a
+`LocalCommandSource`. WARN_RELINQUISH and WARN_OFF record their writer when
+written, but the slot's value changes only when the egress ends, so
+Last_Command_Time moves then, whether the timer runs out, a later command
+halts the egress, or a trim change advances past its end.
 
 The full server derives remote origins from direct network 0/source MAC or routed
 SNET/SADR, independently of Audit reporting. Address-to-Device correlation is a
@@ -281,9 +515,10 @@ selected interpretation of the last command), while the visible source moves to
 the next active slot or none.
 
 Single and Multiple subscriptions to commandable `Value_Source` on these six
-families report `Present_Value`, `Status_Flags`, `Value_Source`,
+families and the two lighting outputs report `Present_Value`, `Status_Flags`, `Value_Source`,
 `Last_Command_Time`, and `Current_Command_Priority` together. The trigger uses
-the object's PV criterion (its `COV_Increment` for analogs), flags, source, or
+the object's PV criterion (its `COV_Increment` for analogs and Lighting
+Output), flags, source, or
 priority changes; time alone does not trigger. A Value_Source subscription's
 increment does not replace the analog object's increment. Initial and renewal
 reports contain the same five fields. A failed or malformed required companion
@@ -346,10 +581,13 @@ subscription's increment. A combined PV write and source correction reports the
 final corrected source. The same capture and delivery fences described above
 apply; command-only fields remain absent.
 
-Color and Color Temperature retain their existing property-COV behavior. Their
-Value_Source companion/trigger contract remains unresolved under #1582 because
-the inspected object tables do not define the Status_Flags companion required
-by Table 13-1a-2's fallback.
+Color and Color Temperature with source tracking take the same noncommandable
+row (#1582). Neither appears in Table 13-1, so the row's fallback applies:
+`Present_Value` and `Status_Flags`. Neither object has `Status_Flags`, so a
+report carries `Present_Value` and `Value_Source` only, the way Table 13-1a
+leaves out flags an object doesn't have. A notification follows any
+`Present_Value` change (neither object has a `COV_Increment`) or any
+`Value_Source` change.
 
 ### APDU Types
 
@@ -364,20 +602,28 @@ use bacnet_encoding::apdu::*;
 
 ```rust
 use bacnet_encoding::npdu::{Npdu, NpduAddress, NpduDecodeError, encode_npdu, decode_npdu};
+use bacnet_npdu::{NetworkMessageType, NetworkPriority};
 
 // Handles source/destination network addresses, hop count, priority
 ```
 
-DADR and SADR are capped at `NpduAddress::MAX_MAC_LEN` (18) octets, the same
-limit as `BACnetAddress::MAX_MAC_LEN` and the longest MAC any built-in data
-link uses (B/IPv6) (#1141). `encode_npdu` refuses a longer address with
-`Error::Encoding`. `decode_npdu` returns `NpduDecodeError`: a DLEN or SLEN past
+DADR and SADR are capped at `bacnet_npdu::MAX_MAC_LEN` (18) octets, the same
+limit as `BACnetAddress::MAX_MAC_LEN` (#1141). No built-in data link uses more
+than 6; the bound is defensive. `encode_npdu` refuses a longer address with
+`Error::Range`. `decode_npdu` returns `NpduDecodeError`: a DLEN or SLEN past
 the cap is `AddressTooLong { field, length, dnet, source }`, checked before the
-address octets are read, and every other malformation is `Malformed(Error)`.
-For an over-long DADR, `source` is the SNET/SADR behind it when the frame holds
-a complete, valid one, which a router needs to address its reject (#1158). The
-error converts into `Error` (an over-long address becomes `Error::OutOfRange`),
-so `?` still works in functions that return `Result<_, Error>`.
+address octets are read, and every other malformation is
+`Malformed(bacnet_npdu::Malformed)`. For an over-long DADR, `source` is the
+SNET/SADR behind it when the frame holds a complete, valid one, which a router
+needs to address its reject (#1158). The error converts into `Error` (an
+over-long address becomes `Error::Range`, anything else `Error::Decoding`), so
+`?` still works in functions that return `Result<_, Error>`.
+
+The owned `Npdu` decodes and encodes through `bacnet-npdu`'s borrowed view, so
+it accepts and refuses exactly the frames the router core does. Its
+`priority` is a `NetworkPriority` and its `message_type` an
+`Option<NetworkMessageType>`; a network-layer message is one whose
+`message_type` is set (`is_network_message()`).
 
 ---
 
@@ -395,7 +641,7 @@ use bacnet_services::wp::WritePropertyRequest;
 `WritePropertyRequest::encode` returns `Result<(), Error>` and validates its
 optional priority before modifying the destination buffer. Only omission or
 1–16 is accepted, including NULL and noncommandable writes. Direct and routed
-client WP paths propagate invalid input as a local `Error::Encoding` before
+client WP paths propagate invalid input as a local `Error::Encode` before
 transaction admission or traffic; device-based calls validate before lookup.
 This outbound contract does not change inbound semantic-error responses or
 remote commandability rules.
@@ -414,8 +660,11 @@ discovery. Inbound cursor/no-op and ordered-prefix error semantics are separate.
 For a Device wildcard request `(Device,4194303)`, the bundled server's
 ReadPropertyMultiple result wrapper names the resolved local Device, including
 wrappers containing per-property errors. Its Object_Identifier value names the
-same Device. Without a matching Device, the wrapper retains the wildcard and
-its references return UNKNOWN_OBJECT. Concrete requests remain unchanged.
+same Device. Full servers and endpoints with a composed identity resolve the
+wildcard to their frozen Device identifier; if that Device is absent, its
+references return UNKNOWN_OBJECT without selecting another Device. Standalone
+handlers and identity-free endpoints use the database's selected Device and
+retain the wildcard if none exists. Concrete requests remain unchanged.
 
 ReadPropertyMultiple response indexes follow the effective object declaration:
 requested indexes remain on known arrays, including index zero and inline array
@@ -586,7 +835,7 @@ to 16. The colour alternatives frame the `encode_xy_color` and
 constructed alternative some octets hold, as a `ConstructedChannelValue`
 (`LightingCommand`, `XyColor` or `ColorCommand`), or `None` for anything else.
 `encode` is fallible: it rejects priorities outside 1 to 16, an empty change list and
-a value that is not a single BACnetChannelValue with `Error::Encoding`, leaving the
+a value that is not a single BACnetChannelValue with `Error::Encode`, leaving the
 buffer unchanged. `decode` enforces the same rules and rejects trailing data.
 The bundled server executes inbound WriteGroup on its Channel objects (see the
 Channel paragraphs under Lighting & Color), and `BACnetClient::write_group` sends one.
@@ -605,7 +854,7 @@ least one of those two must be present. Both `encode` methods are fallible and b
 `device_mac_address` is the MAC the matching device takes on the port the request
 arrived on (Clauses 16.11.3.1.5 and 16.11.4), so it is held to
 `BACnetAddress::MAX_MAC_LEN` (18 octets) in both directions (#1200): `decode`
-refuses a longer one and `encode` returns `Error::Encoding` without writing.
+refuses a longer one and `encode` returns `Error::Encode` without writing.
 
 ### Virtual Terminal
 
@@ -642,6 +891,19 @@ unqualified Clause 13.19 support claim.
 
 Transport-layer implementations. All implement the `TransportPort` trait.
 
+### Throttled peer warnings
+
+A warning that a peer can set off once per frame or connection (a frame that
+won't decode, a refused registration, a reply that failed to go out) goes
+through `bacnet_transport::warn_throttle::WarnThrottle` (#1950). The first
+occurrence warns; later ones log at debug until `WARNING_INTERVAL` (10 s) has
+passed, and the next warning carries the count since the last one. The
+exported `bacnet_transport::warn_throttled!(throttle, fields..., "message")`
+logs one event through a throttle and returns `Some(count)` when it warned,
+`None` when it logged at debug. The transports, the client and the server use
+it, and an application with its own per-peer warnings can too. The throttle
+reads Tokio's clock, so a test can pause it.
+
 ### Local receive capacity and outgoing limits
 
 Every `TransportPort` implementation must
@@ -650,19 +912,48 @@ Transparent wrappers and `AnyTransport` delegate it. The former transport method
 `max_apdu_length()` is now `egress_apdu_limit()` without an alias: it describes
 the current outgoing path, and SC negotiation/reconnect/failover can change it.
 Client budgets continue using egress limits and the client's existing canonical
-configuration policy. Unrelated Device, client and configuration APIs retain
-their names.
+configuration policy.
 
-`ServerConfig.max_apdu_length` is a raw receive ceiling. Startup clamps it to the
-transport's local capacity, rejects an effective value below 50, and requires the
-current selected Device's `Max_APDU_Length_Accepted` to equal that effective
-value before starting the transport. The server does not rewrite an
-application-owned Device. No Device remains a valid startup configuration but
-cannot emit I-Am. Both live I-Am paths recheck the selected Device under the
-same database guard; queued spontaneous announcements check at execution before
-encoding or limiter accounting. A mismatched replacement refuses announcement,
-and a later matching replacement restores it. Database replacement does not
-rebind the discovery limiter's startup identity.
+A server resolves its Device's `Max_APDU_Length_Accepted` from that capacity
+once, at start, and keeps it while it runs, even if the capacity later falls
+(an SC hub failover, a router application port whose path shrinks; #2093).
+Peers learn the value once, from I-Am or their address binding, and cache it,
+so a later change would not reach them. Each reply is sized to its own route
+instead (the requester's declared limit and the path's NPDU limit), so a
+smaller path still gets replies that fit.
+
+`bacnet_objects::DeviceIdentity` owns the Device instance, vendor, raw receive
+ceiling, segmentation mode and segment timeout. Full-server builders and
+endpoint builders take `.device(identity)`; `ServerConfig.device` and
+`DeviceConfig.identity` reuse that value. Startup resolves the ceiling against
+the transport's stable local capacity before generating a stock Device. A
+full-server builder with no database generates one from its configured or
+default identity. Endpoint generation requires an explicit `.device(identity)`;
+an identity-free endpoint invents no Device. For both, an explicit
+`.database(ObjectDatabase::new())` stays empty and emits no I-Am until the
+configured Device identifier exists. The full-server default is Device 1,
+vendor 0, APDU 1476, unsegmented, with a 5000 ms segment timeout; standard
+MS/TP resolves to 480.
+
+A supplied database is preserved, including custom Device and backup/profile
+state. Its initially selected Device must match the resolved identifier,
+vendor, capacity, segmentation and active segment timeout before I/O. Runtime
+announcements and served identity properties use that frozen declaration.
+Device wildcard reads through RP, RPM and `read_local` select its identifier.
+Replacing the Device at its identifier does not change those served fields;
+removing it suppresses announcements, and adding a lower Device does not rebind
+them. An absent configured Device yields UNKNOWN_OBJECT for wildcard reads.
+Raw database reads still expose the object's own declarations.
+
+For migration, replace the old independent server vendor/capacity/segmentation/
+timeout fields and builder setters with `.device(DeviceIdentity::new(instance,
+vendor)?.with_max_apdu(raw)?.with_segmentation(mode)
+.with_apdu_segment_timeout_ms(timeout))`. Reuse the resolved identity in an
+application-owned `DeviceConfig { identity, ..Default::default() }`, or omit the
+database to request generation. Endpoint `.identity(...)` and session
+`.with_identity(...)` become `.device(...)`. Endpoint identity reexports remain
+available; upper-layer I-Am and config adapters are free functions in
+`bacnet_endpoint::identity`.
 
 Raw declarations need not be header codes: Device/I-Am 1474 stays 1474, while
 originated confirmed COV, Audit and Event notifications advertise the floor 1024
@@ -671,16 +962,60 @@ in their Confirmed-Request header. The codec helper
 50/128/206/480/1024/1476 not exceeding its input, rejects values below 50 and
 saturates larger unsigned values at 1476. This conversion does not shrink raw
 byte budgets or I-Am values. It is separate from the exact-code encoder API.
+Endpoint sessions also keep the raw receive ceiling and floor their request
+headers. The existing standalone `ClientConfig` accepts only table values, so
+`bacnet_endpoint::identity::client_config` floors the configuration itself for
+that adapter; a raw 1474 identity produces standalone client capacity 1024.
 
 Built-in B/IP, B/IPv6, Ethernet and SC declare local APDU 1476; MS/TP declares 480,
 or 1476 with extended frames on (`MstpConfig::extended_frames`).
 Both registered B/IP port snapshots use local capacity independently of the
-Device/server ceiling. SC nodes advertise and enforce a router-capable local
-NPDU of 1497 by default on Hub, accepted-direct and outbound-direct intake;
-the validated node and Hub receive-limit builders can raise it. Complete BVLC
-bounds, remote/path limits, routed overhead and the Hub's forwarding capacity
-remain independent. These APIs are new in
+Device/server ceiling. SC nodes advertise and enforce local NPDU 1478, including
+the two-byte plain NPDU header, on Hub, accepted-direct and outbound-direct
+intake. Complete BVLC bounds, remote/path limits, routed overhead and the Hub's
+forwarding capacity remain independent. These APIs are new in
 0.12.0; this bounded evidence is not a full Annex AB or hardware qualification.
+
+`max_npdu()` reports the longest NPDU the link sends, as `NpduLimits` with a
+`unicast` and a `broadcast` limit in octets (#1665). `BACnetRouter` reads it
+when it starts the port, and answers an NPDU it would route there that is
+longer, once rewritten, with reject reason 4 instead of handing it to a send
+that fails. The default is `NpduLimits::STANDARD`, 1,497 octets each way, what
+B/IPv6 and Ethernet carry (Table 6-1). MS/TP reports 501 octets without
+extended frames and 1,497 with them, so a router port, which turns them on,
+reports 1,497. B/IP reports its node's budget for each kind of send, 1,497
+octets each way. BACnet/SC reports, once started, what its hub connection
+carries with no data options: the hub's Max-NPDU-Length within its
+Max-BVLC-Length less the encapsulation, which can pass 1,497 between BACnet/SC
+ports (Clause 6.6). Data attributes a router forwards with an NPDU (Table 6-1,
+note 1) take more of the BVLC, so one at this limit with attributes can still
+fail the transport's Max-BVLC-Length check. A direct connection's own limit
+isn't part of it.
+
+A failover or reconnect can change a BACnet/SC port's limit, so the transport
+publishes it through `max_npdu_changes()`, a `watch::Receiver<NpduLimits>`
+that changes only when a new hub connection carries more or less (#1696). The
+router follows it: it gives the engine's port each new limit as soon as it is
+published, and every frame it routes after that goes by it, so an NPDU too
+long for the new hub draws reason 4, and one the old hub refused goes. A send
+already on the port's queue when the limit falls can still be refused by the
+transport. When a transport returns `Error::SendTooLong`, it guarantees that
+no bytes were queued or written. The router counts that refusal in
+`counters().egress_too_long` and `refused`, then returns reason 4 to an eligible
+origin, naming the original DNET and preserving the arrival's data attributes
+(#1716). BACnet/SC uses this error for its NPDU and encoded-frame bounds,
+including forwarded attributes and direct-peer limits. Forwarded rejects,
+global broadcasts and control fan-outs never draw a reply. The reply enters
+the existing bounded priority queue; refusing that reply cannot start a loop.
+Other failures do not imply a length refusal, even if the port's limit changed.
+
+The default `max_npdu_changes()` result, `None`, says the limit never changes
+once started, which holds for the other
+built-in transports. Wrappers and `AnyTransport` delegate both methods, and a
+wrapper around an MS/TP or BACnet/SC transport that doesn't loses its real
+limit. A custom transport that carries more than 1,497 octets must override
+`max_npdu()`, or a router refuses what it could have sent; one that carries
+less must too, or the router assumes 1,497.
 
 ### Feature Flags
 
@@ -738,11 +1073,22 @@ What changes in this mode:
 
 - **Sends** leave from the interface address and the shared port.
 - **Receipt order:** on Linux, macOS and the BSDs, broadcasts arrive on
-  separate receive-only listeners, read fairly against the address socket in
-  no fixed order. A broadcast and a unicast that arrive together may be
-  handled in either order, so a unicast that depends on a broadcast sent just
-  before it, such as a query after a Network-Number-Is, can be handled first.
-  A listener that fails is closed with a warning, and unicast goes on.
+  separate receive-only listeners beside the address socket. Every one of
+  these sockets asks the kernel to stamp each datagram with its arrival time
+  (the software receive stamp of `SO_TIMESTAMPING` on Linux,
+  `SO_TIMESTAMP_MONOTONIC` on macOS, `SO_TIMESTAMP` on the BSDs), and the
+  transport hands up what they hold in the order the kernel received it
+  (#1546). A unicast that depends on a broadcast sent just before it, such
+  as a query after a Network-Number-Is, is handled after that broadcast.
+  Datagrams without a usable stamp go up in the order read: on Linux, those
+  that arrive in the moment after a host's first socket asks for stamps,
+  before the kernel starts taking them; on the BSDs, two in one
+  microsecond. Two with equal stamps also go up in the order read, and
+  Linux stamps from the realtime clock, so a clock step between two
+  arrivals can reorder them. One that the kernel stamps earlier but queues
+  only after the transport looked goes up next.
+  Windows binds one socket, which keeps arrival order. A listener that fails
+  is closed with a warning, and unicast goes on.
 - **Broadcast address:** it must be the interface's subnet broadcast,
   judged by the netmask the host reports, or 255.255.255.255; anything else
   would lose this subnet's broadcasts, so `start()` fails. A loopback
@@ -821,25 +1167,52 @@ and `forwarded_group_origin_drops()` counts it (#1493). Otherwise a forged
 I-Am could bind a device to a group, and the answer to a request would go to
 every node in it.
 
+`send_unicast` to one of those group destinations fails with
+`Error::Encoding` and sends nothing (#1677). An Original-Unicast-NPDU goes to
+one node's own address, and a receiver that checks where a datagram was sent,
+as this transport does, drops one sent to a group, so the caller finds out
+instead of losing the message; `send_broadcast` reaches the link, and
+`NetworkLayer::send_apdu` and `BACnetRouter` send an Unconfirmed-Request for a
+group address at the link's own port that way themselves
+(`local_broadcast_destinations`). One at another port belongs to another B/IP
+network, so they leave it refused. Another subnet's directed broadcast
+address isn't known to the transport, so it isn't refused.
+
 A well-formed BVLC-Result, Read-BDT-ACK or Read-FDT-ACK that no request was
 waiting for is counted in `bvlc_client_snapshot().unmatched_responses`. Every
 other datagram the receive path drops is counted in `receive_counters()`, a
 `ReceiveCounters` snapshot with one field per reason (#1624): failed socket
 reads; a datagram a per-address broadcast listener doesn't keep, because it
-wasn't sent to this link's broadcast address or came in on another
-interface; a header that is too short, not B/IP or of the wrong Length; a
-BVLC function that doesn't fit the address it was sent to; a management
-request over the rate limit; an unknown function; a payload that doesn't fit
-its function (a malformed response also shows in the client snapshot's
-`malformed_responses`, whether or not a request was waiting for it); this
-node's own echo; a Forwarded-NPDU from outside a BBMD's BDT; and an NPDU the
-network-layer channel couldn't take because it was full or, once the network
-layer stopped reading, closed. Each drop counts once, and the totals survive
-a restart. A header that fails to decode and a
-malformed BVLC response, which used to log a warning for each datagram, now
-log at debug, so a flood of them can't flood the log; the counters carry the
-signal. A full channel still warns, at most once every 10 seconds, with the
-number of NPDUs dropped since the last warning.
+wasn't sent to this link's broadcast address or came in on another interface;
+a header that is too short, not B/IP or of the wrong Length; a BVLC function
+that doesn't fit the address it was sent to; a management request over the
+rate limit; an unknown function; a payload that doesn't fit its function (a
+malformed response also shows in the client snapshot's `malformed_responses`,
+whether or not a request was waiting for it); this node's own echo; a request
+the node would refuse with a NAK, from a source no reply can reach (the
+unspecified address, port 0 or the node itself), which gets no NAK (#1622); a
+Forwarded-NPDU from outside a BBMD's BDT; a Forwarded-NPDU a foreign device
+takes from no one but its BBMD by unicast, the one way a BBMD hands it the
+network's broadcasts (`forwarded_untrusted`, #1622; a node in normal mode
+takes one from any sender); and an NPDU the network-layer
+channel couldn't take because it was full or, once the network layer stopped
+reading, closed. Each drop counts once, and the totals survive a restart. A
+header that fails to decode and a malformed BVLC response, which used to log a
+warning for each datagram, now log at debug, so a flood of them can't flood
+the log; the counters carry the signal. A full channel still warns, at most
+once every 10 seconds, with the number of NPDUs dropped since the last
+warning.
+
+The transport sends NPDUs up to 1497 octets, the most a B/IP data link
+carries (Table 6-1); a BBMD's Forwarded-NPDU of one is a 1507-octet datagram.
+A longer NPDU, unicast or broadcast, fails with `Error::Encoding` before
+anything is sent, and counts in `send_counters().npdu_too_long`, whose totals
+survive a restart (#1622). A router doesn't hand such an NPDU to a B/IP port:
+it answers the sender with Reject-Message-To-Network reason 4 instead (#1665,
+see [bacnet-network](#bacnet-network)). One exception: a BBMD passing on what it received,
+a broadcast to its BDT peers, foreign devices or subnet, or a foreign
+device's Distribute-Broadcast-To-Network, forwards it as it came, without
+this check or count.
 
 ### BIP6 (IPv6)
 
@@ -851,7 +1224,7 @@ let transport = Bip6Transport::new(
     0xBAC0,                 // port
     None,                   // device_instance (auto VMAC)
 );
-// 3-byte VMAC, 3 multicast scopes, collision detection
+// The MAC is the 3-byte VMAC; 3 multicast scopes, collision detection
 ```
 
 The transport selects one concrete local address and OS interface for normal
@@ -863,7 +1236,7 @@ ambiguity. A concrete address must have one usable local owner. This is local
 selection policy, not an Annex U requirement. It replaced, in 0.12.0, 0.11.0's
 selection, which asked the routing table for an address and fell back to `::1`.
 
-The selected address and actual UDP port form `local_mac()`. One wildcard socket
+The selected address and actual UDP port form `local_address()`. One wildcard socket
 receives selected unicast and BACnet multicast traffic; packet metadata fences
 other interfaces and destinations before collision handling, VMAC learning or
 NPDU admission. Every normal data/control send retains the selected source and
@@ -877,8 +1250,15 @@ cross-link reachability.
 With `register_as_foreign_device`, `::` instead derives a concrete unicast source
 usable for the configured BBMD; an explicit source is retained. The production
 socket is bound to that source, so registration, DBTN and ordinary unicast agree
-with `local_mac()`. This branch requires the existing configured Device instance
+with `local_address()`. This branch requires the existing configured Device instance
 and preserves trusted-BBMD handling without normal multicast prerequisites.
+`Bip6ForeignDeviceConfig::check()` says whether a registration can work: the
+BBMD must be an IPv6 unicast host with a nonzero port (not unspecified,
+multicast, link-local, IPv4-mapped or IPv4-compatible) and the TTL nonzero;
+it returns the `Bip6ForeignDeviceRefusal` otherwise. `start()` fails with
+`InvalidInput` for such a registration, and a Network Port activation refuses
+one. The B/IPv6 client builder takes a registration with
+`.foreign_device(config)` alongside `.device_instance(..)` (#1941).
 
 A Forwarded-NPDU whose original source address is an IPv6 multicast group, a
 group destination at any port, is malformed for the same reason as on B/IP:
@@ -922,16 +1302,97 @@ address it was sent to; a Forwarded-NPDU or Forwarded-Address-Resolution
 from an untrusted path; a Forwarded-NPDU whose NPDU is too short or
 malformed; an origin or asker address unusable without a scope ID; a request
 from an unanswerable source or this node's own address; this node's own
-echo, a Forwarded-NPDU that names it as the origin included; and an NPDU the
-network-layer channel couldn't take because it was full or closed. Each drop
-counts once, and the totals survive a restart. Two more
+echo, a Forwarded-NPDU that names it as the origin included; a frame from
+another address that names this node's VMAC as its sender's, and an NPDU
+from a source no answer could reach (#1637); and an NPDU the network-layer
+channel couldn't take because it was full or closed. Each drop counts once,
+and the totals survive a restart. `Bip6ReceiveCounters` is
+`#[non_exhaustive]`, so a later counter isn't a breaking change. Two more
 fields count the replies the quotas held back, NAKs and the answers to
 Forwarded-Address-Resolution, apart from the drops. A frame that fails to
 decode, which used to log a warning for each datagram, now logs at debug. A
 full channel warns at most once every 10 seconds, with the number dropped
-since the last warning, as on B/IP. A Virtual-Address-Resolution-ACK from this
-node's own VMAC (a collision) and a BVLC-Result NAK, which anyone can send,
-log above debug at most once every 10 seconds the same way.
+since the last warning, as on B/IP. A frame from another node using this
+node's VMAC (a collision) and a BVLC-Result NAK, which anyone can send, log
+above debug at most once every 10 seconds the same way.
+
+#### Peers are named by VMAC
+
+The network layer addresses a B/IPv6 node by its 3-octet VMAC (Annex U.1.3),
+so that is the transport's MAC (#1637). `local_mac()` and `local_vmac()` give
+this node's (zero and `None` before start), a received NPDU's `source_mac` is
+its sender's VMAC, or a Forwarded-NPDU's origin's, and `send_unicast` takes
+the destination's VMAC and refuses any other length with `InvalidInput`.
+Routed NPDUs carry a B/IPv6 node's VMAC as a 3-octet SADR or DADR, as other
+vendors' routers expect. `local_address()` gives this node's B/IPv6 address,
+`vmac_from_device_instance` the VMAC a device instance gives (H.7.2), and
+`BACnetServer::transport()` the server's transport. `parse_vmac_text` and
+`format_vmac_text` read and write a VMAC as text the way the CLI and the
+Python bindings take it: `bip6:1234` for an instance's VMAC, `bip6:0x0004D2`
+for any VMAC.
+
+The transport keeps a neighbour table from the frames it receives (U.5): up to
+4096 peers, the one heard from least recently giving way to a new one. It
+never learns its own VMAC; a frame from another address that uses it is
+dropped and counted in `own_vmac_source`, with a throttled collision warning.
+An address carried in a Forwarded-NPDU or Forwarded-Address-Resolution doesn't
+replace one heard from the peer directly within the last minute, so a forged
+forwarded message can't redirect unicasts. `lookup_vmac(vmac)` reads the
+table. A send to a peer silent for five minutes still goes to the address on
+file, and starts a check: a Virtual-Address-Resolution sent by unicast to that
+address, three times a second apart, which reaches the peer however it was
+learned. A peer that doesn't answer is removed, and its VMAC is then held
+unreachable for ten seconds, as after a failed resolution.
+
+A send to a VMAC the table lacks resolves it first. The transport sends an
+Address-Resolution to the scope's multicast group, or as a foreign device by
+unicast to its BBMD, which passes it on (U.4.4); then twice more a second
+apart. Any frame from that VMAC completes the resolution, an
+Address-Resolution-ACK or anything else, an I-Am included. Three seconds after
+the first request the resolution fails, and for ten seconds after that a send
+to the VMAC fails at once with `HostUnreachable`. These timings are fixed.
+
+What `send_unicast` does meanwhile is `UnresolvedSend`:
+
+- `Wait`, the default: the call returns once the NPDU is sent, or fails with
+  `TimedOut` after three seconds, `ConnectionRefused` when the BBMD refused to
+  pass the request on (Address-Resolution NAK). So when nobody answers for
+  a VMAC, a client request to it fails with a transport error, before the
+  transaction manager's timer starts.
+- `Queue`: the NPDU is copied and the call returns at once; the queue goes out
+  in order once the VMAC resolves, or is dropped and counted. `BACnetRouter`
+  selects it for its B/IPv6 ports through `prepare_for_routing`, so one
+  unknown DADR can't stall a port. `set_unresolved_send` selects it directly.
+
+The bounds: 64 VMACs resolving at once; 64 sends waiting on one VMAC and 512
+in all; 8 NPDUs queued for one VMAC and 128 in all. A send past one fails with
+`QuotaExceeded`. `resolution_counters()` returns a `Bip6ResolutionCounters`
+snapshot of the send side: resolutions started, resolved, timed out and
+refused, requests sent, sends refused as unreachable or over a bound, queued
+NPDUs dropped (at a failed resolution or at stop), Virtual-Address-Resolutions,
+and the checks on quiet peers sent and failed. It is `#[non_exhaustive]` too.
+
+`resolve_virtual_address(addr)` finds the VMAC of the node at a B/IPv6
+address: from the table when it maps that address to one VMAC, and otherwise
+with a Virtual-Address-Resolution sent to the node by unicast, three times a
+second apart (U.5). It works in foreign mode and where multicast doesn't
+reach. `send_unicast` never does this itself.
+
+```rust
+let server_vmac = client.transport().resolve_virtual_address(server_address).await?;
+let ack = client
+    .read_property(&server_vmac.octets(), device, PropertyIdentifier::OBJECT_NAME, None)
+    .await?;
+```
+
+**Migrating from 0.12:** pass a peer's 3-octet VMAC wherever an 18-octet
+B/IPv6 MAC went: sends, client requests, recipient lists, bindings, and COV
+subscriptions you store. Find a VMAC from an address with
+`resolve_virtual_address`, and read this node's address with `local_address()`
+instead of decoding `local_mac()`. A router and the B/IPv6 nodes it serves
+should be upgraded together. `encode_bip6_mac` and `decode_bip6_mac` are
+gone, since a B/IPv6 address is no longer a MAC: build and read one with
+`Bip6Address` (`Bip6Address::new(ip, port)`, `to_octets()`, `from_slice()`).
 
 The selected-link wire fixtures qualify Linux on isolated ULA bridges and macOS
 on loopback for multicast intake and unicast/control replies. Windows code is
@@ -954,39 +1415,6 @@ let transport = ScTransport::new(ws, vmac)
     .with_heartbeat_interval_ms(30_000)
     .with_heartbeat_timeout_ms(60_000);
 ```
-
-Reconnect policy is configured with `ScReconnectConfig`. Bounded configuration
-retains its existing semantics: `max_retries == 0` means no counted reconnect
-attempts. Use `ScReconnectConfig::unbounded(initial_delay_ms, max_delay_ms)` (or
-set `retry_forever: true`) for capped exponential backoff without a count limit.
-Unbounded recovery alternates eligible primary and failover targets; protocol
-results that clear retry eligibility still stop recovery.
-
-`retry_forever` is a new public field. Although its default is `false`, adding it
-is source-incompatible for downstream code that uses a complete
-`ScReconnectConfig { ... }` literal. Such callers must add
-`retry_forever: false`, use struct update syntax with `Default`, or migrate to
-`ScReconnectConfig::unbounded(...)`.
-
-`bacnet_runtime::ScConfig` also gains required `device_uuid` and
-`reconnect_forever` fields. Complete downstream struct literals must supply a
-caller-provisioned, durable, nonzero `[u8; 16]` as `device_uuid`, and add
-`reconnect_forever: false` to retain bounded behavior (or set it to `true` to
-allow a zero retry budget and unbounded capped-backoff recovery).
-
-All `TransportPort` implementations now expose a stable `transport_kind()`, an
-optional `topology_id()`, a point-in-time `health()`, and an optional
-`health_changes()` watch receiver. Default implementations preserve custom
-transport implementors. `TransportHealth` contains `state`, `detail`,
-`active_hub`, `last_error`, reconnect `attempt`, and the `since` instant for an
-operational connection. Its states are `Down`, `Connecting`, `Reconnecting`,
-`Up`, and `Failed`. SC reports its normalized primary/failover hub topology and
-live health; stateless transports use the default `Up` snapshot.
-
-`TransportPort::max_npdu_length()` is a defaulted dispatch-time hint for the
-current encoded-NPDU egress ceiling. Most transports return `None`; SC derives
-its value from the Hub's negotiated Max-NPDU and Max-BVLC limits. Transparent
-wrappers such as `AnyTransport` delegate the hint.
 
 Production BACnet/SC transports validate heartbeat settings at `start()`: the interval must be
 `3_000..=300_000` ms, and the disconnect timeout must be greater than the interval.
@@ -1014,6 +1442,45 @@ exposes its `ScConnection`, so applications cannot change the identity through
 it and read the link state through `connection_state_changes()`. Pure
 `ScConnection` codec/manual WebSocket use and later handshake validation are
 outside this guard.
+
+### Hub-connector events and link status
+
+`ScTransport::connection_events()` returns a `tokio::sync::broadcast`
+receiver of `ScEvent`s (#959): `Connected { hub, hub_vmac }`,
+`Disconnected { hub, cause }`, `ConnectFailed { hub, cause }`,
+`ReconnectAttempt { hub, attempt, backoff }`, `FailoverEngaged`,
+`PrimaryRestored`, `PrimaryRestoreFailed { cause }` and
+`ReconnectGaveUp { attempts }`. `hub` is an `ScActiveHub` (`Primary` or
+`Failover`, Annex AB.5.2). While on the failover hub, each failed probe of
+the primary is one `PrimaryRestoreFailed`, at most one per restore interval
+(#1828). The cause is an `ScDisconnectCause`: local close, peer close,
+heartbeat timeout, a WebSocket or TLS error kind, a BVLC-Result NAK with its
+typed `ErrorClass` and `ErrorCode`, `DialTimeout { stage }` (the dial ran out of
+time in its host lookup, TCP connect, TLS handshake or WebSocket upgrade, `stage` an `ScDialStage` when the
+dialler reports it), `ConnectAcceptTimeout` (no Connect-Accept in time),
+`UpgradeRefused { http_status }` (a server, often a proxy, answered the
+upgrade with that HTTP status), a malformed result, an unexpected connect
+reply, rejection expiry, or `Other` with diagnostic text that is not stable to
+match (#1839). A dial timeout is `ScConnectError::DialTimeout` inside
+`Error::Transport`; `bacnet_transport::sc::dial_within` bounds a dial the same
+way. A Connect-Request with no answer stays `Error::Timeout`.
+Events are sent without waiting: a receiver more than `SC_EVENT_CAPACITY` (64)
+events behind gets `RecvError::Lagged` and loses the oldest. Subscribe before
+`start()` to see the first connection; a built client's
+`ScClientBuilder::build_with_events()` and `build_any_with_events()` return a
+receiver subscribed that way (#1909).
+
+`ScTransport::connection_status()` returns an `ScLinkStatus` snapshot: the
+connection state, the active hub, the hub VMAC from Connect-Accept, the
+heartbeat age (time since the hub last sent anything accepted) and the
+round-trip time of the latest answered Heartbeat-Request. It never waits on
+the connection, so poll it as often as a UI redraws.
+
+`with_initial_hub(ScActiveHub::Failover)` starts the transport on the
+failover hub when the WebSocket given to `new` reaches it; with a primary
+connector and reconnect configuration the primary is restored later. Losing
+the failover hub makes each reconnect attempt dial the primary first, then
+the failover hub.
 
 `with_advertised_uris` configures known direct-connection URIs; it does not enable
 accepting connections. Address-Resolution requests receive an ACK (with a
@@ -1044,6 +1511,22 @@ physical sockets may exist, including retiring replacements. Values above
 sockets and can therefore reach 2M. Pending/physical saturation drops TCP;
 otherwise a distinct valid Connect at accepted capacity receives the local
 `RESOURCES/OTHER` NAK. Saturation does not guarantee reconnect admission.
+
+An established accepted link closes after `DIRECT_ACCEPT_IDLE_TIMEOUT` (360
+seconds) without a binary (BVLC) frame in either direction; WebSocket Ping and
+Pong don't count. Keeping the link alive is the initiator's job (Annex AB.6.3).
+That clause caps a fixed heartbeat timeout at 300 seconds and asks a
+configurable one to support 3 to 300 seconds, so the default covers every fixed
+value and the range a configurable timer must offer, with a minute of margin.
+For an initiator set above 300 seconds, raise it with
+`DirectAcceptConfig::with_idle_timeout`. `start` rejects an idle timeout of
+zero or above one day, and a connect timeout (`with_connect_timeout`, default
+10 seconds) of zero or above 300 seconds. An idle timeout under 300 seconds is
+allowed but drops initiators whose heartbeat period is longer, and they must
+reconnect. An idle peer holds its established slot and socket until the bound,
+within the M and 2M caps above. A socket that hasn't finished the Connect
+handshake is held only for the connect timeout (applied to each stage: TLS,
+WebSocket upgrade and Connect-Request), never for the idle bound.
 
 **Pre-1.0 API break:** `with_max_connections` becomes
 `with_max_established_peers`; the former physical-cap semantics and name are
@@ -1127,8 +1610,12 @@ sealed, immutable `DirectScIdentity` with read-only `leaf_sha256()` and
 DER; it does not hash PEM text, a public key, or claimed UUID/VMAC/SNET/SADR.
 Same-leaf reconnects have different incarnations, and certificate rotation
 changes the fingerprint. Incarnations are process-lifetime identifiers, not
-persisted identity or an ordering API. Both values are `Copy + Eq + Hash`;
-their `Debug` output omits fingerprint and incarnation.
+persisted identity or an ordering API. `DirectScIdentity` is
+`Copy + Eq + Hash` and `TransportProvenance` is `Clone + Eq + Hash`; their
+`Debug` output omits fingerprint and incarnation. With `sc-tls`,
+`TransportProvenance::leaf_certificate()` returns the verified leaf
+`ScPeerCertificate` the fingerprint hashes (#1965); it is shared, so a clone
+of the provenance is a reference count, and it takes no part in equality.
 
 Both built-in direct TLS roles capture the verified leaf before WebSocket upgrade and admit
 NPDUs under the committed membership generation's fence. A missing verified
@@ -1145,8 +1632,16 @@ Delayed, already-admitted A segments can finish A's context after replacement;
 new frames from retired A cannot enter it.
 
 Mutation and LifeSafetyOperation authorization contexts expose
-`direct_sc_identity()`. Every WPM element retains the request's one snapshot,
-with existing per-element ordering and authorized-prefix behavior. Application
+`direct_sc_identity()`. Every `ServerPolicy` context, and `ReinitializeContext`,
+also exposes `principal()`, the same leaf digest as a stable `ScPrincipal`
+without the incarnation, `None` for a routed request; and
+`forwarding_peer_principal()`, the immediate direct peer's, routed or not (#524).
+With `sc-tls`, `certificate()` and `forwarding_peer_certificate()` return the
+verified leaf certificates behind those two principals under the same rules
+(#1965): the DER, and metadata with the subject, issuer and DNS, URI, email and
+IP Subject Alternative Names, for rules that survive certificate renewal.
+Every WPM element retains the request's one snapshot, with existing
+per-element ordering and authorized-prefix behavior. Application
 policy still decides permission. `MutationTrust` and `ControlTrust` remain
 scope labels; claimed addresses remain claims. **Pre-1.0 API change:**
 `LifeSafetyOperationAuthorizationContext` now includes `provenance`, and its
@@ -1174,7 +1669,8 @@ outside this confinement guarantee.
 **Pre-1.0 API change:** `ReceivedNpdu` and `ReceivedApdu` add
 `direct_response: Option<DirectResponse>`; custom constructors use `None` for
 unverified ingress and forwarding consumers preserve the original value.
-`TransportProvenance` and `DirectScIdentity` remain `Copy + Eq + Hash`.
+`DirectScIdentity` remains `Copy + Eq + Hash`; `TransportProvenance` is
+`Clone + Eq + Hash` since it holds the verified leaf certificate (#1965).
 The separately sealed, cloneable `DirectResponse` exposes its read-only identity
 and has redacted `Debug`; clones retain neither socket nor membership.
 `ReceivedApdu::response_route()` saves a `ResponseRoute`. Server response helpers
@@ -1307,7 +1803,6 @@ use bacnet_transport::sc_hub::{ScHub, ScHubHandshakeTimeouts, ScHubTlsConfig};
 // Owned, already loaded DER: Vec<CertificateDer<'static>> for both lists,
 // and PrivateKeyDer<'static> for hub_key. File loading belongs to the caller.
 let tls = ScHubTlsConfig::from_der(ca_certs, hub_cert_chain, hub_key)?;
-let tls = tls.with_receive_limits(1497, 5705)?;
 let mut hub = ScHub::start_with_tls_config(
     listen_addr, tls, hub_vmac, hub_uuid, ScHubHandshakeTimeouts::default(),
 ).await?;
@@ -1315,20 +1810,6 @@ let addr = hub.local_addr().expect("started hub has a bound address");
 // ... use the hub ...
 hub.stop().await;
 ```
-
-`ScTransport::with_max_npdu_length` and `with_max_bvlc_length` configure the
-corresponding Connect-Request fields. `ScHubTlsConfig::with_receive_limits`
-does the same for Connect-Accept and hub ingress. Router-capable configurations
-require Max-NPDU in `1497..=61327` and Max-BVLC of at least Max-NPDU + 16 bytes
-of header + 4192 bytes of Data Options. Defaults are 1497 and 5705. Local APDU
-receive capacity remains 1476; the default encoded-NPDU egress budget before
-peer negotiation is 1497 (1495 for an APDU behind the minimal two-byte NPCI).
-
-`sc_tls::connect_sc_transport(ScTlsTransportConfig, ScNodeTlsConfig)` is the
-shared TLS construction path for native client/server builders, runtime and
-Python lifecycles, and typed router ports. It preserves a failed initial primary
-dial for transport-level failover, and installs the primary/failover reconnect
-connectors from the same immutable configuration.
 
 The SC hub is a TLS WebSocket relay. Both clients and servers connect to it as spoke nodes. Messages are routed by VMAC address.
 
@@ -1372,18 +1853,50 @@ loading TLS files. This replaces the pre-1.0 unicast-only setting without an
 alias; update callers to `with_relay_send_budget`, `relay_send_budget` and
 `validate_relay_send_budget`. `ScHubProbePolicy::new(scan_interval, idle_age, ack_age,
 send_budget)` configures the optional accepting-Hub probe through
-`with_probe_policy`. Defaults are 30s/60s/5s/5s. Both policies require positive
+`with_probe_policy`. Defaults are 30s/60s/5s/5s, and
+`with_liveness_bound` sets a fifth value, the liveness bound
+(`SC_HUB_PROBE_LIVENESS_BOUND`, 360 seconds). Both policies require positive
 whole milliseconds, at most `i64::MAX` milliseconds to reserve tick headroom,
-and a future instant representable by the platform monotonic clock.
+and a future instant representable by the platform monotonic clock; the
+liveness bound is also capped at one day (`SC_HUB_PROBE_MAX_LIVENESS_BOUND`).
 
 Each Hub owns one monotonic origin. A scan probes only after idle age strictly
 exceeds its threshold; pending ACK age starts at reservation, before sink
-acquisition, and retirement requires a later scan to observe strictly exceeded
-ACK age. Serial send work or scheduling delays can postpone that scan; ACK age
-is not a hard closure deadline. Missed ticks are skipped. Only a matching valid
-ACK clears pending and refreshes activity. Wrong-ID or malformed ACKs do not.
-The probe send budget includes acquisition and send. These are local Hub
-policies, separate from the initiating node's normative 3–300s heartbeat range.
+acquisition. Serial send work or scheduling delays can postpone later scans;
+neither ACK age nor the liveness bound is a hard closure deadline. Missed ticks
+are skipped. Only a matching valid ACK clears pending and refreshes activity.
+Wrong-ID or malformed ACKs do not. The probe send budget includes acquisition
+and send, and a probe send that fails or overruns it retires the connector at
+once. These are local Hub policies, separate from the initiating node's
+normative 3–300s heartbeat range.
+
+A connector is the initiating peer of its hub connection, so Annex AB.6.3 puts
+keep-alive on the connector and obliges only the hub to answer a
+Heartbeat-Request; a conforming connector may ignore the hub's probes (#2141).
+An unanswered probe therefore retires a connector only when a later scan sees
+that nothing has arrived from it since the probe for longer than both the ACK
+age and the liveness bound. Anything that counts as activity, including the
+connector's own Heartbeat-Request, shows it is alive; the probe then stays
+recorded until the next idle period replaces it. An unanswered probe isn't
+repeated while the connector stays silent, so the count can't restart for a
+dead one. Silence is counted from the probe, not from the connector's last
+frame, because receiving the probe restarts the connector's own heartbeat
+timer: its next Heartbeat-Request can come a full timeout after the probe. The
+360-second default covers every fixed timeout and the whole 3–300 s range a
+configurable timer must offer, plus a minute of margin, as the direct
+listener's idle bound does (#2133).
+
+Only frames received from the connector count. Frames the hub sends it, probes
+and relayed traffic alike, don't, because the hub keeps relaying to a connector
+that may already be dead. So a connector that receives relayed traffic often
+enough never needs to heartbeat, and if it also sends nothing and ignores
+probes, it is retired after the bound. The interop cost the other way: a dead
+connector is now retired only after the bound, about seven and a half to eight
+minutes after its last frame with the defaults (idle age, up to one scan to
+probe, the bound, up to one scan to notice), instead of about 65–95 seconds.
+For a connector whose heartbeat timeout is above 300 seconds, raise the bound;
+a bound no larger than the ACK age retires on the first unanswered probe,
+unless the connector sends something first.
 
 `ScHubBroadcastRatePolicy::new(sender_burst, sender_per_second, global_burst,
 global_per_second)` checks the existing continuously refilled broadcast policy
@@ -1464,7 +1977,7 @@ standalone/Docker migration did not change production CLI or node APIs; the
 subsequent built-in node API migration follows.
 Benchmark compilation and functional TLS tests are not new performance qualification.
 The server-auth-only `sc_latency`/`sc_throughput` targets are retired; the original
-mTLS targets remain, with historical results and limits in [Benchmarks](../Benchmarks.md).
+mTLS targets remain, with current results in [Benchmarks](../Benchmarks.md#4-transports).
 
 #### Strict local node TLS configuration
 
@@ -1505,11 +2018,11 @@ configuration gap is closed, not the full Annex AB profile or issue #513.
 
 ### MS/TP (Serial RS-485)
 
-MS/TP is a token-passing protocol over RS-485 serial, commonly used for field-level BACnet devices. The serial I/O is abstracted behind the `SerialPort` trait, with three RS-485 direction control modes. The master node state machine is the portable `bacnet-mstp-core`, driven by the transport's Tokio task, and frames come from `bacnet-mstp-codec`, re-exported as `bacnet_transport::mstp::codec` for code that builds or reads frames (see [the architecture notes](architecture.md#the-mstp-transport-and-the-portable-core)).
+MS/TP is a token-passing protocol over RS-485 serial, commonly used for field-level BACnet devices. The serial I/O is abstracted behind the `SerialPort` trait, with three RS-485 direction control modes. The master node state machine is the portable `bacnet-mstp-core`, driven by the transport's Tokio task, and frames come from `bacnet-mstp-codec`, re-exported as `bacnet_transport::mstp::codec` for code that builds or reads frames (see [the architecture notes](architecture.md#the-mstp-transport-and-the-portable-core)). Firmware can drive the core directly. Its time is `bacnet-time`'s `Instant` and `Duration`, in nanoseconds from an epoch the caller picks, the same types `bacnet-bip-core` takes, so one clock feeds both.
 
-`MstpConfig` holds the station address, Max_Master, Max_Info_Frames and the baud rate; every Clause 9 timer is derived from them. `start()` refuses a configuration the core refuses, and `MstpConfig::validate()` runs the same checks beforehand: `max_master` at most 127, `this_station` at most `max_master`, `max_info_frames` at least 1, and a baud rate of at least 2667 (so 40 bit times of turnaround fit in T_usage_delay). Sends go to the core's queues, 256 unicast and 256 broadcast NPDUs, served by network priority; a full queue (`WouldBlock`) or an NPDU longer than the port sends (`Error::Encoding`) is refused at once.
+`MstpConfig` holds the station address, Max_Master, Max_Info_Frames and the baud rate, from which the Clause 9 timers are derived, and the transmit-latency pad for a port without a drain (see [Auto-Direction](#auto-direction-usb-rs-485-adapters) below). Three timers that Clause 9.5.3 lets a station lengthen are lengthened on every host port, since a USB adapter delivers what it receives late (16 ms by default on FTDI parts) and can't be told from a native UART on every platform: T_frame_abort is fixed at its 100 ms maximum (`HOST_FRAME_ABORT_MS`), and `usage_timeout` (T_usage_timeout, 20 to 35 ms) and `reply_timeout` (T_reply_timeout, 255 to 300 ms) default to their maxima, `HOST_USAGE_TIMEOUT` and `HOST_REPLY_TIMEOUT`. With the minimums, a successor that used the token or answered a poll as late as T_usage_delay lets it, or a peer that answered a request as late as T_reply_delay lets it, could still be in the adapter when the station gave up: it would send the token again, poll the next address, or pass the token, over an answer already on the wire. `start()` refuses a configuration the core refuses, and `MstpConfig::validate()` runs the same checks beforehand: `max_master` at most 127, `this_station` at most `max_master`, `max_info_frames` at least 1, a baud rate of at least 2667 (so 40 bit times of turnaround fit in T_usage_delay), the two timeouts within their ranges, and a pad of at most T_usage_delay (15 ms): what the station hears while the pad runs reaches the core only after it, so a longer pad would make it answer a token or poll late. The core's transmit watchdog is lengthened by the pad where it would not otherwise cover the longest padded frame. The Python bindings take all three as `mstp_transmit_latency_pad_ms`, `mstp_usage_timeout_ms` and `mstp_reply_timeout_ms`, and `MstpEndpointBuilder` as `transmit_latency_pad`, `usage_timeout` and `reply_timeout`; the client and server builders take the whole `MstpConfig` with the transport. Sends go to the core's queues, 256 unicast and 256 broadcast NPDUs, served by network priority; a full queue (`WouldBlock`) or an NPDU longer than the port sends (`Error::Encoding`) is refused at once.
 
-`MstpConfig::extended_frames` (off by default) turns on the extended frame types, 32 and 33, which carry NPDUs of 502 to 1497 octets COBS-encoded. Clause 9.3 requires them of a routing node and leaves them optional for others, so `BACnetRouter::start` turns the flag on for every MS/TP port it routes, through `TransportPort::prepare_for_routing`, and a device keeps it off unless it sets it. With the flag on the port sends and takes NPDUs of up to 1497 octets (`MstpTransport::max_npdu_length`) and declares an APDU limit of 1476 instead of 480; an answer over 501 octets goes back as a Type 33. Without it, an extended frame the port hears counts as an invalid frame, as on a node without COBS support. On firmware, `MstpCoreConfig::with_extended_frames` sets the flag for `bacnet-mstp-core`, which then needs buffers sized for extended frames (`ExtendedActionBuffers`, 1497-octet queue slots and 1516 octets of receive storage). On a host each port's queues reserve about 770 KiB with the flag on, against about 270 KiB without, and the core's action buffers take about 13 KiB either way.
+`MstpConfig::extended_frames` (off by default) turns on the extended frame types, 32 and 33, which carry NPDUs of 502 to 1497 octets COBS-encoded. Clause 9.3 requires them of a routing node and leaves them optional for others, so `BACnetRouter::start` turns the flag on for every MS/TP port it routes, through `TransportPort::prepare_for_routing`, and a device keeps it off unless it sets it. With the flag on the port sends and takes NPDUs of up to 1497 octets (`MstpTransport::max_npdu_length`) and declares an APDU limit of 1476 instead of 480; an answer over 501 octets goes back as a Type 33. Without it, an extended frame the port hears counts as an invalid frame, as on a node without COBS support. On firmware, `MstpCoreConfig::with_extended_frames` sets the flag for `bacnet-mstp-core`, which then needs buffers sized for extended frames, as an `ExtendedStorage` bundle holds them (1497-octet delivery and queue slots and 1516 octets of receive storage). On a host each port's queues reserve 512 slots, 768 KiB with the flag on (1536-octet slots) against 272 KiB without (544-octet slots), resident as the queues fill, and the core's action buffers take about 13 KiB either way. `MstpEndpointBuilder::extended_frames(true)` turns the flag on for an endpoint, whose identity may then advertise a Max_APDU_Length_Accepted of up to 1476.
 
 #### Host Diagnostics and Qualification
 
@@ -1520,10 +2033,12 @@ retaining serial ownership. Counts start at zero and have no reset. The
 transport-boundary counts (frames sent by kind, reply timeouts, queue and
 ingress drops, serial errors, echo mismatches, late answers) saturate at
 `u64::MAX`; `mac`
-carries the core's own `MstpCounters` (frames received and delivered, invalid
+carries the core's own counters (frames received and delivered, invalid
 frames, frame aborts, token rotations and retries, deferred starts, late and
-expired replies, deadline misses and the queue counters), which saturate at
-`u32::MAX`. Loads are not a globally coherent snapshot. These are redacted
+expired replies, late deadlines and the deadline-lateness histogram, receive errors and transmit aborts by
+kind, and the queue counters) as `mstp::MstpCounters`: the transport takes
+them from the core after each event and adds them up, so they too saturate
+at `u64::MAX`. Loads are not a globally coherent snapshot. These are redacted
 host events, not wire timestamps or proof of peer delivery.
 See the [qualification method](mstp-qualification.md) and
 [unrun result template](mstp-qualification-result.json) for before/after deltas,
@@ -1544,7 +2059,7 @@ let transport = MstpTransport::new(serial, MstpConfig {
     baud_rate: 76800,
     ..MstpConfig::default()
 })
-.with_execution_mode(MstpExecutionMode::DedicatedThread);
+.with_execution_mode(MstpExecutionMode::dedicated_thread());
 ```
 
 Call the builder before `start()`. Omitting it (or selecting `Tokio`) keeps the
@@ -1566,18 +2081,116 @@ or rollback of driver-accepted bytes. As before, stopping does not make a
 consumed serial transport restartable: construct a new transport to restart.
 
 Isolation is an execution option, not a real-time guarantee or measured timing
-claim: fast/efficient does not mean deterministic. RT policy/priority
-(`SCHED_FIFO`), CPU affinity/pinning and reporting RT setup success/failure are
-**deferred, not implemented**. PREEMPT_RT, IRQ, mlock and buffer-tuning deployment
-guidance beyond this note, plus on-wire hardware qualification (#502), remain
-out of scope. This is only the thread-isolation subset of #501; that issue remains
-open for the residual RT work and full documentation.
+claim: fast/efficient does not mean deterministic. On Linux the dedicated thread
+can also run under a real-time policy and be pinned to CPUs, below; on-wire
+hardware qualification is #502.
+
+#### Real-Time Scheduling and CPU Affinity (Linux)
+
+`MstpThreadConfig` says how the dedicated thread is scheduled. Both settings
+are off by default:
+
+```rust
+use bacnet_transport::mstp::{MstpExecutionMode, MstpThreadConfig};
+
+let thread = MstpThreadConfig::new()
+    .with_realtime_priority(40) // SCHED_FIFO, 1 to 99
+    .with_cpu_affinity([3]); // CPUs as Linux numbers them
+let mut transport = MstpTransport::new(serial, config)
+    .with_execution_mode(MstpExecutionMode::DedicatedThread(thread));
+let npdus = transport.start().await?; // fails if either can't be applied
+let status = transport.execution_status().expect("started");
+assert_eq!(status.realtime_priority, Some(40));
+assert_eq!(status.cpu_affinity, [3]);
+```
+
+- **Policy.** `realtime_priority` puts the thread under `SCHED_FIFO`. `SCHED_RR`
+  differs only in time-slicing between threads of equal priority, and the loop
+  spends nearly all its time blocked on a read or a timer, so it never runs long
+  enough for a slice to matter.
+- **Applied on the thread, then read back.** The thread sets its affinity
+  first, then its policy, before it builds its runtime or touches the serial
+  port, and reads both back from the kernel. Threads its runtime starts later
+  for blocking serial calls (the drain) inherit both from it.
+- **Failure is an error from `start`, for both settings.** Missing privilege
+  for the policy (`PermissionDenied`, with the capability, limit or cgroup
+  real-time budget it needs),
+  a CPU set the kernel refuses, or a read-back that differs from the request
+  (the kernel silently drops CPUs outside the process's cpuset) all fail
+  `start` with an error naming the setting. Nothing has gone on the wire by
+  then, and the transport keeps the serial port, so the caller can fix the host
+  or the settings and start again. A logged warning and a counter were the
+  alternative; we chose the error because whoever asks for real-time
+  scheduling is counting on it, and a station that joined the token ring
+  without it would show only as worse timing later.
+- **Linux only.** On every other OS, `MstpThreadConfig::validate` and `start`
+  refuse either setting with `Error::Transport` of kind `Unsupported`; neither
+  is ignored. The policy calls are `pthread_setschedparam` on the thread
+  itself, so they work with glibc and musl alike.
+- **The outcome.** `MstpTransport::execution_status()`, and
+  `MstpDiagnostics::execution_status()` on a handle taken before the transport
+  moved into a client or router, report whether the loop has its own thread and
+  the priority and CPUs read back. Both are `None` until a `start` succeeds.
+
+**Privilege.** `SCHED_FIFO` needs `CAP_SYS_NICE`, or an `RLIMIT_RTPRIO` at least
+as high as the priority: `ulimit -r`, `rtprio` in `/etc/security/limits.conf`,
+or `LimitRTPRIO=` (or `AmbientCapabilities=CAP_SYS_NICE`) in a systemd unit. A
+container needs `--cap-add SYS_NICE` as well, and on kernels built with
+real-time group scheduling its cgroup needs a real-time budget. Pinning to CPUs
+the process may use needs no privilege.
+
+**Deployment.** The settings shorten how long the scheduler keeps the loop
+waiting once its timer fires or its bytes arrive. They don't bound it, and they
+do nothing about where else the time goes:
+
+- **PREEMPT_RT.** On a stock kernel, long non-preemptible sections can delay
+  even the highest-priority thread. A PREEMPT_RT kernel (in mainline since
+  6.12; many distributions ship it as a `-rt` flavour) makes most of them
+  preemptible.
+- **Threaded IRQs.** PREEMPT_RT, or the `threadirqs` boot parameter, runs
+  interrupt handlers as kernel threads, by default at `SCHED_FIFO` 50. The
+  handler that delivers the MS/TP port's bytes (the UART's, or for a USB
+  adapter the host controller's) must not wait behind the MS/TP thread:
+  give the loop a lower priority than that IRQ thread, or raise the IRQ
+  thread (`ps -eLo pid,rtprio,comm | grep irq/` to find it, `chrt -f -p 60
+  PID` to set it). `/proc/irq/N/smp_affinity_list` steers the interrupt to the
+  same CPU, or a neighbour.
+- **CPU isolation.** `isolcpus=`, `nohz_full=` or a cpuset keeps other work off
+  the CPU the loop is pinned to.
+- **RT throttling.** By default the kernel lets real-time threads use only
+  950 ms of each second (`/proc/sys/kernel/sched_rt_runtime_us` against
+  `sched_rt_period_us`), keeping the rest for normal threads. The MS/TP loop
+  sleeps far more than that, so the limit only bites a thread that spins; leave
+  it on as a safety net.
+- **USB adapters.** RT scheduling can't remove what the adapter holds back: an
+  FTDI part keeps received octets for its latency timer, 16 ms by default
+  (`/sys/bus/usb-serial/devices/ttyUSB0/latency_timer`; 1 ms suits MS/TP), and
+  USB full speed moves data in 1 ms frames.
+- **Memory locking.** A page fault in the loop costs far more than a wake-up.
+  The transport doesn't lock memory itself, because `mlockall` covers the whole
+  process: the application calls it before starting, for example with nix's
+  `mlockall(MlockAllFlags::MCL_CURRENT | MlockAllFlags::MCL_FUTURE)` (nix's
+  `mman` feature), which needs
+  `CAP_IPC_LOCK` or a large enough `RLIMIT_MEMLOCK` (`LimitMEMLOCK=` in systemd).
+- **Preallocated buffers.** The token queues (512 slots in all) and the core's
+  frame buffers are reserved when the transport starts and never grow while it
+  runs. Each NPDU handed up to the application is copied into a new buffer as
+  it arrives; with `MCL_FUTURE` that memory is locked too.
+
+**Measure, don't assume.** This is configuration for lower latency, not a timing
+guarantee. Compare the loop's timer lateness before and after, under
+representative load: `MstpCounters::deadline_lateness` (bands under 1 ms, 1-2,
+2-5, 5-10, 10-25 and 25 ms or more, with the maximum) and `late_deadlines` in
+`MstpDiagnostics`' `mac` counters, which the CLI's MS/TP screen shows (#1897).
+The [qualification method](mstp-qualification.md) covers the rest of a run.
 
 #### Auto-Direction (USB RS-485 Adapters)
 
 Most USB RS-485 adapters (FTDI, CH340, CP2102) handle direction switching in hardware — no configuration needed.
 
 ```rust
+use bacnet_client::client::BACnetClient;
+use bacnet_transport::mstp::{MstpConfig, MstpTransport};
 use bacnet_transport::mstp_serial::{TokioSerialPort, SerialConfig};
 
 let serial = TokioSerialPort::open(&SerialConfig {
@@ -1586,9 +2199,16 @@ let serial = TokioSerialPort::open(&SerialConfig {
     baud_rate: 76800,
 })?;
 
-// Use with BACnetClient or BACnetServer via generic_builder
+// Use with BACnetClient or BACnetServer via generic_builder. The MS/TP
+// timers follow MstpConfig's baud rate, so give it the port's.
+let config = MstpConfig {
+    this_station: 1,
+    max_master: 127,
+    baud_rate: 76800,
+    ..MstpConfig::default()
+};
 let client = BACnetClient::generic_builder()
-    .transport(MstpTransport::new(serial, 1, 127))  // station 1, max_master 127
+    .transport(MstpTransport::new(serial, config))
     .build()
     .await?;
 ```
@@ -1607,6 +2227,20 @@ for name in available_ports()? {
     println!("{name}"); // /dev/ttyUSB0, /dev/cu.usbserial-1410, COM3, ...
 }
 ```
+
+On Linux and macOS the transport waits for the port's drain (`tcdrain`) to
+know when a frame left. On Windows `TokioSerialPort` has no drain: its write
+returns once the system holds the data, before the adapter has sent it. The
+transport then takes a frame to end its wire time at the baud rate after the
+write began, plus `MstpConfig::transmit_latency_pad`, the time its first octet
+may take to leave. The default there is `USB_TRANSMIT_LATENCY_PAD`, 4 ms: a USB
+full-speed host starts a transfer only at the next 1 ms frame (FTDI
+AN232B-04), so the pad covers one frame of waiting, one for the transfer and
+2 ms for the host controller and driver. A port that drains is never padded,
+and the default is zero elsewhere. A slower driver or a busy host needs a
+larger pad, up to T_usage_delay (15 ms). One too short starts T_turnaround and
+the reply and usage timeouts early; one too long delays the station's next
+frame, and what it hears meanwhile reaches the core only after the pad.
 
 #### Kernel RS-485 Mode (Linux, RTS-based)
 
@@ -1680,7 +2314,8 @@ octet. The transport must know, or it would take its own Token, heard back,
 for its successor using the token. Declare an echoing port with
 `with_echo(Echo::full())` on `TokioSerialPort` (or `LoopbackSerial`);
 `GpioDirectionPort` reports its inner port's setting, and the default is
-`Echo::None`.
+`Echo::None`. The Python bindings declare it with `mstp_echo=True` (see
+[MS/TP serial ports](python-api.md#mstp-serial-ports)).
 
 With `Echo::Full { grace }` the transport hunts for the frame it sent in the
 octets it reads after it. Octets that could begin the echo are held back and
@@ -1723,8 +2358,6 @@ The MS/TP state machine is hardware-agnostic. Custom serial implementations (e.g
 
 ```rust
 pub trait SerialPort: Send + Sync + 'static {
-    fn set_direction(&self, direction: SerialDirection)
-        -> impl Future<Output = Result<(), Error>> + Send;
     fn write(&self, data: &[u8]) -> impl Future<Output = Result<(), Error>> + Send;
     fn drain(&self) -> impl Future<Output = Result<(), Error>> + Send;
     fn read(&self, buf: &mut [u8]) -> impl Future<Output = Result<usize, Error>> + Send;
@@ -1738,11 +2371,165 @@ the frame may start. `drain()` reports completion of all accepted output,
 including the UART shift register. Its default implementation returns an
 unsupported-operation error, preserving existing custom backends without
 falsely claiming completion; the transport then times each frame by its
-octets at the baud rate. Custom backends used for software direction control
+octets at the baud rate plus `MstpConfig::transmit_latency_pad`. Custom backends used for software direction control
 must implement this operation. `read()` must be cancel safe: the transport
 drops a pending read to service a deadline, and polls one once, without
-waiting, to collect octets already there before it starts a frame. The
-loopback backend completes writes in memory and drains immediately.
+waiting, to collect octets already there before it starts a frame. It waits
+for at least one octet: `Ok(0)` means end of file, no more data will come (a
+closed pseudo-terminal, or on some platforms an unplugged USB adapter), and
+never "nothing yet". After three `Ok(0)` reads in a row the transport ends as
+it does at a read error: counted in `serial_read_errors`, logged, its NPDU
+channel closed and later sends refused. The loopback backend completes writes
+in memory and drains immediately, and its reads always return octets.
+
+#### Passive monitor
+
+`bacnet_transport::mstp::monitor::MstpMonitor` listens to a trunk without
+joining it (#958). Its `MonitorRead` input combines asynchronous reads with
+an explicit close barrier (#1854). With the `serial` feature,
+`mstp_serial::ReceiveOnlyPort::open` requests exclusive native read-only access,
+raw binary 8N1 and input purge, with no kernel RS-485 transmit setup or GPIO.
+Unix uses a nonblocking read-only descriptor and preserves inherited HUPCL. Windows uses a synchronous
+read-only handle owned by one reader thread; awaited close joins that thread.
+Driver/open transitions can still change modem lines, including before an
+explicit RTS level is applied; this is not an electrical-silence guarantee. The monitor decodes the stream with the codec's `StreamDecoder`
+and publishes `MonitorStats` through a `watch` channel: frames per station and
+type, header and data CRC errors, other rejected frames, token passes, rotation
+times and retries, lost tokens (silences of at least T_no_token after a
+Token or Poll For Master), each master's Max_Master (`MaxMaster::AtLeast` the
+highest station it polls, which for most masters stays below it, or
+`MaxMaster::Exact` once its polls wrap to 0), and a silence histogram. `frames()` subscribes to a bounded, lossy stream of the same
+events; a subscriber that falls behind loses the oldest and counts them.
+COBS-encoded frames are decoded and checked only.
+
+Times come from the host clock at each read, worked back to each frame at the
+baud rate, so a USB adapter's latency makes them coarse:
+`MonitorConfig::timestamp_resolution` (16 ms by default) says how coarse, and
+`MonitorStats::timing` carries it for a user interface to show.
+
+```rust
+use bacnet_transport::mstp::monitor::{MonitorConfig, MstpMonitor};
+use bacnet_transport::mstp_serial::{ReceiveOnlyPort, SerialConfig};
+
+let config = SerialConfig { port_name: "/dev/ttyUSB1".into(), baud_rate: 38_400 };
+let mut monitor = MstpMonitor::start(
+    ReceiveOnlyPort::open(&config, None)?,
+    MonitorConfig::new(config.baud_rate),
+).await?;
+let stats = monitor.statistics();
+// ...
+let present: Vec<u8> = stats.borrow().present_stations().collect();
+monitor.stop().await?; // ownership released before reopening the adapter
+```
+
+`open` and `start` return `MonitorAdmissionError` on failure. Its
+`release_confirmed()` permits retry only when no owner was acquired or cleanup
+succeeded; otherwise refuse replacement and retain the error. `start` is async
+so rejected inputs can also be closed. `stop(&mut self)` retains
+shutdown and join progress if its future is cancelled; call it again to await
+the same barrier. Repeated failures remain failures. The CLI terminates its
+coordinator with a visible error on unproven admission cleanup or any failed
+stop, so queued joins cannot open a replacement. This conservatively includes
+a read error followed by successful close. EOF and read errors also
+run the close epilogue before task completion. Drop only requests shutdown and
+is not a reopening barrier. Ordinary in-memory readers explicitly opt into
+`DropOnClose::new(reader)`; do not use this adapter for deferred native cleanup.
+
+Windows first-byte read timeouts provide stop-check opportunities, not EOF or
+a hard driver deadline. A driver that never completes its read can delay close.
+Linux termios2 supports checked numeric rates on supported architectures;
+macOS custom rates use IOSSIOSPEED without physical rate read-back. Unsupported
+configuration fails instead of substituting a rate or opening read-write.
+PTY, scripted-owner and native file-access tests qualify their respective
+software boundaries only; physical COM/RS-485 behavior needs bench evidence.
+
+`MonitorStats::record` is the engine on its own: feed it `(time, LineEvent)`
+pairs from a capture to get the same statistics offline.
+
+### bacnet-mstp-core (firmware)
+
+The MS/TP transport above runs on `bacnet-mstp-core`, which firmware can use
+on its own: `no_std`, no allocator, buffers the caller owns, and time as a
+`bacnet-time` `Instant` passed to each call (see
+[the architecture notes](architecture.md#the-mstp-transport-and-the-portable-core)).
+It re-exports the frame codec as `bacnet_mstp_core::codec`. A `now` earlier
+than the latest one passed in is taken as that latest one, so a clock that
+steps back holds the core's timers still instead of failing;
+`enqueue_npdu` takes its `now` the same way without moving the clock.
+
+The core's large buffers come in one bundle the caller owns and the core
+borrows: `StandardStorage<U, B, D>` (receive storage, `FixedQueues` of `U`
+unicast and `B` broadcast slots, and `D` delivery slots, all for standard
+frames) or `ExtendedStorage<U, B, D>` (the same, sized for extended
+frames). Both are `const fn` zeros, so firmware keeps the bundle in a
+static. `MasterCore::new(config, &mut storage, now)` builds the core over
+it, using as much receive storage as the configuration takes. A caller with
+queues of its own wraps them with `Storage::with_queues`, and
+`MasterCore::from_parts` takes the parts one by one.
+
+Line events, `on_octet`, `on_receive_error`, `on_validated_frame`,
+`on_invalid_frame`, `on_host_activity`, `on_silence`, `on_deadline`, and the
+transmit events `on_transmit_complete` and `on_transmit_aborted`, return
+nothing: an input that breaks the contract is ignored and counted in
+`adapter_errors`, and a broken internal invariant in `internal_errors`
+(debug builds assert). Three calls refuse, each with its own error:
+`MasterCore::new` with `ConfigError`, `on_transmit_started` with
+`TransmitError` and `complete_request` with `RequestError`.
+
+`Action::Transmit { id, header, length }` names a frame ready to send; its
+octets come only from `on_transmit_started(id, now)`, which returns them
+when it confirms the start (decision D10, #1769). A refused start has no
+octets, so the line is never driven for one, and an adapter that can send
+from the core's frame buffer copies nothing. The `inspect` feature adds a
+hidden view of the frame before its start, a test and fuzz hook outside
+the crate's semver.
+
+The types that may grow are `#[non_exhaustive]` (#1684), so code outside the
+crate builds them like this:
+
+- `MstpCoreConfig::STANDARD` (also its `Default`) or
+  `MstpCoreConfig::for_baud_rate(baud)`, then set the fields to change.
+  Both `for_baud_rate` and `validate` are `const fn`s, so a configuration
+  can be built and checked at compile time.
+- `DequeuedNpdu::new(destination, kind, priority, sequence, npdu)` and
+  `QueueItemInfo::new(destination, kind, priority, len, enqueued_at,
+  sequence)`, for a `QueueStorage` of your own; set `expires_at` and
+  `service_wait` when they are not `None` and zero.
+
+`QueueStorage` is an extension point, and its methods are part of the
+crate's semver. The core builds the rest, which a caller reads but can't
+build, or match without `..`: `MstpCounters`, `QueueCounters` and
+`MasterSnapshot`. A `match` on these enums needs a wildcard arm:
+`ConfigError`, `TransmitError`, `RequestError`, `QueueRefusal`, `CoreBuffer`,
+`LocalDurationField`, `LocalLimitField`, `TransmitFailure` and
+`ReceiveError`. The enums an adapter acts on case by case, and the closed
+sets, stay exhaustive: `Action`, `ReplyDecision`, `Direction`,
+`MasterState` and `QueueKind`, and `bacnet-npdu`'s `NetworkPriority`, which
+the queues order by (re-exported as `bacnet_mstp_core::npdu`).
+
+Counters drain: `MasterCore::take_counters()` returns the counts since the
+last take, the queues' with them, and starts them again; each is a `u32`
+that saturates between takes, and the caller keeps the totals.
+`MasterCore::counters()` shows them without taking them. A queue's `depth`
+is a level, not a count, and its `high_water` the deepest since the last
+take. `QueueStorage::stats` is `counters` (a look) and `take_counters` (a
+take). Receive errors and transmit aborts count by kind (`framing_errors`,
+`transmit_timeouts` and the rest).
+
+The Clause 9 values a station can't change are constants: `N_POLL`,
+`N_RETRY_TOKEN`, `N_MIN_OCTETS`, `T_NO_TOKEN` and `T_SLOT`.
+`NetworkPriority` converts with `try_from` (refusing with `PriorityError`),
+`from_control` (the control octet's two low bits) and `u8::from`. The queues' starvation limit is
+`MstpCoreConfig::starvation_limit`, which `MasterCore::new` hands to them;
+queues used without a core start at its default, 8. A broadcast's
+destination is the codec's `BROADCAST_MAC`. The longest NPDU a
+configuration or a queue takes is `max_npdu()`, on `MstpCoreConfig` and
+`QueueStorage`. A reply the application can't give in time is
+`ReplyDecision::Postponed`, which sends Reply Postponed, and
+`ReplyDecision::Abandoned` sends nothing.
+
+`ConfigError`, `TransmitError`, `RequestError`, `QueueRefusal` and
+`PriorityError` implement `core::error::Error`.
 
 ### Loopback Transport
 
@@ -1757,6 +2544,8 @@ let (side_a, side_b) = LoopbackTransport::pair(
 
 In-process channel-based transport for composing a client and server without real network sockets (e.g. inside an HTTP gateway). `LoopbackTransport::pair()` creates two connected transports backed by `tokio::sync::mpsc` channels — sending on one delivers to the other. Available as `AnyTransport::Loopback` for use with the enum dispatch wrapper.
 
+A send never waits for the peer: a frame that finds the peer's 256-frame queue full is dropped and counted in the peer's `receive_drops()`, as on a real data link (#1713).
+
 The peer receives every frame, whatever MAC a unicast was sent to. For tests that need to know, `record_unicast_destinations()` returns a receiver of those MACs, in the order the peer receives the unicast frames (#1243). Call it before handing the transport to a router or network layer; dropping the receiver stops the record.
 
 By default the transport drops the data attributes given to `send_unicast_with_data_attributes` and `send_broadcast_with_data_attributes`, like a data link that cannot carry them. `carry_data_attributes()` makes that side hand them to the peer in `ReceivedNpdu::data_attributes`, so a test can feed a router or network layer frames that carry attributes and check the ones it sends back (#1289).
@@ -1765,12 +2554,39 @@ By default the transport drops the data attributes given to `send_unicast_with_d
 
 ```rust
 use bacnet_transport::any::AnyTransport;
-use bacnet_transport::mstp::NoSerial; // placeholder when serial feature is off
 
-let transport: AnyTransport<NoSerial> = AnyTransport::Bip(Box::new(bip_transport));
+let transport: AnyTransport = AnyTransport::Bip(Box::new(bip_transport));
+// Any MS/TP transport converts, whatever its serial port.
+let transport: AnyTransport = MstpTransport::new(serial, mstp_config).into();
 ```
 
-Variants: `Bip` (boxed), `Bip6`, `Mstp`, `Sc` (boxed), `Loopback`.
+`AnyTransport` has no type parameter (#2039). Its `Mstp` variant holds an
+`MstpTransport<BoxedSerial>`: `BoxedSerial` boxes any `SerialPort`, and the
+`From<MstpTransport<S>>` conversion (`MstpTransport::into_boxed`) does it for
+you. Each serial read, write or drain then costs one dynamic call and one
+boxed future, next to the port's own I/O. A transport used on its own, such
+as `BACnetClient<MstpTransport<TokioSerialPort>>`, keeps the concrete port.
+
+`Bip` (boxed), `Mstp` and `Loopback` are always available. `Bip6` requires
+`ipv6`, `Sc` (boxed) requires `sc-tls`, and `Ethernet` requires `ethernet` on
+Linux. Cargo can enable these features through another dependency.
+
+`AnyTransport` is `#[non_exhaustive]`: matches outside `bacnet-transport` must
+include a fallback even when they list every currently enabled variant. Handle
+only the transports the caller supports and choose an appropriate fallback:
+
+```rust
+use bacnet_transport::any::AnyTransport;
+
+fn is_bip(transport: &AnyTransport) -> bool {
+    match transport {
+        AnyTransport::Bip(_) => true,
+        _ => false,
+    }
+}
+```
+
+Existing variants remain directly constructible as in the example above.
 
 `bacnet_transport::bip::AsBip` lends the `BipTransport` underneath a transport
 that may carry BACnet/IP. `BipTransport` always lends itself; `AnyTransport`
@@ -1810,7 +2626,8 @@ transport.enable_bbmd(vec![
 ]);
 
 // Optional: load a BDT saved in this file at startup, falling back to the
-// configured table if the file is missing or invalid. Write-BDT from the
+// configured table if the file is missing or invalid. A BDT activated through
+// the registered Network Port object is saved here. Write-BDT from the
 // network is always refused and never changes the table or the file.
 transport.set_bdt_persist_path(PathBuf::from("/var/lib/rusty-bacnet/bdt.bin"));
 
@@ -1850,11 +2667,27 @@ address, so the echo of each broadcast comes back from the BBMD's own address.
 A `0.0.0.0` BBMD whose broadcast address is 255.255.255.255 and whose own
 address is not the default-route address logs a warning at start: the kernel
 may send its broadcasts from another interface, and their echo is then not
-recognised as its own. Whatever its own address, a BBMD never rebroadcasts on
-its subnet a Forwarded-NPDU that arrived by broadcast (to the configured
-broadcast address or 255.255.255.255), since the subnet already received it;
-it still sends it to its foreign devices. This also stops a BDT row that is
-the BBMD itself under another address from looping a broadcast.
+recognised as its own. A BBMD rebroadcasts a peer's Forwarded-NPDU on its
+subnet only when the peer sent it to the BBMD alone (Annex J.4.5): its own
+BDT row has the all-ones mask, so peers send to it by unicast, the datagram
+arrived by unicast, and the sender isn't on the BBMD's subnet at the BBMD's
+own UDP port. A peer on the subnet at another port serves another B/IP
+network there (Annex J.1.2), so its forward is still rebroadcast. The
+transport asks the host for the subnet's mask at start; without one (behind
+NAT, where the own address is a global one, or on an OS with no lookup) a
+forward from a peer on the BBMD's own subnet is rebroadcast too. With the
+subnet's mask in its own row, peers send to the subnet's directed broadcast
+address and every device there has the message already. Either way it goes
+to the foreign devices. Never
+rebroadcasting one that arrived by broadcast (to the configured broadcast
+address or 255.255.255.255) also stops a BDT row that is the BBMD itself
+under another address from looping a broadcast.
+
+The tables and the forwarding rules are those of the `no_std` crate
+`bacnet-bip-core`, which firmware can use on its own (see
+[the architecture notes](architecture.md#the-bip-bbmd-and-the-portable-core)).
+`BipTransport::bbmd_state()` lends the transport's `BbmdState`, whose `bdt()`
+and `fdt()` return copies of the rows.
 
 A BBMD forwards its own broadcasts as well as those of other devices on its
 subnet (Annex J.4.5). Each `send_broadcast` in BBMD mode queues a
@@ -1885,6 +2718,441 @@ stopped worker, which only happens as the transport stops, logs at debug
 before the local send and does not depend on it, so in BBMD mode an `Err` from
 `send_broadcast` can follow a forward that was already queued.
 
+### B/IP modes on the builders
+
+A B/IP node is in one mode, and `BipMode` names it (#938): `Normal` (the
+default), `Foreign(ForeignDeviceConfig)` or `Bbmd(BbmdOptions)`. The client,
+server and endpoint builders take it as `.mode(...)`, so a BBMD that also
+registers as a foreign device can't be built. `BbmdOptions` carries what the
+BBMD setters above take: the BDT, the foreign-device policy (`None` refuses
+every registration), the Delete-FDT-Entry ACL (empty denies every source), the
+persisted-BDT path, the `FanoutPolicy` and `alone_on_subnet` (true for a BBMD
+that is the only device of its B/IP network on its subnet, as behind a NAT
+router: it then skips the local rebroadcast of forwarded and distributed
+broadcasts; false by default) and `nat`, for a BBMD behind a NAT router
+([below](#a-bbmd-behind-a-nat-router)). `BipTransport::set_mode` maps a mode
+onto those setters and replaces whatever was set up before; the setters remain
+for code that builds a transport by hand, and `start()` still refuses a
+transport set up as both.
+
+```rust
+use std::net::Ipv4Addr;
+use std::time::Duration;
+
+use bacnet_client::client::BACnetClient;
+use bacnet_endpoint::bip::BipEndpointBuilder;
+use bacnet_server::server::BACnetServer;
+use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy};
+use bacnet_transport::bip::{BbmdOptions, BipMode, ForeignDeviceConfig};
+
+// A BBMD server that takes foreign-device registrations.
+let server = BACnetServer::bip_builder()
+    .interface(Ipv4Addr::new(192, 168, 1, 10))
+    .broadcast_address(Ipv4Addr::new(192, 168, 1, 255))
+    .database(db)
+    .mode(BipMode::Bbmd(BbmdOptions {
+        bdt: vec![BdtEntry {
+            ip: [10, 0, 5, 2],
+            port: 47808,
+            broadcast_mask: [255, 255, 255, 255],
+        }],
+        foreign_device_policy: Some(ForeignDevicePolicy::default()),
+        ..BbmdOptions::default()
+    }))
+    .build()
+    .await?;
+
+// A client behind NAT, registered with that BBMD: the TTL stays long, while
+// renewing every 20 s keeps the NAT mapping the BBMD's replies use open.
+let client = BACnetClient::bip_builder()
+    .port(0)
+    .mode(BipMode::Foreign(ForeignDeviceConfig {
+        bbmd_ip: Ipv4Addr::new(203, 0, 113, 7),
+        bbmd_port: 47808,
+        ttl: 600,
+        renewal_interval: Some(Duration::from_secs(20)),
+    }))
+    .build()
+    .await?;
+
+// The endpoint takes the same modes.
+let session = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
+    .mode(BipMode::Bbmd(BbmdOptions::default()))
+    .build_session()?;
+```
+
+How a foreign device's registration goes, a BBMD's refusal included, is
+`ForeignRegistrationSnapshot`: `registered`, `lease_remaining`,
+`next_attempt_in`, the last attempt's `last_result` and `last_outcome`, and the
+totals. `BACnetClient::foreign_registration()` and
+`BACnetServer::foreign_registration()` read it from a B/IP transport (any
+transport with `AsBip`; the server's fails once it has stopped), and
+`EndpointSession::foreign_registration()` from a session `BipEndpointBuilder`
+built. They read the transport's `bvlc_client_snapshot()` and send nothing. An
+endpoint keeps its transport out of reach, so the builder takes a
+`BipTransport::bvlc_client_status()` handle first; take one yourself before
+handing a transport to another owner. A registered Network Port reports the
+mode in `BACnet_IP_Mode`.
+
+### A BBMD behind a NAT router
+
+Sites on private address ranges can join one B/IP network across the
+internet through NAT routers (Annex J.7.5, #940). Each site exposes one
+device, a BBMD (usually a BBMD and router in one), whose router port-forwards
+a public UDP port to it; every other device at the site sits on its own
+BACnet network behind that router-BBMD. The stack can't check that layout,
+so set it up that way.
+
+Give the BBMD its router's public address and port, its global address, in
+`BbmdOptions::nat` (or `BipTransport::set_bbmd_nat_traversal`). The address is
+configuration: nothing discovers it, and no host names are taken. With it:
+
+- The BBMD runs under the global address. Its BDT must list that address as
+  its own row, and every row must have the all-ones mask, since a directed
+  broadcast can't cross a NAT router (two-hop only). `start()` fails with an
+  error that says which rule a BDT breaks; a written BDT that breaks one is
+  refused at activation. An empty BDT is taken: a BBMD with no peers that
+  serves only foreign devices. No private own row is added. `BbmdState::own_address()` is the
+  global address; `local_address()` stays the socket's.
+- The Forwarded-NPDUs the BBMD builds name the global address as the
+  originating device: its own broadcasts and those from devices on its
+  subnet. Remote devices answer that address, which the router forwards to
+  the BBMD. A Forwarded-NPDU it receives keeps its originating address on
+  the way to its foreign devices and its subnet.
+- A registered foreign device's Distribute-Broadcast-To-Network goes on
+  with the global address as its origin when the device registered from a
+  private address, RFC 1918 or a range in `NatTraversal::private_ranges` (at
+  most four), since other sites couldn't answer it there. One that
+  registered from a public address keeps its own.
+- `alone_on_subnet` is usually true behind NAT and composes as before: the
+  forwarded and distributed broadcasts skip the private subnet.
+- The socket, its subnet mask lookup and its echo filter stay on the private
+  side, and a restart of a `0.0.0.0` BBMD keeps the global row. Because
+  the own address is the global one, the subnet mask doesn't decide the
+  local rebroadcast of a peer's forward behind NAT: a peer is never taken
+  to be on the BBMD's subnet.
+- Turning NAT off (`set_nat_traversal(None)`, or BACnet_IP_NAT_Traversal
+  FALSE activated) drops the BDT row of the old global address, which no
+  longer names this BBMD, and adds the local own row as usual. The row is
+  dropped from a BDT written in the same activation too.
+- `NatTraversal` is `#[non_exhaustive]`: build it with `NatTraversal::new`
+  and `with_private_range`. The Rust API takes a loopback global address,
+  for tests on one host; a Network Port write and Python refuse one.
+
+```rust
+use std::net::{Ipv4Addr, SocketAddrV4};
+
+use bacnet_transport::bbmd::{BdtEntry, NatTraversal};
+use bacnet_transport::bip::{BbmdOptions, BipMode};
+
+let global = SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 1), 47809);
+let other_site = SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 2), 47809);
+let two_hop = |address: SocketAddrV4| BdtEntry {
+    ip: address.ip().octets(),
+    port: address.port(),
+    broadcast_mask: [255; 4],
+};
+let mode = BipMode::Bbmd(BbmdOptions {
+    // Both sites' public addresses, this one's included.
+    bdt: vec![two_hop(global), two_hop(other_site)],
+    alone_on_subnet: true,
+    nat: Some(NatTraversal::new(global)),
+    ..BbmdOptions::default()
+});
+```
+
+A foreign device behind NAT needs no NAT setting: its BBMD records it under
+the router's address, and the device only has to register often enough to
+keep the router's UDP mapping open. Set `ForeignDeviceConfig::renewal_interval`
+below the router's mapping timeout, 30 s or less for many routers, and keep
+the TTL long; any interval from 100 ms up is taken.
+
+Such a device hears only what comes back through its own BBMD. A router that
+forwards nothing inbound drops a unicast reply that another site sends it
+directly, such as an I-Am answering its Who-Is: servers answer a Who-Is with a
+directed I-Am by default (`DiscoveryPolicy::prefer_directed_responses`). To
+reach a foreign device behind such a router, have the remote devices answer
+with a broadcast I-Am (set that field to false), which travels back through the
+BBMDs, or give the device a port forward of its own.
+
+The registered Network Port serves the setting as BACnet_IP_NAT_Traversal and
+BACnet_IP_Global_Address; see
+[Registered B/IP Network Port](#registered-bip-network-port).
+
+**Security:** prefer BACnet/SC (Annex AB) for linking sites across the
+internet. A BBMD reachable from the internet answers anyone who can send it a
+datagram; it relies on the Delete-FDT-Entry ACL, the foreign-device policy
+(an allowed-source list, quotas and rate limits), the FDT caps and the fan-out
+budgets that bound broadcast amplification, and B/IP has no authentication.
+
+### B/IP multicast (B/IP-M)
+
+A B/IP node can use an IPv4 multicast group in place of its subnet's
+broadcast address (Annex J.8, #941): its local and global broadcasts go to
+the group as Original-Broadcast-NPDU, and it takes Original-Broadcast-NPDU
+and Forwarded-NPDU only from the group. A subnet broadcast, the directed one
+or 255.255.255.255, is dropped and counted as a destination mismatch: B/IP-M
+devices and plain B/IP devices don't share an IP subnet (J.8.1), so such a
+broadcast belongs to another network. Directed messages stay
+Original-Unicast-NPDU between unicast addresses. The group's members should
+share one BACnet network number.
+
+```rust
+use std::net::Ipv4Addr;
+
+use bacnet_client::client::BACnetClient;
+use bacnet_transport::bip::{BipMulticast, BipTransport};
+
+// A group whose members are one IP router apart: raise the TTL to 2.
+let group = BipMulticast::new(Ipv4Addr::new(239, 255, 66, 1))?.with_ttl(2)?;
+let client = BACnetClient::bip_builder()
+    .interface(Ipv4Addr::new(192, 0, 2, 20))
+    .multicast(Some(group))
+    .build()
+    .await?;
+
+// By hand: set_multicast refuses a 0.0.0.0 interface at once.
+let mut transport = BipTransport::new(Ipv4Addr::new(192, 0, 2, 21), 47808, Ipv4Addr::BROADCAST);
+transport.set_multicast(Some(group))?;
+```
+
+- **Configuration.** `BipMulticast::new` takes a class D address only, and
+  refuses 224.0.0.0/24, the block reserved for local network control. The
+  multicast TTL defaults to 1 (`BipMulticast::DEFAULT_TTL`), which keeps the
+  group on the local network; raise it with `with_ttl` (1 to 255) for a
+  group that spans IP routers, which must forward multicast. The group's
+  UDP port is the transport's own unless `with_port` sets another (on
+  Windows it must equal the transport's port). The client, server and
+  endpoint builders take `.multicast(Option<BipMulticast>)`.
+- **An explicit interface.** The group is joined on the transport's
+  interface and multicasts leave from it, so `set_multicast` refuses a
+  `0.0.0.0` interface: there is no route lookup to pick one. With no group
+  port, the transport's port must be nonzero. `start()` also refuses a
+  member that is a foreign device, or a transport sharing its port by
+  address. A BBMD with a group serves it (below).
+- **Sockets.** The primary socket sends to the group from the interface
+  (`IP_MULTICAST_IF`), with the TTL and with loop on, so several stacks on
+  one host can share a group; each drops its own looped-back copy as an own
+  echo (`ReceiveCounters::own_echo`). On Linux, macOS and the BSDs a
+  receive-only listener binds the group's address and port with
+  `SO_REUSEADDR` (and `SO_REUSEPORT` on macOS and the BSDs), joins it, and
+  is read beside the primary in arrival order; the primary takes no group
+  traffic (Linux: `IP_MULTICAST_ALL` off). Members on one host at one IP
+  address need their own unicast ports and a shared group port
+  (`with_port`). Windows can't bind a group address, so there the primary
+  socket joins the group, the group's port must be the transport's, and
+  Windows multicast is untested; since the group's port is the
+  transport's there, two members can't share one Windows host. The group is
+  left when its socket closes: at stop, or when an activation replaces it.
+  Another program holding the group's port without `SO_REUSEADDR` (bound
+  to `0.0.0.0` on it, say) makes the listener's bind fail, and the start
+  fails with it. Bind the interface's primary address: with a secondary
+  (alias) address some systems send multicast from the primary one, and the
+  node's own copies would then look like a peer's.
+- **Addresses.** `bip_broadcast_endpoint()` and `is_broadcast_mac()` name
+  the group and its port; any multicast address stays a group destination,
+  so a unicast there is refused. In the core, a link whose
+  `LocalSubnet::broadcast` is a class D address is a member:
+  `Addressed::classify` then counts only the group as a broadcast, and
+  `Node::set_subnet` moves a running node to another group or off.
+  `LocalSubnet::member(group, directed)` keeps the subnet's directed
+  broadcast a group address beside it, so a datagram from it, or a
+  Forwarded-NPDU naming it as the origin, is still dropped (#1493, #1504);
+  the transport's `is_group_destination` agrees. `Link::validate` refuses a
+  group in foreign-device mode (`ConfigError::MulticastMode`): a foreign
+  device broadcasts through its BBMD.
+- **Network Port.** BACnet_IP_Multicast_Address reads the group, or
+  0.0.0.0 while off. A ReinitializeDevice activation of a written group
+  binds, joins and wraps a new listener before the link changes (a failure
+  leaves the old group and answers the activation with the error; the
+  primary socket's multicast send options may already be set, which matters
+  only to multicast sends), then
+  moves the link and hands the listener to the receive loop, which drops a
+  datagram the old listener had read ahead; 0.0.0.0 leaves multicast and
+  returns to the configured broadcast address. Only a transport that lends
+  its group waits on that hand-off; the others' receive loops pay nothing
+  for it. On Windows the primary socket joins the new group, the link
+  moves, and only then is the old group left. `BipTransport::multicast()` reports the group in effect, and a
+  later start keeps it. With `BipTransport::set_multicast_persist_path`
+  it is also saved to a small file of its own (11 octets: a tag, the group,
+  the TTL and the group's port; 0.0.0.0 when multicast was turned off), on a
+  thread of its own after each activation, so a new process over the same
+  path starts in it ahead of its configured group, with a warning when the
+  two differ (#1954; Clause 12.56). A failed save is logged and counted in
+  `multicast_persist_failures()`, and the group stays in use; a file that
+  can't be read is logged and the configured group is used. It is not a
+  trailer in the persisted-BDT file: that file tells its one NAT trailer
+  apart by length, and a plain member has no BDT file. On a group BBMD
+  with both files the two are saved independently, after the same
+  activation, so a crash between the two writes can leave the new group
+  saved beside the old BDT. If that BDT's own row isn't two-hop, the next
+  start refuses it for the group (with a warning) and falls back to the
+  configured BDT, and if the configured BDT doesn't fit the group either the
+  start fails. To recover, give the configured BDT an all-ones own row (or
+  write a fitting BDT to the persisted file), or delete the persisted-group
+  file to start in the configured group.
+- **The BBMD for a group (J.8.3).** A BBMD with a group serves it: enable
+  the BBMD and set the group on one transport (`BipMode::Bbmd` and
+  `.multicast(...)` on a builder). It joins the group as a member does, and
+  the group stands in for its subnet's broadcast address: an
+  Original-Broadcast-NPDU from the group goes on to its BDT peers and
+  foreign devices, a peer's Forwarded-NPDU goes to the group and the
+  foreign devices, and a foreign device's Distribute-Broadcast-To-Network
+  goes to the group, the BDT and every other foreign device. Its own
+  broadcasts go to the group and on to the BDT and foreign devices. Its own
+  BDT row must have the mask 255.255.255.255, so every peer sends it the
+  network's broadcasts itself; a BDT without its own row gets one that
+  does. `start()` refuses a configured BDT whose own row has another mask,
+  takes the configured BDT in place of a persisted one that has it (with a
+  warning, as for any invalid file), and a later `set_bdt` or Network Port
+  activation refuses it too (`BdtError::OneHopForGroup` in the core). The group is configured on its
+  own, never as a BDT row: the BDT policy still refuses multicast
+  addresses. Like a member it keeps its subnet's directed broadcast as a
+  group address. The other BBMDs need nothing new: a plain B/IP BBMD lists
+  the group's BBMD as a two-hop peer. A plain peer BBMD on the group BBMD's
+  own IP subnet is outside the standard (J.8.1) and works in one direction
+  only: its forwards reach the group, but it takes the group BBMD's
+  forwards as already heard on its subnet and doesn't rebroadcast them
+  there. `start()` warns about such a peer (one at the BBMD's own port
+  inside its masked subnet).
+- **Mixed networks.** A network that has both B/IP-M and plain B/IP
+  devices needs exactly one BBMD for the group, and the two kinds of device
+  must not share an IP subnet (J.8.1), or some devices would hear a
+  broadcast twice. Neither can be checked by one node: configure it so. A
+  network of B/IP-M devices alone needs the group's BBMD only to serve
+  foreign devices or other subnets.
+- **With NAT traversal.** A BBMD behind a NAT router (#940) may serve a
+  group: both rules want a two-hop own row, and the origin rules for what it
+  forwards are the NAT ones. The group stays on the private side.
+- **The BBMD's Network Port.** Its port serves
+  BACnet_IP_Multicast_Address beside the BBMD rows, writable as on a NORMAL
+  port, with Changes_Pending and ReinitializeDevice (#1963). The group and
+  the BBMD's own BDT row go together under the all-ones rule, so a written
+  group waits with the BBMD rows and goes in with them through
+  `BbmdTables` (`BbmdChanges::multicast_group`, offered when
+  `BbmdTables::changes_multicast_group` is true): the check before the
+  handler runs judges the BDT under the rule the new group sets, and
+  activation readies the new group's listener first, then puts the tables
+  in, then moves the link, undoing the steps before any that fails, so both
+  change or neither does. A set that doesn't fit, such as a new group with a
+  one-hop own row, answers PROPERTY / INVALID_CONFIGURATION_DATA and stays
+  pending; leaving the group (0.0.0.0) lifts the rule. A restart without a
+  group makes it a plain BBMD again.
+
+### bacnet-bip-core (firmware)
+
+The B/IP node and BBMD above run on `bacnet-bip-core`, which firmware can use
+on its own: `no_std`, no allocator, and time as a `bacnet-time` `Instant`
+passed to each call (see
+[the architecture notes](architecture.md#the-bip-bbmd-and-the-portable-core)).
+It re-exports the BVLL codec as `bacnet_bip_core::codec`. A `now` earlier than
+the latest one passed in is taken as that latest one, so a clock that steps
+back holds the node's timers still instead of failing.
+
+The types that may grow are `#[non_exhaustive]` (#1684), so code outside the
+crate builds them like this:
+
+- `node::Datagram::new(payload, source, to)`: read whole by the primary
+  socket; set `path` or `truncated` on the result when they differ.
+- `bbmd::Context::new(now, fdt_fanout)`.
+- `LocalSubnet::new(broadcast)`, with no mask; set `mask` when it is known.
+- `bbmd::Registration::new(address, ttl, registered_at)`, for `Fdt::restore`.
+- `node::LocalAddresses::new(own, broadcast)`, for a socket bound to `own`;
+  set `wildcard` for one bound to the wildcard address.
+- `node::Groups::new(broadcast, interface)`, or `Link::groups`.
+- `node::Link::new(address, subnet, mode)` and `node::Foreign::new(bbmd,
+  ttl)`, then set the fields to change (a link's `budget`, a registration's
+  `hold` or `retry`); `Node::new` checks the link again.
+- `bbmd::RegistrationLimits::DEFAULT` (also its `Default`), then set the
+  limits.
+- `node::NodeCounters` and `node::ExchangeCounters` from `Default`, then set
+  the counts.
+
+`node::Addressed` stays a plain record of two booleans: the receive rules
+ask a destination only whether it was this node and whether it reached the
+whole subnet.
+
+The core builds the rest, which a caller reads but can't build, or match
+without `..`: `NodeCounters`, `ExchangeCounters`, `RegisterAttempt`,
+`RegistrationSnapshot`, `Lease`, `Outgoing`, `Delivery`, `Response`
+(`Node::resolve` takes the one `Link::receive` returned), and `bbmd::Target`
+(fill storage with `Target::UNUSED`), `Fanout`, `Distribution` and
+`RegisterOutcome`. A `match` on any of these enums needs a wildcard arm:
+
+- errors, refusals and drops: `ConfigError`, `ExchangeRefusal`, `Discard`,
+  `ForwardRefusal`, `DistributeRefusal`, `RegistrationRefusal`, `BdtError`
+  and `EntryError`;
+- outcomes and events: `AttemptOutcome` and `RegistrationEvent`;
+- settings and inputs the host picks: `Retry`, `ForwardedTrust`,
+  `LocalFailure`, `Path` and `Reservation`.
+
+The enums a host acts on case by case, and the closed sets, stay exhaustive:
+`Action`, `Received`, `Inbound`, `ForBbmd`, `Mode`, `Arrival`, `Cast`,
+`Via`, `Registered`, `Admission`, `Operation`, `bbmd::Request` and
+`port::Ingress`.
+
+`bbmd::GRACE_PERIOD` is a `Duration`. `bbmd::StorageFull` and
+`BdtError::Capacity` carry `needed` and `available`, in entries, as the
+codec's `SinkFull` does in octets. `RegistrationRefusal` and `EntryError`
+implement `core::error::Error`.
+
+**The port driver** (`bacnet_bip_core::port`, #1766) joins a node to a
+socket and carries out what it asks, so firmware doesn't write that loop
+itself. Every datagram leaves through your `Datagrams`, which encodes the
+`Bvll` straight into the socket's buffer and refuses with
+`SendRefusal::SocketFull` or `SocketError`; what a datagram brought comes
+back as an `Ingress`.
+
+- `NodePort::new(node, held)` runs a node in normal or foreign-device mode:
+  call `start` once, then `receive`, `unicast`, `broadcast` (which returns
+  the `Admission`: sent, or held while the first registration is
+  outstanding) and `on_deadline`. It sends the NAKs and the registrations,
+  and holds broadcasts in the `HeldBroadcast<N>` slots you lend: at least
+  `Foreign::hold` of them, each as long as the link's broadcast limit.
+- `BbmdPort::new(link, tables, targets, rows)` runs a BBMD's `Link` over
+  `Tables` you lend, with `Tables::MAX_TARGETS` targets and `F` rows. It
+  forwards each broadcast where the tables say and answers each management
+  request itself; a BBMD registers nowhere, so it needs no `Node`.
+  `receive` takes a policy that is both `node::Policy` and `bbmd::Rules`;
+  `node::Permissive` is both.
+- Both count the datagrams of their own the socket refused, drained with
+  `take_counters()` (a `PortCounters` of `u32`s) and looked at with
+  `counters()`, as the node's own counts are (`Node::take_counters`, and
+  `Node::counters` since #1767). `PortError` says why a port refused its
+  node or storage.
+
+`Tables::serve(request, now, rules, rows)` answers the four management
+requests a BBMD serves (`bbmd::Request`), each with the answer Annex J
+gives it: a registration with Successful completion or the
+Register-Foreign-Device NAK, the two table reads with their ACKs (a
+Read-FDT whose rows don't fit, with the Read-FDT NAK), and an entry's
+deletion with Successful completion or, for no live registration or a
+deletion `Rules::admit_delete` refuses, the Delete NAK. The returned `Answer` has the requester, the message and a `Served`
+saying what the request came to. `bbmd::Rules` holds the host's own rules,
+each with a default that admits: the registration limits, which sources
+the reserved slots are for, an admission check, and who may delete. The
+node hands each request over as `ForBbmd::Management(Request)`.
+
+Moving from 0.13's `bacnet_router_core::bip` ports:
+
+- `BipPort` and `BbmdPort` are `bacnet_bip_core::port::NodePort` and
+  `BbmdPort`, without the `PortId`: `NodePort::new(node, held)` and
+  `BbmdPort::new(link, tables, targets, rows)`, which takes the BBMD's
+  `Link` instead of a `Node`, and storage for a Read-FDT-Ack's rows. The
+  router's adapter is `bacnet_router_core::bip::BipPort` (below).
+- `HeldBroadcast`, `Datagrams`, `Ingress`, `PortCounters` and `PortError`
+  move to `bacnet_bip_core::port`. `Datagrams::send` refuses with the
+  bip-core `node::SendRefusal::SocketFull` or `SocketError` instead of the
+  router's `Full` or `Other`.
+- `Ingress::Npdu` carries the node's `Delivery`; `BipPort::arrived` makes
+  the router's `Arrived` of it. `Ingress::Management(ForBbmd)` is gone: the
+  port answers each request, and says what it came to with
+  `Ingress::Served(Served)`.
+- `ForBbmd::Register`, `ReadBdt`, `ReadFdt` and `DeleteFdtEntry` are
+  `ForBbmd::Management(Request::Register { .. })` and so on.
+- A `BbmdPort` has no `node`, `node_mut`, `next_deadline` or `on_deadline`
+  any more: `link()` reads its link.
+
 ---
 
 ## bacnet-network
@@ -1895,6 +3163,13 @@ Network layer routing, router tables, and the multi-port router.
 use bacnet_network::layer::NetworkLayer;
 use bacnet_network::router::BACnetRouter;
 ```
+
+`NetworkLayer::start` returns an `ApduReceiver`, which decodes the
+transport's NPDUs in the task that polls it (#1713). Network controls reach
+the control receiver only while the `ApduReceiver` is polled, so keep polling
+it, as the server and client dispatch loops do, or use
+`start_with_admission()`, whose dispatch task decodes on its own. A stop, or
+dropping the layer, ends the stream once what was queued is drained.
 
 `BACnetRouter::start` takes the ports and a `RouterOptions` (#1220).
 `RouterOptions::new()` is the plain router: a raw `mpsc::Receiver` for local
@@ -1907,6 +3182,11 @@ described below (`network_control_receiver_with_admission()` for a tracked
 one). The start returns a `StartedRouter` holding the router, the
 local APDU receiver and, when asked for, the network-control receiver.
 
+Every port of one router has the same transport type. `RouterPort`'s
+defaults to `AnyTransport` (#2043), so a router that mixes link types takes
+a `Vec<RouterPort>` of `AnyTransport` ports; one whose ports share a
+concrete transport names it, as in `RouterPort<BipTransport>`.
+
 ```rust
 use bacnet_network::router::{BACnetRouter, RouterOptions, StartedRouter};
 
@@ -1914,22 +3194,237 @@ let StartedRouter { router, apdus, network_control } =
     BACnetRouter::start(ports, RouterOptions::new().track_admission()).await?;
 ```
 
-`BACnetRouter::start_with_config` additionally accepts a `RouterConfig`.
-Setting `announce_interval` periodically repeats the startup
-I-Am-Router-To-Network advertisements; `None` preserves one startup
-advertisement. Independently, a port health transition from a non-operational
-state to `Up` immediately re-advertises reachable networks on that recovered
-port. A zero interval is rejected before any transport starts.
+#### Who may change routes (#518)
 
-At startup the router records each port's `max_npdu_length()` hint after the
-transport handshake. Before queueing a routed unicast, it encodes the actual
-rewritten NPDU and compares that complete length with the target port's hint.
-An oversize NPDU is not forwarded: the router increments its saturating
-`oversize_drops()` total and returns Reject-Message-To-Network reason 4
-(`MESSAGE_TOO_LONG`) when the originator can be addressed. A frame exactly at
-the limit is forwarded.
+SC mutual TLS authenticates a connection; it doesn't authorize a peer to change
+the routing table. With `control_policy(ControlPolicy::Hardened)` and a
+`control_authorizer()`, only the controls the authorizer allows can learn, mark
+busy or available, reject or initialize routes.
 
-An inbound NPDU whose DLEN or SLEN is past `NpduAddress::MAX_MAC_LEN` is
+`ControlAuthContext::sending_peer_principal()` is the `ScPrincipal` of the
+verified leaf certificate of the direct BACnet/SC peer that handed the message
+over: the last hop, even when the message carries an SNET. Trusting it trusts
+everything that peer forwards, and allowing it binds the routes it announces to
+the VMAC it sent them from, not to the certificate.
+
+Only **unicast** controls can carry one: Initialize-Routing-Table and its Ack,
+Reject-Message-To-Network, and a directed I-Could-Be-Router-To-Network. The
+route announcements are broadcasts (Clauses 6.6.3.2, 6.6.3.3):
+I-Am-Router-To-Network, and the ones marking a route busy or available again;
+and on BACnet/SC every broadcast goes
+through the hub, which relays it with its registration of the sender's VMAC and
+never the sender's certificate. A conforming SC router's announcements therefore
+carry no principal; that is a limit of BACnet/SC. B/IP, B/IPv6, MS/TP and
+Ethernet senders have none either.
+
+So scope the rule by message type and port. On a router whose ports 0 and 1 are
+BACnet/SC and port 2 is B/IP, this requires a configured router certificate for
+unicast controls on the SC ports, gates SC announcements on the hub-registered
+VMAC (a claim the hub vouches for, which hub certificate bindings, #800, can tie
+to certificates), and keeps the standard behaviour on B/IP:
+
+```rust
+use std::sync::Arc;
+use bacnet_network::router::control_policy::{ControlAuthContext, ControlAuthorizer, ControlPolicy};
+use bacnet_npdu::NetworkMessageType as Message;
+
+let routers: Vec<ScPrincipal> = configured_router_certificates();
+let announcers: Vec<MacAddr> = configured_router_vmacs();
+let authorizer: ControlAuthorizer = Arc::new(move |context: &ControlAuthContext| {
+    if ![0, 1].contains(&context.port_idx) {
+        return true; // B/IP: no certificates
+    }
+    let unicast = [
+        Message::INITIALIZE_ROUTING_TABLE,
+        Message::INITIALIZE_ROUTING_TABLE_ACK,
+        Message::REJECT_MESSAGE_TO_NETWORK,
+        Message::I_COULD_BE_ROUTER_TO_NETWORK,
+    ]
+    .contains(&context.message_type);
+    if unicast {
+        context.sending_peer_principal().is_some_and(|peer| routers.contains(&peer))
+    } else {
+        announcers.contains(&context.source_mac)
+    }
+});
+let options = RouterOptions::new()
+    .control_policy(ControlPolicy::Hardened)
+    .control_authorizer(authorizer);
+```
+
+The router stays `Permissive` unless a policy is configured, so routers that
+announce themselves as the standard expects keep working by default.
+Advertisements circulating in a looped topology are a separate problem, tracked
+in #1810. A relayed Who-Is-Router-To-Network keeps the requester's SNET/SADR, or
+gains the arrival network and sender when it had none (Clause 6.6.3.2), pinned
+by `envelope_discovery_tests`.
+
+Each BACnet/SC node also limits the network-layer messages one source may hand
+in (#518): `ScControlRateLimit` (`ScControlRateLimit::new(burst, per_second)`),
+set with `with_control_rate_limit()` on `ScTransport` or `DirectAcceptConfig`,
+gives each source a bucket of 256 messages refilling at 32 a second by default,
+about a quarter of the hub's own per-sender broadcast budget (#644). A direct
+peer's source is its verified certificate, so one certificate keeps one budget
+across VMACs and reconnects; a hub-relayed message's source is its originating
+VMAC, so a hub client that registers under several VMACs gets a budget for each.
+Messages over budget are dropped before they take a queue slot and counted in
+`ScNpduDropCounts::control_rate_drops`. APDUs are never charged, so a control
+flood starves neither that source's application traffic nor anyone else's. At
+most 256 sources keep their own bucket; once all are in use and none has
+refilled, new sources share one overflow bucket, so a sender holding all 256
+drained can hold new sources' control messages to that shared budget until a
+bucket refills. A site where one router legitimately sends more, such as one
+fronting many networks, raises the limit. `ScNpduAdmissionPolicy`,
+`ScNpduDropCounts` and `ScControlRateLimit` are `#[non_exhaustive]`: build them
+with `Default`, `new` or the builders.
+
+Every routing decision is `bacnet-router-core`'s engine (#1679), which the
+router keeps behind one lock: each port's dispatch task takes it for one
+frame at a time, as the aging sweep and `table()` do, and nothing holds it
+across an await. `table()` returns a `RouterTableGuard`, which derefs to the
+live `RouterTable`: the core's `Table`, re-exported in
+`bacnet_network::router_table` and sized for `ROUTE_CAP` (256) routes and
+`HOLD_RECORDS` (1,024) reject hold-down records. A lookup returns a `Route`
+by value, a copy of the table's row read through its getters (`port()`,
+`is_direct()`, `next_hop()`, `reachability()` and the timestamps); a route
+changes only through the table's own calls. `apply_reject` takes
+`bacnet_npdu::RejectMessageReason`, and routes hold `bacnet_npdu::Mac`. Times in the
+table are the router's own, Tokio time since `start`, which `now()` reads, so
+paused-time tests drive the sweep too. Calls on the table are local
+management, which no wire-control policy sees; drop the guard soon, since
+every port waits for it. The lock isn't reentrant: calling `table()` again
+while a guard lives on the same thread, or from the control authorizer,
+never returns. `counters()`, the four drop counts, `now()` and
+`control_snapshot()` take no lock, so they are safe to call meanwhile: the
+engine's counts are taken and added to the router's `u64` totals before
+each lock is let go. `bacnet_network::router::Counters` holds those totals
+since start, as before #1767; it is the hosted router's own type now, no
+longer a re-export of the engine's, whose counts are drained `u32`s.
+
+```rust
+use bacnet_network::router_table::{Convergence, Reachability};
+
+let now = router.now();
+let mut table = router.table();
+table.set_convergence(Convergence::Hardened);
+let busy = table.effective_reachability(3000, now) == Some(Reachability::Busy);
+drop(table);
+```
+
+The control authorizer runs under the same lock, one call at a time, so it
+must not block or call into the router. A router has 1 to 255 ports, each
+on a network from 1 to 65534 and with a MAC of at most
+`bacnet_npdu::MAX_MAC_LEN` octets, and `start` refuses anything else, the
+network numbers before it starts any transport. Network 0 is no network, and
+0xFFFF, the global broadcast DNET, can't be the SNET the router puts in what
+it relays from the port (Clause 6.2.2.1); the core's `Router::new` refuses
+both too, with `ConfigError::ReservedNetwork` (#1698). The table stops at its
+route cap, direct routes included, for learning, Initialize-Routing-Table
+updates and I-Could-Be-Router offers alike, counting each refusal in its claim
+counters' `learned_cap_ignored`. At the cap, an I-Am-Router-To-Network or an
+Initialize-Routing-Table-Ack still refreshes the networks the table holds, and
+the first network it doesn't hold ends that message's learning (#1698).
+Two more bounds come with the engine. A rewritten NPDU longer than the
+engine's 65,556-octet scratch isn't routed: it is dropped, logged and
+counted in `BACnetRouter::counters().write_failures`. The scratch is the
+largest BVLC message, 65,535 octets, plus the SNET, SLEN and longest SADR a
+router adds, so any BACnet/SC NPDU (at most 61,327 octets, Table 6-1) fits
+with its added source address. No port carries more than 65,535 octets, so in
+practice only a global broadcast meets this bound: anything routed toward one
+network meets its port's limit first (below).
+And the table keeps at most `HOLD_RECORDS` (1,024) reject hold-down records,
+one per network and arrival port; a full pool gives up its oldest record,
+counted in its claim counters' `hold_evicted`.
+
+Where the router departed from Clause 6 before it moved onto the engine, it
+now follows the clause, with no switch to turn back (#1679):
+
+- **Egress limits (R1, #1665).** Each port carries the NPDUs its transport's
+  `max_npdu()` reports, read when the router starts it and followed after
+  that through `max_npdu_changes()`, as on a BACnet/SC failover (#1696); a
+  report under 64 octets counts as 64. An NPDU whose rewrite for its egress port is longer
+  than the port's limit for that kind of send, unicast or broadcast, draws
+  Reject-Message-To-Network reason 4 naming its DNET, sent to its origin like
+  any other reject (Clauses 6.4.4 and 6.6.3.5), and isn't sent. A remote
+  broadcast (a DNET with DLEN 0) does too. A global broadcast, or any other
+  message the router sends to every other port, leaves out a port too short
+  for it, with no reject. Both count in `counters().egress_too_long`, and
+  log a warning at most once per interval, with the count since, as a failed
+  send does. A queued send that the transport later refuses before transmission
+  uses the same original destination and return path for its reject (#1716);
+  forwarded rejects and fan-outs still get no reply.
+- **Rejects keep routes (R2).** A received reject changes the table for
+  reasons 1 (unreachable) and 2 (busy) only (Clause 6.6.3.5). One with any
+  other reason, such as R1's reason 4, leaves a learned route as it is and
+  counts in the claim counters' `reject_kept`, where it used to remove the
+  route. Every reject is still passed on toward its destination.
+- **Network numbers at startup (R3).** Each port first broadcasts a
+  Network-Number-Is with its network number, flagged as configured (Clause
+  6.4.20), then its I-Am-Router; a one-port router sends only the first.
+  Before, each port heard only the I-Am-Router.
+- **Reachable networks only (R4).** A Who-Is-Router that names no network is
+  answered with the networks reached through the other ports, in ascending
+  order, leaving out any marked unreachable; busy ones stay (Clause 6.6.3.2).
+  Before, unreachable networks were listed too, in no set order.
+- **No search behind the arrival port (R5).** A Who-Is-Router naming a network
+  the router reaches through the port it arrived on, that port's own network
+  included, gets no answer and isn't passed on: the router that serves it is
+  on the asker's network (Clause 6.6.3.2 searches only for a network the
+  table lacks). Before, it was passed on to the other ports.
+- **Hop count (R6).** The hop count comes down before the router decides
+  (Clauses 6.2.3 and 6.3.2): an NPDU for another router that arrives with a
+  hop count of 1 isn't relayed, and a global broadcast that arrives with 1 is
+  delivered to the router's own application and passed on nowhere. Each
+  counts in `counters().hop_count_drops`, with no reject, and warns at most
+  once per interval. Delivery onto an attached network, where the NPDU carries
+  no hop count, is unchanged.
+  Before, such an NPDU left with a hop count of 0.
+- **The router's own address (R7).** An APDU addressed to the router's own
+  MAC on any of its networks goes to the local APDU receiver, with the
+  arrival port's network as `ingress_network` (Clause 6.1, Figure 6-12).
+  Before, only its address on the arrival network did, and one for its
+  address on another network went out on that network's wire, to the router
+  itself. A reply now returns through the captured arrival port and immediate
+  peer, with the addressed router endpoint in SNET/SADR (#1699). A request
+  received on network A for the router's address on B therefore receives a
+  response identifying B. The request's SNET/SADR, when present, becomes the
+  reply destination. Requests without DNET and group deliveries select no
+  explicit source identity.
+
+`ReceivedApdu::response_route()` saves that addressing together with ingress
+transport authority. Pass it to `NetworkLayer::send_response_apdu_on_issuance`
+for delayed replies, or to `encode_response_for_handoff` before consuming an
+MS/TP prompt-reply sender. Router replies share the captured port's bounded
+send queue. A full queue, canceled waiter, stopped router or retired network
+owner prevents an unstarted send; there is no alternate-port fallback.
+An already started transport operation cannot be retracted. The issuance
+callback owns its captured state (`Send + 'static`) and runs when the queued
+operation starts. Neither that callback nor send success proves peer receipt.
+
+The server keeps the complete opening route through segmented reassembly,
+expiry, response retries and terminal responses. A later segment naming a
+different router endpoint terminates the partial request using its opening
+route. Cached confirmed responses retain APDU bytes only, so a replay uses the
+new request's route. Direct BACnet/SC replies additionally require the matching
+original socket capability; router context never replaces that authority.
+Reply sizing includes both source and destination NPDU fields and applicable
+port/direct-peer limits. Local delivery still slices the received APDU buffer.
+
+Firmware can retain the fixed-size `bacnet_router_core::router::ReplyPlan`
+from `Local::reply`, then use its `npdu()` view for sizing and writing. It owns
+addresses and a return port without borrowing engine scratch; it supplies no
+link authority. Explicit reserved source networks and empty source addresses
+are refused. This bounded response seam does not choose a source identity for
+arbitrary locally originated requests. These are #1699 interoperability and
+lifetime guarantees, not a complete router or physical-link qualification.
+
+When manually constructing `ReceivedApdu`, set `router_response: None` for an
+ordinary envelope. Preserve `response_route()` when passing router deliveries
+through application queues; cloning the envelope retains it but still omits
+the one-shot MS/TP reply sender. Reconstructing only provenance/direct metadata
+would discard the targeted router endpoint.
+
+An inbound NPDU whose DLEN or SLEN is past `bacnet_npdu::MAX_MAC_LEN` is
 refused before anything else happens to it (#1141). `NetworkLayer` discards it
 and counts it in `address_length_drops()`; a non-router has no reject message
 to send. `BACnetRouter` neither forwards nor delivers it, counts it in its own
@@ -1939,10 +3434,10 @@ that DNET, as it does a DNET it cannot reach. A global broadcast or an NPDU
 without a DNET is dropped without a reject.
 
 Both also drop a frame whose link-layer source MAC, as the transport reports
-it, is longer than `NpduAddress::MAX_MAC_LEN`, before decoding it, and count it
+it, is longer than `bacnet_npdu::MAX_MAC_LEN`, before decoding it, and count it
 in the same `address_length_drops()` (#1198). Nothing answers such a frame, and
 a router learns no route from it. No built-in transport reports a MAC that long
-(B/IP, BACnet/SC and Ethernet use 6 octets, MS/TP 1, B/IPv6 18), so only a
+(B/IP, BACnet/SC and Ethernet use 6 octets, B/IPv6 3, MS/TP 1), so only a
 custom `TransportPort` can, and every address the stack learns off the network
 fits a `BACnetAddress`.
 
@@ -1967,6 +3462,14 @@ APDU octet, so nothing is decoded, and an empty APDU counts too. Network
 messages, an Unconfirmed-Request, and an APDU to one device (a DADR, or no
 DNET at all) are not affected; the server judges a confirmed request that
 arrives by link broadcast itself.
+
+These checks are written once, in `bacnet-router-core`'s `node` module, and
+the router engine and `NetworkLayer` both run them (#1795). Past them,
+`NetworkLayer` runs on that module's `Node`: an NPDU whose DNET names one
+network, APDU or network message, is for a router to act on, so the layer
+hands it to neither receiver (Clauses 6.5.2.1 and 6.5.2.2): the node reports
+`Discard::NotRouted`, and the layer counts it in `counters().routed_drops`. `NetworkLayer::counters()` totals every drop by
+reason, a malformed NPDU (`malformed`) included.
 
 `BACnetRouter` sends each Reject-Message-To-Network it originates to whoever
 first sent the refused NPDU (Clause 6.4.4, #1158). An NPDU that arrived
@@ -2040,16 +3543,32 @@ empty DADR for every PDU type: a remote network's broadcast goes through
 its link DA is the broadcast MAC. `send_apdu` to the MAC the transport reports
 as its broadcast, or any other group address the medium carries
 (`TransportPort::is_group_destination`: on B/IP the limited broadcast, the
-configured broadcast IP or a multicast address at any port, on B/IPv6 any
-multicast group, on Ethernet any MAC with the group bit set), is a local
-broadcast too, but the layer doesn't ask the transport on every unicast:
+configured broadcast IP or a multicast address at any port, on Ethernet any
+MAC with the group bit set; a B/IPv6 MAC is a VMAC, which names no group), is
+a local broadcast too.
+
+`send_apdu` sends an Unconfirmed-Request for one of the groups the link's own
+broadcast stands for (`TransportPort::local_broadcast_destinations`) through
+the transport's `send_broadcast` (#1677). B/IP refuses every unicast to one of
+its group addresses with `Error::Encoding`, sending nothing, since its
+receivers drop an Original-Unicast-NPDU that wasn't sent to their own address.
+On B/IP those groups are the ones at the link's own UDP port: a group address
+at another port belongs to another B/IP network, so a send there is left to
+the transport, which refuses it. On Ethernet a multicast MAC becomes the
+all-ones broadcast. The layer takes the rule when it is made and again at
+start, so no send calls back into the transport; a transport that gives no
+rule (`group_destinations`, which the local-broadcast rule defaults to) has
+every send go as addressed. Anything else goes to the transport as given,
+where B/IP refuses it; the layer doesn't refuse it itself.
+
 `BACnetClient`'s confirmed requests, the endpoint's egress and its requester,
-which take caller-chosen MACs, refuse anything but an Unconfirmed-Request there
-themselves. The server refuses one for the confirmed requests it starts
-itself, to event recipients, Channel and Command targets, audit recipients and
-bound devices, and binds no device to one (#1493); its replies and COV
-notifications go to the source a request came from. `is_broadcast_mac` keeps
-its narrower meaning, this link's own broadcast, which routing relies on.
+which take caller-chosen MACs, refuse anything but an Unconfirmed-Request to a
+group address themselves. The server refuses one for the confirmed requests
+it starts itself, to event recipients, Channel and Command targets, audit
+recipients and bound devices, and binds no device to one (#1493); its replies
+and COV notifications go to the source a request came from.
+`is_broadcast_mac` keeps its narrower meaning, this link's own broadcast,
+which routing relies on.
 
 A reply goes back to the link-layer MAC its request came from, so a
 confirmed request from a group address would get its answer, any segment
@@ -2069,11 +3588,299 @@ connected port, to a DADR that is a group destination there
 (`TransportPort::group_destinations`), unless its APDU is an
 Unconfirmed-Request (#1504). As one unicast it would reach every node in the
 group without the broadcast network addresses #1491 filters. It is delivered
-nowhere, draws no reject, and counts in `group_dadr_drops()`. Network
-messages, and a group DADR on a network behind another router, which that
-router judges, are not affected. A routed request's SADR names a node on
+nowhere, draws no reject, and counts in `group_dadr_drops()`. So is a network
+message routed to such a DADR, or a Reject-Message-To-Network relayed to one,
+which must not reach every router on that network as a broadcast (#1677). An
+Unconfirmed-Request for one of the groups the port's own broadcast stands for
+(`TransportPort::local_broadcast_destinations`) goes out on that port as its
+local broadcast, which is what its sender meant, and isn't counted; it also
+reaches the router's own application where a DLEN 0 broadcast would, when it
+came from that network (#1677). On B/IP a group at another UDP port belongs
+to another B/IP network, so an Unconfirmed-Request for one is dropped and
+counted too. A group DADR on a network behind another router, which that
+router judges, is not affected. A routed request's SADR names a node on
 another network, which the ingress rule above can't judge, so a reply to a
 group SADR is dropped only where the final router is a `BACnetRouter`.
+
+### A client on the router itself
+
+`StartedRouter::into_application_port()` turns the router's application
+entity into a `RouterApplicationPort`, a `TransportPort` with no wire behind
+it, fed by the router's own local APDU receiver, raw or tracked (#1808). It
+returns the router, the port and the network-control receiver, if one was
+asked for. Build a client on the port with
+`BACnetClient::generic_builder().transport(port)`. The client keeps its own
+transaction state machine: invoke IDs, timeouts, retries and segmentation work
+as on any link.
+
+```rust,ignore
+let started = BACnetRouter::start(ports, RouterOptions::new()).await?;
+let (router, port, _controls) = started.into_application_port();
+let client = BACnetClient::generic_builder().transport(port).build().await?;
+// Station 5 on network 2: the router MAC argument is ignored.
+let ack = client
+    .read_property_routed(&[0], 2, &[5], object, PropertyIdentifier::PRESENT_VALUE, None)
+    .await?;
+```
+
+- Every send goes through `BACnetRouter::originate`: the table picks the route
+  and the next hop, so address each device by its network and MAC, as a routed
+  device, whether its network is directly attached or not. The MAC passed as
+  the router's is ignored. The router's address on the egress port is the
+  source unless `with_source(SourceSelection::Port(p))` names one port.
+- Every APDU the router delivers to its application reaches the client with
+  its origin as SNET and SADR. One a router relayed keeps its own; one from a
+  device on an attached network gets that network and the device's MAC, so its
+  reply completes the transaction keyed to the routed destination.
+- The client's answers to confirmed requests it receives, such as the
+  acknowledgement of a confirmed COV notification, go back through the reply
+  plan the router saved with each request, as a server's replies do: from the
+  endpoint that was asked, along the path the request came by. The port keeps
+  the plans of up to 64 requests for up to 30 seconds; an answer after that is
+  originated like any other send.
+- The port has no network of its own: a send with no DNET, such as a local
+  broadcast, fails with `Error::Encoding`, and so do network messages. Who-Is
+  goes out as a global broadcast, on every port.
+- A refusal from `originate` fails the send. Too long for the egress port is
+  `Error::SendTooLong`. Anything else is an `Error::Transport` carrying the
+  `OriginateFailure`, which `OriginateFailure::from_error` returns. A network
+  the table lacks is `Refused(NoRoute)`, and the router starts a search for
+  it, as `originate` does.
+- The port reports the smallest NPDU limits among the router's ports as they
+  are now, and the longest of the router's MACs as its own. When a port's
+  transport publishes a new limit, such as BACnet/SC on hub failover, the
+  port's `max_npdu` and `egress_apdu_limit` follow it and `max_npdu_changes`
+  publishes it, so the client builds its next request for it (#2070).
+  `with_max_npdu` caps the limits. `local_receive_apdu_capacity` stays as it
+  was when the port was made (#2087): the port can't know a later limit, and
+  the trait keeps the declaration stable for the stacks above. After a port's
+  limit falls, the router refuses a message routed onto that path that is too
+  long with reject reason 4, and the port's own send fails with
+  `Error::SendTooLong`.
+- The client takes every APDU for the router's application. To host a server
+  as well, split the entity, as below.
+
+### A server and a client on the router itself
+
+`StartedRouter::into_application_ports()` splits the router's application
+entity between a client and a server (#2069). It returns a
+`RouterApplicationPorts` with a `client` and a `server` port, each a
+`RouterApplicationPort` that sends as above.
+
+```rust,ignore
+let started = BACnetRouter::start(ports, RouterOptions::new()).await?;
+let (router, ports, _controls) = started.into_application_ports();
+let server = BACnetServer::generic_builder()
+    .device(identity)
+    .database(db)
+    .transport(ports.server)
+    .build()
+    .await?;
+let client = BACnetClient::generic_builder().transport(ports.client).build().await?;
+```
+
+The router shares out what it delivers to its application:
+
+- A Confirmed-Request goes to the server, with two exceptions. A
+  ConfirmedCOVNotification goes to the client alone. A
+  ConfirmedEventNotification goes to both: the client hears it, and the server
+  takes it for its Notification Forwarders. The server's answer is the one
+  sent; the client's is dropped. When the server's port can't take it (not
+  started, stopped, or its queue full), the client's answer is sent instead. A
+  ConfirmedAuditNotification goes to the server alone, since only the server
+  handles it.
+- An Unconfirmed-Request goes to both. The client hears I-Am, I-Have and
+  unconfirmed notifications; the server hears Who-Is, Who-Has and the rest.
+  Each ignores what it doesn't use.
+- An answer (Simple-ACK, Complex-ACK, Error, Reject, and a Segment-ACK or
+  Abort with the server bit set) goes to whichever stack sent the request it
+  answers, matched by device and invoke ID. The server sends requests too:
+  notifications, writes to Command targets and binding probes. A request stays
+  matched for 10 seconds after its final answer, so the requester's last
+  Segment-ACK and a device's repeated final segment still find it. An answer
+  that matches no request goes to the client, unless the client could take it
+  for a request that went out under another invoke ID; that one is dropped.
+- A Segment-ACK or Abort with the server bit clear comes from a device acting
+  as the requester, so it goes to the server.
+
+The two stacks choose invoke IDs on their own. When both have a request open
+to one device under the same invoke ID, the later one goes out under another ID
+that is free for that device, and its answers come back under its own ID. The
+ports track up to 1,024 requests, each for 60 seconds from its last segment,
+retry or answer; past 1,024, the least recently used one is forgotten, even if
+still open. Keep each stack's APDU and segment timeouts under 60 seconds, or a
+late answer goes unmatched.
+
+Each port holds only a few NPDUs, and the router's local queue stays the buffer
+that fills and drops, with its admission accounting. A stack that leaves its
+port's queue full for 100 ms is taken as stalled. The other stack stops
+waiting for it, and what arrives for it is dropped while its queue is full,
+until it takes something again. A stalled stack therefore holds the other up
+for at most 100 ms each time it frees a slot and then stays full again. When neither has room, nothing more is taken
+from the router's queue.
+
+### Moving a router table from 0.12
+
+`bacnet_network::router_table::RouterTable` is now the core's `Table`, sized
+for the hosted router (#1679, #1684). Code written against 0.12's
+`RouterTable` changes like this:
+
+- **Types.** `RouteEntry`, `ReachabilityStatus`, `ConvergenceMode` and
+  `RoutingClaimSnapshot` are `Route`, `Reachability`, `Convergence` and
+  `ClaimCounters`, and `claim_snapshot()` is `claim_counters()`. A port is a
+  `PortId` instead of a `usize` index, and a next hop a `Mac`
+  (`Mac::from_slice`) instead of a `MacAddr`. `wire_port_id(index)` and
+  `port_index_for_wire_id(id, count)` are `PortId::wire_id()` and
+  `PortId::from_wire_id(id, count)`.
+- **Reading a route.** `lookup` and `remove` return an owned `Route`, a copy
+  read through getters (`port()`, `is_direct()`, `next_hop()` and the rest),
+  instead of a `&RouteEntry` with public fields. `lookup_mut` is gone; the
+  calls below change a route.
+- **Time.** Each call that read the clock takes a `now`, the router's
+  `router.now()`: `add_learned(network, port, next_hop, now)` replaces both
+  `add_learned` and `add_learned_at`, and `touch(network, now)` both `touch`
+  and `touch_used_at`. `effective_reachability` and `clear_expired_busy`
+  take `now` too.
+- **Learning with flap detection.** `add_learned_with_flap_detection` and
+  its `_at` form are `learn(network, port, next_hop, now)`, which returns a
+  `Learned` (applied, moved with the flap count, or refused), or
+  `apply_claim(.., now, &timing)`, which also holds a move for
+  corroboration under `Convergence::Hardened`.
+- **Adding.** `add_direct` and `add_learned` return `bool`: `false` for a
+  new network once the table holds `ROUTE_CAP` (256) routes, and
+  `add_learned` refuses a network whose route is direct.
+- **Sweeps.** `purge_stale(now, max_age, |network| ..)` replaces
+  `purge_stale` and `purge_stale_at`, and `expire_pending(now, &timing,
+  |network| ..)` replaces `expire_pending_at`: each calls back with every
+  network it drops, in ascending order, and returns the count instead of a
+  `Vec`. `Timing::DEFAULT` holds the hosted router's windows.
+- **Listings.** `networks()`, `networks_on_port(port)`,
+  `networks_not_on_port(port)` and `routes_served_via_peer(port, peer)`
+  return iterators in ascending network order instead of `Vec`s, so
+  `sorted_networks()` is `networks()`; add `.collect::<Vec<_>>()` where a
+  `Vec` is needed. `is_served_via_peer` takes a `PortId` and the peer's MAC
+  octets.
+- **Building one.** `RouterTable::new()` still builds an empty table;
+  `new_hardened()` is `new()` and then
+  `set_convergence(Convergence::Hardened)`.
+
+### bacnet-router-core (firmware)
+
+`BACnetRouter` runs on `bacnet-router-core`, which firmware can use on its
+own: `no_std`, no allocator, storage the caller sizes with const generics,
+and time as a `bacnet-time` `Instant` passed to each call. Its `bip` and
+`mstp` features add router ports over `bacnet-bip-core` and
+`bacnet-mstp-core`. A `now` earlier than the latest one passed in is taken
+as that latest one, so a clock that steps back holds the router's timers
+still instead of failing; the router keeps that time from `Router::new` on.
+The router always follows Clause 6, R1 to R7 above included, with no switch
+back to the hosted router's behaviour before 0.13.0.
+
+The types that may grow are `#[non_exhaustive]` (#1684), so code outside the
+crate builds them like this:
+
+- `router::Options::STANDARD` (also its `Default`) or `Options::HOSTED`,
+  then set the fields to change. The two differ only in the route cap:
+  `STANDARD` has none of its own (`route_cap: None`), so learning may fill
+  whatever table the `Storage` holds, and `HOSTED` caps it at the hosted
+  router's 256 routes, which `Router::new` refuses over a smaller table.
+- `Route::direct(port)` and `Route::learned(port, next_hop, now)`, to
+  compare with what a lookup returns.
+- `router::Counters` and `table::ClaimCounters` from `Default`, then set
+  the counts.
+
+The crate builds the rest, which a caller reads but can't build, or match
+without `..`: `Claim`, `Send`, `Pending` and `npdu::MacTooLong`; and a
+`Route` only through its two constructors above. A
+`match` on these enums needs a wildcard arm: `npdu::Malformed`,
+`npdu::EncodeError`, `router::ReplyPlanError`, `message::DataError`,
+`router::ConfigError`, `Discard`, `Event`, `Kind`, `SendRefusal`,
+`ControlClass`, `table::LearnRefusal`, `Learned` and `RejectEffect`. The
+enums a host acts on case by case, and the closed sets, stay exhaustive:
+`Action`, `Received`, `Dest`, `Cause`, `Group`, `Targets`, `Reachability`,
+`Convergence`, `npdu::DecodeError` (an over-long address or `Malformed`),
+`npdu::AddressField`, `npdu::NetworkPriority` and `WhoIsRouter`.
+
+The NPDU vocabulary is `bacnet-npdu`'s, re-exported as
+`bacnet_router_core::npdu` so a router image needs this crate alone: the
+view and its encoder, `NpduLimits` (a port's limits; `router::MIN_PORT_LIMIT`
+is the least a port may have), `Mac`, `MAX_NPDU` and `MAX_MAC_LEN`. The wire
+codes are open newtypes, the shape the codecs give `BvlcFunction` and
+`FrameType`: `npdu::NetworkMessageType(u8)` and `npdu::RejectMessageReason(u8)`,
+with named constants, `from_raw`, `to_raw`, `name` and `is_defined`.
+`Npdu::message_type`, `Npdu::message`, `Reject::reason`,
+`Claim::message_type`, the `Event`s and `Kind`s that carry a code, and
+`Table::apply_reject` take them. Match the constants with a wildcard arm
+for the rest (`Kind::Answer(NetworkMessageType::I_AM_ROUTER_TO_NETWORK) => ..`),
+or compare `to_raw()`; `NetworkMessageType::is_proprietary` and
+`is_removed_security` cover the ranges.
+
+A `Route` is a copy of the table's row, read through its getters:
+`port()`, `is_direct()`, `next_hop()`, `last_seen()`, `last_used()`,
+`reachability()`, `busy_until()`, `flap_count()` and `last_port_change()`.
+Unlike 0.12's `RouterTable`, the table has no `lookup_mut`: only its own
+calls change a row:
+
+- a route's port, next hop or `last_seen`: `add_learned` (or `learn` and
+  `apply_claim`, which also detect flaps and keep the convergence mode);
+- `direct`: `add_direct`, which replaces the route; the other way, from
+  direct to learned, `remove` and then `add_learned`, which refuses a
+  network whose route is direct;
+- `reachability` and `busy_until`: `mark_busy`, `mark_available` and
+  `mark_unreachable`;
+- `last_used`: `touch`;
+- `flap_count` and `last_port_change`: none; `learn` keeps them.
+
+The B/IP ports are `bacnet-bip-core`'s port driver (#1766): a
+`port::NodePort` for a node in normal or foreign-device mode, and a
+`port::BbmdPort` for a BBMD, which answers the management requests from
+its tables itself (see bacnet-bip-core above). `bip::BipPort` is the
+router's translator over either: `BipPort::new(port)`, then
+`BipPort::config(link, network)` for the router's `PortConfig`,
+`arrived(&delivery)` for each NPDU a port hands up, and
+`send(&mut port, &send, now, &mut socket)` for each router send, whose
+refusals it maps to the router's. The MS/TP port, `mstp::MstpPort`, owns
+its master core, as a `NodePort` owns its node (#1769):
+`MstpPort::new(port, core)` refuses a core without extended frames,
+`port_config(network)` gives the router's `PortConfig` (or
+`mstp::port_config(&core_config, network)` before the core exists),
+`poll_action()` hands each NPDU the core delivers up as a
+`PortAction::Arrived` and every other action as `PortAction::Core`,
+`release(request, now)` answers a relayed request Reply Postponed, and
+`send(&send, now)` queues a router send; `core_mut()` feeds the core the
+line's events. The B/IP ports count what their socket
+refused, drained like the link cores' counts: `take_counters()` returns
+a `PortCounters` of `u32`s that saturate between takes, and `counters()`
+looks without taking. The router's counts drain the same way (#1767,
+decision D3): `Router::take_counters()` returns the `u32` counts since the
+last take, which saturate between takes, and `counters()` looks without
+taking. `BACnetRouter` takes them each time it lets the engine's lock go,
+and keeps the `u64` totals its users read.
+
+The `bip` and `mstp` features re-export their link cores, as
+`bacnet_router_core::bip_core` and `mstp_core` (with their codecs), so a
+router image needs this crate alone, at one version. `RouterIn<'s, P, R,
+H>` is a `Router` over a `&'s mut Storage<P, R, H>`, with `D` and `N` as
+`Storage`'s defaults, so firmware names the sizes once.
+
+A foreign-device port holds broadcasts in `HeldBroadcast<N>` slots of `N`
+octets, `MAX_NPDU` by default. `NodePort::new` checks that the link's
+broadcast limit fits: a link with a smaller send budget can lend shorter
+slots. Build them with `HeldBroadcast::<N>::EMPTY`, or
+`<HeldBroadcast>::EMPTY` for the default `N`: a default doesn't drive
+inference, so a bare `HeldBroadcast::EMPTY` in an expression leaves `N`
+open, but `<HeldBroadcast>` names the type, default and all.
+
+The network-message views return `Result<_, DataError>`, and their writers
+`Result<usize, DataError>`. Route discovery's cooldown and maximum age are
+fields of `router::Options` (`Options::STANDARD` and `HOSTED` hold 5 s and
+30 s).
+bip-core's `PortError::HeldStorage`, `TargetStorage` and `RowStorage`
+carry `needed` and `available`; a link with no send budget, or a broadcast
+limit past the slots, is `PortError::HeldLength`.
+
+`Malformed`, `LearnRefusal` and `DataError` implement `Display` and
+`core::error::Error`, as the crate's other errors do.
 
 ---
 
@@ -2330,7 +4137,7 @@ framing, through the shared `bacnet-encoding` codecs.
   AddListElement reports as NO_SPACE_TO_ADD_LIST_ELEMENT at the request element
   that brought it. `add_destination` returns `Result` and refuses past the cap
   too, and `recipient_list()` reads the list. An address recipient's MAC is at
-  most `BACnetAddress::MAX_MAC_LEN` (18) octets, the B/IPv6 form (#1124):
+  most `BACnetAddress::MAX_MAC_LEN` (18) octets (#1124):
   `decode_destination` reads the recipient with `decode_recipient`, which
   refuses a longer one, so a write fails with PROPERTY / INVALID_DATA_TYPE and
   `add_destination` refuses it with the same code. The
@@ -2340,7 +4147,7 @@ framing, through the shared `bacnet-encoding` codecs.
   audit notifications and records, the GetEnrollmentSummary filter), the
   ValueSource codec and the AuditLogQuery address filters, sharing
   `check_decoded_mac_len`. Their encoders refuse a longer MAC with
-  `Error::Encoding` before writing, through `check_encoded_mac_len`, so
+  `Error::Encode` before writing, through `check_encoded_mac_len`, so
   `encode_recipient`, `encode_destination(_list)` and the
   `encode_cov_(multiple_)subscription(_list)` family return `Result`. The
   stack stores nothing it could not encode: COV admission refuses a subscriber
@@ -2371,12 +4178,30 @@ framing, through the shared `bacnet-encoding` codecs.
   reads. The server's list services and ReadRange edit and page the list of any
   NOTIFICATION_FORWARDER object held this way.
 - **`Event_Parameters` and `Fault_Parameters`** (Clause 12.12) use the
-  BACnetEventParameter and BACnetFaultParameter CHOICE framing. Modeled
-  alternatives round-trip. An alternative the stack does not model is kept as
-  opaque bytes, and omitted, deprecated and reserved choices, or trailing bytes
-  after a framed element, are rejected. Fault_Parameters without a fault
-  algorithm reads as the context-tagged `none` choice (`08`), and writing that
-  clears it. The CHOICE has no application NULL, so a NULL written to it
+  BACnetEventParameter and BACnetFaultParameter CHOICE framing. Every
+  Event_Parameters algorithm of the 2020 standard is modeled (#2090) and
+  round-trips; a body under one of their tags that doesn't follow its form is
+  refused with INVALID_DATA_TYPE, and a string in a character set the stack
+  can't convert with CHARACTER_SET_NOT_SUPPORTED. Only an alternative under
+  an unassigned tag (23 and up) is kept as opaque bytes. Omitted, deprecated
+  and reserved choices, or trailing bytes after a framed element, are
+  rejected. The server runs five of them (out-of-range, floating-limit,
+  change-of-value, change-of-state and change-of-bitstring); the others
+  are stored and served but produce no transition, and an unset
+  Time_Delay_Normal reads back their time delay. Event_Parameters never set
+  reads as the context-tagged `none` choice (`F8 14`, tag 20; #1868). Such an
+  enrollment evaluates reliability only (Clause 12.12.7), and one left
+  offnormal by earlier parameters returns to NORMAL with a TO_NORMAL. Any
+  enrollment with a monitored reference can fault, whatever its parameters,
+  so GetEnrollmentSummary lists it and its TO_FAULT takes an
+  AcknowledgeAlarm. Event_Type follows
+  Event_Parameters (Clause 12.12.5): NONE while they are `none`, the written
+  algorithm's type after. The `EventEnrollmentObject::new` type argument
+  applies only to the legacy octet-string parameters, which name no
+  algorithm, and to an opaque alternative at tag 64 or above, which names no
+  standard event type. Fault_Parameters
+  without a fault algorithm reads as the context-tagged `none` choice (`08`),
+  and writing that clears it. The CHOICE has no application NULL, so a NULL written to it
   succeeds and changes nothing (#1417).
 - **BACnetTimeStamp** (Clause 21) has one codec for every producer and consumer.
   The time form is a primitive tag holding raw Time octets, the sequence number
@@ -2413,7 +4238,7 @@ framing, through the shared `bacnet-encoding` codecs.
   Present_Value. The shared endpoint's ReadProperty uses
   `SessionConfig::read_work_limit` (default 256) instead. A request that would
   pass the limit is aborted with OUT_OF_RESOURCES (`read_local` returns
-  `Error::Abort`).
+  `Error::abort(AbortReason::OUT_OF_RESOURCES)`).
 - **Structured View `Subordinate_List` and Command `Action`** (Clauses 12.29
   and 12.10) are arrays too, with the same per-index reads, as is
   `Subordinate_Annotations`. A Subordinate_List element is a
@@ -2617,13 +4442,16 @@ and reported like an unqualified one (#1184).
 #### Databases with several Devices
 
 A BACnet device has one Device object (Clause 12.11), but a database may hold
-several. The stack then treats the lowest instance as this device everywhere,
-whatever order the Devices were added in (#1204):
+several. The database selects the lowest instance independently of insertion order
+(#1204). Server startup validates that selection against its explicit identity:
 
 - **This device's Device object** is `selected_device`: wildcard Device reads,
-  Who-Is and Who-Has answers, I-Am, the identity in COV and event
-  notifications, the startup APDU capacity check, the APDU_Timeout an Audit Log
+  Who-Has answers, the identity in COV and event notifications,
+  the APDU_Timeout an Audit Log
   sink uses on receipt, and the services the standalone PICS reports.
+- **Announcements and served identity fields** remain bound to the startup
+  `DeviceIdentity`. Who-Is and manual I-Am require that identifier to remain
+  present; later lower-instance insertion does not rebind announcements.
 - **Device-qualified references** go through `local_device().is_local`: Trend
   Log polling, Event Enrollment references, Command action lists, the
   Schedule, Channel, Staging and Averaging reference rewrites, and an Audit
@@ -2911,9 +4739,9 @@ covered by [the external-crate tests](../crates/bacnet-server/tests/event_enroll
 
 | Type | Constructor |
 |------|-------------|
-| `TrendLogObject` | `::new(instance, name, buffer_size)` |
-| `TrendLogMultipleObject` | `::new(instance, name, buffer_size)` |
-| `EventLogObject` | `::new(instance, name, buffer_size)` |
+| `TrendLogObject` | `::new(instance, name, buffer_size)`, `::with_persistence(instance, name, buffer_size, persistence)` |
+| `TrendLogMultipleObject` | `::new(instance, name, buffer_size)`, `::with_persistence(instance, name, buffer_size, persistence)` |
+| `EventLogObject` | `::new(instance, name, buffer_size)`, `::with_persistence(instance, name, buffer_size, persistence)` |
 | `AuditLogObject` | `::new(instance, name, buffer_size, persistence)` |
 | `AuditReporterObject` | `::new(instance, name)` |
 
@@ -2946,8 +4774,8 @@ are both TRUE, or a record that would not encode. It is for start-up, before
 the log goes into an `ObjectDatabase`: a running server reaches its objects
 only through `BACnetObject`, which has no restore, because renumbering a log
 peers are reading would change what their sequence numbers mean with no
-BUFFER_PURGED record to tell them. Durable storage of a log, as the Audit
-Log has, is not built yet.
+BUFFER_PURGED record to tell them. For storage the log keeps itself, see
+the next section.
 
 A device restoring saved records after a restart should then call
 `record_interruption(date, time)` with the time it came back. Clause
@@ -2960,6 +4788,93 @@ collection is off (and turning Enable FALSE when it fills a Stop_When_Full
 buffer). No clock is bound before the log joins a database, so the caller
 gives the time; one that isn't an actual moment fails with
 `Error::OutOfRange`.
+
+##### Durable logs (#1541)
+
+Each of the three logs can keep itself in application-owned storage, as the
+Audit Log does. `bacnet_objects::log_persistence` holds the port:
+
+| Item | What it is |
+|------|------------|
+| `LogPersistence<R>` | `load(oid)` and `commit(&snapshot)` for one log; `R` is the log's record type (`BACnetLogRecord`, `BACnetEventLogRecord` or `BACnetLogMultipleRecord`) |
+| `LogSnapshot<R>` | identity and generation, Buffer_Size, Enable, Stop_When_Full, Total_Record_Count and the records oldest first, Last_Notify_Record, the Records_Since_Notification base and Notification_Threshold, Start_Time and Stop_Time, and on the trend logs a `LogAcquisitionSettings` (Logging_Type, Log_Interval, Align_Intervals, Interval_Offset) and Log_DeviceObjectProperty |
+| `FileLogPersistence` | two-slot, versioned, checksummed files `<base>.slot0` and `<base>.slot1`, as `FileAuditLogPersistence` keeps them; implements the port for all three record types |
+| `LogCommitCadence` | `records` and `interval`; the default is 100 records or 60 seconds |
+
+```rust
+use std::sync::Arc;
+use bacnet_objects::log_persistence::{FileLogPersistence, LogCommitCadence};
+use bacnet_objects::trend::TrendLogObject;
+
+let storage = Arc::new(FileLogPersistence::new("/var/lib/app/trend-log-1")?);
+let mut log = TrendLogObject::with_persistence(1, "Zone temp", 1000, storage)?;
+if !log.reopened() {
+    // First start only: a reopened log keeps the settings it saved.
+    log.set_log_interval(6_000)?;
+}
+log.set_commit_cadence(LogCommitCadence {
+    records: 500,
+    interval: std::time::Duration::from_secs(300),
+});
+```
+
+`TrendLogObject::with_persistence`, `TrendLogMultipleObject::with_persistence`
+and `EventLogObject::with_persistence` take `(instance, name, buffer_size,
+persistence)`.
+
+- **Opening.** A log storage holds comes back as it was saved, except
+  Buffer_Size: peers can't write it, so `buffer_size` wins. A larger size
+  keeps every record; a smaller one keeps the newest records that fit (one
+  slot fewer while Stop_When_Full and Enable are both TRUE, so the next record
+  stops the log as usual) and logs a warning naming both sizes. Sequence
+  numbers, Total_Record_Count and the BUFFER_READY counts don't change.
+- **Size limit.** A slot holds at most 256 MiB, so `with_persistence` refuses
+  with `Error::OutOfRange` a `buffer_size` whose full buffer of the family's
+  largest records couldn't fit: 828,302 records for a Trend Log, 178,437 for
+  an Event Log and 15,849 for a Trend Log Multiple (sized for 64 references
+  of 256-octet values). A record an application adds that is larger than the
+  stack's own can still make a commit fail; the log warns and retries.
+- **Checks.** `FileLogPersistence` checks each slot as it reads it, as
+  `restore_log_buffer` checks its arguments plus the snapshot's own rules:
+  the log's identity, a nonzero generation, at most one reference on a Trend
+  Log and 64 on a Trend Log Multiple, a Logging_Type the object can take, and
+  window ends that are actual moments or wholly unspecified. A slot that is
+  damaged or fails those checks is passed over for the other slot; with no
+  usable slot, or a slot naming another object or an unknown schema,
+  `with_persistence` fails. `with_persistence` checks the loaded snapshot
+  once more, as a guard for other `LogPersistence` backends: one that fails
+  then fails the open. `reopened()` says whether the log came back.
+- **LOG_INTERRUPTED.** A reopened log owes one LOG_INTERRUPTED status record
+  (Clauses 12.25.14, 12.27.13 and 12.30.19). It appends it the first time it
+  reads a valid clock, normally as it joins an `ObjectDatabase`; a record that
+  arrives first without a clock lends its own timestamp, so the record lands
+  after the marker. Calling `record_interruption` before then stands in for
+  it. A log that reopens full and stopped (Enable FALSE, as Stop_When_Full
+  leaves it, Clause 12.25.12) skips the marker rather than push out its
+  oldest record; a stopped log with room takes it, marked LOG_DISABLED too.
+- **BUFFER_READY** carries on from the saved Last_Notify_Record and
+  Notification_Threshold, so a report falls due once that many records have
+  been collected since the last report before the restart, the
+  LOG_INTERRUPTED record included. Notification_Class and the other reporting
+  settings aren't saved: the application sets them on every start.
+- **Committing.** The log copies its state and queues it on its own writer
+  thread (`bacnet_objects::durable`), so the copy is
+  taken under the database guard and the file I/O runs outside it. It commits
+  once Total_Record_Count has moved `records` past the last commit, as a
+  record lands, and once `interval` has passed with a change, which the
+  server's once-a-second operation pass checks (a zero turns either trigger
+  off). Whichever trigger comes first wins, so after a quiet spell longer
+  than `interval` the first change commits at the next pass. A queued commit
+  not yet started is replaced by a newer one. A commit that fails is logged
+  and leaves the log counted as changed, so the next interval pass, or stop,
+  tries again with no new change. The server's `stop()` commits each changed
+  log once more and waits for it, and so does dropping the log. A log no
+  server drives commits by count and when dropped.
+- **Deleting.** Storage outlives the object: a log removed from the database
+  leaves its slots on disk, and one built again on the same base path
+  reopens from them. Delete the slot files to start afresh.
+- `commit_cadence()`, `set_commit_cadence()` and `storage_generation()` read
+  and set the cadence and give the generation storage last took.
 
 Log_DeviceObjectProperty reads as the context-tagged
 `BACnetDeviceObjectPropertyReference` (#1234): one
@@ -3192,6 +5107,22 @@ serves Event_Message_Texts_Config and the Event_Algorithm_Inhibit pair
 - Event_Message_Texts_Config is always three entries: the tables fix its
   size, so a write at index 0 is `PROPERTY/WRITE_ACCESS_DENIED` (Clause
   12.1.5.1).
+- A read of Event_Algorithm_Inhibit with a reference set returns the value
+  as of the object's last evaluation, at most about a second old; the read
+  path doesn't follow the reference itself (#1507).
+
+An Event Enrollment serves the same three rows, with Event_Message_Texts
+beside them (#1507). Its inhibit gates the enrollment's algorithm the same
+way, and the server also refreshes a referenced inhibit at the start of each
+enrollment evaluation pass. The server has no message text of its own for an
+enrollment: a transition sends the matching Event_Message_Texts_Config entry
+as written, and none when that entry is empty.
+
+An Alert Enrollment serves the same four rows too, as Table 12-61 lists them
+(#1865), and keeps the configuration across a detection reset. The stack
+doesn't distribute alerts yet, so for now the rows hold their values for the
+application: Event_Message_Texts stays at its initial empty strings, and the
+inhibit follows its reference as on any other object.
 
 Every Trend Log samples a BACnet property, so its Start_Time, Stop_Time,
 Log_Interval and Log_DeviceObjectProperty are classed required (Table 12-29
@@ -3752,7 +5683,9 @@ while Color_Override is TRUE) as an `OutputColor::Xy` or `OutputColor::Kelvin`,
 with the object it came from. It returns `None` for a reference to an object
 the database doesn't hold: such a reference is stored and served but not
 followed, since the clauses put the companion in the same device and an
-object identifier can't name another one.
+object identifier can't name another one. It also returns `None` while that
+colour object's In_Progress reads NOT_CONTROLLED (#1526): nothing has driven
+it, so its Tracking_Value is no colour to send to hardware.
 
 Fades, ramps and egress timers run on the server's monotonic task, which a
 write that starts one wakes. Tracking_Value is worked out from the clock when
@@ -3866,9 +5799,56 @@ Color_Command that set Present_Value, and only that writer may correct it (see
 Two choices here go past the addendum's text. A new object's
 `Default_Fade_Time` is 100 ms, the shortest the range allows, as Lighting
 Output's is: the addendum gives no initial value, and 0 lies outside its
-range. Neither object models a restart, so `Default_Color` and
-`Default_Color_Temperature` are only stored, and In_Progress never reads
-NOT_CONTROLLED or OTHER.
+range. In_Progress never reads OTHER.
+
+Both objects model the device's start (#1526). A new object's In_Progress
+reads NOT_CONTROLLED: nothing has driven its output yet. As the server
+starts, before it shares the database, it calls `start_output` on each colour
+object in it. An application running one without a server, or adding one to
+a server already running, calls `start_output` itself; until then the object
+reads NOT_CONTROLLED. An in-process WARMSTART or COLDSTART should call it
+again (see the `ReinitializeHandler` notes); it is safe to repeat.
+
+- A non-zero `Default_Color` or `Default_Color_Temperature` (clamped to the
+  limits) becomes Present_Value at once and In_Progress reads IDLE, whatever
+  was set before the start: values set then are configuration, since no
+  peer can write before it, so a first boot and later ones agree. The
+  addendum gives the start no fade, so neither `Transition` nor
+  `Default_Fade_Time` applies. A start that moves Present_Value clears
+  Value_Source, as `set_min_max` does.
+- A zero default, `Default_Color` (0, 0) or a `Default_Color_Temperature` of
+  0, keeps the value from before the restart (Clauses 12.X.8 and 12.Y.4).
+  In order, the output takes the Present_Value the object brought back from
+  its storage, else a value set before the start, and reads IDLE. With
+  neither it stays NOT_CONTROLLED until a write drives it; a STOP with
+  nothing moving doesn't. A repeated start keeps the value served then.
+
+`set_default_color` and `set_default_color_temperature` set the defaults as a
+write would. `with_output_persistence(persistence)`, called on a newly built
+object, keeps Present_Value in an `Arc<dyn ColorOutputPersistence>`
+(`bacnet_objects::color`) and takes the value saved there for the object as
+Present_Value; `output_restored` says whether it did. The object saves each new
+Present_Value, whether a write, a command, a STOP or the start set it, on its
+own writer thread (see `bacnet_objects::durable`), so nothing touches storage
+under the database guard. As with the other durable objects, each colour
+object with storage keeps that thread, parked while idle, for as long as it
+lives: one thread per object, which matters for a device with many of them. Unlike a Notification Class's Recipient_List, a change doesn't wait
+for its save and isn't refused when the save fails: the value is a live
+output, and it keeps working while storage doesn't. The cost is that the
+stored value can lag the served one after a failed save, so a restart in
+that window brings back an older value. Saves coalesce; a failed one is
+logged, counted (`output_save_counters` returns a `ColorOutputSaveCounters`
+whose `failed_saves` reads the total, as a Notification Forwarder's
+`save_counters` does; take it before the object joins a database), and not
+retried at once: the next change, `stop()` (which waits for the saves) or
+the object's drop tries again. `wait_for_output_saves` blocks until the queued
+ones have run. Tags storage
+(`with_tags_persistence`) and Present_Value storage combine.
+`FileColorOutputPersistence::new(path)` is the bundled backend: a tagged
+header with the object identifier, a kind octet and the value (two
+big-endian REALs, or a 32-bit kelvin), replaced whole through a synchronized
+temporary file. A file of the wrong size, kind or object, or holding a value
+out of range, fails `with_output_persistence` with an error.
 
 The colour properties use their standard identifiers: `DEFAULT_COLOR` is
 4194330, `DEFAULT_COLOR_TEMPERATURE` 4194331 and `COLOR_COMMAND` 4194334
@@ -4009,8 +5989,8 @@ Nothing is answered and a malformed request is dropped. DCC's
 DISABLE_INITIATION leaves WriteGroup running, as it only stops what the device
 starts (the server refuses the deprecated DISABLE outright). Local mutation
 policy decides each Channel write on its own (#1319): `MutationPolicy::DenyAll`
-denies it, and an installed `mutation_authorizer` is called once per Channel
-with a `MutationTarget::WriteGroup` (the Channel, group, channel number,
+denies it, and an installed `ServerPolicy` is asked (`authorize_mutation`)
+once per Channel with a `MutationTarget::WriteGroup` (the Channel, group, channel number,
 priority, value and inhibit flag), no invoke ID and
 `MutationService::Unconfirmed(WRITE_GROUP)`, so it can allow some Channels and
 not others. A denied write is skipped with nothing answered and counted in
@@ -4492,6 +6472,47 @@ non-finite increment with VALUE_OUT_OF_RANGE.
 
 ---
 
+## bacnet-runtime
+
+`bacnet-runtime` is the bounded, supervised application layer for managing a
+set of BACnet attachments. The initial 0.13 port deliberately supports B/IP
+attachments only. It owns client startup and shutdown, transactional whole-set
+reconciliation, health snapshots, and ordered read/write batches.
+
+`BacnetRuntime::start` validates the complete configuration and rolls back any
+attachments already started if a later bind fails. `reconcile` accepts a newer
+complete revision, rejects reconciliation while a batch is active, and restores
+the prior attachment set if replacement fails. `stop` is idempotent, refuses
+new work, cancels runtime-owned batches, and then stops every attachment within
+the configured deadline.
+
+Batch admission is bounded by `max_inflight_operations` and
+`scheduler_capacity`; `max_batch_items` bounds each operation. Inputs execute
+in caller order and each outcome retains its `input_index`. Dropping an
+operation handle cancels its task. A `DevicePath::Direct` target contains a
+six-octet B/IP MAC (IPv4 address followed by UDP port). A
+`DevicePath::Routed` target contains the immediate B/IP router's six-octet MAC,
+a DNET in 1..=65534, and a byte-exact DADR of 1..=18 octets. Outcomes return the
+exact admitted path so duplicate or leading-zero addresses are not normalized.
+Routes must be supplied explicitly; this slice does not discover router
+topology or choose a path automatically.
+
+Health snapshots include attachment state, the actual local B/IP MAC, active
+operation counts, and managed foreign-device registration state. The event,
+discovery, cache, and COV counters are reserved and remain zero in this slice.
+Attachment state describes runtime lifecycle; it is not an independent probe
+of the client's receive task. A rejected or expired foreign-device lease keeps
+the attachment `Running` for unicast traffic and reports
+`ForeignDeviceRegistrationFailed` through `last_error`.
+
+MS/TP, BACnet/SC, router discovery/topology, raw I-Am observation, and COV
+supervision are represented in configuration only so requests fail with
+`UnsupportedTransport`; they are not silently approximated. Applications that
+need those capabilities should continue using their lower-level crates until
+the corresponding runtime slices land.
+
+---
+
 ## bacnet-client
 
 Async BACnet client with transaction state machine, segmentation, and discovery.
@@ -4529,6 +6550,67 @@ let client = BACnetClient::sc_builder()
 Use `bip_builder()` for B/IP, `sc_builder()` for BACnet/SC, or
 `generic_builder()` with a prebuilt transport.
 
+### Choosing the client transport at runtime
+
+The B/IP, B/IPv6 and SC builders also offer `build_any()`, returning
+`BACnetClient<AnyTransport>`, which is what `BACnetClient` alone names: the
+client's transport type defaults to `AnyTransport` (#2039), as the server's
+does. They apply the same configuration as `build()`:
+the B/IP mode and address sharing, the IPv6 interface and device instance,
+and SC identity, TLS, heartbeat and optional reconnect settings. Client tuning,
+notification capacities and custom COV response policies are preserved too.
+The existing `build()` methods still return concrete transport types.
+
+For example, with the client's `ipv6` feature enabled:
+
+```rust,no_run
+use bacnet_client::client::BACnetClient;
+
+async fn connect(ipv6: bool) -> Result<BACnetClient, bacnet_types::error::Error> {
+    if ipv6 {
+        BACnetClient::bip6_builder().port(0).device_instance(123)
+            .build_any().await
+    } else {
+        BACnetClient::bip_builder().port(0)
+            .build_any().await
+    }
+}
+```
+
+`build_any()` is `build_into()` with `AnyTransport` (#2071). `build_into::<T>()`
+builds the same client over any transport type the builder's link converts
+into, such as an application's own enum that also holds a transport
+`AnyTransport` can't, like a router's application port:
+
+```rust,ignore
+enum MyTransport {
+    Link(AnyTransport),
+    Router(RouterApplicationPort),
+}
+// `impl TransportPort for MyTransport` passes each call to the variant.
+impl From<BipTransport> for MyTransport {
+    fn from(link: BipTransport) -> Self {
+        Self::Link(link.into())
+    }
+}
+let client: BACnetClient<MyTransport> =
+    BACnetClient::bip_builder().port(0).build_into().await?;
+```
+
+The B/IPv6 and SC builders take `From<Bip6Transport>` and
+`From<ScTransport<TlsWebSocket>>`; SC also has `build_into_with_events()`.
+
+With `sc-tls`, a configured `BACnetClient::sc_builder()` can use the same
+`build_any().await` call. SC validates identity, reconnect and
+client options before dialing. Reconnect remains opt-in through `.reconnect(...)`;
+each retry uses the builder's TLS policy. `.failover_hub_url(...)` adds a
+failover hub with the same TLS policy. It requires `.reconnect(...)`, and both
+URLs are checked before dialling. When the primary cannot be dialled, `build()`
+starts on the failover hub and the transport restores the primary later.
+Each build-time dial is bounded by `.connect_timeout_ms(...)` (default 10 s),
+like the transport's own redials. Use `client.stop().await` to shut down
+the selected transport and its background work.
+
 ### Transport access and BBMD helpers
 
 `client.transport()` borrows the transport a built client owns, whichever
@@ -4539,7 +6621,8 @@ the transport in place. What you take from it can outlive the borrow, which
 suits a long-lived UI:
 
 ```rust
-// BACnet/SC (sc_builder): an owned watch receiver, and a drop-count snapshot.
+// BACnet/SC (sc_builder): an owned watch receiver, an event stream, and
+// link-status and drop-count snapshots.
 let mut state = sc_client.transport().connection_state_changes();
 tokio::spawn(async move {
     while state.changed().await.is_ok() {
@@ -4547,6 +6630,10 @@ tokio::spawn(async move {
         // update the status bar
     }
 });
+// Subscribed after build(): misses the first Connected, which went out
+// while build() ran. Use build_with_events() (below) to see it.
+let mut events = sc_client.transport().connection_events(); // ScEvent: failover, restore, causes
+let link = sc_client.transport().connection_status(); // ScLinkStatus: active hub, hub VMAC, heartbeat
 let drops = sc_client.transport().npdu_drop_counts();
 
 // B/IP (bip_builder): counter snapshots to poll, and the BBMD state if any.
@@ -4554,11 +6641,33 @@ let outgoing = bip_client.transport().bvlc_client_snapshot();
 let management = bip_client.transport().management_counters();
 let fanout = bip_client.transport().fanout_counters();
 let dropped = bip_client.transport().receive_counters(); // datagrams dropped on receipt, by reason
+let refused = bip_client.transport().send_counters(); // NPDUs refused on send, by reason
 let fdt = bip_client.transport().fdt_counters(); // None unless a BBMD
 let bbmd = bip_client.transport().bbmd_state().cloned(); // Option<Arc<std::sync::Mutex<BbmdState>>>
 
 // MS/TP: the same counts-only handle you can take before handing the transport over.
 let diagnostics = mstp_client.transport().diagnostics();
+
+// B/IP, B/IPv6, BACnet/SC and MS/TP: every link-layer frame, in and out.
+let mut frames = bip_client.transport().frame_tap().subscribe();
+```
+
+The first `ScEvent::Connected` goes out while `build()` starts the
+transport, before any caller of `transport().connection_events()` can
+subscribe. To see it, build with `build_with_events()` instead: it returns
+the client and a receiver subscribed before the start, so the first event
+on it is that connect. `build_any_with_events()` does the same for a
+transport-erased `BACnetClient<AnyTransport>` (#1909).
+
+```rust
+let (sc_client, mut events) = BACnetClient::sc_builder()
+    .hub_url("wss://hub.example.com/bacnet")
+    .tls_config(tls)
+    .vmac([0x02, 0, 0, 0, 0, 0x01])
+    .device_uuid([0x42; 16])
+    .build_with_events()
+    .await?;
+assert!(matches!(events.recv().await, Ok(ScEvent::Connected { .. })));
 ```
 
 Reading state and diagnostics is what the borrow supports. Two things go around
@@ -4571,20 +6680,64 @@ take for short critical sections, so holding it stalls the transport or
 deadlocks. Lock, copy and release. The live MS/TP master node and SC
 connection are not public.
 
+### Frame tap
+
+`frame_tap()` on `BipTransport`, `Bip6Transport`, `ScTransport` and
+`MstpTransport` (and `AnyTransport::frame_tap()`, `None` for Ethernet and
+loopback) returns the transport's `FrameTap` (#957). `subscribe()` gives a
+`FrameTapReceiver` of `TappedFrame { timestamp, direction, link, peer, bytes }`
+for every frame the transport sends, and every frame it receives (on MS/TP,
+every frame it hears on the line), control traffic included:
+
+- B/IP and B/IPv6: each BVLL message as the datagram carried it, BVLC-Results,
+  registrations, address resolution and forwarded NPDUs too. A received
+  datagram appears if the transport takes it: a B/IP broadcast listener's
+  datagrams only when the node keeps them, and on B/IPv6 only those the
+  selected link admits. `peer` is the UDP source or destination, broadcast
+  and multicast included.
+- BACnet/SC: each BVLC-SC message on the hub connection, the handshake,
+  heartbeats, address resolution and Disconnect too. `peer` names the hub,
+  primary or failover. Direct connections are not tapped yet.
+- MS/TP: each whole frame, preamble to CRC, Token and Poll For Master too,
+  found in what the line delivered: every frame on the bus, other stations'
+  traffic included. Frames are found from the octets alone, without the
+  master node's inter-octet timing, so a frame the node aborted for a gap
+  can still appear. `peer` is the source station of a received frame and the
+  destination of a sent one.
+
+The tap is in-process. On B/IP, B/IPv6 and BACnet/SC it shows only this
+node's own traffic, so it does not replace a wire capture. A BACnet/SC message
+is taken in plaintext, before TLS encrypts it and after TLS decrypts it.
+
+Each receiver has a bounded queue (`DEFAULT_TAP_CAPACITY`, 1024 frames, or
+`subscribe_with_capacity(n)`). The transport never waits for one: a frame that
+finds a queue full is dropped for that receiver and counted in
+`FrameTapReceiver::dropped()` and in `FrameTap::counters()`. With nobody
+subscribed a frame costs one atomic load and nothing is copied. Subscribe
+before `start()` (on the transport, before handing it to a builder) to see a
+BACnet/SC handshake; a client's builders start the transport. After `stop()`
+a receiver keeps waiting, since the transport may start again; `recv()`
+returns `None` once the transport is dropped and the queue is empty.
+
 The management, FDT and fanout counters count what this transport does as a
-BBMD (ACKs sent, registrations admitted, broadcasts forwarded). A client from
-`bip_builder()` is never a BBMD, so its counters stay at zero; a client built
-with `generic_builder()` over a BBMD-mode `BipTransport` reports live values.
+BBMD (ACKs sent, registrations admitted, broadcasts forwarded). They stay at
+zero unless the client runs as one, from `bip_builder().mode(BipMode::Bbmd(..))`
+or `generic_builder()` over a BBMD-mode `BipTransport`.
 
 `bvlc_client_snapshot()` instead describes this transport's own outgoing
 Read-BDT, Write-BDT, Read-FDT, Delete-FDT and Register-FD exchanges, including
-automatic registration. Each function reports successful local UDP sends,
-valid matched ACKs, matched result counts and the latest result code, response
-timeouts, local errors, malformed replies, and calls refused because the
-single management slot was busy. Sending a datagram is not a BBMD receipt.
-The snapshot uses fixed-size counters and a short synchronous lock; polling it
-does not send traffic. Totals belong to this transport instance and survive
-stop/start; last-result fields clear. BBMD-side counters keep their existing meanings.
+automatic registration, which the `bacnet-bip-core` node engine runs (#1622).
+Each function reports successful local UDP sends, valid matched ACKs, matched
+result counts and the latest result code, response timeouts, local errors,
+malformed replies, and calls refused as busy. Requests to different peers, or
+for different operations, run at the same time, in up to eight exchanges
+(#1622). A request is busy only while the same request is in flight to that
+peer, or another request a success answers (Write-BDT, Delete-FDT-Entry or
+Register-FD) is, since a success couldn't tell the two apart, or while all
+eight are in use. Sending a datagram is not a BBMD receipt. The snapshot uses fixed-size
+counters and a short synchronous lock; polling it does not send traffic.
+Totals belong to this transport instance and survive stop/start; last-result
+fields clear. BBMD-side counters keep their existing meanings.
 
 Response matching checks the peer address and the operation. Read requests
 accept their typed ACK or their own NAK; requests answered by a Result accept
@@ -4597,65 +6750,122 @@ attempt. These counters describe local correlations, not certain attribution
 after a timeout. Encoding/send errors, cancellation and stop release the
 pending slot without inventing a timeout.
 
-The Rust B/IP client builder can configure automatic foreign-device mode:
+The B/IP builders run automatic foreign-device mode with
+`BipMode::Foreign` (see [B/IP modes on the builders](#bip-modes-on-the-builders)):
 
 ```rust
 use bacnet_client::client::BACnetClient;
-use bacnet_transport::bip::ForeignDeviceConfig;
+use bacnet_transport::bip::{BipMode, ForeignDeviceConfig};
 use std::{net::Ipv4Addr, time::Duration};
 
 let client = BACnetClient::bip_builder()
     .port(0)
-    .foreign_device(ForeignDeviceConfig {
+    .mode(BipMode::Foreign(ForeignDeviceConfig {
         bbmd_ip: Ipv4Addr::new(192, 0, 2, 10),
         bbmd_port: 47808,
         ttl: 60,
         renewal_interval: Some(Duration::from_secs(20)),
-    })
+    }))
     .build().await?;
-let registration = client.transport().bvlc_client_snapshot().foreign_registration;
+let registration = client.foreign_registration()?;
 ```
 
-Add `renewal_interval: None` to existing `ForeignDeviceConfig` literals to use
-the default of half the advertised TTL, including 500 ms for TTL 1. Automatic
+`renewal_interval: None` uses half the advertised TTL, including 500 ms for
+TTL 1; a shorter interval renews more often without changing the TTL the BBMD
+is asked for, as behind NAT. Automatic
 mode requires a positive TTL and a positive interval shorter than that TTL;
 invalid settings fail before transport I/O. Positive intervals below 100 ms
 use 100 ms instead, limiting automatic attempts to ten per second even when
-a manual request owns the slot or local sends fail immediately. This is a
+the exchanges are all busy or local sends fail immediately. This is a
 local pacing policy; the requested TTL stays unchanged on the wire. The
 effective interval also drives `next_attempt_in` and response waiting.
 The automatic worker waits at most the smaller of the effective interval
-and three seconds for each result, then schedules another attempt; busy manual
-requests cause a locally counted busy refusal and a retry on the next interval.
-There is no catch-up burst after a delayed attempt. One-shot
-`register_foreign_device_bvlc` calls retain their three-second response wait
-and permit zero-TTL requests; they do not switch broadcast mode.
+and three seconds for each result. After a success it renews one interval
+into the lease that success proved; after a refusal, one interval after that
+attempt started; after a lost attempt or a local error, sooner: one response
+wait later, doubling with each failure in a row, and never later than one
+interval after the attempt started (#1622). A Distribute-Broadcast-To-Network
+NAK from the BBMD, which a BBMD sends a device it holds no registration for,
+brings the next attempt forward, to no sooner than one response wait after
+the last one started; `renewal_hints` counts them. Manual requests run beside
+it; only when all eight exchanges are in use is an attempt refused as busy,
+counted, and retried as after a loss.
+There is no catch-up burst after a delayed attempt. The first attempt is
+admitted at `start()` and sent when the transport's driver task first runs.
+One-shot `register_foreign_device_bvlc` calls retain their three-second
+response wait and permit zero-TTL requests; they do not switch broadcast mode.
+A foreign device refuses the requests a success answers (Register,
+Delete-FDT-Entry and Write-BDT) to its own BBMD, whose registration it
+manages; send them from a transport in normal mode, as the CLI does, or to
+another BBMD. `start()` also refuses a BBMD address no device could register
+with: the unspecified address, a group address or port 0 before any I/O, and
+the transport's own address once bound (#1622).
+A transport is in one B/IP mode: `start()` fails, before any I/O, on one set
+up both as a BBMD (`enable_bbmd`) and as a foreign device, since the two
+broadcast differently; run them on separate transports (#938, #1622). A
+`BipMode` can't express both.
 
-`build()` means the client is running locally. Poll `last_outcome` for a
-matched acceptance or refusal; a send failure or timeout leaves the remote
-outcome unknown. A registration NAK rejects that attempt and does not prove
-an earlier accepted entry disappeared. The `next_attempt_in` countdown is the
-worker's scheduled attempt, not a remote lease expiry. Annex J.5.2's BBMD
-expiry includes its grace period; the earlier local renewal is a scheduling
-choice. Last-attempt status and countdown clear on stop/restart while totals
-remain. Foreign-mode broadcasts use DBTN toward the configured BBMD even
-before acceptance or after a rejected attempt.
+`build()` means the client is running locally. `registered` and
+`lease_remaining` report the lease the BBMD's successes prove: it starts at
+the earliest send a success could answer and lasts one time-to-live, leaving
+out the grace period a BBMD adds (Annex J.5.2.3), so the device never counts
+on time the BBMD might not give it. `lapses` counts leases that ran out with
+no newer success. A BBMD that loses its table early, as on a restart, ends
+the registration before the lease does; its Distribute-Broadcast-To-Network
+NAKs then bring the next attempt forward. The transport logs one line when
+the device becomes registered (info), and when the BBMD refuses it or the
+lease lapses (warn); renewals and lost attempts log at debug. Poll
+`last_outcome` for a matched acceptance or refusal; a send failure or timeout
+leaves the remote outcome unknown. A registration NAK rejects that attempt
+and leaves a live lease in place. The `next_attempt_in` countdown is the
+worker's scheduled attempt, not a lease expiry. Last-attempt status,
+countdown and lease clear on stop/restart while totals remain.
+
+Foreign-mode broadcasts use DBTN toward the configured BBMD. Until the first
+attempt after each start is answered or times out, the transport holds up to
+16 of them (`broadcasts_held`), so what a device or router announces at start
+doesn't race its registration, and refuses more with an error
+(`broadcasts_hold_full`) (#1622). It sends them, in order, once that attempt
+succeeds or goes unanswered (`broadcasts_released`), and drops them if the
+BBMD refuses it (`broadcasts_discarded`). One made while the released ones
+still wait to go queues behind them, so broadcasts go in the order they were
+made; that queue takes another 16, and refuses more as a full hold. A stop
+drops what is held or queued, counted as discarded. After that, broadcasts go
+at once, registered or not; one sent with no live lease is counted in
+`broadcasts_unregistered`.
 
 The BBMD helpers (`read_bdt`, `write_bdt`, `read_fdt`, `delete_fdt_entry`,
 `register_foreign_device_bvlc`) work on any client whose transport implements
 `AsBip`: a client over `BipTransport`, or one over `AnyTransport` whose variant
-is `Bip`. On any other variant they return `Error::UnsupportedTransport`
-before sending anything:
+is `Bip`. Each fails with a `BvlcExchangeError` (#1822): `Nak` with the
+result code a peer refused with, `NoReply` when nothing answered within the
+three-second wait, `UnexpectedResponse`, `Refused` with the transport's
+`ExchangeRefusal` when it turned the request down unsent (the same request in
+flight, or every exchange slot in use, #1841), or `Transport` for a local
+failure.
+The three a success answers return `Ok(())` on success, so a refusal is
+always an error. On any other variant they return
+`BvlcExchangeError::Transport(Error::UnsupportedTransport { .. })` before
+sending anything:
 
 ```rust
-use bacnet_transport::bip::AsBip;
+use bacnet_transport::bip::{AsBip, BvlcExchangeError};
 
-let client = BACnetClient::generic_builder()
-    .transport(AnyTransport::<NoSerial>::from(BipTransport::new(ip, 0, broadcast)))
-    .build()
-    .await?;
-let bdt = client.read_bdt(&bbmd_mac).await?;
-let counters = client.transport().as_bip()?.bvlc_client_snapshot();
+// `?` takes both `Error` and `BvlcExchangeError` into the boxed error.
+async fn tables(ip: Ipv4Addr, broadcast: Ipv4Addr, bbmd_mac: &[u8])
+    -> Result<(), Box<dyn std::error::Error>> {
+    let client = BACnetClient::generic_builder()
+        .transport(AnyTransport::from(BipTransport::new(ip, 0, broadcast)))
+        .build()
+        .await?;
+    match client.read_bdt(bbmd_mac).await {
+        Ok(bdt) => println!("{} entries", bdt.len()),
+        Err(BvlcExchangeError::Nak(code)) => println!("refused: {code}"),
+        Err(other) => return Err(other.into()),
+    }
+    let counters = client.transport().as_bip()?.bvlc_client_snapshot();
+    Ok(())
+}
 ```
 
 ### Routed Confirmed-Request Limits
@@ -4681,7 +6891,7 @@ client
 client.clear_routed_path_limit(&router_mac, dnet).await?;
 ```
 
-Every MAC on a routed path holds to `NpduAddress::MAX_MAC_LEN` (18 octets), the
+Every MAC on a routed path holds to `bacnet_npdu::MAX_MAC_LEN` (18 octets), the
 longest address the NPDU codec carries and the network layer delivers (#1267).
 A routed request refuses a longer DADR or local source MAC, and a router MAC
 that is empty or longer, with `Error::Encoding` before it reserves or waits on
@@ -5090,7 +7300,7 @@ conveyed, including those of a notification that fails during the renewal.
 
 Changes that one notification cannot carry go out in several (§13.1,
 §13.18.1.1), strictly in capture order (#1008). Each notification fits the smaller
-of the server's `max_apdu_length` and the max-APDU-length-accepted from the header
+of the server's resolved Device receive capacity and the max-APDU-length-accepted from the header
 of the subscriber's latest SubscribeCOVPropertyMultiple request
 (`subscribe_multiple` takes it as `subscriber_max_apdu`; `None`, unknown, keeps the
 value advertised before). The oldest changes go first, as many per notification as
@@ -5353,7 +7563,7 @@ client.unsubscribe_cov(&mac, process_id, oid).await?;
 `SubscribeCOVPropertyMultipleRequest::encode` is fallible and validates the entire
 request before appending bytes. Invalid timing pairs, empty nested reference lists,
 prohibited property selectors and the cumulative reference limit return
-`Error::Encoding` without changing the destination buffer. The former `try_encode`
+`Error::Encode` without changing the destination buffer. The former `try_encode`
 and panicking `encode` split has been removed. An empty outer list remains encodable
 with omitted or valid finite timing; finite empty encoding does not establish that
 the bundled server materializes an empty subscription context.
@@ -5370,6 +7580,33 @@ let device = client.get_device(1234).await;              // Option<DiscoveredDev
 client.clear_devices().await;                            // reset table
 ```
 
+Who-Has answers and router discovery (#960):
+
+```rust
+// Send a Who-Has and collect the I-Haves that answer it for three seconds.
+let found: Vec<ReceivedIHave> = client
+    .who_has_replies(WhoHasObject::Name("Supply Air Temp".into()), None, Duration::from_secs(3))
+    .await?;
+let mut i_haves = client.i_have_events();                // every I-Have, asked for or not
+
+// Who-Is-Router-To-Network, then the routers heard and the networks they reach.
+let routers: Vec<DiscoveredRouter> = client.discover_routers(None, Duration::from_secs(3)).await?;
+client.who_is_router_to_network(Some(2), None).await?;   // just send it
+client.what_is_network_number(None).await?;
+
+// I-Am-Router-To-Network, Network-Number-Is and Reject-Message-To-Network.
+let mut reports = client.network_reports();
+if let NetworkReport::RejectMessageToNetwork(reject) = reports.recv().await?.report {
+    eprintln!("router refused network {}: {}", reject.network, reject.reason);
+}
+```
+
+Both are broadcast channels: the dispatch task never waits for a
+subscriber, and one that falls behind loses the oldest and gets
+`RecvError::Lagged` with the count. `NetworkReport` and
+`ReceivedNetworkReport` live in `bacnet_network::layer`, which also has
+`NetworkLayer::send_network_message` for a local network message.
+
 ### Device Management
 
 ```rust
@@ -5380,8 +7617,9 @@ client.reinitialize_device(&mac, ReinitializedState::WARMSTART, None).await?;
 ### Object Management
 
 ```rust
-client.create_object(&mac, ObjectSpecifier::Type(ObjectType::ANALOG_INPUT), initial_values).await?;
-client.delete_object(&mac, oid).await?;
+// The decoded CreateObject-ACK: the identifier, with the instance the server chose.
+let created = client.create_object(&mac, ObjectSpecifier::Type(ObjectType::ANALOG_INPUT), initial_values).await?;
+client.delete_object(&mac, created).await?;
 ```
 
 ### Alarms & Events
@@ -5399,21 +7637,27 @@ let ack = AcknowledgeAlarmRequest {
     time_of_acknowledgment: now,
 };
 client.acknowledge_alarm_request(&mac, &ack).await?;
-let raw = client.get_event_information(&mac, None).await?;
 ```
 
-GetAlarmSummary and GetEnrollmentSummary have no dedicated client methods.
-Send them with `confirmed_request` and decode the ACK with `bacnet_services`:
+`get_event_information`, `get_alarm_summary` and `get_enrollment_summary`
+send GetEventInformation, GetAlarmSummary and GetEnrollmentSummary and
+return the decoded ACKs; their `_from_device` forms take a discovered
+device instance and route through its router when it has one. While a
+`GetEventInformationAck` has `more_events` set, ask again from its last
+summary's object. For display, `bacnet_ops::format::alarms`
+names the states, bits and timestamps of all three, and its
+`read_event_information` follows the pages.
 
 ```rust
-use bacnet_services::alarm_summary::GetAlarmSummaryAck;
-use bacnet_services::enrollment_summary::{GetEnrollmentSummaryAck, GetEnrollmentSummaryRequest};
-use bacnet_types::enums::{AcknowledgmentFilter, ConfirmedServiceChoice};
-use bytes::BytesMut;
+use bacnet_services::enrollment_summary::GetEnrollmentSummaryRequest;
+use bacnet_types::enums::AcknowledgmentFilter;
 
-// GetAlarmSummary takes no parameters.
-let raw = client.confirmed_request(&mac, ConfirmedServiceChoice::GET_ALARM_SUMMARY, &[]).await?;
-let alarms = GetAlarmSummaryAck::decode(&raw)?;
+let events = client.get_event_information(&mac, None).await?;
+if events.more_events {
+    let after = events.list_of_event_summaries.last().map(|s| s.object_identifier);
+    let next = client.get_event_information(&mac, after).await?;
+}
+let alarms = client.get_alarm_summary(&mac).await?;
 
 let request = GetEnrollmentSummaryRequest {
     acknowledgment_filter: AcknowledgmentFilter::ALL,
@@ -5423,12 +7667,7 @@ let request = GetEnrollmentSummaryRequest {
     priority_filter: None,
     notification_class_filter: None,
 };
-let mut service_data = BytesMut::new();
-request.encode(&mut service_data);
-let raw = client
-    .confirmed_request(&mac, ConfirmedServiceChoice::GET_ENROLLMENT_SUMMARY, &service_data)
-    .await?;
-let enrollments = GetEnrollmentSummaryAck::decode(&raw)?;
+let enrollments = client.get_enrollment_summary(&mac, &request).await?;
 ```
 
 ### Life Safety
@@ -5595,7 +7834,7 @@ client.remove_list_element(&mac, nc_oid, PropertyIdentifier::RECIPIENT_LIST, Non
 
 A device that answers with a ChangeList-Error surfaces as `Error::Structured`
 with `ErrorDetail::FirstFailedElementNumber`; a device that sends only the
-class and code surfaces as `Error::Protocol`.
+class and code surfaces as `Error::Remote`.
 
 ### Private Transfer
 
@@ -5816,10 +8055,9 @@ AuditLogQuery against the retained in-memory snapshot of an explicitly backed
 `AuditLogObject`, returning newest-first typed records through the existing
 ComplexACK segmentation path. ConfirmedAuditNotification and
 UnconfirmedAuditNotification receipt are available only when the server is
-configured with exactly one `audit_notification_sink` and the corresponding
-fast `audit_notification_authorizer` or
-`unconfirmed_audit_notification_authorizer`; missing, false, or panicking
-policy fails closed. Each policy receives the immediate MAC, optional routed
+configured with exactly one `audit_notification_sink` and a `ServerPolicy`
+whose `authorize_audit_notification` or `authorize_unconfirmed_audit_notification`
+allows it; no policy, the default method, `false` or a panic fails closed. Each policy receives the immediate MAC, optional routed
 NPDU source, configured sink, and decoded request separately from the
 peer-reported payload; only the confirmed context has an invoke ID. Accepted
 lists merge or create records atomically through the sink's durable backend.
@@ -6055,6 +8293,7 @@ response socket affinity or segmented-response ACK/Abort confinement (#524).
 
 ```rust
 use bacnet_server::server::BACnetServer;
+use bacnet_server::FnPolicy;
 
 // Generic builder — accepts any pre-built TransportPort
 let server = BACnetServer::generic_builder()
@@ -6069,11 +8308,11 @@ let server = BACnetServer::bip_builder()
     .interface(Ipv4Addr::UNSPECIFIED)
     .port(0xBAC0)
     .broadcast_address(Ipv4Addr::BROADCAST)
-    .life_safety_operation_authorizer(|context| {
+    .policy(FnPolicy::new().life_safety_operation(|context| {
         // Use authenticated deployment identity where available; the
         // Requesting Source string is peer-controlled descriptive text.
         allowed_life_safety_peer(&context.source_mac, context.source_network.as_ref())
-    })
+    }))
     .build()
     .await?;
 
@@ -6087,9 +8326,11 @@ let server = BACnetServer::sc_builder()
     .build()
     .await?;
 
-// Access the database at runtime
-let db = server.database().lock().await;
+// Access the database at runtime: a Tokio RwLock, so take a read guard
+// (`.write().await` for a write guard) and drop it before the next await.
+let db = server.database().read().await;
 let value = db.get(&oid).unwrap().read_property(pid, None)?;
+drop(db);
 
 // Check communication state
 let state = server.comm_state(); // DccState::Enable or DccState::DisableInitiation
@@ -6101,12 +8342,15 @@ server.stop().await?;
 Use `bip_builder()` for B/IP, `sc_builder()` for BACnet/SC, or
 `generic_builder()` with a prebuilt transport.
 
-All three Rust builders accept `.mutation_authorizer(|context| ...)`, also
-available as `ServerConfig::mutation_authorizer`. It covers only confirmed
+All three Rust builders accept `.policy(..)`, also available as
+`ServerConfig::policy`: one `bacnet_server::ServerPolicy` that makes the server's
+authorization decisions, each with a documented default
+([Server authorization policy](mutation-policy.md); `FnPolicy` builds one from
+closures). Its `authorize_mutation` covers only confirmed
 WriteProperty, WritePropertyMultiple, CreateObject, DeleteObject, AddListElement,
 RemoveListElement, AtomicWriteFile, SubscribeCOV, SubscribeCOVProperty, and
-SubscribeCOVPropertyMultiple. **Omitting it allows existing behavior**, unlike
-Audit/LifeSafety's fail-closed absence. False or panic returns
+SubscribeCOVPropertyMultiple, plus inbound WriteGroup. **It allows by default**,
+unlike the Audit and LifeSafety methods, which deny by default. False or panic returns
 `SERVICES / SERVICE_REQUEST_DENIED` without the denied mutation. WPM authorizes
 each element in order and retains an authorized prefix on later denial or
 malformed input; other covered services authorize once after service decoding.
@@ -6117,10 +8361,15 @@ database lock (#1321): still once, and in wire order among those elements, so
 ahead of earlier elements no object saves first, and possibly for an element the
 request never reaches because an earlier one fails. Counters and audit records
 cover only the elements the handler reaches.
-Callbacks must be fast, nonblocking, and side-effect-free. Context addresses and
-process IDs are claimed, not authenticated identities. DCC/Reinit, Audit/LifeSafety,
-reads, discovery, trusted local writes and unconfirmed services other than WriteGroup
-are unchanged. An inbound WriteGroup is decided once per Channel write it would make
+Policies must be fast, nonblocking, and side-effect-free. Context addresses and
+process IDs are claimed, not authenticated identities. DeviceCommunicationControl
+has its own method, `authorize_device_communication_control` (allow by default),
+asked after the DCC password, static `DccPolicy` and source restriction pass and
+before the disable rate limit is charged (#1964); a denial or panic answers
+`SERVICES / SERVICE_REQUEST_DENIED` and counts as `policy_denied_total`, which also
+counts static source and rate-limit refusals. Reinit, reads,
+discovery, trusted local writes and unconfirmed services other than WriteGroup
+are outside it. An inbound WriteGroup is decided once per Channel write it would make
 (#1319): the context's `target` is `MutationTarget::WriteGroup`, its `invoke_id` is
 `None` and its `service_choice` is `MutationService::Unconfirmed(WRITE_GROUP)`
 (a confirmed request's is `MutationService::Confirmed`, with `Some` invoke ID).
@@ -6132,27 +8381,33 @@ Each decision context also carries the reassembled ingress snapshot
 (`provenance: TransportProvenance`) and the derived channel/relay scope
 (`trust: MutationTrust`, mirroring RB-09 `ControlTrust`): `Unverified`,
 `VerifiedChannel` (SC-TLS channel), or `VerifiedRelay` (SC-hub relayed
-origin). These enums are scope-only; `context.direct_sc_identity()` separately
-exposes the [accepted-direct leaf/incarnation](#accepted-direct-tls-identity).
+origin). These enums are scope-only; `context.principal()` is the verified
+direct-SC leaf's `ScPrincipal` (`None` for hub-relayed and non-SC requests), and
+`context.direct_sc_identity()` is the immediate direct-SC hop's leaf (the
+`forwarding_peer_principal()` one: for a routed request, the router that
+forwarded it) with its [connection incarnation](#accepted-direct-tls-identity).
 Baseline-only profile: an unknown
 origin — including a hub-mediated unknown leaf, which arrives unverified —
 never satisfies a baseline-only allow rule, and receive-permission is never
-write-permission; the callback owns the rule. Context `Debug` is redacted
-(address lengths and target kind only, no MAC bytes or decoded inputs), and
-decision counters retain no per-source state. The callback runs after
+write-permission; the policy owns the rule. Context `Debug` is redacted
+(address lengths, whether a principal is present and target kind only, no MAC
+bytes, fingerprint or decoded inputs), and
+decision counters retain no per-source state. The policy runs after
 validation and before mutation; denials perform no database mutation, no
 COV/event fan-out, and no audit-log write (counters and bounded diagnostics
 only). This policy governs standalone-server mutations; direct handler calls
 and trusted local writes stay outside it. The shared endpoint's narrow
 [Device-write authorizer](#authorized-endpoint-device-writes) is configured
-separately. Python exposes the same native static policy through
-`BACnetServer(..., mutation_policy="permissive" | "deny_all")`, without a Python
-authorizer callback. See
-[Local mutation authorization](mutation-policy.md).
+separately. Python exposes the same native policy through
+`BACnetServer(..., mutation_policy="permissive" | "deny_all" | callable)`, and
+the endpoints' Device-write authorizer through their `device_write_policy`
+callable (#2033). See
+[Server authorization policy](mutation-policy.md).
 
 ### Life Safety execution and COV
 
-Inbound LifeSafetyOperation is fail-closed unless an authorizer is configured.
+Inbound LifeSafetyOperation is fail-closed unless the server's `ServerPolicy`
+allows it (`authorize_life_safety_operation`).
 The built-in Life Safety Point and Zone objects execute the six silence and
 unsilence operations. `RESET`, `RESET_ALARM`, and `RESET_FAULT` execute only
 through a configured application-owned Point/Zone reset executor after exact
@@ -6282,7 +8537,7 @@ The server automatically dispatches:
 - GetAlarmSummary, GetEnrollmentSummary
 - ConfirmedTextMessage
 - LifeSafetyOperation (authorized silence/unsilence; reset via configured application executor)
-- ConfirmedAuditNotification (explicit sink and fail-closed authorizer; process-local duplicate detection)
+- ConfirmedAuditNotification (explicit sink and `ServerPolicy` approval, denied by default; process-local duplicate detection)
 - ConfirmedEventNotification (acknowledged once it decodes, then offered to the Notification Forwarder objects)
 - AuditLogQuery (retained records; three-state success filter; no query authorization)
 - ReadRange
@@ -6295,7 +8550,7 @@ The server automatically dispatches:
 - TimeSynchronization, UTCTimeSynchronization (opt-in source, step and rate limits: [time synchronization policy](time-sync-policy.md))
 - UnconfirmedTextMessage
 - UnconfirmedEventNotification (offered to the Notification Forwarder objects)
-- UnconfirmedAuditNotification (explicit sink and distinct fail-closed authorizer; no response or duplicate tracking)
+- UnconfirmedAuditNotification (explicit sink and its own `ServerPolicy` approval, denied by default; no response or duplicate tracking)
 
 **Outgoing (server-initiated):**
 - COV notifications (confirmed and unconfirmed, with `NotificationTransactions` retries for confirmed)
@@ -6310,10 +8565,10 @@ later retries; a configured Device binding keeps its fixed next hop. The former
 public `ServerTsm` type and its unused transaction methods have been removed
 without a compatibility alias. `CovAckResult` remains available at its existing
 `bacnet_server::server` path. A refused confirmed request ends as
-`CovAckResult::Error(Refusal)`: `Refusal::Error { class, code }` for an Error
-PDU, `Refusal::Reject(reason)` or `Refusal::Abort(reason)` otherwise (#1323).
-`Error::from(refusal)` gives the `Error::Protocol`, `Error::Reject` or
-`Error::Abort` a client's WriteProperty would report. The notification senders
+`CovAckResult::Error(RemoteError)`: `RemoteError::Error { class, code }` for an
+Error PDU, `RemoteError::Reject { reason }` or `RemoteError::Abort { reason }`
+otherwise (#1323, #1815). `Error::from(error)` gives the `Error::Remote` a
+client's WriteProperty would report. The notification senders
 only ask whether the request was taken; a Channel member in another device
 uses the payload to tell a NULL refused as the wrong datatype, which counts as
 written, from other refusals.
@@ -6355,34 +8610,44 @@ source_mac, source_network, provenance, invoke_id)` builds one for calling a
 handler directly, as its unit tests would; outside `bacnet-transport` only
 `TransportProvenance::unverified()` is available for the provenance.
 
-`Ok(())` sends the SimpleACK and `Err(Error::Protocol { .. })` sends that
+`Ok(())` sends the SimpleACK and `Err(Error::protocol(class, code))` sends that
 class and code instead. The rules:
 
 - The SimpleACK leaves only after the handler returns, so it must not restart
-  inline. Accept or refuse, prepare, and schedule the restart, backup or
-  restore step for after the reply (Clause 16.4.2).
-- Nothing yet signals when the SimpleACK has left (#1565), so any delay before
-  restarting is best effort, and on MS/TP it can need longer, since a
-  postponed reply waits for the token. `BACnetServer::stop()` seals responses
-  and aborts request tasks before joining them, so a restart path that stops
-  the server before the reply has left drops the SimpleACK.
-- On a full server, an accepted WARMSTART or COLDSTART immediately ends
-  DISABLE_INITIATION, cancels its timer and resumes held COV (Clause 16.1.2),
-  even if the reply later fails.
+  inline. Accept or refuse, prepare, and register the restart, backup or
+  restore step with `ReinitializeContext::after_reply(hook)` (Clause 16.4.2).
+- The server runs each registered hook, in order and with no server lock
+  held, once the SimpleACK has been handed to the transport (#1565). On
+  MS/TP, handed off means queued: on the reply channel or the transmit queue
+  the frame still waits for the token, so stopping the server or the port at
+  once can drop the reply there; wait a short while (a few token rotations)
+  first. A
+  request answered with an Error never runs its hooks: a refusal, a password
+  failure, a handler panic, or a Network Port activation the transport
+  refused. Neither does a reply that could not be handed over (the requester
+  retries) or a request task `BACnetServer::stop()` aborted first. Hooks run
+  on the request's task, so keep them short and spawn longer work; a panic in
+  one is logged and the next still runs. Start any `stop()` from a hook, never
+  from the handler.
+- On a full server, an accepted WARMSTART or COLDSTART ends
+  DISABLE_INITIATION as the handler accepts it, cancels its timer and resumes
+  held COV (Clause 16.1.2), even if the reply later fails.
 - It runs synchronously on a runtime worker with the database write-locked:
   keep it quick and hand slow work, such as writing backup files, to a task.
+  Never wait on another task or thread from it: if that work needs the
+  database, the server deadlocks.
 - Its edits through `&mut ObjectDatabase` are raw: they skip what
   `BACnetServer::write_local` adds around a write (the Object_Name uniqueness
   check, the COV fanout, the event pass, Schedule and Command follow-ups, and
   the Audit record). Apply a change that needs those, as ACTIVATE_CHANGES work
   on Network Port or Device properties may, through `write_local` after the
   reply, from a task the handler schedules.
-- Without `reinit_password` any peer reaches it. The mutation policy and the
-  mutation authorizer don't cover ReinitializeDevice, so restrict sources
+- Without `reinit_password` any peer reaches it. Neither `mutation_policy` nor
+  the `ServerPolicy` covers ReinitializeDevice, so restrict sources
   through the context; its addresses are claims, not authenticated identities.
 - Once the handler has run, the request can no longer be rejected (Clause
-  20.1.8): a returned `Error::Reject`, or any error other than `Protocol` or
-  `Structured`, is answered `SERVICES / OTHER`, and so is a panic (caught with
+  20.1.8): a returned `Error::reject(..)`, or any error other than an Error
+  PDU's `Remote` or `Structured`, is answered `SERVICES / OTHER`, and so is a panic (caught with
   unwind builds), since the handler may have partly acted.
 
 ```rust,ignore
@@ -6392,8 +8657,6 @@ use bacnet_types::enums::{ErrorClass, ErrorCode, ReinitializedState};
 let (restart_tx, mut restart_rx) = tokio::sync::mpsc::channel(1);
 tokio::spawn(async move {
     if let Some(state) = restart_rx.recv().await {
-        // Best effort: nothing yet reports that the SimpleACK has left (#1565).
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         restart_device(state); // application code
     }
 });
@@ -6403,21 +8666,36 @@ let server = BACnetServer::bip_builder()
     .on_reinitialize(move |request: &ReinitializeContext, _db: &mut ObjectDatabase| {
         match request.state {
             ReinitializedState::WARMSTART | ReinitializedState::COLDSTART => {
-                // Accept now; the task above restarts after its delay.
-                restart_tx.try_send(request.state).map_err(|_| Error::Protocol {
-                    class: ErrorClass::DEVICE.to_raw() as u32,
-                    code: ErrorCode::CONFIGURATION_IN_PROGRESS.to_raw() as u32,
-                })
+                // Accept now; restart once the SimpleACK has been handed off.
+                let (restart_tx, state) = (restart_tx.clone(), request.state);
+                request.after_reply(move || drop(restart_tx.try_send(state)));
+                Ok(())
             }
-            _ => Err(Error::Protocol {
-                class: ErrorClass::SERVICES.to_raw() as u32,
-                code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::SERVICES,
+                ErrorCode::SERVICE_REQUEST_DENIED,
+            )),
         }
     })
     .build()
     .await?;
 ```
+
+With target Audit configured, an accepted request is audited (Clause 19.6,
+Table 19-5, #1564). Accepted means the handler accepted it and any Network
+Port activation succeeded, so a refusal, a password failure, a handler panic
+or a refused activation records nothing. WARMSTART and COLDSTART record
+DEVICE_RESET, START_BACKUP and END_BACKUP record DEVICE_BACKUP, and the three
+restore steps record DEVICE_RESTORE, each naming the requester as source with
+its invoke ID and this Device as the target, with no object, property, value
+or Result. ACTIVATE_CHANGES records nothing, since Table 19-5 gives it no
+operation. A restart that also ends DISABLE_INITIATION records the reset alone,
+not a DEVICE_ENABLE_COMM beside it. The record goes through the Reporter that
+monitors the local Device, as a DCC record does, and needs that operation's
+bit. A reset the application performs for its own reasons is reported with
+`BACnetServer::report_device_reset_local()`: a DEVICE_RESET record from this
+device with no invoke ID. Call it before restarting, and don't call it for a
+peer's accepted restart, which is recorded already.
 
 Endpoint sessions take the same handler; see
 [Endpoint ReinitializeDevice](#endpoint-reinitializedevice).
@@ -6553,8 +8831,9 @@ and neither does a destination naming the server's own Device object. A local
 notification whose Notification Class names that Device object under several
 process identifiers is one notification, with one cap and one copy per
 destination. The destinations past the cap are dropped and counted in
-`forwarding_cap_dropped`; a capped notification logs a warning at most once a
-minute per process, and at debug level in between. There is no rate limit on
+`forwarding_cap_dropped`; a capped notification logs a warning at most once
+every 10 seconds per server (before 0.14.0, once a minute per process), with
+the count since the last one, and at debug level in between. There is no rate limit on
 received notifications.
 
 The server executes ConfirmedEventNotification, so it acknowledges every
@@ -6594,7 +8873,7 @@ it with the guard dropped (on the blocking pool, as for the Audit Log), and the
 write then takes the saved list. A write
 that cannot be saved fails with DEVICE / OPERATIONAL_PROBLEM and leaves the old
 list. WritePropertyMultiple stages too, its writes to both lists as one save
-(#1423); under a `mutation_authorizer` the server decides each such attempt
+(#1423); under an installed `ServerPolicy` the server decides each such attempt
 before staging it and stages only those allowed (#1321). The operation task's
 lapse and minute saves coalesce, so a burst
 costs one save of the latest lists; one that fails is logged and retried a
@@ -6741,16 +9020,16 @@ All async operations return `Result<T, bacnet_types::error::Error>`. Key variant
 
 | Variant | Meaning |
 |---------|---------|
-| `Error::Protocol { class, code }` | Remote BACnet error response |
+| `Error::Remote(RemoteError)` | Remote device's Error PDU (`RemoteError::Error { class, code }`, an `ErrorClass` and an `ErrorCode`), Reject PDU (`RemoteError::Reject { reason }`, a `RejectReason`) or Abort PDU (`RemoteError::Abort { reason }`, an `AbortReason`) |
 | `Error::Structured { class, code, detail }` | Remote error whose Clause 21 body adds fields (ChangeList-Error, CreateObject-Error, WritePropertyMultiple-Error and others): `detail` is the boxed `ErrorDetail` |
-| `Error::Timeout(msg)` | APDU retry exhausted |
-| `Error::Reject { reason }` | Remote device rejected request |
-| `Error::Abort { reason }` | Remote device aborted request |
+| `Error::Timeout(duration)` | APDU retry exhausted |
 | `Error::RoutedPathTooLong { dnet }` | Router rejected the active message as too long for DNET |
 | `Error::RoutedPathCapacityExceeded { capacity }` | No routed-path entry can be allocated without discarding protected safety state |
 | `Error::UnsupportedTransport { required, actual }` | The client's data link cannot carry the operation (a BBMD helper on a non-B/IP transport) |
-| `Error::Encoding(msg)` | Malformed packet |
-| `Error::Io(io_error)` | Transport I/O failure |
+| `Error::Decoding(DecodeError)` | Malformed received data, with its offset and `DecodingKind` |
+| `Error::Encode(EncodeError)`, `Error::Range(RangeError)` | A value an encoder, validator or constructor refused, with a static label |
+| `Error::Encoding(msg)` | A formatted local encoding or configuration error (transport, network, client and server) |
+| `Error::Transport(io_error)` | Transport I/O failure |
 
 ---
 
@@ -6892,318 +9171,25 @@ client.stop().await?;
 hub.stop().await;
 ```
 
-## Embedded B/IP↔MS/TP router
-
-The embedded router is a synchronous, allocation-free library boundary. It is
-split into:
-
-- `bacnet-router-core` for BVLL/NPDU validation, direct and learned routes,
-  router control messages, routed broadcasts, duplicate suppression, and
-  operational state;
-- `bacnet-router-adapters` for bounded B/IP and MS/TP admission plus
-  bidirectional composition; and
-- `bacnet-mstp-core` for the caller-clocked MS/TP state machine and its real
-  bounded transmit queues.
-
-The router crates own no UDP socket, UART, clock, task, executor, or hidden
-backlog. An ESP-IDF application supplies complete UDP datagrams with their
-actual local-destination metadata, supplies monotonic timestamps, drives the
-MS/TP core, and executes the returned synchronous actions. A successful
-`AdmissionOutcome::AcceptedOwned` means the selected sink or queue copied the
-bytes before returning.
-
-`BipIngressContext` keeps the immediate UDP peer, logical Forwarded-NPDU
-origin, actual local destination, group classification, and receive timestamp
-separate. `BipEgress` encodes Original-Unicast-NPDU or
-Original-Broadcast-NPDU into caller-owned scratch and calls a bounded
-`BipDatagramSink`. The sink receives `TrafficClass`, so a platform can reserve
-network-control capacity independently from ordinary data.
-
-`StandardMstpEgress` is hard-capped at a 501-byte NPDU even if a caller
-overstates the configured port limit. `ExtendedMstpEgress` and
-`PortKind::MstpExtended` are hard-capped at 1497 bytes. Extended transmission
-is fail-closed: `MstpPeerCapability` defaults to `Standard`, so the application
-must explicitly verify and enable extended capability for the destination
-segment or peer before an NPDU larger than 501 bytes can enter the queue.
-Extended frame types `0x20` and `0x21` are DER and DNER; reserved types
-`0x22..=0x7f` are never delivered as BACnet NPDUs.
-
-The portable core provides bounded route discovery, caller-time route aging,
-owner-checked Router-Busy/Router-Available handling, transactional
-Initialize-Routing-Table processing, explicit broadcast policy, per-egress
-fanout results, and caller-time duplicate suppression. It never fragments or
-truncates an NPDU. Unknown routes can be given one bounded
-Who-Is-Router-To-Network discovery interval before a source-aware
-Reject-Message-To-Network is produced; the library retains no pending NPDU
-bytes.
-
-Direct/unicast forwarding rejects a broadcast link destination with
-`ForwardError::BroadcastRequiresPolicy`; callers must use `BroadcastPolicy` so
-policy, ingress exclusion, hop exhaustion, and duplicate suppression cannot be
-bypassed. Router-control payloads are rejected above
-`MAX_ROUTER_CONTROL_PAYLOAD` (1497 bytes) before decoding or state mutation.
-Initialize-Routing-Table peer `port_id` values remain opaque: local learned
-route ownership uses the ingress `PortId` and immediate peer address.
-
-Each `BroadcastTarget` names both the final `routed_network` and the actual
-data-link `destination`. A directly connected remote broadcast uses a
-link-layer broadcast and removes DNET/DADR/Hop for final delivery. A learned
-remote broadcast uses the next router's unicast link address, preserves the
-final DNET/DADR, and decrements Hop Count. Global fanout selects only explicit
-direct link-layer broadcast targets. `BipEgress` additionally rejects a
-configured subnet broadcast, limited broadcast, or IPv4 multicast address if
-it is supplied through the unicast link-address path; those destinations must
-enter through broadcast policy.
-
-`OperationalDiagnostics` exposes saturating global/per-port counters, bounded
-occupancy snapshots, recent failures, and synchronous controls. Its typed
-forwarding, broadcast, and router-control observers define one terminal event
-owner per operation. The adapter functions
-`forward_bip_datagram_to_mstp_observed` and
-`forward_mstp_action_to_bip_observed` validate diagnostic registration before
-executing the raw composition path and record exactly one outer result. Raw
-composition functions remain available for integrations that own a different
-telemetry system; callers must not observe both the raw nested admission and
-the outer result as separate failures.
-
-### Embedded router limitations
-
-The embedded adapter implements ordinary BACnet/IPv4 routing boundaries. It
-does not implement BBMD/BDT/FDT management, foreign-device registration, NAT
-rewriting, or B/IP multicast. Those are separate policies and are not implied
-by Original/Forwarded-NPDU parsing. BACnet/SC, BACnet/IPv6, Ethernet, ARCNET,
-PTP, LonTalk, ZigBee, and security network messages are outside this
-component's supported data-link scope.
-
-Socket lifecycle, UDP destination ancillary-data capture, subnet broadcast
-configuration, UART direction control, DMA ownership, timer scheduling, task
-serialization, flashing, and hardware-in-the-loop validation remain platform
-responsibilities. In-memory composition tests establish library behavior; they
-do not establish ESP-IDF deployment or independent interoperability evidence.
-
-The configured consolidated Standard 135-2020 reference is not present in the
-repository. Extended MS/TP implementation and tests are anchored to official
-ASHRAE addenda, but no consolidated-edition conformance claim is made until
-the licensed standard and independent interoperability evidence are reviewed.
-The hosted `bacnet-transport` adapter currently provides Extended-frame
-framing, assembly, timing, and resynchronization compatibility but does not
-deliver Extended NPDUs to hosted applications.
-
-## Embedded MS/TP
-
-The embedded MS/TP implementation is split into two allocation-free layers:
-
-- `bacnet-mstp-codec` owns the wire format. It encodes into caller-provided
-  storage and incrementally decodes from a caller-provided receive buffer.
-- `bacnet-mstp-core` owns Clause 9.5.6 master behavior. It has no clock,
-  executor, UART, GPIO, lock, or allocator; the platform supplies timestamped
-  events and executes the actions returned by the core.
-
-Both crates are `no_std`. The core's `heapless` feature provides fixed-capacity
-NPDU queues; its `alloc` feature provides an owned, pre-sized queue backend for
-systems that already use an allocator. Neither feature allocates while the
-core is running.
-
-MS/TP source addresses 0–254 are accepted; 255 remains invalid as a source.
-The default transmit watchdog covers the maximum Extended-frame wire time at
-the configured baud rate with margin. Profile construction rejects a custom
-watchdog shorter than that profile's maximum frame wire time.
-
-### Bare-metal codec
-
-`Frame::encode_into` does not require a global allocator. The output and input
-storage can be placed in static memory, a stack-owned buffer, or a DMA buffer
-owned by the serial driver.
-
-```rust
-use bacnet_mstp_codec::{Frame, FrameError, FrameType, MAX_STANDARD_FRAME_LENGTH};
-
-fn encode_token(
-    destination: u8,
-    source: u8,
-    wire: &mut [u8; MAX_STANDARD_FRAME_LENGTH],
-) -> Result<usize, FrameError> {
-    Frame::new(FrameType::Token, destination, source, &[]).encode_into(wire)
-}
-
-fn send_one_token(uart: &mut impl Uart, destination: u8, source: u8)
-    -> Result<(), FrameError>
-{
-    let mut wire = [0; MAX_STANDARD_FRAME_LENGTH];
-    let length = encode_token(destination, source, &mut wire)?;
-    uart.write(&wire[..length]);
-    Ok(())
-}
-
-trait Uart {
-    fn write(&mut self, bytes: &[u8]);
-}
-```
-
-For receive, create `StreamDecoder` over storage owned by the caller and pass
-each received byte to `push`. `DecodeEvent::Invalid` means synchronization
-noise and may be discarded; `DecodeEvent::Malformed` means a frame candidate
-failed validation and should be counted as a parser/frame error. A completed
-`Frame` borrows the decoder storage, so copy or deliver it before reusing that
-storage.
-
-### Driving `MasterCore`
-
-The core is event-driven. A platform normally does the following on each loop:
-
-1. Read the monotonic timestamp and call `on_octet` for each wire-timestamped
-   byte. If a host assembler has already validated a complete frame, call
-   `on_validated_frame` instead. Do not submit the same frame through both
-   ingress paths.
-2. Report UART errors with `on_receive_error`, and call `on_silence` when the
-   serial receiver observes a silence interval.
-3. Arm a timer for `next_deadline()` and call `on_deadline` when it expires.
-4. Drain `poll_action()` and perform the returned hardware or application
-   operation.
-
-The transmit lifecycle is explicit. `SetDirection(Transmit)` is the request to
-assert driver-enable, followed by `Transmit { id, frame }`. The adapter must
-call `on_transmit_started(id, now)` when the UART/DMA transfer actually starts,
-then `on_transmit_complete(id, now)` only after the final stop bit has left the
-wire. On an I/O failure, early abort, or watchdog expiry it must call
-`on_transmit_aborted`; the core then emits `SetDirection(Receive)` and returns
-to a safe logical receive state.
-
-```rust
-use bacnet_mstp_codec::Frame;
-use bacnet_mstp_core::{
-    Action, CoreError, Direction, HeaplessQueues, Instant, MasterCore,
-};
-
-type Queues = HeaplessQueues<8, 8>;
-
-fn service_actions(
-    core: &mut MasterCore<'_, Queues>,
-    uart: &mut impl Port,
-) -> Result<(), CoreError> {
-    loop {
-        // A transmit action borrows the core only until write_frame returns;
-        // the port must copy the bytes into its own UART/DMA storage.
-        let transmit = match core.poll_action() {
-            Action::SetDirection(direction) => {
-                uart.set_direction(direction);
-                None
-            }
-            Action::Transmit { id, frame } => {
-                uart.write_frame(frame);
-                Some((id, uart.now()))
-            }
-            Action::DeliverNpdu {
-                source,
-                destination,
-                npdu,
-                request_id,
-            } => {
-                // Copy `npdu` before polling another action. If request_id is
-                // Some, complete it with Data, Postponed, or Cancelled.
-                application_delivery(source, destination, npdu, request_id);
-                None
-            }
-            Action::Idle => break,
-        };
-
-        if let Some((id, started_at)) = transmit {
-            core.on_transmit_started(id, started_at)?;
-            uart.wait_until_drained();
-            core.on_transmit_complete(id, uart.now())?;
-        }
-    }
-    Ok(())
-}
-
-trait Port {
-    fn set_direction(&mut self, direction: Direction);
-    fn write_frame(&mut self, frame: &[u8]);
-    fn wait_until_drained(&mut self);
-    fn now(&self) -> Instant;
-}
-
-fn application_delivery(
-    _source: u8,
-    _destination: u8,
-    _npdu: &[u8],
-    _request_id: Option<bacnet_mstp_core::RequestId>,
-) {
-    // Forward a copy to the application/network layer.
-}
-
-fn feed_validated_frame(
-    core: &mut MasterCore<'_, Queues>,
-    frame: Frame<'_>,
-    now: Instant,
-) -> Result<(), CoreError> {
-    core.on_validated_frame(frame, now)
-}
-```
-
-The `on_validated_frame` boundary is intended for a host-side assembler that
-handles chunking and timeout policy itself. A bare-metal UART path should use
-`on_octet` so the core can apply exact inter-octet timing and distinguish sync
-noise from a malformed frame candidate.
-
-### Configuration policy
-
-`MstpCoreConfig` validates the Clause 9 timing and addressing parameters, then
-adds bounded local scheduling policy:
-
-- `max_info_frames` is the Clause 9 limit for one token use.
-- `multiple_frame_ratio` is a percentage of `max_info_frames`, not an
-  additional frame count. The effective frame limit is rounded up and clamped
-  to at least one and at most `max_info_frames`; `100` preserves the full
-  Clause 9 limit.
-- `broadcast_unicast_ratio` is the number of broadcast frames scheduled per
-  unicast frame while both queues are eligible. It is a service ratio, not a
-  BACnet network-priority value. `NetworkPriority` still orders traffic within
-  each bounded queue.
-- `starvation_limit` promotes an item that has waited through the configured
-  number of service opportunities. `queue_max_age` is an inclusive expiry
-  boundary.
-- `transmit_watchdog` bounds a platform transfer and guarantees that a lost
-  UART completion cannot leave the logical transceiver in transmit mode.
-
-### Observable counters
-
-`MasterCore::counters()` returns a copy that is safe to expose to a diagnostic
-task or telemetry path without borrowing the core. Counters saturate instead
-of wrapping.
-
-| Counter | Meaning |
-| --- | --- |
-| `state_transitions` | Clause 9 state changes |
-| `deadline_misses` | Deadlines serviced after their scheduled instant |
-| `token_rotations` | Token passes completed to a successor |
-| `token_regenerations` | Lost-token regeneration attempts |
-| `token_retries` | Token-pass retries |
-| `parser_errors` | Malformed candidate or receive-validation errors |
-| `frame_aborts` | Partial candidates abandoned after `T_frame_abort` |
-| `frames_received` | Valid MS/TP frames received |
-| `npdus_delivered` | NPDUs placed in the application-delivery ring |
-| `frames_transmitted` | Frames whose final stop bit was reported complete |
-| `action_drops` | Bounded action-ring capacity failures |
-| `de_assertion_us` | Cumulative driver-enable assertion duration |
-| `unicast`, `broadcast` | Per-queue depth, high-water, enqueue/dequeue, expiry, oversize, full, and starvation counters |
-
-The counters describe local implementation behavior and diagnostics; they do
-not by themselves establish a BACnet conformance or interoperability claim.
-
 ### MS/TP with USB Adapter
 
 ```rust
-use bacnet_transport::mstp::MstpTransport;
+use bacnet_client::client::BACnetClient;
+use bacnet_transport::mstp::{MstpConfig, MstpTransport};
 use bacnet_transport::mstp_serial::{TokioSerialPort, SerialConfig};
 
 let serial = TokioSerialPort::open(&SerialConfig {
     port_name: "/dev/ttyUSB0".into(),
     baud_rate: 76800,
 })?;
+let config = MstpConfig {
+    this_station: 1,
+    baud_rate: 76800, // the port's, which the MS/TP timers follow
+    ..MstpConfig::default()
+};
 
 let client = BACnetClient::generic_builder()
-    .transport(MstpTransport::new(serial, 1, 127))
+    .transport(MstpTransport::new(serial, config))
     .build()
     .await?;
 ```
@@ -7211,7 +9197,8 @@ let client = BACnetClient::generic_builder()
 ### MS/TP with Raspberry Pi RS-485 Hat (GPIO)
 
 ```rust
-use bacnet_transport::mstp::MstpTransport;
+use bacnet_client::client::BACnetClient;
+use bacnet_transport::mstp::{MstpConfig, MstpTransport};
 use bacnet_transport::mstp_serial::{GpioDirectionPort, TokioSerialPort, SerialConfig};
 
 let serial = TokioSerialPort::open(&SerialConfig {
@@ -7221,9 +9208,14 @@ let serial = TokioSerialPort::open(&SerialConfig {
 
 // Seeed Studio RS-485 Shield: GPIO18 for DE/RE, active-high
 let port = GpioDirectionPort::new(serial, "/dev/gpiochip0", 18, true)?;
+let config = MstpConfig {
+    this_station: 1,
+    baud_rate: 76800, // the port's, which the MS/TP timers follow
+    ..MstpConfig::default()
+};
 
 let client = BACnetClient::generic_builder()
-    .transport(MstpTransport::new(port, 1, 127))
+    .transport(MstpTransport::new(port, config))
     .build()
     .await?;
 ```
@@ -7242,9 +9234,10 @@ one zero DNS address, UDP47808 and declared port capacity1476. Device62 and its
 discrete APDU sizes remain independent; neither constructor discovers a NIC or
 binds a transport.
 
-The snapshot denies activation-dependent network writes and derives its readonly
-MAC from configured IP/UDP. Reconstruct it to change configuration. It has no
-pending activation, inert Command, or obsolete port62 projection. Link_Speed is
+The snapshot denies activation-dependent network writes, except a registered
+BBMD's two writable rows (see below), and derives its readonly MAC from
+configured IP/UDP. Reconstruct it to change configuration. It has no inert
+Command or obsolete port62 projection. Link_Speed is
 optional and zero means unknown. The former raw `new` constructor and configuration
 setters are removed. `new_non_bip` takes explicit Ethernet/VIRTUAL number, MAC and
 capacity and exposes common application rows only; it does not claim a complete
@@ -7252,17 +9245,108 @@ SC or Ethernet profile. Both `DeviceIdentity` database builders use these same
 constructors with declared1476 port capacity independent of Device/role limits.
 Live transport association, post-bind synchronization and activation are separate.
 
+`NetworkPortObject::new_bip6(instance, name, Bip6PortConfig)` is the IPV6
+(B/IPv6, Annex U) counterpart (#1579), under the same 1–255 instance policy. It
+serves BACnet_IPv6_Mode, IPv6_Address, IPv6_Prefix_Length (1–128),
+BACnet_IPv6_UDP_Port, IPv6_Default_Gateway, BACnet_IPv6_Multicast_Address and
+the IPv6_DNS_Server array (the IPV6 rows of Tables 12-71 and 12-72), all
+read-only, and none of the IPv4 rows. `Bip6PortConfig` holds sixteen-octet
+addresses (the unspecified `::` means unknown), a prefix length (default 64),
+the broadcast group (default `FF05::BAC0`, which must be a multicast address)
+and the three-octet VMAC that MAC_Address serves (Clause 12.56.15). The
+multicast row is the group followed by the port's UDP port, since the
+transport sends its broadcasts to the group at its own port. The port's
+address is configuration, not something it assigns itself, so the optional
+IPv6_Auto_Addressing_Enable, DHCPv6 and IPv6_Zone_Index rows are absent.
+
 ### Registered B/IP Network Port
 
 This receiving-port association is a bounded single B/IP profile, in whichever B/IP mode the owned transport runs (#939). Local Network Number behavior is described below; complete Network Port conformance and multiport routing remain outside this registration contract.
 
-A transport reports its registration capability through `TransportPort::bip_port()`, which returns a `bacnet_transport::port::BipPort`: the endpoint (configured before start, announced after) and a `bacnet_types::bip_port::BipPortMode`. Startup publishes that mode with the bind, and the port's BACnet_IP_Mode reads it: NORMAL, FOREIGN or BBMD. Property_List and the property metadata follow the mode (Clause 12.56, Table 12-71 footnotes 11 to 13):
+A transport reports its registration capability through `TransportPort::bip_port()`, which returns a `bacnet_transport::port::BipPort`: the endpoint (configured before start, announced after) and a `bacnet_types::bip_port::BipPortMode`. Startup publishes that mode with the bind, and the port's BACnet_IP_Mode reads it: NORMAL, FOREIGN or BBMD. BACnet_IP_Mode is read-only. Property_List and the property metadata follow the mode (Clause 12.56, Table 12-71 footnotes 11 to 13):
 
-- **FOREIGN** adds FD_BBMD_Address (a `BACnetHostNPort`) and FD_Subscription_Lifetime, from the transport's `ForeignDeviceConfig`, which can't change while the server owns it.
+- **FOREIGN** adds FD_BBMD_Address (a `BACnetHostNPort`) and FD_Subscription_Lifetime, read on every property read through the `bacnet_types::bip_port::ForeignRegistration` view the transport lends (`BipPortMode::Foreign { registration }`). `BipPortMode::fixed_foreign` lends a registration that never changes.
 - **BBMD** adds BBMD_Broadcast_Distribution_Table and BBMD_Foreign_Device_Table (BACnetLISTs of `BACnetBDTEntry` and `BACnetFDTEntry`) and BBMD_Accept_FD_Registrations. The object holds the transport's own BBMD state through the `bacnet_types::bip_port::BbmdTables` view and reads it on every property read, so a BDT change, a new or expired registration, or a policy change made through `BipTransport::bbmd_state()` shows on the next read. FDT entries carry each registrant's time to live and the seconds it has left, grace period included; an entry past its time no longer appears even before the purge task removes it. The BDT includes the BBMD's own row.
 - **NORMAL** has none of them: reading one answers UNKNOWN_PROPERTY.
 
-All five are read-only for now, and the PICS draft lists them as not writable. Clauses 12.56.34, 12.56.35, 12.56.37 and 12.56.38 make the BDT, Accept_FD_Registrations and both FD properties writable, with a write setting Changes_Pending until ReinitializeDevice activates it; until that activation path exists, a write answers WRITE_ACCESS_DENIED, as every configuration row of this object does. A transport configured both as a BBMD and as a foreign device has no single mode, and starting with a port registered on it fails with an error that says so. After the owner stops, the port keeps reporting the last published mode, as it keeps the last published bind; a BBMD's rows then show the stopped transport's tables as they were left, until a new registration. NAT traversal (BACnet_IP_NAT_Traversal, BACnet_IP_Global_Address) and B/IP multicast (BACnet_IP_Multicast_Address) are not modeled yet.
+In BBMD mode BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations are writable (Clauses 12.56.34, 12.56.35, #1578), and the PICS draft lists them so. A written BDT is checked on its own against the transport's BDT policy at once, through `BbmdTables::check_value` (whose default checks it with `check_broadcast_distribution_table`; `BipTransport`'s view checks the rows itself and leaves the NAT rules for activation, below): a row with no host, a host name, an IPv6 host or no mask, or a table `BbmdState::set_bdt` would refuse, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. An accepted write waits: Changes_Pending reads TRUE and the property reads back the value written, while the BBMD keeps using the old one, so a Read-BDT still answers with the BDT in use (Clause 12.56.13, 12.56.34). For ACTIVATE_CHANGES or WARMSTART the server first checks, changing nothing, that the transport would still take the pending values (`ObjectDatabase::check_network_port_changes`), and refuses with PROPERTY / INVALID_CONFIGURATION_DATA (Clause 16.4.1.3.1) before the handler runs if not, so a handler never schedules a restart for a request that fails. Once the handler accepts, the server calls `ObjectDatabase::activate_network_port_changes` under the same database lock, which hands the values to the transport (`BbmdTables::activate`, all or none per port, not across ports) and clears Changes_Pending; a refusal then, which only a race with a change to the transport can cause, gets the same Error PDU, and the values stay pending. The rows take writes only on a server or endpoint with a ReinitializeDevice handler (`on_reinitialize`, `BipEndpointBuilder::reinitialize`), and only when the transport's view takes changes (`BbmdTables::can_change`, `ForeignRegistration::can_change`, true for `BipTransport`'s views): otherwise nothing could activate them, so a write answers WRITE_ACCESS_DENIED and the PICS lists them read-only. Turning registrations off keeps the foreign-device policy for when they are turned on again; with none kept, `ForeignDevicePolicy::default()` applies. **Security:** that default has no allowed-source list, so on a BBMD started without a policy, writing TRUE to BBMD_Accept_FD_Registrations lets any source register; start the BBMD with the policy you want, then switch it off, if it should come back restricted. With a persisted-BDT file (`set_bdt_persist_path`), an activated BDT is saved there, replacing the file whole through a temporary file and a rename, so a restart starts from it (#1826). The save runs on a thread of its own after the activation has released its locks, which a runtime shutdown doesn't cancel; a save older than one already written is skipped, so the file always ends with the newest table, and a save that never runs or panics counts as failed. A failed save is logged at warn and counted in `BipTransport::bdt_persist_failures`, and the BBMD keeps using the new BDT. In FOREIGN mode FD_BBMD_Address and FD_Subscription_Lifetime are writable the same way (Clauses 12.56.37, 12.56.38, #1825), and wait for the same activation. A written value is checked at once with the other one waiting, through `ForeignRegistration::check`: the BBMD must be an IPv4 host and a nonzero port that a start would accept (not the unspecified, a broadcast or a multicast address, nor the device's own address), and the time-to-live must be nonzero; anything else, a host name included, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. A client can't see `ForeignDeviceConfig::renewal_interval`, so a new lifetime cuts a configured interval to at most half of it rather than being refused. Only a running transport takes a change, since only its node knows the address it is bound to: while it is stopped the rows answer WRITE_ACCESS_DENIED, and values accepted while it ran, left pending across a stop, fail the check before the handler runs, so ACTIVATE_CHANGES answers PROPERTY / INVALID_CONFIGURATION_DATA. A lifetime over 65535 is out of range for its Unsigned16 type. On activation the running foreign device drops the attempt in flight and sends its next Register-Foreign-Device to the new BBMD with the new time-to-live at once; a lease the old BBMD granted no longer counts, so `bvlc_client_snapshot().foreign_registration` shows the device unregistered until the new BBMD answers, while a new time-to-live for the same BBMD keeps the lease it has. Broadcasts made after a move to another BBMD are held, as at start, until that BBMD answers the first registration (Annex J.4.5). A later restart uses the new values (`BipTransport::foreign_device_config`). With `BipTransport::set_release_previous_bbmd(true)` (off by default), a move to another BBMD also sends the old BBMD a Delete-Foreign-Device-Table-Entry for the device's own address, on the side, so its entry goes before its time-to-live and grace period run out (Annex J.2.9, J.5.2.3, #1852); a NAK or silence never fails the move and is counted in the snapshot's `previous_release_refused` and `previous_release_unanswered`. This stack's own BBMD refuses such a deletion unless its management access list names the device. The request names the device's own local address (`link().address`; on a wildcard bind, the default-route address): behind a NAT router, or on a multi-homed host whose registration left from another address, the old BBMD knows the device by another address and will usually refuse (counted), and in a rare case it could delete another device's entry registered from the same private address and port on its side. Those are further reasons the option is off by default. The other configuration rows stay read-only and answer WRITE_ACCESS_DENIED. A transport configured both as a BBMD and as a foreign device has no single mode, and starting with a port registered on it fails with an error that says so. After the owner stops, the port keeps reporting the last published mode, as it keeps the last published bind; a BBMD's rows then show the stopped transport's tables as they were left, until a new registration. On an IPv4 BBMD port the transport can run behind a NAT router, so the port also serves BACnet_IP_NAT_Traversal and BACnet_IP_Global_Address (Clauses 12.56.32, 12.56.33; Table 12-71 footnotes 9 and 10, #940): FALSE and the unset address (no host, port 0) until NAT is configured. Both are writable the same way, since this stack never discovers the global address, and the three NAT-related rows can be written in any order. A write is checked on its own (`BbmdTables::check_value`): a BDT against the row policy, a global address as an IPv4 unicast host and nonzero port (not the unspecified, broadcast, a multicast or a loopback address), or the unset sentinel; a host name, an IPv6 host or anything else answers PROPERTY / VALUE_OUT_OF_RANGE. The rules that tie them together are checked at ReinitializeDevice, before the handler runs (`BbmdTables::check`): behind NAT a BDT with rows must list the global address, every row must be two-hop, and NAT needs a global address; a set that breaks them answers PROPERTY / INVALID_CONFIGURATION_DATA and stays pending. So moving the global address while NAT is on takes a new address and a BDT that lists it, activated together (`Tables::set_nat_and_bdt` in the core). Turning NAT off drops the BDT row of the old global address, from a BDT written in the same activation too, and adds the local own row. The private ranges are configuration only. With a persisted-BDT file, an activation that changed BACnet_IP_NAT_Traversal or BACnet_IP_Global_Address saves the NAT setting (on or off, and the global address) with the BDT, and every later save carries it, as does every save after a start that loaded a file holding one; a restart loads the three together, and the saved setting wins over the configured one, as the saved BDT does, with a warning when the two differ. Until then a BDT-only activation saves the rows alone, so a NAT setting changed in the configuration still applies at the next start. A pending set that's invalid as a whole (NAT on with no global address, or with a BDT that doesn't list it or has a one-hop row) makes every ReinitializeDevice ACTIVATE_CHANGES and WARMSTART on the device answer PROPERTY / INVALID_CONFIGURATION_DATA until it's fixed, since the check covers all pending Network Port values. To clear it, write BACnet_IP_NAT_Traversal FALSE, or write back the BDT and global address the BBMD runs with (a Read-BDT still answers with the BDT in use), or a pair that fits together, then activate. A port whose transport can use B/IP multicast (an explicit interface, NORMAL or BBMD mode, not sharing its port by address, and a port for the group) also serves BACnet_IP_Multicast_Address, in whichever state, through the `bacnet_types::bip_port::IpMulticast` view in `BipPort::multicast` (Clause 12.56.26; Table 12-71 footnote 7, #941): the group as four octets, or 0.0.0.0 while multicast is off. So every NORMAL or BBMD B/IP port with an explicit interface now lists the row, multicast on or off. On a NORMAL port it is writable the same way, with a ReinitializeDevice handler: a written group must be four octets, class D outside 224.0.0.0/24, or 0.0.0.0, or it answers PROPERTY / VALUE_OUT_OF_RANGE; the written value reads back with Changes_Pending TRUE while the old group stays in use, and activation moves the running transport to it ([B/IP multicast](#bip-multicast-bip-m)). A listener that can't be bound or joined fails the activation with the old group still in use. **Deviation:** Clause 12.56.26 makes the property writable whenever it is present, but on a server or endpoint without a ReinitializeDevice handler nothing could activate a written group, so, as with the BBMD rows (#1578), the row is served read-only there (WRITE_ACCESS_DENIED, and the PICS lists it read-only) rather than left out. A group activated this way is kept by a later start, and across a new process with `BipTransport::set_multicast_persist_path` (#1954). Endpoint sessions publish it too. On a BBMD port the row is writable the same way, and a written group goes in with the BBMD rows in one activation, both or neither, since the BBMD's own BDT row depends on the group ([B/IP multicast](#bip-multicast-bip-m), J.8.3, #1963).
+
+### Registered B/IPv6 Network Port
+
+A B/IPv6 transport registers its Network Port the same way (#1579), through
+`TransportPort::bip6_port()`, which returns a `bacnet_transport::port::Bip6Port`:
+the endpoint (configured before start, bound after), the VMAC (known before start
+only when it comes from a Device instance), the multicast group and the same
+`BipPortMode`. The selected object must be an IPV6 one (`new_bip6`) whose address
+and UDP port match the transport's (port zero allowed before bind); an IPV4 object
+can't register a B/IPv6 link or the reverse. `Bip6Transport` and `AnyTransport::Bip6` report it.
+Startup publishes the bound address and port, the VMAC as MAC_Address, the group and
+the mode, which BACnet_IPv6_Mode reads (Clause 12.56.39). The mode's rows are the
+B/IP ones, served by the same code: FOREIGN adds FD_BBMD_Address (an IPv6
+`BACnetHostNPort`) and FD_Subscription_Lifetime, BBMD adds the BDT (rows with no
+mask), the FDT (18-octet addresses) and BBMD_Accept_FD_Registrations (Table 12-71
+footnotes 11 to 13). A written value waits for ACTIVATE_CHANGES or WARMSTART exactly
+as on a B/IP port, when the transport's view takes changes.
+
+BACnet_IPv6_Mode is read-only, like BACnet_IP_Mode: the mode is the
+transport's configuration, which no write can change.
+
+What `Bip6Transport` supports: NORMAL and FOREIGN mode. It has no BBMD mode, so it
+never reports one; a custom transport that implements a B/IPv6 BBMD can lend its
+tables through `BipPortMode::Bbmd`, and its rows then behave as a B/IP BBMD's. In
+FOREIGN mode it lends a live, changeable registration, as `BipTransport` does
+(#1825): with a ReinitializeDevice handler, FD_BBMD_Address and
+FD_Subscription_Lifetime are writable (Clauses 12.56.37, 12.56.38), a write sets
+Changes_Pending, and ACTIVATE_CHANGES or WARMSTART moves the running registration.
+The transport then registers with the new BBMD and time-to-live at once, sends its
+broadcasts and Address-Resolutions there, and trusts Forwarded-NPDUs from it only;
+`Bip6Transport::foreign_device_config` reports the registration in effect, and a
+later start uses it. A written value is checked at once: the BBMD must be a
+loopback, unique local or global unicast IPv6 host other than the device itself,
+with a nonzero port, and the time-to-live nonzero. The unspecified, multicast,
+link-local, IPv4-mapped and IPv4-compatible forms, IPv4 hosts and host names answer
+PROPERTY / VALUE_OUT_OF_RANGE. The socket stays bound to the address it started
+with, so the new BBMD must also be one this host's routes reach from that address;
+a local probe checks it, sending nothing, and a BBMD reached only from another
+source is refused the same way. Only a running transport takes a change; while it
+is stopped the rows answer WRITE_ACCESS_DENIED. After a move the old BBMD keeps
+forwarding broadcasts until the device's entry in its FDT expires; those
+Forwarded-NPDUs are dropped and counted in
+`Bip6ReceiveCounters::untrusted_forwarded_npdu`. There is no B/IPv6 BBMD, so no BDT
+persistence either.
+
+Registration refuses, besides `::` and multicast addresses, an IPv4-mapped address
+(register IPv4 as B/IP) and a link-local one, since IPv6_Zone_Index isn't modeled;
+`Bip6PortConfig` refuses an IPv4-mapped address too. When a transport reports both
+`bip_port()` and `bip6_port()`, registration takes the B/IP one. The transport hands
+the registration lease to its socket, which every task that owns it shares, so the
+port stays registered until the last of them ends: a start that fails, or a stop,
+leaves the port free for the next owner, which binds the UDP port the port last
+published.
+
+The shared endpoint registers a B/IPv6 port the same way (#1940). It has no B/IPv6
+builder, as the full server has none: compose `EndpointSession::new` over a
+`Bip6Transport`, then `device(identity)` and `with_registered_network_port(oid)`.
+`DeviceIdentity::with_bip6_port` (or `NetworkPortEntry::bip6`) declares the IPV6
+port, with a zero VMAC as a placeholder. Before reserving the port, startup checks
+the identity entry's address, UDP port and network number against the database's
+port, so a mismatch reserves nothing (the VMAC is not compared, since publication
+replaces it); after bind it publishes the bound
+port and the VMAC the transport uses into both. Stop releases the port.
+
+```rust
+use std::net::Ipv6Addr;
+use bacnet_endpoint::{DeviceIdentity, EndpointSession, SessionConfig, SessionRole};
+use bacnet_transport::bip6::Bip6Transport;
+use bacnet_types::{enums::ObjectType, primitives::ObjectIdentifier};
+
+let identity = DeviceIdentity::new(1234, 42)?.with_bip6_port(1, 6, Ipv6Addr::LOCALHOST, 0)?;
+let transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(identity.instance()));
+let mut session = EndpointSession::new(transport, SessionRole::ServerOnly, SessionConfig::default())?
+    .device(identity)
+    .with_registered_network_port(ObjectIdentifier::new(ObjectType::NETWORK_PORT, 1)?);
+session.start().await?;
+```
 
 The BBMD state lock is a synchronous `std::sync::Mutex` (it was a Tokio mutex before #939): the transport and the Network Port view hold it only for short, synchronous critical sections, so the object can read it under the database read lock without awaiting. Lock order stays ObjectDatabase, then the BBMD state; the transport never takes the database.
 
@@ -7276,7 +9360,7 @@ Routed controls, malformed payloads and unicast Network-Number-Is are ignored. A
 
 The full server publishes the number its owner holds on `NetworkLayer::local_network_number` (a `bacnet_network::network_number::LocalNetworkNumber` handle), where event routing, writes in other devices and Audit delivery read it without the database lock (#1298, #1358). With a registered Network Port the port stays the one authority: startup copies the port's number there once the bind is published, and the worker copies the port's state after each control under the same database write lock that changed it, so the handle never holds a number the port does not. Without a registered port, the handle holds the number the worker learned. A later announcement that replaces the number takes effect for the next notification or write sent. Nothing withdraws a known number, since no announcement can, so it stays until a new runtime starts again from the configured number or unknown. The standalone client publishes its learned number on its own layer the same way, where its routed requests and network broadcasts read it (#1358); neither exposes its layer. Every sender that reads the number sends a destination naming it as local traffic, with no DNET, and keys a confirmed request to the MAC it went to, since the answer comes from there with no SNET. `NetworkLayer`'s own send methods frame the destination they are given and never rewrite it, so answers to a request, and COV notifications to a subscriber, keep the route the request arrived by. The shared endpoint session's owner publishes on its own layer in the same way, a registered port's number from startup, and the endpoint's requester and source Audit routes read it (#1403); its answers also keep their route.
 
-Standalone clients start UNKNOWN on transports that opt into local nonrouter Number controls. They learn and reply using the same validation and precedence rules, without a Device object, registered Network Port, configured-number setter or persistence. One 256-entry serial worker owns this state; full or closed admission drops only Number controls. A held Number send leaves routed reason-4 Reject correlation and independent APDU dispatch available. Stop aborts and joins both the Number worker and dispatch before transport cleanup, retaining their joins across a canceled stop waiter. Drop aborts both. Already transmitted bytes cannot be retracted. Controlled-client tests qualify the shared intake/lifecycle behavior; Linux NORMAL-B/IP loopback and Ethernet virtual-link tests independently observe actual reply frames. Constrained-TLS SC tests observe Hub broadcast VMAC and exact Number bytes, including replies to direct-peer queries, while ordinary confirmed client requests complete. SC stop/drop retires client connections; the external DirectListener must separately be stopped and joined before its bind is released. Pending-send/queue cancellation remains covered by the generic controlled-client tests, rather than inferred from wire silence. Rust standalone-client B/IPv6 tests independently capture normal selected-link OriginalBroadcast and configured-foreign DBTN with exact source, destination, interface and Number bytes. Positive reply fences cover UNKNOWN, precedence and invalid/admission refusal; stop and eventual Drop release the socket, and reconstruction starts UNKNOWN. These external ignored Linux tests require the integration `ipv6` feature and isolated observer; ordinary hosted CI does not execute them. They add no Python foreign-device API, configured-client authority or physical-LAN claim. Separate isolated Linux standalone-client BBMD/foreign tests capture own Original-Broadcast versus forwarding traffic and exact DBTN to the configured BBMD. Positive Number fences cover UNKNOWN, BDT/FDT admission/refusal, alternate-sender compatibility, precedence and representative invalid/routed controls; registration NAKs retain DBTN attempts and the timer retries registration. An ordinary client ReadProperty completes during live Number controls, and awaited stop permits exclusive socket rebind before client Drop. No configured client number, new registration policy or complete Annex J claim is added. MS/TP LoopbackSerial tests also cover the standalone client in both execution modes, with the same frame decoding and fences as the full server and shared endpoint below; its own ReadProperty to the peer completes while a Number send is held.
+Standalone clients start UNKNOWN on transports that opt into local nonrouter Number controls. They learn and reply using the same validation and precedence rules, without a Device object, registered Network Port, configured-number setter or persistence. One 256-entry serial worker owns this state; full or closed admission drops only Number controls. A held Number send leaves routed reason-4 Reject correlation and independent APDU dispatch available. Stop aborts and joins both the Number worker and dispatch before transport cleanup, retaining their joins across a canceled stop waiter. Drop aborts both. Already transmitted bytes cannot be retracted. Controlled-client tests qualify the shared intake/lifecycle behavior; Linux NORMAL-B/IP loopback and Ethernet virtual-link tests independently observe actual reply frames. Constrained-TLS SC tests observe Hub broadcast VMAC and exact Number bytes, including replies to direct-peer queries, while ordinary confirmed client requests complete. SC stop/drop retires client connections; the external DirectListener must separately be stopped and joined before its bind is released. Pending-send/queue cancellation remains covered by the generic controlled-client tests, rather than inferred from wire silence. Rust standalone-client B/IPv6 tests independently capture normal selected-link OriginalBroadcast and configured-foreign DBTN with exact source, destination, interface and Number bytes. Positive reply fences cover UNKNOWN, precedence and invalid/admission refusal; stop and eventual Drop release the socket, and reconstruction starts UNKNOWN. These external ignored Linux tests require the integration `ipv6` feature and isolated observer; ordinary hosted CI does not execute them. They add no Python foreign-device API, configured-client authority or physical-LAN claim. Separate isolated Linux standalone-client BBMD/foreign tests capture own Original-Broadcast versus forwarding traffic and exact DBTN to the configured BBMD. Positive Number fences cover UNKNOWN, BDT/FDT admission/refusal, the refusal of another sender's Forwarded-NPDU in foreign mode, precedence and representative invalid/routed controls; registration NAKs retain DBTN attempts and the timer retries registration. An ordinary client ReadProperty completes during live Number controls, and awaited stop permits exclusive socket rebind before client Drop. No configured client number, new registration policy or complete Annex J claim is added. MS/TP LoopbackSerial tests also cover the standalone client in both execution modes, with the same frame decoding and fences as the full server and shared endpoint below; its own ReadProperty to the peer completes while a Number send is held.
 
 The pre-1.0 Rust helper moved directly from `bacnet_objects::network_port::NetworkNumber` to `bacnet_types::network_number::NetworkNumber`, with no compatibility alias. Its default is UNKNOWN; `configured(number)` returns `None` for reserved 65535. Pure observation reports configured conflicts to the caller for logging. Shared nonrouter packet parsing and reply encoding live in `bacnet_network::network_number`; registered database authority remains in the server/object adapter.
 
@@ -7284,11 +9368,17 @@ Transport wrappers must delegate `TransportPort::supports_local_nonrouter_number
 
 SC starts UNKNOWN with no configured SC Network Port API; unrelated configured objects provide no authority. SC logical broadcast is the BVLC broadcast destination VMAC. A direct unicast What-Is is valid, but its Number reply uses the Hub broadcast path, never the saved original-direct APDU response capability. Hub-relayed controls do not identify an originating TLS leaf; SC control-origin authorization remains separate (#518). A message from a direct-connection peer is never a logical broadcast, so it can ask but cannot teach.
 
-B/IP BBMD and configured foreign modes start UNKNOWN unless a Network Port is registered for them, which then supplies configured authority as in NORMAL mode. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts structurally valid Forwarded-NPDU from alternate UDP senders under its existing compatibility policy and answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the existing periodic registration loop continues. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly alternate forwarding and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop. Broader shared-endpoint BBMD/foreign behavior remains experimental; only a registered Network Port adds configured authority in these modes.
+B/IP BBMD and configured foreign modes start UNKNOWN unless a Network Port is registered for them, which then supplies configured authority as in NORMAL mode. BBMD mode learns admitted Original-Broadcast, BDT Forwarded-NPDU and registered foreign-device DBTN announcements; its own Number reply is a local Original-Broadcast, which it also forwards as a Forwarded-NPDU to its BDT peers and registered foreign devices like its other broadcasts (#937). It rejects an exact self UDP source tuple before forwarded delivery or fanout, preserving the self BDT row and admitted peers on the same IP at different ports. Configured foreign mode accepts a Forwarded-NPDU only from its configured BBMD by unicast, and drops any other, counting it in `ReceiveCounters::forwarded_untrusted` (#1622); it answers by DBTN to its configured BBMD. Logical broadcast conveys no authenticated origin. Registration rejection does not suppress DBTN attempts; the registration retries continue. Shared-endpoint Number wire tests cover BBMD ServerOnly admission and Original-Broadcast replies, foreign ClientOnly forwarding from the BBMD (another sender's forwards teach nothing) and DBTN through registration rejection/retry, and Both requester/responder progress during live controls plus stop/drop socket release. Linux loopback supplies the independent BBMD broadcast capture; foreign direct capture also runs on macOS. Existing controlled endpoint tests separately prove held-send cancellation and resumed stop. Broader shared-endpoint BBMD/foreign behavior remains experimental; only a registered Network Port adds configured authority in these modes.
 
-B/IPv6 starts UNKNOWN with no configured IPv6 Network Port authority. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In the Rust configured foreign-device mode, an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder, number setter or Python foreign-device API.
+B/IPv6 starts UNKNOWN unless a B/IPv6 Network Port is registered (#1579), which then supplies configured authority as on B/IP. Normal mode learns admitted OriginalBroadcast announcements and answers by multicast OriginalBroadcast on the selected link. In the Rust configured foreign-device mode, an admitted Forwarded-NPDU from the configured BBMD is a logical broadcast despite its unicast UDP hop; replies use DBTN to that BBMD. A different BBMD endpoint cannot teach. Unicast NNI, routed controls and malformed payloads remain ineligible. Existing selected-link, source-address, destination/interface and VMAC checks still apply. There is no new IPv6 endpoint builder, number setter or Python foreign-device API.
 
 Linux Ethernet full servers and standalone Rust clients start UNKNOWN with no configured Ethernet Network Port authority. The AF_PACKET receive path admits only the bound MAC and all-FF broadcast, before UI, XID or TEST handling; of those, only all-FF is a logical group. As a destination, though, every MAC with the group bit (the low bit of its first octet) set is a group destination (`bacnet_transport::ethernet::is_group_mac`), so no confirmed request goes to a multicast MAC either (#1493). No station sends from a group address, so a frame whose source MAC has the group bit set is dropped before the XID and TEST handlers and before decoding, and counted in `EthernetTransport::group_source_drops()` (#1492): otherwise an answer to it, or to a confirmed request in it, would go to the whole group. This is the local single-link admission policy, not an additional quoted Clause 7 mandate. Existing self-source refusal remains. Actual isolated Docker Ethernet tests independently inspect destination/source, 802.3 length, LLC bytes, exact learned reply flag zero and padding, and verify stop/drop raw-FD release plus canceled transport-stop resumption. No privileged host interface or physical LAN is involved. The [opt-in fixture](../crates/bacnet-integration-tests/tests/ethernet_network_numbers/README.md) requires Linux and CAP_NET_RAW and is excluded from ordinary CI. There is no Ethernet endpoint builder or Python Ethernet API in this slice.
+
+`send_unicast` and `send_broadcast` return an error for a short send, one that
+wrote fewer octets than the frame ("short Ethernet send: N of M octets"), and
+retry an interrupted one (#1918). An XID or TEST reply that fails or goes out
+short is counted in `EthernetTransport::reply_send_failures()` and logged as a
+throttled warning.
 
 MS/TP starts UNKNOWN with no configured MS/TP Network Port API. The full server, shared endpoint and standalone client learn only broadcast DataNotExpectingReply announcements; either a local unicast or broadcast query receives a DataNotExpectingReply to station `0xFF` after token opportunity. Both Tokio and DedicatedThread modes use the existing serial/MAC owner. LoopbackSerial tests run all three owners in both modes. They independently decode complete standard frames, check precedence and invalid-control recovery with a later valid response as an ordering fence, and qualify application progress while the Number producer is held: the server and endpoint answer a peer's ReadProperty, and the client's own ReadProperty to the peer completes. Separate post-enqueue and serial-write gates prove canceled stop and drop release that producer without completing a held Number frame. Queue admission alone is not frame transmission; already completed bytes cannot be retracted. This simulator evidence does not qualify physical RS-485 timing, transceiver control or hardware interoperability.
 
@@ -7328,8 +9418,11 @@ database. Mixed RPM succeeds with inline UNKNOWN_OBJECT for an unavailable port
 when another property is accessible. Successful target Audit uses the same
 concrete object and preserves per-target records. Endpoint responder RPM remains
 unsupported. Same-device multiport/router generations, rebind, pending activation
-(and with it writes to the BBMD and foreign-device rows), NAT traversal, B/IP
+(and with it writes to the BBMD and foreign-device rows, the NAT rows
+included), B/IP
 multicast, DHCP and full Network Port conformance remain outside this profile.
+A B/IPv6 port registers under the same contract; see
+[Registered B/IPv6 Network Port](#registered-bipv6-network-port).
 
 `EndpointSession::bip_local_address()` returns the active post-bind announced
 address, including the actual ephemeral UDP port, for registered and unregistered
@@ -7347,6 +9440,10 @@ lifecycle. Standalone `BACnetClient` and `BACnetServer` remain public APIs with
 their own service and data-link capabilities; they are not deprecated. The
 endpoint responder's narrower service scope is described below.
 
+`EndpointSession`'s transport type defaults to `AnyTransport` (#2043), so
+`EndpointSession` alone names a session over any built-in transport. The
+builders return the concrete form, such as `EndpointSession<BipTransport>`.
+
 ### Builders
 
 ```rust
@@ -7362,7 +9459,7 @@ let db = identity.build_database()?;
 let mut session = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
     .role(SessionRole::Both)
     .database(db)
-    .identity(identity)
+    .device(identity)
     .build_session()?;
 session.start().await?;
 session.broadcast_i_am().await?;
@@ -7374,17 +9471,22 @@ session.stop().await?;
 validation; `build_hub_session` over a caller-dialed `TlsWebSocket`,
 `sc-tls` only, proven against the local constrained-TLS hub).
 `MstpEndpointBuilder` composes one serial owner (simulator evidence only —
-no bench or on-wire conformance; timing is RB-26).
+no bench or on-wire conformance; timing is RB-26). It runs standard frames
+and a 480-octet APDU bound by default; `extended_frames(true)` turns on
+extended frames and resolves the requested identity ceiling against 1476.
+With standard frames the default identity resolves to 480 before Device generation.
+The port declares its own echo, as for a transport built by hand
+(`with_echo(Echo::full())`; see [Echo](#echo)).
 
 ### Choosing standalone or shared client/server roles
 
 | Standalone construction | Shared endpoint composition |
 |---------------------|---------------------|
 | `BACnetClient::bip_builder()...build().await` | `BipEndpointBuilder::new(iface, port, bcast).role(ClientOnly).build_session()?` then `start()` |
-| `BACnetServer::bip_builder()...build().await` | `BipEndpointBuilder::new(iface, port, bcast).role(ServerOnly).database(db).identity(id).build_session()?` then `start()` |
-| Client + server on one device | One `...role(Both).database(db).identity(id).build_session()?` (B/IP, SC, or MS/TP builder) |
+| `BACnetServer::bip_builder()...build().await` | `BipEndpointBuilder::new(iface, port, bcast).role(ServerOnly).database(db).device(id).build_session()?` then `start()` |
+| Client + server on one device | One `...role(Both).database(db).device(id).build_session()?` (B/IP, SC, or MS/TP builder) |
 | `BACnetClient::sc_builder()...build().await` | `ScEndpointBuilder::new(vmac, uuid)...build_hub_session(ws)?` (dial first, then compose) |
-| `BACnetServer::sc_builder()...build().await` | Same `ScEndpointBuilder` with `ServerOnly` + `database` + `identity` |
+| `BACnetServer::sc_builder()...build().await` | Same `ScEndpointBuilder` with `ServerOnly` + `database` + `device` |
 | `generic_builder().transport(mstp)...` | `MstpEndpointBuilder::new(serial, station)...build_session()?` (one serial owner) |
 
 Notes: the endpoint server role defaults to `ReadProperty` (+ `Reject`/`Abort`
@@ -7402,11 +9504,14 @@ responder and retains its services vector as a local declaration.
 Standalone BBMD helpers (`read_bdt` / `write_bdt` / `read_fdt` / foreign
 registration) stay on `BipTransport` and on `BACnetClient` over B/IP (see
 [Transport access and BBMD helpers](#transport-access-and-bbmd-helpers));
-the endpoint BBMD setters only stage
-pre-start state. Local Number controls have the bounded wire coverage above;
-broader BBMD/foreign administration remains experimental.
-BIPv6/Ethernet have no endpoint builder — keep the standalone path there and
-do not expect identical administration across data links.
+`BipEndpointBuilder::mode` sets the B/IP mode as on the
+standalone builders (see [B/IP modes on the builders](#bip-modes-on-the-builders)),
+and `EndpointSession::foreign_registration()` reports a foreign device's
+registration.
+B/IPv6 has no endpoint builder: compose `EndpointSession::new` over a
+`Bip6Transport` (see [Registered B/IPv6 Network Port](#registered-bipv6-network-port)).
+Ethernet has no endpoint builder: keep the standalone path there. Do not expect
+identical administration across data links.
 
 ### Endpoint shutdown and the object database
 
@@ -7442,10 +9547,11 @@ settlement boundary.
 `BipEndpointBuilder::device_writes(authorizer)` enables WriteProperty for the
 one local Device's `Description` and, with a complete source profile,
 `Audit_Notification_Recipient`. Supply a mandatory Rust
-`bacnet_server::mutation::MutationAuthorizer`; its decoded context retains the
-immediate peer, claimed routed source, transport provenance and invoke ID.
-The callback must be fast, nonblocking and side-effect-free. Refusal or panic
-denies before mutation. Provenance is channel scope, not authenticated leaf identity.
+`bacnet_server::mutation::DeviceWriteAuthorizer`; its decoded context retains the
+immediate peer, claimed routed source, transport provenance and invoke ID, and
+its `principal()` names a verified direct SC peer (`None` on B/IP, for a routed
+request and for hub-relayed ingress). The callback must be fast, nonblocking and
+side-effect-free. Refusal or panic denies before mutation.
 
 Startup requires a server role and a concrete built-in local Device in the
 attached database (the lowest when it holds several; see
@@ -7486,8 +9592,15 @@ the Device and identity then advertise ReinitializeDevice next to RP (and WP
 when writes are on).
 
 The handler rules are the server's, with one addition: the session answers
-inbound requests on a single dispatch task, so a slow or blocking handler
-stalls every request behind it. A panic or a returned Reject is answered
+inbound requests on a single dispatch task, so a slow or blocking handler, or
+after-reply hook, stalls every request behind it. The hooks registered with
+`ReinitializeContext::after_reply` run once the egress reports the reply sent,
+or the reply channel has taken it. With a source Audit Reporter configured,
+the session's Reporter records an accepted reset, backup or restore step as
+the server does (#1564), filtered by its Audit_Level and
+Auditable_Operations and sent to the Device's recipient. Clause 19.6.2 casts
+that Reporter as the source-side one; routing these target-side records
+through it, the session's only Reporter, is a local choice. A panic or a returned Reject is answered
 `SERVICES / OTHER` and the session keeps serving. A close that wins while the
 request waits for the database refuses it before the handler runs.
 
@@ -7846,7 +9959,7 @@ Device accepts `DeviceObject::with_tags_persistence(config, storage)`; the exist
 `DeviceConfig` and `DeviceObject::new(config)` keep their defaults.
 
 For example, construct a writable Analog Value with
-`AnalogValueObject::with_tags_persistence(1, "Temperature", 62, PresentValueAccess::Writable, storage)?`,
+`AnalogValueObject::with_tags_persistence(1, "Temperature", EngineeringUnits::DEGREES_CELSIUS, PresentValueAccess::Writable, storage)?`,
 then call `set_profile` to provision the desired rows. `storage` is an
 `Arc<dyn TagsPersistence>` supplied by the application. The shared
 `bacnet_objects::object_profile::{TagsPersistence, TagsSnapshot,

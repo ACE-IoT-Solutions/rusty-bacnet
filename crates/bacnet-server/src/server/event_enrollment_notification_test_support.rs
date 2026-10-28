@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::server::test_transport::{SendMode, SentFrame, TestTransport, BIP_LOCAL_MAC};
+use crate::server::test_transport::{BIP_LOCAL_MAC, SendMode, SentFrame, TestTransport};
 use bacnet_encoding::apdu::decode_apdu;
 use bacnet_encoding::constructed::decode_bacnet_property_value;
 use bacnet_encoding::constructed::decode_event_notification;
@@ -124,26 +124,23 @@ impl BACnetObject for ObservedObject {
                 Ok(PropertyValue::Enumerated(ObjectType::ANALOG_VALUE.to_raw()))
             }
             p if p == PropertyIdentifier::PRESENT_VALUE => Ok(self.value.clone()),
-            p if p == PropertyIdentifier::RELIABILITY => {
-                self.reliability.clone().ok_or(Error::Protocol {
-                    class: ErrorClass::PROPERTY.to_raw() as u32,
-                    code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-                })
-            }
+            p if p == PropertyIdentifier::RELIABILITY => self.reliability.clone().ok_or(
+                Error::protocol(ErrorClass::PROPERTY, ErrorCode::UNKNOWN_PROPERTY),
+            ),
             p if p == PropertyIdentifier::STATUS_FLAGS => self
                 .status_flags
                 .map(|status_flags| PropertyValue::BitString {
                     unused_bits: 4,
                     data: vec![status_flags],
                 })
-                .ok_or(Error::Protocol {
-                    class: ErrorClass::PROPERTY.to_raw() as u32,
-                    code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-                }),
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
+                .ok_or(Error::protocol(
+                    ErrorClass::PROPERTY,
+                    ErrorCode::UNKNOWN_PROPERTY,
+                )),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -163,10 +160,10 @@ impl BACnetObject for ObservedObject {
                 self.status_flags = Some(data[0]);
             }
             _ => {
-                return Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY.to_raw() as u32,
-                    code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-                });
+                return Err(Error::protocol(
+                    ErrorClass::PROPERTY,
+                    ErrorCode::WRITE_ACCESS_DENIED,
+                ));
             }
         }
         Ok(())
@@ -217,8 +214,8 @@ pub(super) fn out_of_range_parameters(time_delay: u32) -> BACnetEventParameter {
 pub(super) fn add_server_context(db: &mut ObjectDatabase, recipients: bool) {
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Event Enrollment Device".into(),
+            identity: bacnet_objects::DeviceIdentity::default()
+                .with_name("Event Enrollment Device"),
             ..DeviceConfig::default()
         })
         .unwrap(),

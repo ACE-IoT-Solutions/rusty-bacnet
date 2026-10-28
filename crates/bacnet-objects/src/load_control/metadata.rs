@@ -1,5 +1,5 @@
 use super::LoadControlObject;
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
@@ -59,17 +59,17 @@ pub(super) fn for_object(_object: &LoadControlObject) -> Cow<'_, [PropertyMetada
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collections::HashSet;
     use crate::traits::BACnetObject;
     use bacnet_types::enums::{ErrorClass, ErrorCode};
-    use bacnet_types::error::Error;
+    use bacnet_types::error::{Error, RemoteError};
     use bacnet_types::primitives::{Date, PropertyValue, Time};
-    use std::collections::HashSet;
 
     fn assert_error(error: Error, expected: ErrorCode) {
         assert!(
-            matches!(error, Error::Protocol { class, code }
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == expected.to_raw() as u32),
+            matches!(error, Error::Remote(RemoteError::Error { class, code })
+                if class == ErrorClass::PROPERTY
+                    && code == expected),
             "expected {expected:?}, got {error:?}"
         );
     }

@@ -1,4 +1,25 @@
-//! BACnet object model: traits, database, and standard object types.
+#![doc = include_str!("../README.md")]
+// Tests always build with std, so feature-off test runs need no imports of
+// their own.
+#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
+#![forbid(unsafe_code)]
+
+// `format!` and `vec!` without std's prelude (#1615).
+#[macro_use]
+extern crate alloc;
+
+#[cfg(not(any(feature = "std", feature = "alloc")))]
+compile_error!(
+    "bacnet-objects needs the `std` or the `alloc` feature: the database boxes every object"
+);
+#[cfg(not(target_has_atomic = "ptr"))]
+compile_error!(
+    "bacnet-objects needs atomic compare-and-swap: its objects share state through alloc::sync::Arc"
+);
+
+#[macro_use]
+mod no_std_support;
+pub(crate) use no_std_support::{catch_panic, collections, float, prelude, sync};
 
 pub mod access_control;
 pub mod accumulator;
@@ -6,14 +27,18 @@ pub mod analog;
 pub mod audit;
 pub mod averaging;
 pub mod binary;
+pub mod catalogue;
 pub mod channel;
 pub mod clock;
 pub mod color;
 pub mod command;
 pub mod command_source;
 pub(crate) mod common;
+pub mod cov_change;
 pub mod database;
 pub mod device;
+pub mod device_identity;
+pub use device_identity::DeviceIdentity;
 pub(crate) mod device_reference;
 pub mod durable;
 pub mod elevator;
@@ -27,6 +52,7 @@ pub mod lighting;
 pub mod load_control;
 pub mod log_buffer;
 pub(crate) mod log_lifecycle;
+pub mod log_persistence;
 pub mod log_reporting;
 pub(crate) mod log_window;
 pub mod loop_obj;
@@ -72,6 +98,9 @@ mod reliability_inhibit_tests;
 
 #[cfg(test)]
 mod typed_enum_storage_tests;
+
+#[cfg(test)]
+mod typed_units_tests;
 
 #[cfg(test)]
 mod computed_status_flags_tests;

@@ -1,3 +1,4 @@
+use bacnet_types::error::RemoteError;
 use std::time::Duration;
 
 use bacnet_types::{
@@ -21,22 +22,24 @@ fn slot(object: &BinaryLightingOutputObject, priority: u8) -> PropertyValue {
 
 fn write_present(object: &mut BinaryLightingOutputObject, value: u32, priority: u8) {
     object
-        .write_property(
+        .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
             None,
             PropertyValue::Enumerated(value),
             Some(priority),
+            &crate::command_source::test_origin(),
         )
         .unwrap();
 }
 
 fn command(object: &mut BinaryLightingOutputObject, priority: u8, value: PropertyValue) {
     object
-        .write_property(
+        .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
             None,
             value,
             Some(priority),
+            &crate::command_source::test_origin(),
         )
         .unwrap();
 }
@@ -66,9 +69,9 @@ fn armed(operation: u32) -> BinaryLightingOutputObject {
 
 fn assert_property_error(error: Error, expected: ErrorCode) {
     match error {
-        Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32);
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected);
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }

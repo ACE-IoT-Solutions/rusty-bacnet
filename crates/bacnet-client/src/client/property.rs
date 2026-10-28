@@ -131,7 +131,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         ReadPropertyMultipleACK::decode(&response_data)
     }
 
-    /// Read multiple properties from a device on a remote BACnet network via a router.
+    /// Read multiple properties from a device on a remote BACnet network.
     pub async fn read_property_multiple_routed(
         &self,
         router_mac: &[u8],
@@ -146,7 +146,6 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         };
         let mut buf = BytesMut::new();
         request.encode(&mut buf)?;
-
         let response_data = self
             .confirmed_request_routed(
                 router_mac,
@@ -156,7 +155,6 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 &buf,
             )
             .await?;
-
         ReadPropertyMultipleACK::decode(&response_data)
     }
 
@@ -279,8 +277,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         Ok(())
     }
 
-    /// Write a property on a device on a remote BACnet network via a router.
     #[allow(clippy::too_many_arguments)]
+    /// Write a property on a device on a remote BACnet network.
     pub async fn write_property_routed(
         &self,
         router_mac: &[u8],
@@ -303,17 +301,14 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         };
         let mut buf = BytesMut::new();
         request.encode(&mut buf)?;
-
-        let _ = self
-            .confirmed_request_routed(
-                router_mac,
-                dest_network,
-                dest_mac,
-                ConfirmedServiceChoice::WRITE_PROPERTY,
-                &buf,
-            )
-            .await?;
-
+        self.confirmed_request_routed(
+            router_mac,
+            dest_network,
+            dest_mac,
+            ConfirmedServiceChoice::WRITE_PROPERTY,
+            &buf,
+        )
+        .await?;
         Ok(())
     }
 
@@ -342,7 +337,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         Ok(())
     }
 
-    /// Write multiple properties on a device on a remote BACnet network via a router.
+    /// Write multiple properties on a device on a remote BACnet network.
     pub async fn write_property_multiple_routed(
         &self,
         router_mac: &[u8],
@@ -357,17 +352,14 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         };
         let mut buf = BytesMut::new();
         request.encode(&mut buf)?;
-
-        let _ = self
-            .confirmed_request_routed(
-                router_mac,
-                dest_network,
-                dest_mac,
-                ConfirmedServiceChoice::WRITE_PROPERTY_MULTIPLE,
-                &buf,
-            )
-            .await?;
-
+        self.confirmed_request_routed(
+            router_mac,
+            dest_network,
+            dest_mac,
+            ConfirmedServiceChoice::WRITE_PROPERTY_MULTIPLE,
+            &buf,
+        )
+        .await?;
         Ok(())
     }
 
@@ -419,14 +411,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         device_instance: u32,
         specs: Vec<bacnet_services::wpm::WriteAccessSpecification>,
     ) -> Result<(), Error> {
-        use bacnet_services::wpm::WritePropertyMultipleRequest;
-
-        // Validate before device resolution so malformed requests never wait
-        // on, or observe, discovery state.
-        WritePropertyMultipleRequest {
-            list_of_write_access_specs: specs.clone(),
-        }
-        .encode(&mut BytesMut::new())?;
+        let request = bacnet_services::wpm::WritePropertyMultipleRequest {
+            list_of_write_access_specs: specs,
+        };
+        request.validate()?;
+        let specs = request.list_of_write_access_specs;
         let (mac, routing) = self.resolve_device(device_instance).await?;
         if let Some((dnet, dadr)) = routing {
             self.write_property_multiple_routed(&mac, dnet, &dadr, specs)
@@ -506,14 +495,29 @@ mod doc_tests {
     fn property_method_docblocks_match_their_methods() {
         let cases = [
             (
+                "read_property_multiple_routed",
+                "Read multiple properties from a device on a remote BACnet network.",
+                "Write",
+            ),
+            (
                 "read_property_multiple",
                 "Read multiple properties from one or more objects on a remote device.",
                 "Write",
             ),
             (
+                "write_property_routed",
+                "Write a property on a device on a remote BACnet network.",
+                "multiple devices concurrently",
+            ),
+            (
                 "read_property_multiple_from_device",
                 "Read multiple properties from a discovered device, auto-routing if needed.",
                 "Write",
+            ),
+            (
+                "write_property_multiple_routed",
+                "Write multiple properties on a device on a remote BACnet network.",
+                "Read",
             ),
             (
                 "read_property_from_devices",

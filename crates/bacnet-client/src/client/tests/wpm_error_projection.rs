@@ -1,9 +1,9 @@
 use super::super::confirmed_response_result;
 use crate::tsm::TsmResponse;
-use bacnet_encoding::apdu::{decode_apdu, Apdu};
+use bacnet_encoding::apdu::{Apdu, decode_apdu};
 use bacnet_types::constructed::BACnetObjectPropertyReference;
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
-use bacnet_types::error::{Error, ErrorDetail};
+use bacnet_types::error::{Error, ErrorDetail, RemoteError};
 use bacnet_types::primitives::ObjectIdentifier;
 use bytes::Bytes;
 
@@ -28,7 +28,7 @@ fn wpm_error_projection_exposes_the_first_failed_write_attempt() {
     assert!(
         matches!(
             &result,
-            Err(Error::Structured { class: 2, code: 40, detail })
+            Err(Error::Structured { class: ErrorClass::PROPERTY, code: ErrorCode::WRITE_ACCESS_DENIED, detail })
                 if **detail == ErrorDetail::FirstFailedWriteAttempt(expected.clone())
         ),
         "{result:?}"
@@ -37,15 +37,14 @@ fn wpm_error_projection_exposes_the_first_failed_write_attempt() {
 
 #[test]
 fn plain_error_projection_stays_class_and_code() {
-    let result = confirmed_response_result(TsmResponse::Error {
-        class: ErrorClass::PROPERTY.to_raw() as u32,
-        code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        detail: None,
-    });
+    let result = confirmed_response_result(TsmResponse::remote(RemoteError::Error {
+        class: ErrorClass::PROPERTY,
+        code: ErrorCode::WRITE_ACCESS_DENIED,
+    }));
     assert!(matches!(
         result,
-        Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+        Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::WRITE_ACCESS_DENIED
     ));
 }

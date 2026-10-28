@@ -49,7 +49,7 @@ impl AlarmSummaryProjection {
                     return Err(operational_problem(
                         object_identifier,
                         "Event_Detection_Enable is not Boolean",
-                    ))
+                    ));
                 }
             }
         }
@@ -207,8 +207,5 @@ fn operational_problem(
     detail: impl std::fmt::Display,
 ) -> Error {
     tracing::warn!(?object_identifier, reason = %detail, "GetAlarmSummary projection failed");
-    Error::Protocol {
-        class: ErrorClass::DEVICE.to_raw() as u32,
-        code: ErrorCode::OPERATIONAL_PROBLEM.to_raw() as u32,
-    }
+    Error::protocol(ErrorClass::DEVICE, ErrorCode::OPERATIONAL_PROBLEM)
 }

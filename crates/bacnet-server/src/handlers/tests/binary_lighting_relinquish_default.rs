@@ -5,6 +5,7 @@ use bacnet_objects::lighting::BinaryLightingOutputObject;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::{WriteAccessSpecification, WritePropertyMultipleRequest};
+use bacnet_types::error::RemoteError;
 
 fn encode_value(value: PropertyValue) -> Vec<u8> {
     let mut bytes = BytesMut::new();
@@ -36,7 +37,7 @@ fn write_wire(
     };
     let mut bytes = BytesMut::new();
     request.encode(&mut bytes).unwrap();
-    handle_write_property(db, &bytes).map(|_| ())
+    sourced_wp(db, &bytes).map(|_| ())
 }
 
 fn write_multiple_relinquish_defaults(
@@ -60,7 +61,7 @@ fn write_multiple_relinquish_defaults(
     };
     let mut bytes = BytesMut::new();
     request.encode(&mut bytes).unwrap();
-    handle_write_property_multiple(db, &bytes)
+    sourced_wpm(db, &bytes)
 }
 
 fn read_property(
@@ -77,9 +78,9 @@ fn read_property(
 
 fn assert_value_out_of_range<T>(result: Result<T, Error>) {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32);
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, ErrorCode::VALUE_OUT_OF_RANGE);
         }
         Err(other) => panic!("expected PROPERTY/VALUE_OUT_OF_RANGE, got {other:?}"),
         Ok(_) => panic!("expected PROPERTY/VALUE_OUT_OF_RANGE, got success"),

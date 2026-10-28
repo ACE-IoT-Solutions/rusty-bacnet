@@ -4,8 +4,9 @@ use crate::common::{
     write_generic_event_properties,
 };
 use crate::object_profile::{ObjectProfile, ProfileState, TagsPersistence};
+use crate::prelude::*;
 use crate::property_metadata::PropertyMetadata;
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 mod metadata;
 
@@ -20,7 +21,7 @@ pub struct AnalogInputObject {
     name: String,
     description: String,
     present_value: f32,
-    units: u32,
+    units: EngineeringUnits,
     out_of_service: bool,
     status_flags: StatusFlags,
     /// COV_Increment: minimum change threshold for COV notifications.
@@ -45,7 +46,11 @@ pub struct AnalogInputObject {
 
 impl AnalogInputObject {
     /// Create a new Analog Input object.
-    pub fn new(instance: u32, name: impl Into<String>, units: u32) -> Result<Self, Error> {
+    pub fn new(
+        instance: u32,
+        name: impl Into<String>,
+        units: EngineeringUnits,
+    ) -> Result<Self, Error> {
         let _oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, instance)?;
         Ok(Self {
             profile: ProfileState::default(),
@@ -75,7 +80,7 @@ impl AnalogInputObject {
     pub fn with_tags_persistence(
         instance: u32,
         name: impl Into<String>,
-        units: u32,
+        units: EngineeringUnits,
         persistence: Arc<dyn TagsPersistence>,
     ) -> Result<Self, Error> {
         let mut object = Self::new(instance, name, units)?;
@@ -204,7 +209,9 @@ impl BACnetObject for AnalogInputObject {
             p if p == PropertyIdentifier::PRESENT_VALUE => {
                 Ok(PropertyValue::Real(self.present_value))
             }
-            p if p == PropertyIdentifier::UNITS => Ok(PropertyValue::Enumerated(self.units)),
+            p if p == PropertyIdentifier::UNITS => {
+                Ok(PropertyValue::Enumerated(self.units.to_raw()))
+            }
             p if p == PropertyIdentifier::COV_INCREMENT => {
                 Ok(PropertyValue::Real(self.cov_increment))
             }
@@ -311,7 +318,7 @@ impl BACnetObject for AnalogInputObject {
         self.profile.capability()
     }
 
-    fn advance_monotonic_time_internal(&mut self, now: std::time::Duration) -> bool {
+    fn advance_monotonic_time_internal(&mut self, now: core::time::Duration) -> bool {
         self.profile.expire(now);
         false
     }
@@ -356,10 +363,10 @@ impl BACnetObject for AnalogInputObject {
         timestamp: &BACnetTimeStamp,
     ) -> Result<(), Error> {
         if !self.event_detection_enable {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::NO_ALARM_CONFIGURED,
+            ));
         }
         self.event_history.acknowledge_correlated(
             &mut self.event_detector.acked_transitions,
@@ -420,12 +427,13 @@ impl BACnetObject for AnalogInputObject {
 #[cfg(test)]
 mod detection_enable_reset_tests {
     use super::*;
+    use bacnet_types::error::RemoteError;
 
     #[test]
     fn built_in_intrinsic_transition_is_a_proposal_until_committed() {
         use crate::event::EventTransitionCommit;
 
-        let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+        let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         ai.event_detector.high_limit = 80.0;
         ai.event_detector.limit_enable = bacnet_types::bitstring::LimitEnable::all();
         ai.event_detector.event_enable = bacnet_types::bitstring::EventTransitionBits::all();
@@ -478,9 +486,10 @@ mod detection_enable_reset_tests {
         use crate::event::{
             EventStateChange, EventTransition, EventTransitionCommit, EventTransitionCommitError,
         };
-        use bacnet_types::enums::{EventState, Reliability};
+        use bacnet_types::enums::{EngineeringUnits, EventState, Reliability};
 
-        let mut delayed = AnalogInputObject::new(1, "AI-delayed", 62).unwrap();
+        let mut delayed =
+            AnalogInputObject::new(1, "AI-delayed", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         delayed.event_detector.high_limit = 80.0;
         delayed.event_detector.limit_enable = bacnet_types::bitstring::LimitEnable::all();
         delayed.event_detector.time_delay = 1;
@@ -515,7 +524,8 @@ mod detection_enable_reset_tests {
         );
         assert_eq!(delayed.tick_intrinsic_reporting(), Some(proposal));
 
-        let mut faulted = AnalogInputObject::new(2, "AI-fault", 62).unwrap();
+        let mut faulted =
+            AnalogInputObject::new(2, "AI-fault", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         faulted.reliability = Reliability::OVER_RANGE;
         let entry = faulted.evaluate_intrinsic_reporting().unwrap();
         crate::event::commit_test_proposal(&mut faulted, entry);
@@ -552,7 +562,7 @@ mod detection_enable_reset_tests {
     /// disabling event detection must still restore their Clause 13.2.2.1 initial conditions.
     #[test]
     fn ai_disabling_detection_resets_event_history() {
-        let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+        let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         assert_eq!(
             ai.read_property(PropertyIdentifier::EVENT_DETECTION_ENABLE, None)
                 .unwrap(),
@@ -613,7 +623,7 @@ mod detection_enable_reset_tests {
 
     #[test]
     fn ai_rejected_detection_write_preserves_hidden_state() {
-        let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+        let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         ai.event_detector.event_state = bacnet_types::enums::EventState::HIGH_LIMIT;
         ai.event_detector.acked_transitions =
             bacnet_types::bitstring::EventTransitionBits::TO_FAULT;
@@ -635,9 +645,9 @@ mod detection_enable_reset_tests {
             )
             .unwrap_err();
         assert!(
-            matches!(error, bacnet_types::error::Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::INVALID_DATA_TYPE.to_raw() as u32)
+            matches!(error, bacnet_types::error::Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::INVALID_DATA_TYPE)
         );
 
         assert!(ai.event_detection_enable);
@@ -677,20 +687,22 @@ mod acknowledge_alarm_correlation_tests;
 mod fault_out_of_range_non_finite_tests {
     use super::*;
     use bacnet_types::enums::{ErrorClass, ErrorCode, Reliability};
+    use bacnet_types::error::RemoteError;
 
     fn assert_value_out_of_range(result: Result<ReliabilityEvaluation, Error>) {
         assert!(matches!(
             result,
-            Err(Error::Protocol { class, code })
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32
+            Err(Error::Remote(RemoteError::Error { class, code }))
+                if class == ErrorClass::PROPERTY
+                    && code == ErrorCode::VALUE_OUT_OF_RANGE
         ));
     }
 
     #[test]
     fn ai_non_finite_monitored_values_preserve_reliability_status_and_ownership() {
         for non_finite in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let mut normal = AnalogInputObject::new(1, "AI-normal", 62).unwrap();
+            let mut normal =
+                AnalogInputObject::new(1, "AI-normal", EngineeringUnits::DEGREES_CELSIUS).unwrap();
             normal.configure_fault_out_of_range(10.0, 20.0).unwrap();
             let status_before = normal
                 .read_property(PropertyIdentifier::STATUS_FLAGS, None)
@@ -717,7 +729,8 @@ mod fault_out_of_range_non_finite_tests {
                 }
             );
 
-            let mut owned = AnalogInputObject::new(2, "AI-owned", 62).unwrap();
+            let mut owned =
+                AnalogInputObject::new(2, "AI-owned", EngineeringUnits::DEGREES_CELSIUS).unwrap();
             owned.configure_fault_out_of_range(10.0, 20.0).unwrap();
             owned.present_value = 9.0;
             owned.evaluate_reliability_internal().unwrap();

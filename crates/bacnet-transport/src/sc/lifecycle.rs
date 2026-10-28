@@ -3,15 +3,11 @@
 //! Moved out of the transport loop file to keep that file within the
 //! repository file-size cap. Registered listener shutdown shares transport teardown.
 
-use std::sync::atomic::Ordering;
-
 use tokio::task::JoinHandle;
 
-use crate::port::{TransportHealthState, TransportPort};
+use crate::port::TransportPort;
 
-use super::{
-    advertisement, ScConnectionState, ScTransport, WebSocketPort, DEFAULT_MAX_APDU_LENGTH,
-};
+use super::{ScConnectionState, ScTransport, WebSocketPort, advertisement};
 use crate::sc_frame::encode_sc_message;
 use bacnet_types::error::Error;
 use bytes::BytesMut;
@@ -52,6 +48,10 @@ impl<W: WebSocketPort> ScTransport<W> {
         if let Some(task) = restore_task {
             let _ = task.await;
         }
+        // A reconnect finishing on another worker can publish a connection
+        // after the abort above; once the task is gone, close the record again.
+        self.observer
+            .disconnected(super::ScDisconnectCause::LocalClose);
 
         if let Some(conn) = conn_for_state {
             let mut c = conn.lock().await;
@@ -84,21 +84,15 @@ impl<W: WebSocketPort> ScTransport<W> {
         if let Some(task) = &restore_task {
             task.abort();
         }
-        if let Some(conn) = &self.connection {
-            if let Ok(mut c) = conn.try_lock() {
-                c.state = ScConnectionState::Disconnected;
-            }
+        if let Some(conn) = &self.connection
+            && let Ok(mut c) = conn.try_lock()
+        {
+            c.state = ScConnectionState::Disconnected;
         }
-        self.effective_max_apdu_length
-            .store(DEFAULT_MAX_APDU_LENGTH, Ordering::Relaxed);
+        self.hub_limits.reset_apdu();
         self.state_tx.send_replace(ScConnectionState::Disconnected);
-        self.health_tx.send_modify(|health| {
-            health.state = TransportHealthState::Down;
-            health.detail = Some("stopped".into());
-            health.active_hub = None;
-            health.attempt = 0;
-            health.since = None;
-        });
+        self.observer
+            .disconnected(super::ScDisconnectCause::LocalClose);
         self.ws_shared = None;
         self.connection = None;
         self.ws = None;

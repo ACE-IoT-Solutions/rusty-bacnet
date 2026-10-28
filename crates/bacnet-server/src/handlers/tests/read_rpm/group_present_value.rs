@@ -2,15 +2,16 @@
 //! read (#1134), through ReadProperty, both ReadPropertyMultiple builders
 //! and ReadRange.
 
-use super::group::{assert_cases, ExpectedRead};
+use super::group::{ExpectedRead, assert_cases};
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::analog::{AnalogInputObject, AnalogValueObject};
 use bacnet_objects::group::GroupObject;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_services::read_range::{RangeSpec, ReadRangeAck, ReadRangeRequest};
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(object_type, instance).unwrap()
@@ -37,7 +38,7 @@ fn member(
 /// AI-1 reading 21.5, AV-2 with an empty priority array, and Group 7 over
 /// them with the members below. AI-9 is not in the database.
 fn database(members: Vec<ReadAccessSpecification>) -> (ObjectDatabase, ObjectIdentifier) {
-    let mut input = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut input = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     input.set_present_value(21.5);
     let mut group = GroupObject::new(7, "GRP-7").unwrap();
     for member in members {
@@ -46,8 +47,10 @@ fn database(members: Vec<ReadAccessSpecification>) -> (ObjectDatabase, ObjectIde
     let group_oid = group.object_identifier();
     let mut db = ObjectDatabase::new();
     db.add(Box::new(input)).unwrap();
-    db.add(Box::new(AnalogValueObject::new(2, "AV-2", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogValueObject::new(2, "AV-2", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     db.add(Box::new(group)).unwrap();
     (db, group_oid)
 }
@@ -165,8 +168,9 @@ fn each_member_reads_as_read_property_multiple_reads_its_specification() {
     // Selectors expand against the member, and the Device wildcard resolves
     // to this device, as they do in a ReadPropertyMultiple request.
     let device = bacnet_objects::device::DeviceObject::new(bacnet_objects::device::DeviceConfig {
-        instance: 100,
-        name: "DEV-100".into(),
+        identity: bacnet_objects::DeviceIdentity::new(100, 0)
+            .expect("valid Device identity")
+            .with_name("DEV-100"),
         ..Default::default()
     })
     .unwrap();
@@ -244,7 +248,7 @@ fn expanded_rows(db: &ObjectDatabase, specs: Vec<ReadAccessSpecification>) -> us
 
 #[test]
 fn member_rows_are_charged_to_the_rpm_work_budget_and_shared_between_groups() {
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted_observed, ReadFailure};
+    use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted_observed};
     let input = oid(ObjectType::ANALOG_INPUT, 1);
     let value = oid(ObjectType::ANALOG_VALUE, 2);
     // Group 7 expands ALL on AV-2; Group 8 is two explicit rows.

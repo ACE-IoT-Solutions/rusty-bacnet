@@ -1,37 +1,103 @@
+//! Managed COV subscriptions to a routed device (#1790): requests carry the
+//! device's network and address, and only notifications from that address
+//! move the renewal.
+
 use super::*;
-use bacnet_encoding::apdu::{decode_apdu, encode_apdu};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
+use bacnet_encoding::apdu::{SimpleAck, UnconfirmedRequest, decode_apdu, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::cov::SubscribeCOVRequest;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
-use bacnet_types::enums::{ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{ObjectType, PropertyIdentifier, Segmentation};
 use bacnet_types::primitives::ObjectIdentifier;
 
-fn analog_object(instance: u32) -> ObjectIdentifier {
+const CLIENT: [u8; 1] = [0x01];
+const ROUTER: [u8; 1] = [0x02];
+const NETWORK: u16 = 7;
+const STATION: [u8; 1] = [0x05];
+
+fn ai(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::ANALOG_INPUT, instance).unwrap()
 }
 
-async fn receive_routed_subscribe(
-    router_rx: &mut tokio::sync::mpsc::Receiver<ReceivedNpdu>,
-    client_mac: &[u8],
-    remote_network: u16,
-    remote_mac: &[u8],
-) -> (u8, SubscribeCOVRequest) {
-    let received = timeout(Duration::from_secs(2), router_rx.recv())
-        .await
-        .expect("router timed out waiting for SubscribeCOV")
-        .expect("router channel closed");
-    assert_eq!(&received.source_mac[..], client_mac);
+fn notification(
+    process: u32,
+    object: ObjectIdentifier,
+    time_remaining: u32,
+) -> COVNotificationRequest {
+    COVNotificationRequest {
+        subscriber_process_identifier: process,
+        initiating_device_identifier: ObjectIdentifier::new(ObjectType::DEVICE, 100).unwrap(),
+        monitored_object_identifier: object,
+        time_remaining,
+        list_of_values: vec![BACnetPropertyValue {
+            property_identifier: PropertyIdentifier::PRESENT_VALUE,
+            property_array_index: None,
+            value: vec![0x44, 0x42, 0x48, 0x00, 0x00],
+            priority: None,
+        }],
+    }
+}
 
+/// `received` as the client's notification channel would carry it, from
+/// `mac` with `routed` as its source network and address.
+fn received(mac: &[u8], routed: Option<(u16, &[u8])>) -> ReceivedCOVNotification {
+    let source = routed.map(|(network, address)| NpduAddress {
+        network,
+        mac_address: MacAddr::from_slice(address),
+    });
+    ReceivedCOVNotification::new(
+        notification(1, ai(1), 60),
+        mac,
+        &source,
+        COVNotificationDelivery::Unconfirmed,
+    )
+}
+
+/// Send `apdu` to the client as the router relays it: from `source`.
+async fn relay(router: &LoopbackTransport, source: Option<(u16, &[u8])>, apdu: Apdu) {
+    let mut apdu_buf = BytesMut::new();
+    encode_apdu(&mut apdu_buf, &apdu).unwrap();
+    let npdu = Npdu {
+        source: source.map(|(network, address)| NpduAddress {
+            network,
+            mac_address: MacAddr::from_slice(address),
+        }),
+        payload: apdu_buf.freeze(),
+        ..Npdu::default()
+    };
+    let mut npdu_buf = BytesMut::new();
+    encode_npdu(&mut npdu_buf, &npdu).unwrap();
+    router.send_unicast(&npdu_buf, &CLIENT).await.unwrap();
+}
+
+async fn relay_notification(
+    router: &LoopbackTransport,
+    source: Option<(u16, &[u8])>,
+    time_remaining: u32,
+) {
+    let mut service_request = BytesMut::new();
+    notification(9, ai(1), time_remaining).encode(&mut service_request);
+    let apdu = Apdu::UnconfirmedRequest(UnconfirmedRequest {
+        service_choice: UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION,
+        service_request: service_request.freeze(),
+    });
+    relay(router, source, apdu).await;
+}
+
+/// The next SubscribeCOV the router receives: it goes to the router with
+/// the station's network and address as its destination.
+async fn routed_subscribe(rx: &mut mpsc::Receiver<ReceivedNpdu>) -> (u8, SubscribeCOVRequest) {
+    let received = rx.recv().await.expect("router channel closed");
     let npdu = decode_npdu(received.npdu).unwrap();
-    let destination = npdu.destination.expect("routed NPDU destination");
-    assert_eq!(destination.network, remote_network);
-    assert_eq!(&destination.mac_address[..], remote_mac);
-
-    let decoded = decode_apdu(npdu.payload).unwrap();
-    let Apdu::ConfirmedRequest(request) = decoded else {
-        panic!("expected confirmed request, got {decoded:?}");
+    let destination = npdu
+        .destination
+        .expect("a routed request names its destination");
+    assert_eq!(destination.network, NETWORK);
+    assert_eq!(&destination.mac_address[..], &STATION);
+    let Apdu::ConfirmedRequest(request) = decode_apdu(npdu.payload).unwrap() else {
+        panic!("expected a confirmed request");
     };
     assert_eq!(
         request.service_choice,
@@ -43,79 +109,22 @@ async fn receive_routed_subscribe(
     )
 }
 
-async fn send_routed_simple_ack<T: TransportPort>(
-    transport: &T,
-    client_mac: &[u8],
-    remote_network: u16,
-    remote_mac: &[u8],
-    invoke_id: u8,
-) {
-    let mut apdu = BytesMut::new();
-    encode_apdu(
-        &mut apdu,
-        &Apdu::SimpleAck(SimpleAck {
-            invoke_id,
-            service_choice: ConfirmedServiceChoice::SUBSCRIBE_COV,
-        }),
-    )
-    .unwrap();
-    let mut npdu = BytesMut::new();
-    encode_npdu(
-        &mut npdu,
-        &Npdu {
-            source: Some(NpduAddress {
-                network: remote_network,
-                mac_address: MacAddr::from_slice(remote_mac),
-            }),
-            payload: apdu.freeze(),
-            ..Npdu::default()
-        },
-    )
-    .unwrap();
-    transport.send_unicast(&npdu, client_mac).await.unwrap();
+async fn ack(router: &LoopbackTransport, invoke_id: u8) {
+    let ack = Apdu::SimpleAck(SimpleAck {
+        invoke_id,
+        service_choice: ConfirmedServiceChoice::SUBSCRIBE_COV,
+    });
+    relay(router, Some((NETWORK, &STATION)), ack).await;
 }
 
-fn routed_notification(
-    router_mac: &[u8],
-    remote_network: u16,
-    remote_mac: &[u8],
-    process_id: u32,
-    object_id: ObjectIdentifier,
-    time_remaining: u32,
-) -> ReceivedCOVNotification {
-    ReceivedCOVNotification::new(
-        COVNotificationRequest {
-            subscriber_process_identifier: process_id,
-            initiating_device_identifier: ObjectIdentifier::new(ObjectType::DEVICE, 6001).unwrap(),
-            monitored_object_identifier: object_id,
-            time_remaining,
-            list_of_values: vec![BACnetPropertyValue {
-                property_identifier: PropertyIdentifier::PRESENT_VALUE,
-                property_array_index: None,
-                value: vec![0x44, 0x42, 0x48, 0x00, 0x00],
-                priority: None,
-            }],
-        },
-        router_mac,
-        &Some(NpduAddress {
-            network: remote_network,
-            mac_address: MacAddr::from_slice(remote_mac),
-        }),
-        COVNotificationDelivery::Unconfirmed,
-    )
-}
-
-#[tokio::test]
-async fn routed_managed_subscription_renews_via_existing_routed_request_path() {
-    let client_mac = vec![0x61];
-    let router_mac = vec![0x62];
-    let remote_network = 2001;
-    let remote_mac = vec![0x0a, 0x0b];
-    let object_id = analog_object(7);
-    let process_id = 7007;
-    let (client_transport, mut router_transport) =
-        LoopbackTransport::pair(client_mac.clone(), router_mac.clone());
-    let mut router_rx = router_transport.start().await.unwrap();
+/// The subscription and its renewals go through the router to the station,
+/// and a notification moves the renewal only when it comes from the
+/// station's network and address: not from another station on that
+/// network, nor from a local device whose MAC equals the station address.
+#[tokio::test(start_paused = true)]
+async fn a_routed_subscription_renews_through_the_router_and_follows_its_station() {
+    let (client_transport, mut router) = LoopbackTransport::pair(CLIENT.to_vec(), ROUTER.to_vec());
+    let mut rx = router.start().await.unwrap();
     let client = Arc::new(
         BACnetClient::generic_builder()
             .transport(client_transport)
@@ -124,121 +133,107 @@ async fn routed_managed_subscription_renews_via_existing_routed_request_path() {
             .await
             .unwrap(),
     );
-
-    let start_client = Arc::clone(&client);
-    let start_router = router_mac.clone();
-    let start_remote = remote_mac.clone();
-    let start = tokio::spawn(async move {
-        start_client
-            .manage_cov_subscription_routed(
-                &start_router,
-                remote_network,
-                &start_remote,
-                process_id,
-                object_id,
-                false,
-                10,
-                ManagedCOVSubscriptionOptions::default()
-                    .with_renewal_margin(Duration::from_secs(2)),
-            )
-            .await
+    let start = tokio::spawn({
+        let client = Arc::clone(&client);
+        async move {
+            client
+                .manage_cov_subscription(
+                    CovTarget::routed(&ROUTER, NETWORK, &STATION),
+                    9,
+                    ai(1),
+                    false,
+                    60,
+                    ManagedCOVSubscriptionOptions::default()
+                        .with_renewal_margin(Duration::from_secs(10)),
+                )
+                .await
+        }
     });
-
-    let (initial_invoke_id, initial) =
-        receive_routed_subscribe(&mut router_rx, &client_mac, remote_network, &remote_mac).await;
-    assert_eq!(initial.subscriber_process_identifier, process_id);
-    assert_eq!(initial.lifetime, Some(10));
-    send_routed_simple_ack(
-        &router_transport,
-        &client_mac,
-        remote_network,
-        &remote_mac,
-        initial_invoke_id,
-    )
-    .await;
-
+    let (invoke_id, request) = routed_subscribe(&mut rx).await;
+    assert_eq!(request.subscriber_process_identifier, 9);
+    assert_eq!(request.lifetime, Some(60));
+    ack(&router, invoke_id).await;
     let managed = start.await.unwrap().unwrap();
     let mut events = managed.events();
-    client
-        .cov_tx
-        .send(routed_notification(
-            &router_mac,
-            remote_network,
-            &remote_mac,
-            process_id,
-            object_id,
-            1,
-        ))
-        .unwrap();
 
-    assert!(matches!(
-        timeout(Duration::from_secs(2), events.recv())
-            .await
-            .unwrap()
-            .unwrap(),
-        ManagedCOVSubscriptionEvent::NotificationObserved {
-            time_remaining: 1,
-            renew_after
-        } if renew_after.is_zero()
-    ));
+    // Neither of these is the station; had either matched, its time would
+    // come first.
+    relay_notification(&router, Some((NETWORK, &[0x06])), 40).await;
+    relay_notification(&router, None, 41).await;
+    relay_notification(&router, Some((NETWORK, &STATION)), 3).await;
     assert_eq!(
-        timeout(Duration::from_secs(2), events.recv())
-            .await
-            .unwrap()
-            .unwrap(),
-        ManagedCOVSubscriptionEvent::ImpendingExpiry { time_remaining: 1 }
+        events.recv().await.unwrap(),
+        ManagedCOVSubscriptionEvent::NotificationObserved {
+            time_remaining: 3,
+            renew_after: Duration::ZERO,
+        }
+    );
+    assert_eq!(
+        events.recv().await.unwrap(),
+        ManagedCOVSubscriptionEvent::ImpendingExpiry { time_remaining: 3 }
     );
 
-    let (renew_invoke_id, renewal) =
-        receive_routed_subscribe(&mut router_rx, &client_mac, remote_network, &remote_mac).await;
-    assert_eq!(renewal.subscriber_process_identifier, process_id);
-    assert_eq!(renewal.lifetime, Some(10));
-    send_routed_simple_ack(
-        &router_transport,
-        &client_mac,
-        remote_network,
-        &remote_mac,
-        renew_invoke_id,
-    )
-    .await;
-    assert!(matches!(
-        timeout(Duration::from_secs(2), events.recv())
-            .await
-            .unwrap()
-            .unwrap(),
+    let (renewal, request) = routed_subscribe(&mut rx).await;
+    assert_eq!(request.lifetime, Some(60));
+    ack(&router, renewal).await;
+    assert_eq!(
+        events.recv().await.unwrap(),
         ManagedCOVSubscriptionEvent::Renewed {
-            requested_lifetime: 10,
-            ..
+            requested_lifetime: 60,
+            renew_after: Duration::from_secs(50),
         }
-    ));
+    );
 
     managed.stop().await;
-    let mut client = match Arc::try_unwrap(client) {
-        Ok(client) => client,
-        Err(_) => panic!("managed task retained client after stop"),
+    let Ok(mut client) = Arc::try_unwrap(client) else {
+        panic!("managed subscription kept a client reference after stop");
     };
     client.stop().await.unwrap();
-    router_transport.stop().await.unwrap();
+    router.stop().await.unwrap();
 }
 
 #[test]
-fn routed_matching_requires_router_and_npdu_source_identity() {
-    let object_id = analog_object(8);
-    let target = ManagedCOVTarget::Routed {
-        router_mac: MacAddr::from_slice(&[0x71]),
-        dest_network: 3001,
-        dest_mac: MacAddr::from_slice(&[0x72]),
-    };
-    let matching = routed_notification(&[0x71], 3001, &[0x72], 8, object_id, 10);
-    assert!(matches_managed_cov_notification(
-        &matching, &target, 8, object_id
-    ));
+fn a_local_target_takes_only_its_mac_with_no_source_network() {
+    let target = CovTarget::local(&[0x05]);
+    assert!(target.sent(&received(&[0x05], None), None));
+    assert!(!target.sent(&received(&[0x06], None), None));
+    assert!(!target.sent(&received(&[0x05], Some((NETWORK, &[0x05]))), None));
+}
 
-    let wrong_source = routed_notification(&[0x71], 3001, &[0x73], 8, object_id, 10);
-    assert!(!matches_managed_cov_notification(
-        &wrong_source,
-        &target,
-        8,
-        object_id
-    ));
+#[test]
+fn a_routed_target_takes_its_network_and_station_through_any_router() {
+    let target = CovTarget::routed(&ROUTER, NETWORK, &STATION);
+    assert!(target.sent(&received(&ROUTER, Some((NETWORK, &STATION))), None));
+    // Another router on the way back still names the same station.
+    assert!(target.sent(&received(&[0x09], Some((NETWORK, &STATION))), None));
+    assert!(!target.sent(&received(&ROUTER, Some((NETWORK, &[0x06]))), None));
+    assert!(!target.sent(&received(&ROUTER, Some((8, &STATION))), None));
+    assert!(!target.sent(&received(&STATION, None), None));
+    // Once this network is known to be the target's, the station answers as
+    // a local device (#1358).
+    assert!(target.sent(&received(&STATION, None), Some(NETWORK)));
+    assert!(!target.sent(&received(&STATION, None), Some(8)));
+}
+
+#[test]
+fn a_discovered_device_is_routed_when_its_i_am_came_through_a_router() {
+    let device = |routed: Option<(u16, &[u8])>| DiscoveredDevice {
+        object_identifier: ObjectIdentifier::new(ObjectType::DEVICE, 100).unwrap(),
+        mac_address: MacAddr::from_slice(&ROUTER),
+        max_apdu_length: 480,
+        segmentation_supported: Segmentation::NONE,
+        max_segments_accepted: None,
+        vendor_id: 0,
+        last_seen: std::time::Instant::now(),
+        source_network: routed.map(|(network, _)| network),
+        source_address: routed.map(|(_, address)| MacAddr::from_slice(address)),
+    };
+    assert_eq!(
+        CovTarget::of_device(&device(Some((NETWORK, &STATION)))),
+        CovTarget::routed(&ROUTER, NETWORK, &STATION)
+    );
+    assert_eq!(
+        CovTarget::of_device(&device(None)),
+        CovTarget::local(&ROUTER)
+    );
 }

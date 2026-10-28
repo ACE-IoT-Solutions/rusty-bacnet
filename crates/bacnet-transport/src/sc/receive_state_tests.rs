@@ -168,9 +168,11 @@ async fn sc_receive_loop_discards_frame_above_local_max_bvlc() {
     assert!(buf.len() > 1476);
 
     ws_hub.send(&buf).await.unwrap();
-    assert!(tokio::time::timeout(Duration::from_millis(50), rx.recv())
-        .await
-        .is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), rx.recv())
+            .await
+            .is_err()
+    );
     transport.stop().await.unwrap();
 }
 
@@ -187,7 +189,6 @@ async fn sc_reconnect_exhaustion_leaves_connection_disconnected() {
             initial_delay_ms: 10,
             max_delay_ms: 10,
             max_retries: 1,
-            retry_forever: false,
         });
 
     let hub_task = tokio::spawn(async move {

@@ -1,7 +1,7 @@
 //! The shared save writer (#1270).
 
 use super::*;
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::task::Wake;
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
@@ -188,6 +188,35 @@ fn a_save_wait_wakes_its_task_when_the_save_runs() {
     assert!(flag.0.load(std::sync::atomic::Ordering::SeqCst));
     assert!(Pin::new(&mut wait).poll(&mut cx).is_ready());
     assert!(wait.is_ready());
+}
+
+/// A joined wait ends only once every wait in it has, in either order, and
+/// wakes its task for the later one (#1526).
+#[test]
+fn a_joined_wait_ends_with_the_last_of_its_waits() {
+    for first_set in [0, 2] {
+        let events: Vec<Arc<Event>> = (0..3).map(|_| Arc::default()).collect();
+        let waits = events.iter().map(|event| SaveWait::new(Arc::clone(event)));
+        let mut joined = waits.reduce(SaveWait::and).unwrap();
+        let flag = Arc::new(Flag(Default::default()));
+        let waker = Waker::from(Arc::clone(&flag));
+        let mut cx = Context::from_waker(&waker);
+        let mut order: Vec<usize> = (0..3).collect();
+        order.rotate_left(first_set);
+        for (count, &index) in order.iter().enumerate() {
+            assert!(!joined.is_ready());
+            assert!(Pin::new(&mut joined).poll(&mut cx).is_pending());
+            flag.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            events[index].set();
+            if count + 1 < order.len() {
+                continue;
+            }
+            assert!(flag.0.load(std::sync::atomic::Ordering::SeqCst));
+        }
+        assert!(joined.is_ready());
+        assert!(Pin::new(&mut joined).poll(&mut cx).is_ready());
+        joined.block();
+    }
 }
 
 #[test]

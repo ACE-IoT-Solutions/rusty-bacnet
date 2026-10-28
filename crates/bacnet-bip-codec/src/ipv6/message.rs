@@ -1,7 +1,7 @@
 //! B/IPv6 BVLL frames and messages: one-shot decode, and checked encode.
 
-use super::{Bip6Address, Bip6Vmac, Bvlc6Function, Bvlc6ResultCode, Bvll6Error, BVLC_TYPE_BIP6};
-use crate::{BvllSink, PayloadShape, HEADER_LENGTH, MAX_BVLL_LENGTH};
+use super::{BVLC_TYPE_BIP6, Bip6Address, Bip6Vmac, Bvlc6Function, Bvlc6ResultCode, Bvll6Error};
+use crate::{BvllSink, HEADER_LENGTH, MAX_BVLL_LENGTH, PayloadShape};
 
 /// A B/IPv6 BVLL message whose header checks out, before its payload is
 /// read.
@@ -148,7 +148,7 @@ fn read(function: Bvlc6Function, payload: &[u8]) -> Option<Bvll6<'_>> {
             return Some(Bvll6::OriginalBroadcastNpdu {
                 source,
                 npdu: fields.npdu(),
-            })
+            });
         }
         Bvlc6Function::ADDRESS_RESOLUTION => Bvll6::AddressResolution {
             source,
@@ -191,7 +191,7 @@ fn read(function: Bvlc6Function, payload: &[u8]) -> Option<Bvll6<'_>> {
             return Some(Bvll6::DistributeBroadcastToNetwork {
                 original_source: source,
                 npdu: fields.npdu(),
-            })
+            });
         }
         _ => return None,
     };
@@ -336,6 +336,7 @@ pub enum Bvll6<'a> {
 
 impl<'a> Bvll6<'a> {
     /// The message's function code.
+    #[must_use]
     pub const fn function(&self) -> Bvlc6Function {
         match self {
             Self::BvlcResult { .. } => Bvlc6Function::BVLC_RESULT,
@@ -364,6 +365,7 @@ impl<'a> Bvll6<'a> {
     /// Forwarded-Address-Resolution), where it is the originating node's.
     /// Distribute-Broadcast-To-Network calls its VMAC the original source,
     /// but the foreign device that sends one is that source.
+    #[must_use]
     pub const fn source_vmac(&self) -> Bip6Vmac {
         match *self {
             Self::BvlcResult { source, .. }
@@ -393,6 +395,7 @@ impl<'a> Bvll6<'a> {
     /// The recipient's VMAC, for the three messages that name one:
     /// Original-Unicast-NPDU and the two ACKs. A node discards those when it
     /// isn't theirs (U.3).
+    #[must_use]
     pub const fn destination_vmac(&self) -> Option<Bip6Vmac> {
         match *self {
             Self::OriginalUnicastNpdu { destination, .. }
@@ -403,6 +406,7 @@ impl<'a> Bvll6<'a> {
     }
 
     /// The NPDU, for the four functions that carry one.
+    #[must_use]
     pub const fn npdu(&self) -> Option<&'a [u8]> {
         match *self {
             Self::OriginalUnicastNpdu { npdu, .. }
@@ -415,6 +419,7 @@ impl<'a> Bvll6<'a> {
 
     /// The originating node's B/IPv6 address, for the two messages a BBMD
     /// relays with one: Forwarded-NPDU and Forwarded-Address-Resolution.
+    #[must_use]
     pub const fn origin(&self) -> Option<Bip6Address> {
         match *self {
             Self::ForwardedNpdu {
@@ -452,12 +457,12 @@ impl<'a> Bvll6<'a> {
     /// other shape the standard forbids can't be built: each variant holds
     /// exactly its function's fields.
     pub fn encoded_len(&self) -> Result<usize, Bvll6Error> {
-        if let Self::BvlcResult { code, .. } = self {
-            if !code.is_defined() {
-                return Err(Bvll6Error::UndefinedResultCode {
-                    code: code.to_raw(),
-                });
-            }
+        if let Self::BvlcResult { code, .. } = self
+            && !code.is_defined()
+        {
+            return Err(Bvll6Error::UndefinedResultCode {
+                code: code.to_raw(),
+            });
         }
         let length = HEADER_LENGTH + self.payload_length();
         if length > MAX_BVLL_LENGTH {
@@ -504,13 +509,13 @@ impl<'a> Bvll6<'a> {
     /// [`BvllSink`].
     pub fn encode_to_sink<S: BvllSink + ?Sized>(&self, sink: &mut S) -> Result<usize, Bvll6Error> {
         let length = self.encoded_len()?;
-        if let Some(available) = sink.remaining_capacity() {
-            if available < length {
-                return Err(Bvll6Error::BufferExhausted {
-                    needed: length,
-                    available,
-                });
-            }
+        if let Some(available) = sink.remaining_capacity()
+            && available < length
+        {
+            return Err(Bvll6Error::BufferExhausted {
+                needed: length,
+                available,
+            });
         }
         // `encoded_len` capped the length at 0xFFFF.
         let [high, low] = (length as u16).to_be_bytes();

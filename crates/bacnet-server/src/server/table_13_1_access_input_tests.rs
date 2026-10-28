@@ -8,6 +8,7 @@
 
 use super::*;
 use bacnet_types::enums::{DoorStatus, EventState, LockStatus};
+use bacnet_types::error::RemoteError;
 
 fn ap(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::ACCESS_POINT, instance).unwrap()
@@ -23,8 +24,8 @@ fn door_oid() -> ObjectIdentifier {
 
 fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class: c, code: e })
-            if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class: c, code: e }))
+            if c == class && e == code),
         "expected {class:?} / {code:?}, got {result:?}"
     );
 }

@@ -3,6 +3,7 @@ use bacnet_encoding::primitives::encode_timestamp_choice;
 use bacnet_objects::notification_class::NotificationClass;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::enums::NotifyType;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, Time};
 
 struct EventSummaryFixture {
@@ -45,10 +46,10 @@ impl BACnetObject for EventSummaryFixture {
             p if p == PropertyIdentifier::EVENT_TIME_STAMPS => {
                 Ok(PropertyValue::List(self.timestamps.to_vec()))
             }
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -59,10 +60,10 @@ impl BACnetObject for EventSummaryFixture {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
     fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
@@ -115,9 +116,9 @@ fn add_notification_class(
 fn assert_operational_problem(error: Error) {
     assert!(matches!(
         error,
-        Error::Protocol { class, code }
-            if class == ErrorClass::DEVICE.to_raw() as u32
-                && code == ErrorCode::OPERATIONAL_PROBLEM.to_raw() as u32
+        Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::DEVICE
+                && code == ErrorCode::OPERATIONAL_PROBLEM
     ));
 }
 
@@ -181,9 +182,10 @@ fn get_event_information_empty() {
 #[test]
 fn get_event_information_reports_non_normal_objects() {
     use bacnet_types::bitstring::LimitEnable;
+    use bacnet_types::enums::EngineeringUnits;
 
     let mut db = ObjectDatabase::new();
-    let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     // Configure intrinsic reporting
     ai.write_property(
         PropertyIdentifier::HIGH_LIMIT,
@@ -248,8 +250,9 @@ fn get_event_information_reports_non_normal_objects() {
 #[test]
 fn get_event_information_reads_event_enable_notify_type_and_priorities() {
     use bacnet_types::bitstring::LimitEnable;
+    use bacnet_types::enums::EngineeringUnits;
     let mut db = ObjectDatabase::new();
-    let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.write_property(
         PropertyIdentifier::HIGH_LIMIT,
         None,

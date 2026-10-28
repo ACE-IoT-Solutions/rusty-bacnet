@@ -1,11 +1,14 @@
 //! Integration tests for one-shot MS/TP frame encode and decode, CRCs and sinks.
 
+use bacnet_mstp_codec::crc::{crc8, crc8_valid, crc16, crc16_valid};
 use bacnet_mstp_codec::{
-    crc16, crc16_accumulate_all, crc16_valid, crc8, crc8_accumulate_all, crc8_valid, decode_frame,
-    find_preamble, Frame, FrameError, FrameHeader, FrameSink, FrameType, DATA_CRC_RESIDUAL,
-    HEADER_CRC_RESIDUAL, MAX_STANDARD_FRAME_LENGTH, MAX_STANDARD_MPDU_DATA, PREAMBLE,
+    Frame, FrameError, FrameHeader, FrameSink, FrameType, MAX_STANDARD_FRAME_LENGTH,
+    MAX_STANDARD_MPDU_DATA, PREAMBLE, SinkFull, decode_frame, find_preamble,
 };
 use proptest::prelude::*;
+
+mod support;
+use support::{DATA_CRC_RESIDUAL, HEADER_CRC_RESIDUAL};
 
 /// Build a frame by hand, with valid CRCs, bypassing the encoder's checks.
 fn raw_frame(raw_type: u8, destination: u8, source: u8, data: &[u8]) -> Vec<u8> {
@@ -44,15 +47,12 @@ fn golden_crc_vectors() {
         let mut bytes = header.to_vec();
         bytes.push(expected);
         assert!(crc8_valid(&bytes));
-        assert_eq!(crc8_accumulate_all(&bytes), HEADER_CRC_RESIDUAL);
+        assert_eq!(!crc8(&bytes), HEADER_CRC_RESIDUAL);
     }
     // Computed here, not taken from the standard; the frames below use it.
     assert_eq!(crc16(&[0x01, 0x00]), 0x169F);
     assert!(crc16_valid(&[0x01, 0x00, 0x9F, 0x16]));
-    assert_eq!(
-        crc16_accumulate_all(&[0x01, 0x00, 0x9F, 0x16]),
-        DATA_CRC_RESIDUAL
-    );
+    assert_eq!(!crc16(&[0x01, 0x00, 0x9F, 0x16]), DATA_CRC_RESIDUAL);
     assert!(crc8_valid(&[crc8(&[])]));
 }
 
@@ -64,16 +64,16 @@ fn annex_g_token_example() {
     // The CRC register after each header octet, before the final complement.
     let registers = [0x55, 0xC2, 0xBC, 0x95, 0x73];
     for (count, register) in registers.into_iter().enumerate() {
-        assert_eq!(crc8_accumulate_all(&fields[..=count]), register);
+        assert_eq!(!crc8(&fields[..=count]), register);
     }
     assert_eq!(crc8(&fields), 0x8C);
     assert_eq!(
-        crc8_accumulate_all(&[0x00, 0x10, 0x05, 0x00, 0x00, 0x8C]),
+        !crc8(&[0x00, 0x10, 0x05, 0x00, 0x00, 0x8C]),
         HEADER_CRC_RESIDUAL
     );
 
     let expected = [0x55, 0xFF, 0x00, 0x10, 0x05, 0x00, 0x00, 0x8C];
-    let token = Frame::new(FrameType::Token, 0x10, 0x05, &[]);
+    let token = Frame::new(FrameType::TOKEN, 0x10, 0x05, &[]);
     let mut wire = [0u8; 8];
     assert_eq!(token.encode_into(&mut wire), Ok(8));
     assert_eq!(wire, expected);
@@ -87,16 +87,21 @@ fn annex_g_data_crc_example() {
     // The CRC register after each data octet, before the final complement.
     let registers = [0x1E0E, 0xEB70, 0x42EF];
     for (count, register) in registers.into_iter().enumerate() {
-        assert_eq!(crc16_accumulate_all(&data[..=count]), register);
+        assert_eq!(!crc16(&data[..=count]), register);
     }
     assert_eq!(crc16(&data), 0xBD10);
     // Sent least significant octet first; the receiver's register after each.
     let received = [0x01, 0x22, 0x30, 0x10, 0xBD];
-    assert_eq!(crc16_accumulate_all(&received[..4]), 0x0F3A);
-    assert_eq!(crc16_accumulate_all(&received), DATA_CRC_RESIDUAL);
+    assert_eq!(!crc16(&received[..4]), 0x0F3A);
+    assert_eq!(!crc16(&received), DATA_CRC_RESIDUAL);
     assert!(crc16_valid(&received));
 
-    let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0x10, 0x05, &data);
+    let frame = Frame::new(
+        FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+        0x10,
+        0x05,
+        &data,
+    );
     let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
     let used = frame.encode_into(&mut wire).unwrap();
     assert_eq!(&wire[8..used], &received);
@@ -125,7 +130,7 @@ fn standard_golden_frames() {
     let token = [0x55, 0xFF, 0x00, 0x00, 0x07, 0x00, 0x00, 0x37];
     let (frame, used) = decode_frame(&token).unwrap();
     assert_eq!(used, token.len());
-    assert_eq!(frame.header.frame_type, FrameType::Token);
+    assert_eq!(frame.header.frame_type, FrameType::TOKEN);
     assert_eq!(frame.data, &[]);
     let data = [
         0x55, 0xFF, 0x06, 0x00, 0x07, 0x00, 0x02, 0xD9, 0x01, 0x00, 0x9F, 0x16,
@@ -148,7 +153,7 @@ fn slave_range_sources_decode_and_round_trip() {
     assert_eq!(
         frame,
         Frame::new(
-            FrameType::BACnetDataNotExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
             1,
             200,
             &[0x01, 0x00]
@@ -156,7 +161,7 @@ fn slave_range_sources_decode_and_round_trip() {
     );
 
     for source in [128, 200, 254] {
-        let response = Frame::new(FrameType::TestResponse, 3, source, &[0xAA, 0x55]);
+        let response = Frame::new(FrameType::TEST_RESPONSE, 3, source, &[0xAA, 0x55]);
         let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
         let used = response.encode_into(&mut wire).unwrap();
         assert_eq!(wire[4], source);
@@ -193,12 +198,10 @@ fn broadcast_source_is_refused_both_ways() {
 #[test]
 fn no_data_types_refuse_data_on_encode_but_decode_it() {
     for frame_type in [
-        FrameType::Token,
-        FrameType::PollForMaster,
-        FrameType::ReplyToPollForMaster,
-        FrameType::ReplyPostponed,
-        FrameType::Unknown(0),
-        FrameType::Unknown(7),
+        FrameType::TOKEN,
+        FrameType::POLL_FOR_MASTER,
+        FrameType::REPLY_TO_POLL_FOR_MASTER,
+        FrameType::REPLY_POSTPONED,
     ] {
         assert!(!frame_type.allows_data());
         let raw_type = frame_type.to_raw();
@@ -279,7 +282,7 @@ fn proprietary_types_need_a_vendor_id_on_encode() {
 
 #[test]
 fn truncation_oversize_and_corruption_are_typed() {
-    let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0, 7, &[1, 2, 3]);
+    let frame = Frame::new(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 0, 7, &[1, 2, 3]);
     let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
     let used = frame.encode_into(&mut wire).unwrap();
     assert!(matches!(
@@ -293,7 +296,7 @@ fn truncation_oversize_and_corruption_are_typed() {
     );
     let too_long = [0u8; MAX_STANDARD_MPDU_DATA + 1];
     assert_eq!(
-        Frame::new(FrameType::TestRequest, 0, 0, &too_long).encode_into(&mut wire),
+        Frame::new(FrameType::TEST_REQUEST, 0, 0, &too_long).encode_into(&mut wire),
         Err(FrameError::Oversize {
             length: 502,
             maximum: MAX_STANDARD_MPDU_DATA
@@ -301,7 +304,7 @@ fn truncation_oversize_and_corruption_are_typed() {
     );
     let largest = [0u8; MAX_STANDARD_MPDU_DATA];
     assert_eq!(
-        Frame::new(FrameType::TestRequest, 0, 0, &largest).encode_into(&mut wire),
+        Frame::new(FrameType::TEST_REQUEST, 0, 0, &largest).encode_into(&mut wire),
         Ok(MAX_STANDARD_FRAME_LENGTH)
     );
 }
@@ -325,14 +328,13 @@ fn reserved_cobs_types_are_rejected_after_the_header_checks() {
         assert!(output.iter().all(|&octet| octet == 0xA5));
     }
     assert!(FrameType::from_raw(0x22).is_cobs());
-    assert_eq!(FrameType::from_raw(0x22), FrameType::Unknown(0x22));
     assert_eq!(
         FrameType::from_raw(0x20),
-        FrameType::BACnetExtendedDataExpectingReply
+        FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY
     );
     assert_eq!(
         FrameType::from_raw(0x21),
-        FrameType::BACnetExtendedDataNotExpectingReply
+        FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY
     );
 }
 
@@ -377,7 +379,7 @@ fn header_checks_run_source_then_length_then_type() {
     // Encode, the same order: a reserved COBS type with no data has a
     // Length of 4, too short.
     let mut output = [0u8; MAX_STANDARD_FRAME_LENGTH];
-    let reserved = FrameType::Unknown(0x22);
+    let reserved = FrameType::from_raw(0x22);
     assert_eq!(
         Frame::new(reserved, 3, 0xFF, &[]).encode_into(&mut output),
         Err(FrameError::BroadcastSource)
@@ -392,14 +394,14 @@ fn header_checks_run_source_then_length_then_type() {
     );
     let oversized = [0u8; MAX_STANDARD_MPDU_DATA + 1];
     assert_eq!(
-        Frame::new(FrameType::TestRequest, 3, 0xFF, &oversized).encode_into(&mut output),
+        Frame::new(FrameType::TEST_REQUEST, 3, 0xFF, &oversized).encode_into(&mut output),
         Err(FrameError::BroadcastSource)
     );
 }
 
 #[test]
 fn sink_exhaustion_and_slice_sink() {
-    let frame = Frame::new(FrameType::Token, 0, 7, &[]);
+    let frame = Frame::new(FrameType::TOKEN, 0, 7, &[]);
     let mut short = [0xA5; 7];
     let mut sink = &mut short[..];
     assert_eq!(
@@ -420,7 +422,7 @@ fn sink_exhaustion_and_slice_sink() {
 
 #[test]
 fn header_and_data_build_a_frame() {
-    let header = FrameHeader::new(FrameType::Token, 0x10, 5);
+    let header = FrameHeader::new(FrameType::TOKEN, 0x10, 5);
     let frame = Frame { header, data: &[] };
     let mut output = [0u8; 8];
     assert_eq!(frame.encode_into(&mut output), Ok(8));
@@ -443,11 +445,13 @@ fn frame_error_is_a_core_error() {
         describe(&FrameError::BroadcastSource),
         "source address is broadcast (0xFF)"
     );
-    assert!(describe(&FrameError::FrameTooLong {
-        needed: 13,
-        capacity: 12
-    })
-    .contains("13"));
+    assert!(
+        describe(&FrameError::FrameTooLong {
+            needed: 13,
+            capacity: 12
+        })
+        .contains("13")
+    );
 }
 
 /// A sink that accepts a fixed number of writes, then fails. It reports no
@@ -462,9 +466,9 @@ impl FrameSink for FailingSink {
         None
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), FrameError> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull> {
         if self.writes_left == 0 {
-            return Err(FrameError::BufferExhausted {
+            return Err(SinkFull {
                 needed: bytes.len(),
                 available: 0,
             });
@@ -481,19 +485,46 @@ fn growable_sink_failing_mid_frame_keeps_the_prefix() {
         written: Vec::new(),
         writes_left: 1,
     };
-    let frame = Frame::new(FrameType::TestRequest, 1, 2, &[7, 7, 7]);
-    assert!(matches!(
+    let frame = Frame::new(FrameType::TEST_REQUEST, 1, 2, &[7, 7, 7]);
+    // The failing write is the data's, three octets into no room: its
+    // SinkFull comes back field for field.
+    assert_eq!(
         frame.encode_to_sink(&mut sink),
-        Err(FrameError::BufferExhausted { .. })
-    ));
+        Err(FrameError::BufferExhausted {
+            needed: 3,
+            available: 0
+        })
+    );
     assert_eq!(sink.written.len(), 8);
     assert_eq!(&sink.written[..2], &PREAMBLE);
+}
+
+#[test]
+fn sink_full_becomes_buffer_exhausted_field_for_field() {
+    let full = SinkFull {
+        needed: 5,
+        available: 2,
+    };
+    assert_eq!(
+        FrameError::from(full),
+        FrameError::BufferExhausted {
+            needed: 5,
+            available: 2
+        }
+    );
+    assert_eq!(full.to_string(), "sink full: need 5, have 2");
+
+    // A slice refuses a write longer than its room and keeps its room.
+    let mut storage = [0u8; 2];
+    let mut sink: &mut [u8] = &mut storage;
+    assert_eq!(sink.write(&[1, 2, 3, 4, 5]), Err(full));
+    assert_eq!(sink.remaining_capacity(), Some(2));
 }
 
 #[cfg(feature = "alloc")]
 #[test]
 fn vec_sink_appends_without_replacing_prefix() {
-    let frame = Frame::new(FrameType::Token, 0, 7, &[]);
+    let frame = Frame::new(FrameType::TOKEN, 0, 7, &[]);
     let mut output = b"prefix".to_vec();
     assert_eq!(frame.encode_to_sink(&mut output), Ok(8));
     assert_eq!(&output[..6], b"prefix");
@@ -503,7 +534,7 @@ fn vec_sink_appends_without_replacing_prefix() {
 #[cfg(feature = "bytes")]
 #[test]
 fn bytes_mut_sink_appends_without_replacing_prefix() {
-    let frame = Frame::new(FrameType::Token, 0, 7, &[]);
+    let frame = Frame::new(FrameType::TOKEN, 0, 7, &[]);
     let mut output = bytes::BytesMut::from(&b"prefix"[..]);
     assert_eq!(frame.encode_to_sink(&mut output), Ok(8));
     assert_eq!(&output[..6], b"prefix");
@@ -513,7 +544,7 @@ fn bytes_mut_sink_appends_without_replacing_prefix() {
 #[cfg(feature = "heapless")]
 #[test]
 fn heapless_sink() {
-    let frame = Frame::new(FrameType::Token, 0, 7, &[]);
+    let frame = Frame::new(FrameType::TOKEN, 0, 7, &[]);
     let mut output = heapless::Vec::<u8, 8>::new();
     assert_eq!(frame.encode_to_sink(&mut output), Ok(8));
     assert_eq!(output.len(), 8);
@@ -531,7 +562,7 @@ fn heapless_sink() {
 proptest! {
     #[test]
     fn encoded_frames_only_decode_when_complete(payload in prop::collection::vec(any::<u8>(), 0..=501)) {
-        let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0, 7, &payload);
+        let frame = Frame::new(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 0, 7, &payload);
         let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
         let used = frame.encode_into(&mut wire).unwrap();
         for end in 0..used {
@@ -545,7 +576,7 @@ proptest! {
         payload in prop::collection::vec(any::<u8>(), 1..=64),
         index in 0usize..80,
     ) {
-        let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0, 7, &payload);
+        let frame = Frame::new(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 0, 7, &payload);
         let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
         let used = frame.encode_into(&mut wire).unwrap();
         let index = index % used;
@@ -559,7 +590,7 @@ proptest! {
         destination in any::<u8>(),
         payload in prop::collection::vec(any::<u8>(), 0..32),
     ) {
-        let frame = Frame::new(FrameType::BACnetDataExpectingReply, destination, source, &payload);
+        let frame = Frame::new(FrameType::BACNET_DATA_EXPECTING_REPLY, destination, source, &payload);
         let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
         let encoded = frame.encode_into(&mut wire);
         if source == 0xFF {
@@ -572,7 +603,7 @@ proptest! {
 
     #[test]
     fn sink_capacity_is_never_overrun(capacity in 0usize..512) {
-        let frame = Frame::new(FrameType::Token, 0, 7, &[]);
+        let frame = Frame::new(FrameType::TOKEN, 0, 7, &[]);
         let mut storage = [0u8; 511];
         let available = capacity.min(storage.len());
         let mut sink = &mut storage[..available];
@@ -588,7 +619,7 @@ proptest! {
     #[test]
     fn declared_oversize_wire_lengths_are_rejected(length in 502u16..=u16::MAX) {
         let fields = [
-            FrameType::BACnetDataNotExpectingReply.to_raw(),
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY.to_raw(),
             0,
             7,
             (length >> 8) as u8,

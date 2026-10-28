@@ -1,4 +1,5 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     event_log::EventLogObject,
     traits::BACnetObject,
@@ -10,8 +11,8 @@ use bacnet_types::constructed::{
     BACnetLogRecord, EventLogDatum, LogData, LogDatum, LogValue,
 };
 use bacnet_types::enums::LoggingType;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, PropertyValue, StatusFlags, Time};
-use PropertyIdentifier as P;
 
 fn log_objects(capacity: u32, configured: bool) -> [Box<dyn BACnetObject>; 3] {
     let mut trend = TrendLogObject::new(1, "TL-1", capacity).unwrap();
@@ -127,7 +128,8 @@ fn expected_rows(kind: ObjectType, triggered: bool) -> Vec<(P, bool, bool)> {
         rows.extend([P::START_TIME, P::STOP_TIME].map(|p| (p, true, true)));
     } else {
         rows.extend([
-            // Both trend objects take POLLED or TRIGGERED (#1235, #1354).
+            // Both trend objects take POLLED or TRIGGERED (#1235, #1354), a
+            // Trend Log COV too (#1480).
             (P::LOGGING_TYPE, false, true),
             // Writable on both trend objects (#1234).
             (P::LOG_DEVICE_OBJECT_PROPERTY, false, true),
@@ -136,6 +138,12 @@ fn expected_rows(kind: ObjectType, triggered: bool) -> Vec<(P, bool, bool)> {
         // #1353, #1354).
         rows.extend([P::START_TIME, P::STOP_TIME].map(|p| (p, !trend, true)));
         rows.extend([P::ALIGN_INTERVALS, P::INTERVAL_OFFSET, P::TRIGGER].map(|p| (p, true, true)));
+        if trend {
+            // A Trend Log's two COV rows, optional and writable (#1480).
+            rows.extend(
+                [P::COV_RESUBSCRIPTION_INTERVAL, P::CLIENT_COV_INCREMENT].map(|p| (p, true, true)),
+            );
+        }
     }
     // Every log's BUFFER_READY rows, the configuration ones writable (#1347).
     // Tables 12-29 and 12-35 (footnote 4) and 12-31 (footnote 3) require
@@ -240,7 +248,7 @@ fn request(oid: ObjectIdentifier, references: &[(P, Option<u32>)]) -> BytesMut {
 }
 
 fn assert_budget_parity(db: &ObjectDatabase, request: &[u8], legacy: &[u8], count: usize) {
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+    use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
     use crate::server::ReadPropertyMultipleBudget;
     let budget = ReadPropertyMultipleBudget {
         max_result_elements: count,
@@ -352,8 +360,10 @@ fn rpm_log_indexed_property_list_and_list_gates_preserve_bytes() {
                 Err(code) => {
                     assert_eq!(result.error, Some((ErrorClass::PROPERTY, code)));
                     assert!(result.property_value.is_none());
-                    assert!(matches!(rp_result, Err(Error::Protocol { class, code: c })
-                        if class == ErrorClass::PROPERTY.to_raw() as u32 && c == code.to_raw() as u32));
+                    assert!(
+                        matches!(rp_result, Err(Error::Remote(RemoteError::Error { class, code: c }))
+                        if class == ErrorClass::PROPERTY && c == code)
+                    );
                 }
             }
         }
@@ -424,9 +434,11 @@ fn rpm_and_rp_refuse_log_buffer_while_read_range_serves_framed_records() {
                     Some((ErrorClass::PROPERTY, ErrorCode::READ_ACCESS_DENIED))
                 );
                 assert!(result.property_value.is_none());
-                assert!(matches!(rp_result, Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32
-                        && code == ErrorCode::READ_ACCESS_DENIED.to_raw() as u32));
+                assert!(
+                    matches!(rp_result, Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == ErrorClass::PROPERTY
+                        && code == ErrorCode::READ_ACCESS_DENIED)
+                );
             } else {
                 assert!(result.error.is_none());
                 assert_eq!(result.property_value.as_deref(), Some(&[0x21, 2][..]));
@@ -454,10 +466,12 @@ fn rpm_and_rp_refuse_log_buffer_while_read_range_serves_framed_records() {
                 Some((ErrorClass::PROPERTY, ErrorCode::READ_ACCESS_DENIED)),
                 "{oid:?} {selector:?}"
             );
-            assert!(results
-                .iter()
-                .filter(|result| result.property_identifier != P::LOG_BUFFER)
-                .all(|result| result.error.is_none()));
+            assert!(
+                results
+                    .iter()
+                    .filter(|result| result.property_identifier != P::LOG_BUFFER)
+                    .all(|result| result.error.is_none())
+            );
         }
 
         let mut range_request = BytesMut::new();

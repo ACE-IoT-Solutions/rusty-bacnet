@@ -1,8 +1,8 @@
 //! Python BACnetServer — async wrapper around the Rust BACnetServer.
 
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -46,6 +46,8 @@ use bacnet_objects::value_types::{
     TimePatternValueObject, TimeValueObject,
 };
 use bacnet_server::server;
+
+use crate::app_transport::AppTransport;
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bip6::Bip6Transport;
@@ -74,10 +76,16 @@ use audit_configuration::AuditNotificationSink;
 ///
 /// Supports multiple transports via the `transport` parameter:
 /// - `"bip"` (default): BACnet/IP over UDP
-/// - `"ipv6"`: BACnet/IPv6 over UDP multicast
+/// - `"ipv6"`: BACnet/IPv6 over UDP multicast. The server's VMAC is its
+///   `device_instance` (`bip6:0x0004D2` for 1234); startup fails when another
+///   node on the link already uses it. `foreign_device=` with a B/IPv6 BBMD
+///   registers it as a foreign device (#1941).
 /// - `"sc"`: BACnet/SC over TLS WebSocket (requires `sc_hub`, `sc_vmac`,
 ///   `sc_ca_cert`, `sc_client_cert`, `sc_client_key`, and persistent `sc_device_uuid`)
 /// - `"mstp"`: BACnet MS/TP over RS-485 (requires `serial_port`)
+/// - `"router"`: the server share of `router=`, a `BACnetRouter` built with
+///   `application="client_and_server"` (#2071). The server answers at the
+///   router's address on each of its networks.
 ///
 /// SC credential paths must be nonempty at construction (ValueError otherwise).
 /// start() loads the files before dialing or draining registrations; local TLS
@@ -85,7 +93,7 @@ use audit_configuration::AuditNotificationSink;
 /// Later startup failures retain existing behavior, not general rollback.
 #[pyclass(name = "BACnetServer", module = "rusty_bacnet")]
 pub struct BACnetServer {
-    inner: Arc<Mutex<Option<server::BACnetServer<AnyTransport<crate::mstp_py::PySerial>>>>>,
+    inner: Arc<Mutex<Option<server::BACnetServer<AppTransport>>>>,
     device_instance: u32,
     segmentation_supported: bacnet_types::enums::Segmentation,
     apdu_segment_timeout_ms: u64,
@@ -97,11 +105,19 @@ pub struct BACnetServer {
     broadcast_address: String,
     /// See `BipTransport::set_share_port_by_address` (#1538).
     share_port_by_address: bool,
+    /// The B/IP mode `bbmd=` or `foreign_device=` asked for (#938).
+    bip_mode: bacnet_transport::bip::BipMode,
+    /// The B/IPv6 foreign-device registration `foreign_device=` asked for
+    /// (#1941).
+    bip6_foreign: Option<bacnet_transport::bip6::Bip6ForeignDeviceConfig>,
+    /// The B/IP multicast group `multicast=` asked for (#941).
+    multicast: Option<bacnet_transport::bip::BipMulticast>,
     registered_network_port: Option<u32>,
     // SC config
     sc_hub: Option<String>,
     sc_vmac: Option<Vec<u8>>,
     sc_device_uuid: [u8; 16],
+    sc_npdu_admission_policy: bacnet_transport::sc::ScNpduAdmissionPolicy,
     sc_ca_cert: Option<String>,
     sc_client_cert: Option<String>,
     sc_client_key: Option<String>,
@@ -109,21 +125,19 @@ pub struct BACnetServer {
     sc_heartbeat_timeout_ms: Option<u64>,
     // IPv6 config
     ipv6_interface: Option<String>,
-    // MS/TP config
-    serial_port: Option<String>,
-    mstp_baud: u32,
-    mstp_mac: u8,
-    mstp_max_master: u8,
-    mstp_max_info_frames: u8,
-    /// Extended MS/TP frames (Types 32 and 33), off by default (#1611).
-    mstp_extended_frames: bool,
+    /// The MS/TP keywords, `serial_port` included.
+    mstp: crate::mstp_py::MstpOptions,
     // Passwords
     dcc_password: Option<String>,
     mutation_policy: bacnet_server::mutation::MutationPolicy,
+    /// The `mutation_policy` callable, when one was given (#1966).
+    mutation_callback: Option<Arc<crate::mutation_policy::PyMutationPolicy>>,
     dcc_policy: server::DccPolicy,
     dcc_source_restriction: Option<server::DccSourceRestriction>,
     dcc_disable_rate_limit: Option<server::DccDisableRateLimit>,
     reinit_password: Option<String>,
+    /// The `on_reinitialize` and `after_reinitialize` callables (#1566).
+    reinitialize: Option<Arc<crate::reinitialize::PyReinitialize>>,
     request_admission_policy: server::RequestAdmissionPolicy,
     read_property_multiple_budget: server::ReadPropertyMultipleBudget,
     get_alarm_summary_budget: server::GetAlarmSummaryBudget,
@@ -150,6 +164,9 @@ pub struct BACnetServer {
     /// Save counters of the forwarders the running server holds, replaced
     /// under the `inner` lock when a start publishes its server.
     forwarder_save_counters: Arc<std::sync::Mutex<Vec<ForwarderSaveCounterEntry>>>,
+    /// The router whose application entity `transport="router"` runs on
+    /// (#2071).
+    router: Option<crate::router::application::RouterApplication>,
 }
 
 /// One Notification Forwarder's instance and its shared save counters.
@@ -201,6 +218,7 @@ impl BACnetServer {
 
 mod server_methods {
     mod access_control_methods;
+    mod access_credential_methods;
     mod access_input_methods;
     mod access_rights_methods;
     mod audit_log_methods;
@@ -213,14 +231,17 @@ mod server_methods {
     mod dcc_outcomes;
     mod event_notification_counters;
     mod file_configuration;
+    mod foreign_registration;
     mod life_safety_methods;
     mod lifecycle;
+    mod lighting_methods;
     mod loop_methods;
     mod network_port;
     mod notification_forwarder;
     mod policy_dict;
     mod registration;
     mod request_admission;
+    mod sc_npdu;
     mod time_sync_policy;
     mod trend_log_methods;
     mod value_registration;

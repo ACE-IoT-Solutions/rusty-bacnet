@@ -5,8 +5,8 @@ use crate::multistate::MultiStateValueObject;
 use crate::present_value_access::PresentValueAccess;
 use crate::property_metadata::PropertyWriteCapability;
 use crate::traits::BACnetObject;
-use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
-use bacnet_types::error::Error;
+use bacnet_types::enums::{EngineeringUnits, ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::PropertyValue;
 
 const LOWER_PRIORITY: u8 = 8;
@@ -30,7 +30,15 @@ fn values(
 ) -> [(Box<dyn BACnetObject>, PropertyValue, PropertyValue); 3] {
     [
         (
-            Box::new(AnalogValueObject::with_access(1, "AV-1", 62, access).unwrap()),
+            Box::new(
+                AnalogValueObject::with_access(
+                    1,
+                    "AV-1",
+                    EngineeringUnits::DEGREES_CELSIUS,
+                    access,
+                )
+                .unwrap(),
+            ),
             PropertyValue::Real(21.5),
             PropertyValue::Real(30.0),
         ),
@@ -51,7 +59,7 @@ fn values(
 fn commandable_values() -> [(Box<dyn BACnetObject>, PropertyValue, PropertyValue); 3] {
     [
         (
-            Box::new(AnalogValueObject::new(1, "AV-1", 62).unwrap()),
+            Box::new(AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
             PropertyValue::Real(21.5),
             PropertyValue::Real(30.0),
         ),
@@ -74,12 +82,12 @@ fn assert_protocol<T: std::fmt::Debug>(
     code: ErrorCode,
 ) {
     match result {
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             class: actual_class,
             code: actual_code,
-        }) => {
-            assert_eq!(actual_class, class.to_raw() as u32);
-            assert_eq!(actual_code, code.to_raw() as u32);
+        })) => {
+            assert_eq!(actual_class, class);
+            assert_eq!(actual_code, code);
         }
         other => panic!("expected {class:?} / {code:?}, got {other:?}"),
     }

@@ -1,7 +1,8 @@
 use super::*;
+use bacnet_types::enums::PropertyIdentifier;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::oneshot;
-use tokio::time::{sleep_until, Instant as TokioInstant};
+use tokio::time::{Instant as TokioInstant, sleep_until};
 
 const DEFAULT_COV_RENEWAL_MARGIN: Duration = Duration::from_secs(30);
 const DEFAULT_COV_RENEWAL_EVENT_CAPACITY: usize = 16;
@@ -20,6 +21,22 @@ pub struct ManagedCOVSubscriptionOptions {
     ///
     /// Accepted range is `1..=MAX_COV_CHANNEL_CAPACITY`.
     pub event_channel_capacity: usize,
+    /// A semaphore each renewal takes one permit of before it is sent and
+    /// holds until its answer, its failure or [`ManagedCOVSubscription::stop`]
+    /// (#1791). An application that limits its own requests to a device
+    /// (one outstanding at a time, say) passes that limit here, so renewals
+    /// keep to it too. `None` (the default) sends renewals ungated.
+    ///
+    /// The first request is not gated: it is sent from the caller's
+    /// context, which may already hold a permit for it. A closed semaphore
+    /// stops gating.
+    ///
+    /// A gated renewal goes only once the permit comes, so whatever holds
+    /// the gate delays it, by up to that request's whole time with retries
+    /// on a device that stops answering. Size
+    /// [`renewal_margin`](Self::renewal_margin) to cover that wait as well as
+    /// the renewal's own request, or the subscription can lapse first.
+    pub renewal_gate: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 impl Default for ManagedCOVSubscriptionOptions {
@@ -27,6 +44,7 @@ impl Default for ManagedCOVSubscriptionOptions {
         Self {
             renewal_margin: DEFAULT_COV_RENEWAL_MARGIN,
             event_channel_capacity: DEFAULT_COV_RENEWAL_EVENT_CAPACITY,
+            renewal_gate: None,
         }
     }
 }
@@ -41,6 +59,13 @@ impl ManagedCOVSubscriptionOptions {
     /// Set the renewal event broadcast channel capacity.
     pub fn with_event_channel_capacity(mut self, capacity: usize) -> Self {
         self.event_channel_capacity = capacity;
+        self
+    }
+
+    /// Gate every renewal on a permit of `gate` (see
+    /// [`renewal_gate`](Self::renewal_gate)).
+    pub fn with_renewal_gate(mut self, gate: Arc<tokio::sync::Semaphore>) -> Self {
+        self.renewal_gate = Some(gate);
         self
     }
 
@@ -91,21 +116,6 @@ pub enum ManagedCOVSubscriptionEvent {
     RenewalFailed {
         /// Display form of the protocol, reject, abort, transport, or timeout error.
         error: String,
-    },
-    /// Matching notification observations were lost to channel backpressure.
-    NotificationLagged {
-        /// Number of notifications skipped before the receiver recovered.
-        skipped: u64,
-    },
-}
-
-#[derive(Clone)]
-enum ManagedCOVTarget {
-    Direct(MacAddr),
-    Routed {
-        router_mac: MacAddr,
-        dest_network: u16,
-        dest_mac: MacAddr,
     },
 }
 
@@ -158,67 +168,98 @@ impl Drop for ManagedCOVSubscription {
     }
 }
 
+/// The request a managed subscription sends, first and on every renewal.
+#[derive(Clone, Copy)]
+enum ManagedRequest {
+    /// SubscribeCOV on the whole object.
+    Object {
+        subscriber_process_identifier: u32,
+        monitored_object_identifier: bacnet_types::primitives::ObjectIdentifier,
+        confirmed: bool,
+        lifetime: u32,
+    },
+    /// SubscribeCOVProperty on one property.
+    Property(CovPropertySubscription),
+}
+
+impl ManagedRequest {
+    fn lifetime(self) -> u32 {
+        match self {
+            Self::Object { lifetime, .. } => lifetime,
+            Self::Property(subscription) => subscription.lifetime.get(),
+        }
+    }
+
+    /// The property a single-property subscription monitors.
+    fn property(self) -> Option<PropertyIdentifier> {
+        match self {
+            Self::Object { .. } => None,
+            Self::Property(subscription) => Some(subscription.monitored_property_identifier),
+        }
+    }
+
+    fn identity(self) -> (u32, bacnet_types::primitives::ObjectIdentifier) {
+        match self {
+            Self::Object {
+                subscriber_process_identifier,
+                monitored_object_identifier,
+                ..
+            } => (subscriber_process_identifier, monitored_object_identifier),
+            Self::Property(subscription) => (
+                subscription.subscriber_process_identifier,
+                subscription.monitored_object_identifier,
+            ),
+        }
+    }
+
+    async fn send<T: TransportPort + 'static>(
+        self,
+        client: &BACnetClient<T>,
+        target: &CovTarget,
+    ) -> Result<(), Error> {
+        let target = target.confirmed();
+        match self {
+            Self::Object {
+                subscriber_process_identifier,
+                monitored_object_identifier,
+                confirmed,
+                lifetime,
+            } => {
+                let request = BACnetClient::<T>::subscribe_cov_request(
+                    subscriber_process_identifier,
+                    monitored_object_identifier,
+                    Some(confirmed),
+                    Some(lifetime),
+                );
+                client.send_subscribe_cov_request(target, request).await
+            }
+            Self::Property(subscription) => {
+                client
+                    .send_subscribe_cov_property_request(target, subscription.into_request())
+                    .await
+            }
+        }
+    }
+}
+
 impl<T: TransportPort + 'static> BACnetClient<T> {
-    /// Start a managed finite SubscribeCOV renewal task for a directly reachable device.
+    /// Start a managed finite SubscribeCOV renewal task for the device at
+    /// `target`, on this network or behind a router.
     ///
     /// The helper sends the initial SubscribeCOV request, then renews the same
     /// subscription before expiry. It also listens to [`Self::cov_notifications`]
     /// and moves the renewal earlier when matching notifications report a lower
-    /// `time_remaining` than the requested lifetime-based schedule.
+    /// `time_remaining` than the requested lifetime-based schedule. A
+    /// notification matches when it comes from `target`'s address (see
+    /// [`CovTarget`]) and names this subscription's process and object.
+    /// The helper only renews; after [`ManagedCOVSubscription::stop`], cancel
+    /// with [`Self::unsubscribe_cov_target`].
     ///
     /// This method takes `Arc<Self>` so the renewal task can keep the client alive.
     /// Call it as `Arc::clone(&client).manage_cov_subscription(...)`.
     pub async fn manage_cov_subscription(
         self: Arc<Self>,
-        destination_mac: &[u8],
-        subscriber_process_identifier: u32,
-        monitored_object_identifier: bacnet_types::primitives::ObjectIdentifier,
-        confirmed: bool,
-        lifetime: u32,
-        options: ManagedCOVSubscriptionOptions,
-    ) -> Result<ManagedCOVSubscription, Error> {
-        self.manage_cov_subscription_target(
-            ManagedCOVTarget::Direct(MacAddr::from_slice(destination_mac)),
-            subscriber_process_identifier,
-            monitored_object_identifier,
-            confirmed,
-            lifetime,
-            options,
-        )
-        .await
-    }
-
-    /// Start a managed finite SubscribeCOV renewal task through an explicit route.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn manage_cov_subscription_routed(
-        self: Arc<Self>,
-        router_mac: &[u8],
-        dest_network: u16,
-        dest_mac: &[u8],
-        subscriber_process_identifier: u32,
-        monitored_object_identifier: bacnet_types::primitives::ObjectIdentifier,
-        confirmed: bool,
-        lifetime: u32,
-        options: ManagedCOVSubscriptionOptions,
-    ) -> Result<ManagedCOVSubscription, Error> {
-        self.manage_cov_subscription_target(
-            ManagedCOVTarget::Routed {
-                router_mac: MacAddr::from_slice(router_mac),
-                dest_network,
-                dest_mac: MacAddr::from_slice(dest_mac),
-            },
-            subscriber_process_identifier,
-            monitored_object_identifier,
-            confirmed,
-            lifetime,
-            options,
-        )
-        .await
-    }
-
-    async fn manage_cov_subscription_target(
-        self: Arc<Self>,
-        target: ManagedCOVTarget,
+        target: CovTarget,
         subscriber_process_identifier: u32,
         monitored_object_identifier: bacnet_types::primitives::ObjectIdentifier,
         confirmed: bool,
@@ -230,19 +271,44 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 "managed COV subscriptions require a finite non-zero lifetime".into(),
             ));
         }
-        options.validate(lifetime)?;
-
-        let mut notifications = self.cov_notifications();
-
-        subscribe_managed_target(
-            &self,
-            &target,
+        let request = ManagedRequest::Object {
             subscriber_process_identifier,
             monitored_object_identifier,
             confirmed,
-            Some(lifetime),
-        )
-        .await?;
+            lifetime,
+        };
+        self.manage(target, request, options).await
+    }
+
+    /// Start a managed finite SubscribeCOVProperty renewal task for the
+    /// device at `target`: [`Self::manage_cov_subscription`] for one property.
+    ///
+    /// Every renewal repeats `subscription` as given, its lifetime included.
+    /// The helper only renews; after [`ManagedCOVSubscription::stop`], cancel
+    /// with [`Self::unsubscribe_cov_property_target`].
+    pub async fn manage_cov_property_subscription(
+        self: Arc<Self>,
+        target: CovTarget,
+        subscription: CovPropertySubscription,
+        options: ManagedCOVSubscriptionOptions,
+    ) -> Result<ManagedCOVSubscription, Error> {
+        self.manage(target, ManagedRequest::Property(subscription), options)
+            .await
+    }
+
+    async fn manage(
+        self: Arc<Self>,
+        target: CovTarget,
+        request: ManagedRequest,
+        options: ManagedCOVSubscriptionOptions,
+    ) -> Result<ManagedCOVSubscription, Error> {
+        let lifetime = request.lifetime();
+        options.validate(lifetime)?;
+        let (subscriber_process_identifier, monitored_object_identifier) = request.identity();
+
+        let mut notifications = self.cov_notifications();
+
+        request.send(&self, &target).await?;
 
         let (events_tx, _) = broadcast::channel(options.event_channel_capacity);
         let events_tx_for_task = events_tx.clone();
@@ -250,7 +316,6 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let last_event_for_task = Arc::clone(&last_event);
         let (stop_tx, mut stop_rx) = oneshot::channel();
         let client = Arc::clone(&self);
-        let renewal_target = target.clone();
         let mut renew_at = TokioInstant::now() + options.renewal_delay(lifetime);
 
         let task = tokio::spawn(async move {
@@ -260,14 +325,16 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 tokio::select! {
                     _ = &mut stop_rx => break,
                     _ = &mut renew_sleep => {
-                        let renewal = subscribe_managed_target(
-                            &client,
-                            &renewal_target,
-                            subscriber_process_identifier,
-                            monitored_object_identifier,
-                            confirmed,
-                            Some(lifetime),
-                        );
+                        // The permit lives as long as this future: until the
+                        // answer, or until a stop drops it mid-wait or
+                        // mid-request.
+                        let renewal = async {
+                            let _permit = match &options.renewal_gate {
+                                Some(gate) => gate.acquire().await.ok(),
+                                None => None,
+                            };
+                            request.send(&client, &target).await
+                        };
                         tokio::pin!(renewal);
                         tokio::select! {
                             _ = &mut stop_rx => break,
@@ -300,21 +367,16 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     received = notifications.recv() => {
                         let received = match received {
                             Ok(received) => received,
-                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                                publish_managed_cov_event(
-                                    &events_tx_for_task,
-                                    &last_event_for_task,
-                                    ManagedCOVSubscriptionEvent::NotificationLagged { skipped },
-                                );
-                                continue;
-                            }
+                            Err(broadcast::error::RecvError::Lagged(_)) => continue,
                             Err(broadcast::error::RecvError::Closed) => break,
                         };
                         if !matches_managed_cov_notification(
                             &received,
-                            &renewal_target,
+                            &target,
+                            client.network.local_network_number().get(),
                             subscriber_process_identifier,
                             monitored_object_identifier,
+                            request.property(),
                         ) {
                             continue;
                         }
@@ -368,76 +430,27 @@ fn publish_managed_cov_event(
     let _ = events_tx.send(event);
 }
 
+/// True when `received` answers this subscription: it comes from `target`
+/// and names the subscription's process and object. A single-property
+/// subscription also needs its property among the reported values, so two
+/// subscriptions to one object under one process identifier don't move
+/// each other's renewals.
 fn matches_managed_cov_notification(
     received: &ReceivedCOVNotification,
-    target: &ManagedCOVTarget,
+    target: &CovTarget,
+    local_network: Option<u16>,
     subscriber_process_identifier: u32,
     monitored_object_identifier: bacnet_types::primitives::ObjectIdentifier,
+    property: Option<PropertyIdentifier>,
 ) -> bool {
-    if received.notification.subscriber_process_identifier != subscriber_process_identifier {
-        return false;
-    }
-    if received.notification.monitored_object_identifier != monitored_object_identifier {
-        return false;
-    }
-    match target {
-        ManagedCOVTarget::Direct(destination_mac) => {
-            received.source_network.is_none()
-                && received.source_address.is_none()
-                && received.source_mac == *destination_mac
-        }
-        ManagedCOVTarget::Routed {
-            router_mac,
-            dest_network,
-            dest_mac,
-        } => {
-            received.source_mac == *router_mac
-                && received.source_network == Some(*dest_network)
-                && received.source_address.as_ref() == Some(dest_mac)
-        }
-    }
+    received.notification.subscriber_process_identifier == subscriber_process_identifier
+        && received.notification.monitored_object_identifier == monitored_object_identifier
+        && target.sent(received, local_network)
+        && property.is_none_or(|property| {
+            received
+                .notification
+                .list_of_values
+                .iter()
+                .any(|value| value.property_identifier == property)
+        })
 }
-
-async fn subscribe_managed_target<T: TransportPort + 'static>(
-    client: &BACnetClient<T>,
-    target: &ManagedCOVTarget,
-    subscriber_process_identifier: u32,
-    monitored_object_identifier: bacnet_types::primitives::ObjectIdentifier,
-    confirmed: bool,
-    lifetime: Option<u32>,
-) -> Result<(), Error> {
-    match target {
-        ManagedCOVTarget::Direct(destination_mac) => {
-            client
-                .subscribe_cov(
-                    destination_mac,
-                    subscriber_process_identifier,
-                    monitored_object_identifier,
-                    confirmed,
-                    lifetime,
-                )
-                .await
-        }
-        ManagedCOVTarget::Routed {
-            router_mac,
-            dest_network,
-            dest_mac,
-        } => {
-            client
-                .subscribe_cov_routed(
-                    router_mac,
-                    *dest_network,
-                    dest_mac,
-                    subscriber_process_identifier,
-                    monitored_object_identifier,
-                    confirmed,
-                    lifetime,
-                )
-                .await
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "cov_renewal_routed_tests.rs"]
-mod routed_tests;

@@ -2,15 +2,19 @@
 //! the Length rule and its bounds, against the worked examples of Annexes G
 //! and T and boundary cases checked by hand.
 
+use bacnet_mstp_codec::crc::{crc8, crc32k};
 use bacnet_mstp_codec::{
-    crc32k, crc32k_accumulate_all, crc8, decode_frame, decode_frame_in_place, Frame, FrameError,
-    FrameType, CRC32K_RESIDUAL, MAX_COBS_FRAME_LENGTH, MAX_COBS_LENGTH, MAX_EXTENDED_FRAME_LENGTH,
-    MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH, MIN_COBS_LENGTH, PREAMBLE,
+    Frame, FrameError, FrameType, MAX_COBS_FRAME_LENGTH, MAX_COBS_LENGTH,
+    MAX_EXTENDED_FRAME_LENGTH, MAX_EXTENDED_MPDU_DATA, MAX_STANDARD_FRAME_LENGTH, MIN_COBS_LENGTH,
+    PREAMBLE, decode_frame, decode_frame_in_place,
 };
 use proptest::prelude::*;
 
-const EXPECTING: FrameType = FrameType::BACnetExtendedDataExpectingReply;
-const NOT_EXPECTING: FrameType = FrameType::BACnetExtendedDataNotExpectingReply;
+mod support;
+use support::CRC32K_RESIDUAL;
+
+const EXPECTING: FrameType = FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY;
+const NOT_EXPECTING: FrameType = FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY;
 
 fn encode(frame: Frame<'_>) -> Vec<u8> {
     let mut wire = vec![0u8; MAX_COBS_FRAME_LENGTH];
@@ -73,15 +77,14 @@ fn annex_g_crc32k_example() {
     let data = [0x01, 0x22, 0x30];
     let registers = [0x5638_1747, 0x1255_7D20, 0x83DD_5A41];
     for (count, register) in registers.into_iter().enumerate() {
-        assert_eq!(crc32k_accumulate_all(&data[..=count]), register);
+        assert_eq!(!crc32k(&data[..=count]), register);
     }
     assert_eq!(crc32k(&data), 0x7C22_A5BE);
     let received = [0x01, 0x22, 0x30, 0xBE, 0xA5, 0x22, 0x7C];
     let registers = [0xC0D1_F128, 0x1C70_8944, 0x7FC2_C8BD, CRC32K_RESIDUAL];
     for (count, register) in registers.into_iter().enumerate() {
-        assert_eq!(crc32k_accumulate_all(&received[..4 + count]), register);
+        assert_eq!(!crc32k(&received[..4 + count]), register);
     }
-    assert_eq!(CRC32K_RESIDUAL, 0x0843_323B);
 }
 
 /// Annex T.1's example: the string "Hello World", a newline and a zero.
@@ -103,7 +106,9 @@ fn annex_t_hello_world_encoding() {
     let encoded = masked(&cobs);
     assert_eq!(
         encoded,
-        [0x58, 0x1D, 0x30, 0x39, 0x39, 0x3A, 0x75, 0x02, 0x3A, 0x27, 0x39, 0x31, 0x5F, 0x54]
+        [
+            0x58, 0x1D, 0x30, 0x39, 0x39, 0x3A, 0x75, 0x02, 0x3A, 0x27, 0x39, 0x31, 0x5F, 0x54
+        ]
     );
     assert_eq!(length_field(&wire), 17);
     assert_eq!(wire.len(), 8 + 17 + 2);
@@ -114,8 +119,8 @@ fn annex_t_hello_world_encoding() {
     decodes_to(&wire, Frame::new(NOT_EXPECTING, 0xFF, 0x01, data));
 
     // The register the annex prints, B3 8F 28 CA, is that of the first 13.
-    assert_eq!(crc32k_accumulate_all(&encoded[..13]), 0xB38F_28CA);
-    assert_eq!(crc32k_accumulate_all(&encoded), 0xF211_25A2);
+    assert_eq!(!crc32k(&encoded[..13]), 0xB38F_28CA);
+    assert_eq!(!crc32k(&encoded), 0xF211_25A2);
     // The frame with the annex's Encoded CRC-32K fails its check.
     let mut printed = wire[..22].to_vec();
     printed.extend_from_slice(&[0x50, 0x60, 0x82, 0x25, 0x19]);
@@ -444,7 +449,6 @@ proptest! {
     #[test]
     fn crc32k_matches_the_bitwise_definition(data in prop::collection::vec(any::<u8>(), 0..600)) {
         prop_assert_eq!(crc32k(&data), bitwise_crc32k(&data));
-        prop_assert_eq!(crc32k_accumulate_all(&data), !bitwise_crc32k(&data));
     }
 
     /// Any data within the bounds round-trips through encode and both

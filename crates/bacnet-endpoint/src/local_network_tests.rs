@@ -12,16 +12,16 @@
 //! learned through the session's own Network-Number-Is intake.
 use super::*;
 use crate::roles::EndpointApduDestination;
-use bacnet_encoding::apdu::{decode_apdu, encode_apdu, ComplexAck, ConfirmedRequest};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
+use bacnet_encoding::apdu::{ComplexAck, ConfirmedRequest, decode_apdu, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu};
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::bvll::encode_bip_mac;
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
-use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
 use bacnet_types::MacAddr;
+use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
 use bytes::{Bytes, BytesMut};
 use std::net::{Ipv4Addr, SocketAddrV4};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 #[path = "local_network_source_tests.rs"]
 mod source;
@@ -92,10 +92,10 @@ impl TransportPort for Capture {
         true
     }
     fn bip_port(&self) -> Option<bacnet_transport::port::BipPort> {
-        Some(bacnet_transport::port::BipPort {
-            endpoint: host(SELF),
-            mode: bacnet_types::bip_port::BipPortMode::Normal,
-        })
+        Some(bacnet_transport::port::BipPort::new(
+            host(SELF),
+            bacnet_types::bip_port::BipPortMode::Normal,
+        ))
     }
     fn retain_network_port_lease_internal(&mut self, lease: Arc<()>) -> Result<(), Error> {
         self.lease = Some(lease);
@@ -497,7 +497,7 @@ async fn a_registered_ports_configured_number_is_local_from_startup() {
     endpoint.session = endpoint
         .session
         .with_database(db)
-        .with_identity(identity)
+        .device(identity)
         .with_registered_network_port(port);
     // No Number control arrives: the port's number is published at startup.
     endpoint.start(false).await;

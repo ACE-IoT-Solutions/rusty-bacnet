@@ -48,7 +48,7 @@ fn assert_who_am_i_decoding_error(data: &[u8]) {
     assert!(
         matches!(
             WhoAmIRequest::decode(data),
-            Err(Error::Decoding { .. } | Error::BufferTooShort { .. })
+            Err(Error::Decoding(_) | Error::BufferTooShort { .. })
         ),
         "expected a decoding error for {data:02X?}"
     );
@@ -58,7 +58,7 @@ fn assert_you_are_decoding_error(data: &[u8]) {
     assert!(
         matches!(
             YouAreRequest::decode(data),
-            Err(Error::Decoding { .. } | Error::BufferTooShort { .. })
+            Err(Error::Decoding(_) | Error::BufferTooShort { .. })
         ),
         "expected a decoding error for {data:02X?}"
     );
@@ -217,7 +217,7 @@ fn you_are_rejects_neither_optional_field() {
     let mut buf = BytesMut::new();
     assert!(matches!(
         you_are(None, None).encode(&mut buf),
-        Err(Error::Encoding(_))
+        Err(Error::Encode(_))
     ));
     assert!(buf.is_empty());
 }
@@ -277,7 +277,7 @@ fn you_are_rejects_non_device_identifier() {
     let mut buf = BytesMut::new();
     assert!(matches!(
         you_are(Some(analog_input), None).encode(&mut buf),
-        Err(Error::Encoding(_))
+        Err(Error::Encode(_))
     ));
     assert!(buf.is_empty());
     // The same identifier on the wire: Analog Input 1 is 00 00 00 01.
@@ -320,7 +320,7 @@ fn app_octets(length: u8) -> Vec<u8> {
 #[test]
 fn you_are_mac_address_holds_to_the_bacnet_address_bound() {
     let longest = BACnetAddress::MAX_MAC_LEN as u8;
-    // The B/IPv6 form, the longest MAC on any data link the stack serves (#1200).
+    // The longest MAC the stack takes, `BACnetAddress::MAX_MAC_LEN` (#1200).
     let req = you_are(Some(device_1234()), Some(app_octets(longest)[2..].to_vec()));
     let expected = concat(&[&IDENTITY, &DEVICE_1234, &app_octets(longest)]);
     assert_eq!(encode_you_are(&req), expected);
@@ -335,6 +335,6 @@ fn you_are_mac_address_holds_to_the_bacnet_address_bound() {
         Some(app_octets(longest + 1)[2..].to_vec()),
     );
     let mut buf = BytesMut::from(&[0xEE][..]);
-    assert!(matches!(too_long.encode(&mut buf), Err(Error::Encoding(_))));
+    assert!(matches!(too_long.encode(&mut buf), Err(Error::Encode(_))));
     assert_eq!(&buf[..], &[0xEE]);
 }

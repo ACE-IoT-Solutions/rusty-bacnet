@@ -7,10 +7,10 @@ mod mstp_wire;
 mod support;
 use bacnet_client::client::BACnetClient;
 use bacnet_encoding::{
-    apdu::{decode_apdu, Apdu},
+    apdu::{Apdu, decode_apdu},
     npdu::decode_npdu,
 };
-use bacnet_transport::{mstp::codec::FrameType, mstp::MstpExecutionMode, port::TransportPort};
+use bacnet_transport::{mstp::MstpExecutionMode, mstp::codec::FrameType, port::TransportPort};
 use bacnet_types::{
     enums::{ObjectType, PropertyIdentifier},
     primitives::ObjectIdentifier,
@@ -98,22 +98,23 @@ async fn responder_progress(peer: &mut Peer) {
     // NPDU version1/expecting-reply, confirmed unsegmented APDU, max-APDU480.
     let request = [1, 4, 0, 3, 42, 12, 0x0c, 0, 0, 0, 1, 0x19, 85];
     peer.await_token().await;
-    bounded(peer.frame(FrameType::BACnetDataExpectingReply, NODE, &request))
+    bounded(peer.frame(FrameType::BACNET_DATA_EXPECTING_REPLY, NODE, &request))
         .await
         .unwrap();
     let frame = peer.answer().await;
     assert_eq!(frame.destination, PEER);
     let npdu = decode_npdu(frame.data).unwrap();
-    assert!(!npdu.is_network_message);
+    assert!(!npdu.is_network_message());
     match decode_apdu(npdu.payload).unwrap() {
         Apdu::ComplexAck(ack) => {
             assert_eq!(ack.invoke_id, 42);
             assert_eq!(ack.service_choice.to_raw(), 12);
             // Encoded real value42.0 appears inside the returned property value.
-            assert!(ack
-                .service_ack
-                .windows(5)
-                .any(|bytes| bytes == [0x44, 0x42, 0x28, 0, 0]));
+            assert!(
+                ack.service_ack
+                    .windows(5)
+                    .any(|bytes| bytes == [0x44, 0x42, 0x28, 0, 0])
+            );
         }
         other => panic!("expected ReadProperty ACK, got {other:?}"),
     }
@@ -126,10 +127,10 @@ async fn requester_progress(client: &BACnetClient<GatedTransport>, peer: &mut Pe
     let request = client.read_property(&[PEER], object, PropertyIdentifier::PRESENT_VALUE, None);
     let respond = async {
         let frame = peer.data().await;
-        assert_eq!(frame.frame_type, FrameType::BACnetDataExpectingReply);
+        assert_eq!(frame.frame_type, FrameType::BACNET_DATA_EXPECTING_REPLY);
         assert_eq!(frame.destination, PEER);
         let npdu = decode_npdu(frame.data).unwrap();
-        assert!(!npdu.is_network_message);
+        assert!(!npdu.is_network_message());
         let invoke_id = match decode_apdu(npdu.payload).unwrap() {
             Apdu::ConfirmedRequest(request) => {
                 assert_eq!(request.service_choice.to_raw(), 12);
@@ -148,7 +149,7 @@ async fn requester_progress(client: &BACnetClient<GatedTransport>, peer: &mut Pe
             1, 0, 0x30, invoke_id, 12, 0x0c, 0, 0, 0, 1, 0x19, 85, 0x3e, 0x44, 0x42, 0x28, 0, 0,
             0x3f,
         ];
-        bounded(peer.frame(FrameType::BACnetDataNotExpectingReply, NODE, &ack))
+        bounded(peer.frame(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, NODE, &ack))
             .await
             .unwrap();
     };
@@ -200,7 +201,10 @@ async fn stopped_producer(role: Role, mode: MstpExecutionMode, bare_drop: bool) 
 
 #[tokio::test]
 async fn mstp_number_transport_group_and_any_delegation() {
-    for mode in [MstpExecutionMode::Tokio, MstpExecutionMode::DedicatedThread] {
+    for mode in [
+        MstpExecutionMode::Tokio,
+        MstpExecutionMode::dedicated_thread(),
+    ] {
         let (mut transport, peer) = transport(mode, Gates::new(false, false, false)).await;
         assert!(transport.supports_local_nonrouter_number_controls());
         let mut received = transport.start().await.unwrap();
@@ -216,7 +220,7 @@ async fn mstp_number_transport_group_and_any_delegation() {
     }
 }
 macro_rules! mode_tests {
-    ($name:ident, $role:expr, $mode:expr) => {
+    ($name:ident, $role:expr_2021, $mode:expr_2021) => {
         #[tokio::test]
         async fn $name() {
             controls($role, $mode).await;
@@ -231,7 +235,7 @@ mode_tests!(
 mode_tests!(
     mstp_number_server_dedicated_wire,
     Role::Server,
-    MstpExecutionMode::DedicatedThread
+    MstpExecutionMode::dedicated_thread()
 );
 mode_tests!(
     mstp_number_endpoint_tokio_wire,
@@ -241,7 +245,7 @@ mode_tests!(
 mode_tests!(
     mstp_number_endpoint_dedicated_wire,
     Role::Endpoint,
-    MstpExecutionMode::DedicatedThread
+    MstpExecutionMode::dedicated_thread()
 );
 mode_tests!(
     mstp_number_client_tokio_wire,
@@ -251,10 +255,12 @@ mode_tests!(
 mode_tests!(
     mstp_number_client_dedicated_wire,
     Role::Client,
-    MstpExecutionMode::DedicatedThread
+    MstpExecutionMode::dedicated_thread()
 );
-const MODES: [MstpExecutionMode; 2] =
-    [MstpExecutionMode::Tokio, MstpExecutionMode::DedicatedThread];
+const MODES: [MstpExecutionMode; 2] = [
+    MstpExecutionMode::Tokio,
+    MstpExecutionMode::dedicated_thread(),
+];
 #[tokio::test]
 async fn mstp_number_held_producer_preserves_application_progress() {
     for role in [Role::Server, Role::Endpoint] {
@@ -274,7 +280,7 @@ async fn mstp_number_queued_producer_canceled_stop_and_drop() {
     for role in [Role::Server, Role::Endpoint] {
         for mode in MODES {
             for bare_drop in [false, true] {
-                stopped_producer(role, mode, bare_drop).await;
+                stopped_producer(role, mode.clone(), bare_drop).await;
             }
         }
     }
@@ -283,7 +289,7 @@ async fn mstp_number_queued_producer_canceled_stop_and_drop() {
 async fn mstp_number_client_queued_producer_canceled_stop_and_drop() {
     for mode in MODES {
         for bare_drop in [false, true] {
-            stopped_producer(Role::Client, mode, bare_drop).await;
+            stopped_producer(Role::Client, mode.clone(), bare_drop).await;
         }
     }
 }

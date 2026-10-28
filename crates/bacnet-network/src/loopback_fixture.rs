@@ -7,23 +7,21 @@
 //! was sent to (#1243), and [`RouterFixture`]'s links carry data attributes
 //! both ways (#1289).
 
-use bacnet_encoding::npdu::{
-    decode_npdu, decode_reject_message_to_network, Npdu, NpduAddress, RejectMessageToNetwork,
-};
+use bacnet_encoding::npdu::{Npdu, decode_npdu};
+use bacnet_npdu::{NetworkMessageType, RejectMessageToNetwork};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportPort};
-use bacnet_types::enums::NetworkMessageType;
 use bacnet_types::MacAddr;
 use bytes::Bytes;
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 use crate::layer::{ReceivedApdu, ReceivedNetworkControl};
 use crate::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
 
 pub(crate) const APDU: [u8; 2] = [0x10, 0x08];
-pub(crate) const TOO_LONG: u8 = NpduAddress::MAX_MAC_LEN as u8 + 1;
-pub(crate) const LONGEST: u8 = NpduAddress::MAX_MAC_LEN as u8;
+pub(crate) const TOO_LONG: u8 = bacnet_npdu::MAX_MAC_LEN as u8 + 1;
+pub(crate) const LONGEST: u8 = bacnet_npdu::MAX_MAC_LEN as u8;
 /// The original source network in routed frames.
 pub(crate) const ORIGIN: u16 = 4000;
 /// The network the fixture router reaches through peer B.
@@ -36,7 +34,7 @@ pub(crate) const REMOTE: u16 = 3000;
 pub(crate) fn wire(
     destination: Option<(u16, u8)>,
     source: Option<(u16, u8)>,
-    control: Option<u8>,
+    control: Option<NetworkMessageType>,
 ) -> Vec<u8> {
     let mut flags = 0;
     if control.is_some() {
@@ -61,17 +59,47 @@ pub(crate) fn wire(
         out.push(255);
     }
     match control {
-        Some(message_type) => out.extend_from_slice(&[message_type, 0x0B, 0xB8]),
+        Some(message_type) => out.extend_from_slice(&[message_type.to_raw(), 0x0B, 0xB8]),
         None => out.extend_from_slice(&APDU),
     }
     out
 }
 
-pub(crate) async fn recv<T>(rx: &mut mpsc::Receiver<T>) -> T {
-    timeout(Duration::from_secs(2), rx.recv())
+pub(crate) async fn recv<R: Receive>(rx: &mut R) -> R::Item {
+    timeout(Duration::from_secs(2), rx.receive())
         .await
         .expect("timed out waiting for the network layer")
         .expect("channel closed")
+}
+
+/// Poll `apdus` once more, finding no APDU, so the network messages the
+/// transport queued after the last APDU are decoded and reach the control
+/// receiver: the layer decodes only while its APDU receiver is polled (#1713).
+pub(crate) fn pump(apdus: &mut crate::layer::ApduReceiver) {
+    assert!(matches!(
+        apdus.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+/// A receiver [`recv`] can wait on: a channel, or the layer's APDU receiver.
+pub(crate) trait Receive {
+    type Item;
+    fn receive(&mut self) -> impl std::future::Future<Output = Option<Self::Item>>;
+}
+
+impl<T> Receive for mpsc::Receiver<T> {
+    type Item = T;
+    fn receive(&mut self) -> impl std::future::Future<Output = Option<T>> {
+        self.recv()
+    }
+}
+
+impl Receive for crate::layer::ApduReceiver {
+    type Item = crate::layer::ReceivedApdu;
+    fn receive(&mut self) -> impl std::future::Future<Output = Option<Self::Item>> {
+        self.recv()
+    }
 }
 
 /// What a router sends one peer: the frames, and the MAC each unicast among
@@ -133,8 +161,8 @@ impl RouterFixture {
     }
 
     /// [`Self::start`], with the router's network-control receiver (#1175).
-    pub(crate) async fn start_with_network_control(
-    ) -> (Self, mpsc::Receiver<ReceivedNetworkControl>) {
+    pub(crate) async fn start_with_network_control()
+    -> (Self, mpsc::Receiver<ReceivedNetworkControl>) {
         let (fixture, controls) = Self::launch(true, None).await;
         (fixture, controls.expect("opted in"))
     }
@@ -190,7 +218,7 @@ impl RouterFixture {
         };
         // Teach the router that network 3000 lies behind peer B. Its relay of
         // the announcement to port A shows the route is in place.
-        let i_am = Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK.to_raw());
+        let i_am = Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK);
         fixture
             .peer_b
             .send_broadcast(&wire(None, None, i_am))
@@ -223,22 +251,27 @@ impl RouterFixture {
     }
 
     pub(crate) async fn stop(mut self) {
-        self.router.stop().await;
+        self.router.stop().await.unwrap();
         self.peer_a.stop().await.unwrap();
         self.peer_b.stop().await.unwrap();
     }
 }
 
-/// The next frame a router sends to a peer, past its I-Am-Router-To-Network
-/// announcements, with the MAC it was unicast to, or `None` when it went out
-/// as a data-link broadcast.
+/// The next frame a router sends to a peer, past its startup announcements
+/// (Network-Number-Is and I-Am-Router-To-Network), with the MAC it was
+/// unicast to, or `None` when it went out as a data-link broadcast.
 pub(crate) async fn next_received_from_router(
     rx: &mut FromRouter,
 ) -> (ReceivedNpdu, Option<MacAddr>) {
-    let i_am = Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK.to_raw());
+    let announcements = [
+        NetworkMessageType::I_AM_ROUTER_TO_NETWORK,
+        NetworkMessageType::NETWORK_NUMBER_IS,
+    ]
+    .map(Some);
     loop {
         let (frame, to) = rx.recv().await;
-        if decode_npdu(frame.npdu.clone()).unwrap().message_type != i_am {
+        let message_type = decode_npdu(frame.npdu.clone()).unwrap().message_type;
+        if !announcements.contains(&message_type) {
             return (frame, to);
         }
     }
@@ -259,7 +292,7 @@ pub(crate) async fn next_from_router(rx: &mut FromRouter) -> (Npdu, Option<MacAd
 pub(crate) fn reject_of(npdu: &Npdu) -> RejectMessageToNetwork {
     assert_eq!(
         npdu.message_type,
-        Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw())
+        Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
     );
-    decode_reject_message_to_network(&npdu.payload).unwrap()
+    RejectMessageToNetwork::decode(&npdu.payload).unwrap()
 }

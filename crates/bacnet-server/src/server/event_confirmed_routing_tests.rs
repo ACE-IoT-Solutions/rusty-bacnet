@@ -16,7 +16,7 @@ use super::event_notifications::CommittedIntrinsicTransition;
 use super::event_notifications_tests::local_broadcast_destination;
 use super::event_recipient_routing_tests::{address_recipient, destination_for, is_who_is};
 use super::*;
-use crate::server::test_transport::{SendLog, TestTransport, BIP_LOCAL_MAC};
+use crate::server::test_transport::{BIP_LOCAL_MAC, SendLog, TestTransport};
 use bacnet_encoding::constructed::decode_event_notification;
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
@@ -25,7 +25,7 @@ use bacnet_objects::notification_class::NotificationClass;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_transport::port::TransportProvenance;
 use bacnet_types::constructed::{BACnetDestination, BACnetRecipient};
-use bacnet_types::enums::{EventState, EventType};
+use bacnet_types::enums::{EngineeringUnits, EventState, EventType};
 use bacnet_types::primitives::StatusFlags;
 use bytes::Bytes;
 
@@ -78,14 +78,13 @@ impl Harness {
         db.add(Box::new(nc)).unwrap();
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance: 1,
-                name: "Dev".into(),
+                identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
                 ..DeviceConfig::default()
             })
             .unwrap(),
         ))
         .unwrap();
-        let mut ai = AnalogInputObject::new(1, "AI-1", 0).unwrap();
+        let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::SQUARE_METERS).unwrap();
         ai.write_property(
             PropertyIdentifier::NOTIFY_TYPE,
             None,
@@ -245,6 +244,7 @@ impl Harness {
             source_mac,
             apdu,
             bacnet_network::layer::ReceivedApdu {
+                router_response: None,
                 direct_response: None,
                 apdu: Bytes::new(),
                 source_mac: MacAddr::from_slice(source_mac),

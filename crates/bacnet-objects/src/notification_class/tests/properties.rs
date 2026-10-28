@@ -4,9 +4,10 @@
 
 use super::super::*;
 use super::{make_dest_device, make_time};
+use bacnet_types::MacAddr;
 use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};
 use bacnet_types::enums::ErrorCode;
-use bacnet_types::MacAddr;
+use bacnet_types::error::RemoteError;
 
 #[test]
 fn object_type_is_notification_class() {
@@ -350,8 +351,8 @@ fn out_of_service_is_unknown() {
     ] {
         assert!(matches!(
             result,
-            Err(Error::Protocol { code, .. })
-                if code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
+            Err(Error::Remote(RemoteError::Error { code, .. }))
+                if code == ErrorCode::UNKNOWN_PROPERTY
         ));
     }
     assert_eq!(

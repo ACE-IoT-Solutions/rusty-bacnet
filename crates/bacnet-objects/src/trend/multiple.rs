@@ -1,8 +1,9 @@
 //! TrendLogMultiple (type 27, Clause 12.30).
 
-use std::borrow::Cow;
-use std::collections::VecDeque;
-use std::sync::Arc;
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetLogMultipleRecord};
@@ -19,10 +20,11 @@ use crate::clock::ClockReader;
 use crate::common::{self, read_property_list_property};
 use crate::device_reference;
 use crate::log_buffer::{
-    log_buffer_read_denied, LogBufferRecords, LogRecordBuffer, LogRecordIdentity,
+    LogBufferRecords, LogRecordBuffer, LogRecordIdentity, log_buffer_read_denied,
 };
 use crate::log_lifecycle::LogLifecycle;
-use crate::log_reporting::{impl_buffer_ready_reporting, BufferReadyReporting};
+use crate::log_persistence::store::{DurableLog, LogStore};
+use crate::log_reporting::{BufferReadyReporting, impl_buffer_ready_reporting};
 use crate::log_window::LogWindow;
 use crate::traits::BACnetObject;
 
@@ -49,6 +51,8 @@ pub struct TrendLogMultipleObject {
     reporting: BufferReadyReporting,
     reliability: Reliability,
     clock: Option<Arc<dyn ClockReader>>,
+    /// The storage the log commits to, when built with `with_persistence`.
+    store: Option<LogStore<BACnetLogMultipleRecord>>,
 }
 
 impl TrendLogMultipleObject {
@@ -70,6 +74,7 @@ impl TrendLogMultipleObject {
             reporting: BufferReadyReporting::default(),
             reliability: Reliability::NO_FAULT_DETECTED,
             clock: None,
+            store: None,
         })
     }
 
@@ -84,8 +89,10 @@ impl TrendLogMultipleObject {
     /// ignored (Enable FALSE, or outside the window): the acquisition was
     /// made.
     pub fn add_record(&mut self, record: BACnetLogMultipleRecord) -> Result<(), Error> {
+        self.settle_interruption(Some((record.date, record.time)));
         self.lifecycle().try_add_ordinary(record)?;
         self.acquisition.acquired();
+        self.commit_if_counted();
         Ok(())
     }
 
@@ -197,9 +204,16 @@ impl TrendLogMultipleObject {
 
     /// Append a LOG_INTERRUPTED status record, as
     /// [`TrendLogObject::record_interruption`](super::TrendLogObject::record_interruption)
-    /// does, after restoring the log on a restart (#1537).
+    /// does, after restoring the log on a restart (#1537). A log reopened
+    /// from storage appends this record itself; calling this first takes its
+    /// place.
     pub fn record_interruption(&mut self, date: Date, time: Time) -> Result<(), Error> {
-        self.lifecycle().record_interruption((date, time))
+        self.lifecycle().record_interruption((date, time))?;
+        if let Some(store) = &mut self.store {
+            store.interruption_recorded();
+        }
+        self.commit_if_counted();
+        Ok(())
     }
 
     /// Clear the buffer.
@@ -383,10 +397,10 @@ impl BACnetObject for TrendLogMultipleObject {
             p if p == PropertyIdentifier::PROPERTY_LIST => {
                 read_property_list_property(&self.property_list(), array_index)
             }
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -401,10 +415,10 @@ impl BACnetObject for TrendLogMultipleObject {
             if let PropertyValue::Boolean(v) = value {
                 return self.lifecycle().write_enable(v);
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         if let Some(result) = self.acquisition.write(property, &value) {
             return result;
@@ -419,19 +433,19 @@ impl BACnetObject for TrendLogMultipleObject {
             if let PropertyValue::Boolean(v) = value {
                 return self.lifecycle().write_stop_when_full(v);
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         if property == PropertyIdentifier::RECORD_COUNT {
             if let PropertyValue::Unsigned(0) = value {
                 return self.lifecycle().purge();
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         if property == PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY {
             return self.write_log_device_object_property(array_index, value);
@@ -460,6 +474,16 @@ impl BACnetObject for TrendLogMultipleObject {
 
     fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
         self.clock = clock;
+        self.settle_interruption(None);
+    }
+
+    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.store.is_some().then_some(self as _)
+    }
+
+    fn advance_monotonic_time_internal(&mut self, now: core::time::Duration) -> bool {
+        self.commit_if_interval(now);
+        false
     }
 
     fn log_record_identities_internal(&self) -> Option<Vec<LogRecordIdentity>> {
@@ -475,8 +499,14 @@ impl BACnetObject for TrendLogMultipleObject {
     }
 
     fn refresh_log_window_internal(&mut self) -> bool {
-        self.lifecycle().refresh_window()
+        self.settle_interruption(None);
+        let recorded = self.lifecycle().refresh_window();
+        self.commit_if_counted();
+        recorded
     }
 
     impl_buffer_ready_reporting!(reporting, log_buffer);
 }
+
+#[path = "multiple_durable.rs"]
+mod durable;

@@ -1,32 +1,185 @@
-# Local mutation authorization
+# Server authorization policy
 
-Rust operators can set `ServerConfig::mutation_policy` or call
-`.mutation_policy(bacnet_server::mutation::MutationPolicy::DenyAll)` on the generic,
-B/IP or SC server builder. The native default is `Permissive`:
-an absent authorizer allows; an installed authorizer must approve. `DenyAll` denies
-covered decisions even with an allow-all authorizer, without invoking it, using
-SERVICES / SERVICE_REQUEST_DENIED. Both modes accept any authorizer configuration.
+The server asks one object, its `bacnet_server::ServerPolicy`, every "may this
+peer do this?" question it puts to an application (#524). Install it with
+`.policy(..)` on the generic, B/IP or SC server builder, or in
+`ServerConfig::policy`. Each method has a default, so a policy overrides only what
+it decides:
+
+| Method | Decides | Default |
+|---|---|---|
+| `authorize_mutation` | the ten covered confirmed services, and each Channel write of an inbound WriteGroup | allow |
+| `authorize_life_safety_operation` | LifeSafetyOperation | deny |
+| `authorize_device_communication_control` | DeviceCommunicationControl, once the static DCC checks pass | allow |
+| `authorize_audit_notification` | storing a ConfirmedAuditNotification in the configured sink | deny |
+| `authorize_unconfirmed_audit_notification` | storing an UnconfirmedAuditNotification there | deny |
+
+With no policy installed (`ServerConfig::policy` is `None`) the server decides as
+those defaults do, except that it allows a covered mutation without decoding it
+for authorization first. A policy whose `decides_mutations()` returns `false`
+takes that same path, so a policy that only decides LifeSafetyOperation or Audit
+receipt leaves mutations exactly as they were. Returning `false`, or panicking,
+denies, and the request changes nothing. `bacnet_server::FnPolicy` builds a
+policy from closures, one per decision; a decision with no closure keeps its
+default, and with no mutation closure it doesn't decide mutations at all.
+`Arc<P>` and `Box<P>` are policies when `P` is.
+
+```rust
+use bacnet_server::{server::BACnetServer, FnPolicy};
+
+let builder = BACnetServer::bip_builder().policy(
+    FnPolicy::new()
+        .mutation(|context| context.principal().is_some())
+        .life_safety_operation(|_| true),
+);
+```
+
+Outside the policy, and why:
+
+- `MutationPolicy::DenyAll` is a static hardening switch. It denies every covered
+  mutation without asking the policy, and its denials are counted apart.
+- DeviceCommunicationControl's password, static `DccPolicy`, source restriction
+  and disable rate limit are settings ([DCC policy](dcc-policy.md)). The policy's
+  `authorize_device_communication_control` is asked after the password,
+  `DccPolicy` and source checks pass (#1964), with the requested state and
+  duration in its context, and before the shared DISABLE_INITIATION rate limit
+  is charged, so a requester the policy denies can't spend that budget. A denial
+  or panic answers `SERVICES / SERVICE_REQUEST_DENIED`, as other policy denials
+  do, leaves the state and any running timer alone, and counts as
+  `policy_denied_total` (which also counts the static source and rate-limit
+  refusals).
+- `on_reinitialize` carries out a ReinitializeDevice after the server's own checks;
+  it acts rather than decides, and stays its own handler.
+- `on_time_sync` observes a clock change it can't refuse.
+- Routing-control messages belong to the router's `ControlAuthorizer`
+  (`bacnet-network`), not the server.
+
+**Pre-1.0 API change (#524):** `ServerConfig::policy` replaces
+`mutation_authorizer`, `life_safety_operation_authorizer`,
+`audit_notification_authorizer` and `unconfirmed_audit_notification_authorizer`,
+and the builders' `.policy(..)` replaces their four setters. Each `.policy(..)`
+call replaces the policy before it, so put every decision in one policy, for
+example one `FnPolicy` chain. The `MutationAuthorizer`,
+`LifeSafetyOperationAuthorizer`, `AuditNotificationAuthorizer` and
+`UnconfirmedAuditNotificationAuthorizer` aliases are gone; the shared endpoint's
+Device-write callback type is now `mutation::DeviceWriteAuthorizer`. Decision
+counters behave as before: only a policy that decides mutations makes the server
+decode a mutation for authorization first, as an installed mutation authorizer
+did.
+
+## Mutation policy modes
+
+`ServerConfig::mutation_policy`, or `.mutation_policy(MutationPolicy::DenyAll)` on
+a builder, selects the mode. The native default is `Permissive`: with no policy
+every covered mutation is allowed, and an installed policy must approve each one.
+`DenyAll` denies covered decisions even with an allow-all policy, without asking
+it, using SERVICES / SERVICE_REQUEST_DENIED.
 
 **Inbound WriteGroup is decided per Channel write (#1319).** A WriteGroup can
 write several Channels, so policy judges each Channel write on its own, just before
-it is made: `DenyAll` denies it, and an installed authorizer can allow some Channels
+it is made: `DenyAll` denies it, and an installed policy can allow some Channels
 and not others. A denied write is skipped silently, since nothing answers an
 unconfirmed request, makes no Audit record, and is counted in the `write_group` row of
 `mutation_decision_counters()`.
 
-**Check an existing authorizer for WriteGroup.** Before #1319 an installed authorizer
-never saw a WriteGroup, which was dropped whatever it returned. A callback that allows
+**Check an existing policy for WriteGroup.** Before #1319 an installed authorizer
+never saw a WriteGroup, which was dropped whatever it returned. A policy that allows
 what it doesn't recognize, through `matches!`, `if let` or a `_ => true` arm, now
 allows WriteGroup Channel writes. `MutationTarget` isn't `#[non_exhaustive]`, but
-such callbacks still compile, so handle `MutationTarget::WriteGroup` explicitly.
+such code still compiles, so handle `MutationTarget::WriteGroup` explicitly.
 
-**SC mTLS channel/peer authentication is not service authorization.** Identities at
-this layer are claimed link/routed addresses, never certificate principals.
-Distinguishing SC certificate principals is out of scope: none reaches this layer.
+## Principals
+
+**SC mutual TLS is authentication, not authorization.** Any peer a trusted CA
+admits may use every service the server's defaults allow, until a policy says
+otherwise.
+
+Every decision context, and `ReinitializeContext`, has `principal()`: an
+`Option<ScPrincipal>` (`bacnet_server::policy::ScPrincipal`). It names the peer
+that **originated** the request, and is `Some` only when the request arrived over
+a verified **direct** BACnet/SC connection, accepted or built-in outbound, with no
+routed SNET/SADR source. It holds the SHA-256 of the exact leaf certificate DER that TLS
+verified, the digest hub certificate bindings pin. It has no connection
+incarnation, so a reconnect with the same certificate keeps its principal, and a
+renewed certificate is a new one; pin both while it rolls out. `Display` writes
+the 64 hex digits; `Debug` shows only the first eight hex digits, and the
+contexts' `Debug` says only whether a principal is present.
+
+It is `None` for:
+
+- B/IP, B/IPv6, MS/TP and Ethernet requests;
+- requests a BACnet/SC hub relays. The hub authenticated its own TLS client, and
+  the origin's certificate never reaches this node, so a policy can't tell one
+  hub member from another. A hub's certificate bindings (#800) constrain which
+  leaf may register which VMAC and UUID at that hub; they don't forward the leaf;
+- the hub admission callback's own channel;
+- a routed request, one carrying an SNET/SADR source, even over a direct
+  connection: that connection authenticates the router that forwarded it, not the
+  device behind it.
+
+So `principal()` means the direct SC peer that sent the NPDU without an SNET. A
+router that doesn't follow the standard, or an application gateway that
+re-originates requests, shows its own principal for what it relays, so trust a
+principal as far as everything its holder may relay.
+
+`forwarding_peer_principal()` returns the principal of the direct peer that
+handed the request over, a router included. A policy that trusts a router with
+everything it forwards can allow on it; that trusts every claimed origin behind
+that router.
+
+With `sc-tls`, `certificate()` and `forwarding_peer_certificate()` return the
+verified leaf certificates behind those two principals, under the same rules
+(#1965): `None` exactly when the matching principal is. Each is a
+`bacnet_server::policy::ScPeerCertificate` with the DER and `metadata()`: the
+subject, issuer and the DNS, URI, email and IP Subject Alternative Names
+(`ScSubjectAltName`). A rule by name keeps working when a certificate is renewed,
+where a fingerprint pin needs both fingerprints:
+
+```rust
+use bacnet_server::FnPolicy;
+use bacnet_server::policy::ScSubjectAltName;
+
+let policy = FnPolicy::new().mutation(|context| {
+    context
+        .certificate()
+        .and_then(|leaf| leaf.metadata())
+        .is_some_and(|metadata| {
+            metadata
+                .subject_alt_names()
+                .contains(&ScSubjectAltName::Dns("operator.example".into()))
+        })
+});
+```
+
+Allow on a name found rather than deny on one missing: other name forms, and a
+missing, repeated or malformed extension, give no names, and the subject and
+issuer are escaped and bounded (`text_truncated()`). Compare names for exact
+equality. Matching is byte for byte: DNS case isn't folded, a wildcard such as
+`*.example.com` comes back as written and is not expanded, names may hold UTF-8
+outside the IA5 range, and IP names compare as `IpAddr`, so an IPv4-mapped IPv6
+name doesn't equal the IPv4 one. Don't match by suffix: `evil-operator.example`
+ends with `operator.example`. Certificate contents are the peer's:
+neither the contexts' nor the certificate's `Debug` shows them, and a policy
+shouldn't log them.
+
+A source VMAC, UUID, routed SNET/SADR, Requesting Source or process ID is a
+claim, never a principal. A policy that should admit only known operators can
+allow `Some(principal)` from a pinned list and deny everything else; that denies
+all hub-relayed and non-SC traffic too, which is the conservative choice.
+
+Replies to a direct request go back only over the connection it arrived on
+([accepted direct server responses](rust-api.md#accepted-direct-server-responses)).
+If another certificate later claims the same VMAC, or the first reconnects, a
+reply still owed to the first connection is dropped rather than sent to the new
+one. The server's `direct_principal_*` and `direct_response_*` tests show this
+over real TLS for success, segmented, Error and Abort replies; Reject takes the
+same route check.
+Admitted work may still finish under its original principal after its connection
+closes; a lost reply doesn't roll it back.
 
 ## Authorization context
 
-Each decision receives a `mutation::MutationAuthorizationContext`:
+Each mutation decision receives a `mutation::MutationAuthorizationContext`:
 
 - `source_mac` / `source_network` — claimed immediate peer and routed origin.
   Never authenticated identities, never certificate principals.
@@ -35,15 +188,17 @@ Each decision receives a `mutation::MutationAuthorizationContext`:
   into `mutations::Request`. Cross-segment provenance mismatches already fail
   closed at reassembly, so every element of one request (including each WPM
   element) observes the same snapshot.
+- `principal()` / `forwarding_peer_principal()` — as above, from `provenance`
+  and `source_network`.
 - `trust` — `mutation::MutationTrust` derived from the snapshot, mirroring
   RB-09 `ControlTrust`: `Unverified`, `VerifiedChannel` (direct SC-TLS peer),
   or `VerifiedRelay` (SC-hub relayed origin). Channel/relay scope only, never
-  leaf identity: a verified scope asserts the channel/relay validation, not
-  that a claimed SNET/SADR leaf is the authenticated peer.
-- `direct_sc_identity()` — the sealed accepted-direct TLS leaf-DER SHA-256 and
-  process-lifetime connection incarnation, when present. Same-leaf reconnects
-  get new incarnations; queued complete work retains its original snapshot
-  after replacement. Hub-relayed and unverified ingress have no direct identity.
+  leaf identity.
+- `direct_sc_identity()` — the immediate direct-SC hop's leaf digest (the
+  `forwarding_peer_principal()` one, so for a routed request the router that
+  forwarded it) plus the process-lifetime connection incarnation, when present. Same-leaf reconnects get new
+  incarnations; queued complete work retains its original snapshot after
+  replacement.
 - `invoke_id`, `service_choice`, `target` — the request's identity and the
   decoded mutation (current element for WPM). `service_choice` is a
   `mutation::MutationService`: `Confirmed(choice)` with `Some` invoke ID for the ten
@@ -52,24 +207,10 @@ Each decision receives a `mutation::MutationAuthorizationContext`:
   channel number, the priority used, the encoded value and the inhibit flag.
 
 `Debug` for the context is redacted by construction: address lengths, the
-provenance/trust labels, and the target kind only — never MAC bytes, property
-values, file payloads, or other decoded inputs.
-
-## Baseline-only profile
-
-Direct TLS identity is separate from claimed addresses and authorization.
-Hub-relayed end-to-end identity and response confinement (#524) remain separate:
-
-- An unknown origin — including a hub-mediated unknown leaf, which arrives
-  `Unverified` — never satisfies a baseline-only allow rule. The gate delivers
-  the snapshot; the operator's callback owns the rule.
-- Receive-permission is not write-permission: allowing one covered service
-  (for example a COV subscription) never implies allowing another (for
-  example a property write). Each covered decision needs its own allow.
-- The SC VMAC is payload-claimed inside the TLS channel, not bound to the
-  operational certificate. The direct leaf fingerprint does not establish a
-  certificate-to-VMAC/UUID/SNET/SADR mapping. See the
-  [identity API and limits](rust-api.md#accepted-direct-tls-identity).
+provenance/trust labels, whether a principal is present and the target kind only —
+never MAC bytes, the fingerprint, property values, file payloads, or other decoded
+inputs. The LifeSafetyOperation and both AuditNotification contexts carry the same
+addresses, `provenance`, `principal()` and `forwarding_peer_principal()`.
 
 ## Timing and side effects
 
@@ -77,35 +218,47 @@ Order per request is validation, then authorization, then mutation, with no
 audit-log write on deny: a denial performs no database mutation, no COV/event
 fan-out, and no audit-log write (that write would itself be a mutation). It is
 recorded in the saturating per-service decision counters and bounded tracing
-diagnostics only. The callback runs after DCC prechecks, request admission,
-service decoding, and per-element validation, and before the database write;
-WPM invokes it per validated element in wire order while holding the database
-write lock, so callbacks must stay fast, nonblocking, reentry-free, and
-side-effect-free, and may run concurrently. A panicking callback denies
+diagnostics only. `authorize_mutation` runs after DCC prechecks, request admission,
+service decoding, and per-element validation, and before the database write.
+It is never asked with a database guard held: WPM asks it per validated element
+in wire order before taking the database write lock (#2032). Each call runs on
+Tokio's blocking pool while the request waits, so a policy that blocks delays
+only its own request: other clients carry on, and `stop()`, which joins every
+admitted request, aborts that one without waiting for the call, whose answer
+is then ignored. A call that never returns still holds its blocking thread,
+and a Tokio runtime waits for blocking tasks when it shuts down, so such a
+policy keeps the process from exiting. DeviceCommunicationControl,
+LifeSafetyOperation and AuditNotification decisions run the same way. Policies
+should still stay fast (each request costs a trip to the pool), reentry-free
+and side-effect-free, and may be called concurrently. A panicking policy denies
 fail-closed. Neither the allow nor the deny path generates an audit record for
 the decision itself; audit records arrive only as explicitly authorized
 AuditNotification service receptions.
 
-**WPM elements an object saves first are decided ahead (#1321).** A Notification
-Forwarder's or Notification Class's list, an Access Rights object's rule arrays,
-Enable or Accompaniment, and an Audit Log's Log_Enable or Buffer_Size are saved
-before the object serves them, and the server stages that save so it runs with the
-database write lock released. For such an element the callback is asked before the
-save is staged, under a database read guard, after the element's own validation and
-in wire order among such elements, so ahead of earlier elements no object saves
-first; only allowed elements are staged, up to one whose value doesn't decode, and
-the handler applies the recorded decision when it reaches the element instead of
-asking again. The callback is still asked once per element, but it can be asked
-about an element the request never reaches, when an earlier element fails for
-another reason. A request with no such element asks nothing ahead. The decision
-counters and audit records cover only the elements the handler reaches, as before.
+**WPM elements are decided ahead (#1321, #2032).** The server first walks the
+elements in wire order under a short database read guard and keeps those that pass
+the checks made before authorization (the object exists, and the index and value
+suit the property), up to the first that fails them. It drops the guard, asks the
+policy about each kept element in wire order up to the first denial, stages the
+allowed elements an object saves first (a Notification Forwarder's or Notification
+Class's list, an Access Rights object's rule arrays, Enable or Accompaniment, an
+Audit Log's Log_Enable or Buffer_Size) so their saves run with no guard held, and
+only then takes the write lock and applies the elements. The handler checks each
+element again under the lock and applies the recorded decision when it reaches it
+instead of asking again. The policy is still asked once per element, but it can be
+asked about an element the request never reaches, when an earlier element fails as
+it is written (its object refuses the value, or the new Object_Name is taken). If
+the database changes between the passes, an element whose object was deleted fails
+with its usual error, and an element whose object appeared, so the policy never saw
+it, is denied. The decision counters and audit records cover only the elements the
+handler reaches, as before.
 
 Coverage is the ten confirmed `mutation::MutationTarget` services and the Channel
 writes of an inbound WriteGroup, each decided after the change list is decoded and
 matched to the Channels, with no database guard held. Reads, discovery, DCC,
-TimeSync, LifeSafety/Audit, direct handler calls and trusted local writes retain
-their existing behavior. Admission, duplicate detection, decoding and WPM validation
-retain precedence. WPM makes one decision per reached element; empty requests make
+TimeSync, direct handler calls and trusted local writes retain their existing
+behavior. Admission, duplicate detection, decoding and WPM validation retain
+precedence. WPM makes one decision per reached element; empty requests make
 none, and a denial stops the suffix without rolling back an allowed prefix.
 WPM denials keep the `first_failed` error shape; other denials use
 SERVICES / SERVICE_REQUEST_DENIED.
@@ -117,9 +270,10 @@ SERVICES / SERVICE_REQUEST_DENIED.
   same documented bypass contract as the RB-09 precedent. No raw
   server-receive path skips `mutations::Request`.
 - The shared endpoint has a separate narrow [Device-write authorizer](rust-api.md#authorized-endpoint-device-writes);
-  this standalone policy does not configure it.
-- LifeSafetyOperation, DeviceCommunicationControl, ReinitializeDevice and Audit
-  keep their separate policy and configuration paths.
+  the server policy does not configure it. Python endpoints set it with their
+  `device_write_policy` callable (#2033).
+- DeviceCommunicationControl and ReinitializeDevice keep their separate
+  configuration paths.
 
 ## Python configuration
 
@@ -129,15 +283,32 @@ WritePropertyMultiple, CreateObject, DeleteObject, AddListElement,
 RemoveListElement, AtomicWriteFile, SubscribeCOV, SubscribeCOVProperty and
 SubscribeCOVPropertyMultiple decisions through the existing Rust gate. Denials
 use SERVICES / SERVICE_REQUEST_DENIED (with WPM's existing failed-reference shape).
-No Python callback or separate authorization gate is installed.
 
-Other strings raise `ValueError`, and non-strings raise `TypeError` synchronously
+The keyword also takes a callable (#1966), installed as the mutation decision of
+the server's `ServerPolicy`, so it is asked exactly where `authorize_mutation`
+is, WritePropertyMultiple elements and WriteGroup Channels included. It gets a
+frozen, redacted `MutationContext` (service, target coordinates, claimed source
+addresses, provenance kind, principal fingerprints and invoke ID) and returns a
+bool. An exception, a non-bool answer or interpreter shutdown denies; the
+denied mutation changes nothing, though earlier elements of the same
+WritePropertyMultiple stay written. It runs with no database guard held and
+off the request task, so one that blocks delays only its own request, not
+other clients or `stop()` (#2032), but one that never returns keeps the
+process from exiting, since interpreter exit waits for every thread inside the
+bindings. It should still decide from the context alone, synchronously and
+quickly. Python has no direct BACnet/SC listener, so the context's
+`principal` is always `None` there, and its `certificate` and
+`forwarding_peer_certificate` are `None` too. See
+[the Python API](python-api.md#runtime-object-access) for the calling rules.
+
+Other strings raise `ValueError`, and other non-callables raise `TypeError` synchronously
 in the constructor, before startup drains registrations or performs transport
 I/O. Reads and trusted local `write_property_local` calls remain available under
 `"deny_all"`. It also denies each Channel write of an inbound WriteGroup to a Channel
 added with `add_channel`. The option does not configure DCC, ReinitializeDevice, LifeSafety,
-Audit or endpoint authorization, and does not establish a certificate principal.
+Audit or endpoint authorization.
 
+## Decision counters (Rust)
 
 `BACnetServer::mutation_decision_counters()` exposes fixed per-service saturating
 `u64` totals, including after `stop()`: `allow_total`, `deny_total` (all denials),

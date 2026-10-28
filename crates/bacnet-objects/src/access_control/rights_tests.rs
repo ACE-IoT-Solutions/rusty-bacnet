@@ -5,6 +5,7 @@
 
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference};
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::RemoteError;
 
 use super::*;
 
@@ -14,9 +15,9 @@ fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
 
 fn assert_property_error<T: std::fmt::Debug>(result: Result<T, Error>, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code: actual })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && actual == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code: actual }))
+            if class == ErrorClass::PROPERTY
+                && actual == code),
         "expected PROPERTY / {code:?}, got {result:?}"
     );
 }
@@ -247,9 +248,9 @@ fn access_rights_setters_refuse_more_rules_than_the_cap() {
         rights.set_negative_access_rules(too_many),
     ] {
         assert!(
-            matches!(result, Err(Error::Protocol { class, code })
-                if class == ErrorClass::RESOURCES.to_raw() as u32
-                    && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY.to_raw() as u32),
+            matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+                if class == ErrorClass::RESOURCES
+                    && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY),
             "{result:?}"
         );
     }

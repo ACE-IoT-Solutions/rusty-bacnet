@@ -12,11 +12,17 @@ Use the [result template](mstp-qualification-result.json) for each campaign.
   writes, FEC writes, reboot/DCC, configuration/table writes, or production load
   generation. **Do not use DNET 2000 in the reporter's lab.** Obtain an explicit
   unused, isolated test network assignment; this document supplies no default.
-- Current transport scope remains standard frames, at most 501 NPDU octets and
-  480 advertised APDU octets. A routed ReadProperty experiment is diagnostic
-  evidence, **not a conformant MS/TP router claim**. Extended/COBS routing (RB-25),
-  endpoint composition (RB-17+) and Linux RT/affinity controls (RB-24/#501) are not
-  implemented or changed here. No timers, queue sizes or direction policies change.
+- A device's port uses standard frames by default, at most 501 NPDU octets and
+  480 advertised APDU octets. `MstpConfig::extended_frames` (Python
+  `mstp_extended_frames`) raises those to 1497 and 1476, and `BACnetRouter` turns
+  it on for every MS/TP port it routes, so record the setting for each cell. A
+  routed ReadProperty experiment is diagnostic evidence, **not a conformant MS/TP
+  router claim**. On Linux the dedicated thread can run under `SCHED_FIFO` and be
+  pinned to CPUs (`MstpThreadConfig::with_realtime_priority` and
+  `with_cpu_affinity`, CLI `--mstp-rt-priority` and `--mstp-cpus`, #501), so
+  record the requested settings and `execution_status()` for each cell. The
+  host's timer defaults are under **Host timeouts and USB latency** below; this
+  method changes no timers, queue sizes or direction policies.
 - Neither dedicated-thread execution nor PREEMPT_RT promises on-wire timing.
   A USB result says nothing about native UART, another adapter with the same chip,
   or another driver/kernel/USB topology. No issue-closure claim before evidence.
@@ -24,14 +30,22 @@ Use the [result template](mstp-qualification-result.json) for each campaign.
   Publish only redacted counts, settings and synthetic role labels. An independent
   analyzer must observe the bus without becoming another active master or opening
   either application's serial device a second time.
+  `bacnet_transport::mstp::monitor::MstpMonitor` over a
+  `mstp_serial::ReceiveOnlyPort` on a second adapter is such an analyzer: it
+  uses native read-only access, and its statistics carry the timestamp resolution
+  to quote with any interval it reports. Driver/open transitions can still affect
+  modem lines; qualify electrical behavior for the chosen adapter. Await the
+  monitor's `stop(&mut self)` before reopening its device; Drop is not that barrier.
 
 ## Host counters: obtain before moving the transport
 
 `bacnet_transport::mstp::{MstpDiagnostics, MstpDiagnosticsSnapshot}` is Rust-only.
 Keep the handle in each downstream router/mini process before its existing owner
 consumes `MstpTransport`. No change to `TransportPort` or Python status is required.
-Builders that construct the transport internally do not automatically expose it;
-this slice does not add a generic endpoint status API.
+A session that `MstpEndpointBuilder::build_session` builds keeps the handle for you:
+`EndpointSession::mstp_diagnostics` returns it, before start, while running and
+after stop. The client and server builders take a transport you built, so take
+`MstpTransport::diagnostics` before handing it over.
 
 ```rust
 use bacnet_transport::mstp::{LoopbackSerial, MstpConfig, MstpTransport};
@@ -51,8 +65,8 @@ assert_eq!(before, after);
 ```
 
 Each transport starts at zero. Clones retain counters only, not the serial owner
-or runtime. Transport-boundary counters saturate at `u64::MAX` and the core's
-(`mac`) at `u32::MAX`; there is no reset. Snapshot fields use individually atomic
+or runtime. Every counter, `mac`'s totals of the core's counts included,
+saturates at `u64::MAX`; there is no reset. Snapshot fields use individually atomic
 Relaxed loads plus the core's counters as last published by the MAC task,
 **not a globally coherent transaction**. Poll at
 coarse intervals outside the MAC loop; do not add per-frame logging. For controlled
@@ -74,9 +88,10 @@ and mark saturated fields indeterminate rather than claiming exact counts.
 | `late_answers_queued`, `late_answers_dropped`, `late_answers_expired` | Application answers that came after Reply Postponed (or after the core gave up) and were queued for the token; reply channels given up because more than eight were waiting, or at the queue's maximum age. |
 | `mac.frames_received`, `mac.npdus_delivered`, `mac.frames_delivered` | Valid frames the core's decoder assembled (any destination), and data it passed up. |
 | `mac.parser_errors`, `mac.frame_aborts` | Frames invalid for this station per the receive rules (bad header, or bad data for this station or broadcast), and partial frames abandoned by T_frame_abort (100 ms on a host) or at a transmit start. Chunk gaps under 100 ms are not aborts. |
-| `mac.deadline_misses` | Deadlines the MAC task serviced 1 ms or more late. |
-| `mac.token_rotations`, `mac.token_retries`, `mac.token_regenerations`, `mac.deferred_starts`, `mac.late_replies`, `mac.expired_requests`, `mac.cancelled_sends`, `mac.discarded_while_busy`, `mac.own_address_frames` | The core's protocol counters; see `bacnet_mstp_core::MstpCounters`. |
-| `mac.unicast`, `mac.broadcast` | The two transmit queues' depth, high water and drops. |
+| `mac.late_deadlines`, `mac.deadline_lateness` | Deadlines the MAC task serviced 5 ms or more late (`HOST_LATE_DEADLINE`), and every serviced deadline by lateness: under 1 ms, 1-2, 2-5, 5-10, 10-25 and 25 ms or more, with the largest. Tokio's timer alone puts most wakes in the first two bands. |
+| `mac.token_rotations`, `mac.token_retries`, `mac.token_regenerations`, `mac.deferred_starts`, `mac.late_replies`, `mac.expired_requests`, `mac.cancelled_sends`, `mac.discarded_while_busy`, `mac.own_address_frames` | The core's protocol counters, which `bacnet_mstp_core::MstpCounters` describes; the transport adds up each take of them (`bacnet_transport::mstp::MstpCounters`). |
+| `mac.transmit_io_errors`, `mac.transmit_timeouts` | Frames aborted because a serial write or drain failed, and frames the core's transmit watchdog aborted. The receive-error counts (`mac.framing_errors` and the rest) stay zero on a host: its serial API reports no per-octet errors. So do `mac.transmit_aborts` and `mac.transmit_rejections`: the transport reports only `Io` aborts, and `Timeout` comes from the core's watchdog alone. |
+| `mac.unicast`, `mac.broadcast` | The two transmit queues' depth when last published, highest depth, and drops. |
 
 TX means the frame completed on the wire as far as the host can tell: the port's
 drain returned and its time at the baud rate had passed. That is not peer receipt
@@ -166,11 +181,37 @@ corrections; no licensed text/capture is bundled. One bit time is `1 / baud` sec
 | Last received stop-bit end to local DE assertion (also record first TX start) | Tturnaround minimum 40 bit times |
 | Last transmitted stop bit to DE release | Record offsets from **both beginning and end** of that stop bit. 9.2.3 uses beginning, while 9.5.3 defines Tpostdrive from end (15 bit times). Conservatively require release no later than 15 bit times from beginning and not before the stop bit is generated; retain both measurements, not a silently chosen origin. |
 | Within-frame idle interval: previous octet stop-bit beginning to next start-bit beginning (including the stop bit) | Tframe_gap maximum 20 bit times |
-| Transmitted request end to subsequent token activity when no reply begins | Observe Treply_timeout: 255 ms in this implementation; permitted enlargement only through 300 ms, not a tunable feature here |
-| Token pass/PFM end to successor activity, and no-activity retry interval | Record both; peer response uses the 15 ms usage limit. Sender Tusage_timeout is 20 ms here, permitted enlargement only through 35 ms, not a tunable feature here |
+| Transmitted request end to subsequent token activity when no reply begins | Observe Treply_timeout: 255 to 300 ms allowed; this implementation's host default is 300 ms (`MstpConfig::reply_timeout`, Python `mstp_reply_timeout_ms`), so record the configured value |
+| Token pass/PFM end to successor activity, and no-activity retry interval | Record both; peer response uses the 15 ms usage limit. Sender Tusage_timeout is 20 to 35 ms; the host default is 35 ms (`MstpConfig::usage_timeout`, Python `mstp_usage_timeout_ms`), so record the configured value |
 
 For timeout measurements, absence of DataAvailable/ReceiveError events is part of
-the condition; host snapshots cannot establish it. Wire idle and host scheduling
+the condition; host snapshots cannot establish it.
+
+**Host timeouts and USB latency (#1655).** A USB adapter hands the host what it
+receives late: FTDI parts hold a short read for their latency timer, 16 ms by
+default, and the host collects it at the next 1 ms USB frame. A successor that
+answers at the 15 ms usage limit therefore reaches the host about 32 ms after
+the token or poll ended, and an answer begun at the 250 ms reply limit about
+267 ms after the request. The shortest timeouts (20 and 255 ms) run out first,
+so every host port defaults to the longest ones 9.5.3 allows, 35 and 300 ms.
+That leaves 3 ms and 33 ms for an adapter whose latency is longer still, as an
+FTDI latency timer raised above 16 ms would be; lower the timer, rather than
+expect the timeouts to cover it. On Windows, where the port has no drain, the
+host counts a frame's end from its wire time plus the transmit-latency pad
+(4 ms by default), so both timers start up to the pad, less the adapter's real
+transmit latency, after the last stop bit: measured on the wire, the waits can
+run to about 39 ms and 304 ms. Token generation is tighter still: each master's
+generation slot (T_slot) is 10 ms wide, shorter than an FTDI part's default
+16 ms latency timer, so a host that hears the line that late can misjudge
+whose slot the silence has reached. For a station that may generate the token,
+set the adapter's latency timer to its minimum (1 ms on FTDI parts). In the inventory, record the configured
+`usage_timeout`, `reply_timeout` and `transmit_latency_pad` with the adapter's
+latency setting. Signs that the latency exceeds the margin: `mac.token_retries`
+rising while the successor is present, `wait_for_reply_timeouts` rising with
+replies visible on the analyzer within 250 ms, or polls moving past a master
+that answered. The transport tests show the defaults absorb a 17 ms delivery
+delay where the minimums do not, and the simulator's invariants hold with the
+longer timeouts; that is host evidence, not a hardware result. Wire idle and host scheduling
 are different observations. Wire Tframe_abort starts at 60 bit times (allowed
 enlargement up to 100 ms); **do not apply it to host USB chunk gaps** or change the
 transport's stale-host policy. Unlike the fixed millisecond reply/usage limits,
@@ -197,7 +238,7 @@ RP success is a functional outcome separate from timing verdicts.
 | ReplyPostponed on wire / mini `reply_postponed_tx`, then token and queued DNER | Deferred path only when the independent capture/application result correlates it. `dner_tx_queued` alone cannot. |
 | Router `wait_for_reply_timeouts` increases | MAC wait expired; distinguish missing reply, late reply, host decode loss and application APDU timeout with capture. |
 | `mac.parser_errors` or `mac.frame_aborts` increases | Frames invalid for this station, or partial frames abandoned (by 100 ms of silence or at a transmit start); not automatically a wire CRC/timing violation. Compare homogeneous controls and independent capture. |
-| `mac.deadline_misses` increases | The MAC task woke a millisecond or more late for a protocol deadline; look at host load and execution mode. |
+| `mac.late_deadlines` increases | The MAC task woke 5 ms or more late for a protocol deadline, beyond the timer's own rounding; compare the lateness bands and maximum, and look at host load and execution mode. |
 | `outbound_queue_full`/`outbound_oversize`, `ingress_full`/`ingress_closed`, or serial errors | Local rejection/delivery/I/O evidence; record exact deltas and unchanged returned errors, rather than interpreting no response as only a timer problem. |
 
 If a specific path cannot meet measured limits, evaluate a different serial path

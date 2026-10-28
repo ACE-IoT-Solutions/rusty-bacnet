@@ -1,6 +1,6 @@
 //! Byte sinks for [`Frame::encode_to_sink`](crate::Frame::encode_to_sink).
 
-use crate::FrameError;
+use core::fmt;
 
 /// A destination for encoded frame octets.
 ///
@@ -16,8 +16,32 @@ pub trait FrameSink {
     fn remaining_capacity(&self) -> Option<usize>;
 
     /// Append `bytes`, or fail without appending any of them.
-    fn write(&mut self, bytes: &[u8]) -> Result<(), FrameError>;
+    fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull>;
 }
+
+/// A [`FrameSink`] had no room for a write.
+///
+/// [`Frame::encode_to_sink`](crate::Frame::encode_to_sink) reports it as
+/// [`FrameError::BufferExhausted`](crate::FrameError::BufferExhausted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SinkFull {
+    /// Octets the write needed.
+    pub needed: usize,
+    /// Room the sink had.
+    pub available: usize,
+}
+
+impl fmt::Display for SinkFull {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "sink full: need {}, have {}",
+            self.needed, self.available
+        )
+    }
+}
+
+impl core::error::Error for SinkFull {}
 
 /// Writes at the front of the slice and advances it past what was written,
 /// so after a successful encode the slice holds the unused tail.
@@ -26,9 +50,9 @@ impl FrameSink for &mut [u8] {
         Some(self.len())
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), FrameError> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull> {
         if self.len() < bytes.len() {
-            return Err(FrameError::BufferExhausted {
+            return Err(SinkFull {
                 needed: bytes.len(),
                 available: self.len(),
             });
@@ -46,13 +70,12 @@ impl<const N: usize> FrameSink for heapless::Vec<u8, N> {
         Some(N - self.len())
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), FrameError> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull> {
         let available = N - self.len();
-        self.extend_from_slice(bytes)
-            .map_err(|_| FrameError::BufferExhausted {
-                needed: bytes.len(),
-                available,
-            })
+        self.extend_from_slice(bytes).map_err(|_| SinkFull {
+            needed: bytes.len(),
+            available,
+        })
     }
 }
 
@@ -62,7 +85,7 @@ impl FrameSink for alloc::vec::Vec<u8> {
         None
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), FrameError> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull> {
         self.extend_from_slice(bytes);
         Ok(())
     }
@@ -74,7 +97,7 @@ impl FrameSink for bytes::BytesMut {
         None
     }
 
-    fn write(&mut self, bytes: &[u8]) -> Result<(), FrameError> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), SinkFull> {
         self.extend_from_slice(bytes);
         Ok(())
     }

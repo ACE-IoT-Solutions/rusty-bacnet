@@ -18,6 +18,7 @@ use super::cov_wire_test_support::*;
 use super::*;
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::primitives::Time;
 
 const SMALL_APDU: u16 = 206;
@@ -97,7 +98,7 @@ async fn many_object_harness(confirmed: bool, untimed: u32, delay: u32) -> Harne
         for instance in 2..=OBJECTS + untimed {
             let name = format!("AV-{instance}");
             db.add(Box::new(
-                AnalogValueObject::new(instance, &name, 62).unwrap(),
+                AnalogValueObject::new(instance, &name, EngineeringUnits::DEGREES_CELSIUS).unwrap(),
             ))
             .unwrap();
         }
@@ -386,9 +387,10 @@ async fn untimestamped_values_too_large_for_one_apdu_follow_every_change_in_part
     let mut objects = Vec::new();
     for notification in untimed_parts {
         let rows = pv_rows_by_time(notification);
-        assert!(rows
-            .iter()
-            .all(|(object, _, time)| { object.instance_number() > OBJECTS && time.is_none() }));
+        assert!(
+            rows.iter()
+                .all(|(object, _, time)| { object.instance_number() > OBJECTS && time.is_none() })
+        );
         assert_eq!(notification.timestamp, None, "nothing in it is timestamped");
         objects.extend(rows.into_iter().map(|(object, _, _)| object));
     }

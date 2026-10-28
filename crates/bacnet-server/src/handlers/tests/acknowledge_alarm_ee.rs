@@ -15,6 +15,7 @@ use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetEventParameter, BACnetPropertyStates,
 };
 use bacnet_types::enums::EventType;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::BACnetTimeStamp;
 
 /// Database: BI-1 monitored by a COS enrollment (EE-7) referencing
@@ -219,9 +220,9 @@ fn ee_acknowledge_alarm_detection_disabled_refused() {
     )
     .unwrap_err();
     match err {
-        Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::OBJECT.to_raw() as u32);
-            assert_eq!(code, ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32);
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::OBJECT);
+            assert_eq!(code, ErrorCode::NO_ALARM_CONFIGURED);
         }
         other => panic!("expected OBJECT/NO_ALARM_CONFIGURED, got {other:?}"),
     }

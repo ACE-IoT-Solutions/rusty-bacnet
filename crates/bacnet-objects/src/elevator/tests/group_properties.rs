@@ -6,15 +6,16 @@
 use super::super::*;
 use super::assert_value_out_of_range;
 use bacnet_types::enums::{ErrorClass, ErrorCode, Reliability};
+use bacnet_types::error::RemoteError;
 
 const MACHINE_ROOM_ID: PropertyIdentifier = PropertyIdentifier::MACHINE_ROOM_ID;
 const GROUP_ID: PropertyIdentifier = PropertyIdentifier::GROUP_ID;
 
 fn assert_property_error(result: Result<impl std::fmt::Debug, Error>, expected: ErrorCode) {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32, "expected {expected:?}");
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected, "expected {expected:?}");
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }

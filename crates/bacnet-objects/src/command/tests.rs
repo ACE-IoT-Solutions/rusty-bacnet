@@ -1,6 +1,7 @@
 use super::*;
 use bacnet_types::constructed::BACnetActionCommand;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 /// The commands a queued run makes.
 fn commands(run: &CommandRun) -> &[BACnetActionCommand] {
@@ -12,9 +13,9 @@ fn commands(run: &CommandRun) -> &[BACnetActionCommand] {
 
 fn assert_property_error<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == expected.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == expected),
         "expected {expected:?}, got {result:?}"
     );
 }
@@ -279,9 +280,9 @@ fn command_present_value_write_queues_the_selected_list_and_busies_the_object() 
     for value in [0, 1, 2] {
         let result = write_pv(&mut cmd, value);
         assert!(
-            matches!(result, Err(Error::Protocol { class, code })
-                if class == ErrorClass::OBJECT.to_raw() as u32
-                    && code == ErrorCode::BUSY.to_raw() as u32),
+            matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+                if class == ErrorClass::OBJECT
+                    && code == ErrorCode::BUSY),
             "{value}: {result:?}"
         );
     }

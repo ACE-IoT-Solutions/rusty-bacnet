@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use tokio::net::UdpSocket;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use tracing::Level;
 
 use super::fanout::{AtomicFanoutCounters, FanoutDispatcher, FanoutJob, FanoutRateLimiter};
@@ -177,18 +177,13 @@ async fn failed_forwarded_npdu_sends_warn_at_most_once_per_interval() {
     }
     let (npdu_tx, _npdu_rx) = mpsc::channel(8);
     let ctx = RecvContext {
-        local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local.port()),
-        socket,
-        npdu_tx,
-        bbmd: Some(Arc::new(std::sync::Mutex::new(state))),
-        broadcast_addr: Ipv4Addr::BROADCAST,
-        broadcast_port: 0xBAC0,
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
+        ..RecvContext::for_test(
+            socket,
+            npdu_tx,
+            SocketAddrV4::new(Ipv4Addr::from(Ipv4Addr::LOCALHOST.octets()), local.port()),
+            SocketAddrV4::new(Ipv4Addr::BROADCAST, 0xBAC0),
+            Some(Arc::new(std::sync::Mutex::new(state))),
+        )
     };
     let distribute = BvllMessage {
         function: BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK,

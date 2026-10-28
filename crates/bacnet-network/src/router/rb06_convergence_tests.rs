@@ -4,188 +4,20 @@
 //! Who-Is discovery come up empty), 6.6.3.2 (a later I-Am for a network
 //! supersedes earlier ones), 6.6.3.3 (replace MAC/port on difference) and
 //! 6.5 (attempt Who-Is when the next router is unknown).
-//! In-memory only, deterministic time via table/tracker injection, no sleeps.
+//! In-memory only, no sleeps. The table-level and discovery cases moved to
+//! `bacnet-router-core`'s `tests/table.rs`, `tests/table_claims.rs` and
+//! `tests/discovery.rs` in #1688; these run the router on its engine.
 
-use super::envelope_harness::{broadcast_data, control_npdu, Harness};
-use super::*;
-use crate::router_table::ConvergenceMode;
-use bacnet_encoding::npdu::{decode_npdu, NpduAddress};
-use bacnet_transport::port::ReceivedNpdu;
-use bacnet_transport::port::TransportProvenance;
-use bacnet_types::enums::RejectMessageReason;
-use std::time::Instant;
+use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu};
+use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
+use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportProvenance};
+use bacnet_types::MacAddr;
+use bytes::{Bytes, BytesMut};
+use tokio::sync::mpsc;
 
-fn learned_at(port: usize, now: Instant) -> RouterTable {
-    let mut table = RouterTable::new();
-    table.add_learned_at(3000, port, MacAddr::from_slice(&[1]), now);
-    table
-}
-
-// --- Freshness split ---
-
-#[test]
-fn touch_updates_used_only_and_expiry_keys_off_seen() {
-    let base = Instant::now();
-    let mut table = learned_at(0, base);
-    assert!(table.lookup(3000).unwrap().last_used.is_none());
-    for i in 1..=100 {
-        table.touch_used_at(3000, base + Duration::from_secs(i));
-    }
-    let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.last_seen, Some(base));
-    assert_eq!(entry.last_used, Some(base + Duration::from_secs(100)));
-    // Sustained traffic did not slide expiry: 300s rescue still fires.
-    let purged = table.purge_stale_at(base + Duration::from_secs(301), Duration::from_secs(300));
-    assert_eq!(purged, vec![3000]);
-    assert!(table.lookup(3000).is_none());
-}
-
-#[test]
-fn expiry_without_traffic_fires_on_seen_and_directs_never_expire() {
-    let base = Instant::now();
-    let mut table = RouterTable::new();
-    table.add_learned_at(3000, 0, MacAddr::from_slice(&[1]), base);
-    table.add_direct(1000, 0);
-    table.touch_used_at(1000, base + Duration::from_secs(10));
-    assert!(table.lookup(1000).unwrap().last_seen.is_none());
-    let purged = table.purge_stale_at(base + Duration::from_secs(301), Duration::from_secs(300));
-    assert_eq!(purged, vec![3000]);
-    assert!(table.lookup(1000).is_some());
-}
-
-#[test]
-fn same_port_refresh_updates_seen_preserves_used() {
-    let base = Instant::now();
-    let mut table = learned_at(0, base);
-    table.touch_used_at(3000, base + Duration::from_secs(10));
-    assert!(table.apply_learning_claim(
-        3000,
-        0,
-        MacAddr::from_slice(&[2]),
-        base + Duration::from_secs(20)
-    ));
-    let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.last_seen, Some(base + Duration::from_secs(20)));
-    assert_eq!(entry.last_used, Some(base + Duration::from_secs(10)));
-    assert_eq!(entry.next_hop_mac.as_slice(), &[2]);
-}
-
-#[test]
-fn busy_available_touch_neither_timestamp() {
-    let base = Instant::now();
-    let mut table = learned_at(0, base);
-    table.touch_used_at(3000, base + Duration::from_secs(5));
-    table.mark_busy(3000, base + Duration::from_secs(35));
-    let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.last_seen, Some(base));
-    assert_eq!(entry.last_used, Some(base + Duration::from_secs(5)));
-    table.mark_available(3000);
-    let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.last_seen, Some(base));
-    assert_eq!(entry.last_used, Some(base + Duration::from_secs(5)));
-}
-
-// --- Convergence modes ---
-
-#[test]
-fn standard_converges_on_single_claim_under_sustained_traffic() {
-    let base = Instant::now();
-    let mut table = learned_at(0, base);
-    assert_eq!(table.convergence(), ConvergenceMode::Standard);
-    for i in 1..=50 {
-        table.touch_used_at(3000, base + Duration::from_secs(i));
-    }
-    assert!(table.apply_learning_claim(
-        3000,
-        1,
-        MacAddr::from_slice(&[2]),
-        base + Duration::from_secs(51)
-    ));
-    let entry = table.lookup(3000).unwrap();
-    assert_eq!(entry.port_index, 1);
-    assert_eq!(entry.next_hop_mac.as_slice(), &[2]);
-    assert_eq!(entry.last_seen, Some(base + Duration::from_secs(51)));
-    assert!(entry.last_used.is_none());
-    assert_eq!(table.pending_count(), 0);
-    assert_eq!(table.claim_snapshot().pending_started, 0);
-}
-
-#[test]
-fn hardened_holds_then_reaps_then_recovers() {
-    let base = Instant::now();
-    let mut table = RouterTable::new_hardened();
-    table.add_learned_at(3000, 0, MacAddr::from_slice(&[1]), base);
-    assert!(!table.apply_learning_claim(3000, 1, MacAddr::from_slice(&[2]), base));
-    assert_eq!(table.lookup(3000).unwrap().port_index, 0);
-    assert_eq!(table.pending_count(), 1);
-    // Idle reaper clears the slot so a single-shot advertiser does not linger.
-    let expired = table.expire_pending_at(base + Duration::from_secs(61));
-    assert_eq!(expired, vec![3000]);
-    assert_eq!(table.pending_count(), 0);
-    assert_eq!(table.claim_snapshot().pending_expired, 1);
-    // Fresh challenger pends again, immediate repeat corroborates.
-    assert!(!table.apply_learning_claim(
-        3000,
-        1,
-        MacAddr::from_slice(&[2]),
-        base + Duration::from_secs(62)
-    ));
-    assert!(table.apply_learning_claim(
-        3000,
-        1,
-        MacAddr::from_slice(&[2]),
-        base + Duration::from_secs(63)
-    ));
-    assert_eq!(table.lookup(3000).unwrap().port_index, 1);
-    assert_eq!(table.claim_snapshot().corroborated_applied, 1);
-}
-
-#[test]
-fn hardened_alternation_never_converges_robustness_only() {
-    // Cyclic alternation is a bounded-robustness check, never a supported
-    // topology claim: the slot resets each time and the old route forwards.
-    let base = Instant::now();
-    let mut table = RouterTable::new_hardened();
-    table.add_learned_at(3000, 0, MacAddr::from_slice(&[1]), base);
-    for i in 0..10 {
-        assert!(!table.apply_learning_claim(
-            3000,
-            1 + (i % 2) as usize,
-            MacAddr::from_slice(&[2]),
-            base + Duration::from_secs(i)
-        ));
-        assert_eq!(table.lookup(3000).unwrap().port_index, 0);
-    }
-    assert_eq!(table.pending_count(), 1);
-    assert_eq!(table.claim_snapshot().pending_started, 10);
-}
-
-// --- Discovery tracker bounds ---
-
-#[test]
-fn discovery_coalesces_rate_limits_expires_and_caps() {
-    let base = Instant::now();
-    let mut disc = DiscoveryTracker::default();
-    assert!(disc.should_solicit_at(3000, base));
-    assert!(!disc.should_solicit_at(3000, base + Duration::from_secs(1)));
-    assert_eq!(disc.len(), 1);
-    assert!(disc.should_solicit_at(3000, base + Duration::from_secs(5)));
-    assert!(!disc.should_solicit_at(0, base));
-    assert!(!disc.should_solicit_at(0xFFFF, base));
-    for net in 4000..(4000 + 255) {
-        assert!(disc.should_solicit_at(net, base));
-    }
-    assert_eq!(disc.len(), 256);
-    assert!(!disc.should_solicit_at(9999, base));
-    let expired = disc.expire_at(base + Duration::from_secs(36));
-    assert_eq!(expired.len(), 256);
-    assert_eq!(disc.len(), 0);
-    assert!(disc.should_solicit_at(9999, base + Duration::from_secs(37)));
-    disc.cancel();
-    assert!(disc.is_cancelled());
-    assert_eq!(disc.len(), 0);
-    assert!(!disc.should_solicit_at(3000, base + Duration::from_secs(100)));
-}
+use super::envelope_harness::{Harness, broadcast_data, control_npdu};
+use super::{BACnetRouter, RouterOptions, RouterPort, SendRequest, StartedRouter};
+use crate::router_table::PortId;
 
 // --- Router harness: directed unknown solicits, coalesces, learns ---
 
@@ -206,7 +38,7 @@ async fn directed_unknown_solicits_once_then_rejects_twice_coalesced() {
     let who_is = decode_npdu(solicited[0].clone()).unwrap();
     assert_eq!(
         who_is.message_type,
-        Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw())
+        Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK)
     );
     assert_eq!(who_is.payload.as_ref(), &[0x27, 0x0f]);
     let rejects = h.drain(0);
@@ -218,7 +50,7 @@ async fn directed_unknown_solicits_once_then_rejects_twice_coalesced() {
                 let decoded = decode_npdu(npdu).unwrap();
                 assert_eq!(
                     decoded.message_type,
-                    Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw())
+                    Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
                 );
                 assert_eq!(
                     decoded.payload.as_ref(),
@@ -246,7 +78,7 @@ async fn directed_unknown_discovered_via_answer_routes_next_packet() {
     h.dispatch(h.ctx(0, &[7], npdu)).await;
     assert_eq!(broadcast_data(h.drain(1)).len(), 1);
     assert_eq!(h.drain(0).len(), 1);
-    assert!(h.table.lock().await.lookup(3000).is_none());
+    assert!(h.table().lookup(3000).is_none());
     // Answer installs the route (standard last-wins, no corroboration wait).
     h.handle(h.ctx(
         1,
@@ -261,15 +93,15 @@ async fn directed_unknown_discovered_via_answer_routes_next_packet() {
                 SendRequest::Broadcast { npdu, .. } => {
                     assert_eq!(
                         decode_npdu(npdu).unwrap().message_type,
-                        Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK.to_raw())
+                        Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK)
                     );
                 }
                 SendRequest::Unicast { .. } => panic!("expected only I-Am rebroadcast"),
             }
         }
     }
-    assert!(h.table.lock().await.lookup(3000).is_some());
-    assert_eq!(h.table.lock().await.lookup(3000).unwrap().port_index, 1);
+    assert!(h.table().lookup(3000).is_some());
+    assert_eq!(h.table().lookup(3000).unwrap().port(), PortId(1));
     // Next packet to the now-known network forwards instead of rejecting.
     let mut npdu = control_npdu(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK, &[0x0b, 0xb8]);
     npdu.destination = Some(NpduAddress {
@@ -323,6 +155,9 @@ impl bacnet_transport::port::TransportPort for MemTransport {
                 npdu: Bytes::copy_from_slice(npdu),
                 mac: MacAddr::from_slice(mac),
                 data_attributes: data_attributes.to_vec(),
+
+                response: None,
+                reject_origin: None,
             })
             .map_err(|_| bacnet_types::error::Error::Encoding("wire full".into()))
     }
@@ -335,6 +170,8 @@ impl bacnet_transport::port::TransportPort for MemTransport {
             .try_send(SendRequest::Broadcast {
                 npdu: Bytes::copy_from_slice(npdu),
                 data_attributes: data_attributes.to_vec(),
+
+                reject_origin: None,
             })
             .map_err(|_| bacnet_types::error::Error::Encoding("wire full".into()))
     }
@@ -415,8 +252,7 @@ async fn apdu_unknown_solicits_rejects_then_forwards_after_answer() {
         while let Ok(req) = wire1.try_recv() {
             if let SendRequest::Broadcast { npdu, .. } = req {
                 let decoded = decode_npdu(npdu).unwrap();
-                if decoded.message_type
-                    == Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw())
+                if decoded.message_type == Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK)
                     && decoded.payload.as_ref() == [0x0b, 0xb8]
                 {
                     saw_who_is = true;
@@ -426,8 +262,7 @@ async fn apdu_unknown_solicits_rejects_then_forwards_after_answer() {
         while let Ok(req) = wire0.try_recv() {
             if let SendRequest::Unicast { npdu, mac, .. } = req {
                 let decoded = decode_npdu(npdu).unwrap();
-                if decoded.message_type
-                    == Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw())
+                if decoded.message_type == Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
                     && decoded.payload.as_ref()
                         == [
                             RejectMessageReason::NOT_DIRECTLY_CONNECTED.to_raw(),
@@ -448,9 +283,10 @@ async fn apdu_unknown_solicits_rejects_then_forwards_after_answer() {
     assert!(saw_reject, "expected honest retryable reject");
     // Answer installs the route; the retry forwards without a reject.
     {
-        let mut tbl = router.table().lock().await;
-        tbl.apply_learning_claim(3000, 1, MacAddr::from_slice(&[2]), Instant::now());
-        tbl.record_learned();
+        let now = router.now();
+        let mac = bacnet_npdu::Mac::from_array([2]);
+        let port = crate::router_table::PortId(1);
+        let _ = router.table().learn(3000, port, mac, now);
     }
     tx0.send(ingress(apdu_to(3000))).await.unwrap();
     let mut forwarded = false;
@@ -458,19 +294,18 @@ async fn apdu_unknown_solicits_rejects_then_forwards_after_answer() {
     for _ in 0..20 {
         tokio::task::yield_now().await;
         while let Ok(req) = wire1.try_recv() {
-            if let SendRequest::Unicast { mac, .. } = req {
-                if mac.as_slice() == [2] {
-                    forwarded = true;
-                }
+            if let SendRequest::Unicast { mac, .. } = req
+                && mac.as_slice() == [2]
+            {
+                forwarded = true;
             }
         }
         while let Ok(req) = wire0.try_recv() {
-            if let SendRequest::Unicast { npdu, .. } = req {
-                if decode_npdu(npdu).unwrap().message_type
-                    == Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw())
-                {
-                    rejected = true;
-                }
+            if let SendRequest::Unicast { npdu, .. } = req
+                && decode_npdu(npdu).unwrap().message_type
+                    == Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
+            {
+                rejected = true;
             }
         }
         if forwarded {
@@ -479,7 +314,7 @@ async fn apdu_unknown_solicits_rejects_then_forwards_after_answer() {
     }
     assert!(forwarded, "expected forward after discovery");
     assert!(!rejected, "no reject once the route is known");
-    router.stop().await;
+    router.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -517,13 +352,11 @@ async fn stop_cancels_pending_discovery() {
     tx0.send(ingress(apdu_to(4000))).await.unwrap();
     for _ in 0..10 {
         tokio::task::yield_now().await;
-        if router.discovery.lock().await.len() == 1 {
+        if router.searches().0 == 1 {
             break;
         }
     }
-    assert_eq!(router.discovery.lock().await.len(), 1);
-    router.stop().await;
-    let disc = router.discovery.lock().await;
-    assert!(disc.is_cancelled());
-    assert_eq!(disc.len(), 0);
+    assert_eq!(router.searches(), (1, false));
+    router.stop().await.unwrap();
+    assert_eq!(router.searches(), (0, true));
 }

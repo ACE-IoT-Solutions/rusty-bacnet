@@ -2,8 +2,8 @@
 //! function has.
 
 use super::{BIP6_ADDRESS_LENGTH, VMAC_LENGTH};
-use crate::function::named_codes;
 use crate::PayloadShape;
+use crate::function::named_codes;
 
 named_codes! {
     /// A B/IPv6 BVLC function code: the second octet of every B/IPv6 BVLL
@@ -95,6 +95,7 @@ impl Bvlc6Function {
     /// );
     /// assert_eq!(Bvlc6Function::from_raw(0x0B).payload_shape(), None);
     /// ```
+    #[must_use]
     pub const fn payload_shape(self) -> Option<PayloadShape> {
         Some(match self {
             Self::VIRTUAL_ADDRESS_RESOLUTION => PayloadShape::Fixed(VMAC_LENGTH),
@@ -138,6 +139,7 @@ impl Bvlc6Function {
     /// (U.4.4); a broadcast distribution from a node that isn't a registered
     /// foreign device gets its NAK the same way. A
     /// Forwarded-Address-Resolution is never answered with a BVLC-Result.
+    #[must_use]
     pub const fn nak(self) -> Option<Bvlc6ResultCode> {
         Some(match self {
             Self::ADDRESS_RESOLUTION => Bvlc6ResultCode::ADDRESS_RESOLUTION_NAK,

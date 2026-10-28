@@ -1,3 +1,4 @@
+use bacnet_types::error::RemoteError;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -74,10 +75,10 @@ impl BACnetObject for ListObject {
         if property == self.property {
             Ok(PropertyValue::List(self.items.clone()))
         } else {
-            Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            })
+            Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            ))
         }
     }
 
@@ -88,10 +89,10 @@ impl BACnetObject for ListObject {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
     fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
@@ -382,9 +383,9 @@ fn by_sequence_rejects_unnumbered_properties_and_misalignment() {
         .unwrap_err();
         assert!(matches!(
             error,
-            Error::Protocol { class, code }
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == ErrorCode::LIST_ITEM_NOT_NUMBERED.to_raw() as u32
+            Error::Remote(RemoteError::Error { class, code })
+                if class == ErrorClass::PROPERTY
+                    && code == ErrorCode::LIST_ITEM_NOT_NUMBERED
         ));
     }
 }

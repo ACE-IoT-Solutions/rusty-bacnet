@@ -1,0 +1,28 @@
+---
+source: crates/bacnet-cli/src/tui/tests/help_keys.rs
+expression: end
+---
+" [1 Devices] 2 3 4 7 | BIP 10.0.0.1:47808 | up | READ-ONLY | drop 0      ? help "
+"┌ ┌ Help (? or Esc to close) ────────────────────────────────────────────────┐─┐"
+"│ │   writem DEVICE OBJECT PROPERTY VALUE[@P] ...                            │ │"
+"│ │                    One WritePropertyMultiple to a device, previewed      │ │"
+"│ │                    first                                                 │ │"
+"│ │   bbmd [ADDRESS]   Another BBMD's tables; alone, back to our own BBMD's  │ │"
+"│ │   find NAME        Who-Has by object name; alone, close the list         │ │"
+"│ │   mstp rotation|hold MS                                                  │ │"
+"│ │                    Monitor thresholds, safe-join window, or receive-only │ │"
+"│ │                    baud scan                                             │ │"
+"│ │   mstp listen SECS Monitor thresholds, safe-join window, or receive-only │ │"
+"│ │                    baud scan                                             │ │"
+"│ │   mstp scan SECS|cancel                                                  │ │"
+"│ │                    Monitor thresholds, safe-join window, or receive-only │ │"
+"│ │                    baud scan                                             │ │"
+"│ │   dcc enable       DeviceCommunicationControl, selected device (T3)      │ │"
+"│ │   dcc disable-initiation|disable [MINUTES]                               │ │"
+"│ │                    DeviceCommunicationControl, selected device (T3)      │ │"
+"│ │   dcc disable-initiation|disable forever                                 │ │"
+"│ │                    DeviceCommunicationControl, selected device (T3)      │ │"
+"│ │   reinit coldstart|warmstart|STATE                                       │ │"
+"│ │                    ReinitializeDevice, selected device (T3)              │ │"
+"└─└─────────────────────────────────── 32-51 of 51  Up Down PgUp PgDn scroll ┘─┘"
+"                                                                                "

@@ -7,13 +7,13 @@
 //! not. macOS is where this test is the B/IPv6 real-socket evidence, so there
 //! it fails if the probe does not get through; elsewhere it skips.
 
-use super::bip6_group_confirmed::{database, npdu, who_is, write_present_value, DEVICE};
-use bacnet_encoding::apdu::{decode_apdu, Apdu, SimpleAck};
+use super::bip6_group_confirmed::{DEVICE, database, npdu, who_is, write_present_value};
+use bacnet_encoding::apdu::{Apdu, SimpleAck, decode_apdu};
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip6::{
-    decode_bip6_mac, decode_bvll6, encode_bvll6, Bip6Transport, Bip6Vmac, Bvll6,
-    BACNET_IPV6_MULTICAST_LINK_LOCAL,
+    BACNET_IPV6_MULTICAST_LINK_LOCAL, Bip6Transport, Bip6Vmac, Bvll6, decode_bvll6, encode_bvll6,
+    vmac_from_device_instance,
 };
 use bacnet_types::enums::{ObjectType, PropertyIdentifier, UnconfirmedServiceChoice};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
@@ -21,22 +21,17 @@ use bytes::{Bytes, BytesMut};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::{Ipv6Addr, SocketAddrV6};
 use tokio::net::UdpSocket;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 const CLIENT_VMAC: Bip6Vmac = Bip6Vmac::new([0x0A, 0x0B, 0x0C]);
 /// The OS whose loopback carries FF02::BAC0, where the test has to run.
 const EVIDENCE_OS: bool = cfg!(target_os = "macos");
 
 /// The loopback interface's index, looked up by its usual names.
-#[allow(unsafe_code)]
 fn loopback_index() -> Option<u32> {
-    ["lo0", "lo"].into_iter().find_map(|name| {
-        let name = std::ffi::CString::new(name).unwrap();
-        // SAFETY: `name` is a NUL-terminated string that outlives the call,
-        // which only reads it.
-        let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
-        (index != 0).then_some(index)
-    })
+    ["lo0", "lo"]
+        .into_iter()
+        .find_map(|name| nix::net::if_::if_nametoindex(name).ok())
 }
 
 /// An IPv6 UDP socket bound to `address` that sends multicast out the
@@ -119,16 +114,19 @@ async fn an_original_unicast_sent_to_the_multicast_group_is_not_answered() {
         return;
     };
     let mut server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(DEVICE, 0).unwrap())
         .database(database())
         .transport(Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(DEVICE)))
         .build()
         .await
         .unwrap();
-    let (_, port) = decode_bip6_mac(server.local_mac()).unwrap();
-    let server_vmac = {
-        let bytes = DEVICE.to_be_bytes();
-        Bip6Vmac::new([bytes[1], bytes[2], bytes[3]])
-    };
+    let port = server.transport().unwrap().local_address().unwrap().port();
+    let server_vmac = vmac_from_device_instance(DEVICE).unwrap();
+    assert_eq!(
+        server.local_mac(),
+        server_vmac.octets(),
+        "the MAC is the VMAC"
+    );
     let client = socket(Ipv6Addr::LOCALHOST, index).unwrap();
     let to_group = SocketAddrV6::new(BACNET_IPV6_MULTICAST_LINK_LOCAL, port, 0, index);
     let to_server = SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0);
@@ -165,7 +163,7 @@ async fn an_original_unicast_sent_to_the_multicast_group_is_not_answered() {
                 Some(Apdu::UnconfirmedRequest(request))
                     if request.service_choice == UnconfirmedServiceChoice::I_AM =>
                 {
-                    break
+                    break;
                 }
                 Some(Apdu::UnconfirmedRequest(_)) | None => {}
                 Some(answer) => panic!("the multicast request drew an answer: {answer:?}"),

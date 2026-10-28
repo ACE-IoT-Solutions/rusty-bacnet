@@ -65,18 +65,21 @@ fn six_single_reference_mappings_keep_exact_octets_and_outer_index_boundaries() 
     }
     // Same property on an object outside the six pairings is not reclassified.
     assert_eq!(
-        element(
+        property_element(
             ObjectType::ANALOG_INPUT,
             PropertyIdentifier::OBJECT_PROPERTY_REFERENCE
         ),
         None
     );
     assert_eq!(
-        element(
+        property_element(
             ObjectType::TREND_LOG_MULTIPLE,
             PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY
         ),
-        Some((Element::DeviceObjectPropertyReference, Shape::Collection))
+        Some((
+            Element::DeviceObjectPropertyReference,
+            ElementShape::Collection
+        ))
     );
 }
 
@@ -162,9 +165,11 @@ fn rpm_converter_keeps_typed_raw_value_raw_bytes_and_embedded_error_distinct() {
         let error = error.cast::<PyDict>().unwrap();
         assert!(error.get_item("value").unwrap().unwrap().is_none());
         let pair = error.get_item("error").unwrap().unwrap();
-        let (class, code): (crate::types::PyErrorClass, crate::types::PyErrorCode) =
-            pair.extract().unwrap();
-        assert_eq!(class.inner, ErrorClass::PROPERTY);
-        assert_eq!(code.inner, ErrorCode::UNKNOWN_PROPERTY);
+        let (class, code): (u16, u16) = pair.extract().unwrap();
+        assert_eq!(class, ErrorClass::PROPERTY.to_raw());
+        assert_eq!(code, ErrorCode::UNKNOWN_PROPERTY.to_raw());
+        // Members of the IntEnum classes (#1816).
+        let class_type = crate::types::int_enums::class::<ErrorClass>(py).unwrap();
+        assert!(pair.get_item(0).unwrap().is_instance(class_type).unwrap());
     });
 }

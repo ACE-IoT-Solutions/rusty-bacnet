@@ -9,6 +9,8 @@
 //! Controlled_Variable_Value, the measurement it compares with Setpoint; the
 //! object doesn't follow Controlled_Variable_Reference itself.
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
 use bacnet_types::constructed::BACnetObjectPropertyReference;
 use bacnet_types::enums::{
     Action, EngineeringUnits, ErrorClass, ErrorCode, EventState, ObjectType, PropertyIdentifier,
@@ -16,7 +18,6 @@ use bacnet_types::enums::{
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
-use std::borrow::Cow;
 
 use crate::common::{self, read_property_list_property};
 use crate::reference::{self, ReferenceFrame};
@@ -36,7 +37,7 @@ pub struct LoopObject {
     proportional_constant: f32,
     integral_constant: f32,
     derivative_constant: f32,
-    output_units: u32,
+    output_units: EngineeringUnits,
     controlled_variable_units: EngineeringUnits,
     proportional_constant_units: EngineeringUnits,
     integral_constant_units: EngineeringUnits,
@@ -58,7 +59,11 @@ pub struct LoopObject {
 impl LoopObject {
     /// Create a new Loop object; `output_units` is a raw BACnetEngineeringUnits value for the
     /// output.
-    pub fn new(instance: u32, name: impl Into<String>, output_units: u32) -> Result<Self, Error> {
+    pub fn new(
+        instance: u32,
+        name: impl Into<String>,
+        output_units: EngineeringUnits,
+    ) -> Result<Self, Error> {
         let oid = ObjectIdentifier::new(ObjectType::LOOP, instance)?;
         Ok(Self {
             oid,
@@ -260,7 +265,7 @@ impl BACnetObject for LoopObject {
                 Ok(PropertyValue::Real(self.derivative_constant))
             }
             p if p == PropertyIdentifier::OUTPUT_UNITS => {
-                Ok(PropertyValue::Enumerated(self.output_units))
+                Ok(PropertyValue::Enumerated(self.output_units.to_raw()))
             }
             p if p == PropertyIdentifier::CONTROLLED_VARIABLE_UNITS => Ok(
                 PropertyValue::Enumerated(self.controlled_variable_units.to_raw()),
@@ -322,10 +327,10 @@ impl BACnetObject for LoopObject {
             p if p == PropertyIdentifier::PROPERTY_LIST => {
                 read_property_list_property(&self.property_list(), array_index)
             }
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -387,10 +392,10 @@ impl BACnetObject for LoopObject {
                     self.update_interval = common::u64_to_u32(v)?;
                     return Ok(());
                 }
-                Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY.to_raw() as u32,
-                    code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
-                })
+                Err(Error::protocol(
+                    ErrorClass::PROPERTY,
+                    ErrorCode::INVALID_DATA_TYPE,
+                ))
             }
             // Clause 12.17 Table 12-20 lists Reliability O7; that footnote requires
             // writes to be supported while Out_Of_Service is TRUE. The property's
@@ -413,20 +418,20 @@ impl BACnetObject for LoopObject {
                     self.reliability = v;
                     return Ok(());
                 }
-                Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY.to_raw() as u32,
-                    code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
-                })
+                Err(Error::protocol(
+                    ErrorClass::PROPERTY,
+                    ErrorCode::INVALID_DATA_TYPE,
+                ))
             }
             p if p == PropertyIdentifier::DESCRIPTION => {
                 if let PropertyValue::CharacterString(s) = value {
                     self.description = s;
                     return Ok(());
                 }
-                Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY.to_raw() as u32,
-                    code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
-                })
+                Err(Error::protocol(
+                    ErrorClass::PROPERTY,
+                    ErrorCode::INVALID_DATA_TYPE,
+                ))
             }
             // Table 12-20 types the two variable references
             // BACnetObjectPropertyReference: a write takes the reference's

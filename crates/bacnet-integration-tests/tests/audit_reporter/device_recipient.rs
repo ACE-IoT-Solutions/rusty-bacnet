@@ -1,6 +1,7 @@
 //! Actual B/IP recipient changes notify the old Device route and new Address.
 use super::*;
-use bacnet_types::{constructed::BACnetAddress, MacAddr};
+use bacnet_types::error::RemoteError;
+use bacnet_types::{MacAddr, constructed::BACnetAddress};
 use bytes::BytesMut;
 
 #[tokio::test]
@@ -26,6 +27,7 @@ async fn device_recipient_bip_address_change_delivers_to_both_real_loggers() {
         // The mandatory property-specific pair applies even at Audit_Level NONE.
         db.add(Box::new(reporter)).unwrap();
         let mut target = BACnetServer::bip_builder()
+            .device(bacnet_objects::DeviceIdentity::new(10, 0).unwrap())
             .interface(Ipv4Addr::LOCALHOST)
             .port(0)
             .database(db)
@@ -76,7 +78,7 @@ async fn device_recipient_bip_address_change_delivers_to_both_real_loggers() {
                 .await
                 .unwrap_err();
             assert!(
-                matches!(error, Error::Protocol { class, code } if class == ErrorClass::SERVICES.to_raw() as u32 && code == ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32)
+                matches!(error, Error::Remote(RemoteError::Error { class, code }) if class == ErrorClass::SERVICES && code == ErrorCode::SERVICE_REQUEST_DENIED)
             );
         }
         assert_eq!(old_records.record_count(), 0);

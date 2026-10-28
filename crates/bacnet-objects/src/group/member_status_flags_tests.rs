@@ -3,6 +3,7 @@
 
 use super::*;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 const IN_ALARM: u8 = 0x80;
 const FAULT: u8 = 0x40;
@@ -40,9 +41,9 @@ fn assert_write_denied(group: &mut GlobalGroupObject, property: PropertyIdentifi
     assert!(!group.is_writable_property(property));
     assert!(matches!(
         group.write_property(property, None, value.clone(), None),
-        Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+        Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::WRITE_ACCESS_DENIED
     ));
     assert_eq!(read(group, property), value);
 }

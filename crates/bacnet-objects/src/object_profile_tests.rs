@@ -8,12 +8,13 @@ use crate::lighting::{BinaryLightingOutputObject, ColorLink, LightingOutputObjec
 use crate::property_metadata::PropertyConformance;
 use crate::traits::BACnetObject;
 use bacnet_types::enums::ObjectType;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::ObjectIdentifier;
 
 fn assert_code<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     match result {
-        Err(Error::Protocol { code, .. }) => {
-            assert_eq!(code, expected.to_raw() as u32, "expected {expected:?}")
+        Err(Error::Remote(RemoteError::Error { code, .. })) => {
+            assert_eq!(code, expected, "expected {expected:?}")
         }
         other => panic!("expected {expected:?}, got {other:?}"),
     }
@@ -69,9 +70,11 @@ fn an_unprovisioned_profile_serves_and_lists_nothing() {
         );
     }
     assert!(profile.read(P::DESCRIPTION, None).is_none());
-    assert!(profile
-        .write(P::DESCRIPTION, None, &PropertyValue::Null)
-        .is_none());
+    assert!(
+        profile
+            .write(P::DESCRIPTION, None, &PropertyValue::Null)
+            .is_none()
+    );
 }
 
 #[test]
@@ -298,7 +301,8 @@ fn objects() -> Vec<Case> {
         (
             Box::new(BinaryLightingOutputObject::new(1, "BLO-1").unwrap()),
             Box::new(binary),
-            P::CURRENT_COMMAND_PRIORITY,
+            // Table 12-69 lists the value-source rows (#1866) before Tags.
+            P::LAST_COMMAND_TIME,
         ),
     ]
 }

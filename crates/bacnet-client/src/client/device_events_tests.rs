@@ -1,12 +1,11 @@
 use super::*;
-use bacnet_encoding::apdu::{encode_apdu, UnconfirmedRequest};
-use bacnet_encoding::npdu::{encode_npdu, Npdu};
+use bacnet_encoding::apdu::{UnconfirmedRequest, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, encode_npdu};
 use bacnet_services::who_is::IAmRequest;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{ObjectType, Segmentation};
 use bacnet_types::primitives::ObjectIdentifier;
-use std::time::Instant;
 
 fn i_am_npdu(instance: u32, vendor_id: u16) -> BytesMut {
     i_am_npdu_with_capabilities(instance, vendor_id, 1476, Segmentation::NONE)

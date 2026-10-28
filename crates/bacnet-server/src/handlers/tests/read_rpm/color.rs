@@ -1,11 +1,12 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     color::{ColorObject, ColorTemperatureObject},
     traits::BACnetObject,
 };
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 // Shared RP-vs-RPM parity plus budget parity over one case table.
 type ExpectedRead = Result<&'static [u8], ErrorCode>;
@@ -72,13 +73,15 @@ fn assert_cases(
             Err(expected) => {
                 assert!(result.property_value.is_none());
                 assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
-                assert!(matches!(rp, Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32));
+                assert!(
+                    matches!(rp, Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == ErrorClass::PROPERTY && code == expected)
+                );
                 assert!(response.is_empty());
             }
         }
     }
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+    use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
     let budget = crate::server::ReadPropertyMultipleBudget {
         max_result_elements: cases.len(),
         max_service_ack_bytes: legacy.len(),
@@ -200,7 +203,12 @@ fn rpm_color_indexed_reads_and_bytes_are_unchanged() {
                 Some(0),
                 Err(ErrorCode::PROPERTY_IS_NOT_AN_ARRAY),
             ),
-            (P::IN_PROGRESS, None, Ok(&[0x91, 0])),
+            // Undriven until a write or the device start drives it (#1526).
+            (
+                P::IN_PROGRESS,
+                None,
+                Ok(if configured { &[0x91, 0] } else { &[0x91, 3] }),
+            ),
             (
                 P::IN_PROGRESS,
                 Some(0),
@@ -353,7 +361,11 @@ fn rpm_color_temperature_indexed_reads_and_bytes_are_unchanged() {
                 Some(0),
                 Err(ErrorCode::PROPERTY_IS_NOT_AN_ARRAY),
             ),
-            (P::IN_PROGRESS, None, Ok(&[0x91, 0])),
+            (
+                P::IN_PROGRESS,
+                None,
+                Ok(if configured { &[0x91, 0] } else { &[0x91, 3] }),
+            ),
             (
                 P::IN_PROGRESS,
                 Some(0),

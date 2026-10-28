@@ -11,8 +11,8 @@ use tokio::sync::mpsc;
 
 use super::frame::{encoded, raw_frame};
 use super::receive::Receiver;
+use super::resolver::Resolver;
 use super::socket::Bip6Socket;
-use super::vmac_table::VmacTable;
 use super::*;
 use crate::port::ReceivedNpdu;
 use crate::port::TransportPort;
@@ -49,13 +49,13 @@ async fn receiver() -> (Receiver, mpsc::Receiver<ReceivedNpdu>) {
     let receiver = Receiver {
         socket: Arc::new(socket),
         tx,
-        local_mac: encode_bip6_mac(local_ip(), 0xBAC0),
+        local_port: 0xBAC0,
         vmac: LOCAL_VMAC,
         local_ip: local_ip(),
         unicast_ips: vec![local_ip()],
         wildcard_bind: false,
         foreign_bbmd: None,
-        vmac_table: VmacTable::new(),
+        neighbours: Resolver::with_own(LOCAL_VMAC),
         forwarded_group_origin_drops: Arc::default(),
         drops: Arc::default(),
         nak_quota: Default::default(),
@@ -96,6 +96,7 @@ fn datagram(
         destination: IpAddr::V6(destination),
         arrival_index: Some(1),
         os_group_delivery,
+        arrival_stamp: None,
     }
 }
 
@@ -179,33 +180,28 @@ async fn original_unicast_for_another_vmac_is_dropped() {
     );
 }
 
-/// #1479: every IPv6 multicast group is a group destination at any port,
-/// the BACnet groups and others such as ff02::1, while `is_broadcast_mac`
-/// keeps to the BACnet groups. The owned rule agrees with the live one.
+/// The MAC is a VMAC, which always names one node (U.1.3): a B/IPv6
+/// broadcast is the network layer's zero-length MAC. No MAC is this link's
+/// broadcast or a group destination, an 18-octet multicast address
+/// included, and the owned rule agrees with the live one (#1479, #1637).
 #[test]
-fn every_multicast_group_is_a_group_destination() {
+fn no_mac_is_a_group_destination() {
     let transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0xBAC0, None);
     let owned = transport.group_destinations();
-    let mac = |ip: Ipv6Addr, port: u16| [&ip.octets()[..], &port.to_be_bytes()].concat();
-    for (ip, group) in [
-        (BACNET_IPV6_MULTICAST_LINK_LOCAL, true),
-        ("ff02::1".parse().unwrap(), true),
-        ("ff05::1:3".parse().unwrap(), true),
-        ("fe80::1".parse().unwrap(), false),
-        ("2001:db8::7".parse().unwrap(), false),
-        (Ipv6Addr::LOCALHOST, false),
-    ] {
-        for port in [0xBAC0, 0x1234] {
-            assert_eq!(
-                transport.is_group_destination(&mac(ip, port)),
-                group,
-                "{ip}"
-            );
-            assert_eq!(owned.contains(&mac(ip, port)), group, "{ip}");
-        }
+    let multicast = |ip: Ipv6Addr| [&ip.octets()[..], &0xBAC0u16.to_be_bytes()].concat();
+    let macs = [
+        vec![0x00, 0x04, 0xD2],
+        vec![0xFF, 0xFF, 0xFF],
+        vec![0xFF],
+        Vec::new(),
+        multicast(BACNET_IPV6_MULTICAST_LINK_LOCAL),
+        multicast("ff02::1".parse().unwrap()),
+    ];
+    for mac in macs {
+        assert!(!transport.is_broadcast_mac(&mac), "{mac:02X?}");
+        assert!(!transport.is_group_destination(&mac), "{mac:02X?}");
+        assert!(!owned.contains(&mac), "{mac:02X?}");
     }
-    assert!(!transport.is_broadcast_mac(&mac("ff02::1".parse().unwrap(), 0xBAC0)));
-    assert!(!transport.is_group_destination(&[0xFF; 16]));
 }
 
 /// A Forwarded-NPDU from `origin`, carrying a ReadProperty request.
@@ -256,10 +252,7 @@ async fn a_forwarded_npdu_from_a_multicast_origin_is_dropped_and_counted() {
         )
         .await;
     let npdu = rx.try_recv().expect("a unicast origin is handed up");
-    assert_eq!(
-        npdu.source_mac.as_slice(),
-        &encode_bip6_mac(*station.ip(), station.port())
-    );
+    assert_eq!(npdu.source_mac.as_slice(), SENDER_VMAC.octets());
 }
 
 /// A Forwarded-NPDU whose NPDU is shorter than an NPDU's version and control
@@ -300,7 +293,7 @@ async fn a_forwarded_npdu_too_short_for_an_npdu_is_dropped_before_its_origin() {
         .await;
 
     assert!(rx.try_recv().is_err());
-    assert_eq!(receiver.vmac_table.lookup(&SENDER_VMAC).await, None);
+    assert_eq!(receiver.neighbours.lookup(SENDER_VMAC), None);
     assert_eq!(
         receiver
             .forwarded_group_origin_drops
@@ -329,7 +322,7 @@ async fn a_running_transport_counts_multicast_origins() {
         ttl: 60,
     });
     let mut rx = transport.start().await.unwrap();
-    let (_, port) = decode_bip6_mac(transport.local_mac()).unwrap();
+    let port = transport.local_address().unwrap().port();
     let to = SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0);
     let station = SocketAddrV6::new("2001:db8::20".parse().unwrap(), 0xBAC0, 0, 0);
     let group = SocketAddrV6::new("ff02::1".parse().unwrap(), 0xBAC0, 0, 0);
@@ -342,8 +335,13 @@ async fn a_running_transport_counts_multicast_origins() {
         .unwrap();
     assert_eq!(
         received.source_mac.as_slice(),
-        &encode_bip6_mac(*station.ip(), station.port()),
+        SENDER_VMAC.octets(),
         "the group origin went nowhere"
+    );
+    assert_eq!(
+        transport.lookup_vmac(SENDER_VMAC),
+        Some(station),
+        "the station's address is learned for its VMAC"
     );
     assert_eq!(transport.forwarded_group_origin_drops(), 1);
     transport.stop().await.unwrap();

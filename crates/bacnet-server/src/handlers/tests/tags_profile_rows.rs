@@ -13,6 +13,7 @@ use bacnet_objects::lighting::BinaryLightingOutputObject;
 use bacnet_objects::object_profile::ObjectProfile;
 use bacnet_objects::object_profile::{TagsPersistence, TagsSnapshot};
 use bacnet_types::constructed::BACnetNameValue;
+use bacnet_types::error::RemoteError;
 use std::sync::{Arc, Mutex};
 
 const TAGS: PropertyIdentifier = PropertyIdentifier::TAGS;
@@ -201,9 +202,9 @@ fn tags_take_array_writes_and_the_profile_rows_none() {
     // Past the resource cap: RESOURCES / NO_SPACE_TO_WRITE_PROPERTY.
     let too_many = write_at(&mut db, oid, TAGS, Some(0), &[0x22, 0x04, 0x01]);
     assert!(
-        matches!(too_many, Err(Error::Protocol { class, code })
-            if class == ErrorClass::RESOURCES.to_raw() as u32
-                && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY.to_raw() as u32),
+        matches!(too_many, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::RESOURCES
+                && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY),
         "{too_many:?}"
     );
     // A NULL to a property with no NULL in its datatype changes nothing.
@@ -253,9 +254,9 @@ fn a_whole_tags_write_takes_up_to_max_tags_elements() {
     );
     let too_many = write_at(&mut db, oid, TAGS, None, &tag.repeat(max + 1));
     assert!(
-        matches!(too_many, Err(Error::Protocol { class, code })
-            if class == ErrorClass::RESOURCES.to_raw() as u32
-                && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY.to_raw() as u32),
+        matches!(too_many, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::RESOURCES
+                && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY),
         "{too_many:?}"
     );
     assert_eq!(
@@ -272,6 +273,7 @@ fn value_profiles_read_with_exact_wire_bytes() {
     use bacnet_objects::binary::BinaryValueObject;
     use bacnet_objects::multistate::MultiStateValueObject;
     use bacnet_objects::present_value_access::PresentValueAccess;
+    use bacnet_types::enums::EngineeringUnits;
     for access in [
         PresentValueAccess::Commandable,
         PresentValueAccess::Writable,
@@ -286,7 +288,7 @@ fn value_profiles_read_with_exact_wire_bytes() {
             profile_name: Some(NAME.into()),
         };
         macro_rules! build {
-            ($object:expr) => {{
+            ($object:expr_2021) => {{
                 let mut object = $object.unwrap();
                 // Absent rows refuse both reads and writes before provisioning.
                 for property in [
@@ -309,7 +311,12 @@ fn value_profiles_read_with_exact_wire_bytes() {
             }};
         }
         for object in [
-            build!(AnalogValueObject::with_access(1, "AV", 95, access)),
+            build!(AnalogValueObject::with_access(
+                1,
+                "AV",
+                EngineeringUnits::NO_UNITS,
+                access
+            )),
             build!(BinaryValueObject::with_access(1, "BV", access)),
             build!(MultiStateValueObject::with_access(1, "MSV", 3, access)),
         ] {
@@ -361,6 +368,7 @@ fn input_profiles_read_with_exact_wire_bytes_in_either_oos_state() {
     use bacnet_objects::analog::AnalogInputObject;
     use bacnet_objects::binary::BinaryInputObject;
     use bacnet_objects::multistate::MultiStateInputObject;
+    use bacnet_types::enums::EngineeringUnits;
     for out_of_service in [false, true] {
         let profile = ObjectProfile {
             tags: Some(vec![
@@ -371,7 +379,7 @@ fn input_profiles_read_with_exact_wire_bytes_in_either_oos_state() {
             profile_name: Some(NAME.into()),
         };
         macro_rules! build {
-            ($object:expr) => {{
+            ($object:expr_2021) => {{
                 let mut object = $object.unwrap();
                 for property in [
                     TAGS,
@@ -401,7 +409,7 @@ fn input_profiles_read_with_exact_wire_bytes_in_either_oos_state() {
             }};
         }
         for object in [
-            build!(AnalogInputObject::new(1, "AI", 95)),
+            build!(AnalogInputObject::new(1, "AI", EngineeringUnits::NO_UNITS)),
             build!(BinaryInputObject::new(1, "BI")),
             build!(MultiStateInputObject::new(1, "MSI", 3)),
         ] {
@@ -440,7 +448,7 @@ fn input_profiles_read_with_exact_wire_bytes_in_either_oos_state() {
             );
             let count = write_at(&mut db, oid, TAGS, Some(0), &[0x22, 4, 1]);
             assert!(
-                matches!(count, Err(Error::Protocol { class, code }) if class == ErrorClass::RESOURCES.to_raw() as u32 && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY.to_raw() as u32)
+                matches!(count, Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::RESOURCES && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY)
             );
             assert_eq!(read_wire(&db, oid, TAGS), [EXHAUST, FLOOR].concat());
             write_at(&mut db, oid, TAGS, None, &FLOOR).unwrap();
@@ -497,6 +505,7 @@ fn output_profiles_read_with_exact_wire_bytes_in_either_oos_state() {
     use bacnet_objects::analog::AnalogOutputObject;
     use bacnet_objects::binary::BinaryOutputObject;
     use bacnet_objects::multistate::MultiStateOutputObject;
+    use bacnet_types::enums::EngineeringUnits;
     for out_of_service in [false, true] {
         let profile = ObjectProfile {
             tags: Some(vec![
@@ -507,7 +516,7 @@ fn output_profiles_read_with_exact_wire_bytes_in_either_oos_state() {
             profile_name: Some(NAME.into()),
         };
         macro_rules! build {
-            ($object:expr) => {{
+            ($object:expr_2021) => {{
                 let mut object = $object.unwrap();
                 for property in [
                     TAGS,
@@ -537,7 +546,7 @@ fn output_profiles_read_with_exact_wire_bytes_in_either_oos_state() {
             }};
         }
         for object in [
-            build!(AnalogOutputObject::new(1, "AO", 95)),
+            build!(AnalogOutputObject::new(1, "AO", EngineeringUnits::NO_UNITS)),
             build!(BinaryOutputObject::new(1, "BO")),
             build!(MultiStateOutputObject::new(1, "MSO", 3)),
         ] {
@@ -592,11 +601,11 @@ fn output_profiles_read_with_exact_wire_bytes_in_either_oos_state() {
             // Broken application framing is rejected by the outer service parser.
             assert!(matches!(
                 write_at(&mut db, oid, TAGS, None, &[0xff]),
-                Err(Error::Reject { reason }) if reason == RejectReason::INVALID_TAG.to_raw()
+                Err(Error::Remote(RemoteError::Reject { reason })) if reason == RejectReason::INVALID_TAG
             ));
             let count = write_at(&mut db, oid, TAGS, Some(0), &[0x22, 4, 1]);
             assert!(
-                matches!(count, Err(Error::Protocol { class, code }) if class == ErrorClass::RESOURCES.to_raw() as u32 && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY.to_raw() as u32)
+                matches!(count, Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::RESOURCES && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY)
             );
             assert_eq!(read_wire(&db, oid, TAGS), [EXHAUST, FLOOR].concat());
             write_at(&mut db, oid, TAGS, None, &FLOOR).unwrap();

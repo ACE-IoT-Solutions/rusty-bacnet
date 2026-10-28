@@ -1,4 +1,6 @@
 use super::*;
+use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::error::RemoteError;
 
 /// Handle a WhoHas request and return an IHave response if we have the object.
 ///
@@ -47,7 +49,7 @@ pub fn handle_who_has(
 /// Returns the encoded ObjectIdentifier of the created object (ComplexAck payload).
 /// A refused initial value is `Error::Structured` naming its position in the
 /// List of Initial Values (Clause 15.3.1.3); any other refusal is
-/// `Error::Protocol` or a decoding error.
+/// `Error::protocol` or a decoding error.
 pub fn handle_create_object(
     db: &mut ObjectDatabase,
     service_data: &[u8],
@@ -78,13 +80,12 @@ impl CreateObjectRefusal {
     /// it.
     fn of_initial_value(self, position: u32) -> Self {
         let named = |error| match error {
-            Error::Protocol { class, code } | Error::Structured { class, code, .. } => {
-                Error::protocol(
-                    class,
-                    code,
-                    Some(ErrorDetail::FirstFailedElementNumber(position)),
-                )
-            }
+            Error::Remote(RemoteError::Error { class, code })
+            | Error::Structured { class, code, .. } => Error::with_detail(
+                class,
+                code,
+                Some(ErrorDetail::FirstFailedElementNumber(position)),
+            ),
             other => other,
         };
         match self {
@@ -120,7 +121,10 @@ pub(crate) fn handle_create_object_observed(
         }
     }
 
-    bacnet_encoding::primitives::encode_app_object_id(buf, &created_oid);
+    bacnet_services::object_mgmt::CreateObjectAck {
+        object_identifier: created_oid,
+    }
+    .encode(buf);
     Ok(())
 }
 
@@ -212,10 +216,10 @@ fn create(
 ) -> Result<ObjectIdentifier, Error> {
     const MAX_OBJECTS: usize = 10_000;
     if db.len() >= MAX_OBJECTS {
-        return Err(Error::Protocol {
-            class: ErrorClass::RESOURCES.to_raw() as u32,
-            code: ErrorCode::NO_SPACE_FOR_OBJECT.to_raw() as u32,
-        });
+        return Err(Error::protocol(
+            ErrorClass::RESOURCES,
+            ErrorCode::NO_SPACE_FOR_OBJECT,
+        ));
     }
 
     let (object_type, instance) = match &request.object_specifier {
@@ -225,20 +229,21 @@ fn create(
                 .iter()
                 .map(|oid| oid.instance_number())
                 .collect();
-            let next = (1u32..=4_194_303)
-                .find(|i| !existing.contains(i))
-                .ok_or_else(|| Error::Protocol {
-                    class: ErrorClass::RESOURCES.to_raw() as u32,
-                    code: ErrorCode::NO_SPACE_FOR_OBJECT.to_raw() as u32,
-                })?;
+            let next =
+                (1u32..=4_194_303)
+                    .find(|i| !existing.contains(i))
+                    .ok_or(Error::protocol(
+                        ErrorClass::RESOURCES,
+                        ErrorCode::NO_SPACE_FOR_OBJECT,
+                    ))?;
             (*obj_type, next)
         }
         ObjectSpecifier::Identifier(oid) => {
             if db.get(oid).is_some() {
-                return Err(Error::Protocol {
-                    class: ErrorClass::OBJECT.to_raw() as u32,
-                    code: ErrorCode::OBJECT_IDENTIFIER_ALREADY_EXISTS.to_raw() as u32,
-                });
+                return Err(Error::protocol(
+                    ErrorClass::OBJECT,
+                    ErrorCode::OBJECT_IDENTIFIER_ALREADY_EXISTS,
+                ));
             }
             (oid.object_type(), oid.instance_number())
         }
@@ -258,13 +263,13 @@ fn create(
         Box::new(bacnet_objects::analog::AnalogInputObject::new(
             instance,
             name(),
-            95,
+            EngineeringUnits::NO_UNITS,
         )?)
     } else if object_type == ObjectType::ANALOG_OUTPUT {
         Box::new(bacnet_objects::analog::AnalogOutputObject::new(
             instance,
             name(),
-            95,
+            EngineeringUnits::NO_UNITS,
         )?)
     } else if object_type == ObjectType::BINARY_INPUT {
         Box::new(bacnet_objects::binary::BinaryInputObject::new(
@@ -318,10 +323,10 @@ fn create(
             2,
         )?)
     } else {
-        return Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::UNSUPPORTED_OBJECT_TYPE.to_raw() as u32,
-        });
+        return Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::UNSUPPORTED_OBJECT_TYPE,
+        ));
     };
 
     let created_oid = object.object_identifier();
@@ -372,8 +377,8 @@ fn initialize(
     command_origin: Option<&bacnet_objects::command_source::CommandOrigin>,
 ) -> Result<(), CreateObjectRefusal> {
     use super::write_property::{
-        check_and_prepare_name_write, check_write_array_index, commit_attempt,
-        decode_write_property_value, WriteTarget,
+        WriteTarget, check_and_prepare_name_write, check_write_array_index, commit_attempt,
+        decode_write_property_value,
     };
     let property = pv.property_identifier;
     let array_index = pv.property_array_index;
@@ -425,12 +430,9 @@ fn initialize(
     // The labels have to fit the count the request gives; the caller drops
     // the object on a refusal, so the resize needs no undoing.
     match fixed_count {
-        Some(count) if state_count(db, created_oid) != count => {
-            Err(CreateObjectRefusal::Failed(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32,
-            }))
-        }
+        Some(count) if state_count(db, created_oid) != count => Err(CreateObjectRefusal::Failed(
+            Error::protocol(ErrorClass::PROPERTY, ErrorCode::VALUE_OUT_OF_RANGE),
+        )),
         _ => Ok(()),
     }
 }
@@ -462,17 +464,17 @@ pub fn handle_delete_object(
 
     match request.object_identifier.object_type() {
         ObjectType::DEVICE | ObjectType::NETWORK_PORT => {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::OBJECT_DELETION_NOT_PERMITTED.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::OBJECT_DELETION_NOT_PERMITTED,
+            ));
         }
         _ => {}
     }
 
     db.remove(&request.object_identifier)?
-        .ok_or(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::UNKNOWN_OBJECT.to_raw() as u32,
-        })
+        .ok_or(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::UNKNOWN_OBJECT,
+        ))
 }

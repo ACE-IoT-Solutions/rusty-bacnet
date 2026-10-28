@@ -9,8 +9,8 @@ use bacnet_types::constructed::BACnetRecipient;
 use bacnet_types::enums::{ObjectType, Segmentation, ServiceSupported};
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 const ROWS: [P; 3] = [P::TAGS, P::PROFILE_LOCATION, P::PROFILE_NAME];
@@ -64,14 +64,14 @@ impl AuditRecipientChangeSink for Sink {
 }
 fn configured(clock: bool, segmented: bool, cov: bool, audit: u8) -> (DeviceObject, Arc<Sink>) {
     let mut object = DeviceObject::new(DeviceConfig {
-        instance: 123,
-        name: "Profile Device".into(),
-        vendor_id: 555,
-        segmentation_supported: if segmented {
-            Segmentation::BOTH
-        } else {
-            Segmentation::NONE
-        },
+        identity: crate::DeviceIdentity::new(123, 555)
+            .expect("valid Device identity")
+            .with_name("Profile Device")
+            .with_segmentation(if segmented {
+                Segmentation::BOTH
+            } else {
+                Segmentation::NONE
+            }),
         ..Default::default()
     })
     .unwrap();
@@ -146,9 +146,11 @@ fn device_eight_masks_compose_with_clock_segmentation_cov_and_audit_metadata() {
                             .collect();
                         assert_eq!(&object.property_list()[list.len()..], expected);
                         assert!(object.property_list().contains(&P::PROPERTY_LIST));
-                        assert!(!object
-                            .property_list()
-                            .contains(&P::DEPLOYED_PROFILE_LOCATION));
+                        assert!(
+                            !object
+                                .property_list()
+                                .contains(&P::DEPLOYED_PROFILE_LOCATION)
+                        );
                         for (bit, p) in ROWS.into_iter().enumerate() {
                             let present = mask & (1 << bit) != 0;
                             let row = metadata.iter().find(|r| r.property_identifier == p);
@@ -326,9 +328,11 @@ fn device_invalid_writes_and_save_failure_preserve_served_and_stored_tags() {
         assert_eq!(store.attempts(), 0);
     }
     store.fail_save.store(true, Ordering::SeqCst);
-    assert!(object
-        .write_property(P::TAGS, None, framed(&tags("refused")), None)
-        .is_err());
+    assert!(
+        object
+            .write_property(P::TAGS, None, framed(&tags("refused")), None)
+            .is_err()
+    );
     object.wait_for_tag_saves();
     assert_eq!(store.attempts(), 1);
     assert_eq!(store.saved(), Some(snapshot("saved")));
@@ -383,17 +387,12 @@ fn device_persistence_constructor_keeps_validation_before_loading() {
             panic!("constructor must not save");
         }
     }
-    for config in [
-        DeviceConfig {
-            instance: ObjectIdentifier::MAX_INSTANCE + 1,
-            ..Default::default()
-        },
-        DeviceConfig {
-            segmentation_supported: Segmentation::BOTH,
-            apdu_segment_timeout: 0,
-            ..Default::default()
-        },
-    ] {
-        assert!(DeviceObject::with_tags_persistence(config, Arc::new(NoLoad)).is_err());
-    }
+    assert!(crate::DeviceIdentity::new(ObjectIdentifier::MAX_INSTANCE + 1, 0).is_err());
+    let config = DeviceConfig {
+        identity: crate::DeviceIdentity::default()
+            .with_segmentation(Segmentation::BOTH)
+            .with_apdu_segment_timeout_ms(0),
+        ..Default::default()
+    };
+    assert!(DeviceObject::with_tags_persistence(config, Arc::new(NoLoad)).is_err());
 }

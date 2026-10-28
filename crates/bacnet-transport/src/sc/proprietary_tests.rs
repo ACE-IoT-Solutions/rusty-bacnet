@@ -159,7 +159,7 @@ async fn proprietary_negative_matrix_nak_vs_silence() {
 
 #[tokio::test]
 async fn proprietary_silence_and_known_codes_never_consult_expired_budget() {
-    use super::rejection::{reject, RejectionBudget, RejectionExpired};
+    use super::rejection::{RejectionBudget, RejectionExpired, reject};
     struct NoIo;
     impl WebSocketPort for NoIo {
         async fn send(&self, _: &[u8]) -> Result<(), Error> {
@@ -264,7 +264,7 @@ fn proprietary_direct_connection_is_pure_in_all_states_and_codec_is_permissive()
                 assert_eq!(conn.max_bvlc_length, before.max_bvlc_length);
                 assert_eq!(conn.max_apdu_length, before.max_apdu_length);
                 assert_eq!(conn.hub_max_bvlc_length, before.hub_max_bvlc_length);
-                assert_eq!(conn.hub_max_apdu_length, before.hub_max_apdu_length);
+                assert_eq!(conn.hub_max_npdu_length, before.hub_max_npdu_length);
                 assert_eq!(conn.next_message_id, before.next_message_id);
                 assert_eq!(
                     conn.pending_connect_message_id,

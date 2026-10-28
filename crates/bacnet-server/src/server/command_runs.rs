@@ -188,7 +188,7 @@ impl<T: TransportPort + 'static> CommandRunner<T> {
             comm_state: &self.comm_state,
             timeout: Duration::from_millis(self.config.cov_retry_timeout_ms),
             retries: DEFAULT_APDU_RETRIES,
-            max_apdu: self.config.max_apdu_length,
+            max_apdu: u32::from(self.config.device.max_apdu_length()),
         }
     }
 
@@ -227,10 +227,10 @@ impl<T: TransportPort + 'static> RunHost for CommandRunner<T> {
         // checks the index again (#1426).
         let value = {
             let db = self.db.read().await;
-            let object = db.get(&command.object_identifier).ok_or(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_OBJECT.to_raw() as u32,
-            })?;
+            let object = db.get(&command.object_identifier).ok_or(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::UNKNOWN_OBJECT,
+            ))?;
             handlers::gate_and_decode_write(
                 object,
                 command.property_identifier,
@@ -307,10 +307,10 @@ impl<T: TransportPort + 'static> RunHost for CommandRunner<T> {
             Ok(mut db) => {
                 // The COV table comes after the database in lock order, so a
                 // busy one only costs the timestamped capture.
-                if left.end(&mut db) {
-                    if let Ok(table) = self.cov_table.try_read() {
-                        table.timed_capture(source).run(&db);
-                    }
+                if left.end(&mut db)
+                    && let Ok(table) = self.cov_table.try_read()
+                {
+                    table.timed_capture(source).run(&db);
                 }
             }
             Err(_) => {

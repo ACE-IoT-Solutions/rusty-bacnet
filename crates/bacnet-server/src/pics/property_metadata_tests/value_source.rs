@@ -3,10 +3,11 @@
 //! value-source footnote) and writable by its owner, and leaves it out of one
 //! that doesn't.
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::color::{ColorObject, ColorTemperatureObject};
 use bacnet_objects::present_value_access::PresentValueAccess;
 use bacnet_objects::traits::BACnetObject;
-use PropertyIdentifier as P;
+use bacnet_types::enums::EngineeringUnits;
 
 /// One instance of each type that can track a single source, tracked as
 /// `tracked` says.
@@ -15,8 +16,13 @@ fn objects(tracked: bool) -> Vec<Box<dyn BACnetObject>> {
     color.set_value_source_tracking(tracked);
     let mut temperature = ColorTemperatureObject::new(1, "CT-1").unwrap();
     temperature.set_value_source_tracking(tracked);
-    let mut av =
-        AnalogValueObject::with_access(1, "AV-1", 62, PresentValueAccess::Writable).unwrap();
+    let mut av = AnalogValueObject::with_access(
+        1,
+        "AV-1",
+        EngineeringUnits::DEGREES_CELSIUS,
+        PresentValueAccess::Writable,
+    )
+    .unwrap();
     av.set_value_source_tracking(tracked);
     let mut bv = BinaryValueObject::with_access(1, "BV-1", PresentValueAccess::ReadOnly).unwrap();
     bv.set_value_source_tracking(tracked);

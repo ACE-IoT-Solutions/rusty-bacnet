@@ -12,7 +12,7 @@ import { release, repository } from '../../../lib/site.mjs';
 
 **Choose one path.** Use the CLI to inspect, Python to automate, or Rust to embed. For the [local client/server lab](/rusty-bacnet/start/local-lab/), start with **Python**; the CLI is optional.
 
-<Tabs>
+<Tabs syncKey="lang">
 <TabItem label="CLI">
 
 ## Install a CLI executable
@@ -27,7 +27,7 @@ The release also publishes <a href={`${repository}/releases/download/v${release}
 
 ### Run it from the download directory
 
-<Tabs>
+<Tabs syncKey="os">
 <TabItem label="macOS">
 
 #### CLI on macOS
@@ -127,9 +127,9 @@ cargo install --path crates/bacnet-cli --locked --features sc-tls
 
 ## Install the Python package
 
-The ACE package is named `ace-rusty-bacnet`; the import is `rusty_bacnet`. It does **not** install the documented `bacnet` CLI executable.
+The package is named `rusty-bacnet`; the import is `rusty_bacnet`. It does **not** install the documented `bacnet` CLI executable.
 
-The package minimum is Python 3.11. The release publishes a wheel for each of CPython **3.11, 3.12, 3.13, and 3.14** on each of these platforms, to the private ACE index and to the GitHub release:
+The package minimum is Python 3.11. The release publishes a wheel for each of CPython **3.11, 3.12, 3.13, and 3.14** on each of these platforms, to PyPI and to the GitHub release:
 
 | Platform | Wheel platform tag | Runs on |
 |---|---|---|
@@ -143,7 +143,7 @@ Start with one of those interpreters. Free-threaded Python builds, musl-based Li
 
 Every wheel, macOS and Windows included, is built with the MS/TP serial transport, and `rusty_bacnet.list_serial_ports()` shows the ports the operating system reports. Release testing does not drive a serial line, so qualify MS/TP hardware separately.
 
-<Tabs>
+<Tabs syncKey="os">
 <TabItem label="macOS / Linux">
 
 ### Python on macOS or Linux
@@ -152,12 +152,12 @@ Check that `python3` is an appropriate interpreter, then create a local environm
 
 <Code lang="sh" code={`python3 --version
 python3 -m venv .venv
-.venv/bin/python -m pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ --only-binary=:all: ace-rusty-bacnet==${release}`} />
+.venv/bin/python -m pip install --only-binary=:all: rusty-bacnet==${release}`} />
 
 Verify that the native module loads, not just that package metadata exists:
 
 ```sh
-.venv/bin/python -c "from rusty_bacnet import BACnetClient; from importlib.metadata import version; print(version('ace-rusty-bacnet'))"
+.venv/bin/python -c "from rusty_bacnet import BACnetClient; from importlib.metadata import version; print(version('rusty-bacnet'))"
 ```
 
 </TabItem>
@@ -168,10 +168,10 @@ Verify that the native module loads, not just that package metadata exists:
 This example explicitly selects Python 3.13. Use an installed, supported interpreter:
 
 <Code lang="powershell" code={String.raw`py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --index-url https://ace-pypi.tail8c70f.ts.net/simple/ --only-binary=:all: ace-rusty-bacnet==${release}`} />
+.\.venv\Scripts\python.exe -m pip install --only-binary=:all: rusty-bacnet==${release}`} />
 
 ```powershell
-.\.venv\Scripts\python.exe -c "from rusty_bacnet import BACnetClient; from importlib.metadata import version; print(version('ace-rusty-bacnet'))"
+.\.venv\Scripts\python.exe -c "from rusty_bacnet import BACnetClient; from importlib.metadata import version; print(version('rusty-bacnet'))"
 ```
 
 Using the environment's interpreter directly avoids a separate activation step or an execution-policy change.
@@ -189,7 +189,7 @@ The command prints <code>{release}</code> without an import or shared-library er
 
 `--only-binary=:all:` deliberately prevents an unexpected native source build. Check the interpreter version, operating system, architecture, and configured package index. A missing wheel is not a BACnet network failure.
 
-The release also publishes a source distribution, <code>ace_rusty_bacnet-{release}.tar.gz</code>, but installing from it is a different installation path: it builds the native extension, so it needs Rust and the native prerequisites for the release's PyO3/Maturin build. Review the <a href={`${repository}/blob/v${release}/crates/rusty-bacnet/pyproject.toml`}>Python packaging source</a> before choosing it. Do not silently drop the binary-only option and call that an equivalent install.
+The release also publishes a source distribution, <code>rusty_bacnet-{release}.tar.gz</code>, but installing from it is a different installation path: it builds the native extension, so it needs Rust and the native prerequisites for the release's PyO3/Maturin build. Review the <a href={`${repository}/blob/v${release}/crates/rusty-bacnet/pyproject.toml`}>Python packaging source</a> before choosing it. Do not silently drop the binary-only option and call that an equivalent install.
 
 <NextStep href="/rusty-bacnet/start/local-lab/" label="Try the local client/server lab" description="Read an example point without a physical controller or building network." />
 
@@ -208,7 +208,7 @@ bacnet-types = "=${release}"
 bacnet-encoding = "=${release}"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }`} />
 
-The release publishes these crates to crates.io, all at the same version: `bacnet-types`, `bacnet-encoding`, `bacnet-services`, `bacnet-mstp-codec`, `bacnet-mstp-core`, `bacnet-bip-codec`, `bacnet-transport`, `bacnet-network`, `bacnet-endpoint-core`, `bacnet-endpoint`, `bacnet-client`, `bacnet-objects`, `bacnet-server`, and `bacnet-cli`. Keep related BACnet crate versions aligned. Add transport features only when the application needs them. The [Rust quickstart](/rusty-bacnet/start/rust/) supplies a directed-read example and explains the address format.
+The release publishes these crates to crates.io, all at the same version: `bacnet-npdu`, `bacnet-types`, `bacnet-encoding`, `bacnet-services`, `bacnet-mstp-codec`, `bacnet-mstp-core`, `bacnet-bip-codec`, `bacnet-bip-core`, `bacnet-router-core`, `bacnet-transport`, `bacnet-network`, `bacnet-endpoint-core`, `bacnet-endpoint`, `bacnet-client`, `bacnet-objects`, `bacnet-server`, `bacnet-ops`, `bacnet-mcp`, and `bacnet-cli`. Keep related BACnet crate versions aligned. `bacnet-time` versions on its own: it gets a new version only when its own API changes, so its number can differ from the release's, and the other crates name the version they need. Add transport features only when the application needs them. The [Rust quickstart](/rusty-bacnet/start/rust/) supplies a directed-read example and explains the address format.
 
 <NextStep href="/rusty-bacnet/start/rust/" label="Embed the Rust client" description="Build a small client, then choose the transport your application needs." />
 
@@ -221,12 +221,12 @@ The <a href={`${repository}/blob/v${release}/.github/workflows/release.yml`}>rel
 
 - **The GitHub release** (<a href={`${repository}/releases/tag/v${release}`}>v{release}</a>):
   - five CLI executables: `bacnet-linux-amd64`, `bacnet-linux-arm64`, `bacnet-macos-amd64`, `bacnet-macos-arm64` and `bacnet-windows-amd64.exe`;
-  - twenty Python wheels, <code>ace_rusty_bacnet-{release}-cp3XY-cp3XY-PLATFORM.whl</code>: one per CPython 3.11, 3.12, 3.13 and 3.14 (`cp311` to `cp314`) per platform tag in the Python table;
-  - the Python source distribution, <code>ace_rusty_bacnet-{release}.tar.gz</code>;
+  - twenty Python wheels, <code>rusty_bacnet-{release}-cp3XY-cp3XY-PLATFORM.whl</code>: one per CPython 3.11, 3.12, 3.13 and 3.14 (`cp311` to `cp314`) per platform tag in the Python table;
+  - the Python source distribution, <code>rusty_bacnet-{release}.tar.gz</code>;
   - `THIRD-PARTY-NOTICES`, the license texts of Rusty BACnet and of the third-party code built into the executables and wheels;
   - `SHA256SUMS`, the SHA-256 of each of those files.
-- **ACE private index**: the CPython 3.13 wheels and repaired source distribution, as `ace-rusty-bacnet`.
-- **crates.io**: the fourteen crates listed under Rust, all at version {release}.
+- **PyPI**: the same wheels and source distribution, as the [rusty-bacnet](https://pypi.org/project/rusty-bacnet/) package.
+- **crates.io**: the nineteen crates listed under Rust at version {release}, and `bacnet-time` at its own version when that version is new.
 
 To check a wheel or the source distribution downloaded from the GitHub release, use your system's command from the CLI tabs with that file's name.
 

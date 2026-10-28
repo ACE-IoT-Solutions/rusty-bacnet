@@ -6,6 +6,7 @@ use super::*;
 use crate::server::ReadPropertyMultipleBudget;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+use bacnet_types::error::RemoteError;
 
 /// One specification after target resolution and ALL/REQUIRED/OPTIONAL
 /// expansion; a Group's Present_Value plans its members the same way.
@@ -246,6 +247,7 @@ pub(super) fn plan_specs(
             db,
             &spec.object_identifier,
             view.and_then(|view| view.registered_port),
+            view.and_then(|view| view.device_oid()),
         );
         let stored = read_property::read_target_object(db, &lookup_oid);
         let served = stored.and_then(|object| view.map(|view| view.object(object)));
@@ -336,10 +338,7 @@ pub(super) fn element(
                     .map(|()| encoded.to_vec())
                     .map_err(|_| (ErrorClass::PROPERTY, ErrorCode::OTHER))
             }
-            Err(Error::Protocol { class, code }) => Err((
-                ErrorClass::from_raw(class as u16),
-                ErrorCode::from_raw(code as u16),
-            )),
+            Err(Error::Remote(RemoteError::Error { class, code })) => Err((class, code)),
             Err(_) => Err((ErrorClass::PROPERTY, ErrorCode::UNKNOWN_PROPERTY)),
         },
     };

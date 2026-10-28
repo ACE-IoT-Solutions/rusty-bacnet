@@ -1,11 +1,11 @@
 use super::rate_limit::{
-    is_covered_management_request, ManagementRateLimiter, MANAGEMENT_RATE_GLOBAL,
-    MANAGEMENT_RATE_MAX_SOURCES, MANAGEMENT_RATE_PER_SOURCE_IP, MANAGEMENT_RATE_WINDOW,
+    MANAGEMENT_RATE_GLOBAL, MANAGEMENT_RATE_MAX_SOURCES, MANAGEMENT_RATE_PER_SOURCE_IP,
+    MANAGEMENT_RATE_WINDOW, ManagementRateLimiter,
 };
 use super::*;
 use bytes::{Bytes, BytesMut};
 use std::time::Instant;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 async fn send_register(socket: &UdpSocket, dest: SocketAddrV4, ttl: u16) -> Option<BvllMessage> {
     let mut buf = BytesMut::new();
@@ -51,49 +51,85 @@ fn test_ctx(
     let local_port = socket.local_addr().unwrap().port();
     let management_limiter = Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new()));
     freeze_window(&management_limiter);
+    let own = SocketAddrV4::new(Ipv4Addr::LOCALHOST, local_port);
     RecvContext {
-        local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local_port),
-        socket,
-        npdu_tx,
-        bbmd: bbmd.map(|s| Arc::new(std::sync::Mutex::new(s))),
-        broadcast_addr: Ipv4Addr::LOCALHOST,
-        broadcast_port: local_port,
-        client_management: Arc::default(),
         management_limiter,
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
+        ..RecvContext::for_test(
+            socket,
+            npdu_tx,
+            own,
+            own,
+            bbmd.map(|s| Arc::new(std::sync::Mutex::new(s))),
+        )
     }
 }
 
-#[test]
-fn management_rate_limit_classification() {
+/// The four requests a BBMD answers from its tables share the management
+/// quota, before their payload is read; everything else stays outside it,
+/// Write-BDT and Distribute-Broadcast-To-Network included.
+#[tokio::test]
+async fn management_rate_limit_classification() {
+    let socket = Arc::new(super::BipSocket::new(
+        UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap(),
+        None,
+    ));
+    let (npdu_tx, _npdu_rx) = mpsc::channel(16);
+    let ctx = test_ctx(socket, None, npdu_tx);
+    let sender = ([192, 0, 2, 10], 47808);
+    {
+        let mut limiter = ctx.management_limiter.lock().unwrap();
+        for _ in 0..MANAGEMENT_RATE_PER_SOURCE_IP {
+            assert!(limiter.check_now(sender.0));
+        }
+    }
+    let message = |function| BvllMessage {
+        function,
+        payload: Bytes::new(),
+    };
     for f in [
         BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE,
         BvlcFunction::READ_FOREIGN_DEVICE_TABLE,
         BvlcFunction::REGISTER_FOREIGN_DEVICE,
         BvlcFunction::DELETE_FOREIGN_DEVICE_TABLE_ENTRY,
     ] {
-        assert!(
-            is_covered_management_request(f),
+        let before = ctx.drops.snapshot().rate_limited;
+        handle_bvll_message(&message(f), sender, Delivery::Unicast, &ctx).await;
+        assert_eq!(
+            ctx.drops.snapshot().rate_limited,
+            before + 1,
             "{f:?} must share the management quota"
         );
     }
 
-    for f in [
-        BvlcFunction::WRITE_BROADCAST_DISTRIBUTION_TABLE,
-        BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK,
-        BvlcFunction::ORIGINAL_UNICAST_NPDU,
-        BvlcFunction::ORIGINAL_BROADCAST_NPDU,
-        BvlcFunction::FORWARDED_NPDU,
-        BvlcFunction::BVLC_RESULT,
-        BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK,
-        BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK,
-        BvlcFunction::from_raw(0x0D),
+    for (f, delivery) in [
+        (
+            BvlcFunction::WRITE_BROADCAST_DISTRIBUTION_TABLE,
+            Delivery::Unicast,
+        ),
+        (
+            BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK,
+            Delivery::Unicast,
+        ),
+        (BvlcFunction::ORIGINAL_UNICAST_NPDU, Delivery::Unicast),
+        (BvlcFunction::ORIGINAL_BROADCAST_NPDU, Delivery::Broadcast),
+        (BvlcFunction::FORWARDED_NPDU, Delivery::Unicast),
+        (BvlcFunction::BVLC_RESULT, Delivery::Unicast),
+        (
+            BvlcFunction::READ_BROADCAST_DISTRIBUTION_TABLE_ACK,
+            Delivery::Unicast,
+        ),
+        (
+            BvlcFunction::READ_FOREIGN_DEVICE_TABLE_ACK,
+            Delivery::Unicast,
+        ),
+        (BvlcFunction::from_raw(0x0D), Delivery::Unicast),
     ] {
-        assert!(
-            !is_covered_management_request(f),
+        handle_bvll_message(&message(f), sender, delivery, &ctx).await;
+        assert_eq!(
+            ctx.drops.snapshot().rate_limited,
+            4,
             "{f:?} must stay outside the management quota"
         );
     }

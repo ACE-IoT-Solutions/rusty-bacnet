@@ -5,8 +5,8 @@ mod optional_fallback;
 use bacnet_types::constructed::ReadAccessSpecification;
 use std::borrow::Cow;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 struct Counting {
@@ -56,7 +56,10 @@ impl BACnetObject for Counting {
             return Ok(PropertyValue::List(vec![PropertyValue::Unsigned(1); 1000]));
         }
         if property == PropertyIdentifier::DESCRIPTION {
-            return Err(Error::Protocol { class: 2, code: 32 });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            ));
         }
         Ok(PropertyValue::Unsigned(1))
     }
@@ -306,7 +309,9 @@ fn rpm_success_independent_scalar_golden() {
     // application unsigned 1, close value/results (independent vector).
     assert_eq!(
         &out[..],
-        &[0x0c, 0, 0, 0, 1, 0x1e, 0x29, 0x55, 0x4e, 0x21, 1, 0x4f, 0x1f]
+        &[
+            0x0c, 0, 0, 0, 1, 0x1e, 0x29, 0x55, 0x4e, 0x21, 1, 0x4f, 0x1f
+        ]
     );
 }
 
@@ -316,7 +321,7 @@ fn rpm_migrated_metadata_device_wildcard_and_index_legacy_parity() {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 123,
+            identity: bacnet_objects::DeviceIdentity::new(123, 0).expect("valid Device identity"),
             ..Default::default()
         })
         .unwrap(),
@@ -371,7 +376,8 @@ fn rpm_device_result_identity_errors_and_exact_byte_budget() {
         let mut db = ObjectDatabase::new();
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance,
+                identity: bacnet_objects::DeviceIdentity::new(instance, 0)
+                    .expect("valid Device identity"),
                 ..Default::default()
             })
             .unwrap(),

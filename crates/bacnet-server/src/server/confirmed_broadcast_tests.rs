@@ -4,13 +4,13 @@
 //! offered to the forwarders, and a segment draws no SegmentACK or Abort.
 
 use super::event_forwarding_tests::{
-    copies, database, destination, encoded, notification, unconfirmed, To, LOCAL_DEVICE, PEER_A,
-    PEER_B,
+    LOCAL_DEVICE, PEER_A, PEER_B, To, copies, database, destination, encoded, notification,
+    unconfirmed,
 };
-use super::event_recipient_routing_tests::{address_recipient, LITERAL_BROADCAST_MAC};
-use super::test_transport::{SendLog, TestTransport, BIP_LOCAL_MAC};
+use super::event_recipient_routing_tests::{LITERAL_BROADCAST_MAC, address_recipient};
+use super::test_transport::{BIP_LOCAL_MAC, SendLog, TestTransport};
 use super::*;
-use bacnet_encoding::npdu::{encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, encode_npdu};
 use bacnet_objects::notification_forwarder::NotificationForwarderObject;
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
 
@@ -172,13 +172,13 @@ async fn a_segment_sent_by_broadcast_draws_no_segment_ack_or_abort() {
             .build();
         let sent = transport.sent();
         let config = ServerConfig {
-            segmentation_supported: segmentation,
+            device: bacnet_objects::DeviceIdentity::default().with_segmentation(segmentation),
             ..ServerConfig::default()
         };
         let mut db = ObjectDatabase::new();
         db.add(Box::new(
             bacnet_objects::device::DeviceObject::new(bacnet_objects::device::DeviceConfig {
-                segmentation_supported: segmentation,
+                identity: bacnet_objects::DeviceIdentity::default().with_segmentation(segmentation),
                 ..Default::default()
             })
             .unwrap(),

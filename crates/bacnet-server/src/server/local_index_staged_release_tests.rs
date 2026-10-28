@@ -21,6 +21,7 @@ use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{BACnetDestination, BACnetRecipient};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::Time;
 use std::borrow::Cow;
 use std::sync::Mutex as StdMutex;
@@ -194,8 +195,9 @@ async fn a_local_write_refused_before_the_object_releases_what_it_staged() {
     let mut db = clocked_test_database();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1426,
-            name: "Staged release".into(),
+            identity: bacnet_objects::DeviceIdentity::new(1426, 0)
+                .expect("valid Device identity")
+                .with_name("Staged release"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -203,6 +205,7 @@ async fn a_local_write_refused_before_the_object_releases_what_it_staged() {
     .unwrap();
     db.add(Box::new(IndexBlind(forwarder))).unwrap();
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1426, 0).unwrap())
         .transport(TestTransport::new())
         .database(db)
         .enable_event_enrollment(false)
@@ -215,9 +218,9 @@ async fn a_local_write_refused_before_the_object_releases_what_it_staged() {
         .await
         .unwrap_err();
     assert!(
-        matches!(error, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32),
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY),
         "{error:?}"
     );
     // Released, it goes back to the list NF-1 serves: none written yet.
