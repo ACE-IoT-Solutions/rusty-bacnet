@@ -38,7 +38,9 @@ cleanup barrier whether startup succeeded or was cancelled.
   counters cannot substitute for genuine per-port counts. SC health currently
   exposes state but not complete hub/error/retry/elapsed-state details.
 - `bacnet-runtime` remains B/IP-only. Restoring workspace membership does not
-  implement runtime SC attachments or broaden transport support.
+  implement runtime SC attachments or broaden transport support. It is
+  explicitly non-publishable on this ACE migration branch, so the inherited
+  crates.io release workflow and public installation page do not advertise it.
 - A separate read-only review identified pre-existing runtime failure-state
   risks that remain unresolved here: an operation-drain timeout after
   `stop()` sets `stopped=true` can leave attachments running while later stop
