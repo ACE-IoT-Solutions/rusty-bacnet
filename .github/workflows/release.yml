@@ -962,6 +962,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends cmake libudev-dev perl pkg-config
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: notices
+          path: crates/rusty-bacnet
       - *release-assets
       - name: Select the CPython 3.13 release wheels
         env:
@@ -984,7 +988,11 @@ jobs:
       - name: Build and validate the repaired source distribution
         env:
           VERSION: ${{ needs.validate.outputs.version }}
-        run: scripts/publish-python-release.sh "$VERSION" --build-only --allow-dirty --wheel-dir dist/release-wheels
+        run: |
+          scripts/publish-python-release.sh "$VERSION" --build-only --allow-dirty --wheel-dir dist/release-wheels
+          tar -xOf "dist/python/$VERSION/ace_rusty_bacnet-$VERSION.tar.gz" \
+            "ace_rusty_bacnet-$VERSION/THIRD-PARTY-NOTICES" \
+            | cmp - crates/rusty-bacnet/THIRD-PARTY-NOTICES
       - name: Connect to the ACE tailnet
         uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
         with:
