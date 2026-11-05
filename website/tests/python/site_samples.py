@@ -413,10 +413,12 @@ SAMPLES: dict[str, object] = {
         Skip("F", INSTALL),
     "start/installation.mdx::cargo install --path crates/bacnet-cli --locked --features sc-tls": Skip("F", INSTALL),
     'start/installation.mdx::<Code lang="sh" code={`python3 --version': Skip("F", INSTALL),
-    # The environment's interpreter stands in for .venv/bin/python.
+    # The ACE fork installs ace-rusty-bacnet, while this upstream-facing
+    # installation page names rusty-bacnet. The private release's wheel smoke
+    # checks its distribution metadata separately.
     "start/installation.mdx::.venv/bin/python -c \"from rusty_bacnet import BACnetClient; "
     "from importlib.metadata import version; print(version('rusty-bacnet'))\"":
-        Run("", (ok(r"^\d+\.\d+\.\d+$"),), server="none"),
+        Skip("F", "upstream distribution name differs from the ACE wheel"),
     'start/installation.mdx::<Code lang="powershell" code={String.raw`py -3.13 -m venv .venv': Skip("F", POWERSHELL),
     "start/installation.mdx::.\\.venv\\Scripts\\python.exe -c \"from rusty_bacnet import BACnetClient; "
     "from importlib.metadata import version; print(version('rusty-bacnet'))\"": Skip("F", POWERSHELL),

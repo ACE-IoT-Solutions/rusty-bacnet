@@ -271,7 +271,6 @@ impl<const N: usize> Fdt<N> {
     }
 
     /// The registrations still live at `now`.
-    #[must_use]
     pub fn live_at(&self, now: Instant) -> impl DoubleEndedIterator<Item = &Registration> + '_ {
         self.registrations()
             .iter()
