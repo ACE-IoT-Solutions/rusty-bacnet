@@ -138,14 +138,14 @@ pub(super) struct PortCounterState {
 
 impl PortCounterState {
     fn increment(counter: &AtomicU64) {
-        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             Some(value.saturating_add(1))
         });
     }
 
     fn add(counter: &AtomicU64, value: usize) {
         let value = u64::try_from(value).unwrap_or(u64::MAX);
-        let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(current.saturating_add(value))
         });
     }

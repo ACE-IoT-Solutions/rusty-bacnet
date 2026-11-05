@@ -145,11 +145,21 @@ fn a_discovery_learning_and_aging() {
     assert_eq!(route.last_seen(), Some(at(3)));
     assert_eq!(
         host.events,
-        [Event::Learned {
-            network: 9,
-            port: PortId(1),
-            class: ControlClass::IAm
-        }]
+        [
+            Event::NoRoute {
+                port: PortId(0),
+                network: 9,
+            },
+            Event::NoRoute {
+                port: PortId(0),
+                network: 9,
+            },
+            Event::Learned {
+                network: 9,
+                port: PortId(1),
+                class: ControlClass::IAm,
+            },
+        ]
     );
     assert_eq!(router.counters(), counts(2, 1));
     assert_eq!(router.table().claim_counters(), learned(1));

@@ -9,6 +9,998 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries for the next release are fragment files in [`changelog.d/`](changelog.d/), assembled here when a version is released. Add one per change instead of editing this file: [`changelog.d/README.md`](changelog.d/README.md) has the format, and `python3 scripts/changelog.py preview` shows the section they make.
 
+## [0.15.1] - 2026-11-05
+
+### Migration notes
+
+- **Log reporting settings (Rust API, #1952):** `LogSnapshot` gains
+  `reporting`, a `LogReportingSettings`; a custom `LogPersistence` must store
+  it, or a peer's write is answered but lost. A saved write wins over its
+  setter: call `clear_written_reporting` first (Python:
+  `clear_written_reporting=True`) to apply yours. Version 1 files still load.
+
+- **Colour output storage (Rust API, #1956):** `ColorOutputSnapshot` gains
+  `default`, and `present_value` becomes an `Option`; a custom
+  `ColorOutputPersistence` stores both. Once a peer's default is saved,
+  `set_default_color` and `set_default_color_temperature` keep it: call
+  `clear_written_default` first (Python: `clear_written_default=True`) to
+  apply yours. Old files still load.
+
+- **MCP plan grants (#2159):** run `bacnet mcp authorize --profile NAME` again for a profile with an `[mcp.plan]` authorized before this release: its plan writes are refused (`plan-budget-unavailable`) until the authorization has started a write count. Rust callers building a `PlanGrant` set `authorized_unix` and call `start_budget` on the workspace.
+
+- **Device instance (Python API, #2171):** `BACnetServer`, `BipEndpoint`,
+  `ScEndpoint` and `MstpEndpoint` built with `device_instance=4194303` now
+  raise `ValueError` at construction, where a server used to fail at
+  `start()`. Use an instance from 0 to 4194302.
+
+- **Reserved instance (Rust API, #2171):** `ObjectDatabase::add` refuses an
+  object at instance 4194303, a Device included, and `DeviceIdentity::new`
+  returns `Error::Range` for it. Give the object or identity an instance from
+  0 to 4194302.
+
+- **Createability (Rust API, #2172):** delete `is_createable` overrides and
+  forwarding impls. To ask whether CreateObject builds a type, call
+  `ObjectTypeRegistry::creates(object_type)` on the server configuration's
+  registry; to make a custom type creatable, register a constructor for it.
+
+- **CreateObject constructors (Rust API, #2173):** exhaustive `ServerConfig`
+  literals need `object_types: ObjectTypeRegistry::default()`, or end
+  with `..ServerConfig::default()`.
+
+- **Value types (Rust API, #2177):** `standard_array_property` and
+  `standard_list_property` are gone; use
+  `bacnet_types::datatype::standard_value_type(object_type, property)` and its
+  `is_array()` or `is_list()`. Building a `PropertyMetadata` is unchanged; a
+  custom object that overrode `is_array_property` or `is_list_property` for a
+  vendor property can state it on the row with `with_value_type` instead.
+
+- **Writability and shapes (Rust API, #2177):** call
+  `property_metadata::is_writable_property(&object, p)`, `is_array_property`
+  or `is_list_property` instead of the trait methods. An override moves onto
+  the rows: the write capability, or a vendor array or list with
+  `with_value_type`. `decode_write_property_value` takes the property's
+  `Option<ValueType>` in place of the list flag
+  ([guide](docs/rust-api.md#migrating-custom-objects-to-016)).
+
+- **Device core (Rust API, #2178):** `ReadPropertyMultipleBudget` moved from
+  `bacnet_server::server` to `bacnet_device_core::read`; update imports.
+  `bacnet_server::handlers::handle_read_property` and `handle_who_has` are
+  gone: read through `bacnet_device_core` (`responder::Responder` or the
+  staged `read` functions with `NoOverlay`) or the server's `read_local`.
+
+- **Device core RPM and WPM (Rust API, #2178):** for
+  `handlers::handle_read_property_multiple`, use `Responder::read` or
+  `read::RpmPlan` with a budget. For
+  `handlers::handle_write_property_multiple`, use `Responder::write`, or
+  `write::write_property_multiple` then `write::end_unmade`.
+  `ReadFailure::unlimited`, `read_target_object`, `rpm_response_index` and
+  `read::group::plan_property` are no longer public.
+
+- **Device core writes (Rust API, #2178):**
+  `bacnet_server::handlers::handle_write_property` is gone: write through
+  `bacnet_device_core` (`responder::Responder::write`, or
+  `write::write_property` then `write::end_unmade` for the bare handler's
+  behaviour) or the server's `write_local`. `Responder::handle` now returns
+  `Written`; read its `outcome`. `Responder` writes carry no command origin,
+  so a commandable Present_Value refuses them (#2209).
+
+- **Audit hooks (Rust API, #2179):** a custom Audit Log implements the hidden
+  `AuditLog` and lends it from `audit_log()` and `audit_log_mut()`; its
+  required `storage()` returns what `audit_log_storage_internal` did, so a
+  sink without storage is no longer possible. Callers read
+  `audit_log().map(|log| log.storage())`. Reporter settings go through
+  `audit_reporter_mut()` and `AuditReporterAuthority::configure`, which a
+  wrapper can no longer intercept.
+
+- **CovReporting (Rust API, #2179):** lend `cov()` in place of
+  `supports_cov() -> true` and move the COV hooks into `impl CovReporting`;
+  a property-only object answers `supports_subscribe_cov()` with `false`.
+  `cov_reported_properties` returns `None` for the type's Table 13-1 row. A
+  custom Life Safety object narrows its own properties. Concrete calls need
+  `use bacnet_objects::traits::CovReporting` ([details](docs/rust-api.md#capabilities)).
+
+- **Creation and deletion (Rust API, #2179):** move a type's
+  `creation_only_properties` and `initialize_property` into
+  `impl Creatable for MyType` (`CREATION_ONLY_PROPERTIES` and
+  `initialize_property`; an empty `impl` when it has none); a CreateObject
+  constructor for it is registered by returning `MyType` itself. Replace an
+  `is_deleteable() -> false` override with the builder's or
+  `ObjectTypeRegistry`'s `keep_from_deletion(type)`
+  ([details](docs/rust-api.md#creation-and-deletion)).
+
+- **EnrollmentEval (Rust API, #2179):** `enrollment_eval_state_internal`,
+  `set_enrollment_eval_state_internal`, `enrollment_eval_source_internal`,
+  `set_enrollment_eval_source_internal` and
+  `commit_event_enrollment_reliability_internal` become `eval_state`,
+  `set_eval_state`, `eval_source`, `set_eval_source` and `commit_reliability`
+  on `EnrollmentEval`, lent by `enrollment_eval()`/`_mut()`. Seed an Event
+  Enrollment's Event_State with `set_event_state`; Alert Enrollment has no
+  external seeding route.
+
+- **ReliabilityEval (Rust API, #2179):** move `evaluate_reliability_internal`,
+  `reliability_evaluation_inhibited_internal` and `set_reliability_internal`
+  into `impl ReliabilityEval` without `_internal`, lent by `reliability_eval()`.
+  Calls become `obj.reliability_eval().map(|r| r.set_reliability(..))` and
+  `obj.reliability_eval().map(|r| r.evaluate_reliability())`
+  ([details](docs/rust-api.md#capabilities)).
+
+- **EventReporting (Rust API, #2179):** move the intrinsic-reporting hooks
+  into `impl EventReporting`, lent by `event_reporting()`/`_mut()`; calls on a
+  concrete type need `use bacnet_objects::traits::EventReporting`. Commit,
+  inhibit and enrollment-summary hooks drop `_internal`; the correlated hooks
+  become `acknowledge_alarm(state, &timestamp)`, and the bits-only
+  `acknowledge_alarm` is removed ([details](docs/rust-api.md#capabilities)).
+
+- **File storage (Rust API, #2179):** a custom File object lends its
+  `FileStorage` from `file_storage()` and `file_storage_mut()` instead of the
+  `_internal` names, with the same bodies; callers rename the same way
+  ([details](docs/rust-api.md#capabilities)).
+
+- **LocalInput, LifeSafety (Rust API, #2179):** `set_present_value_internal`
+  and its siblings become `impl LocalInput` (lent by `local_input()`);
+  `report_access_input_internal` is `LocalInputValue::AccessControl`.
+  `apply_life_safety_operation` moves into `impl LifeSafety` (lent by
+  `life_safety()`), and `set_life_safety_operation_expected_internal` is
+  `LifeSafety::set_life_safety_operation_expected`. For
+  `supports_access_event_batch_internal` use `access_events().is_some()`
+  ([before and after](docs/rust-api.md#capabilities)).
+
+- **Log hooks (Rust API, #2179):** `log_buffer_internal`,
+  `log_record_identities_internal` and the three `add_*_record` hooks leave
+  `BACnetObject`. Add a record to a built-in Trend Log, Trend Log Multiple or
+  Event Log with its own `add_record`; a custom log lends the hidden
+  `LogBuffer` from `log_buffer()` and `log_buffer_mut()`. A wrapper around a
+  built-in COV Trend Log or Event Log no longer reaches its Enable/window gate
+  or its received-notification opt-in.
+
+- **BACnetObject (Rust API, #2179):** the trait is now the core a custom
+  object implements plus one accessor per capability.
+  [Migrating custom objects to 0.16](docs/rust-api.md#migrating-custom-objects-to-016)
+  maps every removed or renamed method of the series to its new home.
+
+- **ScheduleRunner (Rust API, #2179):** move the four Schedule hooks from
+  `impl BACnetObject` into `impl ScheduleRunner` unchanged, and lend it from
+  `schedule_runner(&mut self)`. `s.tick_schedule(..)` becomes
+  `s.schedule_runner().and_then(|r| r.tick_schedule(..))`, and
+  `retry_refusals_naming` is reached the same way. On a concrete
+  `ScheduleObject`, importing `ScheduleRunner` keeps direct calls
+  ([details](docs/rust-api.md#capabilities)).
+
+- **Timed (Rust API, #2179):** move clock hooks into `impl Timed`, return it
+  from `timed()`; one `bind_clocks(&Clocks)` replaces the three binds. Move
+  `profile.expire(now)` into `DurableWrites::expire_staged`;
+  `durable_writes_internal` is `durable_writes`. `advance_time_internal` and
+  `lighting_blink_count_internal` are gone; `MonotonicClock`,
+  `DeadlineWaker` and `DurableWrites` are public. `set_monotonic_clock` and
+  `set_deadline_waker` drop `_internal`. New: `start_outputs`
+  ([Capabilities](docs/rust-api.md#capabilities)).
+
+- **Custom objects (Rust API, #2181):** implement `property_metadata` with a
+  row per served property, universal ones included. With
+  `use bacnet_objects::property_metadata::{PropertyConformance as C,
+  PropertyMetadata as M, PropertyWriteCapability as W};` a row is
+  `M::new(PropertyIdentifier::OBJECT_NAME, C::RequiredRead, None, W::ReadOnly)`.
+  The rows are the only list an object writes (#2197).
+
+- **Watch hub (Rust API, #2185):** `bacnet_ops::watch::WatchOptions` has a new
+  `agent` field; a struct literal that lists every field adds `agent: false`
+  (or ends with `..WatchOptions::default()`).
+
+- **bacnet-device-core (Rust API, #2186):** `discovery::who_has` takes the
+  `DeviceIdentity` first, as `who_is` does, in place of a Device identifier:
+  `who_has(&identity, &db, request)`.
+
+- **Timer (wire and Rust API, #2192):** Present_Value reads and takes an
+  Unsigned timeout in milliseconds instead of the Enumerated timer state; read
+  Timer_State for the state. `TimerObject::start`, `stop`,
+  `set_initial_timeout`, `set_update_time` and `set_expiration_time` are gone:
+  drive the timer by writing Present_Value, Timer_Running or Timer_State, and
+  configure it with `set_pres_value_range` and `set_default_timeout`.
+  Initial_Timeout no longer takes writes.
+
+- **Property list (Rust API, #2197):** drop `fn property_list` and
+  `fn required_properties` from custom objects; `.property_list()
+  .contains(&p)` becomes `has_property(&rows, p)`. The Device's old list
+  included Property_List, and `has_property` still answers true for it.
+  `property_list_from_metadata` and `required_properties_from_metadata`
+  become `property_list(&rows)` and `required_properties(&rows)`. The new
+  list omits Object_Identifier, Object_Name and Object_Type; use the rows
+  for the old set.
+
+- **TUI-attached listener (Rust API, #2203):** `bacnet_mcp::attach::Listener::bind`
+  takes a `SessionRuntime`: `Own` runs the sessions on a runtime of the
+  listener's own, `Callers` on the caller's (tests on a paused clock).
+
+- **bacnet-device-core feature (Rust API, #2210):** a no_std build with `alloc` alone refuses writes of an event parameter and of port permission or stage limit elements with WRITE_ACCESS_DENIED. A firmware that writes them names `features = ["alloc", "structured-writes"]`; `std` builds need nothing.
+
+- **bacnet-objects features (Rust API, #2215):** a no_std build with `alloc` alone no longer lends event reporting or stages durable writes. A no_std host that drives either names the features, `features = ["alloc", "event-reporting", "durable-writes"]`; `std` builds need nothing.
+
+- **Audit sink helpers (Rust API, #2228):** `handle_audit_notification(db, sink, request)` becomes `(db, device, sink, request)`: pass the Device your identity names, such as `identity.device_oid()`. A missing Device still refuses the batch with DEVICE / OPERATIONAL_PROBLEM. `handle_confirmed_audit_notification` is removed; call `handle_audit_notification`.
+
+- **ScheduleWrite (Rust API, #2264):** build it with
+  `ScheduleWrite::new(value, priority, references)`, adding `.with_retry(true)`
+  for a retry and `.with_relinquish(true)` for a NULL that gives up a slot
+  your custom `ScheduleRunner` held (owed or removal writes).
+
+- **Event reporting (Rust API, #2271):** `EventReporting::commit_event_transition`
+  on a built-in object with Event_Detection_Enable FALSE now fails with
+  `DetectionDisabled`. Binary Output and Multi-state Output start with
+  detection off, so turn it on before committing.
+
+- **COV reports (Rust API, #2303):** `CovTable::begin_confirmed` takes each
+  carried reference with the `CovObservation` it reports, and `delivered`
+  commits those on `Delivery::Acknowledged` and returns the references owed
+  a fresh look; call `complete_observation` only for reports you track
+  yourself. Match the new `Delivery::Sent`, which commits an unconfirmed
+  report `evaluate` handed out.
+
+- **COV table (Rust API, #2303):** import `CovPolicy`, `CovCounters`,
+  `CovRecipient`, `CovSubscription`, `CovSubscriptionKey`, `CovSample`,
+  `CovObservation` and the other subscription types from
+  `bacnet_device_core::cov`; `bacnet_server::server` no longer re-exports
+  `CovPolicy` or `CovCounters`. `CovSubscription::expires_at` is a
+  `bacnet_time::Instant`; `CovSubscriptionTable::subscribe`,
+  `subscribe_multiple` and `remaining_lifetime` are internal, so a host
+  keeps a `CovTable` itself.
+
+- **bip-core node actions (Rust API, #2307):** a `match` on `node::Action` handles `ReleasePrevious { exchange, to, entry }`: send `Action::message()` to `to` and report it with `Node::exchange_sent` or `Node::exchange_failed`, as for `Register`. `NodePort` does this already.
+
+- **BBMD host names (Rust API, #2308):** import `BbmdResolver`, `BbmdLookup` and `BbmdLookupFailure` from `bacnet_transport::bbmd_lookup`, not `bacnet_transport::bip`. A resolver returns `Vec<IpAddr>`: wrap IPv4 answers in `IpAddr::V4`. `BbmdLookupFailure::NoIpv4Address` is now `NoAddress`, and `Unusable` carries an `IpAddr`.
+
+- **bip-core foreign BBMD (Rust API, #2308):** `node::Foreign::bbmd` is `Option<SocketAddrV4>`: `Foreign::new` sets `Some`, so wrap an address you assign in `Some`, and compare with `Some(peer)`. `Link::broadcast` refuses a waiting foreign node's broadcast with `SendRefusal::NoBbmd`; ask `Node::admit_broadcast` first, as before.
+
+- **Configured BBMD (Rust API, #2308):** write `ForeignDeviceConfig { bbmd: (ip, port).into(), .. }` where you wrote `bbmd_ip: ip, bbmd_port: port`, or `"host:port".parse()?` for a host name; read the port back with `config.bbmd.port()` and the address with `config.bbmd.address()`.
+
+- **SubscribeCOV refusal (wire, #2317):** a client that recognised a refused
+  indefinite subscription by SERVICES / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED
+  now gets SERVICES / VALUE_OUT_OF_RANGE; ask again with a finite lifetime.
+
+- **Responder (Rust API, #2321):** `Responder::write` and `handle` take
+  `&mut self`, since a time synchronization sets the clock it holds: hold
+  the responder under the database's exclusive guard, or bind it `mut`.
+  `classify` returns `Access::Write` for TimeSynchronization and
+  UTCTimeSynchronization even with no clock, so a host that ran its own
+  handler on `Access::None` routes them on `write`'s `Outcome::Unhandled`.
+
+- **Alert Enrollment (Rust API, #2331):** assign Event_Enable,
+  Notification_Class and Event_Detection_Enable through
+  `set_event_enable`, `set_notification_class` and
+  `set_event_detection_enable` instead of the fields, and read them with
+  `read_property`.
+
+- **Written configuration (Rust API, #2331):** `WriteConfigSnapshot` is
+  `#[non_exhaustive]` and gains `Reporting(ReportingWriteConfig)`, so a
+  `match` on it takes a wildcard arm; build a `ReportingWriteConfig` from
+  `Default` and set its fields. A custom `WriteConfigPersistence` stores it
+  like the other kinds (`snapshot::write_config::encode` gives its octets).
+  Older files still load.
+
+- **Snapshot formats (Rust API, #2364):** `LogReportingSettings`,
+  `NotificationClassSnapshot`, `ForwarderSnapshot` and
+  `AccessRightsSnapshot` gain a `description` field. A file holding one is
+  log schema version 3, `RBNNCL02`, `RBNFWD02` or `RBNACR02`, which older
+  builds refuse; files without one keep their octets.
+
+- **Written configuration (Rust API, #2364):** `TimerWriteConfig`,
+  `ChannelWriteConfig` and `ReportingWriteConfig` gain a `description`
+  field, and the first two are now `#[non_exhaustive]`: build them from
+  `Default` and set their fields. A file holding a written Description is
+  kind 5 of `RBNWCF01`, which older builds refuse; files without one keep
+  their octets.
+
+- **Durable log size (#2364):** a durable log's largest Buffer_Size drops
+  slightly, to leave room for a Description: Trend Log 828,251, Event Log
+  178,426, Trend Log Multiple 15,848. A log configured above the new limit
+  but within the old one (for example a Trend Log at 828,300) is now
+  refused when it opens; lower its Buffer_Size.
+
+- **B/IPv6 configured BBMD (Rust API, #2365):** write `Bip6ForeignDeviceConfig { bbmd: (ip, port).into(), .. }` where you wrote `bbmd_ip: ip, bbmd_port: port`, or `"host:port".parse()?` for a host name; read the port back with `config.bbmd.port()` and the address with `config.bbmd.address()`.
+
+- **Claimed B/IP port (#2366):** a device or tool that shared its port, say
+  47808, with another stack on one host now fails to start. Give each stack
+  its own port or address (`share_port_by_address`), or set
+  `share_wildcard_port` (CLI `--share-port`) on every stack that shares it;
+  unicast then reaches only one of them. Exhaustive `ServerConfig` and
+  `ClientConfig` literals need `share_wildcard_port: false`.
+
+- **B/IP receive time (Rust API, #2373):** drop the `now` argument from
+  `Link::receive` calls and from your `Policy::admit_management` impl. A
+  policy that needs the time, such as a rate limit, reads its own clock
+  there, or keeps the `now` the host passes to the port. `Node::receive` and the ports' `receive` still take `now`.
+
+- **Property value encoders (Rust API, #2376):** `encode_bacnet_property_value`
+  and the `encode` methods of `ReadPropertyACK`, `ReadPropertyMultipleACK`,
+  `ReadAccessResult`, `ReadResultElement`, `CreateObjectRequest` and
+  `COVNotificationRequest` return `Result<(), Error>`: propagate or handle it.
+  `ReadPropertyAckRef::encode_to_sink` fails with
+  `bacnet_encoding::sink::SinkEncodeError`, whose `Full` holds the old
+  `SinkFull`.
+
+- **Property value boundaries (Rust API, #2376):**
+  `bacnet_encoding::constructed::PropertyValueBoundary` gains
+  `OneOctetContext(u8)`, a one-octet context tag followed by the end of the
+  input or a context tag 0. Add an arm to any exhaustive match on it.
+
+- **B/IPv6 foreign-device one-shots (CLI, #2388):** a command run with `--ipv6 --foreign-bbmd` now waits for the BBMD to accept its registration and exits with an error if it refuses or stays silent for 5 seconds. Fix the BBMD's address or its foreign-device policy, or drop `--foreign-bbmd` to run on the local link only.
+
+- **Python router:** Health now reports only upstream-native state, and SC
+  router receive limits are fixed at 1497 octets NPDU and 5705 octets BVLC;
+  other limits and `failover_hub` are rejected until the upstream transport
+  can preserve initial TLS failover identity. Post-stop health and route data
+  are last-known snapshots rather than live telemetry. ([f840bb0](https://github.com/jscott3201/rusty-bacnet/commit/f840bb0bd1d09c9ab6fa339cd0ada5592fee1838))
+
+- **BACnet runtime:** The first 0.13 runtime slice is intentionally B/IP-only.
+  MS/TP, BACnet/SC, router-topology discovery, raw I-Am observation, and COV
+  orchestration fail closed until they are ported to current upstream seams.
+  Explicit property paths may name a directly connected B/IP peer or a remote
+  peer through a known B/IP router; automatic route discovery remains deferred,
+  and the removed 0.12 APIs are not emulated with weaker behavior. ([f72678f](https://github.com/jscott3201/rusty-bacnet/commit/f72678f3269686dac0d6a734d1c4895d660652a1))
+
+- **ACE mixed router:** Replace `BACnetRouter.from_ports(...)` with `AceMixedRouter.from_ports(...)` and import `AceMixedRouter`. Existing `RouterBipPort` and `RouterScPort` configurations, `start`/`stop`, health and routing snapshots remain available. Upstream `BACnetRouter` uses `BipRouterPort` and `close`.
+
+### Added
+
+- **Rust and Python API:** `EndpointSession::report_device_reset_local()`
+  records a reset the application makes itself through the session's
+  source Audit Reporter, as `BACnetServer`'s does; the Python endpoints gain
+  the method, which records nothing until Python can configure that Reporter
+  (#1837).
+
+- **Wire:** A B/IP foreign device's FD_BBMD_Address may name its BBMD by host name, looked up at activation and alongside later registrations; a failed lookup is counted and keeps the last address, and `BipTransport::set_bbmd_resolver` replaces the system resolver (#1852).
+
+- The Ethernet transport has a frame tap: `EthernetTransport::frame_tap()`,
+  also reached through `AnyTransport::frame_tap()`, reports every 802.3 frame
+  it sends and every one it takes, XID and TEST included (#1856).
+
+- **Python API:** the endpoint object builders take the server builders'
+  `tags`, `profile_location`, `profile_name`, `present_value_access` and
+  `value_source_tracking` keywords, so endpoint objects serve Tags, the
+  profile rows and Value_Source (#1867).
+
+- The CLI's `--nat-global-address IP:PORT` (and `nat_global_address` in a B/IP
+  profile) lets the TUI's Network screen find and mark our FDT entry when a NAT
+  router translated the foreign-device registration; nothing sent changes (#1943).
+
+- `ScEndpoint` reconnects, fails over to a second hub and reports its link
+  like `BACnetClient`. In Rust, `ScEndpointBuilder::connect_hub_session`
+  dials through the new `ScHubDialer`, shared with the SC client (dial logs
+  now come from `bacnet_transport`); `EndpointSession::sc_link` reports it
+  (#1946).
+
+- A counting harness measures callgrind instructions and allocations per request for two commits, in local Docker or the manual Perf counts workflow, with fixed acceptance gates for performance changes (#1978, #1979).
+
+- `stress-test clients` takes `--requests` (a fixed number of requests per
+  client instead of the time window) and, on B/IP, `--max-confirmed-in-flight`,
+  and reports the server's peak of live confirmed handlers per step (#1979).
+
+- `bacnet_objects::snapshot` makes the log and Timer/Channel written-configuration snapshot formats public, with `encode` and `decode` that need only `alloc`, so a flash or EEPROM backend stores the octets the file backends write (#2047).
+
+- `bacnet_objects::snapshot::audit_log` makes the Audit Log's two-slot snapshot format public, with `encode`, `decode` and `newest` that need only `alloc`, so a custom backend stores the octets and makes the slot choice `FileAuditLogPersistence` does (#2047).
+
+- `bacnet_objects::snapshot` gains the Notification Class, Notification Forwarder, Tags, colour and Access Rights file formats, with `encode` and `decode` that need only `alloc`, so a custom backend stores the octets the file backends write (#2047).
+
+- **Rust API:** A `ServerPolicy` that never blocks can return `true` from
+  `decides_inline()` (or use `FnPolicy::inline()`) to be called on the
+  request task, skipping the blocking-pool trip each decision otherwise
+  takes; Python's `mutation_policy` stays on the pool (#2049).
+
+- `bacnet mcp serve` now asks hosts older than the 2026-07-28 revision of MCP to confirm a T1 write with the server's own elicitation request, when they declare the capability, instead of refusing it (#2158).
+
+- `bacnet mcp serve` now notifies subscribers of `bacnet://session` and `bacnet://ledger` when it arms a session, spends a plan grant, records, settles or reverts a write, or a session or plan runs out (#2160).
+
+- Applications can register a CreateObject constructor per object type
+  (Device and Network Port excepted) with the server, making their own
+  proprietary types creatable over the network or replacing a built-in
+  type's defaults; the PICS reports a registered type as createable (#2173).
+
+- **Breaking (Rust API):** New `bacnet-device-core` crate, a sans-IO request
+  core over an `ObjectDatabase` (`no_std` with an allocator, or hosted).
+  `bacnet-server` now answers ReadProperty, Who-Is and Who-Has through it,
+  and firmware can run them with its `Responder` (#2178).
+
+- The TUI's agent pane (screen `8`) lists attached agents' MCP calls with their
+  outcome and cost, and the writes waiting for you with their ages; disarming
+  refuses waiting writes at once, `bacnet://session` reports the TUI's arming,
+  and the rate meter shows the agents' share (#2185).
+
+- On Unix, `bacnet tui` lets agents attach read-only to a profile authorized for MCP (`bacnet mcp connect`), profiles authorized earlier included, unless `tui_listener = false`; the `[mcp]` limits apply only while one is attached, and its workspace is kept private (#2185).
+
+- With `mcp_writes = "elicit"`, agents attached to `bacnet tui` can write and revert: each change opens the TUI's preview dialog under an agent banner, requests queue one at a time, and only a confirmation there sends it; a decline or the 120 s timeout returns `declined` (#2185).
+
+- On Windows too, agents attach read-only to a TUI through `bacnet mcp connect`, over a local named pipe only the TUI's user may open, named anew on each TUI run from secrets in the profile's workspace; each end checks the other's user first, and refusals are audited (#2201, #2219, #2237).
+
+- **Python API:** A Timer can serve State_Change_Values,
+  List_Of_Object_Property_References and Priority_For_Writing, and the server
+  writes each transition's value to the referenced properties as it does a
+  Command's; `add_timer` takes them as keywords (#2206).
+
+- **Wire:** CreateObject now builds Calendar, Schedule, Notification Class,
+  Trend Log, Event Enrollment and Structured View. Each starts empty, takes
+  read-only settings such as Object_Name or a Trend Log's Buffer_Size (up to
+  10,000) as initial values, and runs once configured, with no restart (#2208).
+
+- `bacnet-device-core`'s `Inbound::with_source` names a request's sender, so
+  `Responder` commands a commandable Present_Value for it as the server does;
+  a request with no source is still refused (#2209).
+
+- **Breaking (Rust API):** `bacnet-device-core` has a `structured-writes` feature, which `std` turns on; a no_std build with `alloc` alone now refuses writes of a few structured datatypes it decodes itself, which drops about 20 KB of flash from the objects image (#2210).
+
+- **Breaking (Rust API):** `bacnet-objects` has `event-reporting` and `durable-writes` features, which `std` turns on; a no_std build with `alloc` alone now has both off, which drops about 4.4 to 6 KB of flash from the objects image (#2215).
+
+- Timers and Channels built `with_persistence` keep the configuration a peer
+  writes across a restart, refusing a write they can't save; a saved part
+  wins over its setter until `clear_written_config` drops it (#2243).
+
+- **Python API:** `BACnetServer.set_program_state_local` (Rust: the same
+  method, and the `ProgramState` local input) is how the application reports a
+  Program's Program_State now that writes to it are refused (#2258).
+
+- An application can feed a registered Accumulator its input pulses with `BACnetServer::add_pulses_local`, a new `LocalInputValue::Pulses`: they step Present_Value through Prescale, and the server turns each Limit_Monitoring_Interval's count into Pulse_Rate (#2259).
+
+- **Python API:** `BACnetServer.add_pulses_local` feeds an Accumulator its input pulses (#2259).
+
+- `bacnet-device-core`'s `report::Reporter` reports COV for firmware: it
+  answers SubscribeCOV and SubscribeCOVProperty, queues notifications in a
+  fixed outbox, sends confirmed ones with retries, and lists the Device's
+  subscriptions through `ActiveCovOverlay` (#2303).
+
+- Test-only: CI links a `reporting` firmware image, bacnet-device-core's COV
+  table with SubscribeCOV and SubscribeCOVProperty on bare metal, about
+  22 KB of flash (21 KB of code) over the objects image on a Cortex-M3
+  (#2303).
+
+- Each release attaches an MCP bundle (`.mcpb`) of the `bacnet` CLI per
+  platform, so Claude Desktop installs the read-only MCP server with a
+  profile name as its one setting; `bacnet mcp serve` now says where it
+  looked for a missing profile (#2304).
+
+- `bacnet-bip-core` can release the BBMD a foreign device moves away from: with `Foreign::release_previous`, `Node::retarget` asks it once to delete the device's entry, and counts and reports the answer. The B/IP transport's release runs on it (#2307).
+
+- The B/IP client and endpoint builders take `release_previous_bbmd` and `bbmd_resolver`, which were `BipTransport` setters only (#2307).
+
+- A foreign device's BBMD host-name lookups now show in Python's `foreign_registration()`, the CLI's registration errors and the TUI's status bar and Network screen, with the reason the newest failed and whether the device still waits for the name (`waiting_for_bbmd`) (#2308).
+
+- **Wire:** A B/IPv6 foreign device's FD_BBMD_Address may name its BBMD by host name, looked up on B/IP's policy and counted in `Bip6Transport::bbmd_lookup_counters`; `Bip6Transport::set_bbmd_resolver` replaces the system resolver (#2308).
+
+- A foreign device's configured BBMD may be a host name (`ForeignBbmd`, the CLI's `--foreign-bbmd host[:port]`, Python's `ForeignDevice("host:port")`); one that doesn't resolve still starts, its failure counted and retried every 30 s (#2308).
+
+- **Python API:** `add_timer` and `add_channel` take `storage_path`, which
+  keeps what a peer writes to their configuration across a restart, and
+  `clear_written_config` (#2312).
+
+- A Timer built `with_persistence` keeps a Default_Timeout a peer writes
+  across a restart; a saved value outside a range the application has since
+  narrowed is dropped with a warning, and the rest still restores (#2312).
+
+- `bacnet-device-core`'s `clock` module gives firmware a Device clock that
+  TimeSynchronization and UTCTimeSynchronization set: the Device serves
+  Local_Date and Local_Time from it, and Notification Class recipient
+  windows open once it is synchronized, failing closed before (#2321).
+
+- `bacnet_objects::notification_class::in_window` and `always_in_window`
+  expose the recipient window test the server selects destinations by,
+  which `bacnet-device-core`'s clock judges with too (#2321).
+
+- Every `.mcpb` MCP bundle carries a 512x512 project icon. The release
+  workflow can sign the bundles, but signing stays off until the maintainer
+  adds a code-signing certificate to the release environment's secrets; until
+  then they ship unsigned, as before (#2324).
+
+- Analog, binary and multi-state objects built `with_reporting_persistence`
+  keep the reporting settings a peer writes, saved before the reply; a saved
+  one wins over its setter until `clear_written_reporting` (#2331).
+  **Python API:** `storage_path` and `clear_written_reporting`.
+
+- Access Door, Access Zone, Event Enrollment and Alert Enrollment keep the
+  reporting settings a peer writes too, built `with_reporting_persistence`
+  (#2331). **Python API:** their `add_*` builders take `storage_path` and
+  `clear_written_reporting`.
+
+- **Wire:** A B/IPv6 foreign device can ask the BBMD it moved away from to delete its entry, as B/IP does (`Bip6Transport::set_release_previous_bbmd`, counted in `previous_bbmd_releases`), and `Bip6ClientBuilder` gains `release_previous_bbmd` and `bbmd_resolver` (#2338).
+
+- **Python API:** `BipEndpoint` takes `source_audit_reporter`,
+  `audit_recipient` and `audit_device_bindings`, and gains
+  `add_audit_reporter`, so its ReinitializeDevice operations and
+  `report_device_reset_local()` calls are recorded (#2348).
+
+- **Rust and Python API:** an endpoint session's source Audit Reporter now works on
+  every link, not only IPv4 B/IP: B/IPv6, SC and MS/TP sessions take Device
+  bindings in their own link's format, and `ScEndpoint` and `MstpEndpoint` take
+  the source Reporter keywords and `add_audit_reporter` (#2357).
+
+- The three logs, Notification Class, Notification Forwarder and Access
+  Rights keep a peer-written Description in their own storage files, saved
+  before the reply; a saved one wins over `set_description` (#2364).
+  **Python API:** the same `storage_path`.
+
+- The objects that keep written reporting settings, and Timer and Channel,
+  keep a peer-written Description in the same file, saved before the reply;
+  a saved one wins over `set_description` until the object's clear (#2364).
+  **Python API:** the same `storage_path`.
+
+- A B/IPv6 foreign device's configured BBMD may be a host name (Rust, `--ipv6 --foreign-bbmd`, Python): a start on `::` looks it up first, and one on an explicit interface waits for it. `foreign_status()` reports the wait, lookups, releases and refused broadcasts (#2365).
+
+- **Python API:** `foreign_registration()` on a B/IPv6 owner returns a `Bip6ForeignRegistrationStatus`: the BBMD and the host name it is known by, the wait for that name, the lookup and release counters, and the registrations sent (#2365).
+
+- **CLI:** a B/IP profile's `share_port` setting keeps `--share-port` for
+  the TUI and `mcp serve`, and `--share-port` with `tui --profile` turns it
+  on for one run (#2366).
+
+- **Rust and Python API:** an endpoint session's source Audit Reporter can bind
+  a recipient Device behind a router, by network number and MAC (`"2:0x05"` in
+  Python), on every link; records go through the router, which the session
+  learns from traffic and router announcements (#2371).
+
+- The TUI shows a B/IPv6 foreign device's registration as it shows B/IP's: `FD` in the status bar, a WAITING banner while the BBMD's name doesn't resolve, and the Network panel's counters. Off B/IP that screen offers no table reads (#2378).
+
+- `bacnet-device-core`'s `Reporter::remove_for_object` drops a deleted
+  object's COV subscriptions, queued and owed reports and confirmed
+  notifications, giving their invoke IDs back, so an object created again
+  under its identifier reports to nobody (#2384).
+
+- A B/IPv6 foreign device records its BBMD's answer to each registration: `foreign_status()` reports it held, refused or unanswered, how long ago, and the refusals so far (#2388).
+
+- **Python API:** a B/IPv6 owner's `foreign_registration()` reports the BBMD's answer under B/IP's `last_outcome`, `last_result` and `refused` keys, with `last_outcome_age` and `unanswered` (#2388).
+
+- **Python API:** `ace-rusty-bacnet` exposes typed B/IP and BACnet/SC router
+  ports and `BACnetRouter`, backed by the upstream 0.13 router and its live
+  route and SC connection state. ([f840bb0](https://github.com/jscott3201/rusty-bacnet/commit/f840bb0bd1d09c9ab6fa339cd0ada5592fee1838))
+
+- **Client API:** Add explicit routed RPM, WriteProperty, and WPM entry points
+  using the upstream confirmed-request transaction machinery. ([daddf3d](https://github.com/jscott3201/rusty-bacnet/commit/daddf3dd9ac7ae01f6e1d941b0d65b4213a356b3))
+
+- **Rust API:** Restore the ACE supervised `bacnet-runtime` aggregate on the
+  upstream 0.13 client and transport stack, beginning with bounded B/IP
+  attachment lifecycle, foreign-device health, reconciliation, and ordered
+  direct and explicitly routed B/IP property batch operations. ([f72678f](https://github.com/jscott3201/rusty-bacnet/commit/f72678f3269686dac0d6a734d1c4895d660652a1))
+
+- **Rust API:** A running `BACnetRouter` can reannounce its directly connected
+  networks on one recovered port without duplicating announcements elsewhere. ([8562af0](https://github.com/jscott3201/rusty-bacnet/commit/8562af03ebec40864edb95eeb1c97781a26d4c32))
+
+### Changed
+
+- **Python API:** `ScEndpoint.start()` now gives up a hub dial after
+  `sc_connect_timeout_ms` (10 s by default), as `BACnetClient` does; before,
+  it waited as long as the OS allowed (#1946).
+
+- **Breaking (Rust API):** Durable Trend Logs, Trend Log Multiples and Event
+  Logs keep the reporting settings a peer writes, saved before the write is
+  answered; a saved one wins over its setter until `clear_written_reporting`
+  drops it (#1952).
+
+- **Breaking (Rust API):** a colour object with storage keeps a written
+  default, which wins over `set_default_color*` until `clear_written_default`
+  drops it, so a zero default written over the network keeps the last value
+  at the next start (#1956).
+
+- A durable object's save thread now ends once the object has saved nothing
+  for a while, and the next save starts another, so a device with many
+  objects with storage no longer holds an idle thread for each (#1956).
+
+- The client and server copy peer addresses fewer times per request, about 520 fewer instructions per ReadProperty round trip in a release-like build, and the server builds each reply route once (#1978).
+
+- A damaged Audit Log snapshot slot (past a size or count cap, or holding a record that doesn't decode) now fails to load as an encoding error, and a record that won't encode is refused as out of range; Python still raises `BacnetError`, with new message text (#2047).
+
+- Tags no write would take now fail to load as an encoding error, from a file or a custom backend. The colour, Notification Class, forwarder and Access Rights file backends refuse to save what they couldn't load: an out-of-range value, an over-long list or an oversized file (#2047).
+
+- A durable log whose stored snapshot holds an invalid Start_Time, Stop_Time or reference now fails to open as damaged data (an encoding error; `BacnetError` in Python) rather than VALUE_OUT_OF_RANGE (`BacnetProtocolError`) (#2047).
+
+- **Breaking (Rust API):** `bacnet_mcp::policy::PlanGrant` gains `authorized_unix`, `start_budget` and `budget_used`, for the write count kept in the workspace (#2159).
+
+- **CI:** CodeQL code scanning runs from its own workflow and scans the
+  library and binary code, leaving tests, benchmarks, examples and fuzz
+  crates out (#2166).
+
+- **Python API:** `BACnetServer`, `BipEndpoint`, `ScEndpoint` and
+  `MstpEndpoint` raise `ValueError` at construction for a `device_instance`
+  of 4194303 (#2171).
+
+- **Breaking (Rust API):** `ObjectDatabase::add` and `DeviceIdentity::new`
+  refuse instance 4194303, which no object may have (#2171).
+
+- **Breaking (Rust API):** `BACnetObject::is_createable` is removed:
+  createability belongs to the object type, answered by
+  `ObjectTypeRegistry::creates`, and the PICS now lists every createable
+  type, with or without an instance (#2172, #2173).
+
+- **Wire:** CreateObject now builds Analog Value and the twelve value types
+  from one constructor table that the PICS also reads. Analog Value, Integer
+  Value, Positive Integer Value and Large Analog Value take Units at
+  creation, as Analog Input and Output already did (#2172).
+
+- **Breaking (Rust API):** `ServerConfig` has a new `object_types`
+  field, an `ObjectTypeRegistry` holding the application's CreateObject
+  constructors (#2173) and the types it keeps from deletion (#2179).
+
+- **Breaking (Rust API):** each property metadata row now carries the
+  property's datatype and shape, from a standard table in `bacnet-types`, and
+  the server's list, ReadRange, NULL-write and local-reference handling reads
+  it from the rows (#2177).
+
+- **Breaking (Rust API):** `BACnetObject` loses `is_writable_property`,
+  `is_array_property` and `is_list_property`; free functions of the same
+  names in `bacnet_objects::property_metadata` answer from the object's
+  rows, and WriteProperty decodes a value by its row's value type (#2177).
+
+- **Wire:** `bacnet_device_core::SERVICES` now lists ReadPropertyMultiple
+  and WritePropertyMultiple, so a database built with
+  `with_services(SERVICES)` declares them in Protocol_Services_Supported
+  (#2178).
+
+- **Breaking (Rust API):** WritePropertyMultiple moves to
+  `bacnet-device-core` (`write::write_property_multiple`), whose `Responder`
+  now answers ReadPropertyMultiple and WritePropertyMultiple within `Limits`'
+  new RPM budget. The legacy RPM and WPM handlers are deleted (#2178).
+
+- **Breaking (Rust API):** `bacnet-server`'s WriteProperty path now runs on
+  `bacnet-device-core`, whose `write` module holds it, and firmware can run
+  WriteProperty with its `Responder` (#2178).
+
+- **Breaking (Rust API):** `BACnetObject`'s Audit Log hooks, the public
+  `audit_log_storage_internal` and `audit_log_notification_sink_internal`
+  among them, move behind a hidden `AuditLog` capability, and the Audit
+  policy and Reporter hooks behind hidden accessors (#2179).
+
+- `BACnetObject`'s hidden Averaging sample hook moves to a hidden
+  `Timed::take_due_sample`, and the Pulse Converter input hooks leave the
+  trait: the database counts the built-in Pulse Converter only, so a wrapped
+  one is no longer judged or counted (#2179).
+
+- A Calendar's state for a given day moves from the hidden
+  `calendar_state_internal` hook to a hidden `CalendarState` capability lent
+  through `calendar_state()`; its method is now `state_on` (#2179).
+
+- **Breaking (Rust API):** `BACnetObject`'s COV hooks move to a public
+  `CovReporting` capability lent through `cov()`, where `None` means the
+  object takes no COV subscription. The unused `set_overridden` hook is
+  removed (#2179).
+
+- **Breaking (Rust API):** `BACnetObject`'s `creation_only_properties`,
+  `initialize_property` and `is_deleteable` move to the type: a new
+  `Creatable` trait and the CreateObject table answer creation, and
+  `ObjectTypeRegistry::deletes` answers deletion (#2179).
+
+- **Breaking (Rust API):** `BACnetObject`'s reliability hooks move to a public
+  `ReliabilityEval` capability lent through `reliability_eval()`, the Event
+  Enrollment evaluator's hooks to a hidden `EnrollmentEval`, and the unused
+  `set_event_state_internal` and `set_acked_transitions_internal` go (#2179).
+
+- **Breaking (Rust API):** `BACnetObject`'s event-reporting hooks move to an
+  `EventReporting` capability lent through `event_reporting()` and
+  `event_reporting_mut()`. One `acknowledge_alarm` replaces the plain,
+  correlated and detailed acknowledgment hooks (#2179).
+
+- **Breaking (Rust API):** `BACnetObject::file_storage_internal` and
+  `file_storage_internal_mut` are renamed `file_storage` and
+  `file_storage_mut`; the hidden File configuration accessors drop
+  `_internal` the same way (#2179).
+
+- **Breaking (Rust API):** `BACnetObject`'s local-input hooks become one
+  `LocalInput` capability, lent through `local_input()` and taking a
+  `LocalInputValue`; the Life Safety hooks become a `LifeSafety` capability
+  lent through `life_safety()`. `AccessControlInput` is `#[non_exhaustive]`
+  (#2179).
+
+- **Breaking (Rust API):** `BACnetObject`'s log hooks move behind a hidden
+  `LogBuffer` capability lent through `log_buffer()`/`log_buffer_mut()`, and
+  the Trend Log collecting and Event Log received-notification checks leave
+  the trait; these hooks are not public API yet (#2179).
+
+- **Breaking (Rust API):** `BACnetObject`'s Schedule hooks, `tick_schedule`,
+  `take_owed_schedule_writes`, `complete_schedule_write` and
+  `retry_refusals_naming`, move to a public `ScheduleRunner` capability lent
+  through `schedule_runner()` (#2179).
+
+- `BACnetObject`'s hidden Staging and Command/Channel run hooks move behind
+  two hidden capability accessors, `staging_source()` and
+  `command_runner()`/`command_runner_mut()`; these hooks are not public API
+  yet (#2179).
+
+- **Breaking (Rust API):** `BACnetObject`'s time and clock hooks move to a
+  `Timed` capability that an object lends through `timed()`, and staged-write
+  expiry moves to `DurableWrites::expire_staged`, so an object that only
+  stages writes is no longer timed (#2179).
+
+- **Breaking (Rust API):** `BACnetObject::property_metadata` is required. Rows
+  alone drive the PICS, RPM ALL/REQUIRED/OPTIONAL and result index, the
+  indexed-write gate (UNKNOWN_PROPERTY without a row) and the endpoint
+  Device-write check; ReadProperty and WriteProperty still reach the object
+  (#2181).
+
+- **Breaking (Rust API):** `bacnet-device-core`'s `discovery::who_has` takes
+  the `DeviceIdentity`, as `who_is` does, and picks the Device itself (#2186).
+
+- `DeviceIdentity` writes the default Device and Network Port names
+  (`device-<n>`, `port-<n>`) without `core::fmt`, so a no_std image that
+  builds a Device database links no `core::fmt` (#2187).
+
+- Network Port's B/IP, B/IPv6, BBMD, foreign-device, NAT and multicast rows
+  keep their table's optional code and carry the condition that makes each
+  required; ReadPropertyMultiple and the PICS return the same as before
+  (#2191).
+
+- **Breaking (Rust API):** `BACnetObject` loses `property_list` and
+  `required_properties`: the metadata rows are an object's only property
+  list, and free functions in `bacnet_objects::property_metadata` derive
+  Property_List, the required set and presence from them (#2197).
+
+- `bacnet mcp serve` now exits with an error when a request's handler
+  panics, after answering that request with an internal error, instead of
+  leaving the agent waiting and serving on (#2203).
+
+- Log and Audit Log snapshots save and load with fewer allocations and a table-driven checksum, and a log dropped before its first save commits without starting a writer thread (#2233).
+
+- **Breaking (Rust API):** `ScheduleWrite` is `#[non_exhaustive]`, built with
+  `ScheduleWrite::new`, and gains a `relinquish` flag marking the NULLs that
+  give up slots a Schedule held (#2264).
+
+- **Breaking (Rust API):** `bacnet-device-core`'s `cov::evaluate` decides
+  what a change reports to ordinary and Single COV subscriptions, within an
+  `EventBudget`, and its `cov` module holds the values notifications carry
+  and the Device's subscription lists; `bacnet-server` reports through it
+  (#2303).
+
+- **Wire:** A confirmed COV notification whose sends stall ends half a
+  timeout after its retry cycle and holds its subscription off, as one whose
+  retries ran out, so a stale retry can't follow a newer report (#2303).
+
+- **Breaking (Rust API):** The COV subscription table, SubscribeCOV and
+  SubscribeCOVProperty move into `bacnet-device-core`'s `cov` module, on
+  `bacnet-time`, so firmware can keep subscriptions; `bacnet-server` runs its
+  table on it (#2303).
+
+- **Breaking (Rust API):** `bacnet_bip_core::node::Action` gains `ReleasePrevious`, the request that releases the BBMD a move left (#2307).
+
+- **Breaking (Rust API):** The BBMD host-name resolver types moved to `bacnet_transport::bbmd_lookup`, shared by B/IP and B/IPv6, and a resolver now answers with addresses of either family (#2308).
+
+- **Breaking (Rust API):** A `bacnet-bip-core` foreign node can start before its BBMD is known: `Foreign::bbmd` is an `Option`, and `Foreign::waiting` (`None`) starts a node that holds broadcasts until a `retarget` names its BBMD (#2308).
+
+- **Breaking (Rust API):** `ForeignDeviceConfig`'s `bbmd_ip` and `bbmd_port` become `bbmd: ForeignBbmd`, an address or a host name with its port (#2308).
+
+- The counting harness builds like the published binaries, runs with fixed glibc allocator settings, and adds a no-regression check (`--aim none`), call-first attribution and a split of lock cost by caller (#2314).
+
+- **Error text:** a peer's Reject or Abort names its reason (`BACnet abort:
+  tsm-timeout`) in CLI and TUI errors, COV and renewal messages, read notes,
+  logs and Python's `RouterCleanupFailure.message`; other Python exception text
+  is unchanged (#2325).
+
+- **Breaking (Rust API):** `AlertEnrollmentObject`'s `event_enable`,
+  `notification_class` and `event_detection_enable` fields are private; set
+  them through its setters, which a saved write wins over (#2331).
+
+- **Breaking (Rust API):** `WriteConfigSnapshot` gains a `Reporting`
+  variant, stored as kind 4 of the `RBNWCF01` format, and it and
+  `ReportingWriteConfig` are `#[non_exhaustive]` (#2331).
+
+- The server's confirmed-request admission policy is documented under load:
+  refusal by Abort or silent drop, when refusals start, and how to size
+  `max_confirmed_in_flight`, with the measured curve of clients against
+  Aborts (#2333).
+
+- A command written over the network copies its writer's address fewer times, about 500 fewer instructions per WriteProperty in a release-like build (#2342).
+
+- **Breaking (Rust API):** `Bip6ForeignDeviceConfig`'s `bbmd_ip` and `bbmd_port` become `bbmd: Bip6ForeignBbmd`, a B/IPv6 address or a host name with its port (#2365).
+
+- **Binding:** on Linux a B/IP multicast node that starts with its group on
+  its own port binds its interface address, with listeners for the
+  broadcasts it heard before, so it can claim the port beside the group's
+  listener (#2366).
+
+- **Binding:** a B/IP transport claims an explicitly requested UDP port, so
+  a second bind of it on the host fails at once with an error naming the
+  port; `share_wildcard_port` (builders, Python; CLI `--share-port`) keeps
+  the old sharing (#2366).
+
+- **Breaking (Rust API):** `ServerConfig` and `ClientConfig` have a new
+  `share_wildcard_port` field, read by the B/IP builders (#2366).
+
+- **Rust API:** an endpoint's transaction coordinator matches a direct answer
+  to a request routed to a network that has since become its own (new
+  `CanonicalPeer::direct_alias`); this applies to every endpoint role, the
+  server's notification transactions included (#2371).
+
+- **Rust and Python API:** an endpoint session with a source Audit Reporter now
+  executes and records a client operation routed to a station on another
+  network; before, it returned an error and sent nothing (#2371).
+
+- **Breaking (Rust API):** `bacnet_bip_core::node::Link::receive` and
+  `Policy::admit_management` no longer take the time, so the B/IP transport
+  reads no clock for an ordinary received datagram, about 240 fewer
+  instructions per ReadProperty round trip (#2373).
+
+- **Wire:** A legacy-form Event_Parameters value from an older peer with more
+  than one possible end is read up to the first instead of refused, and in a
+  standalone property value it now ends before a one-octet priority followed
+  by the end or the next value (#2376).
+
+- **Breaking (CLI):** on B/IPv6 the TUI's `FD` reads `held`, `refused` or `no answer` instead of `sent`, with B/IP's banners, and a one-shot command with `--foreign-bbmd` fails when the BBMD refuses or doesn't answer its registration (#2388).
+
+- **Python packaging:** Publish the fork as `ace-rusty-bacnet` to the ACE private index from validated fork tags; the import remains `rusty_bacnet`. ([66cdcca](https://github.com/jscott3201/rusty-bacnet/commit/66cdccafff6fa52f161ad5cd5f1726b7de6ae926))
+
+- The ACE-only `bacnet-runtime` remains available in this workspace but is not included in the upstream crates.io release set while its downstream and failure-state acceptance gates remain open. ([bf03a6a](https://github.com/jscott3201/rusty-bacnet/commit/bf03a6ac737e6749b160f6f0987e89ee0e2ec507))
+
+- Merge upstream 0.15 development changes while retaining ACE's mixed B/IP–SC router, supervised B/IP runtime, routed client helpers, private package identity, and recovered-SC-port announcements; use upstream SC failover and B/IP port-sharing APIs.
+
+- **Breaking (Python API):** The ACE mixed B/IP+SC router is now `AceMixedRouter`. `BACnetRouter` provides upstream B/IP routing with application client/server ownership. The ACE runtime remains a workspace member and wheels retain the private `ace-rusty-bacnet` name.
+
+### Fixed
+
+- The MS/TP frame tap times frames as the master node does, so it no longer
+  reports a frame the node gave up after a silence longer than T_frame_abort
+  or when it started to send (#1856).
+
+- An MCP listen stream refused at its start, because the session already runs
+  its maximum, now frees only the watches set aside for it, never those of
+  another waiting stream with the same resources (#2157).
+
+- Saving the session ledger, a profile or the MCP plan's write count now syncs the workspace directory on Unix, where the filesystem supports it, so a power loss can't undo a save that reported success (#2159).
+
+- **Breaking (CLI):** a plan grant's write budget now holds across `bacnet mcp serve` restarts: it is counted in the profile workspace before each write, and `bacnet mcp authorize` starts it fresh, so a plan authorized by an earlier release must be authorized again (#2159).
+
+- The TUI watch list no longer shows a value without its units or state
+  texts when the device's first COV notification arrives before the row's
+  first read (#2167).
+
+- A point watched through MCP (the watch tools and resources) keeps the value
+  of a COV notification that arrives before the point's first read is
+  applied, instead of showing the older read until the next change (#2169).
+
+- **Wire:** CreateObject tells a type the device supports but doesn't create
+  apart from an unsupported one, and refuses the reserved instance 4194303;
+  DeleteObject reports an absent object as unknown and asks the object
+  whether it may be deleted (#2171).
+
+- **Wire:** Property rows for Trend Log, Trend Log Multiple, Staging,
+  Averaging, Timer and Network Port follow their Clause 12 tables, which
+  changes what ReadPropertyMultiple REQUIRED and OPTIONAL return for some of
+  them and what the PICS marks optional (#2174).
+
+- **Breaking (Rust API):** Event Enrollment refuses an event transition commit
+  that leaves NORMAL while Event_Detection_Enable is FALSE, with the new
+  `EventTransitionCommitError::DetectionDisabled` (#2179).
+
+- **Wire:** I-Have names the same Device as I-Am, the one the identity names,
+  in the server and in `bacnet-device-core` `Responder` hosts, and Who-Has
+  goes unanswered while that Device is missing, even beside a second Device
+  of a lower instance (#2186).
+
+- **Breaking (wire):** The Timer object runs the Clause 12.57 state machine:
+  Present_Value is the time left in milliseconds, writes to Present_Value,
+  Timer_Running and Timer_State start, expire or clear it, and it serves
+  Default_Timeout, Last_State_Change and its timeout range (#2192).
+
+- **Wire:** COV_Increment (and Pulse Converter's COV_Period) is now required
+  of every object that reports COV, as its table says, so ReadPropertyMultiple
+  REQUIRED returns it and the PICS no longer marks it optional (#2193).
+
+- Retrying a new BACnet/SC profile's save in the TUI after only its directory
+  sync failed now succeeds: the editor keeps the VMAC and device UUID the
+  first attempt wrote, instead of drawing new ones that the saved file refuses
+  (#2196).
+
+- A server's Who-Is and Who-Has answers, and an endpoint's I-Am broadcast, no
+  longer hold the object database lock while the reply is sent, so a slow link
+  can't stall database writes and the reads queued behind them (#2199).
+
+- A request whose wait for its rate-limit slot is cancelled (a withdrawn TUI
+  job, an MCP call cancelled or out of budget) now gives the slot and its
+  principal token back, so later requests no longer queue behind slots nobody
+  used, and the rate meter doesn't count them (#2202).
+
+- **Breaking (Rust API):** a bug an attached agent's MCP request reaches no
+  longer stops the TUI drawing: the sessions run on the listener's own
+  threads, and a panic there ends only that agent's session, audited
+  (#2203). `Listener::bind` says where sessions run.
+
+- **Wire:** COV and event notifications name the identity's Device, as I-Am does, not a lower Device added after start, which now gets no local event copies; with no Device in the database they name the identity's instance, not Device 0 (#2217).
+
+- **Wire:** Beside a lower Device added after start, BUFFER_READY buffer references (even while the identity's Device is missing), Value_Source owners, the live COV lists and Device_Address_Binding, reference locality, Audit forwarding and Event Log de-duplication follow the identity's Device (#2227).
+
+- **Breaking (Rust API):** An Audit Log sink takes APDU_Timeout from the identity's Device, not the lowest one; `handle_audit_notification` takes that Device's identifier, and the `handle_confirmed_audit_notification` alias is gone (#2228).
+
+- A B/IP broadcast or multicast listener that fails to bind or join its group
+  still names the listener, and now keeps the OS error as the I/O error's
+  `source()`, so callers can read its error code (#2231).
+
+- **Wire:** An event notification of type ACK_NOTIFICATION that carries
+  ack-required, from-state or event values is now refused: a confirmed sender
+  gets a Reject, and an unconfirmed one is dropped, not logged or forwarded
+  (#2247).
+
+- `build_database_with_extra` refuses an extra object whose identifier is
+  already taken by the Device, a declared Network Port or another extra,
+  instead of silently replacing that object (#2250).
+
+- **Python API:** an endpoint whose objects reuse an object identifier now
+  fails to start with `ValueError`, as a duplicate object name does (#2250).
+
+- **Wire:** an Accumulator serves Pulse_Rate as an Unsigned count of the pulses in the last Limit_Monitoring_Interval and takes Unsigned writes only while out of service (#2251).
+
+- **Wire:** a Life Safety Point serves and takes Maintenance_Required as a BACnetMaintenance, which the CLI, MCP and Python name, instead of a BOOLEAN; the application sets it with `set_maintenance_required` (#2252).
+
+- **Wire:** DeleteObject of a Schedule now relinquishes the priority slots it
+  holds on its targets, as removing them from its reference list does, so its
+  last command no longer stays behind (#2256).
+
+- **Wire:** Program_State is read-only: network and local writes are refused
+  and the PICS lists it read-only. Objects' own writes now refuse an index on a
+  non-array, change nothing when refused, and treat a NULL Description alike;
+  Staging ends a simulated Reliability with Out_Of_Service (#2258).
+
+- **Wire:** A Schedule removed by the application's own `ObjectDatabase::remove`,
+  or replaced by `add`, now relinquishes its slots, and a Schedule's relinquish
+  leaves a slot that another writer has taken since (#2264).
+
+- **Wire:** Deleting or removing a Staging object now relinquishes the
+  priority slots its stage writes filled on its targets, but only slots it
+  still holds, as a Schedule does (#2265).
+
+- **Wire:** A Command, Channel or Timer deleted while its writes are in
+  progress now makes no further write, local or in another device, including
+  retries and writes waiting on a device lookup (#2265).
+
+- **Wire:** An Accumulator's Present_Value accepts a write while it is out of
+  service, up to Max_Pres_Value, and the PICS lists it writable; fed pulses
+  count on from the written value once back in service (#2267).
+
+- **Breaking (Rust API):** Every built-in event reporter now refuses every
+  event transition commit while Event_Detection_Enable is FALSE, NORMAL
+  targets included, with `DetectionDisabled`; the server never made such a
+  commit, so nothing changes on the wire (#2271).
+
+- Written directly through the object API, a BBMD Network Port's Broadcast
+  Distribution Table takes back the list a read returns, and Recipient_List
+  and Subscribed_Recipients take their entries as a list of elements too; the
+  wire is unchanged (#2272).
+
+- Built-in objects called directly through `read_property` now refuse an
+  array index on a property that isn't an array, as the server does; this
+  includes a proprietary property the object lacks. Nothing changes on the
+  wire (#2274).
+
+- **Wire:** Accumulator Reliability is writable out of service and restored
+  on return; Max_Pres_Value can't drop below Present_Value. **Rust API:**
+  `set_present_value` stores modulo Max_Pres_Value + 1, and the Accumulator
+  lends `ReliabilityEval` (`set_reliability`) (#2280).
+
+- **Wire:** Changing a Staging object's Target_References or
+  Priority_For_Writing now relinquishes the priority slots the new
+  configuration no longer writes, but only slots it still holds; out of
+  service it waits until the object is back in service (#2289).
+
+- **Wire:** A whole-array write with no elements, or such an array among
+  CreateObject's initial values, reaches the object instead of being refused
+  as undecodable; the object takes it or answers by its own rules, so a
+  read-only array refuses access (#2305).
+
+- **Breaking (wire):** A SubscribeCOV asking for an indefinite lifetime from a
+  server whose COV policy refuses them is answered SERVICES /
+  VALUE_OUT_OF_RANGE, the code the standard lists, instead of
+  OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED (#2317).
+
+- `bacnet` prints a fatal error as its message, not its Debug form: no quotes
+  or doubled backslashes, and `transport error: Can't assign requested address
+  (os error 49)` instead of `Transport(Os { code: 49, … })`; exit code 1 is
+  unchanged (#2325).
+
+- A BACnet/SC direct-discovery request whose caller is cancelled no longer leaves its Address-Resolution waiter behind for the life of the hub connection (#2328).
+
+- **Wire:** A BACnet/SC node accepts an Address-Resolution answer only from the node it asked, so another node on the hub can't forge one by guessing the message ID; a refusal from the hub itself ends the wait at once and caches nothing (#2332).
+
+- An endpoint session's source Audit refuses its link's broadcast address at
+  any port, in Device bindings and recipient writes, as the server's Device
+  bindings do; it refused only the endpoint's own port before (#2348).
+
+- **Wire:** A router's application port now answers a segmented request through the path its first segment came by, not the last segment's (#2355).
+
+- **Breaking (Rust API):** Every property value encoder refuses a legacy-form
+  Event_Parameters value that wouldn't decode back as itself, so the stack no
+  longer sends octets its own decoder misreads or refuses (#2376).
+
+- **Python API:** `DirectTarget` and `RoutedTarget` now report the `rusty_bacnet` module, and the local learning lab checks the ACE distribution name so it runs with the private wheel.
+
+- **ACE mixed router:** Cancellation no longer interrupts admitted startup or cleanup. Stop failures remain observable and block restart, and SC recovery notifications arriving before the monitor first runs trigger reannouncement.
+
 ## [0.15.0] - 2026-10-29
 
 ### Release highlights

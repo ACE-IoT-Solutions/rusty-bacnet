@@ -186,7 +186,7 @@ fn parse_bip_address(address: &str, field: &str) -> PyResult<Vec<u8>> {
 }
 
 /// A direct BACnet/IP destination with an explicitly preserved UDP port.
-#[pyclass(name = "DirectTarget", frozen, from_py_object)]
+#[pyclass(name = "DirectTarget", module = "rusty_bacnet", frozen, from_py_object)]
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PyDirectTarget {
     pub(crate) address: String,
@@ -217,7 +217,7 @@ impl PyDirectTarget {
 }
 
 /// A routed BACnet destination with an explicit next-hop router, DNET, and DADR.
-#[pyclass(name = "RoutedTarget", frozen, from_py_object)]
+#[pyclass(name = "RoutedTarget", module = "rusty_bacnet", frozen, from_py_object)]
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PyRoutedTarget {
     pub(crate) router: String,
@@ -237,11 +237,10 @@ pub enum PyTarget {
     Routed(PyRoutedTarget),
 }
 
+type TargetParts = (Vec<u8>, Option<(u16, Vec<u8>)>);
+
 impl PyTarget {
-    pub(crate) fn into_parts(
-        self,
-        peers: PeerAddresses,
-    ) -> PyResult<(Vec<u8>, Option<(u16, Vec<u8>)>)> {
+    pub(crate) fn into_parts(self, peers: PeerAddresses) -> PyResult<TargetParts> {
         match self {
             Self::Address(address) => Ok((peers.parse(&address)?, None)),
             Self::Direct(target) => Ok((target.mac, None)),

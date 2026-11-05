@@ -110,6 +110,7 @@ impl<'n, 'o> Distribution<'n, 'o> {
     }
 
     /// Each destination with the message to send it.
+    #[must_use]
     pub fn transmissions(
         &self,
     ) -> impl ExactSizeIterator<Item = (SocketAddrV4, Bvll<'n>)> + use<'n, 'o> {
