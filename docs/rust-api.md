@@ -1133,9 +1133,10 @@ What changes in this mode:
 
 Tests run the shared port on every OS: on Linux on 127.0.0.2 and 127.0.0.3,
 with broadcasts to 127.255.255.255 and 255.255.255.255, and on macOS and
-Windows with 127.0.0.1 beside the default-route address. A subnet broadcast
-on the default-route interface checks broadcast receipt on every OS, and is
-skipped without a broadcast-capable default route; Windows runs it only in
+Windows with 127.0.0.1 beside a non-loopback address verified to exchange UDP
+in both directions (the default-route address is tried first). A subnet broadcast
+on a broadcast-capable local interface checks receipt on every OS, and is
+skipped when no such interface is available; Windows runs it only in
 CI.
 
 With the `0.0.0.0` interface, `start()` lists the host's IPv4 addresses, with

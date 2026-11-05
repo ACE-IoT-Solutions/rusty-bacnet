@@ -9,18 +9,75 @@ use crate::port_ownership::{ATTEMPTS, lost_port};
 use socket::udp_socket;
 use tokio::time::timeout;
 
+/// Whether datagrams can travel both ways between loopback and `ip`. A VPN
+/// address may be bindable and receive from loopback while its return route
+/// refuses packets sourced from loopback.
+fn loopback_reaches(ip: Ipv4Addr) -> bool {
+    let Ok(loopback) = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)) else {
+        return false;
+    };
+    let Ok(other) = std::net::UdpSocket::bind((ip, 0)) else {
+        return false;
+    };
+    if loopback
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .is_err()
+        || other
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .is_err()
+    {
+        return false;
+    }
+    let exchange = |from: &std::net::UdpSocket, to: &std::net::UdpSocket| {
+        let Ok(destination) = to.local_addr() else {
+            return false;
+        };
+        let Ok(source) = from.local_addr() else {
+            return false;
+        };
+        if from.send_to(b"shared-port-probe", destination).is_err() {
+            return false;
+        }
+        let mut packet = [0; 32];
+        matches!(to.recv_from(&mut packet), Ok((len, sender))
+            if sender == source && &packet[..len] == b"shared-port-probe")
+    };
+    exchange(&loopback, &other) && exchange(&other, &loopback)
+}
+
 /// Two local addresses a test can bind and reach from this host, or why
 /// there aren't two. Linux answers for all of 127.0.0.0/8 on loopback.
-/// macOS assigns only 127.0.0.1 there unless an alias is added, so macOS
-/// and Windows pair it with the default-route address.
+/// macOS assigns only 127.0.0.1 there unless an alias is added, so other
+/// hosts pair it with a verified non-loopback address.
 fn two_local_addresses() -> Result<[Ipv4Addr; 2], &'static str> {
     if cfg!(target_os = "linux") {
         return Ok([Ipv4Addr::new(127, 0, 0, 2), Ipv4Addr::new(127, 0, 0, 3)]);
     }
-    match crate::local_addresses::route_ipv4() {
-        Some(ip) if !ip.is_loopback() => Ok([Ipv4Addr::LOCALHOST, ip]),
-        _ => Err("no default-route IPv4 address to pair with 127.0.0.1"),
+    let mut candidates =
+        crate::local_addresses::ipv4().map_err(|_| "could not list local IPv4 addresses")?;
+    if let Some(route) = crate::local_addresses::route_ipv4() {
+        candidates.insert(0, route);
     }
+    candidates
+        .into_iter()
+        .find(|ip| !ip.is_loopback() && loopback_reaches(*ip))
+        .map(|ip| [Ipv4Addr::LOCALHOST, ip])
+        .ok_or("no non-loopback IPv4 address exchanges UDP with 127.0.0.1")
+}
+
+/// Prefer the default route, but a point-to-point VPN may not carry subnet
+/// broadcasts while another local interface does.
+fn broadcast_capable_address() -> Option<(Ipv4Addr, Ipv4Addr)> {
+    let mut candidates = crate::local_addresses::ipv4().ok()?;
+    if let Some(route) = crate::local_addresses::route_ipv4() {
+        candidates.insert(0, route);
+    }
+    candidates.into_iter().find_map(|ip| {
+        (!ip.is_loopback())
+            .then(|| crate::local_addresses::subnet_broadcast(ip))
+            .flatten()
+            .map(|subnet| (ip, subnet))
+    })
 }
 
 struct Node {
@@ -195,7 +252,24 @@ async fn a_bbmd_and_a_foreign_device_share_a_port_on_two_addresses() {
             tokio::task::yield_now().await;
         }
     });
-    registered.await.expect("the device never registered");
+    registered
+        .await
+        .expect("the BBMD never received registration");
+
+    // An FDT entry only proves that the BBMD received the request. Wait for
+    // its BVLC result to reach the foreign device before testing its sends.
+    timeout(Duration::from_secs(2), async {
+        while !device
+            .transport
+            .bvlc_client_snapshot()
+            .foreign_registration
+            .registered
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the foreign device never received its registration result");
 
     device.transport.send_broadcast(&npdu(1)).await.unwrap();
     let distributed = bbmd.next().await;
@@ -317,16 +391,13 @@ async fn an_address_and_port_are_not_shared_twice() {
     node.transport.stop().await.unwrap();
 }
 
-/// A broadcast on the default-route subnet reaches a transport bound to
-/// that subnet's address, on every OS. Skipped without a default route or a
-/// broadcast-capable interface for it, or where the host can't send one.
+/// A subnet broadcast reaches a transport bound to that subnet's address,
+/// on every OS. Skipped without a broadcast-capable local interface or where
+/// the host can't send one.
 #[tokio::test]
 async fn a_subnet_broadcast_reaches_a_transport_sharing_its_port_by_address() {
-    let Some(route) = crate::local_addresses::route_ipv4().filter(|ip| !ip.is_loopback()) else {
-        return eprintln!("skipped: no default-route IPv4 address");
-    };
-    let Some(subnet) = crate::local_addresses::subnet_broadcast(route) else {
-        return eprintln!("skipped: {route} has no subnet broadcast address");
+    let Some((route, subnet)) = broadcast_capable_address() else {
+        return eprintln!("skipped: no broadcast-capable local IPv4 address");
     };
     let [mut node] = start_on_one_port([route], [subnet], |_, _, _| {}).await;
     let peer = UdpSocket::bind(SocketAddrV4::new(route, 0)).await.unwrap();
@@ -349,13 +420,13 @@ async fn a_subnet_broadcast_reaches_a_transport_sharing_its_port_by_address() {
 /// the wildcard one), which drops it: only broadcasts that arrived on the
 /// transport's own interface count (#1538). A control socket bound where
 /// the listener is shows the broadcast did come back to this host. Skipped
-/// without a default route, or where the host can't send a limited
+/// without a broadcast-capable local interface, or where the host can't send a limited
 /// broadcast or doesn't loop it back.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_broadcast_from_another_interface_is_dropped() {
-    let Some(route) = crate::local_addresses::route_ipv4().filter(|ip| !ip.is_loopback()) else {
-        return eprintln!("skipped: no default-route IPv4 address");
+    let Some((route, _)) = broadcast_capable_address() else {
+        return eprintln!("skipped: no broadcast-capable local IPv4 address");
     };
     let loopback = if cfg!(target_os = "linux") {
         Ipv4Addr::new(127, 0, 0, 2)
@@ -404,8 +475,8 @@ async fn a_broadcast_from_another_interface_is_dropped() {
 /// frame tap exactly once: the listener reports it as the node keeps it
 /// (#1856), and the address socket never reads it. Linux sends it to
 /// loopback's 127.255.255.255; macOS and the BSDs give loopback no
-/// broadcast address, so there it goes to the default-route subnet's, and
-/// the test is skipped without one or where the host can't send it.
+/// broadcast address, so there it goes to a local subnet's, and the test is
+/// skipped without a broadcast-capable interface or where the host can't send it.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_kept_broadcast_reaches_the_tap_once() {
@@ -416,12 +487,8 @@ async fn a_kept_broadcast_reaches_the_tap_once() {
             Ipv4Addr::new(127, 255, 255, 255),
         )
     } else {
-        let Some(route) = crate::local_addresses::route_ipv4().filter(|ip| !ip.is_loopback())
-        else {
-            return eprintln!("skipped: no default-route IPv4 address");
-        };
-        let Some(subnet) = crate::local_addresses::subnet_broadcast(route) else {
-            return eprintln!("skipped: {route} has no subnet broadcast address");
+        let Some((route, subnet)) = broadcast_capable_address() else {
+            return eprintln!("skipped: no broadcast-capable local IPv4 address");
         };
         (route, subnet)
     };
