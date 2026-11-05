@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::{audit::AuditReporterObject, traits::BACnetObject};
 use bacnet_services::{
     read_property::{ReadPropertyACK, ReadPropertyRequest},
@@ -215,11 +216,27 @@ impl BACnetObject for ReadProbe {
     fn object_name(&self) -> &str {
         "read probe"
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[
-            PropertyIdentifier::PRESENT_VALUE,
-            PropertyIdentifier::DESCRIPTION,
-        ])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        // The probe serves these two rows only, Description with its
+        // injected failure, so RPM ALL reads exactly them.
+        use bacnet_objects::property_metadata::{
+            PropertyConformance as C, PropertyWriteCapability as W,
+        };
+        const ROWS: &[PropertyMetadata] = &[
+            PropertyMetadata::new(
+                PropertyIdentifier::PRESENT_VALUE,
+                C::RequiredRead,
+                None,
+                W::ReadOnly,
+            ),
+            PropertyMetadata::new(
+                PropertyIdentifier::DESCRIPTION,
+                C::Optional,
+                None,
+                W::ReadOnly,
+            ),
+        ];
+        Cow::Borrowed(ROWS)
     }
     fn read_property(
         &self,
@@ -264,7 +281,7 @@ async fn audit_reporter_rp_execution_errors_map_result_but_unknown_outcomes_are_
     type ExecutionCase = (fn() -> Error, Option<(ErrorClass, ErrorCode)>);
     let cases: [ExecutionCase; 5] = [
         (
-            || Error::Protocol { class: 2, code: 32 },
+            || Error::protocol(ErrorClass::PROPERTY, ErrorCode::UNKNOWN_PROPERTY),
             Some((ErrorClass::PROPERTY, ErrorCode::UNKNOWN_PROPERTY)),
         ),
         (
@@ -272,18 +289,8 @@ async fn audit_reporter_rp_execution_errors_map_result_but_unknown_outcomes_are_
             Some((ErrorClass::SERVICES, ErrorCode::OTHER)),
         ),
         (|| Error::Timeout(Duration::from_secs(1)), None),
-        (
-            || Error::Reject {
-                reason: RejectReason::OTHER.to_raw(),
-            },
-            None,
-        ),
-        (
-            || Error::Abort {
-                reason: AbortReason::OTHER.to_raw(),
-            },
-            None,
-        ),
+        (|| Error::reject(RejectReason::OTHER), None),
+        (|| Error::abort(AbortReason::OTHER), None),
     ];
     for (error, result) in cases {
         let mut fixture = server(read_reporter()).await;

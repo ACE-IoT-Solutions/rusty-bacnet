@@ -32,17 +32,17 @@ async fn cov_order_supplied_terminal_snapshot_orders_preparation_not_object_age(
     let old_snapshot = {
         let mut db = server.db.write().await;
         let obj = db.get_mut(&oid).unwrap();
-        obj.write_property(
+        obj.write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
             None,
             PropertyValue::Enumerated(3),
             Some(8),
+            &crate::command_source::test_origin(),
         )
         .unwrap();
-        assert!(
-            obj.advance_monotonic_time_internal(obj.next_monotonic_deadline_internal().unwrap())
-        );
-        obj.cov_snapshot_internal().unwrap()
+        let timed = obj.timed().unwrap();
+        assert!(timed.advance_monotonic_time(timed.next_monotonic_deadline().unwrap()));
+        timed.cov_snapshot().unwrap()
     };
     // The newer live command is observed and successfully sent first.
     write_command(&server, oid, 1, 4).await;

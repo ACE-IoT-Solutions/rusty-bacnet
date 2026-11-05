@@ -3,15 +3,15 @@ use super::*;
 use bacnet_transport::loopback::LoopbackTransport;
 use tokio::sync::{Notify, Semaphore};
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_rpm_default_queue_accounts_local_losses_and_recovers_summary() {
     congestion(0).await;
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_rpm_full_queue_summary_wait_is_owned_and_stop_cancels() {
     congestion(1).await;
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_rpm_full_queue_summary_generation_replacement_discards_old_count() {
     congestion(2).await;
 }
@@ -27,7 +27,9 @@ async fn congestion(mode: u8) {
     flags.insert(AuditOperation::AUDITING_FAILURE);
     db.get_mut(&selected())
         .unwrap()
-        .configure_audit_reporter_internal(
+        .audit_reporter_mut()
+        .expect("an Audit Reporter")
+        .configure(
             AuditLevel::AUDIT_ALL,
             flags,
             false,
@@ -75,8 +77,8 @@ async fn congestion(mode: u8) {
     let env = receive(&mut received).await;
     let (invoke, rpm) = request(&env);
     entered.notified().await; // consume the request's transport-entry marker
-                              // Fill the default16-slot queue behind one held unrelated transport send.
-                              // This deterministically forces the summary itself to encounter QueueFull.
+    // Fill the default16-slot queue behind one held unrelated transport send.
+    // This deterministically forces the summary itself to encounter QueueFull.
     let egress = session.egress.as_ref().unwrap();
     let enqueue = || {
         egress
@@ -86,7 +88,7 @@ async fn congestion(mode: u8) {
                     destination_mac: MacAddr::from_slice(&peer_mac),
                 },
                 false,
-                NetworkPriority::NORMAL,
+                NetworkPriority::Normal,
                 Vec::new(),
                 None,
             )
@@ -97,29 +99,16 @@ async fn congestion(mode: u8) {
     unrelated.extend((0..16).map(|_| enqueue()));
     let mut encoded = BytesMut::new();
     encode_apdu(&mut encoded, &response(invoke, &success(&rpm))).unwrap();
-    peer.send_apdu(&encoded, &source_mac, false, NetworkPriority::NORMAL)
+    peer.send_apdu(&encoded, &source_mac, false, NetworkPriority::Normal)
         .await
         .unwrap();
     assert!(read.await.unwrap().is_ok());
     // All notification admissions and the first full-queue summary attempt settle
     // while transport remains held. No deadline or speculative retry is needed.
-    timeout(WAIT, async {
-        loop {
-            let db = session.database.as_ref().unwrap().read().await;
-            let state = db
-                .get(&selected())
-                .unwrap()
-                .read_property(PropertyIdentifier::RELIABILITY, None)
-                .unwrap();
-            if state == PropertyValue::Enumerated(Reliability::COMMUNICATION_FAILURE.to_raw()) {
-                break;
-            }
-            drop(db);
-            tokio::task::yield_now().await;
-        }
+    eventually(WAIT, "Reliability is COMMUNICATION_FAILURE", async || {
+        reliability(&session).await == Reliability::COMMUNICATION_FAILURE.to_raw()
     })
-    .await
-    .unwrap();
+    .await;
     timeout(
         WAIT,
         session
@@ -134,9 +123,11 @@ async fn congestion(mode: u8) {
     if mode == 1 {
         let db = Arc::clone(session.database.as_ref().unwrap());
         let guard = db.write().await;
-        assert!(timeout(Duration::from_millis(20), session.stop())
-            .await
-            .is_err());
+        assert!(
+            timeout(Duration::from_millis(20), session.stop())
+                .await
+                .is_err()
+        );
         drop(guard);
         timeout(WAIT, session.stop()).await.unwrap().unwrap();
         assert_eq!(session.active_leases(), 0);
@@ -179,7 +170,7 @@ async fn congestion(mode: u8) {
         let (invoke, rpm) = request(&env);
         let mut bytes = BytesMut::new();
         encode_apdu(&mut bytes, &response(invoke, &success(&rpm))).unwrap();
-        peer.send_apdu(&bytes, &source_mac, false, NetworkPriority::NORMAL)
+        peer.send_apdu(&bytes, &source_mac, false, NetworkPriority::Normal)
             .await
             .unwrap();
         read.await.unwrap().unwrap();
@@ -235,24 +226,10 @@ async fn congestion(mode: u8) {
     assert_eq!(delivered, 0);
     assert!(lost > 0);
     assert!(summaries >= 1);
-    timeout(WAIT, async {
-        loop {
-            let db = session.database.as_ref().unwrap().read().await;
-            if db
-                .get(&selected())
-                .unwrap()
-                .read_property(PropertyIdentifier::RELIABILITY, None)
-                .unwrap()
-                == PropertyValue::Enumerated(Reliability::NO_FAULT_DETECTED.to_raw())
-            {
-                break;
-            }
-            drop(db);
-            tokio::task::yield_now().await;
-        }
+    eventually(WAIT, "Reliability is NO_FAULT_DETECTED", async || {
+        reliability(&session).await == Reliability::NO_FAULT_DETECTED.to_raw()
     })
-    .await
-    .unwrap();
+    .await;
     for send in unrelated {
         assert!(send.complete().await.result.is_ok());
     }

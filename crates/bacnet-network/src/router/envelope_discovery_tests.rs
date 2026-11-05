@@ -7,12 +7,14 @@
 //!
 //! Shares [`super::envelope_harness`] with the control-envelope module.
 
-use super::control_messages::handle_network_message;
+use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu};
+use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
+use bacnet_types::MacAddr;
+use bytes::Bytes;
+
+use super::SendRequest;
 use super::envelope_harness::*;
-use super::*;
-use crate::router_table::ReachabilityStatus;
-use bacnet_encoding::npdu::{decode_npdu, NpduAddress};
-use bacnet_types::enums::RejectMessageReason;
+use crate::router_table::{PortId, Reachability};
 
 // --- Who-Is discovery origin (Clause 6.6.3.2) ---
 
@@ -41,10 +43,10 @@ async fn who_is_local_origin_adds_ingress_source_and_attributes_on_forward() {
     assert_eq!(relayed.payload, npdu.payload);
     assert_eq!(
         relayed.message_type,
-        Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw())
+        Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK)
     );
     // Next hop stays separate: the relay is a link broadcast, not addressed.
-    assert_eq!(h.table.lock().await.len(), 2);
+    assert_eq!(h.table().len(), 2);
 }
 
 #[tokio::test]
@@ -90,13 +92,14 @@ async fn who_is_scoped_known_network_answered_locally_not_forwarded() {
         SendRequest::Broadcast {
             npdu,
             data_attributes,
+            ..
         } => (npdu, data_attributes),
         SendRequest::Unicast { .. } => panic!("expected broadcast I-Am reply"),
     };
     let decoded = decode_npdu(data).unwrap();
     assert_eq!(
         decoded.message_type,
-        Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK.to_raw())
+        Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK)
     );
     assert_eq!(decoded.payload.as_ref(), &[0x07, 0xd0]);
     assert_eq!(attrs, attributes());
@@ -134,7 +137,7 @@ async fn who_is_truncated_tail_never_promotes_to_global_scan() {
         .await;
         h.assert_quiet();
     }
-    assert_eq!(h.table.lock().await.len(), 2);
+    assert_eq!(h.table().len(), 2);
 }
 
 // --- Initialize-Routing-Table transactional envelope ---
@@ -154,7 +157,7 @@ async fn init_update_query_and_garbage_envelopes() {
     ))
     .await;
     h.assert_quiet();
-    assert_eq!(h.table.lock().await.len(), 2);
+    assert_eq!(h.table().len(), 2);
 
     // Trailing garbage after a zero count: not a query, no ACK.
     h.handle(h.ctx(
@@ -186,16 +189,16 @@ async fn init_update_query_and_garbage_envelopes() {
             let decoded = decode_npdu(npdu).unwrap();
             assert_eq!(
                 decoded.message_type,
-                Some(NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK.to_raw())
+                Some(NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK)
             );
             assert!(decoded.payload.is_empty());
         }
         SendRequest::Broadcast { .. } => panic!("expected unicast ACK"),
     }
-    let route = h.table.lock().await.lookup(3000).unwrap().clone();
-    assert_eq!(route.port_index, 0);
-    assert!(!route.directly_connected);
-    assert_eq!(route.next_hop_mac.as_slice(), &[2]);
+    let route = h.table().lookup(3000).unwrap();
+    assert_eq!(route.port(), PortId(0));
+    assert!(!route.is_direct());
+    assert_eq!(route.next_hop().as_slice(), &[2]);
 
     // Valid query: one ACK carries the full table — ascending DNETs with
     // stable nonzero wire Port IDs (1000->1, 2000->2, 3000->1).
@@ -232,7 +235,7 @@ async fn init_ack_truncated_entry_learns_nothing() {
     ))
     .await;
     h.assert_quiet();
-    let table = h.table.lock().await;
+    let table = h.table();
     assert_eq!(table.len(), 2);
     assert!(table.lookup(3000).is_none());
 }
@@ -241,44 +244,31 @@ async fn init_ack_truncated_entry_learns_nothing() {
 
 #[tokio::test]
 async fn initialize_routing_table_ack() {
-    let mut table = RouterTable::new();
+    let mut table = TableSeed::new();
     table.add_direct(1000, 0);
     table.add_direct(2000, 1);
-
-    let table = Arc::new(Mutex::new(table));
-
-    let (tx, mut rx) = mpsc::channel::<SendRequest>(256);
-    let send_txs = vec![tx];
+    let mut h = Harness::with_table(table);
 
     // RB-03: a table query is Number of Ports == 0 (one octet), not a
     // missing field. An empty payload is a truncated envelope: no ACK.
     let npdu = Npdu {
-        is_network_message: true,
-        message_type: Some(NetworkMessageType::INITIALIZE_ROUTING_TABLE.to_raw()),
+        message_type: Some(NetworkMessageType::INITIALIZE_ROUTING_TABLE),
         payload: Bytes::from_static(&[0]),
         ..Npdu::default()
     };
+    h.handle(h.ctx(0, &[0x0A], npdu)).await;
 
-    handle_network_message(
-        &table,
-        &send_txs,
-        &IngressContext::test_local(0, 1000, &[0x0A], npdu),
-        &control_policy::ControlGate::permissive(),
-        &LocalControl::default(),
-    )
-    .await;
-
-    let sent = rx.try_recv().unwrap();
+    let sent = h.rxs[0].try_recv().unwrap();
     match sent {
         SendRequest::Unicast {
             npdu: data, mac, ..
         } => {
             assert_eq!(mac.as_slice(), &[0x0A]);
             let decoded = decode_npdu(data.clone()).unwrap();
-            assert!(decoded.is_network_message);
+            assert!(decoded.is_network_message());
             assert_eq!(
                 decoded.message_type,
-                Some(NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK.to_raw())
+                Some(NetworkMessageType::INITIALIZE_ROUTING_TABLE_ACK)
             );
             assert_eq!(decoded.payload.len(), 9);
             assert_eq!(decoded.payload[0], 2);
@@ -296,38 +286,26 @@ async fn initialize_routing_table_ack() {
 async fn initialize_routing_table_empty_payload_sends_no_ack() {
     // RB-03: the Number of Ports octet is absent, so this is a truncated
     // envelope, not a query. No table change, no ACK.
-    let mut table = RouterTable::new();
+    let mut table = TableSeed::new();
     table.add_direct(1000, 0);
-    let table = Arc::new(Mutex::new(table));
-
-    let (tx, mut rx) = mpsc::channel::<SendRequest>(256);
-    let send_txs = vec![tx];
+    let mut h = Harness::with_table(table);
 
     let npdu = Npdu {
-        is_network_message: true,
-        message_type: Some(NetworkMessageType::INITIALIZE_ROUTING_TABLE.to_raw()),
+        message_type: Some(NetworkMessageType::INITIALIZE_ROUTING_TABLE),
         payload: Bytes::new(),
         ..Npdu::default()
     };
+    h.handle(h.ctx(0, &[0x0A], npdu)).await;
 
-    handle_network_message(
-        &table,
-        &send_txs,
-        &IngressContext::test_local(0, 1000, &[0x0A], npdu),
-        &control_policy::ControlGate::permissive(),
-        &LocalControl::default(),
-    )
-    .await;
-
-    assert!(rx.try_recv().is_err());
-    assert_eq!(table.lock().await.len(), 1);
+    h.assert_quiet();
+    assert_eq!(h.table().len(), 1);
 }
 
 // --- Routing-first dispatcher for directed controls ---
 
 #[tokio::test]
 async fn directed_control_routed_not_consumed() {
-    let mut table = RouterTable::new();
+    let mut table = TableSeed::new();
     table.add_direct(1000, 0);
     table.add_direct(2000, 1);
     table.add_learned(3000, 1, MacAddr::from_slice(&[5]));
@@ -352,12 +330,13 @@ async fn directed_control_routed_not_consumed() {
             npdu,
             mac,
             data_attributes,
+            ..
         } => {
             assert_eq!(mac.as_slice(), &[5]);
             let decoded = decode_npdu(npdu).unwrap();
             assert_eq!(
                 decoded.message_type,
-                Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK.to_raw())
+                Some(NetworkMessageType::I_AM_ROUTER_TO_NETWORK)
             );
             assert_eq!(
                 decoded.destination,
@@ -373,9 +352,9 @@ async fn directed_control_routed_not_consumed() {
         SendRequest::Broadcast { .. } => panic!("expected unicast route"),
     }
     // The payload network was forwarded, not learned.
-    let table = h.table.lock().await;
+    let table = h.table();
     assert!(table.lookup(4000).is_none());
-    assert_eq!(table.lookup(3000).unwrap().port_index, 1);
+    assert_eq!(table.lookup(3000).unwrap().port(), PortId(1));
 }
 
 #[tokio::test]
@@ -419,7 +398,7 @@ async fn directed_control_to_unknown_network_rejected() {
     let who_is = decode_npdu(solicited[0].clone()).unwrap();
     assert_eq!(
         who_is.message_type,
-        Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK.to_raw())
+        Some(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK)
     );
     assert_eq!(who_is.payload.as_ref(), &[0x27, 0x0f]);
     let mut rejects = h.drain(0);
@@ -430,7 +409,7 @@ async fn directed_control_to_unknown_network_rejected() {
             let decoded = decode_npdu(npdu).unwrap();
             assert_eq!(
                 decoded.message_type,
-                Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK.to_raw())
+                Some(NetworkMessageType::REJECT_MESSAGE_TO_NETWORK)
             );
             assert_eq!(
                 decoded.payload.as_ref(),
@@ -443,7 +422,7 @@ async fn directed_control_to_unknown_network_rejected() {
         }
         SendRequest::Broadcast { .. } => panic!("expected unicast reject"),
     }
-    assert_eq!(h.table.lock().await.len(), 2);
+    assert_eq!(h.table().len(), 2);
 }
 
 #[tokio::test]
@@ -498,7 +477,7 @@ async fn directed_who_is_remote_broadcast_forwarded_with_origin() {
 
 #[tokio::test]
 async fn link_broadcast_routed_unicast_control_stays_unicast() {
-    let mut table = RouterTable::new();
+    let mut table = TableSeed::new();
     table.add_direct(1000, 0);
     table.add_direct(2000, 1);
     table.add_learned(3000, 1, MacAddr::from_slice(&[5]));
@@ -522,7 +501,7 @@ async fn link_broadcast_routed_unicast_control_stays_unicast() {
     }
     // A transit control is never consumed: no busy mark from our own relay.
     assert_eq!(
-        h.table.lock().await.effective_reachability(3000),
-        Some(ReachabilityStatus::Reachable)
+        h.table().effective_reachability(3000, h.now()),
+        Some(Reachability::Reachable)
     );
 }

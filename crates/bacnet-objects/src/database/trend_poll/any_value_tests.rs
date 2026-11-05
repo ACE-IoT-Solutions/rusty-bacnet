@@ -4,6 +4,7 @@
 use super::*;
 use crate::value_types::LargeAnalogValueObject;
 use bacnet_encoding::primitives::decode_application_value;
+use bacnet_types::enums::EngineeringUnits;
 
 #[test]
 fn read_values_map_to_their_datum_or_an_any_value() {
@@ -111,7 +112,7 @@ fn a_polled_value_too_long_to_page_logs_value_too_long() {
     let (mut db, oid, _, _) = fixture(u32::MAX);
     db.remove(&target()).unwrap();
     db.add(Box::new(
-        AnalogValueObject::new(1, "x".repeat(300), 95).unwrap(),
+        AnalogValueObject::new(1, "x".repeat(300), EngineeringUnits::NO_UNITS).unwrap(),
     ))
     .unwrap();
     let mut object = trend(u32::MAX, 16);
@@ -134,7 +135,12 @@ fn a_polled_value_too_long_to_page_logs_value_too_long() {
 
 /// The record ReadRange serves for the newest sample of `oid`.
 fn last_served(db: &ObjectDatabase, oid: ObjectIdentifier) -> Vec<u8> {
-    let records = db.get(&oid).unwrap().log_buffer_internal().unwrap();
+    let records = db
+        .get(&oid)
+        .unwrap()
+        .log_buffer()
+        .and_then(|log| log.buffer_records())
+        .unwrap();
     let mut bytes = BytesMut::new();
     records.encode_record(records.record_count() - 1, &mut bytes);
     bytes.to_vec()

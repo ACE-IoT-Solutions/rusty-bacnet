@@ -7,7 +7,7 @@ use super::*;
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::color::ColorObject;
 use bacnet_objects::present_value_access::PresentValueAccess;
-use bacnet_types::enums::ObjectType;
+use bacnet_types::enums::{EngineeringUnits, ObjectType};
 
 const VS: PropertyIdentifier = PropertyIdentifier::VALUE_SOURCE;
 const PV: PropertyIdentifier = PropertyIdentifier::PRESENT_VALUE;
@@ -29,8 +29,13 @@ const DEVICE: [u8; 4] = [0x02, 0x00, 0x03, 0x58];
 
 async fn harness() -> Harness {
     Harness::start_with(ServerConfig::default(), |db| {
-        let mut value =
-            AnalogValueObject::with_access(2, "AV-2", 62, PresentValueAccess::ReadOnly).unwrap();
+        let mut value = AnalogValueObject::with_access(
+            2,
+            "AV-2",
+            EngineeringUnits::DEGREES_CELSIUS,
+            PresentValueAccess::ReadOnly,
+        )
+        .unwrap();
         value.set_value_source_tracking(true);
         db.add(Box::new(value)).unwrap();
         let mut color = ColorObject::new(1, "CLR-1").unwrap();
@@ -106,4 +111,25 @@ async fn a_local_write_publishes_its_initiator() {
         .unwrap();
     // AV-1 is 00 80 00 01.
     assert_eq!(source(&h, color()).await, names([0x00, 0x80, 0x00, 0x01]));
+}
+
+/// A local command is owned by the identity's Device, not a lower-instance
+/// Device the application added once the server ran (#2227).
+#[tokio::test(start_paused = true)]
+async fn the_identity_device_owns_a_local_command_beside_a_lower_one() {
+    let h = harness().await;
+    let lower = crate::local_device::lower_device(5);
+    h.server.database().write().await.add(lower).unwrap();
+    h.server
+        .write_local(
+            &color(),
+            PV,
+            None,
+            PropertyValue::List(vec![PropertyValue::Real(0.25), PropertyValue::Real(0.5)]),
+            None,
+            crate::LocalCommandSource::ServerDevice,
+        )
+        .await
+        .unwrap();
+    assert_eq!(source(&h, color()).await, names(DEVICE));
 }

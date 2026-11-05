@@ -1,26 +1,95 @@
 //! One real serial/MAC owner; gates observe admission without replacing transport behavior.
-use crate::mstp_wire::{decode_frame, encode_frame, FrameType, MstpFrame};
+use crate::mstp_wire::{FrameType, MstpFrame, decode_frame, encode_frame};
 use bacnet_client::client::{BACnetClient, ClientConfig};
 use bacnet_endpoint::session::{EndpointSession, SessionRole};
 use bacnet_objects::{analog::AnalogInputObject, database::ObjectDatabase};
 use bacnet_server::server::{BACnetServer, ServerConfig};
 use bacnet_transport::{
     any::AnyTransport,
-    mstp::{LoopbackSerial, MstpConfig, MstpExecutionMode, MstpTransport, SerialPort},
+    mstp::{
+        LoopbackSerial, MstpConfig, MstpDiagnostics, MstpExecutionMode, MstpTransport, SerialPort,
+    },
     port::{ReceivedNpdu, TransportPort},
 };
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::error::Error;
 use bytes::{Bytes, BytesMut};
-use std::{future::Future, sync::Arc, time::Duration};
-use tokio::sync::{mpsc, Semaphore};
+use std::{
+    collections::VecDeque,
+    future::Future,
+    sync::{Arc, Mutex as StdMutex, OnceLock},
+    time::Duration,
+};
+use tokio::sync::{Semaphore, mpsc};
 
 pub const NODE: u8 = 3;
 pub const PEER: u8 = 7;
 pub const BROADCAST: u8 = 255;
-pub async fn bounded<T>(future: impl Future<Output = T>) -> T {
-    tokio::time::timeout(Duration::from_secs(5), future)
-        .await
-        .expect("MS/TP fixture made no progress")
+/// Frames kept for a failure message.
+const TRACE_FRAMES: usize = 40;
+
+/// One fixture's MS/TP link as a failure message sees it: the node's state
+/// and counters, and the last [`TRACE_FRAMES`] frames each side sent,
+/// stamped with Tokio time since the fixture started (#2277): virtual
+/// time in the paused variants (the dedicated ones on test time, #2284),
+/// wall time in the dedicated smoke test.
+///
+/// `deadline_lateness` and the wall-clock stamps tell host starvation
+/// (deadlines serviced seconds late, gaps between frames) from a node that
+/// stopped: under background QoS on a loaded macOS host, a 20 ms sleep can
+/// wake seconds late.
+#[derive(Clone)]
+pub struct Link {
+    /// Set once the transport exists, before it moves into its owner.
+    diagnostics: Arc<OnceLock<MstpDiagnostics>>,
+    trace: Arc<StdMutex<VecDeque<String>>>,
+    start: tokio::time::Instant,
+}
+impl Default for Link {
+    fn default() -> Self {
+        Self {
+            diagnostics: Default::default(),
+            trace: Default::default(),
+            start: tokio::time::Instant::now(),
+        }
+    }
+}
+impl Link {
+    fn note(&self, dir: &str, frame: &MstpFrame) {
+        let mut trace = self.trace.lock().unwrap();
+        if trace.len() == TRACE_FRAMES {
+            trace.pop_front();
+        }
+        trace.push_back(format!(
+            "{:>8.3?} {dir} {:?} ->{} {:02x?}",
+            self.start.elapsed(),
+            frame.frame_type,
+            frame.destination,
+            &frame.data[..frame.data.len().min(8)]
+        ));
+    }
+    /// The node's state, counters and recent frames.
+    pub fn report(&self) -> String {
+        let trace = self.trace.lock().unwrap();
+        format!(
+            "{:?} since start; node {:?}; {:?}; frames:\n{}",
+            self.start.elapsed(),
+            self.diagnostics.get().map(MstpDiagnostics::node_state),
+            self.diagnostics.get().map(MstpDiagnostics::snapshot),
+            trace.iter().cloned().collect::<Vec<_>>().join("\n")
+        )
+    }
+    /// Runs `future` with a 5 s hang backstop. On paused time (the Tokio
+    /// variants, and the dedicated ones on test time) the clock moves only
+    /// when every task, and the dedicated node, is idle, so the backstop
+    /// fires only when nothing can run; on the wall clock (the dedicated
+    /// smoke test) host starvation counts against it too.
+    pub async fn bounded<T>(&self, future: impl Future<Output = T>) -> T {
+        match tokio::time::timeout(Duration::from_secs(5), future).await {
+            Ok(value) => value,
+            Err(_) => panic!("MS/TP fixture made no progress; {}", self.report()),
+        }
+    }
 }
 
 pub struct Gates {
@@ -59,6 +128,7 @@ pub struct ObservedSerial {
     /// Live until drop, as for `inner`.
     writes: Option<mpsc::UnboundedSender<MstpFrame>>,
     gates: Arc<Gates>,
+    link: Link,
 }
 impl ObservedSerial {
     fn wire(&self) -> &LoopbackSerial {
@@ -89,6 +159,7 @@ impl SerialPort for ObservedSerial {
             std::future::pending::<()>().await;
         }
         self.wire().write(data).await?;
+        self.link.note("node", &frame);
         self.writes
             .as_ref()
             .expect("observer is live until drop")
@@ -102,7 +173,7 @@ impl SerialPort for ObservedSerial {
 }
 
 pub struct GatedTransport {
-    inner: AnyTransport<ObservedSerial>,
+    inner: AnyTransport,
     gates: Arc<Gates>,
 }
 impl TransportPort for GatedTransport {
@@ -166,14 +237,15 @@ pub enum Owner {
     Client(Box<BACnetClient<GatedTransport>>),
 }
 impl Owner {
-    async fn start(role: Role, transport: GatedTransport) -> Self {
+    async fn start(role: Role, transport: GatedTransport, link: &Link) -> Self {
         let mut db = ObjectDatabase::new();
-        let mut analog = AnalogInputObject::new(1, "number-progress", 0).unwrap();
+        let mut analog =
+            AnalogInputObject::new(1, "number-progress", EngineeringUnits::SQUARE_METERS).unwrap();
         analog.set_present_value(42.0);
         db.add(Box::new(analog)).unwrap();
         match role {
             Role::Server => Self::Server(Box::new(
-                bounded(BACnetServer::start(ServerConfig::default(), db, transport))
+                link.bounded(BACnetServer::start(ServerConfig::default(), db, transport))
                     .await
                     .unwrap(),
             )),
@@ -182,11 +254,11 @@ impl Owner {
                     EndpointSession::new(transport, SessionRole::Both, Default::default())
                         .unwrap()
                         .with_database(db);
-                bounded(session.start()).await.unwrap();
+                link.bounded(session.start()).await.unwrap();
                 Self::Endpoint(Box::new(session))
             }
             Role::Client => Self::Client(Box::new(
-                bounded(BACnetClient::start(ClientConfig::default(), transport))
+                link.bounded(BACnetClient::start(ClientConfig::default(), transport))
                     .await
                     .unwrap(),
             )),
@@ -209,6 +281,7 @@ impl Owner {
 pub struct Peer {
     pub serial: Arc<LoopbackSerial>,
     pub writes: mpsc::UnboundedReceiver<MstpFrame>,
+    pub link: Link,
     drain: tokio::task::JoinHandle<()>,
 }
 impl Drop for Peer {
@@ -219,26 +292,29 @@ impl Drop for Peer {
 impl Peer {
     pub async fn frame(&self, kind: FrameType, destination: u8, data: &[u8]) -> Result<(), Error> {
         let mut wire = BytesMut::new();
-        encode_frame(
-            &mut wire,
-            &MstpFrame {
-                frame_type: kind,
-                destination,
-                source: PEER,
-                data: Bytes::copy_from_slice(data),
-            },
-        )
-        .unwrap();
+        let frame = MstpFrame {
+            frame_type: kind,
+            destination,
+            source: PEER,
+            data: Bytes::copy_from_slice(data),
+        };
+        encode_frame(&mut wire, &frame).unwrap();
+        self.link.note("peer", &frame);
         self.serial.write(&wire).await
     }
     pub async fn control(&self, destination: u8, data: &[u8]) {
-        bounded(self.frame(FrameType::BACnetDataNotExpectingReply, destination, data))
+        self.link
+            .bounded(self.frame(
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
+                destination,
+                data,
+            ))
             .await
             .unwrap();
     }
     pub async fn number(&mut self, number: u16) {
         let frame = self.data().await;
-        assert_eq!(frame.frame_type, FrameType::BACnetDataNotExpectingReply);
+        assert_eq!(frame.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
         assert_eq!(frame.destination, BROADCAST);
         assert_eq!(
             frame.data.as_ref(),
@@ -251,23 +327,24 @@ impl Peer {
     /// address is left to time out; a token sent while the node polls would
     /// be an unexpected frame there (Clause 9.5.6.8) and cost the token.
     pub async fn data(&mut self) -> MstpFrame {
-        bounded(async {
-            self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+        let link = self.link.clone();
+        link.bounded(async {
+            self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
             loop {
                 let frame = self.writes.recv().await.expect("serial owner disappeared");
                 assert_eq!(frame.source, NODE);
                 match frame.frame_type {
-                    FrameType::BACnetDataNotExpectingReply
-                    | FrameType::BACnetDataExpectingReply => return frame,
-                    FrameType::PollForMaster if frame.destination == PEER => {
-                        self.frame(FrameType::ReplyToPollForMaster, NODE, &[])
+                    FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+                    | FrameType::BACNET_DATA_EXPECTING_REPLY => return frame,
+                    FrameType::POLL_FOR_MASTER if frame.destination == PEER => {
+                        self.frame(FrameType::REPLY_TO_POLL_FOR_MASTER, NODE, &[])
                             .await
                             .unwrap();
                     }
-                    FrameType::Token if frame.destination == PEER => {
-                        self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+                    FrameType::TOKEN if frame.destination == PEER => {
+                        self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
                     }
-                    FrameType::PollForMaster | FrameType::ReplyPostponed => {}
+                    FrameType::POLL_FOR_MASTER | FrameType::REPLY_POSTPONED => {}
                     other => panic!("unexpected frame {other:?}"),
                 }
             }
@@ -278,17 +355,18 @@ impl Peer {
     /// polls on the way: a master sends a request only while it holds the
     /// token.
     pub async fn await_token(&mut self) {
-        bounded(async {
+        let link = self.link.clone();
+        link.bounded(async {
             loop {
                 let frame = self.writes.recv().await.expect("serial owner disappeared");
                 assert_eq!(frame.source, NODE);
                 match frame.frame_type {
-                    FrameType::PollForMaster if frame.destination == PEER => {
-                        self.frame(FrameType::ReplyToPollForMaster, NODE, &[])
+                    FrameType::POLL_FOR_MASTER if frame.destination == PEER => {
+                        self.frame(FrameType::REPLY_TO_POLL_FOR_MASTER, NODE, &[])
                             .await
                             .unwrap();
                     }
-                    FrameType::Token if frame.destination == PEER => return,
+                    FrameType::TOKEN if frame.destination == PEER => return,
                     _ => {}
                 }
             }
@@ -300,22 +378,23 @@ impl Peer {
     /// token. After Reply Postponed the peer passes the token on, so the
     /// node can send the answer with it.
     pub async fn answer(&mut self) -> MstpFrame {
-        bounded(async {
+        let link = self.link.clone();
+        link.bounded(async {
             loop {
                 let frame = self.writes.recv().await.expect("serial owner disappeared");
                 assert_eq!(frame.source, NODE);
                 match frame.frame_type {
-                    FrameType::BACnetDataNotExpectingReply => return frame,
-                    FrameType::ReplyPostponed => {
-                        self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+                    FrameType::BACNET_DATA_NOT_EXPECTING_REPLY => return frame,
+                    FrameType::REPLY_POSTPONED => {
+                        self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
                     }
-                    FrameType::PollForMaster if frame.destination == PEER => {
-                        self.frame(FrameType::ReplyToPollForMaster, NODE, &[])
+                    FrameType::POLL_FOR_MASTER if frame.destination == PEER => {
+                        self.frame(FrameType::REPLY_TO_POLL_FOR_MASTER, NODE, &[])
                             .await
                             .unwrap();
                     }
-                    FrameType::Token if frame.destination == PEER => {
-                        self.frame(FrameType::Token, NODE, &[]).await.unwrap();
+                    FrameType::TOKEN if frame.destination == PEER => {
+                        self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
                     }
                     _ => {}
                 }
@@ -325,12 +404,14 @@ impl Peer {
     }
 
     pub async fn assert_released(&mut self, gates: &Gates) {
-        bounded(gates.serial_dropped.acquire())
+        self.link
+            .bounded(gates.serial_dropped.acquire())
             .await
             .unwrap()
             .forget();
         assert!(
-            bounded(self.frame(FrameType::Token, NODE, &[]))
+            self.link
+                .bounded(self.frame(FrameType::TOKEN, NODE, &[]))
                 .await
                 .is_err(),
             "no receive owner after stop/drop"
@@ -346,11 +427,13 @@ impl Peer {
 pub async fn transport(mode: MstpExecutionMode, gates: Arc<Gates>) -> (GatedTransport, Peer) {
     let (serial, peer) = LoopbackSerial::pair();
     let (tx, writes) = mpsc::unbounded_channel();
+    let link = Link::default();
     let transport = MstpTransport::new(
         ObservedSerial {
             inner: Some(serial),
             writes: Some(tx),
             gates: gates.clone(),
+            link: link.clone(),
         },
         MstpConfig {
             this_station: NODE,
@@ -359,7 +442,11 @@ pub async fn transport(mode: MstpExecutionMode, gates: Arc<Gates>) -> (GatedTran
         },
     )
     .with_execution_mode(mode);
-    let inner = AnyTransport::Mstp(transport);
+    // Taken before the transport moves into its owner.
+    link.diagnostics
+        .set(transport.diagnostics())
+        .expect("one transport per link");
+    let inner = AnyTransport::from(transport);
     assert_eq!(inner.local_receive_apdu_capacity(), 480);
     assert_eq!(inner.egress_apdu_limit(), 480);
     assert!(inner.bip_port().is_none(), "no configured B/IP authority");
@@ -374,11 +461,12 @@ pub async fn transport(mode: MstpExecutionMode, gates: Arc<Gates>) -> (GatedTran
         Peer {
             serial,
             writes,
+            link,
             drain,
         },
     )
 }
 pub async fn fixture(role: Role, mode: MstpExecutionMode, gates: Arc<Gates>) -> (Owner, Peer) {
     let (transport, peer) = transport(mode, gates).await;
-    (Owner::start(role, transport).await, peer)
+    (Owner::start(role, transport, &peer.link).await, peer)
 }

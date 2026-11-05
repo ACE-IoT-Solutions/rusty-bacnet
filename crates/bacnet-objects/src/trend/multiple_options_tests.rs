@@ -4,9 +4,12 @@
 
 use super::*;
 use crate::clock::{ClockFrame, ClockReader};
+use crate::property_metadata::is_writable_property;
+use crate::traits::Timed;
 use bacnet_types::bitstring::LogStatus;
 use bacnet_types::calendar::SpecificDate;
 use bacnet_types::constructed::{BACnetLogMultipleRecord, LogData, LogValue};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, Time};
 use std::sync::Mutex;
 
@@ -54,7 +57,10 @@ fn datetime((date, time): (Date, Time)) -> PropertyValue {
 fn clocked(capacity: u32) -> (TrendLogMultipleObject, Arc<Clock>) {
     let clock = Arc::new(Clock(Mutex::new(frame(at(9, 0)))));
     let mut log = TrendLogMultipleObject::new(1, "TLM-1", capacity).unwrap();
-    log.bind_clock_internal(Some(clock.clone()));
+    log.bind_clocks(&crate::traits::Clocks {
+        clock: Some(clock.clone()),
+        ..crate::traits::Clocks::default()
+    });
     (log, clock)
 }
 
@@ -84,8 +90,8 @@ fn write(
 
 fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class: c, code: e })
-            if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class: c, code: e }))
+            if c == class && e == code),
         "expected {class:?} / {code:?}, got {result:?}"
     );
 }
@@ -144,7 +150,10 @@ fn logging_type_takes_polled_or_triggered_and_refuses_cov() {
         read(&log, PropertyIdentifier::LOG_INTERVAL),
         PropertyValue::Unsigned(0)
     );
-    assert!(!log.is_writable_property(PropertyIdentifier::LOG_INTERVAL));
+    assert!(!is_writable_property(
+        &log,
+        PropertyIdentifier::LOG_INTERVAL
+    ));
     for value in [PropertyValue::Unsigned(500), PropertyValue::Null] {
         assert_refused(
             write(&mut log, PropertyIdentifier::LOG_INTERVAL, value),
@@ -160,7 +169,7 @@ fn logging_type_takes_polled_or_triggered_and_refuses_cov() {
 
     // POLLED with a zero interval takes the default; a nonzero one stays.
     log.set_logging_type(LoggingType::POLLED).unwrap();
-    assert!(log.is_writable_property(PropertyIdentifier::LOG_INTERVAL));
+    assert!(is_writable_property(&log, PropertyIdentifier::LOG_INTERVAL));
     assert_eq!(
         read(&log, PropertyIdentifier::LOG_INTERVAL),
         PropertyValue::Unsigned(DEFAULT_LOG_INTERVAL.into())
@@ -342,8 +351,8 @@ fn the_window_holds_back_records_and_logs_each_change() {
 
     // Start_Time reached: logging resumes and says so.
     clock.set(at(10, 0));
-    assert!(log.refresh_log_window_internal());
-    assert!(!log.refresh_log_window_internal());
+    assert!(log.log_buffer_mut().unwrap().refresh_window());
+    assert!(!log.log_buffer_mut().unwrap().refresh_window());
     log.add_record(sample(at(10, 0))).unwrap();
     assert_eq!(data(&log), [DISABLED, ENABLED, sample(at(10, 0)).log_data]);
 
@@ -394,7 +403,7 @@ fn the_window_holds_back_records_and_logs_each_change() {
     )
     .unwrap();
     clock.set(at(10, 30));
-    assert!(!log.refresh_log_window_internal());
+    assert!(!log.log_buffer_mut().unwrap().refresh_window());
     write(
         &mut log,
         PropertyIdentifier::LOG_ENABLE,
@@ -411,7 +420,7 @@ fn the_window_holds_back_records_and_logs_each_change() {
         datetime(crate::clock::UNSPECIFIED_DATETIME),
     )
     .unwrap();
-    assert!(!log.refresh_log_window_internal());
+    assert!(!log.log_buffer_mut().unwrap().refresh_window());
     assert_eq!(log.records().len(), 2);
 }
 
@@ -502,11 +511,11 @@ fn a_local_window_is_configuration_and_its_opening_is_logged() {
     // Set before the first look: noting the closed window logs nothing.
     let (date, time) = at(10, 0);
     log.set_start_time(date, time).unwrap();
-    assert!(!log.refresh_log_window_internal());
+    assert!(!log.log_buffer_mut().unwrap().refresh_window());
     log.add_record(sample(at(9, 0))).unwrap();
     assert!(log.records().is_empty());
     clock.set(at(10, 0));
-    assert!(log.refresh_log_window_internal());
+    assert!(log.log_buffer_mut().unwrap().refresh_window());
     assert_eq!(data(&log), [ENABLED]);
 }
 
@@ -529,7 +538,7 @@ fn an_opening_that_would_fill_a_stop_when_full_log_disables_it() {
     // The clear status would fill the buffer, so Enable goes FALSE as an
     // Enable write would make it.
     clock.set(at(10, 0));
-    assert!(log.refresh_log_window_internal());
+    assert!(log.log_buffer_mut().unwrap().refresh_window());
     assert_eq!(data(&log), [DISABLED, DISABLED]);
     assert_eq!(
         read(&log, PropertyIdentifier::LOG_ENABLE),

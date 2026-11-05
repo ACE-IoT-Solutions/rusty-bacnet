@@ -44,10 +44,7 @@ pub(crate) fn protocol_error(
     class: bacnet_types::enums::ErrorClass,
     code: bacnet_types::enums::ErrorCode,
 ) -> bacnet_types::error::Error {
-    bacnet_types::error::Error::Protocol {
-        class: class.to_raw() as u32,
-        code: code.to_raw() as u32,
-    }
+    bacnet_types::error::Error::protocol(class, code)
 }
 
 /// Classify an unhandled built-in write after its specific guards and routes.
@@ -55,62 +52,16 @@ pub(crate) fn protocol_error(
 pub(crate) fn unhandled_write_error(
     metadata: &[crate::property_metadata::PropertyMetadata],
     property: bacnet_types::enums::PropertyIdentifier,
-    array_index: Option<u32>,
 ) -> bacnet_types::error::Error {
-    // Indexed fallback precedence is outside this unindexed correction.
-    if array_index.is_some()
-        || metadata
-            .iter()
-            .any(|row| row.property_identifier == property)
+    // Built-in objects run `check_write_array_index` first, so an index never
+    // decides the answer here.
+    if metadata
+        .iter()
+        .any(|row| row.property_identifier == property)
     {
         write_access_denied_error()
     } else {
         unknown_property_error()
-    }
-}
-
-/// Read the PROPERTY_LIST property for any object that implements property_list().
-/// Handles array_index variants: None = full list, Some(0) = length, Some(n) = nth element.
-/// Object_Name, Object_Type, Object_Identifier, and Property_List itself are excluded.
-pub fn read_property_list_property(
-    props: &[bacnet_types::enums::PropertyIdentifier],
-    array_index: Option<u32>,
-) -> Result<bacnet_types::primitives::PropertyValue, bacnet_types::error::Error> {
-    use bacnet_types::enums::PropertyIdentifier;
-
-    // Filter out the four excluded properties
-    let filtered: Vec<_> = props
-        .iter()
-        .copied()
-        .filter(|p| {
-            *p != PropertyIdentifier::OBJECT_IDENTIFIER
-                && *p != PropertyIdentifier::OBJECT_NAME
-                && *p != PropertyIdentifier::OBJECT_TYPE
-                && *p != PropertyIdentifier::PROPERTY_LIST
-        })
-        .collect();
-
-    match array_index {
-        None => {
-            let elements = filtered
-                .iter()
-                .map(|p| bacnet_types::primitives::PropertyValue::Enumerated(p.to_raw()))
-                .collect();
-            Ok(bacnet_types::primitives::PropertyValue::List(elements))
-        }
-        Some(0) => Ok(bacnet_types::primitives::PropertyValue::Unsigned(
-            filtered.len() as u64,
-        )),
-        Some(idx) => {
-            let i = (idx - 1) as usize;
-            if i < filtered.len() {
-                Ok(bacnet_types::primitives::PropertyValue::Enumerated(
-                    filtered[i].to_raw(),
-                ))
-            } else {
-                Err(invalid_array_index_error())
-            }
-        }
     }
 }
 
@@ -121,7 +72,7 @@ pub fn read_property_list_property(
 /// The caller must provide `self` which has fields: `oid`, `name`,
 /// `description`.
 macro_rules! read_identity_properties {
-    ($self:expr, $property:expr, $array_index:expr) => {
+    ($self:expr_2021, $property:expr_2021, $array_index:expr_2021) => {
         match $property {
             p if p == bacnet_types::enums::PropertyIdentifier::OBJECT_IDENTIFIER => Some(Ok(
                 bacnet_types::primitives::PropertyValue::ObjectIdentifier($self.oid),
@@ -133,9 +84,8 @@ macro_rules! read_identity_properties {
                 bacnet_types::primitives::PropertyValue::CharacterString($self.description.clone()),
             )),
             p if p == bacnet_types::enums::PropertyIdentifier::PROPERTY_LIST => {
-                let props = $self.property_list();
-                Some($crate::common::read_property_list_property(
-                    &props,
+                Some($crate::property_metadata::read_property_list(
+                    &$crate::traits::BACnetObject::property_metadata($self),
                     $array_index,
                 ))
             }
@@ -143,6 +93,7 @@ macro_rules! read_identity_properties {
         }
     };
 }
+use crate::prelude::*;
 pub(crate) use read_identity_properties;
 
 /// Common read_property match arms shared by most object types.
@@ -158,7 +109,7 @@ pub(crate) use read_identity_properties;
 /// `out_of_service` field, leaves OUT_OF_SERVICE to the caller's
 /// unknown-property fallback, and holds the OUT_OF_SERVICE flag FALSE.
 macro_rules! read_common_properties {
-    (@status $self:expr, $property:expr, $array_index:expr, $out_of_service:expr) => {{
+    (@status $self:expr_2021, $property:expr_2021, $array_index:expr_2021, $out_of_service:expr_2021) => {{
         let out_of_service: Option<bool> = $out_of_service;
         match $property {
             p if p == bacnet_types::enums::PropertyIdentifier::STATUS_FLAGS => {
@@ -181,10 +132,10 @@ macro_rules! read_common_properties {
             _ => $crate::common::read_identity_properties!($self, $property, $array_index),
         }
     }};
-    ($self:expr, $property:expr, $array_index:expr, no_out_of_service) => {
+    ($self:expr_2021, $property:expr_2021, $array_index:expr_2021, no_out_of_service) => {
         $crate::common::read_common_properties!(@status $self, $property, $array_index, None)
     };
-    ($self:expr, $property:expr, $array_index:expr) => {
+    ($self:expr_2021, $property:expr_2021, $array_index:expr_2021) => {
         $crate::common::read_common_properties!(
             @status $self,
             $property,
@@ -322,6 +273,21 @@ pub(crate) fn write_description(
     }
 }
 
+/// Set `name` from a whole Object_Name CreateObject initial value, on an
+/// object whose name WriteProperty can't change (#2208): checked as
+/// [`write_object_name`] checks a write.
+pub(crate) fn initialize_object_name(
+    name: &mut String,
+    value: &bacnet_types::primitives::PropertyValue,
+) -> Result<(), bacnet_types::error::Error> {
+    write_object_name(
+        name,
+        bacnet_types::enums::PropertyIdentifier::OBJECT_NAME,
+        value,
+    )
+    .expect("the Object_Name arm answers Object_Name")
+}
+
 /// Write the OBJECT_NAME property.
 ///
 /// Validates type and non-empty. Uniqueness must be checked by the caller
@@ -356,15 +322,6 @@ pub(crate) fn write_access_denied_error() -> bacnet_types::error::Error {
     )
 }
 
-/// Return the optional-functionality-not-supported protocol error.
-#[inline]
-pub(crate) fn optional_functionality_not_supported_error() -> bacnet_types::error::Error {
-    protocol_error(
-        bacnet_types::enums::ErrorClass::OBJECT,
-        bacnet_types::enums::ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
-    )
-}
-
 /// Return the invalid-data-type protocol error.
 #[inline]
 pub(crate) fn invalid_data_type_error() -> bacnet_types::error::Error {
@@ -387,7 +344,9 @@ mod command_write;
 mod encoded_elements;
 mod list_element;
 pub(crate) use command_write::decode_command_write;
-pub(crate) use encoded_elements::{chunks, decode_element, decode_elements, decode_single_element};
+pub(crate) use encoded_elements::{
+    chunks, decode_element, decode_elements, decode_single_element, framed_octets,
+};
 #[cfg(test)]
 pub(crate) use list_element::assert_list_element_refused;
 pub(crate) use list_element::at_list_element;
@@ -480,7 +439,7 @@ pub(crate) fn read_array(
 ///
 /// Clause 15.5.1.3 / 15.9.1.3: the request named an array index for a
 /// property that isn't a BACnetARRAY. The RP/RPM/WP/WPM service handlers
-/// gate on [`crate::traits::BACnetObject::is_array_property`]; object arms
+/// gate on [`crate::property_metadata::is_array_property`]; object arms
 /// mirror the classification for direct (non-service) calls.
 #[inline]
 pub(crate) fn property_is_not_an_array_error() -> bacnet_types::error::Error {
@@ -540,7 +499,7 @@ pub(crate) fn current_command_priority<T>(
 
 /// Generic intrinsic-reporting read properties shared by every event detector.
 macro_rules! read_generic_event_properties {
-    ($self:expr, $property:expr) => {
+    ($self:expr_2021, $property:expr_2021) => {
         match $property {
             p if p == bacnet_types::enums::PropertyIdentifier::EVENT_STATE => {
                 Some(Ok(bacnet_types::primitives::PropertyValue::Enumerated(
@@ -597,7 +556,7 @@ pub(crate) use read_generic_event_properties;
 /// Event timestamps and message texts are served by `EventHistory::read`,
 /// invoked at every analog call site immediately after this macro.
 macro_rules! read_analog_event_properties {
-    ($self:expr, $property:expr) => {
+    ($self:expr_2021, $property:expr_2021) => {
         match $property {
             p if p == bacnet_types::enums::PropertyIdentifier::HIGH_LIMIT => Some(Ok(
                 bacnet_types::primitives::PropertyValue::Real($self.event_detector.high_limit),
@@ -634,7 +593,7 @@ pub(crate) use read_analog_event_properties;
 /// `Some(Err(...))` for type/validation errors,
 /// or `None` if the property is not an event property.
 macro_rules! write_analog_event_properties {
-    ($self:expr, $property:expr, $value:expr) => {
+    ($self:expr_2021, $property:expr_2021, $value:expr_2021) => {
         match $property {
             p if p == bacnet_types::enums::PropertyIdentifier::HIGH_LIMIT => {
                 if let bacnet_types::primitives::PropertyValue::Real(v) = $value {
@@ -698,7 +657,7 @@ pub(crate) use write_analog_event_properties;
 
 /// Generic intrinsic-reporting write properties shared by every event detector.
 macro_rules! write_generic_event_properties {
-    ($self:expr, $property:expr, $value:expr) => {
+    ($self:expr_2021, $property:expr_2021, $value:expr_2021) => {
         match $property {
             p if p == bacnet_types::enums::PropertyIdentifier::EVENT_ENABLE => {
                 // BACnetEventTransitionBits is a 3-bit production (Clause 21):
@@ -784,7 +743,7 @@ macro_rules! write_generic_event_properties {
                 // AcknowledgeAlarm or a local means — never by property write.
                 //
                 // This denial predates the generic/analog split and must survive it. The
-                // service path (`BACnetObject::acknowledge_alarm`) deliberately ORs the
+                // service path (`EventReporting::acknowledge_alarm`) deliberately ORs the
                 // acknowledged bit in; a property write would assign, so it could both
                 // fabricate an acknowledgment and erase one. GetAlarmSummary and
                 // GetEventInformation read this field straight off the object, so an
@@ -807,7 +766,7 @@ pub(crate) use write_generic_event_properties;
 ///
 /// `$wrap` is a closure/function that converts `T` into a `PropertyValue`.
 macro_rules! read_priority_array {
-    ($self:expr, $array_index:expr, $wrap:expr) => {{
+    ($self:expr_2021, $array_index:expr_2021, $wrap:expr_2021) => {{
         let wrap_fn = $wrap;
         match $array_index {
             None => {

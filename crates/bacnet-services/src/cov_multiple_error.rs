@@ -123,9 +123,9 @@ impl TryFrom<&ErrorPdu> for SubscribeCOVPropertyMultipleError {
 
 impl From<SubscribeCOVPropertyMultipleError> for Error {
     fn from(error: SubscribeCOVPropertyMultipleError) -> Self {
-        Error::protocol(
-            error.error_class.to_raw() as u32,
-            error.error_code.to_raw() as u32,
+        Error::with_detail(
+            error.error_class,
+            error.error_code,
             error
                 .first_failed_subscription
                 .map(ErrorDetail::FirstFailedSubscription),
@@ -135,6 +135,7 @@ impl From<SubscribeCOVPropertyMultipleError> for Error {
 
 #[cfg(test)]
 mod tests {
+    use bacnet_types::error::RemoteError;
     use super::*;
     use bacnet_types::enums::ObjectType;
     use bacnet_types::primitives::ObjectIdentifier;
@@ -204,13 +205,13 @@ mod tests {
     fn only_the_subscription_choice_carries_a_detail() {
         assert!(matches!(
             Error::from(general()),
-            Error::Protocol { class: 5, code: 37 }
+            Error::Remote(RemoteError::Error { class: ErrorClass::SERVICES, code: ErrorCode::VALUE_OUT_OF_RANGE })
         ));
         let error = subscription(Some(8));
         let reference = error.first_failed_subscription.clone().unwrap();
         assert!(matches!(
             Error::from(error),
-            Error::Structured { class: 2, code: 44, detail }
+            Error::Structured { class: ErrorClass::PROPERTY, code: ErrorCode::NOT_COV_PROPERTY, detail }
                 if *detail == ErrorDetail::FirstFailedSubscription(reference)
         ));
     }

@@ -17,8 +17,8 @@ use crate::property_metadata::{
 // RequiredRead/Always; Priority_Array Optional/Commandable/ReadOnly;
 // Relinquish_Default Optional/Commandable/Always; Out_Of_Service
 // Optional/Always; Reliability Optional/ReadOnly; Property_List
-// RequiredRead/ReadOnly (appended so the projection helper omits it while
-// required_properties keeps it). Object_Name, Description, and Out_Of_Service
+// RequiredRead/ReadOnly (appended last). Object_Name, Description, and
+// Out_Of_Service
 // carry common write arms; Present_Value and Relinquish_Default carry the
 // commandable write arms. These properties are Always writable.
 // Priority_Array is intentionally read-only under §19.2.1; its slots change
@@ -35,10 +35,8 @@ use crate::property_metadata::{
 // shape, with the table's datatype (Unsigned, or Double on Large Analog
 // Value). Bit_Text, Alarm_Value, Fault/High/Low_Limit,
 // event/intrinsic, value-source, and audit rows stay absent until dispatch
-// exists. Value types are not createable at
-// runtime (the network factory builds only the eight analog/binary/
-// multi-state input/output/value types), so the is_createable=false default
-// holds with no override.
+// exists. Every value type is createable at runtime (#2172): the
+// `creation` table builds each.
 pub(crate) const INTEGER_VALUE_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::OBJECT_IDENTIFIER, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::OBJECT_NAME, RequiredRead, None, Always),
@@ -51,7 +49,7 @@ pub(crate) const INTEGER_VALUE_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::UNITS, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::PRIORITY_ARRAY, Optional, Some(Commandable), ReadOnly),
     PropertyMetadata::new(P::RELINQUISH_DEFAULT, Optional, Some(Commandable), Always),
-    PropertyMetadata::new(P::COV_INCREMENT, Optional, None, Always),
+    crate::property_metadata::COV_INCREMENT_ROW,
     PropertyMetadata::new(
         P::CURRENT_COMMAND_PRIORITY,
         Optional,
@@ -73,7 +71,7 @@ pub(crate) const POSITIVE_INTEGER_VALUE_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::UNITS, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::PRIORITY_ARRAY, Optional, Some(Commandable), ReadOnly),
     PropertyMetadata::new(P::RELINQUISH_DEFAULT, Optional, Some(Commandable), Always),
-    PropertyMetadata::new(P::COV_INCREMENT, Optional, None, Always),
+    crate::property_metadata::COV_INCREMENT_ROW,
     PropertyMetadata::new(
         P::CURRENT_COMMAND_PRIORITY,
         Optional,
@@ -95,7 +93,7 @@ pub(crate) const LARGE_ANALOG_VALUE_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::UNITS, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::PRIORITY_ARRAY, Optional, Some(Commandable), ReadOnly),
     PropertyMetadata::new(P::RELINQUISH_DEFAULT, Optional, Some(Commandable), Always),
-    PropertyMetadata::new(P::COV_INCREMENT, Optional, None, Always),
+    crate::property_metadata::COV_INCREMENT_ROW,
     PropertyMetadata::new(
         P::CURRENT_COMMAND_PRIORITY,
         Optional,

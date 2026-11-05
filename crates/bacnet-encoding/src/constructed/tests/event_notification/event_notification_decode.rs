@@ -64,13 +64,15 @@ fn event_notification_u32_fields_reject_overflow_aliases() {
         for value in [[1, 0, 0, 0, 0].as_slice(), [0xff; 8].as_slice()] {
             let mut values = canonical_values();
             values[field] = value;
-            assert!(decode_event_notification(&raw_event_notification(
-                values,
-                canonical_tags(),
-                Some(&[1]),
-                false,
-            ))
-            .is_err());
+            assert!(
+                decode_event_notification(&raw_event_notification(
+                    values,
+                    canonical_tags(),
+                    Some(&[1]),
+                    false,
+                ))
+                .is_err()
+            );
         }
     }
 }
@@ -80,13 +82,15 @@ fn event_notification_priority_rejects_values_above_u8() {
     for value in [[1, 0].as_slice(), [1, 1].as_slice(), [0xff; 8].as_slice()] {
         let mut values = canonical_values();
         values[2] = value;
-        assert!(decode_event_notification(&raw_event_notification(
-            values,
-            canonical_tags(),
-            Some(&[1]),
-            false,
-        ))
-        .is_err());
+        assert!(
+            decode_event_notification(&raw_event_notification(
+                values,
+                canonical_tags(),
+                Some(&[1]),
+                false,
+            ))
+            .is_err()
+        );
     }
 }
 
@@ -125,47 +129,55 @@ fn event_notification_fields_require_owned_context_tags() {
     for field in 0..canonical_tags().len() {
         let mut field_tags = canonical_tags();
         field_tags[field].0 = 13;
-        assert!(decode_event_notification(&raw_event_notification(
-            canonical_values(),
-            field_tags,
-            Some(&[1]),
-            false,
-        ))
-        .is_err());
+        assert!(
+            decode_event_notification(&raw_event_notification(
+                canonical_values(),
+                field_tags,
+                Some(&[1]),
+                false,
+            ))
+            .is_err()
+        );
 
         let mut field_tags = canonical_tags();
         field_tags[field].1 = tags::TagClass::Application;
-        assert!(decode_event_notification(&raw_event_notification(
-            canonical_values(),
-            field_tags,
-            Some(&[1]),
-            false,
-        ))
-        .is_err());
+        assert!(
+            decode_event_notification(&raw_event_notification(
+                canonical_values(),
+                field_tags,
+                Some(&[1]),
+                false,
+            ))
+            .is_err()
+        );
     }
 }
 
 #[test]
 fn event_notification_rejects_unknown_fields_before_notify_type() {
-    assert!(decode_event_notification(&raw_event_notification(
-        canonical_values(),
-        canonical_tags(),
-        Some(&[1]),
-        true,
-    ))
-    .is_err());
+    assert!(
+        decode_event_notification(&raw_event_notification(
+            canonical_values(),
+            canonical_tags(),
+            Some(&[1]),
+            true,
+        ))
+        .is_err()
+    );
 }
 
 #[test]
 fn event_notification_ack_required_must_be_boolean() {
     for value in [&[][..], &[2], &[0, 1]] {
-        assert!(decode_event_notification(&raw_event_notification(
-            canonical_values(),
-            canonical_tags(),
-            Some(value),
-            false,
-        ))
-        .is_err());
+        assert!(
+            decode_event_notification(&raw_event_notification(
+                canonical_values(),
+                canonical_tags(),
+                Some(value),
+                false,
+            ))
+            .is_err()
+        );
     }
 }
 
@@ -192,10 +204,11 @@ fn event_notification_preserves_optional_envelope_fields() {
     assert_eq!(decoded.message_text.as_deref(), Some("high limit"));
     assert!(decoded.ack_required);
 
-    let mut ack_values = canonical_values();
-    ack_values[4] = &[2];
+    // An EVENT that leaves out ackRequired reads as not needing one.
+    let mut event_values = canonical_values();
+    event_values[4] = &[1];
     let decoded = decode_event_notification(&raw_event_notification(
-        ack_values,
+        event_values,
         canonical_tags(),
         None,
         false,
@@ -273,4 +286,89 @@ fn event_notification_rejects_every_truncated_prefix() {
     for end in 0..encoded.len() {
         assert!(decode_event_notification(&encoded[..end]).is_err());
     }
+}
+
+/// An ACK_NOTIFICATION of a high-limit transition, as the encoder writes it:
+/// without ackRequired, fromState or eventValues, ending with To State [11].
+fn ack_request() -> EventNotificationRequest {
+    EventNotificationRequest {
+        process_identifier: 1,
+        initiating_device_identifier: ObjectIdentifier::new(ObjectType::DEVICE, 1).unwrap(),
+        event_object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 3).unwrap(),
+        timestamp: BACnetTimeStamp::SequenceNumber(7),
+        notification_class: 5,
+        priority: 100,
+        event_type: EventType::OUT_OF_RANGE,
+        message_text: None,
+        notify_type: NotifyType::ACK_NOTIFICATION,
+        ack_required: false,
+        from_state: EventState::NORMAL,
+        to_state: EventState::HIGH_LIMIT,
+        event_values: None,
+    }
+}
+
+/// The encoded ACK_NOTIFICATION with `between` inserted before To State
+/// and `after` appended.
+fn ack_notification(between: &[u8], after: &[u8]) -> Vec<u8> {
+    let mut plain = BytesMut::new();
+    encode_event_notification(&ack_request(), &mut plain).unwrap();
+    let (head, to_state) = plain.split_at(plain.len() - 2);
+    assert_eq!(to_state, [0xb9, 0x03], "To State [11] HIGH_LIMIT ends it");
+    [head, between, to_state, after].concat()
+}
+
+/// The encoded out-of-range event values: [12] { [5] { ... } }.
+fn out_of_range_values() -> Vec<u8> {
+    let mut alarm = ack_request();
+    alarm.notify_type = NotifyType::ALARM;
+    let mut without = BytesMut::new();
+    encode_event_notification(&alarm, &mut without).unwrap();
+    alarm.event_values = Some(NotificationParameters::OutOfRange {
+        exceeding_value: 81.5,
+        status_flags: StatusFlags::IN_ALARM,
+        deadband: 1.0,
+        exceeded_limit: 80.0,
+    });
+    let mut with = BytesMut::new();
+    encode_event_notification(&alarm, &mut with).unwrap();
+    with[without.len()..].to_vec()
+}
+
+#[test]
+fn ack_notification_refuses_alarm_only_fields() {
+    // #2247: the encoder leaves these out of an ACK_NOTIFICATION, so reading
+    // them there changed the request through a re-encode. Each one alone is
+    // refused, where To State is due or as octets past it.
+    let values = &out_of_range_values()[..];
+    assert!(decode_event_notification(&ack_notification(&[], &[])).is_ok());
+    for (between, after, kind) in [
+        (&[0x99, 0x01][..], &[][..], DecodingKind::InvalidTag),
+        (&[0xa9, 0x04], &[], DecodingKind::InvalidTag),
+        (&[0x99, 0x01, 0xa9, 0x04], &[], DecodingKind::InvalidTag),
+        (&[], values, DecodingKind::Trailing),
+    ] {
+        let data = ack_notification(between, after);
+        let refused = decode_event_notification(&data).unwrap_err();
+        assert_eq!(
+            refused.decode_fault().map(|(_, k)| k),
+            Some(kind),
+            "{data:02x?}"
+        );
+        // The tolerant decoder, which the client and the Event Log read
+        // with, keeps the strict decoder's refusal.
+        assert!(decode_event_notification_tolerant(&data).is_err());
+    }
+
+    // The same fields in an ALARM decode.
+    let mut alarm = ack_notification(&[0x99, 0x01, 0xa9, 0x04], values);
+    let notify_type = alarm
+        .windows(2)
+        .position(|pair| pair == [0x89, 0x02])
+        .expect("[8] notifyType ACK_NOTIFICATION");
+    alarm[notify_type + 1] = 0x00;
+    let decoded = decode_event_notification(&alarm).unwrap();
+    assert!(decoded.ack_required);
+    assert_eq!(decoded.from_state, EventState::LOW_LIMIT);
+    assert!(decoded.event_values.is_some());
 }

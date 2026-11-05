@@ -112,7 +112,7 @@ async fn unknown_function_all_wire_codes_and_address_option_payload_matrix() {
 
 #[tokio::test]
 async fn unknown_function_silence_and_known_codes_never_consult_expired_budget() {
-    use super::rejection::{reject, RejectionBudget, RejectionExpired};
+    use super::rejection::{RejectionBudget, RejectionExpired, reject};
     struct NoIo;
     impl WebSocketPort for NoIo {
         async fn send(&self, _: &[u8]) -> Result<(), Error> {
@@ -206,7 +206,7 @@ fn unknown_function_direct_connection_is_pure_in_all_states_and_codec_is_permiss
                 assert_eq!(conn.max_bvlc_length, before.max_bvlc_length);
                 assert_eq!(conn.max_apdu_length, before.max_apdu_length);
                 assert_eq!(conn.hub_max_bvlc_length, before.hub_max_bvlc_length);
-                assert_eq!(conn.hub_max_apdu_length, before.hub_max_apdu_length);
+                assert_eq!(conn.hub_max_npdu_length, before.hub_max_npdu_length);
                 assert_eq!(conn.next_message_id, before.next_message_id);
                 assert_eq!(
                     conn.pending_connect_message_id,
@@ -316,8 +316,10 @@ async fn unknown_function_during_handshake_is_ignored_without_nak() {
     assert!(silent, "handshake unexpectedly rejected unknown function");
 }
 
-#[tokio::test]
-async fn unknown_function_burst_before_and_after_probe_cannot_refresh_real_clock() {
+// Paused clock: the heartbeat deadline follows it (#2124), so the 2 s bound
+// can't expire on a stalled runner before the 700 ms timeout fires (#2310).
+#[tokio::test(start_paused = true)]
+async fn unknown_function_burst_before_and_after_probe_cannot_refresh_activity() {
     let (client, hub) = LoopbackWebSocket::pair();
     let mut transport = ScTransport::new(client, [1; 6])
         .with_device_uuid([1; 16])
@@ -327,7 +329,7 @@ async fn unknown_function_burst_before_and_after_probe_cannot_refresh_real_clock
         super::data_attribute_tests::hub_accept(&hub, [0x10; 6])
     );
     let mut rx = rx.unwrap();
-    let started = Instant::now();
+    let started = tokio::time::Instant::now();
     let mut states = transport.connection_state_changes();
     let mut interval = tokio::time::interval(Duration::from_millis(15));
     let mut sent = 0;
@@ -364,7 +366,9 @@ async fn unknown_function_burst_before_and_after_probe_cannot_refresh_real_clock
     assert!(rx.try_recv().is_err());
 }
 
-#[tokio::test]
+// Paused clock: the heartbeat deadline follows it (#2124). On real time a
+// stalled runner could pass the 700 ms timeout before the probe's ACK (#2310).
+#[tokio::test(start_paused = true)]
 async fn unknown_function_original_ack_and_valid_npdu_resume_activity() {
     let (client, hub) = LoopbackWebSocket::pair();
     let mut transport = ScTransport::new(client, [1; 6])
@@ -381,9 +385,11 @@ async fn unknown_function_original_ack_and_valid_npdu_resume_activity() {
         hub.send(&wire(0xFF, 0, None, None, 0, &[])).await.unwrap();
         assert_eq!(recv(&hub).await, nak(0xFF, 0, None));
     }
-    assert!(timeout(Duration::from_millis(100), hub.recv())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(100), hub.recv())
+            .await
+            .is_err()
+    );
     assert!(rx.try_recv().is_err());
     // Positive controls only AFTER the unknown accounting window.
     hub.send(&[0x0B, 0, probe[2], probe[3]]).await.unwrap();

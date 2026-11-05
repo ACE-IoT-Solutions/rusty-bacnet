@@ -1,9 +1,9 @@
 # SC-to-IP router work plan
 
-Status: R1-R9 landed on `main` at `e1540afc` through PR #5. PR #4 is closed as
-superseded. Draft PR #6 ports the remaining ACE-owned surface onto upstream
-0.13 from `dev@488f7ecf`; I1-I3 and I6-I8 are dispositioned, I4 and downstream
-I5 remain open. H1-H7 closed; R10 open.
+Status: upstream 0.14.0 merged on `feature/upstream-0.14-migration` (`ae3cec68`,
+2026-10-23) on top of the 0.13 migration line and `main`; fork delta is now 51
+files over upstream `dev`. I1, I3, I6 overtaken by the merge; I2, I4, I5, I7, I8
+open. R10 open.
 Created: 2026-09-11
 Target line: `main` at `9eed26a` (workspace version 0.11.0, reconciled onto
 `upstream/dev` `a62821b`)
@@ -1072,6 +1072,107 @@ its CPython 3.13 macOS arm64 wheel passed an installed import smoke test.
       not merged this week, split the next upstream merge into its own PR so
       the fork's own changes stay diffable. **Disposition:** PR #5 landed
       unchanged; the upstream 0.13 port is isolated in draft PR #6.
+
+## Merge 2026-10-23 - upstream 0.14.0 onto the migration line
+
+Branch `feature/upstream-0.14-migration` starts from the team's
+`feature/upstream-0.13-migration` (`daddf3dd`), merges `main` (PR #5 and #7,
+which the 0.13 branch lacked, restoring the three plan documents), then
+merges upstream `dev` at `2d82e9a9` (v0.14.0 plus 20 commits). Zero commits
+behind upstream at commit time.
+
+### What was taken from upstream
+
+- Everything the fork had not changed, which is almost all 2,200 modified
+  files, including the rewritten `bacnet-network` router over
+  `bacnet-router-core`, `bacnet-npdu`, `bacnet-bip-core`, the extended
+  MS/TP host transport, the SC `ServerPolicy` and principal model, and the
+  0.14 Python surface (SC events, reinitialize, log records).
+- Upstream's own `bacnet-router-core` replaces the fork's crate of the same
+  name; the fork's `bacnet-router-adapters` was already gone on the 0.13
+  branch. I1 is closed by the merge.
+
+### What the fork still carries (51 files, about 4,500 lines over upstream)
+
+- The ACE Python router: `RouterBipPort`, `RouterScPort`,
+  `BACnetRouter.from_ports`, `port_health`, `routing_table`,
+  `announce_interval_s`. Upstream 0.14 added its own Python `BACnetRouter`
+  with `BipRouterPort`, `ports()`, `routes()`, `close()` and an async
+  context manager, B/IP only, no health. The fork's class keeps the name
+  and the SC capability; upstream's module, stub classes and two router
+  tests are not built. This is a deliberate divergence to raise upstream:
+  propose SC ports and health on their `BACnetRouter`, then retire ours.
+- `BACnetRouter::reannounce_port` in `bacnet-network`, re-added on
+  upstream's new `Outputs` and `send_queue` structure (R8). The fork's
+  `bip_endpoint` accessor is gone; the bound address comes from `ports()`.
+- The runtime routed-property paths, the client property helpers, the ACE
+  release workflow and scripts, and `validate_wss_uri` (now in
+  `sc_tls/validate.rs`).
+
+### Gates on macOS arm64, pinned 1.97.1 toolchain
+
+| Check | Result |
+|---|---|
+| `cargo check`, workspace and bindings, all targets | clean |
+| `cargo fmt --check`, 700-line gate | clean |
+| Workspace tests, CI feature set | 268 suites, 12047 passed, 2 failed |
+| The 2 failures on pristine upstream `dev`, same host | both fail there too (`bacnet-server` allocator fast-path size, `bacnet-cli` tshark pcap) |
+| `cargo clippy -D warnings` | fails in `bacnet-bip-core` on 2 `must_use` lints, also on pristine upstream `dev` |
+| Fresh `ace_rusty_bacnet-0.14.0` wheel, Python suite | 712 passed, 0 failed |
+
+Environment notes for the team: Homebrew's `rustc` ahead of rustup on `PATH`
+breaks cross-compiles, doc-tests and clippy with "incompatible version of
+rustc"; put the 1.97.1 toolchain's `bin` first. `uv pip install` run inside
+`crates/rusty-bacnet` consults the private index in `pyproject.toml` and
+hangs off the tailnet (D4); install from another directory or pass
+`--index-url`.
+
+### Open after the merge
+
+- [ ] **J1 - Upstream the SC-port and health extension of the Python
+      router**, or adopt upstream's `BACnetRouter` and re-port. Until then
+      the fork builds its own module and the two API shapes must not drift
+      further apart.
+- [ ] **J2 - `test_sc_ip_router.py` is gone.** Neither `main` nor the 0.13
+      branch carries the installed-wheel SC router test that was the R2
+      Python evidence; only `test_router_ports.py` (5 tests) remains. Restore
+      it against the 0.14 surface.
+- [ ] **J3 - Report the two upstream-side failures and the clippy lint
+      upstream** if they reproduce on Linux CI; on this host they are
+      pre-existing.
+- [ ] **J4 - PR #6 is superseded.** Open a PR from
+      `feature/upstream-0.14-migration` to `main` and close #6.
+- [ ] **J5 - I2, I4, I5, I7 and I8 still apply** (retire the fork's R7
+      slice for #1665/#1696, 0.13-plus release line, firmware vendor pin,
+      plan wording for K5/Phase 4, PR hygiene).
+
+## Integration 2026-10-26 - pinned upstream 0.15 development
+
+`feature/upstream-0.15-migration` integrates upstream `dev` at `773c4025e`
+from the ACE 0.14 migration head `788e4d28e`. Upstream still declares the
+workspace version `0.14.0`; this integration does not assign a release version.
+
+The upstream Python `BACnetRouter` and its lifecycle tests are restored. It
+owns B/IP forwarding and supports the application client/server attachment
+API. The ACE mixed B/IP+SC implementation is now `AceMixedRouter`, isolated
+in `crates/rusty-bacnet/src/ace_mixed_router/`. Mixed-router callers must import
+`AceMixedRouter` and use `AceMixedRouter.from_ports(...)`; their typed
+`RouterBipPort`/`RouterScPort` configs and `start`/`stop`, health, routes and
+reannouncement settings retain their existing behavior. The two router
+classes use distinct configuration types and cannot be interchanged.
+
+The ACE runtime is included in workspace builds again. Its operation error
+mapping now consumes upstream `RemoteError`, retaining retryable Abort and
+non-retryable Error/Reject outcomes. Its routed read/write helpers and the
+native per-port reannouncement extension remain present. Distribution naming
+and the private ACE release path remain unchanged.
+
+Remaining downstream work: migrate the mixed router import in consumers;
+implement real per-port counters if required (`port_counters` was already
+absent in the 0.14 integration); restore SC wire-level router coverage (J2);
+and resolve the existing mixed-router failover limitation. The canonical
+upstream router's application attachment cannot be used on `AceMixedRouter`.
+The previous 0.14 gate results above apply only to that earlier revision.
 
 ## Out of scope
 

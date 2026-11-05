@@ -1,6 +1,6 @@
 [package]
 name = "firmware-link"
-description = "Firmware link test and size budget for the MS/TP, B/IP and APDU stacks"
+description = "Firmware link test and size budget for the MS/TP, B/IP, router, device and APDU stacks"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -26,6 +26,36 @@ path = "src/bin/bip.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "node"
+path = "src/bin/node.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "bbmd"
+path = "src/bin/bbmd.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "mstp-extended"
+path = "src/bin/mstp_extended.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "router"
+path = "src/bin/router.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "device"
+path = "src/bin/device.rs"
+test = false
+bench = false
+
 # Named for its scenario, not its feature: a crate named `alloc` would share
 # the sysroot crate's name in the size check's per-crate list.
 [[bin]]
@@ -40,25 +70,74 @@ name = "apdu"
 path = "tests/apdu.rs"
 required-features = ["alloc"]
 
+# bacnet-device-core's Responder over a bacnet-objects database (#2178).
+[[bin]]
+name = "objects"
+path = "src/bin/objects.rs"
+test = false
+bench = false
+required-features = ["objects"]
+
+[[test]]
+name = "objects"
+path = "tests/objects.rs"
+required-features = ["objects"]
+
+# The objects image's database with bacnet-device-core's COV table on top:
+# subscribe, renew and cancel through its staged functions (#2303).
+[[bin]]
+name = "reporting"
+path = "src/bin/reporting.rs"
+test = false
+bench = false
+required-features = ["reporting"]
+
+[[test]]
+name = "reporting"
+path = "tests/reporting.rs"
+required-features = ["reporting"]
+
 # `alloc`: the apdu image and its scenario, which link bacnet-encoding and
-# bacnet-services with `alloc`, and on bare-metal targets
+# bacnet-services with `alloc` (the device image links them without it),
+# and on bare-metal targets
 # the image's allocator and critical section, and the atomics backend where
 # the target has no compare-and-swap. On by default, so host builds, clippy,
-# rustdoc and tests cover it. The mstp and bip images build without it
+# rustdoc and tests cover it. The other images build without it
 # (`--no-default-features`): with it, the lib links `alloc`, and an image
 # without a global allocator fails to link.
 [features]
-default = ["alloc"]
+default = ["alloc", "objects", "reporting"]
 alloc = [
-    "dep:bacnet-types",
-    "dep:bacnet-encoding",
-    "dep:bacnet-services",
+    "bacnet-types/alloc",
+    "bacnet-encoding/alloc",
+    "bacnet-services/alloc",
     "dep:bytes",
     "dep:embedded-alloc",
     "dep:portable-atomic",
     "dep:critical-section",
     "dep:riscv",
 ]
+
+# `objects`: the objects image and its scenario (#2178), bacnet-device-core's
+# Responder answering from a bacnet-objects database, both with `alloc`. On
+# by default for the host builds, as `alloc` is. Both crates need atomic
+# compare-and-swap, so the image builds only for targets that have it
+# (scripts/ci/check-firmware-link.sh filters them), and the apdu image
+# builds with `alloc` alone. bacnet-objects' capability features (#2215)
+# stay off: the responder drives neither event reporting nor staged durable
+# writes, so the image drops the code only those reach. bacnet-device-core's
+# `structured-writes` (#2210) stays off too: the image writes no event
+# parameter, port permission or stage limit, so it drops their decoders.
+objects = ["alloc", "dep:bacnet-objects", "dep:bacnet-device-core"]
+
+# `reporting`: the reporting image and its scenario (#2303), the objects
+# image's database and bacnet-device-core's COV `Reporter`, which
+# subscribes, renews, cancels, reports and lists, and the core's Device
+# clock, which a UTCTimeSynchronization sets (#2321). Its timeline is
+# bacnet-time's. bacnet-device-core has no `cov` feature: the linker drops
+# the COV code an image doesn't reach, so the objects image is no smaller
+# without it. On by default, as `objects` is, for the host builds.
+reporting = ["objects", "dep:bacnet-time"]
 
 # `emulate`: the emulation build, which scripts/emu/emulate-firmware.sh runs
 # under QEMU by hand, never in CI (docs/ci.md, "Emulation (manual)"). Each
@@ -81,18 +160,28 @@ board-netduinoplus2 = ["emulate"]
 # QEMU's SiFive E board, an E31 core (RV32IMAC): riscv32imc-unknown-none-elf.
 board-sifive-e = ["emulate"]
 
-# Default features, so no allocator, plus each crate's heapless storage: the
-# core's queues and the BVLL codec's sink. The alloc stack is `no_std` with
-# `alloc`, as the libraries document.
+# Default features, so no allocator, plus the BVLL codec's heapless sink
+# and the router core's B/IP and MS/TP glue, which need neither std nor an
+# allocator. The MS/TP core's FixedQueues need no feature, and
+# bacnet-bip-core has none. bacnet-types, bacnet-encoding and
+# bacnet-services without default features are their allocation-free
+# profile (#1614), which the device image links; the `alloc` feature turns
+# on their `alloc` profile for the apdu image.
 [dependencies]
 bacnet-mstp-codec = { workspace = true }
-bacnet-mstp-core = { workspace = true, features = ["heapless"] }
+bacnet-mstp-core = { workspace = true }
 bacnet-bip-codec = { workspace = true, features = ["heapless"] }
+bacnet-bip-core = { workspace = true }
+bacnet-router-core = { workspace = true, features = ["bip", "mstp"] }
 heapless = { workspace = true }
-bacnet-types = { workspace = true, features = ["alloc"], optional = true }
-bacnet-encoding = { workspace = true, features = ["alloc"], optional = true }
-bacnet-services = { workspace = true, features = ["alloc"], optional = true }
+bacnet-npdu = { workspace = true }
+bacnet-types = { workspace = true }
+bacnet-encoding = { workspace = true }
+bacnet-services = { workspace = true }
 bytes = { workspace = true, optional = true }
+bacnet-objects = { workspace = true, optional = true, features = ["alloc"] }
+bacnet-device-core = { workspace = true, optional = true, features = ["alloc"] }
+bacnet-time = { workspace = true, optional = true }
 
 # The host test runs the alloc scenario in the image's allocator, a
 # linked-list first fit, over an arena of the image's size.

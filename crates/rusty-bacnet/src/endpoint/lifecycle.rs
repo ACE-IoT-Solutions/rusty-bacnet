@@ -6,7 +6,7 @@
 
 use std::future::Future;
 use std::sync::{Arc, Mutex as StdMutex};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{Mutex, oneshot};
 
 /// The concrete owner must finish failed-start cleanup before returning Err;
 /// stop must settle teardown even when it reports a terminal dispatch error.
@@ -128,8 +128,8 @@ impl<S: Session, P: Clone + Send + 'static> Lifecycle<S, P> {
         }
         let (mut result, waiter) = oneshot::channel();
         tokio::spawn(async move {
-            // Preparation owns only local resources. TLS dial/handshake has no
-            // local timeout and no spawned tasks, so cancellation drops it safely.
+            // Preparation owns only local resources. The TLS dial spawns no
+            // tasks (its bound is a local timer), so cancellation drops it safely.
             // The transport session's start is a separate, retained phase below.
             let prepared = tokio::select! {
                 biased;

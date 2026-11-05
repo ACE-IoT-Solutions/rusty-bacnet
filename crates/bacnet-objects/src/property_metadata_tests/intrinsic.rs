@@ -17,6 +17,7 @@ use crate::event_log::EventLogObject;
 use crate::trend::{TrendLogMultipleObject, TrendLogObject};
 
 use PropertyIdentifier as P;
+use bacnet_types::enums::EngineeringUnits;
 
 /// The rows every one of these tables requires of an intrinsic reporter.
 const COMMON_REQUIRED: [P; 6] = [
@@ -67,17 +68,17 @@ fn cases() -> Vec<Case> {
     let delay_normal: &'static [P] = &[P::TIME_DELAY_NORMAL];
     vec![
         case(
-            Box::new(AnalogInputObject::new(1, "AI", 62).unwrap()),
+            Box::new(AnalogInputObject::new(1, "AI", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
             OUT_OF_RANGE,
             delay_normal,
         ),
         case(
-            Box::new(AnalogOutputObject::new(1, "AO", 62).unwrap()),
+            Box::new(AnalogOutputObject::new(1, "AO", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
             OUT_OF_RANGE,
             delay_normal,
         ),
         case(
-            Box::new(AnalogValueObject::new(1, "AV", 62).unwrap()),
+            Box::new(AnalogValueObject::new(1, "AV", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
             OUT_OF_RANGE,
             delay_normal,
         ),
@@ -158,7 +159,7 @@ fn property_metadata_intrinsic_rows_are_required_or_only_permitted_per_table() {
     {
         let kind = object.object_identifier().object_type();
         let metadata = object.property_metadata();
-        let rpm_required = object.required_properties();
+        let rpm_required = crate::test_rows::required(&object.property_metadata());
         let required: Vec<P> = COMMON_REQUIRED.iter().chain(required).copied().collect();
         let permitted: Vec<P> = COMMON_PERMITTED.iter().chain(permitted).copied().collect();
         for row in metadata.iter() {

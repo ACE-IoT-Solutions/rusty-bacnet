@@ -13,8 +13,10 @@ use crate::loop_obj::LoopObject;
 use crate::schedule::{CalendarObject, ScheduleObject};
 use crate::traits::BACnetObject;
 use crate::trend::{TrendLogMultipleObject, TrendLogObject};
-use bacnet_types::enums::{ErrorClass, ErrorCode, EventState, PropertyIdentifier, Reliability};
-use bacnet_types::error::Error;
+use bacnet_types::enums::{
+    EngineeringUnits, ErrorClass, ErrorCode, EventState, PropertyIdentifier, Reliability,
+};
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{PropertyValue, StatusFlags};
 
 fn read(object: &dyn BACnetObject, property: PropertyIdentifier) -> PropertyValue {
@@ -96,7 +98,9 @@ fn assert_simulation_and_evaluation_drive_flags(object: &mut dyn BACnetObject) {
     assert_flags(object, Kind::FollowsOutOfService, StatusFlags::empty());
 
     object
-        .set_reliability_internal(Reliability::CONFIGURATION_ERROR)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::CONFIGURATION_ERROR)
         .unwrap();
     assert_flags(object, Kind::FollowsOutOfService, StatusFlags::FAULT);
 
@@ -134,14 +138,18 @@ fn assert_simulation_and_evaluation_drive_flags(object: &mut dyn BACnetObject) {
     assert_flags(object, Kind::FollowsOutOfService, StatusFlags::FAULT);
 
     object
-        .set_reliability_internal(Reliability::NO_FAULT_DETECTED)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::NO_FAULT_DETECTED)
         .unwrap();
     assert_flags(object, Kind::FollowsOutOfService, StatusFlags::empty());
 }
 
 #[test]
 fn loop_status_flags_follow_reliability_and_out_of_service() {
-    assert_simulation_and_evaluation_drive_flags(&mut LoopObject::new(1, "LOOP-1", 62).unwrap());
+    assert_simulation_and_evaluation_drive_flags(
+        &mut LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    );
 }
 
 #[test]
@@ -159,20 +167,21 @@ fn trend_log_flags_match_its_fixed_state() {
     // so FAULT stays FALSE and agrees with the NO_FAULT_DETECTED readback.
     let mut log = TrendLogObject::new(1, "TL-1", 10).unwrap();
     assert_flags(&log, Kind::LogFixedFalse, StatusFlags::empty());
-    assert!(log
-        .read_property(PropertyIdentifier::OUT_OF_SERVICE, None)
-        .is_err());
-    assert!(log
-        .write_property(
+    assert!(
+        log.read_property(PropertyIdentifier::OUT_OF_SERVICE, None)
+            .is_err()
+    );
+    assert!(
+        log.write_property(
             PropertyIdentifier::RELIABILITY,
             None,
             PropertyValue::Enumerated(Reliability::OPEN_LOOP.to_raw()),
             None,
         )
-        .is_err());
-    assert!(log
-        .set_reliability_internal(Reliability::OPEN_LOOP)
-        .is_err());
+        .is_err()
+    );
+    // Nor does it lend a derived-Reliability route.
+    assert!(log.reliability_eval().is_none());
     assert_flags(&log, Kind::LogFixedFalse, StatusFlags::empty());
 }
 
@@ -203,12 +212,15 @@ fn calendar_has_no_status_flags_to_compute() {
         assert!(
             matches!(
                 calendar.read_property(property, None),
-                Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32
-                        && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
+                Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == ErrorClass::PROPERTY
+                        && code == ErrorCode::UNKNOWN_PROPERTY
             ),
             "Calendar must not serve {property:?}"
         );
-        assert!(!calendar.property_list().contains(&property));
+        assert!(!crate::property_metadata::has_property(
+            &calendar.property_metadata(),
+            property
+        ));
     }
 }

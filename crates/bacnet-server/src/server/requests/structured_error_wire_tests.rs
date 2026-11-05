@@ -13,7 +13,7 @@
 //! reference's property and index inside tag 1, and the class and code
 //! inside tag 2 (0x2E ... 0x2F).
 
-use super::mutation_tests::{oid, Fixture};
+use super::mutation_tests::{Fixture, oid};
 use super::*;
 use crate::mutation::MutationPolicy;
 use bacnet_encoding::npdu::decode_npdu;
@@ -50,7 +50,8 @@ fn create(specifier: ObjectSpecifier, values: Vec<(PropertyIdentifier, Vec<u8>)>
             })
             .collect(),
     }
-    .encode(&mut bytes);
+    .encode(&mut bytes)
+    .unwrap();
     bytes.freeze()
 }
 
@@ -97,8 +98,39 @@ async fn create_object_refusals_go_out_as_create_object_errors() {
             ),
         ),
         (
-            "an object type the server cannot create",
-            create(ObjectSpecifier::Type(ObjectType::ANALOG_VALUE), vec![]),
+            "an object type the server lists but cannot create",
+            create(ObjectSpecifier::Type(ObjectType::ACCESS_POINT), vec![]),
+            create_object_error(
+                ErrorClass::OBJECT,
+                ErrorCode::DYNAMIC_CREATION_NOT_SUPPORTED,
+                0,
+            ),
+        ),
+        (
+            // The type refusal comes before any initial value (#2171).
+            "a listed type the server cannot create, with initial values",
+            create(
+                ObjectSpecifier::Type(ObjectType::ACCESS_POINT),
+                vec![
+                    description(),
+                    (PropertyIdentifier::PRESENT_VALUE, vec![0x91, 0x00]),
+                ],
+            ),
+            create_object_error(
+                ErrorClass::OBJECT,
+                ErrorCode::DYNAMIC_CREATION_NOT_SUPPORTED,
+                0,
+            ),
+        ),
+        (
+            "an unlisted type, even at the reserved instance",
+            create(
+                ObjectSpecifier::Identifier(oid(
+                    ObjectType::from_raw(600),
+                    ObjectIdentifier::WILDCARD_INSTANCE,
+                )),
+                vec![description()],
+            ),
             create_object_error(ErrorClass::OBJECT, ErrorCode::UNSUPPORTED_OBJECT_TYPE, 0),
         ),
         (
@@ -140,9 +172,10 @@ async fn create_object_refusals_go_out_as_create_object_errors() {
         // Nothing is created, and no name is left behind.
         let db = fixture.db.read().await;
         assert_eq!(db.len(), before, "{what}");
-        assert!(db
-            .check_name_available(&oid(ObjectType::BINARY_VALUE, 3), "x")
-            .is_ok());
+        assert!(
+            db.check_name_available(&oid(ObjectType::BINARY_VALUE, 3), "x")
+                .is_ok()
+        );
     }
 
     // A good request still creates the object.

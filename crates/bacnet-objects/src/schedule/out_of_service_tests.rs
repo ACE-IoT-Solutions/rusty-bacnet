@@ -4,6 +4,7 @@
 //! calculation on the return to service.
 
 use super::*;
+use bacnet_types::error::RemoteError;
 
 type P = PropertyIdentifier;
 
@@ -77,14 +78,15 @@ fn owed(value: PropertyValue) -> Option<ScheduleWrite> {
         priority: 9,
         references: vec![target()],
         retry: false,
+        relinquish: false,
     })
 }
 
 fn assert_code(result: Result<(), Error>, code: ErrorCode, what: &str) {
     match result {
-        Err(Error::Protocol { class, code: c }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32, "{what}");
-            assert_eq!(c, code.to_raw() as u32, "{what}: expected {code:?}");
+        Err(Error::Remote(RemoteError::Error { class, code: c })) => {
+            assert_eq!(class, ErrorClass::PROPERTY, "{what}");
+            assert_eq!(c, code, "{what}: expected {code:?}");
         }
         other => panic!("{what}: expected {code:?}, got {other:?}"),
     }

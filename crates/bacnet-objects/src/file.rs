@@ -3,13 +3,14 @@
 //! Backs AtomicReadFile and AtomicWriteFile services. Supports both
 //! stream-access and record-access modes.
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
 use bacnet_types::enums::{
     ErrorClass, ErrorCode, FileAccessMethod, ObjectType, PropertyIdentifier,
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, Time};
-use std::borrow::Cow;
-use std::sync::Arc;
 
 use crate::clock::ClockReader;
 use crate::common::{self, read_identity_properties};
@@ -124,8 +125,8 @@ pub enum FileWriteStart {
 /// and nothing here appears in `Property_List`.
 ///
 /// The server reaches an implementation through
-/// [`BACnetObject::file_storage_internal`] and
-/// [`BACnetObject::file_storage_internal_mut`]. Every method has a default
+/// [`BACnetObject::file_storage`] and
+/// [`BACnetObject::file_storage_mut`]. Every method has a default
 /// that refuses with SERVICES / FILE_ACCESS_DENIED — there is no
 /// implementation behind it, making the file inaccessible under
 /// Clause 18 — and a stream-only implementation overrides only the
@@ -446,7 +447,7 @@ impl FileStorage for FileObject {
             usize::try_from(start).map_err(|_| file_full())?,
             usize::try_from(end).map_err(|_| file_full())?,
         );
-        let mut updated = std::mem::take(&mut self.data);
+        let mut updated = core::mem::take(&mut self.data);
         if end_idx > updated.len() {
             updated.resize(end_idx, 0);
         }
@@ -495,7 +496,7 @@ impl FileStorage for FileObject {
         if projected > self.max_file_size.max(existing) {
             return Err(file_full());
         }
-        let mut updated = std::mem::take(&mut self.records);
+        let mut updated = core::mem::take(&mut self.records);
         if end_idx > updated.len() {
             updated.resize(end_idx, Vec::new());
         }
@@ -557,6 +558,7 @@ impl BACnetObject for FileObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // Table 12-16 has no Status_Flags, Reliability or Out_Of_Service (#1064).
         if let Some(result) = read_identity_properties!(self, property, array_index) {
             return result;
@@ -590,10 +592,11 @@ impl BACnetObject for FileObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
@@ -628,7 +631,7 @@ impl BACnetObject for FileObject {
                 Err(common::write_access_denied_error())
             }
             p if p == PropertyIdentifier::RECORD_COUNT => {
-                if _array_index.is_none() && self.record_count.is_none() {
+                if array_index.is_none() && self.record_count.is_none() {
                     Err(common::unknown_property_error())
                 } else {
                     resize::write_records(self, value)
@@ -637,7 +640,6 @@ impl BACnetObject for FileObject {
             _ => Err(crate::common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                _array_index,
             )),
         }
     }
@@ -646,28 +648,30 @@ impl BACnetObject for FileObject {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
-
-    fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
-        self.clock = clock;
-    }
-
-    fn file_configuration_internal(&self) -> Option<&dyn FileConfiguration> {
+    fn file_configuration(&self) -> Option<&dyn FileConfiguration> {
         Some(self)
     }
 
-    fn file_configuration_internal_mut(&mut self) -> Option<&mut dyn FileConfiguration> {
+    fn file_configuration_mut(&mut self) -> Option<&mut dyn FileConfiguration> {
         Some(self)
     }
 
-    fn file_storage_internal(&self) -> Option<&dyn FileStorage> {
+    fn file_storage(&self) -> Option<&dyn FileStorage> {
         Some(self)
     }
 
-    fn file_storage_internal_mut(&mut self) -> Option<&mut dyn FileStorage> {
+    fn file_storage_mut(&mut self) -> Option<&mut dyn FileStorage> {
         Some(self)
+    }
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
+    }
+}
+
+impl crate::traits::Timed for FileObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.clock = clocks.clock.clone();
     }
 }
 

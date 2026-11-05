@@ -3,13 +3,14 @@
 //! The Load Control object provides a standard interface for demand-response
 //! load shedding. It tracks requested, expected, and actual shed levels.
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
 use bacnet_encoding::constructed::{decode_shed_level, encode_shed_level};
 use bacnet_types::constructed::BACnetShedLevel;
 use bacnet_types::enums::{EventState, ObjectType, PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, StatusFlags, Time};
 use bytes::BytesMut;
-use std::borrow::Cow;
 
 use crate::common::{self, read_common_properties};
 use crate::traits::BACnetObject;
@@ -115,7 +116,7 @@ impl LoadControlObject {
     /// another choice, or an amount that isn't finite, fails with PROPERTY /
     /// VALUE_OUT_OF_RANGE and changes nothing.
     pub fn set_actual_shed_level(&mut self, level: BACnetShedLevel) -> Result<(), Error> {
-        if std::mem::discriminant(&level) != std::mem::discriminant(&self.requested_shed_level) {
+        if core::mem::discriminant(&level) != core::mem::discriminant(&self.requested_shed_level) {
             return Err(common::value_out_of_range_error());
         }
         if let BACnetShedLevel::Amount(amount) = level {
@@ -171,6 +172,7 @@ impl BACnetObject for LoadControlObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // Table 12-32 has no Out_Of_Service (#1064), and Clause 12.28 holds the
         // OUT_OF_SERVICE flag FALSE.
         if let Some(result) =
@@ -211,10 +213,11 @@ impl BACnetObject for LoadControlObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
@@ -233,7 +236,6 @@ impl BACnetObject for LoadControlObject {
             _ => Err(crate::common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                _array_index,
             )),
         }
     }
@@ -242,13 +244,9 @@ impl BACnetObject for LoadControlObject {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
-
-    /// Table 13-1 lists Load Control, so it takes SubscribeCOV; the shed
-    /// rows it reports come from the trait default.
-    fn supports_cov(&self) -> bool {
-        true
-    }
+    // Table 13-1 lists Load Control, so it takes SubscribeCOV; the shed
+    // rows it reports are that row's (the default).
+    crate::traits::lend_cov_reporting!();
 }
+
+impl crate::traits::CovReporting for LoadControlObject {}

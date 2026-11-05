@@ -42,19 +42,19 @@ mod expected;
 pub use expected::expected;
 
 use bacnet_encoding::apdu::{
-    decode_apdu, encode_apdu, Apdu, ComplexAck, ConfirmedRequest, UnconfirmedRequest,
+    Apdu, ComplexAck, ConfirmedRequest, UnconfirmedRequest, decode_apdu, encode_apdu,
 };
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress, NpduDecodeError};
+use bacnet_encoding::npdu::{Npdu, NpduAddress, NpduDecodeError, decode_npdu, encode_npdu};
 use bacnet_encoding::primitives::{decode_application_value, encode_app_real};
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_services::who_is::{DeviceInstanceRange, IAmRequest, WhoIsRequest};
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{
     ConfirmedServiceChoice, ObjectType, PropertyIdentifier, RejectReason, Segmentation,
     UnconfirmedServiceChoice,
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
-use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
 
 /// The heap the apdu image gives its allocator, in octets.
@@ -252,8 +252,8 @@ pub fn run(datagrams: &[&[u8]; MESSAGES]) -> Summary {
 
 /// Service parameters the scenario carries.
 trait Parameters: Sized + PartialEq {
-    /// Encode them into `buf`.
-    fn encode(&self, buf: &mut BytesMut);
+    /// Encode them into `buf`, or refuse.
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), Error>;
     /// Decode them from service-request or service-ACK octets.
     fn decode(data: &[u8]) -> Result<Self, Error>;
 }
@@ -261,8 +261,9 @@ trait Parameters: Sized + PartialEq {
 macro_rules! parameters {
     ($($service:ty),+) => {$(
         impl Parameters for $service {
-            fn encode(&self, buf: &mut BytesMut) {
+            fn encode(&self, buf: &mut BytesMut) -> Result<(), Error> {
                 <$service>::encode(self, buf);
+                Ok(())
             }
             fn decode(data: &[u8]) -> Result<Self, Error> {
                 <$service>::decode(data)
@@ -271,12 +272,16 @@ macro_rules! parameters {
     )+};
 }
 
-parameters!(
-    WhoIsRequest,
-    IAmRequest,
-    ReadPropertyRequest,
-    ReadPropertyACK
-);
+parameters!(WhoIsRequest, IAmRequest, ReadPropertyRequest);
+
+impl Parameters for ReadPropertyACK {
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), Error> {
+        <ReadPropertyACK>::encode(self, buf)
+    }
+    fn decode(data: &[u8]) -> Result<Self, Error> {
+        <ReadPropertyACK>::decode(data)
+    }
+}
 
 /// Which APDU carries a message's parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -469,7 +474,10 @@ fn round_trip<P: Parameters>(
         return;
     };
     let mut parameters = BytesMut::new();
-    message.parameters.encode(&mut parameters);
+    if message.parameters.encode(&mut parameters).is_err() {
+        summary.error();
+        return;
+    }
     let apdu = message.header.apdu(parameters.freeze());
     let mut payload = BytesMut::new();
     if encode_apdu(&mut payload, &apdu).is_err() {
@@ -546,9 +554,9 @@ fn refusals(who_is: &[u8]) -> u8 {
     };
     let network_0_refused = matches!(
         encode_npdu(&mut BytesMut::new(), &to_network_0),
-        Err(Error::Encoding(_))
+        Err(Error::Range(_))
     );
-    // `validate_max_apdu_length` refuses the size, as an encoding error,
+    // `validate_max_apdu_length` refuses the size, as a static range error,
     // before the encoder writes the header.
     let odd_size = Apdu::ConfirmedRequest(ConfirmedRequest {
         segmented: false,
@@ -564,7 +572,7 @@ fn refusals(who_is: &[u8]) -> u8 {
     });
     let mut header = BytesMut::new();
     let odd_size_refused =
-        matches!(encode_apdu(&mut header, &odd_size), Err(Error::Encoding(_))) && header.is_empty();
+        matches!(encode_apdu(&mut header, &odd_size), Err(Error::Range(_))) && header.is_empty();
     u8::from(version_refused) + u8::from(network_0_refused) + u8::from(odd_size_refused)
 }
 

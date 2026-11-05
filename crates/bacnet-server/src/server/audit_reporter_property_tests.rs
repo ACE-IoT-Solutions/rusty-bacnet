@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::server::test_transport::TestTransport;
+use bacnet_objects::property_metadata::is_writable_property;
 use bacnet_services::{
     read_property::{ReadPropertyACK, ReadPropertyRequest},
     rpm::{ReadPropertyMultipleACK, ReadPropertyMultipleRequest},
@@ -327,9 +328,10 @@ async fn audit_reporter_monitored_objects_network_writes_are_denied_without_muta
                         before
                     );
                     assert_eq!(
-                        object
-                            .property_list()
-                            .contains(&PropertyIdentifier::MONITORED_OBJECTS),
+                        bacnet_objects::property_metadata::has_property(
+                            &object.property_metadata(),
+                            PropertyIdentifier::MONITORED_OBJECTS
+                        ),
                         selection.is_some()
                     );
                     assert_eq!(
@@ -338,7 +340,10 @@ async fn audit_reporter_monitored_objects_network_writes_are_denied_without_muta
                             .unwrap(),
                         PropertyValue::CharacterString(String::new())
                     );
-                    assert!(!object.is_writable_property(PropertyIdentifier::MONITORED_OBJECTS));
+                    assert!(!is_writable_property(
+                        object,
+                        PropertyIdentifier::MONITORED_OBJECTS
+                    ));
                 }
                 let requests = notifications(&fixture.transport.sent);
                 if selection.is_none() && index.is_some() {
@@ -378,10 +383,12 @@ async fn audit_reporter_monitored_objects_network_writes_are_denied_without_muta
                     );
                 }
                 assert_eq!(fixture.server.notification_transactions.active_count(), 0);
-                assert!(fixture
-                    .server
-                    .notification_transactions
-                    .delivery_workers_idle());
+                assert!(
+                    fixture
+                        .server
+                        .notification_transactions
+                        .delivery_workers_idle()
+                );
                 fixture.server.stop().await.unwrap();
             }
         }

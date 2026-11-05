@@ -6,11 +6,14 @@ use super::super::*;
 use bacnet_objects::analog::{AnalogInputObject, AnalogValueObject};
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::event_enrollment::EventEnrollmentObject;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
+use bacnet_objects::traits::EnrollmentEval;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetEventParameter};
+use bacnet_types::enums::EngineeringUnits;
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 // ---- Integration: multiple enrollments ----
 
@@ -19,12 +22,12 @@ fn evaluates_multiple_enrollments() {
     let mut db = ObjectDatabase::new();
 
     // Two analog inputs
-    let mut ai1 = AnalogInputObject::new(80, "AI-80", 62).unwrap();
+    let mut ai1 = AnalogInputObject::new(80, "AI-80", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai1.set_present_value(90.0); // will trigger HIGH_LIMIT
     let ai1_oid = ai1.object_identifier();
     db.add(Box::new(ai1)).unwrap();
 
-    let mut ai2 = AnalogInputObject::new(81, "AI-81", 62).unwrap();
+    let mut ai2 = AnalogInputObject::new(81, "AI-81", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai2.set_present_value(50.0); // normal
     let ai2_oid = ai2.object_identifier();
     db.add(Box::new(ai2)).unwrap();
@@ -98,15 +101,16 @@ pub(super) fn setup_qualified_reference(
     let mut db = ObjectDatabase::new();
     for instance in local_device_instances {
         let device = DeviceObject::new(DeviceConfig {
-            instance: *instance,
-            name: format!("Device-{instance}"),
+            identity: bacnet_objects::DeviceIdentity::new(*instance, 0)
+                .expect("valid Device identity")
+                .with_name(format!("Device-{instance}")),
             ..DeviceConfig::default()
         })
         .unwrap();
         db.add(Box::new(device)).unwrap();
     }
 
-    let mut ai = AnalogInputObject::new(3, "AI-3", 62).unwrap();
+    let mut ai = AnalogInputObject::new(3, "AI-3", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.set_present_value(90.0);
     let ai_oid = ai.object_identifier();
     db.add(Box::new(ai)).unwrap();
@@ -182,10 +186,9 @@ fn qualified_reference_names_the_selected_device() {
     let (mut other, _, _) = setup_qualified_reference(&[100, 200], 200);
     assert!(evaluate_event_enrollments(&mut other, 1).is_empty());
 
-    let (mut wildcard, _, _) = setup_qualified_reference(
-        &[ObjectIdentifier::WILDCARD_INSTANCE],
-        ObjectIdentifier::WILDCARD_INSTANCE,
-    );
+    // The wildcard Device names no particular device, so a reference
+    // naming it never points inside this one.
+    let (mut wildcard, _, _) = setup_qualified_reference(&[], ObjectIdentifier::WILDCARD_INSTANCE);
     assert!(evaluate_event_enrollments(&mut wildcard, 1).is_empty());
 }
 
@@ -198,7 +201,6 @@ pub(super) struct ReferenceValueObject {
     pub(super) state_write_count: Arc<AtomicUsize>,
     pub(super) source_supported: bool,
     pub(super) source_writable: Arc<AtomicBool>,
-    pub(super) normal_event_state_writable: bool,
     pub(super) event_state_error_after_write: bool,
     pub(super) atomic_commit_supported: bool,
     pub(super) reliability_commit_supported: bool,
@@ -231,7 +233,6 @@ impl ReferenceValueObject {
             state_write_count: Arc::new(AtomicUsize::new(0)),
             source_supported: true,
             source_writable: Arc::new(AtomicBool::new(true)),
-            normal_event_state_writable: true,
             event_state_error_after_write: false,
             atomic_commit_supported: true,
             reliability_commit_supported: true,
@@ -261,10 +262,10 @@ impl BACnetObject for ReferenceValueObject {
         } else if property == PropertyIdentifier::FAULT_PARAMETERS
             && !self.fault_parameters_supported
         {
-            Err(bacnet_types::error::Error::Protocol {
-                class: bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32,
-                code: bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            })
+            Err(bacnet_types::error::Error::protocol(
+                bacnet_types::enums::ErrorClass::PROPERTY,
+                bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY,
+            ))
         } else if property == PropertyIdentifier::EVENT_PARAMETERS
             && !self.event_parameters_readable.load(Ordering::SeqCst)
         {
@@ -297,17 +298,32 @@ impl BACnetObject for ReferenceValueObject {
         }
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        self.inner.property_list()
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        self.inner.property_metadata()
     }
 
-    fn enrollment_eval_state_internal(
-        &self,
-    ) -> Option<bacnet_objects::event_enrollment::EventEnrollmentEvalState> {
-        self.inner.enrollment_eval_state_internal()
+    fn enrollment_eval(&self) -> Option<&dyn EnrollmentEval> {
+        Some(self)
     }
 
-    fn set_enrollment_eval_state_internal(
+    fn enrollment_eval_mut(&mut self) -> Option<&mut dyn EnrollmentEval> {
+        Some(self)
+    }
+
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+}
+
+impl EnrollmentEval for ReferenceValueObject {
+    fn eval_state(&self) -> EventEnrollmentEvalState {
+        self.inner.eval_state()
+    }
+
+    fn set_eval_state(
         &mut self,
         state: bacnet_objects::event_enrollment::EventEnrollmentEvalState,
     ) -> Result<(), bacnet_types::error::Error> {
@@ -317,17 +333,17 @@ impl BACnetObject for ReferenceValueObject {
                 "evaluation state write failed".into(),
             ));
         }
-        self.inner.set_enrollment_eval_state_internal(state)
+        self.inner.set_eval_state(state)
     }
 
-    fn enrollment_eval_source_internal(
+    fn eval_source(
         &self,
     ) -> Option<Option<bacnet_objects::event_enrollment::EventEnrollmentMonitoredSource>> {
         self.source_supported
-            .then(|| self.inner.enrollment_eval_source_internal().flatten())
+            .then(|| self.inner.eval_source().flatten())
     }
 
-    fn set_enrollment_eval_source_internal(
+    fn set_eval_source(
         &mut self,
         source: Option<bacnet_objects::event_enrollment::EventEnrollmentMonitoredSource>,
     ) -> Result<(), bacnet_types::error::Error> {
@@ -336,62 +352,35 @@ impl BACnetObject for ReferenceValueObject {
                 "source write failed".into(),
             ));
         }
-        self.inner.set_enrollment_eval_source_internal(source)
+        self.inner.set_eval_source(source)
     }
 
-    fn set_event_state_internal(
-        &mut self,
-        state: EventState,
-    ) -> Result<(), bacnet_types::error::Error> {
-        if state == EventState::NORMAL && !self.normal_event_state_writable {
-            return Err(bacnet_types::error::Error::Encoding(
-                "event state write failed".into(),
-            ));
-        }
-        self.inner.set_event_state_internal(state)?;
-        if self.event_state_error_after_write {
-            Err(bacnet_types::error::Error::Encoding(
-                "event state write reported failure".into(),
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn set_acked_transitions_internal(
-        &mut self,
-        transition_bit: EventTransitionBits,
-        acknowledged: bool,
-    ) -> Result<(), bacnet_types::error::Error> {
-        self.inner
-            .set_acked_transitions_internal(transition_bit, acknowledged)
-    }
-
-    fn commit_event_transition_internal(
-        &mut self,
-        commit: bacnet_objects::event::EventTransitionCommit,
-    ) -> Result<(), bacnet_objects::event::EventTransitionCommitError> {
-        if !self.atomic_commit_supported {
-            return Err(bacnet_objects::event::EventTransitionCommitError::Unsupported);
-        }
-        self.inner.commit_event_transition_internal(commit)?;
-        if self.event_state_error_after_write {
-            Err(bacnet_objects::event::EventTransitionCommitError::Unsupported)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn commit_event_enrollment_reliability_internal(
+    fn commit_reliability(
         &mut self,
         commit: bacnet_objects::event_enrollment::EventEnrollmentReliabilityCommit,
     ) -> Result<(), bacnet_objects::event::EventTransitionCommitError> {
         if !self.reliability_commit_supported {
             return Err(bacnet_objects::event::EventTransitionCommitError::Unsupported);
         }
-        self.inner
-            .commit_event_enrollment_reliability_internal(commit)?;
+        self.inner.commit_reliability(commit)?;
         if self.reliability_error_after_write {
+            Err(bacnet_objects::event::EventTransitionCommitError::Unsupported)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl bacnet_objects::traits::EventReporting for ReferenceValueObject {
+    fn commit_event_transition(
+        &mut self,
+        commit: bacnet_objects::event::EventTransitionCommit,
+    ) -> Result<(), bacnet_objects::event::EventTransitionCommitError> {
+        if !self.atomic_commit_supported {
+            return Err(bacnet_objects::event::EventTransitionCommitError::Unsupported);
+        }
+        self.inner.commit_event_transition(commit)?;
+        if self.event_state_error_after_write {
             Err(bacnet_objects::event::EventTransitionCommitError::Unsupported)
         } else {
             Ok(())
@@ -432,7 +421,8 @@ pub(super) fn reference_value(
 #[test]
 fn failed_source_write_does_not_persist_dependent_state() {
     let mut db = ObjectDatabase::new();
-    let mut target = AnalogValueObject::new(99, "AV-failed-source", 62).unwrap();
+    let mut target =
+        AnalogValueObject::new(99, "AV-failed-source", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     target
         .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
@@ -455,7 +445,8 @@ fn failed_source_write_does_not_persist_dependent_state() {
         assert_eq!(
             db.get(&enrollment_oid)
                 .unwrap()
-                .enrollment_eval_state_internal(),
+                .enrollment_eval()
+                .map(|e| e.eval_state()),
             Some(bacnet_objects::event_enrollment::EventEnrollmentEvalState::default())
         );
     }
@@ -464,7 +455,12 @@ fn failed_source_write_does_not_persist_dependent_state() {
 #[test]
 fn source_write_failure_still_allows_an_immediate_stateless_transition() {
     let mut db = ObjectDatabase::new();
-    let mut target = AnalogValueObject::new(100, "AV-immediate-source", 62).unwrap();
+    let mut target = AnalogValueObject::new(
+        100,
+        "AV-immediate-source",
+        EngineeringUnits::DEGREES_CELSIUS,
+    )
+    .unwrap();
     target
         .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
@@ -503,7 +499,8 @@ fn source_write_failure_still_allows_an_immediate_stateless_transition() {
 #[test]
 fn failed_state_reset_clears_source_ownership() {
     let mut db = ObjectDatabase::new();
-    let mut target = AnalogValueObject::new(101, "AV-state-reset", 62).unwrap();
+    let mut target =
+        AnalogValueObject::new(101, "AV-state-reset", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     target
         .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
@@ -540,17 +537,19 @@ fn failed_state_reset_clears_source_ownership() {
         });
     enrollment
         .inner
-        .set_enrollment_eval_state_internal(
-            bacnet_objects::event_enrollment::EventEnrollmentEvalState {
-                pending: None,
-                cov_baseline: Some(PropertyValue::Real(10.0)),
-                last_offnormal_value: None,
-            },
-        )
+        .enrollment_eval_mut()
+        .unwrap()
+        .set_eval_state(bacnet_objects::event_enrollment::EventEnrollmentEvalState {
+            pending: None,
+            cov_baseline: Some(PropertyValue::Real(10.0)),
+            last_offnormal_value: None,
+        })
         .unwrap();
     enrollment
         .inner
-        .set_enrollment_eval_source_internal(Some(old_source))
+        .enrollment_eval_mut()
+        .unwrap()
+        .set_eval_source(Some(old_source))
         .unwrap();
     enrollment.state_writable.store(false, Ordering::SeqCst);
     let enrollment_oid = enrollment.object_identifier();
@@ -560,7 +559,8 @@ fn failed_state_reset_clears_source_ownership() {
     assert_eq!(
         db.get(&enrollment_oid)
             .unwrap()
-            .enrollment_eval_source_internal(),
+            .enrollment_eval()
+            .and_then(|e| e.eval_source()),
         Some(None)
     );
     assert!(evaluate_event_enrollments(&mut db, 1).is_empty());
@@ -642,7 +642,7 @@ fn stale_eval_state() -> bacnet_objects::event_enrollment::EventEnrollmentEvalSt
 #[test]
 fn malformed_retarget_does_not_resume_stale_countdown() {
     let mut db = ObjectDatabase::new();
-    let mut ai = AnalogInputObject::new(3, "AI-3", 62).unwrap();
+    let mut ai = AnalogInputObject::new(3, "AI-3", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.set_present_value(90.0);
     let target = ai.object_identifier();
     db.add(Box::new(ai)).unwrap();
@@ -674,7 +674,8 @@ fn malformed_retarget_does_not_resume_stale_countdown() {
     assert_eq!(
         db.get(&enrollment_oid)
             .unwrap()
-            .enrollment_eval_state_internal()
+            .enrollment_eval()
+            .map(|e| e.eval_state())
             .unwrap(),
         bacnet_objects::event_enrollment::EventEnrollmentEvalState::default()
     );
@@ -716,7 +717,9 @@ fn invalid_reference_clears_before_other_property_failure() {
         .event_parameters_readable
         .store(false, Ordering::SeqCst);
     enrollment
-        .set_enrollment_eval_state_internal(stale_eval_state())
+        .enrollment_eval_mut()
+        .unwrap()
+        .set_eval_state(stale_eval_state())
         .unwrap();
     let enrollment_oid = enrollment.object_identifier();
     let mut db = ObjectDatabase::new();
@@ -726,7 +729,8 @@ fn invalid_reference_clears_before_other_property_failure() {
     assert_eq!(
         db.get(&enrollment_oid)
             .unwrap()
-            .enrollment_eval_state_internal()
+            .enrollment_eval()
+            .map(|e| e.eval_state())
             .unwrap(),
         bacnet_objects::event_enrollment::EventEnrollmentEvalState::default()
     );

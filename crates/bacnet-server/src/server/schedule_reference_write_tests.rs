@@ -22,7 +22,7 @@ use bacnet_encoding::constructed::encode_object_property_reference;
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::binary::BinaryValueObject;
 use bacnet_types::constructed::BACnetObjectPropertyReference;
-use bacnet_types::enums::{ObjectType, Reliability};
+use bacnet_types::enums::{EngineeringUnits, ObjectType, Reliability};
 
 pub(super) const LIST: PropertyIdentifier = PropertyIdentifier::LIST_OF_OBJECT_PROPERTY_REFERENCES;
 const PRIORITY: PropertyIdentifier = PropertyIdentifier::PRIORITY_FOR_WRITING;
@@ -51,8 +51,10 @@ pub(super) fn present_values(objects: &[ObjectIdentifier]) -> Vec<u8> {
 async fn start() -> Harness {
     let mut h = Harness::start_with(ServerConfig::default(), |db| {
         schedule(db);
-        db.add(Box::new(AnalogValueObject::new(2, "AV-2", 62).unwrap()))
-            .unwrap();
+        db.add(Box::new(
+            AnalogValueObject::new(2, "AV-2", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+        ))
+        .unwrap();
         db.add(Box::new(BinaryValueObject::new(2, "BV-2").unwrap()))
             .unwrap();
     })
@@ -312,7 +314,8 @@ async fn a_target_created_later_takes_the_value_as_it_is_created() {
         object_specifier: ObjectSpecifier::Identifier(ao9),
         list_of_initial_values: Vec::new(),
     }
-    .encode(&mut body);
+    .encode(&mut body)
+    .unwrap();
     h.request(ConfirmedServiceChoice::CREATE_OBJECT, body).await;
     tokio::time::timeout(Duration::from_secs(1), async {
         while h.server.database().read().await.get(&ao9).is_none() {

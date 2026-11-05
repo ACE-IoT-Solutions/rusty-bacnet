@@ -16,8 +16,8 @@ use bacnet_objects::traits::BACnetObject;
 use bacnet_services::device_mgmt::DeviceCommunicationControlRequest;
 use bacnet_types::constructed::BACnetRecipient;
 use bacnet_types::enums::EnableDisable;
-use std::sync::mpsc as std_mpsc;
 use std::sync::Weak;
+use std::sync::mpsc as std_mpsc;
 use std::thread::ThreadId;
 
 /// Storage for one class that reports the thread it is dropped on. The
@@ -78,11 +78,12 @@ async fn serving(
     let (transport, inbound) = TestTransport::inbound(4);
     let mut db = ObjectDatabase::new();
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 100,
+        identity: bacnet_objects::DeviceIdentity::new(100, 0).expect("valid Device identity"),
         ..DeviceConfig::default()
     })
     .unwrap();
     let mut builder = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .transport(transport)
         .enable_event_enrollment(false);
     if dcc_audit {
@@ -291,7 +292,7 @@ async fn a_settle_task_that_ends_last_drops_the_database_off_the_runtime() {
         .write()
         .await
         .get_mut(&nc(1))
-        .and_then(|class| class.durable_writes_internal())
+        .and_then(|class| class.durable_writes())
         .expect("the class saves")
         .stage_writes(&[PendingWrite {
             property: RECIPIENT_LIST,

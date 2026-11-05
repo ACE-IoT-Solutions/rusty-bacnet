@@ -1,7 +1,9 @@
 //! A writable decorator must preserve source authority and its own write gate.
 use super::*;
 use bacnet_objects::command_source::CommandOrigin;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_types::enums::ObjectType;
+use bacnet_types::error::RemoteError;
 use std::sync::Mutex;
 
 struct RecordingObject(Arc<Mutex<Vec<(PropertyIdentifier, CommandOrigin)>>>);
@@ -12,8 +14,8 @@ impl BACnetObject for RecordingObject {
     fn object_name(&self) -> &str {
         "source-forwarding"
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
     fn read_property(&self, _: PropertyIdentifier, _: Option<u32>) -> Result<PropertyValue, Error> {
         Ok(PropertyValue::Null)
@@ -85,7 +87,7 @@ fn command_source_decorator_forwards_exact_origin_and_preserves_active_gate() {
             )
         };
         assert!(
-            matches!(result, Err(Error::Protocol { code, .. }) if code == u32::from(ErrorCode::WRITE_ACCESS_DENIED.to_raw()))
+            matches!(result, Err(Error::Remote(RemoteError::Error { code, .. })) if code == ErrorCode::WRITE_ACCESS_DENIED)
         );
     }
     assert_eq!(seen.lock().unwrap().len(), 1);

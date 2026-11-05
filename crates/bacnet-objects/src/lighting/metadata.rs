@@ -1,29 +1,31 @@
-use super::binary::BinaryLightingOutputObject;
 use super::LightingOutputObject;
-use std::borrow::Cow;
+use super::binary::BinaryLightingOutputObject;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
 use crate::property_metadata::{
     PropertyConformance::{Optional, RequiredRead, RequiredWrite},
     PropertyMetadata, PropertyPresenceCondition,
-    PropertyWriteCapability::{Always, ReadOnly},
+    PropertyPresenceCondition::{CommandableValueSourceTracking, ValueSourceTracking},
+    PropertyWriteCapability::{Always, ReadOnly, WhenCommandOwner},
 };
 
 // Canonical effective rows for the Lighting duo (ASHRAE 135-2020; PDF = printed + 2):
 // - Lighting Output (type 54, §12.54 Table 12-64; printed pp. 518-519 / PDF pp. 520-521)
 // - Binary Lighting Output (type 55, §12.55 Table 12-69; printed pp. 532-533 / PDF pp. 534-535)
-// Order preserves each legacy projection; DEFAULT_FADE_TIME (once readable
+// Order preserves each type's earlier row order; DEFAULT_FADE_TIME (once
+// readable
 // but unlisted) is appended after the Lighting Output legacy rows (Lift
 // FLOOR_NUMBER precedent), followed by the rows #1092 added
 // (Default_Ramp_Rate, Default_Step_Increment, then Current_Command_Priority
-// on both objects), and PROPERTY_LIST is appended so the projection helper
-// omits it while required_properties keeps it. Only implemented rows are
+// on both objects), and PROPERTY_LIST is appended last. Only implemented
+// rows are
 // described: table rows the objects do not serve (Lighting Output
 // Transition, Feedback_Value, Power, Instantaneous_Power,
-// Min/Max_Actual_Value, Value_Source family, event/intrinsic/audit rows;
+// Min/Max_Actual_Value, Command_Time_Array, event/intrinsic/audit rows;
 // Binary Lighting Output Feedback_Value, Power, Polarity,
-// Elapsed_Active_Time family, Value_Source family, event/intrinsic/audit
+// Elapsed_Active_Time family, Command_Time_Array, event/intrinsic/audit
 // rows) are all optional and stay absent until dispatch exists. Tags,
 // Profile_Location and Profile_Name join once `set_profile` provisions
 // them (#1553).
@@ -51,19 +53,22 @@ use crate::property_metadata::{
 // Current_Command_Priority carries the table R code on both objects and is
 // derived from Priority_Array (Clauses 12.54.39 and 12.55.32), so
 // RequiredRead/ReadOnly.
+// Value_Source, Value_Source_Array and Last_Command_Time (#1866) carry the
+// value-source footnotes of Tables 12-64 and 12-69 and come last, as on the
+// other commandable objects; Value_Source takes a correction from the
+// slot's writer only.
 // Writability is Always, never WhenOutOfService: dispatch routes every write
 // arm unconditionally and the suites pin in-service writes, so the metadata
-// mirrors dispatch. Presence is None throughout: the implementation models no
-// commandable, intrinsic-reporting, or value-source gating on this family.
-// The duo is not createable at runtime (the network factory builds only the
-// eight analog/binary/multi-state input/output/value types, so the
-// is_createable=false default holds) and remains deleteable (delete denies
-// only Device and NetworkPort, so the is_deleteable=true default holds);
+// mirrors dispatch. Presence is None apart from the value-source rows: the
+// implementation models no commandable or intrinsic-reporting gating here.
+// The duo is not createable at runtime (the `creation` table has no
+// constructor for it) and remains deleteable (delete denies
+// only Device and NetworkPort, so the builtin_deleteable=true default holds);
 // neither needs an override. Array gating keeps the default: Priority_Array
 // and Property_List admit an index (BACnetARRAY per Tables 12-64/12-69)
 // while every other served row rejects one. COV keeps its override:
-// supports_cov=true on both objects, and the COV gating path (read_property
-// plus supports_cov_property to supports_cov) never consults metadata.
+// both objects lend `cov()`, and the COV gating path (read_property plus
+// `CovReporting::supports_cov_property`) never consults metadata.
 const LIGHTING_OUTPUT_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::OBJECT_IDENTIFIER, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::OBJECT_NAME, RequiredRead, None, ReadOnly),
@@ -91,7 +96,10 @@ const LIGHTING_OUTPUT_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::DEFAULT_RAMP_RATE, RequiredRead, None, Always),
     PropertyMetadata::new(P::DEFAULT_STEP_INCREMENT, RequiredRead, None, Always),
     PropertyMetadata::new(P::CURRENT_COMMAND_PRIORITY, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::COV_INCREMENT, Optional, None, Always),
+    crate::property_metadata::COV_INCREMENT_ROW,
+    VALUE_SOURCE_ROWS[0],
+    VALUE_SOURCE_ROWS[1],
+    VALUE_SOURCE_ROWS[2],
     PropertyMetadata::new(P::PROPERTY_LIST, RequiredRead, None, ReadOnly),
 ];
 
@@ -110,7 +118,33 @@ const BINARY_LIGHTING_OUTPUT_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::PRIORITY_ARRAY, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::RELINQUISH_DEFAULT, RequiredRead, None, Always),
     PropertyMetadata::new(P::CURRENT_COMMAND_PRIORITY, RequiredRead, None, ReadOnly),
+    VALUE_SOURCE_ROWS[0],
+    VALUE_SOURCE_ROWS[1],
+    VALUE_SOURCE_ROWS[2],
     PropertyMetadata::new(P::PROPERTY_LIST, RequiredRead, None, ReadOnly),
+];
+
+/// Value_Source, Value_Source_Array and Last_Command_Time, as a commandable
+/// Binary Output serves them.
+const VALUE_SOURCE_ROWS: [PropertyMetadata; 3] = [
+    PropertyMetadata::new(
+        P::VALUE_SOURCE,
+        Optional,
+        Some(ValueSourceTracking),
+        WhenCommandOwner,
+    ),
+    PropertyMetadata::new(
+        P::VALUE_SOURCE_ARRAY,
+        Optional,
+        Some(CommandableValueSourceTracking),
+        ReadOnly,
+    ),
+    PropertyMetadata::new(
+        P::LAST_COMMAND_TIME,
+        Optional,
+        Some(CommandableValueSourceTracking),
+        ReadOnly,
+    ),
 ];
 
 pub(super) fn for_lighting_output_object(
@@ -168,18 +202,18 @@ fn with_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collections::HashSet;
     use crate::property_metadata::PropertyWriteCapability;
     use crate::traits::BACnetObject;
     use bacnet_types::enums::{ErrorClass, ErrorCode};
-    use bacnet_types::error::Error;
+    use bacnet_types::error::{Error, RemoteError};
     use bacnet_types::primitives::PropertyValue;
-    use std::collections::HashSet;
 
     fn assert_error(error: Error, expected: ErrorCode) {
         assert!(
-            matches!(error, Error::Protocol { class, code }
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == expected.to_raw() as u32),
+            matches!(error, Error::Remote(RemoteError::Error { class, code })
+                if class == ErrorClass::PROPERTY
+                    && code == expected),
             "expected {expected:?}, got {error:?}"
         );
     }
@@ -188,8 +222,14 @@ mod tests {
         let metadata = object.property_metadata();
         assert!(matches!(metadata, Cow::Borrowed(_)));
         assert_eq!(metadata.len(), all.len() + 1);
-        assert_eq!(object.property_list().as_ref(), all);
-        assert_eq!(object.required_properties().as_ref(), required);
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(all)
+        );
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            required
+        );
         assert_eq!(
             metadata
                 .iter()
@@ -198,12 +238,27 @@ mod tests {
                 .len(),
             metadata.len()
         );
-        assert!(!object.is_createable());
-        assert!(object.is_deleteable());
-        assert!(object.supports_cov());
+        assert!(crate::creation::builtin_deleteable(
+            object.object_identifier().object_type()
+        ));
+        assert!(object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
         for row in metadata.iter() {
-            assert_eq!(row.presence_condition, None);
-            let expected = if required.contains(&row.property_identifier) {
+            // The value-source rows are required by their footnotes, not
+            // their base code (#1866).
+            let (condition, base) = match row.property_identifier {
+                P::VALUE_SOURCE => (Some(PropertyPresenceCondition::ValueSourceTracking), true),
+                P::VALUE_SOURCE_ARRAY | P::LAST_COMMAND_TIME => (
+                    Some(PropertyPresenceCondition::CommandableValueSourceTracking),
+                    true,
+                ),
+                // Table 12-64 footnote 3 (#2193).
+                P::COV_INCREMENT => (Some(PropertyPresenceCondition::CovReporting), true),
+                _ => (None, false),
+            };
+            assert_eq!(row.presence_condition, condition);
+            let expected = if base {
+                Optional
+            } else if required.contains(&row.property_identifier) {
                 if row.property_identifier == P::PRESENT_VALUE
                     || row.property_identifier == P::LIGHTING_COMMAND
                 {
@@ -225,8 +280,14 @@ mod tests {
             .filter(|&&p| !matches!(p, P::OBJECT_IDENTIFIER | P::OBJECT_NAME | P::OBJECT_TYPE))
             .map(|p| PropertyValue::Enumerated(p.to_raw()))
             .collect();
-        assert!(object.is_array_property(P::PROPERTY_LIST));
-        assert!(object.is_array_property(P::PRIORITY_ARRAY));
+        assert!(crate::property_metadata::is_array_property(
+            object,
+            P::PROPERTY_LIST
+        ));
+        assert!(crate::property_metadata::is_array_property(
+            object,
+            P::PRIORITY_ARRAY
+        ));
         assert_eq!(
             object.read_property(P::PROPERTY_LIST, None).unwrap(),
             PropertyValue::List(wire.clone())
@@ -279,6 +340,9 @@ mod tests {
             P::DEFAULT_STEP_INCREMENT,
             P::CURRENT_COMMAND_PRIORITY,
             P::COV_INCREMENT,
+            P::VALUE_SOURCE,
+            P::VALUE_SOURCE_ARRAY,
+            P::LAST_COMMAND_TIME,
         ];
         let required = [
             P::OBJECT_IDENTIFIER,
@@ -300,6 +364,10 @@ mod tests {
             P::DEFAULT_RAMP_RATE,
             P::DEFAULT_STEP_INCREMENT,
             P::CURRENT_COMMAND_PRIORITY,
+            P::COV_INCREMENT,
+            P::VALUE_SOURCE,
+            P::VALUE_SOURCE_ARRAY,
+            P::LAST_COMMAND_TIME,
             P::PROPERTY_LIST,
         ];
         assert_exact_sets(&object, &all, &required);
@@ -349,10 +417,22 @@ mod tests {
         );
         // Priority_Array is BACnetARRAY (Table 12-64), so the service gate
         // admits an index; Tracking_Value is scalar and rejects one.
-        assert!(object.is_array_property(P::PRIORITY_ARRAY));
-        assert!(!object.is_array_property(P::TRACKING_VALUE));
-        assert!(!object.is_array_property(P::DEFAULT_FADE_TIME));
-        assert!(!object.is_array_property(P::CURRENT_COMMAND_PRIORITY));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::PRIORITY_ARRAY
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::TRACKING_VALUE
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::DEFAULT_FADE_TIME
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::CURRENT_COMMAND_PRIORITY
+        ));
     }
 
     #[test]
@@ -373,6 +453,9 @@ mod tests {
             P::PRIORITY_ARRAY,
             P::RELINQUISH_DEFAULT,
             P::CURRENT_COMMAND_PRIORITY,
+            P::VALUE_SOURCE,
+            P::VALUE_SOURCE_ARRAY,
+            P::LAST_COMMAND_TIME,
         ];
         let required = [
             P::OBJECT_IDENTIFIER,
@@ -387,6 +470,9 @@ mod tests {
             P::PRIORITY_ARRAY,
             P::RELINQUISH_DEFAULT,
             P::CURRENT_COMMAND_PRIORITY,
+            P::VALUE_SOURCE,
+            P::VALUE_SOURCE_ARRAY,
+            P::LAST_COMMAND_TIME,
             P::PROPERTY_LIST,
         ];
         assert_exact_sets(&object, &all, &required);
@@ -409,9 +495,18 @@ mod tests {
                 .unwrap(),
             PropertyValue::Null
         );
-        assert!(object.is_array_property(P::PRIORITY_ARRAY));
-        assert!(!object.is_array_property(P::BLINK_WARN_ENABLE));
-        assert!(!object.is_array_property(P::CURRENT_COMMAND_PRIORITY));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::PRIORITY_ARRAY
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::BLINK_WARN_ENABLE
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::CURRENT_COMMAND_PRIORITY
+        ));
     }
 
     #[test]
@@ -462,6 +557,15 @@ mod tests {
                 let original = object.property_metadata().into_owned();
                 for row in &original {
                     let p = row.property_identifier;
+                    // Only the slot's writer may correct Value_Source; the
+                    // command-source suites cover that route (#1866).
+                    if p == P::VALUE_SOURCE {
+                        assert_eq!(
+                            row.write_capability,
+                            PropertyWriteCapability::WhenCommandOwner
+                        );
+                        continue;
+                    }
                     let capability = if writable.contains(&p) {
                         PropertyWriteCapability::Always
                     } else {
@@ -469,7 +573,7 @@ mod tests {
                     };
                     assert_eq!(row.write_capability, capability, "{p:?}");
                     assert_eq!(
-                        object.is_writable_property(p),
+                        crate::property_metadata::is_writable_property(&*object, p),
                         capability.is_writable(),
                         "{p:?}"
                     );
@@ -485,7 +589,13 @@ mod tests {
                         let value = object.read_property(p, None).unwrap();
                         (value, None)
                     };
-                    let result = object.write_property(p, index, value, None);
+                    let result = object.write_property_from(
+                        p,
+                        index,
+                        value,
+                        None,
+                        &crate::command_source::test_origin(),
+                    );
                     if capability.is_writable() {
                         result.unwrap();
                     } else {
@@ -494,7 +604,10 @@ mod tests {
                 }
                 // Object_Name has no network write route: a rename falls
                 // through to WRITE_ACCESS_DENIED even with a well-formed value.
-                assert!(!object.is_writable_property(P::OBJECT_NAME));
+                assert!(!crate::property_metadata::is_writable_property(
+                    &*object,
+                    P::OBJECT_NAME
+                ));
                 assert_error(
                     object
                         .write_property(
@@ -524,18 +637,25 @@ mod tests {
                 )
                 .unwrap();
             object
-                .write_property(P::PRESENT_VALUE, None, PropertyValue::Real(50.0), Some(8))
+                .write_property_from(
+                    P::PRESENT_VALUE,
+                    None,
+                    PropertyValue::Real(50.0),
+                    Some(8),
+                    &crate::command_source::test_origin(),
+                )
                 .unwrap();
             assert_eq!(
                 object.read_property(P::PRESENT_VALUE, None).unwrap(),
                 PropertyValue::Real(50.0)
             );
             object
-                .write_property(
+                .write_property_from(
                     P::LIGHTING_COMMAND,
                     None,
                     PropertyValue::ApplicationData(vec![0x09, 0x0A]),
                     None,
+                    &crate::command_source::test_origin(),
                 )
                 .unwrap();
             assert_eq!(
@@ -604,7 +724,15 @@ mod tests {
                 (P::COV_INCREMENT, PropertyValue::Double(1.0)),
             ] {
                 assert_error(
-                    object.write_property(p, None, value, None).unwrap_err(),
+                    object
+                        .write_property_from(
+                            p,
+                            None,
+                            value,
+                            None,
+                            &crate::command_source::test_origin(),
+                        )
+                        .unwrap_err(),
                     ErrorCode::INVALID_DATA_TYPE,
                 );
             }
@@ -618,10 +746,18 @@ mod tests {
             ] {
                 let value = object.read_property(p, None).unwrap();
                 assert_error(
-                    object.write_property(p, None, value, None).unwrap_err(),
+                    object
+                        .write_property_from(
+                            p,
+                            None,
+                            value,
+                            None,
+                            &crate::command_source::test_origin(),
+                        )
+                        .unwrap_err(),
                     ErrorCode::WRITE_ACCESS_DENIED,
                 );
-                assert!(!object.is_writable_property(p));
+                assert!(!crate::property_metadata::is_writable_property(&object, p));
             }
         }
     }
@@ -629,7 +765,7 @@ mod tests {
     #[test]
     fn property_metadata_lighting_duo_unserved_rows_stay_unknown() {
         fn assert_unserved(object: &mut dyn BACnetObject, p: P) {
-            assert!(!object.is_writable_property(p));
+            assert!(!crate::property_metadata::is_writable_property(&*object, p));
             assert_error(
                 object.read_property(p, None).unwrap_err(),
                 ErrorCode::UNKNOWN_PROPERTY,

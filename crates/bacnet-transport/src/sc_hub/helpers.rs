@@ -10,7 +10,7 @@ use futures_util::SinkExt;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::sc_frame::{ScFunction, ScMessage, Vmac, BACNET_SC_HUB_SUBPROTOCOL, BROADCAST_VMAC};
+use crate::sc_frame::{BACNET_SC_HUB_SUBPROTOCOL, BROADCAST_VMAC, ScFunction, ScMessage, Vmac};
 
 use super::{
     Clients, ConnectRequestVmacDisposition, DeviceUuid, HubClient, HubClientRegistrationDecision,
@@ -22,14 +22,12 @@ pub(super) fn connect_accept_message(
     message_id: u16,
     hub_vmac: Vmac,
     hub_uuid: DeviceUuid,
-    max_bvlc_length: u16,
-    max_npdu_length: u16,
 ) -> ScMessage {
     let mut payload = Vec::with_capacity(26);
     payload.extend_from_slice(&hub_vmac);
     payload.extend_from_slice(&hub_uuid);
-    payload.extend_from_slice(&max_bvlc_length.to_be_bytes());
-    payload.extend_from_slice(&max_npdu_length.to_be_bytes());
+    payload.extend_from_slice(&super::HUB_MAX_BVLC_LENGTH.to_be_bytes());
+    payload.extend_from_slice(&super::HUB_MAX_NPDU_LENGTH.to_be_bytes());
     ScMessage {
         function: ScFunction::ConnectAccept,
         message_id,
@@ -53,8 +51,8 @@ pub(super) fn offers_websocket_subprotocol(
         .unwrap_or(false)
 }
 
-pub(super) fn websocket_subprotocol_error_response(
-) -> tokio_tungstenite::tungstenite::handshake::server::ErrorResponse {
+pub(super) fn websocket_subprotocol_error_response()
+-> tokio_tungstenite::tungstenite::handshake::server::ErrorResponse {
     tokio_tungstenite::tungstenite::http::Response::builder()
         .status(tokio_tungstenite::tungstenite::http::StatusCode::BAD_REQUEST)
         .body(Some(format!(

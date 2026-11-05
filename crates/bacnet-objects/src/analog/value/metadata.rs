@@ -1,5 +1,5 @@
 use super::AnalogValueObject;
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
@@ -44,7 +44,7 @@ const BASE: &[PropertyMetadata] = &[
         Some(Commandable),
         ReadOnly,
     ),
-    PropertyMetadata::new(P::COV_INCREMENT, Optional, None, Always),
+    crate::property_metadata::COV_INCREMENT_ROW,
     PropertyMetadata::new(
         P::HIGH_LIMIT,
         Optional,

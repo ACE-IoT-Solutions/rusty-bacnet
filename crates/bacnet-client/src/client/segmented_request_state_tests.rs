@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
-use bacnet_encoding::apdu::{self, encode_apdu, Apdu, ComplexAck, ErrorPdu, SegmentAck, SimpleAck};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::apdu::{self, Apdu, ComplexAck, ErrorPdu, SegmentAck, SimpleAck, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort, TransportProvenance};
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{
     AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, RejectReason,
 };
-use bacnet_types::error::Error;
-use bacnet_types::MacAddr;
+use bacnet_types::error::{Error, RemoteError};
 use bytes::{Bytes, BytesMut};
-use tokio::sync::{mpsc, Notify};
-use tokio::time::{timeout, Duration};
+use tokio::sync::{Notify, mpsc};
+use tokio::time::{Duration, timeout};
 
 use super::{BACnetClient, ClientConfig};
 
@@ -146,15 +146,14 @@ async fn assert_premature_response_aborts(kind: PrematureResponse) {
             .await
             .unwrap()
             .unwrap(),
-        Err(Error::Abort { reason })
-            if reason == AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw()
+        Err(Error::Remote(RemoteError::Abort { reason }))
+            if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
     ));
-    assert_eq!(client.tsm.lock().await.pending_count(), 0);
+    assert_eq!(client.tsm.lock().pending_count(), 0);
     assert!(
         !client
             .seg_ack_senders
             .lock()
-            .await
             .contains_key(&(MacAddr::from_slice(SERVER_MAC), first.invoke_id)),
         "completed request retained its SegmentACK route"
     );
@@ -223,10 +222,10 @@ async fn reject_during_segmented_send_stops_the_sender() {
             .await
             .unwrap()
             .unwrap(),
-        Err(Error::Reject { reason }) if reason == RejectReason::OTHER.to_raw()
+        Err(Error::Remote(RemoteError::Reject { reason })) if reason == RejectReason::OTHER
     ));
     expect_silence(&mut rx, "after Reject completed the send").await;
-    assert_eq!(client.tsm.lock().await.pending_count(), 0);
+    assert_eq!(client.tsm.lock().pending_count(), 0);
 
     let mut client = Arc::try_unwrap(client).unwrap_or_else(|_| panic!("request retained client"));
     client.stop().await.unwrap();
@@ -268,7 +267,7 @@ async fn server_abort_during_segmented_send_stops_the_sender() {
     )
     .await;
     expect_silence(&mut rx, "after server=FALSE Abort").await;
-    assert_eq!(client.tsm.lock().await.pending_count(), 1);
+    assert_eq!(client.tsm.lock().pending_count(), 1);
 
     send_to_client(
         &server,
@@ -284,10 +283,10 @@ async fn server_abort_during_segmented_send_stops_the_sender() {
             .await
             .unwrap()
             .unwrap(),
-        Err(Error::Abort { reason }) if reason == AbortReason::BUFFER_OVERFLOW.to_raw()
+        Err(Error::Remote(RemoteError::Abort { reason })) if reason == AbortReason::BUFFER_OVERFLOW
     ));
     expect_silence(&mut rx, "after server Abort completed the send").await;
-    assert_eq!(client.tsm.lock().await.pending_count(), 0);
+    assert_eq!(client.tsm.lock().pending_count(), 0);
 
     let mut client = Arc::try_unwrap(client).unwrap_or_else(|_| panic!("request retained client"));
     client.stop().await.unwrap();
@@ -405,7 +404,7 @@ async fn response_after_final_segment_before_final_segment_ack_succeeds() {
     .expect("request waited for a final SegmentACK");
     final_response_sent.notified().await;
     assert!(result.unwrap().is_empty());
-    assert_eq!(client.tsm.lock().await.pending_count(), 0);
+    assert_eq!(client.tsm.lock().pending_count(), 0);
     client.stop().await.unwrap();
 }
 
@@ -499,7 +498,7 @@ async fn segmented_response_before_final_segment_ack_hands_off_to_receive_timer(
             .as_ref(),
         b"first-response"
     );
-    assert_eq!(client.tsm.lock().await.pending_count(), 0);
+    assert_eq!(client.tsm.lock().pending_count(), 0);
 
     let mut client = Arc::try_unwrap(client).unwrap_or_else(|_| panic!("request retained client"));
     client.stop().await.unwrap();
@@ -565,11 +564,12 @@ async fn stale_segment_ack_after_terminal_completion_is_not_routed() {
     )
     .await
     .expect("terminal response did not reach delayed route cleanup");
-    assert!(client
-        .seg_ack_senders
-        .lock()
-        .await
-        .contains_key(&(MacAddr::from_slice(SERVER_MAC), invoke_id)));
+    assert!(
+        client
+            .seg_ack_senders
+            .lock()
+            .contains_key(&(MacAddr::from_slice(SERVER_MAC), invoke_id))
+    );
 
     send_to_client(
         &server,
@@ -640,12 +640,14 @@ async fn stale_segment_ack_after_terminal_completion_is_not_routed() {
     );
 
     client.segmented_post_wait_cleanup.release();
-    assert!(timeout(Duration::from_secs(2), first)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap()
-        .is_empty());
+    assert!(
+        timeout(Duration::from_secs(2), first)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .is_empty()
+    );
 
     let mut client = Arc::try_unwrap(client).unwrap_or_else(|_| panic!("requests retained client"));
     client.stop().await.unwrap();

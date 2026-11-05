@@ -1,13 +1,14 @@
 use super::*;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 use PropertyIdentifier as P;
 
 fn assert_error(error: Error, expected: ErrorCode) {
     assert!(
-        matches!(error, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == expected.to_raw() as u32),
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::PROPERTY
+                && code == expected),
         "expected {expected:?}, got {error:?}"
     );
 }
@@ -240,7 +241,7 @@ fn load_control_read_start_time() {
 #[test]
 fn load_control_property_list() {
     let lc = LoadControlObject::new(1, "LC-1").unwrap();
-    let list = lc.property_list();
+    let list = crate::test_rows::listed(&lc.property_metadata());
     assert!(list.contains(&P::PRESENT_VALUE));
     assert!(list.contains(&P::REQUESTED_SHED_LEVEL));
     assert!(list.contains(&P::EXPECTED_SHED_LEVEL));

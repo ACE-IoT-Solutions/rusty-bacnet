@@ -137,3 +137,80 @@ fn a_relayed_answer_matches_the_direct_station_or_the_routed_form_it_was_sent_to
         assert_eq!(admission.metadata().peer(), &keyed, "the peer that matched");
     }
 }
+
+/// A direct answer from the station matches a lease keyed to the routed form
+/// a request took to a network that has since become this one (#2371), and
+/// nothing wider: another station, another or an unknown number, or another
+/// invoke ID.
+#[test]
+fn a_direct_answer_matches_the_routed_form_naming_this_network() {
+    assert_eq!(
+        CanonicalPeer::direct_alias(&STATION, None, Some(200)),
+        Some(CanonicalPeer::routed(200, &STATION))
+    );
+    assert_eq!(CanonicalPeer::direct_alias(&STATION, None, None), None);
+    assert_eq!(
+        CanonicalPeer::direct_alias(&STATION, Some(&relayed(200)), Some(200)),
+        None
+    );
+    let coordinator = OutboundTransactionCoordinator::new();
+    let invoke_id = lease(&coordinator, CanonicalPeer::routed(200, &STATION));
+    for (mac, local, invoke) in [
+        (&[0xaa, 0xbc][..], Some(200), invoke_id),
+        (&STATION[..], Some(201), invoke_id),
+        (&STATION[..], None, invoke_id),
+        (&STATION[..], Some(200), invoke_id.wrapping_add(1)),
+    ] {
+        let outcome = coordinator
+            .admit_from_source(mac, None, local, &ack(invoke))
+            .unwrap();
+        assert!(
+            !matches!(outcome, AdmissionOutcome::Admitted(_)),
+            "{outcome:?}"
+        );
+    }
+    let AdmissionOutcome::Admitted(admission) = coordinator
+        .admit_from_source(&STATION, None, Some(200), &ack(invoke_id))
+        .unwrap()
+    else {
+        panic!("the direct answer is admitted");
+    };
+    assert_eq!(
+        admission.metadata().peer(),
+        &CanonicalPeer::routed(200, &STATION)
+    );
+}
+
+/// A copied peer keeps the variant, the network and every address length,
+/// inline or spilled, and owns its bytes (#1978: `Clone` is by hand).
+#[test]
+fn copied_peers_preserve_arbitrary_address_identity_and_ownership() {
+    let mut identities = std::collections::HashMap::new();
+    for len in [0, 1, 3, 6, 7, 18, 23, 64] {
+        let bytes: Vec<u8> = (0..len).map(|index| index as u8).collect();
+        for mut original in [
+            CanonicalPeer::direct(&bytes),
+            CanonicalPeer::routed(42, &bytes),
+            CanonicalPeer::routed(43, &bytes),
+        ] {
+            let copied = original.clone();
+            assert_eq!(copied, original);
+            assert!(identities.insert(copied.clone(), len).is_none());
+            let (original_mac, copied_mac) = match (&mut original, &copied) {
+                (CanonicalPeer::Direct(a), CanonicalPeer::Direct(b)) => (a, b),
+                (
+                    CanonicalPeer::Routed { address: a, .. },
+                    CanonicalPeer::Routed { address: b, .. },
+                ) => (a, b),
+                _ => unreachable!(),
+            };
+            assert_eq!(copied_mac.as_slice(), bytes);
+            assert_eq!(copied_mac.spilled(), len > 6);
+            original_mac.push(0xff);
+            assert_ne!(original, copied);
+            assert_eq!(identities.get(&copied), Some(&len));
+            assert!(!identities.contains_key(&original));
+        }
+    }
+    assert_eq!(identities.len(), 24);
+}

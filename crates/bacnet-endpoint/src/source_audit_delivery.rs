@@ -1,17 +1,19 @@
 //! Bounded source notification delivery and local communication-result mapping.
+use super::routers::{Hop, SourceRoute, SourceRouters};
 use super::*;
-use bacnet_encoding::apdu::{encode_apdu, Apdu, ConfirmedRequest, UnconfirmedRequest};
-use bacnet_endpoint_core::coordinator::CanonicalPeer;
+use bacnet_encoding::apdu::{Apdu, ConfirmedRequest, UnconfirmedRequest, encode_apdu};
 use bacnet_endpoint_core::endpoint_ingress::EndpointEgressAdmissionError;
+use bacnet_npdu::NetworkPriority;
 use bacnet_server::server::{
     __endpoint_NotificationWorkerResult as NotificationWorkerResult,
     __endpoint_run_notification_worker as run_notification_worker,
 };
 use bacnet_services::audit::AuditNotificationRequest;
 use bacnet_types::enums::{
-    ConfirmedServiceChoice, ErrorClass, ErrorCode, NetworkPriority, UnconfirmedServiceChoice,
+    AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, RejectReason,
+    UnconfirmedServiceChoice,
 };
-use bacnet_types::MacAddr;
+use bacnet_types::error::RemoteError;
 use bytes::BytesMut;
 use tokio::time::{Duration, Instant};
 
@@ -62,19 +64,22 @@ pub(super) fn admit(
     source: &Arc<SourceAudit>,
     owner: &NotificationTransactions,
     confirmed: bool,
-    mac: MacAddr,
+    route: SourceRoute,
     notification: BACnetAuditNotification,
     completion: Completion,
-    failure: Option<AuditFailureTicket<MacAddr>>,
+    failure: Option<AuditFailureTicket<SourceRoute>>,
 ) {
     // Invalid/oversized records are not resource losses, even at saturation.
     let Some(mut encoded) = encode(&notification, confirmed, source.max_apdu, 0) else {
         return;
     };
+    // A source record carries the source timestamp; a record of an
+    // operation on this device, the target timestamp.
     let timestamp = notification
         .source_timestamp
         .clone()
-        .expect("source record timestamp");
+        .or_else(|| notification.target_timestamp.clone())
+        .expect("record timestamp");
     let permit = match owner.try_admit_audit() {
         Ok(permit) => permit,
         Err(tokio::sync::TryAcquireError::NoPermits) => {
@@ -85,7 +90,7 @@ pub(super) fn admit(
     };
     let reserved = if confirmed {
         match owner.reserve(
-            CanonicalPeer::direct(mac.as_slice()),
+            route.peer(),
             ConfirmedServiceChoice::CONFIRMED_AUDIT_NOTIFICATION,
         ) {
             Ok(reserved) => Some(reserved),
@@ -109,17 +114,18 @@ pub(super) fn admit(
     }
     let deadline = Instant::now() + DEADLINE;
     let egress = source.egress.clone();
+    let routers = Arc::clone(&source.routers);
     let weak_owner = source.notifications.clone();
     let source = Arc::downgrade(source);
     owner.spawn(async move {
         let _permit = permit;
-        let sent = admit_encoded(&egress, mac, encoded, confirmed, deadline);
-        if matches!(sent, Err(EndpointEgressAdmissionError::QueueFull)) {
-            if let (Some(source), Some(owner)) = (source.upgrade(), weak_owner.upgrade()) {
-                failures::record_drop(&source, &owner, failure, timestamp);
-            }
+        let (sent, hop) = admit_encoded(&egress, &routers, &route, encoded, confirmed, deadline);
+        if matches!(sent, Err(EndpointEgressAdmissionError::QueueFull))
+            && let (Some(source), Some(owner)) = (source.upgrade(), weak_owner.upgrade())
+        {
+            failures::record_drop(&source, &owner, failure, timestamp);
         }
-        completion.finish(finish_send(sent, reserved, deadline).await);
+        completion.finish(finish_send(sent, hop, reserved, deadline).await);
     });
 }
 
@@ -159,23 +165,37 @@ pub(super) fn encode(
     (encoded.len() <= usize::from(max_apdu)).then(|| encoded.to_vec())
 }
 
+/// Queue one encoded record for `route`: to a MAC on the link, or through
+/// the network layer to a station behind a router, by the router learned
+/// for its network or the link's broadcast MAC ([`SourceRouters`], #2371).
+/// The [`Hop`] names a learned router the send went through, which a lost
+/// delivery forgets. A routed record for a network that has become this one
+/// goes direct only to a MAC the link's unicast rule takes; any other is
+/// refused here, unsent, like a send the egress can't take, so it fails
+/// without counting as a resource loss.
 pub(super) fn admit_encoded(
     egress: &EndpointEgress,
-    mac: MacAddr,
+    routers: &Arc<SourceRouters>,
+    route: &SourceRoute,
     encoded: Vec<u8>,
     confirmed: bool,
     deadline: Instant,
-) -> Result<bacnet_endpoint_core::endpoint_ingress::EndpointSend, EndpointEgressAdmissionError> {
-    egress.admit_apdu(
+) -> (
+    Result<bacnet_endpoint_core::endpoint_ingress::EndpointSend, EndpointEgressAdmissionError>,
+    Hop,
+) {
+    let Some((destination, hop)) = routers.destination(route) else {
+        return (Err(EndpointEgressAdmissionError::Closed), Hop::none());
+    };
+    let sent = egress.admit_apdu(
         encoded,
-        EndpointApduDestination::Direct {
-            destination_mac: mac,
-        },
+        destination,
         confirmed,
-        NetworkPriority::NORMAL,
+        NetworkPriority::Normal,
         Vec::new(),
         Some(deadline),
-    )
+    );
+    (sent, hop)
 }
 
 /// Queue one encoded UnconfirmedAuditNotification for global broadcast
@@ -190,7 +210,7 @@ pub(super) fn admit_global_broadcast(
         encoded,
         EndpointApduDestination::GlobalBroadcast,
         false,
-        NetworkPriority::NORMAL,
+        NetworkPriority::Normal,
         Vec::new(),
         Some(deadline),
     )
@@ -201,30 +221,58 @@ type Reservation = (
     oneshot::Receiver<bacnet_server::server::CovAckResult>,
 );
 
+/// Wait for a queued record's outcome: whether it was delivered (sent, and
+/// for a confirmed one acknowledged). A delivery through a learned router
+/// that was lost, with no answer in time or a failed send, forgets the
+/// router ([`Hop::lost`]), but only once the send went out on the link. A
+/// peer's Error, Reject or Abort came back through it, and a send the local
+/// queue refused, expired in it or lost to shutdown never reached it, so
+/// none of those does; each still counts as undelivered.
 pub(super) async fn finish_send(
     sent: Result<
         bacnet_endpoint_core::endpoint_ingress::EndpointSend,
         EndpointEgressAdmissionError,
     >,
+    hop: Hop,
     reserved: Option<Reservation>,
     deadline: Instant,
 ) -> bool {
+    // Whether the egress began the send on the link: only then can a
+    // missing answer or a failed send be the router's.
+    let attempted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let went_out = || attempted.load(std::sync::atomic::Ordering::Acquire);
     let mut sent = Some(sent);
     let send = |_| {
         let sent = sent.take().expect("notifications have no retries");
-        async move { sent?.complete().await.result }
+        let attempted = Arc::clone(&attempted);
+        async move {
+            let outcome = sent?.complete().await;
+            attempted.store(outcome.attempted, std::sync::atomic::Ordering::Release);
+            outcome.result
+        }
     };
-    tokio::time::timeout_at(deadline, async {
+    // Delivered, and whether the router is to blame if not.
+    let (delivered, lost) = tokio::time::timeout_at(deadline, async {
         if let Some((operation, receiver)) = reserved {
-            run_notification_worker(operation, receiver, DEADLINE, 0, send).await
-                == NotificationWorkerResult::Ack
+            match run_notification_worker(operation, receiver, DEADLINE, 0, send).await {
+                NotificationWorkerResult::Ack => (true, false),
+                NotificationWorkerResult::Error(_) | NotificationWorkerResult::Closed => {
+                    (false, false)
+                }
+                NotificationWorkerResult::Exhausted => (false, went_out()),
+            }
         } else {
             let mut send = send;
-            send(0).await.is_ok()
+            let sent = send(0).await.is_ok();
+            (sent, !sent && went_out())
         }
     })
     .await
-    .unwrap_or(false)
+    .unwrap_or_else(|_| (false, went_out()));
+    if lost {
+        hop.lost();
+    }
+    delivered
 }
 
 /// Clause 18.7 local record codes; never communication-class Error PDUs.
@@ -233,41 +281,44 @@ pub(super) async fn finish_send(
 pub(super) fn result<T>(outcome: &Result<T, Error>) -> Option<(ErrorClass, ErrorCode)> {
     let error = outcome.as_ref().err()?;
     let code = match error {
-        Error::Protocol { class, code } => {
-            return Some(match (u16::try_from(*class), u16::try_from(*code)) {
-                (Ok(class), Ok(code)) => (ErrorClass::from_raw(class), ErrorCode::from_raw(code)),
-                _ => (ErrorClass::COMMUNICATION, ErrorCode::OTHER),
-            })
-        }
+        Error::Remote(RemoteError::Error { class, code }) => return Some((*class, *code)),
         Error::Timeout(_) => ErrorCode::TIMEOUT,
-        Error::Abort { reason } => match reason {
-            0 => ErrorCode::ABORT_OTHER,
-            1 => ErrorCode::ABORT_BUFFER_OVERFLOW,
-            2 => ErrorCode::ABORT_INVALID_APDU_IN_THIS_STATE,
-            3 => ErrorCode::ABORT_PREEMPTED_BY_HIGHER_PRIORITY_TASK,
-            4 => ErrorCode::ABORT_SEGMENTATION_NOT_SUPPORTED,
-            5 => ErrorCode::ABORT_SECURITY_ERROR,
-            6 => ErrorCode::ABORT_INSUFFICIENT_SECURITY,
-            7 => ErrorCode::ABORT_WINDOW_SIZE_OUT_OF_RANGE,
-            8 => ErrorCode::ABORT_APPLICATION_EXCEEDED_REPLY_TIME,
-            9 => ErrorCode::ABORT_OUT_OF_RESOURCES,
-            10 => ErrorCode::ABORT_TSM_TIMEOUT,
-            11 => ErrorCode::ABORT_APDU_TOO_LONG,
-            64..=255 => ErrorCode::ABORT_PROPRIETARY,
+        Error::Remote(RemoteError::Abort { reason }) => match *reason {
+            AbortReason::OTHER => ErrorCode::ABORT_OTHER,
+            AbortReason::BUFFER_OVERFLOW => ErrorCode::ABORT_BUFFER_OVERFLOW,
+            AbortReason::INVALID_APDU_IN_THIS_STATE => ErrorCode::ABORT_INVALID_APDU_IN_THIS_STATE,
+            AbortReason::PREEMPTED_BY_HIGHER_PRIORITY_TASK => {
+                ErrorCode::ABORT_PREEMPTED_BY_HIGHER_PRIORITY_TASK
+            }
+            AbortReason::SEGMENTATION_NOT_SUPPORTED => ErrorCode::ABORT_SEGMENTATION_NOT_SUPPORTED,
+            AbortReason::SECURITY_ERROR => ErrorCode::ABORT_SECURITY_ERROR,
+            AbortReason::INSUFFICIENT_SECURITY => ErrorCode::ABORT_INSUFFICIENT_SECURITY,
+            AbortReason::WINDOW_SIZE_OUT_OF_RANGE => ErrorCode::ABORT_WINDOW_SIZE_OUT_OF_RANGE,
+            AbortReason::APPLICATION_EXCEEDED_REPLY_TIME => {
+                ErrorCode::ABORT_APPLICATION_EXCEEDED_REPLY_TIME
+            }
+            AbortReason::OUT_OF_RESOURCES => ErrorCode::ABORT_OUT_OF_RESOURCES,
+            AbortReason::TSM_TIMEOUT => ErrorCode::ABORT_TSM_TIMEOUT,
+            AbortReason::APDU_TOO_LONG => ErrorCode::ABORT_APDU_TOO_LONG,
+            reason if reason.to_raw() >= 64 => ErrorCode::ABORT_PROPRIETARY,
             _ => ErrorCode::OTHER,
         },
-        Error::Reject { reason } => match reason {
-            0 => ErrorCode::REJECT_OTHER,
-            1 => ErrorCode::REJECT_BUFFER_OVERFLOW,
-            2 => ErrorCode::REJECT_INCONSISTENT_PARAMETERS,
-            3 => ErrorCode::REJECT_INVALID_PARAMETER_DATA_TYPE,
-            4 => ErrorCode::REJECT_INVALID_TAG,
-            5 => ErrorCode::REJECT_MISSING_REQUIRED_PARAMETER,
-            6 => ErrorCode::REJECT_PARAMETER_OUT_OF_RANGE,
-            7 => ErrorCode::REJECT_TOO_MANY_ARGUMENTS,
-            8 => ErrorCode::REJECT_UNDEFINED_ENUMERATION,
-            9 => ErrorCode::REJECT_UNRECOGNIZED_SERVICE,
-            64..=255 => ErrorCode::REJECT_PROPRIETARY,
+        Error::Remote(RemoteError::Reject { reason }) => match *reason {
+            RejectReason::OTHER => ErrorCode::REJECT_OTHER,
+            RejectReason::BUFFER_OVERFLOW => ErrorCode::REJECT_BUFFER_OVERFLOW,
+            RejectReason::INCONSISTENT_PARAMETERS => ErrorCode::REJECT_INCONSISTENT_PARAMETERS,
+            RejectReason::INVALID_PARAMETER_DATA_TYPE => {
+                ErrorCode::REJECT_INVALID_PARAMETER_DATA_TYPE
+            }
+            RejectReason::INVALID_TAG => ErrorCode::REJECT_INVALID_TAG,
+            RejectReason::MISSING_REQUIRED_PARAMETER => {
+                ErrorCode::REJECT_MISSING_REQUIRED_PARAMETER
+            }
+            RejectReason::PARAMETER_OUT_OF_RANGE => ErrorCode::REJECT_PARAMETER_OUT_OF_RANGE,
+            RejectReason::TOO_MANY_ARGUMENTS => ErrorCode::REJECT_TOO_MANY_ARGUMENTS,
+            RejectReason::UNDEFINED_ENUMERATION => ErrorCode::REJECT_UNDEFINED_ENUMERATION,
+            RejectReason::UNRECOGNIZED_SERVICE => ErrorCode::REJECT_UNRECOGNIZED_SERVICE,
+            reason if reason.to_raw() >= 64 => ErrorCode::REJECT_PROPRIETARY,
             _ => ErrorCode::OTHER,
         },
         _ => ErrorCode::OTHER,
@@ -278,61 +329,123 @@ pub(super) fn result<T>(outcome: &Result<T, Error>) -> Option<(ErrorClass, Error
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A learned router and a send through it.
+    fn through_router() -> (Arc<SourceRouters>, Hop) {
+        let routers = Arc::new(SourceRouters::default());
+        routers.track(2);
+        routers.learn_for_test(2, &[0xFE]);
+        let route = SourceRoute::Routed {
+            network: 2,
+            mac: MacAddr::from_slice(&[5]),
+        };
+        let (destination, hop) = routers.destination(&route).unwrap();
+        assert!(matches!(
+            destination,
+            EndpointApduDestination::Routed { router_mac, .. } if router_mac.as_slice() == [0xFE]
+        ));
+        (routers, hop)
+    }
+
+    /// A send the local queue refused never reached the router: the record
+    /// is undelivered, and the router stays (#2371).
+    #[tokio::test(start_paused = true)]
+    async fn a_full_local_queue_keeps_the_learned_router() {
+        let (routers, hop) = through_router();
+        let deadline = Instant::now() + DEADLINE;
+        let sent = Err(EndpointEgressAdmissionError::QueueFull);
+        assert!(!finish_send(sent, hop, None, deadline).await);
+        assert_eq!(routers.router(2).as_deref(), Some(&[0xFE][..]));
+    }
+
+    /// A routed record for a network that has become this one goes direct
+    /// only to a MAC the link's unicast rule takes: this node's own, the
+    /// one-octet broadcast and a MAC of another length have no destination.
+    #[test]
+    fn a_record_for_this_network_meets_the_links_unicast_rule() {
+        let routers = Arc::new(SourceRouters::default());
+        let number = bacnet_network::network_number::LocalNetworkNumber::default();
+        number.publish(bacnet_types::network_number::NetworkNumber::configured(7).unwrap());
+        let link = super::recipient::SourceLink::Other {
+            local: MacAddr::from_slice(&[1]),
+            groups: bacnet_transport::port::GroupDestinations::unknown(),
+        };
+        routers.finalize(link, number);
+        let to = |mac: &[u8]| {
+            routers
+                .destination(&SourceRoute::Routed {
+                    network: 7,
+                    mac: MacAddr::from_slice(mac),
+                })
+                .map(|(destination, _)| destination)
+        };
+        assert_eq!(
+            to(&[5]),
+            Some(EndpointApduDestination::Direct {
+                destination_mac: MacAddr::from_slice(&[5]),
+            })
+        );
+        for refused in [&[1][..], &[0xFF], &[5, 5]] {
+            assert_eq!(to(refused), None, "{refused:?}");
+        }
+    }
+
+    /// A lost delivery forgets its router only while it is still the one
+    /// learned: one learned since stays.
+    #[test]
+    fn a_lost_hop_forgets_only_its_own_router() {
+        let (routers, hop) = through_router();
+        hop.lost();
+        assert_eq!(routers.router(2), None);
+        let (routers, hop) = through_router();
+        routers.learn_for_test(2, &[0xFD]);
+        hop.lost();
+        assert_eq!(routers.router(2).as_deref(), Some(&[0xFD][..]));
+    }
     #[test]
     fn source_audit_result_codes_preserve_peer_errors_and_cover_reason_boundaries() {
         let abort_codes = [56, 51, 52, 53, 54, 136, 135, 127, 124, 125, 126, 123];
         let reject_codes = [69, 59, 60, 61, 62, 63, 64, 65, 66, 67];
         for (reason, code) in abort_codes.into_iter().enumerate() {
             assert_eq!(
-                result::<()>(&Err(Error::Abort {
-                    reason: reason as u8
-                })),
+                result::<()>(&Err(Error::abort(AbortReason::from_raw(reason as u8)))),
                 Some((ErrorClass::COMMUNICATION, ErrorCode::from_raw(code)))
             );
         }
         for (reason, code) in reject_codes.into_iter().enumerate() {
             assert_eq!(
-                result::<()>(&Err(Error::Reject {
-                    reason: reason as u8
-                })),
+                result::<()>(&Err(Error::reject(RejectReason::from_raw(reason as u8)))),
                 Some((ErrorClass::COMMUNICATION, ErrorCode::from_raw(code)))
             );
         }
         for reason in [12, 63] {
             assert_eq!(
-                result::<()>(&Err(Error::Abort { reason })),
+                result::<()>(&Err(Error::abort(AbortReason::from_raw(reason)))),
                 Some((ErrorClass::COMMUNICATION, ErrorCode::OTHER))
             );
         }
         for reason in [10, 11, 63] {
             assert_eq!(
-                result::<()>(&Err(Error::Reject { reason })),
+                result::<()>(&Err(Error::reject(RejectReason::from_raw(reason)))),
                 Some((ErrorClass::COMMUNICATION, ErrorCode::OTHER))
             );
         }
         for reason in [64, 255] {
             assert_eq!(
-                result::<()>(&Err(Error::Abort { reason })),
+                result::<()>(&Err(Error::abort(AbortReason::from_raw(reason)))),
                 Some((ErrorClass::COMMUNICATION, ErrorCode::ABORT_PROPRIETARY))
             );
             assert_eq!(
-                result::<()>(&Err(Error::Reject { reason })),
+                result::<()>(&Err(Error::reject(RejectReason::from_raw(reason)))),
                 Some((ErrorClass::COMMUNICATION, ErrorCode::REJECT_PROPRIETARY))
             );
         }
         assert_eq!(
-            result::<()>(&Err(Error::Protocol {
-                class: 512,
-                code: 513
-            })),
+            result::<()>(&Err(Error::protocol(
+                ErrorClass::from_raw(512),
+                ErrorCode::from_raw(513)
+            ))),
             Some((ErrorClass::from_raw(512), ErrorCode::from_raw(513)))
-        );
-        assert_eq!(
-            result::<()>(&Err(Error::Protocol {
-                class: u32::MAX,
-                code: 513
-            })),
-            Some((ErrorClass::COMMUNICATION, ErrorCode::OTHER))
         );
         assert_eq!(result(&Ok(())), None);
     }

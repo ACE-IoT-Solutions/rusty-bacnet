@@ -21,7 +21,7 @@ impl BACnetServer {
         dcc_password=None,
         reinit_password=None,
         *,
-        mutation_policy="permissive",
+        mutation_policy=crate::mutation_policy::MutationSetting::default(),
         dcc_policy="deny_all",
         dcc_source_restriction=None,
         dcc_disable_rate_limit=None,
@@ -31,6 +31,11 @@ impl BACnetServer {
         mstp_max_master=127,
         mstp_max_info_frames=1,
         mstp_extended_frames=false,
+        mstp_echo=false,
+        mstp_echo_grace_ms=None,
+        mstp_transmit_latency_pad_ms=None,
+        mstp_usage_timeout_ms=None,
+        mstp_reply_timeout_ms=None,
         max_confirmed_in_flight=64,
         max_unconfirmed_in_flight=32,
         max_confirmed_in_flight_per_peer=16,
@@ -59,8 +64,17 @@ impl BACnetServer {
         cov_policy=None,
         time_sync_policy=None,
         share_port_by_address=false,
+        share_wildcard_port=false,
         segmentation_supported=crate::types::PySegmentation { inner: bacnet_types::enums::Segmentation::NONE },
-        apdu_segment_timeout_ms=5000
+        apdu_segment_timeout_ms=5000,
+        bbmd=None,
+        foreign_device=None,
+        multicast=None,
+        sc_npdu_per_origin_limit=None,
+        sc_control_rate_limit=None,
+        on_reinitialize=None,
+        after_reinitialize=None,
+        router=None
     ))]
     fn new(
         device_instance: u32,
@@ -79,7 +93,8 @@ impl BACnetServer {
         ipv6_interface: Option<String>,
         dcc_password: Option<String>,
         reinit_password: Option<String>,
-        mutation_policy: &str,
+        #[pyo3(from_py_with = crate::mutation_policy::parse)]
+        mutation_policy: crate::mutation_policy::MutationSetting,
         dcc_policy: &str,
         dcc_source_restriction: Option<Vec<(Option<u16>, Vec<u8>)>>,
         dcc_disable_rate_limit: Option<(u32, u64)>,
@@ -89,6 +104,11 @@ impl BACnetServer {
         mstp_max_master: u8,
         mstp_max_info_frames: u8,
         mstp_extended_frames: bool,
+        mstp_echo: bool,
+        mstp_echo_grace_ms: Option<u32>,
+        mstp_transmit_latency_pad_ms: Option<u32>,
+        mstp_usage_timeout_ms: Option<u32>,
+        mstp_reply_timeout_ms: Option<u32>,
         max_confirmed_in_flight: usize,
         max_unconfirmed_in_flight: usize,
         max_confirmed_in_flight_per_peer: usize,
@@ -117,16 +137,56 @@ impl BACnetServer {
         cov_policy: Option<&Bound<'_, pyo3::types::PyDict>>,
         time_sync_policy: Option<&Bound<'_, pyo3::types::PyDict>>,
         share_port_by_address: bool,
+        share_wildcard_port: bool,
         segmentation_supported: crate::types::PySegmentation,
         apdu_segment_timeout_ms: u64,
+        bbmd: Option<PyRef<'_, crate::bip_options::PyBbmd>>,
+        foreign_device: Option<PyRef<'_, crate::bip_options::PyForeignDevice>>,
+        multicast: Option<PyRef<'_, crate::bip_options::PyMulticast>>,
+        sc_npdu_per_origin_limit: Option<usize>,
+        sc_control_rate_limit: Option<(u32, u32)>,
+        on_reinitialize: Option<&Bound<'_, PyAny>>,
+        after_reinitialize: Option<&Bound<'_, PyAny>>,
+        router: Option<PyRef<'_, crate::router::PyBACnetRouter>>,
     ) -> PyResult<Self> {
+        // The same check the endpoints make through their identity: an
+        // instance past 4194303, or 4194303 itself, which no object may
+        // have (#2171), is a ValueError now rather than a failed start().
+        bacnet_objects::DeviceIdentity::new(device_instance, 555)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let router = crate::router::application::stack_router(
+            transport,
+            router,
+            crate::router::application::Role::Server,
+            apdu_segment_timeout_ms,
+            "apdu_segment_timeout_ms",
+        )?;
+        let reinitialize = crate::reinitialize::parse(on_reinitialize, after_reinitialize)?;
+        let sc_npdu_admission_policy =
+            crate::sc_npdu::policy(transport, sc_npdu_per_origin_limit, sc_control_rate_limit)?;
         let segmentation_supported = super::constructor_budgets::segmentation(
             segmentation_supported,
             apdu_segment_timeout_ms,
         )?;
-        crate::bip_options::only_on_bip(share_port_by_address, transport)?;
+        crate::bip_options::only_on_bip("share_port_by_address", share_port_by_address, transport)?;
+        crate::bip_options::only_on_bip("share_wildcard_port", share_wildcard_port, transport)?;
+        let crate::bip_options::IpModes {
+            bip: bip_mode,
+            bip6_foreign,
+        } = crate::bip_options::ip_modes(transport, bbmd, foreign_device)?;
+        let multicast = crate::bip_options::bip_multicast(
+            transport,
+            interface,
+            port,
+            share_port_by_address,
+            &bip_mode,
+            multicast,
+        )?;
         super::constructor_budgets::registered_network_port(registered_network_port, transport)?;
-        let mutation_policy = super::constructor_budgets::mutation_policy(mutation_policy)?;
+        let crate::mutation_policy::MutationSetting {
+            mode: mutation_policy,
+            callback: mutation_callback,
+        } = mutation_policy;
         let super::constructor_budgets::DccConfiguration {
             policy: dcc_policy,
             source_restriction: dcc_source_restriction,
@@ -137,6 +197,7 @@ impl BACnetServer {
             dcc_source_restriction,
             dcc_disable_rate_limit,
         )?;
+        crate::reinitialize::password_limit("reinit_password", &reinit_password)?;
         let super::constructor_budgets::Budgets {
             request_admission_policy,
             read_property_multiple_budget,
@@ -193,28 +254,44 @@ impl BACnetServer {
             port,
             broadcast_address: broadcast_address.to_string(),
             share_port_by_address,
+            share_wildcard_port,
+            bip_mode,
+            bip6_foreign,
+            multicast,
             registered_network_port,
             sc_hub,
             sc_vmac,
             sc_device_uuid,
+            sc_npdu_admission_policy,
             sc_ca_cert,
             sc_client_cert,
             sc_client_key,
             sc_heartbeat_interval_ms,
             sc_heartbeat_timeout_ms,
             ipv6_interface,
-            serial_port,
-            mstp_baud,
-            mstp_mac,
-            mstp_max_master,
-            mstp_max_info_frames,
-            mstp_extended_frames,
+            mstp: crate::mstp_py::MstpOptions {
+                serial_port,
+                baud: mstp_baud,
+                mac: mstp_mac,
+                max_master: mstp_max_master,
+                max_info_frames: mstp_max_info_frames,
+                extended_frames: mstp_extended_frames,
+                echo: mstp_echo,
+                echo_grace_ms: mstp_echo_grace_ms,
+                timing: crate::mstp_py::MstpTiming {
+                    transmit_latency_pad_ms: mstp_transmit_latency_pad_ms,
+                    usage_timeout_ms: mstp_usage_timeout_ms,
+                    reply_timeout_ms: mstp_reply_timeout_ms,
+                },
+            },
             dcc_password,
             mutation_policy,
+            mutation_callback,
             dcc_policy,
             dcc_source_restriction,
             dcc_disable_rate_limit,
             reinit_password,
+            reinitialize,
             request_admission_policy,
             read_property_multiple_budget,
             get_alarm_summary_budget,
@@ -234,6 +311,7 @@ impl BACnetServer {
             pending_objects: std::sync::Mutex::new(Vec::new()),
             pending_forwarder_save_counters: std::sync::Mutex::new(Vec::new()),
             forwarder_save_counters: Arc::new(std::sync::Mutex::new(Vec::new())),
+            router,
         })
     }
 

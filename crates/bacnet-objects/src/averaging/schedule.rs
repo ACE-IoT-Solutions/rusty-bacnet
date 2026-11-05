@@ -7,9 +7,9 @@
 //! moment it was last reset: Attempted_Samples reaches Window_Samples only once
 //! that much time has passed (Clause 12.5.11).
 
-use std::fmt;
-use std::sync::Arc;
-use std::time::Duration;
+use alloc::sync::Arc;
+use core::fmt;
+use core::time::Duration;
 
 use crate::traits::MonotonicClock;
 
@@ -55,6 +55,10 @@ impl SampleSchedule {
             .clock
             .as_ref()
             .map(|clock| clock().saturating_add(period));
+    }
+
+    pub(super) fn clock(&self) -> Option<&Arc<MonotonicClock>> {
+        self.clock.as_ref()
     }
 
     pub(super) fn next_due(&self) -> Option<Duration> {

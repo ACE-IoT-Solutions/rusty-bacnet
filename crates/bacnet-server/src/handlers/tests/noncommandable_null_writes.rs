@@ -6,7 +6,7 @@
 //! datatype has a NULL still stores it.
 
 use super::*;
-use crate::handlers::relinquish::null_in_datatype;
+use PropertyIdentifier as P;
 use bacnet_objects::access_control::{AccessCredentialObject, AccessRightsObject};
 use bacnet_objects::analog::{AnalogOutputObject, AnalogValueObject};
 use bacnet_objects::command_source::CommandOrigin;
@@ -17,7 +17,8 @@ use bacnet_objects::schedule::{CalendarObject, ScheduleObject};
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_types::constructed::BACnetPortPermission;
-use PropertyIdentifier as P;
+use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::error::RemoteError;
 
 /// One application NULL, the whole value.
 const NULL: &[u8] = &[0x00];
@@ -74,11 +75,13 @@ fn db() -> ObjectDatabase {
     let mut credential = AccessCredentialObject::new(1, "CRED-1").unwrap();
     credential.set_global_identifier(7);
     db.add(Box::new(credential)).unwrap();
-    let mut input = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut input = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     input.set_description("kept");
     db.add(Box::new(input)).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     db.add(Box::new(CalendarObject::new(1, "CAL-1").unwrap()))
         .unwrap();
     db.add(Box::new(NotificationClass::new(1, "NC-1").unwrap()))
@@ -102,8 +105,10 @@ fn db() -> ObjectDatabase {
         ScheduleObject::new(1, "SCH-1", PropertyValue::Real(1.0)).unwrap(),
     ))
     .unwrap();
-    db.add(Box::new(AnalogValueObject::new(99, "AV-99", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogValueObject::new(99, "AV-99", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     // One positive rule, so the array has an element 1.
     wp(
         &mut db,
@@ -148,12 +153,10 @@ fn wp_from(
     priority: Option<u8>,
 ) -> Result<Applied, Error> {
     let request = request(oid, property, index, value, priority);
-    handle_write_property_observed(db, &request, None, None, Some(origin)).map(
-        |(written, applied)| {
-            assert_eq!(written, oid);
-            applied
-        },
-    )
+    write::write_property(db, &request, None, None, Some(origin)).map(|(written, applied)| {
+        assert_eq!(written, oid);
+        applied
+    })
 }
 
 fn wp(
@@ -209,8 +212,8 @@ fn read(db: &ObjectDatabase, oid: ObjectIdentifier, property: P) -> Vec<u8> {
 
 fn assert_error(result: Result<impl std::fmt::Debug, Error>, class: ErrorClass, code: ErrorCode) {
     assert!(
-        matches!(&result, Err(Error::Protocol { class: c, code: e })
-            if *c == class.to_raw() as u32 && *e == code.to_raw() as u32),
+        matches!(&result, Err(Error::Remote(RemoteError::Error { class: c, code: e }))
+            if *c == class && *e == code),
         "expected {class:?} / {code:?}, got {result:?}"
     );
 }
@@ -461,65 +464,4 @@ fn null_to_value_source_needs_the_command_owner() {
         ErrorCode::WRITE_ACCESS_DENIED,
     );
     assert_eq!(read(&db, ao(), P::VALUE_SOURCE), before);
-}
-
-#[test]
-fn null_in_datatype_names_the_choices_with_an_application_null() {
-    for (object_type, property, index, expected) in [
-        (ObjectType::SCHEDULE, P::PRESENT_VALUE, None, true),
-        (ObjectType::CHANNEL, P::PRESENT_VALUE, None, true),
-        (ObjectType::ANALOG_VALUE, P::PRESENT_VALUE, None, false),
-        (ObjectType::SCHEDULE, P::SCHEDULE_DEFAULT, None, true),
-        (
-            ObjectType::CHARACTERSTRING_VALUE,
-            P::ALARM_VALUES,
-            Some(1),
-            true,
-        ),
-        (ObjectType::MULTI_STATE_INPUT, P::ALARM_VALUES, None, false),
-        (ObjectType::TIMER, P::STATE_CHANGE_VALUES, Some(3), true),
-        // Index 0 is the array's size.
-        (ObjectType::TIMER, P::STATE_CHANGE_VALUES, Some(0), false),
-        (
-            ObjectType::NOTIFICATION_FORWARDER,
-            P::PROCESS_IDENTIFIER_FILTER,
-            None,
-            true,
-        ),
-        (ObjectType::TREND_LOG, P::CLIENT_COV_INCREMENT, None, true),
-        (ObjectType::LOOP, P::LOW_DIFF_LIMIT, None, true),
-        (
-            ObjectType::AUDIT_REPORTER,
-            P::MONITORED_OBJECTS,
-            Some(1),
-            true,
-        ),
-        (
-            ObjectType::ANALOG_OUTPUT,
-            P::AUDIT_PRIORITY_FILTER,
-            None,
-            true,
-        ),
-        (ObjectType::ANALOG_OUTPUT, P::PRIORITY_ARRAY, Some(1), true),
-        // Context-tagged NULL members are no application NULL.
-        (ObjectType::ANALOG_OUTPUT, P::VALUE_SOURCE, None, false),
-        (
-            ObjectType::EVENT_ENROLLMENT,
-            P::FAULT_PARAMETERS,
-            None,
-            false,
-        ),
-        (
-            ObjectType::ACCESS_CREDENTIAL,
-            P::GLOBAL_IDENTIFIER,
-            None,
-            false,
-        ),
-    ] {
-        assert_eq!(
-            null_in_datatype(object_type, property, index),
-            expected,
-            "{object_type:?} {property:?} {index:?}"
-        );
-    }
 }

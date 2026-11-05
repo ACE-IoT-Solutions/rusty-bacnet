@@ -2,7 +2,7 @@ use super::*;
 use crate::object_profile::{ObjectProfile, ProfileState, TagsPersistence};
 use crate::present_value_access::PresentValueAccess;
 use crate::property_metadata::PropertyMetadata;
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 mod metadata;
 
@@ -37,6 +37,10 @@ pub struct MultiStateValueObject {
     /// event-state-machine evaluation under Clause 13.2.2.1.
     event_detection_enable: bool,
     pub(crate) event_history: EventHistory,
+    /// The reporting settings a write set, kept in storage once the
+    /// object opts in (#2331).
+    #[cfg(feature = "event-reporting")]
+    reporting_store: crate::write_config::reporting::ReportingStore,
     /// Implemented paired command-source tracking (Clause 19.5).
     value_source: crate::command_source::ValueSourceTracking,
     /// The last writer of a noncommandable Present_Value, once tracked (#1552).
@@ -89,6 +93,8 @@ impl MultiStateValueObject {
             event_detector: ChangeOfStateDetector::default(),
             event_detection_enable: true,
             event_history: EventHistory::default(),
+            #[cfg(feature = "event-reporting")]
+            reporting_store: Default::default(),
             value_source: crate::command_source::ValueSourceTracking::default(),
             write_source: crate::command_source::SingleValueSource::default(),
         })
@@ -130,11 +136,6 @@ impl MultiStateValueObject {
     /// [`AnalogValueObject::set_value_source_tracking`]: crate::analog::AnalogValueObject::set_value_source_tracking
     pub fn set_value_source_tracking(&mut self, enabled: bool) {
         self.write_source.set_enabled(enabled);
-    }
-
-    /// Set the description string.
-    pub fn set_description(&mut self, desc: impl Into<String>) {
-        self.description = desc.into();
     }
 
     fn recalculate_present_value(&mut self) {
@@ -270,6 +271,8 @@ impl MultiStateValueObject {
     }
 }
 
+crate::write_config::reporting::impl_reporting_persistence!(MultiStateValueObject);
+
 impl BACnetObject for MultiStateValueObject {
     fn object_identifier(&self) -> ObjectIdentifier {
         self.oid
@@ -279,42 +282,16 @@ impl BACnetObject for MultiStateValueObject {
         &self.name
     }
 
-    fn supports_cov(&self) -> bool {
-        true
-    }
+    crate::traits::lend_cov_reporting!();
 
-    crate::event::impl_builtin_intrinsic_reporting!(
-        event_detector,
-        event_history,
-        [present_value],
-        reliability,
-        event_detection_enable,
-        ChangeOfStateDetector::ALGORITHM
-    );
-
-    fn acknowledge_alarm_correlated_internal(
-        &mut self,
-        event_state: EventState,
-        timestamp: &BACnetTimeStamp,
-    ) -> Result<(), Error> {
-        if !self.event_detection_enable {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
-            });
-        }
-        self.event_history.acknowledge_correlated(
-            &mut self.event_detector.acked_transitions,
-            event_state,
-            timestamp,
-        )
-    }
+    crate::traits::lend_event_reporting!();
 
     fn read_property(
         &self,
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if metadata::excludes(self, property) {
             return Err(common::unknown_property_error());
         }
@@ -408,13 +385,7 @@ impl BACnetObject for MultiStateValueObject {
         priority: Option<u8>,
         origin: &crate::command_source::CommandOrigin,
     ) -> Result<(), Error> {
-        if matches!(
-            property,
-            PropertyIdentifier::PRESENT_VALUE | PropertyIdentifier::VALUE_SOURCE
-        ) && array_index.is_some()
-        {
-            return Err(common::property_is_not_an_array_error());
-        }
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if property == PropertyIdentifier::VALUE_SOURCE {
             return match self.access {
                 PresentValueAccess::Commandable => {
@@ -457,6 +428,8 @@ impl BACnetObject for MultiStateValueObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        crate::write_config::reporting::admit(self, property, array_index, &value)?;
         if metadata::excludes(self, property) {
             return Err(common::unknown_property_error());
         }
@@ -567,33 +540,28 @@ impl BACnetObject for MultiStateValueObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
-        self.profile.capability()
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: std::time::Duration) -> bool {
-        self.profile.expire(now);
-        false
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.durable_capability()
     }
 
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
+    crate::traits::lend_reliability_eval!();
 
-    fn is_createable(&self) -> bool {
-        true
+    fn local_input(&mut self) -> Option<&mut dyn crate::traits::LocalInput> {
+        Some(self)
     }
-    fn creation_only_properties(&self) -> &'static [PropertyIdentifier] {
-        CREATION_ONLY
-    }
+}
+
+impl crate::creation::Creatable for MultiStateValueObject {
+    const CREATION_ONLY_PROPERTIES: &'static [PropertyIdentifier] = CREATION_ONLY;
+
     fn initialize_property(
         &mut self,
         property: PropertyIdentifier,
@@ -610,7 +578,12 @@ impl BACnetObject for MultiStateValueObject {
         let _ = self.recompute_reliability();
         Ok(())
     }
-    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
+}
+
+impl crate::traits::CovReporting for MultiStateValueObject {}
+
+impl crate::traits::ReliabilityEval for MultiStateValueObject {
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
         if self.out_of_service || self.reliability_inhibit.enabled() {
             return Err(common::write_access_denied_error());
         }
@@ -622,15 +595,49 @@ impl BACnetObject for MultiStateValueObject {
         Ok(())
     }
 
-    fn evaluate_reliability_internal(&mut self) -> Result<ReliabilityEvaluation, Error> {
+    fn evaluate_reliability(&mut self) -> Result<ReliabilityEvaluation, Error> {
         Ok(self.recompute_reliability())
     }
 
-    fn set_present_value_internal(&mut self, value: PropertyValue) -> Result<(), Error> {
+    fn reliability_evaluation_inhibited(&self) -> bool {
+        self.reliability_inhibit.enabled()
+    }
+}
+
+crate::event::impl_builtin_intrinsic_reporting!(
+    MultiStateValueObject,
+    event_detector,
+    event_history,
+    [present_value],
+    reliability,
+    event_detection_enable,
+    ChangeOfStateDetector::ALGORITHM
+);
+
+/// The Present_Value the application supplies while it isn't commandable,
+/// published as Value_Source from `origin` when the object tracks its
+/// source (#1552).
+impl crate::traits::LocalInput for MultiStateValueObject {
+    fn apply_local_input(&mut self, input: crate::traits::LocalInputValue) -> Result<(), Error> {
+        let crate::traits::LocalInputValue::PresentValue { value, origin } = input else {
+            return Err(crate::traits::not_supported());
+        };
+        let Some(origin) = origin else {
+            return self.apply_local_present_value(value);
+        };
+        self.write_source.admit(&origin)?;
+        self.apply_local_present_value(value)?;
+        self.write_source.record(&origin);
+        Ok(())
+    }
+}
+
+impl MultiStateValueObject {
+    /// The application's Present_Value, refused while it's commandable or
+    /// Out_Of_Service is TRUE.
+    fn apply_local_present_value(&mut self, value: PropertyValue) -> Result<(), Error> {
         match self.access {
-            PresentValueAccess::Commandable => {
-                Err(common::optional_functionality_not_supported_error())
-            }
+            PresentValueAccess::Commandable => Err(crate::traits::not_supported()),
             _ if self.out_of_service => Err(common::write_access_denied_error()),
             PresentValueAccess::ReadOnly | PresentValueAccess::Writable => {
                 self.set_present_value_directly(value)?;
@@ -639,26 +646,12 @@ impl BACnetObject for MultiStateValueObject {
             }
         }
     }
-
-    fn set_present_value_from_internal(
-        &mut self,
-        value: PropertyValue,
-        origin: &crate::command_source::CommandOrigin,
-    ) -> Result<(), Error> {
-        self.write_source.admit(origin)?;
-        self.set_present_value_internal(value)?;
-        self.write_source.record(origin);
-        Ok(())
-    }
-
-    fn reliability_evaluation_inhibited_internal(&self) -> bool {
-        self.reliability_inhibit.enabled()
-    }
 }
 
 #[cfg(test)]
 mod detection_enable_tests {
     use super::*;
+    use crate::traits::EventReporting as _;
 
     #[test]
     fn msv_detection_enable_resets_and_gates_intrinsic_reporting() {
@@ -719,10 +712,14 @@ mod detection_enable_tests {
             msv.event_detector.pending.is_none(),
             "evaluate/tick re-armed a countdown while detection is disabled"
         );
-        assert!(msv
-            .property_list()
-            .contains(&PropertyIdentifier::EVENT_DETECTION_ENABLE));
-        assert!(msv.is_writable_property(PropertyIdentifier::EVENT_DETECTION_ENABLE));
+        assert!(crate::property_metadata::has_property(
+            &msv.property_metadata(),
+            PropertyIdentifier::EVENT_DETECTION_ENABLE
+        ));
+        assert!(crate::property_metadata::is_writable_property(
+            &msv,
+            PropertyIdentifier::EVENT_DETECTION_ENABLE
+        ));
     }
 }
 
@@ -737,14 +734,20 @@ mod reliability_evaluator_tests {
         msv.present_value = 3;
         msv.event_detector.alarm_values = vec![3];
 
-        msv.evaluate_reliability_internal().unwrap();
+        msv.reliability_eval()
+            .unwrap()
+            .evaluate_reliability()
+            .unwrap();
         assert_eq!(
             msv.reliability,
             Reliability::CONFIGURATION_ERROR,
             "invalid configuration must dominate invalid Present_Value"
         );
         msv.event_detector.alarm_values = vec![1];
-        msv.evaluate_reliability_internal().unwrap();
+        msv.reliability_eval()
+            .unwrap()
+            .evaluate_reliability()
+            .unwrap();
         assert_eq!(msv.reliability, Reliability::MULTI_STATE_OUT_OF_RANGE);
         msv.set_number_of_states(3).unwrap();
         assert_eq!(

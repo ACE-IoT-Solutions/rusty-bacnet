@@ -8,6 +8,7 @@
 use super::*;
 use bacnet_objects::access_control::{AccessCredentialObject, AccessDoorObject};
 use bacnet_types::enums::{BinaryPV, DoorValue};
+use bacnet_types::error::RemoteError;
 
 fn db_with(object: Box<dyn BACnetObject>) -> (ObjectDatabase, ObjectIdentifier) {
     let oid = object.object_identifier();
@@ -58,9 +59,9 @@ fn read_wire(
 
 fn assert_property_error<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == expected.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == expected),
         "expected PROPERTY/{expected:?}, got {result:?}"
     );
 }

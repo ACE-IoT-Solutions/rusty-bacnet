@@ -7,7 +7,9 @@ fn write_database(confirmed: bool) -> ObjectDatabase {
     let mut db = database(confirmed);
     db.get_mut(&selected())
         .unwrap()
-        .configure_audit_reporter_internal(
+        .audit_reporter_mut()
+        .expect("an Audit Reporter")
+        .configure(
             AuditLevel::AUDIT_ALL,
             AuditOperationFlags::from_bits(2).unwrap(),
             confirmed,
@@ -38,7 +40,7 @@ fn write_ack(invoke_id: u8, _: &WritePropertyRequest) -> Apdu {
     })
 }
 fn start_write(
-    session: &EndpointSession<BipTransport>,
+    session: &EndpointSession<BusPort>,
     mac: &[u8],
     property: PropertyIdentifier,
     index: Option<u32>,
@@ -54,7 +56,7 @@ fn start_write(
     )
 }
 fn write_value(
-    session: &EndpointSession<BipTransport>,
+    session: &EndpointSession<BusPort>,
     mac: &[u8],
     property: PropertyIdentifier,
     index: Option<u32>,
@@ -81,7 +83,7 @@ fn write_value(
     })
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_write_wire_identity_value_boundaries_and_terminal_results() {
     let (mut peer, mut requests) = network().await;
     let (mut sink, mut records) = network().await;
@@ -202,7 +204,7 @@ async fn source_write_wire_identity_value_boundaries_and_terminal_results() {
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_write_commandability_priority_policy_matrix() {
     let (mut peer, mut requests) = network().await;
     let (mut sink, mut records) = network().await;
@@ -300,7 +302,9 @@ async fn source_write_commandability_priority_policy_matrix() {
             .await
             .get_mut(&selected())
             .unwrap()
-            .configure_audit_reporter_internal(
+            .audit_reporter_mut()
+            .expect("an Audit Reporter")
+            .configure(
                 level,
                 AuditOperationFlags::from_bits(operations).unwrap(),
                 false,
@@ -334,9 +338,11 @@ async fn source_write_commandability_priority_policy_matrix() {
                 );
                 assert_eq!(record.target_value, Some(value));
             } else {
-                assert!(timeout(Duration::from_millis(15), records.recv())
-                    .await
-                    .is_err());
+                assert!(
+                    timeout(Duration::from_millis(15), records.recv())
+                        .await
+                        .is_err()
+                );
             }
         }
     }

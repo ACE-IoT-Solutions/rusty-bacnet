@@ -14,8 +14,8 @@
 //!
 //! # Extended frames
 //!
-//! Types 32 and 33 ([`FrameType::BACnetExtendedDataExpectingReply`] and
-//! [`FrameType::BACnetExtendedDataNotExpectingReply`]) carry NPDUs too long
+//! Types 32 and 33 ([`FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY`] and
+//! [`FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY`]) carry NPDUs too long
 //! for a standard frame (Clauses 9.3.9, 9.3.10).
 //! On the wire their data is COBS-encoded with a CRC-32K, so no preamble can
 //! appear inside them (Clause 9.10), and the header's Length counts the two
@@ -84,14 +84,14 @@
 //! - `heapless`: for `heapless::Vec<u8, N>`.
 //! - `crc32k-table`: works out the CRC-32K with a 256-entry table, about
 //!   1 KiB more flash than the default 16-entry one and half the lookups (see
-//!   [`crc32k`]).
+//!   [`crc::crc32k`]).
 //!
 //! # Example
 //!
 //! ```
 //! use bacnet_mstp_codec::{decode_frame, Frame, FrameType, MAX_STANDARD_FRAME_LENGTH};
 //!
-//! let frame = Frame::new(FrameType::BACnetDataNotExpectingReply, 0x10, 0x05, &[0x01, 0x00]);
+//! let frame = Frame::new(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 0x10, 0x05, &[0x01, 0x00]);
 //! let mut wire = [0u8; MAX_STANDARD_FRAME_LENGTH];
 //! let length = frame.encode_into(&mut wire)?;
 //!
@@ -102,27 +102,25 @@
 //! ```
 
 #![no_std]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
+#![warn(missing_debug_implementations, clippy::must_use_candidate)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
 mod cobs;
-mod crc;
+pub mod crc;
 mod decode;
 mod error;
 mod frame;
 mod sink;
 mod stream;
 
-pub use crc::{
-    crc16, crc16_accumulate_all, crc16_valid, crc32k, crc32k_accumulate_all, crc8,
-    crc8_accumulate_all, crc8_valid,
-};
 pub use decode::{decode_frame, decode_frame_in_place, find_preamble};
 pub use error::FrameError;
 pub use frame::{Frame, FrameHeader, FrameType};
-pub use sink::FrameSink;
+pub use sink::{FrameSink, SinkFull};
 pub use stream::{DecodeEvent, StreamDecoder, StreamPhase};
 
 /// The two preamble octets that start every frame.
@@ -136,13 +134,6 @@ pub const MAX_STANDARD_MPDU_DATA: usize = 501;
 pub const MAX_MASTER: u8 = 127;
 /// The broadcast address. It is valid only as a destination.
 pub const BROADCAST_MAC: u8 = 0xFF;
-/// What the receiver's header CRC register holds after a good header.
-pub const HEADER_CRC_RESIDUAL: u8 = 0x55;
-/// What the receiver's data CRC register holds after good data.
-pub const DATA_CRC_RESIDUAL: u16 = 0xF0B8;
-/// What the receiver's CRC-32K register holds after a good extended frame's
-/// Encoded Data and its decoded CRC-32K octets (Clause 9.6.3).
-pub const CRC32K_RESIDUAL: u32 = 0x0843_323B;
 /// Longest standard frame on the wire: preamble, header, the largest data
 /// field and its CRC.
 pub const MAX_STANDARD_FRAME_LENGTH: usize =
@@ -168,3 +159,8 @@ pub const MAX_EXTENDED_FRAME_LENGTH: usize = PREAMBLE.len()
 /// the largest Length.
 pub const MAX_COBS_FRAME_LENGTH: usize =
     PREAMBLE.len() + HEADER_LENGTH + MAX_COBS_LENGTH + cobs::LENGTH_ADJUSTMENT;
+
+/// The README's example, compiled and run as a doctest.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;

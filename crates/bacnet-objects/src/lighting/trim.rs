@@ -46,8 +46,8 @@
 //! so (Clauses 12.54.Y1 and 12.54.Y2), and the trims hold nothing until it's
 //! put right. Putting it right gives back the Reliability the trims replaced.
 
-use std::ops::RangeInclusive;
-use std::time::Duration;
+use core::ops::RangeInclusive;
+use core::time::Duration;
 
 use bacnet_types::enums::Reliability;
 use bacnet_types::error::Error;
@@ -243,7 +243,8 @@ impl LightingOutputObject {
     /// they stand to the new ones over Trim_Fade_Time.
     fn change_trims(&mut self, change: impl FnOnce(&mut Trims)) {
         let now = self.now();
-        self.advance_to(now);
+        // An egress that ran out before this change ends its command here.
+        self.advance_sourced(now);
         let from = self.trims.at(now);
         change(&mut self.trims);
         // The trims set CONFIGURATION_ERROR, and clear only what they set.

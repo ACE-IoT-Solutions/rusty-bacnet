@@ -7,9 +7,9 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 use std::time::Duration;
 
-use tokio::time::{sleep, Instant};
+use tokio::time::{Instant, sleep};
 
-use super::{interleave, race, CONNECTION_ATTEMPT_DELAY};
+use super::{CONNECTION_ATTEMPT_DELAY, interleave, race};
 
 const V6_A: &str = "[::1]:47808";
 const V6_B: &str = "[2001:db8::1]:47808";
@@ -259,7 +259,8 @@ async fn connect_reaches_a_listener_through_resolution() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let target = listener.local_addr().unwrap();
     let host_port = target.to_string();
-    let (dialed, accepted) = tokio::join!(super::connect(&host_port), listener.accept());
+    let addrs = super::resolve(&host_port).await.unwrap();
+    let (dialed, accepted) = tokio::join!(super::connect_resolved(&addrs), listener.accept());
     let (dialed, (accepted, peer)) = (dialed.unwrap(), accepted.unwrap());
     assert_eq!(dialed.peer_addr().unwrap(), target);
     assert_eq!(accepted.local_addr().unwrap(), target);

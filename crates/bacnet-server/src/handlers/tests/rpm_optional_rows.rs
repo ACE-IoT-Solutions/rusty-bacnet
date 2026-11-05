@@ -1,0 +1,146 @@
+//! ROOT-1 semantic characterization; no wall-clock performance assertions.
+use super::*;
+use bacnet_objects::property_metadata::{
+    PropertyConformance, PropertyMetadata, PropertyWriteCapability,
+};
+
+const REQUIRED_COUNT: usize = 4096;
+const OPTIONAL_IDS: [PropertyIdentifier; 4] = [
+    PropertyIdentifier::from_raw(6001),
+    PropertyIdentifier::from_raw(6000),
+    PropertyIdentifier::from_raw(6001),
+    PropertyIdentifier::from_raw(6002),
+];
+
+const fn rows() -> [PropertyMetadata; REQUIRED_COUNT + 4] {
+    let mut result = [PropertyMetadata::new(
+        PropertyIdentifier::PRESENT_VALUE,
+        PropertyConformance::RequiredRead,
+        None,
+        PropertyWriteCapability::ReadOnly,
+    ); REQUIRED_COUNT + 4];
+    let mut i = 0;
+    while i < REQUIRED_COUNT {
+        result[i].property_identifier = PropertyIdentifier::from_raw(512 + i as u32);
+        i += 1;
+    }
+    let mut j = 0;
+    while j < OPTIONAL_IDS.len() {
+        result[i + j].property_identifier = OPTIONAL_IDS[j];
+        result[i + j].conformance = PropertyConformance::Optional;
+        j += 1;
+    }
+    result
+}
+
+static ROWS: [PropertyMetadata; REQUIRED_COUNT + 4] = rows();
+
+struct BorrowedRows {
+    all_required: bool,
+    reads: Arc<AtomicUsize>,
+}
+
+impl BACnetObject for BorrowedRows {
+    fn object_identifier(&self) -> ObjectIdentifier {
+        oid(1)
+    }
+    fn object_name(&self) -> &str {
+        "large borrowed metadata"
+    }
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        Cow::Borrowed(if self.all_required {
+            &ROWS[..REQUIRED_COUNT]
+        } else {
+            &ROWS
+        })
+    }
+    fn read_property(
+        &self,
+        property: PropertyIdentifier,
+        _: Option<u32>,
+    ) -> Result<PropertyValue, Error> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Ok(PropertyValue::Unsigned(u64::from(property.to_raw())))
+    }
+    fn write_property(
+        &mut self,
+        _: PropertyIdentifier,
+        _: Option<u32>,
+        _: PropertyValue,
+        _: Option<u8>,
+    ) -> Result<(), Error> {
+        unreachable!()
+    }
+}
+
+fn large_fixture(all_required: bool) -> (ObjectDatabase, Arc<AtomicUsize>) {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let mut db = ObjectDatabase::new();
+    db.add(Box::new(BorrowedRows {
+        all_required,
+        reads: reads.clone(),
+    }))
+    .unwrap();
+    (db, reads)
+}
+
+#[test]
+fn rpm_optional_large_borrowed_all_required_preserves_empty_wrappers() {
+    let (db, reads) = large_fixture(true);
+    let data = request(vec![
+        spec(1, vec![reference(PropertyIdentifier::OPTIONAL)]),
+        spec(1, vec![reference(PropertyIdentifier::OPTIONAL)]),
+    ]);
+    for bytes in [13, 14, 15] {
+        let mut out = BytesMut::from(&b"prefix"[..]);
+        let result = handle_rpm_budgeted(&db, &data, &mut out, budget(1, bytes));
+        if bytes == 13 {
+            assert!(matches!(result, Err(ReadFailure::Bytes)));
+            assert_eq!(&out[..], b"prefix");
+        } else {
+            result.unwrap();
+            let empty = [0x0c, 0, 0, 0, 1, 0x1e, 0x1f];
+            assert_eq!(&out[6..], empty.repeat(2));
+        }
+    }
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn rpm_optional_large_borrowed_mostly_required_order_duplicates_and_late_cap() {
+    let (db, reads) = large_fixture(false);
+    let object = db.get(&oid(1)).unwrap();
+    assert!(matches!(object.property_metadata(), Cow::Borrowed(_)));
+
+    // Required rows never spend expanded-result capacity, and the cap stops
+    // before the final optional occurrence (bacnet-device-core's `expand`
+    // tests cover the visitor itself).
+    let data = request(vec![
+        spec(1, vec![reference(ROWS[0].property_identifier)]),
+        spec(1, vec![reference(PropertyIdentifier::OPTIONAL)]),
+    ]);
+    let mut out = BytesMut::from(&b"prefix"[..]);
+    assert!(matches!(
+        handle_rpm_budgeted(&db, &data, &mut out, budget(4, 1024)),
+        Err(ReadFailure::Work)
+    ));
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    assert_eq!(&out[..], b"prefix");
+
+    for limit in [5, 6] {
+        let mut out = BytesMut::new();
+        handle_rpm_budgeted(&db, &data, &mut out, budget(limit, 1024)).unwrap();
+        let ack = ReadPropertyMultipleACK::decode(&out).unwrap();
+        let results = &ack.list_of_read_access_results[1].list_of_results;
+        assert_eq!(
+            results
+                .iter()
+                .map(|r| r.property_identifier)
+                .collect::<Vec<_>>(),
+            OPTIONAL_IDS
+        );
+        let mut unlimited = BytesMut::new();
+        handle_read_property_multiple(&db, &data, &mut unlimited).unwrap();
+        assert_eq!(out, unlimited);
+    }
+}

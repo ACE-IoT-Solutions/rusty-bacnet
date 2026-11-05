@@ -390,8 +390,8 @@ fn raw_destination(recipient: &[u8]) -> Vec<u8> {
 
 #[test]
 fn recipient_mac_bound_holds_in_both_directions() {
-    // 18 octets, B/IPv6's IPv6 address and UDP port, is the longest MAC this
-    // stack uses (`BACnetAddress::MAX_MAC_LEN`). Every recipient, configured
+    // 18 octets is the longest MAC this stack takes
+    // (`BACnetAddress::MAX_MAC_LEN`). Every recipient, configured
     // (#1124) or carried by a service or report (#1156), decodes up to it and
     // refuses one octet more, and the encoder refuses what the decoder would.
     let longest = address_with_mac(BACnetAddress::MAX_MAC_LEN);
@@ -419,7 +419,7 @@ fn recipient_mac_bound_holds_in_both_directions() {
     for len in [BACnetAddress::MAX_MAC_LEN + 1, 64, 255] {
         let raw = raw_address_recipient(len);
         assert!(
-            matches!(decode_recipient(&raw, 0), Err(Error::Decoding { .. })),
+            matches!(decode_recipient(&raw, 0), Err(Error::Decoding(_))),
             "{len}-octet MAC"
         );
         assert!(decode_destination(&raw_destination(&raw), 0).is_err());
@@ -437,10 +437,16 @@ fn recipient_mac_bound_holds_in_both_directions() {
             ..device_destination()
         };
         let mut buf = BytesMut::from(&[0xAA][..]);
-        assert!(matches!(
-            encode_recipient(&mut buf, &too_long.recipient),
-            Err(Error::Encoding(_))
-        ));
+        // A static refusal that still names both lengths (#1802).
+        match encode_recipient(&mut buf, &too_long.recipient) {
+            Err(Error::Encode(refused)) => assert_eq!(
+                refused.message().to_string(),
+                std::format!(
+                    "BACnetRecipient: mac-address of {len} octets exceeds the 18-octet limit"
+                )
+            ),
+            other => panic!("{len}-octet MAC: {other:?}"),
+        }
         assert!(encode_destination(&mut buf, &too_long).is_err());
         assert!(encode_destination_list(&mut buf, &[device_destination(), too_long]).is_err());
         assert_eq!(&buf[..], &[0xAA], "{len}-octet MAC left output behind");

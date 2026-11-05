@@ -3,6 +3,9 @@
 //! validity window against the wall clock, Global_Identifier, and the two
 //! constructed arrays.
 
+use crate::property_metadata::is_writable_property;
+use crate::traits::Timed;
+use bacnet_types::error::RemoteError;
 use std::sync::{Arc, Mutex};
 
 use bacnet_encoding::constructed::{
@@ -74,9 +77,9 @@ fn reasons(raw: &[u32]) -> PropertyValue {
 
 fn assert_property_error<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32, "expected {expected:?}");
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected, "expected {expected:?}");
         }
         other => panic!("expected PROPERTY / {expected:?}, got {other:?}"),
     }
@@ -194,7 +197,10 @@ fn access_credential_local_reasons_merge_with_credential_disable() {
 fn access_credential_validity_window_follows_the_clock() {
     let clock = Arc::new(TestClock(Mutex::new(None)));
     let mut credential = AccessCredentialObject::new(1, "CRED-1").unwrap();
-    credential.bind_clock_internal(Some(clock.clone()));
+    credential.bind_clocks(&crate::traits::Clocks {
+        clock: Some(clock.clone()),
+        ..crate::traits::Clocks::default()
+    });
     credential
         .write_property(AT, None, date_time(date(2026, 3, 1), time(8, 0)), None)
         .unwrap();
@@ -484,7 +490,7 @@ fn access_credential_arrays_refuse_bad_elements_and_network_writes() {
     // Table 12-40 makes both R; the network can't write them, whole or by
     // element.
     for property in [AF, AAR] {
-        assert!(!credential.is_writable_property(property));
+        assert!(!is_writable_property(&credential, property));
         for index in [None, Some(1)] {
             let value = credential.read_property(property, index).unwrap();
             assert_property_error(

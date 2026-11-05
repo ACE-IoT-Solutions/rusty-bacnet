@@ -2,10 +2,12 @@
 
 use super::*;
 use crate::analog::{AnalogOutputObject, AnalogValueObject};
+use crate::traits::Timed;
 use crate::trend::TrendLogMultipleObject;
 use bacnet_encoding::constructed::decode_log_multiple_record;
 use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::BACnetLogMultipleRecord;
+use bacnet_types::enums::EngineeringUnits;
 
 const THIS_DEVICE: u32 = 100;
 
@@ -21,10 +23,10 @@ pub(super) fn clocked_database() -> (ObjectDatabase, Arc<Mutex<Duration>>, Arc<W
     let (mut db, trend, time, clock) = fixture(u32::MAX);
     db.remove(&trend).unwrap();
     db.remove(&target()).unwrap();
-    let mut av = AnalogValueObject::new(1, "AV", 95).unwrap();
+    let mut av = AnalogValueObject::new(1, "AV", EngineeringUnits::NO_UNITS).unwrap();
     av.set_relinquish_default(42.5).unwrap();
     db.add(Box::new(av)).unwrap();
-    let mut ao = AnalogOutputObject::new(1, "AO", 95).unwrap();
+    let mut ao = AnalogOutputObject::new(1, "AO", EngineeringUnits::NO_UNITS).unwrap();
     ao.write_property_from(
         P::PRESENT_VALUE,
         None,
@@ -36,8 +38,9 @@ pub(super) fn clocked_database() -> (ObjectDatabase, Arc<Mutex<Duration>>, Arc<W
     db.add(Box::new(ao)).unwrap();
     db.add(Box::new(
         crate::device::DeviceObject::new(crate::device::DeviceConfig {
-            instance: THIS_DEVICE,
-            name: "Device".into(),
+            identity: crate::DeviceIdentity::new(THIS_DEVICE, 0)
+                .expect("valid Device identity")
+                .with_name("Device"),
             ..Default::default()
         })
         .unwrap(),
@@ -90,7 +93,12 @@ pub(super) fn multiple(
 
 /// The log's records, decoded from the framed records ReadRange serves.
 pub(super) fn records(db: &ObjectDatabase, oid: ObjectIdentifier) -> Vec<BACnetLogMultipleRecord> {
-    let records = db.get(&oid).unwrap().log_buffer_internal().unwrap();
+    let records = db
+        .get(&oid)
+        .unwrap()
+        .log_buffer()
+        .and_then(|log| log.buffer_records())
+        .unwrap();
     (0..records.record_count())
         .map(|index| {
             let mut bytes = BytesMut::new();
@@ -121,8 +129,8 @@ fn polled(members: Vec<BACnetDeviceObjectPropertyReference>) -> Vec<LogValue> {
 
 fn failed(class: ErrorClass, code: ErrorCode) -> LogValue {
     LogValue::Failure {
-        error_class: class.to_raw().into(),
-        error_code: code.to_raw().into(),
+        error_class: class,
+        error_code: code,
     }
 }
 
@@ -338,7 +346,10 @@ fn a_disabled_log_accepts_the_poll_without_a_record() {
         8,
         vec![member(av(), P::PRESENT_VALUE, None, None)],
     );
-    log.bind_clock_internal(Some(Arc::new(WallClock(Mutex::new(Some(frame()))))));
+    log.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(WallClock(Mutex::new(Some(frame()))))),
+        ..crate::traits::Clocks::default()
+    });
     log.write_property(P::LOG_ENABLE, None, PropertyValue::Boolean(false), None)
         .unwrap();
     let oid = log.object_identifier();

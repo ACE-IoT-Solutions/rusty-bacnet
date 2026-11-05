@@ -7,25 +7,39 @@
 //! themselves are the bundled server's: it takes the queued [`CommandRun`]
 //! under the guard that committed the Present_Value write and makes each
 //! write once that guard is released.
+//!
+//! **On deletion** (#2265) a Command releases nothing. Its actions are
+//! one-shot writes, and Clause 12.10 makes no attempt to undo or roll back
+//! writes already made, so the values it wrote stay until another writer
+//! changes or relinquishes them. A run in progress stops: a local action
+//! checks the run's generation under the guard that commits it, so none is
+//! written once the object is gone, after a Post_Delay included. An action
+//! in another device is checked once its route is known, before its invoke
+//! ID is leased, and before each retry; a request that passed its last check
+//! still goes out if the delete lands in that gap, since no guard is held
+//! over a send.
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
 use bacnet_encoding::constructed::encode_action_list;
 use bacnet_types::constructed::{BACnetActionCommand, BACnetActionList};
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 use bytes::BytesMut;
-use std::borrow::Cow;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use core::sync::atomic::Ordering;
+
+use crate::sync::AtomicU64;
 
 use crate::common::{self, read_common_properties};
-use crate::traits::BACnetObject;
+use crate::traits::{BACnetObject, CommandRunner};
 
 mod metadata;
 
 /// The writes a Present_Value write queued, for the server to make: a
 /// Command object's selected list, or a Channel object's value for each of
-/// its members.
+/// its members. A Timer's transition queues one too, as a list of actions.
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandRun {
@@ -41,9 +55,9 @@ pub struct CommandRun {
     pub chain: Arc<[ObjectIdentifier]>,
 }
 
-/// The next run generation. One counter serves every Command and Channel in
-/// the process, so a run left over from an object that was removed never
-/// matches the object that took its place.
+/// The next run generation. One counter serves every Command, Channel and
+/// Timer in the process, so a run left over from an object that was removed
+/// never matches the object that took its place.
 pub(crate) fn next_generation() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
@@ -223,6 +237,7 @@ impl BACnetObject for CommandObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // Table 12-12 has no Out_Of_Service (#1064), and Clause 12.10 holds the
         // OUT_OF_SERVICE flag FALSE.
         if let Some(result) =
@@ -278,6 +293,7 @@ impl BACnetObject for CommandObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
@@ -291,7 +307,6 @@ impl BACnetObject for CommandObject {
             _ => Err(crate::common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                array_index,
             )),
         }
     }
@@ -300,31 +315,36 @@ impl BACnetObject for CommandObject {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
+    crate::traits::lend_cov_reporting!();
+
+    fn command_runner(&self) -> Option<&dyn CommandRunner> {
+        Some(self)
     }
 
-    fn supports_subscribe_cov_property(&self) -> bool {
+    fn command_runner_mut(&mut self) -> Option<&mut dyn CommandRunner> {
+        Some(self)
+    }
+}
+
+impl crate::traits::CovReporting for CommandObject {
+    fn supports_subscribe_cov(&self) -> bool {
         // Table 13-1 has no Command row, so SubscribeCOV stays refused. A
         // property subscription follows Table 13-1a, which lets a client watch
         // In_Process and All_Writes_Successful through a run.
-        true
+        false
     }
+}
 
-    fn take_command_run_internal(&mut self) -> Option<CommandRun> {
+impl CommandRunner for CommandObject {
+    fn take_command_run(&mut self) -> Option<CommandRun> {
         self.pending_run.take()
     }
 
-    fn command_generation_internal(&self) -> Option<u64> {
-        Some(self.generation)
+    fn command_generation(&self) -> u64 {
+        self.generation
     }
 
-    fn record_command_write_internal(
-        &mut self,
-        generation: u64,
-        command: usize,
-        success: bool,
-    ) -> bool {
+    fn record_command_write(&mut self, generation: u64, command: usize, success: bool) -> bool {
         if generation != self.generation || !self.in_process {
             return false;
         }
@@ -345,11 +365,7 @@ impl BACnetObject for CommandObject {
         true
     }
 
-    fn complete_command_run_internal(
-        &mut self,
-        generation: u64,
-        outcome: Result<(), WriteFailure>,
-    ) -> bool {
+    fn complete_command_run(&mut self, generation: u64, outcome: Result<(), WriteFailure>) -> bool {
         if generation != self.generation || !self.in_process {
             return false;
         }

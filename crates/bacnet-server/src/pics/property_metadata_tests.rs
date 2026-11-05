@@ -9,7 +9,7 @@ use bacnet_objects::{
     value_types::TimeValueObject,
 };
 use bacnet_types::constructed::BACnetStageLimitValue;
-use bacnet_types::enums::{EventType, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{EngineeringUnits, EventType, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 
 use super::*;
@@ -96,7 +96,7 @@ fn pics_projects_migrated_property_metadata() {
             StagingConfig {
                 present_value: 0.0,
                 min_present_value: -1.0,
-                units: 62,
+                units: EngineeringUnits::DEGREES_CELSIUS,
                 priority_for_writing: 8,
                 stages: vec![
                     BACnetStageLimitValue {
@@ -117,7 +117,8 @@ fn pics_projects_migrated_property_metadata() {
         .unwrap(),
     ))
     .unwrap();
-    let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+    let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+        .instance_types_only(&db);
 
     for (object_type, property_id, optional, writable) in [
         (
@@ -294,6 +295,10 @@ fn pics_projects_migrated_property_metadata() {
             (PropertyIdentifier::ACKED_TRANSITIONS, false, false),
             (PropertyIdentifier::NOTIFY_TYPE, false, true),
             (PropertyIdentifier::EVENT_TIME_STAMPS, false, false),
+            (PropertyIdentifier::EVENT_MESSAGE_TEXTS, true, false),
+            (PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG, true, true),
+            (PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF, true, true),
+            (PropertyIdentifier::EVENT_ALGORITHM_INHIBIT, true, true),
             (PropertyIdentifier::PROPERTY_LIST, false, false),
         ])
     );
@@ -304,7 +309,8 @@ fn pics_audit_reporter_metadata_is_complete_and_exact() {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(AuditReporterObject::new(1, "ar-1").unwrap()))
         .unwrap();
-    let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+    let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+        .instance_types_only(&db);
     let reporter = pics
         .supported_object_types
         .iter()
@@ -359,8 +365,9 @@ fn pics_audit_reporter_metadata_is_complete_and_exact() {
 
 #[test]
 fn pics_analog_property_metadata_is_exact_for_each_configuration() {
-    use bacnet_objects::traits::BACnetObject;
     use PropertyIdentifier as P;
+    use bacnet_objects::traits::BACnetObject;
+    use bacnet_types::enums::EngineeringUnits;
 
     // Expected (identifier, optional, writable) rows, not generated from metadata.
     // The event rows Tables 12-2, 12-3 and 12-4 require of an intrinsic
@@ -377,7 +384,8 @@ fn pics_analog_property_metadata_is_exact_for_each_configuration() {
         (P::EVENT_DETECTION_ENABLE, false, true),
         (P::OUT_OF_SERVICE, false, true),
         (P::UNITS, false, false),
-        (P::COV_INCREMENT, true, true),
+        // Tables 12-2 and 12-4 footnote 2, 12-3 footnote 1 (#2193).
+        (P::COV_INCREMENT, false, true),
         (P::HIGH_LIMIT, false, true),
         (P::LOW_LIMIT, false, true),
         (P::DEADBAND, false, true),
@@ -398,9 +406,9 @@ fn pics_analog_property_metadata_is_exact_for_each_configuration() {
         (P::PROPERTY_LIST, false, false),
     ];
     for configuration in 0..8 {
-        let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
-        let mut av = AnalogValueObject::new(1, "AV-1", 62).unwrap();
-        let mut ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
+        let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
+        let mut av = AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
+        let mut ao = AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         if configuration & 1 != 0 {
             ai.configure_fault_out_of_range(-10.0, 100.0).unwrap();
             av.configure_fault_out_of_range(-10.0, 100.0).unwrap();
@@ -452,15 +460,17 @@ fn pics_analog_property_metadata_is_exact_for_each_configuration() {
                     (P::LAST_COMMAND_TIME, false, false),
                 ]);
             }
-            let required = object.required_properties();
+            let required: Vec<_> =
+                bacnet_objects::property_metadata::required_properties(&object.property_metadata())
+                    .collect();
             let mut db = ObjectDatabase::new();
             db.add(object).unwrap();
-            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+                .instance_types_only(&db);
             let support = &pics.supported_object_types[0];
             assert_eq!(support.object_type, kind);
-            if kind != ObjectType::ANALOG_INPUT {
-                assert_eq!(support.createable, kind == ObjectType::ANALOG_OUTPUT);
-            }
+            // Every analog type is createable since #2172.
+            assert!(support.createable);
             let rows: Vec<_> = support
                 .supported_properties
                 .iter()
@@ -486,9 +496,9 @@ fn pics_analog_property_metadata_is_exact_for_each_configuration() {
 
 #[test]
 fn pics_binary_commandable_property_metadata_is_exact() {
+    use PropertyIdentifier as P;
     use bacnet_objects::traits::BACnetObject;
     use bacnet_types::primitives::PropertyValue;
-    use PropertyIdentifier as P;
 
     // Independent (identifier, optional, writable) fixture in legacy order.
     // Tables 12-8 and 12-10 require the event rows of an intrinsic reporter
@@ -563,10 +573,14 @@ fn pics_binary_commandable_property_metadata_is_exact() {
                     (P::LAST_COMMAND_TIME, false, false),
                 ]);
                 expected.push((P::PROPERTY_LIST, false, false));
-                let required = object.required_properties();
+                let required: Vec<_> = bacnet_objects::property_metadata::required_properties(
+                    &object.property_metadata(),
+                )
+                .collect();
                 let mut db = ObjectDatabase::new();
                 db.add(object).unwrap();
-                let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+                let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+                    .instance_types_only(&db);
                 assert_eq!(pics.supported_object_types.len(), 1);
                 let support = &pics.supported_object_types[0];
                 assert_eq!(support.object_type, kind);
@@ -597,9 +611,9 @@ fn pics_binary_commandable_property_metadata_is_exact() {
 
 #[test]
 fn pics_multistate_property_metadata_is_exact() {
+    use PropertyIdentifier as P;
     use bacnet_objects::traits::BACnetObject;
     use bacnet_types::primitives::PropertyValue;
-    use PropertyIdentifier as P;
 
     let base = [
         (P::OBJECT_IDENTIFIER, false, false),
@@ -677,10 +691,14 @@ fn pics_multistate_property_metadata_is_exact() {
                     ]);
                 }
                 expected.push((P::PROPERTY_LIST, false, false));
-                let required = object.required_properties();
+                let required: Vec<_> = bacnet_objects::property_metadata::required_properties(
+                    &object.property_metadata(),
+                )
+                .collect();
                 let mut db = ObjectDatabase::new();
                 db.add(object).unwrap();
-                let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+                let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+                    .instance_types_only(&db);
                 assert_eq!(pics.supported_object_types.len(), 1);
                 let support = &pics.supported_object_types[0];
                 assert_eq!(support.object_type, kind);

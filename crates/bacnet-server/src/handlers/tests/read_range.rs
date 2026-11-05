@@ -1,3 +1,6 @@
+use bacnet_objects::property_metadata::PropertyMetadata;
+use bacnet_objects::traits::{LogBuffer, Timed};
+use bacnet_types::error::RemoteError;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -74,10 +77,10 @@ impl BACnetObject for ListObject {
         if property == self.property {
             Ok(PropertyValue::List(self.items.clone()))
         } else {
-            Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            })
+            Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            ))
         }
     }
 
@@ -88,18 +91,26 @@ impl BACnetObject for ListObject {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Owned(vec![self.property])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[self.property])
     }
 
-    fn log_record_identities_internal(&self) -> Option<Vec<LogRecordIdentity>> {
-        self.identities.clone()
+    fn log_buffer(&self) -> Option<&dyn LogBuffer> {
+        self.identities.is_some().then_some(self as _)
+    }
+}
+
+/// Identities without a paged buffer: ReadRange reads Log_Buffer through
+/// `read_property` and selects by these.
+impl LogBuffer for ListObject {
+    fn record_identities(&self) -> Vec<LogRecordIdentity> {
+        self.identities.clone().unwrap_or_default()
     }
 }
 
@@ -382,9 +393,9 @@ fn by_sequence_rejects_unnumbered_properties_and_misalignment() {
         .unwrap_err();
         assert!(matches!(
             error,
-            Error::Protocol { class, code }
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == ErrorCode::LIST_ITEM_NOT_NUMBERED.to_raw() as u32
+            Error::Remote(RemoteError::Error { class, code })
+                if class == ErrorClass::PROPERTY
+                    && code == ErrorCode::LIST_ITEM_NOT_NUMBERED
         ));
     }
 }
@@ -532,7 +543,9 @@ impl ClockReader for FixedClock {
 #[test]
 fn purge_status_record_replaces_old_sequence_continuation() {
     let mut object = EventLogObject::new(7, "EL-7", 3).unwrap();
-    object.bind_clock_internal(Some(Arc::new(FixedClock)));
+    object.bind_clocks(
+        &bacnet_objects::traits::Clocks::default().with_clock(Some(Arc::new(FixedClock))),
+    );
     object.add_record(event_record(1)).unwrap();
     object.add_record(event_record(2)).unwrap();
     object
@@ -543,7 +556,11 @@ fn purge_status_record_replaces_old_sequence_continuation() {
             None,
         )
         .unwrap();
-    let status_sequence = object.log_record_identities_internal().unwrap()[0].sequence_number();
+    let status_sequence = object
+        .log_buffer()
+        .map(|log| log.record_identities())
+        .unwrap()[0]
+        .sequence_number();
     assert_eq!(status_sequence, 3);
     let oid = object.object_identifier();
     let mut db = ObjectDatabase::new();

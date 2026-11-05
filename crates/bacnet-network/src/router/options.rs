@@ -10,8 +10,11 @@ use std::marker::PhantomData;
 
 use tokio::sync::mpsc;
 
-use super::control_policy::{ControlAuthorizer, ControlGate, ControlPolicy};
+use bacnet_router_core::router::{Congestion, Duplicates, Options};
+
 use super::BACnetRouter;
+use super::control_policy::{ControlAuthorizer, ControlGate, ControlPolicy};
+use super::engine::OPTIONS;
 use crate::layer::{
     AdmissionReceiver, QueueAdmissionCounters, ReceivedApdu, ReceivedNetworkControl,
 };
@@ -50,6 +53,7 @@ pub struct RouterOptions<
     policy: ControlPolicy,
     authorizer: Option<ControlAuthorizer>,
     network_control: bool,
+    engine: Options,
     receivers: PhantomData<fn() -> (A, C)>,
 }
 
@@ -76,6 +80,7 @@ impl RouterOptions {
             policy: ControlPolicy::default(),
             authorizer: None,
             network_control: false,
+            engine: OPTIONS,
             receivers: PhantomData,
         }
     }
@@ -184,6 +189,100 @@ impl<A, C> RouterOptions<A, C> {
         self.receivers()
     }
 
+    /// The router's own Router-Busy for a clogged port (#1697): off unless
+    /// this sets a policy.
+    ///
+    /// Each port queues at most 256 sends. With a policy set, a port whose
+    /// queue stays full for [`Congestion::clog_after`] counts as clogged:
+    /// the router broadcasts Router-Busy-To-Network on its other ports for
+    /// the networks it reaches through that one, answers each send the full
+    /// queue then refuses, when it has an origin to answer, with
+    /// Reject-Message-To-Network reason 2, and broadcasts
+    /// Router-Available-To-Network once the queue falls under the policy's
+    /// low-water mark (Clauses 6.6.3.6, 6.6.3.7, 6.6.4).
+    /// [`Congestion::DEFAULT`] clogs after 2 s and drains under half.
+    /// The counts are in [`Counters`](super::Counters).
+    pub fn congestion(mut self, policy: Congestion) -> Self {
+        self.engine.congestion = Some(policy);
+        self
+    }
+
+    /// Apply a received Reject-Message-To-Network to a learned route only
+    /// when it came from that route's next router (#1698).
+    ///
+    /// Off by default: Clause 6.6.3.5 has a router update the route a
+    /// reject names whoever sent it, so a reject relayed by any router
+    /// changes it. On, one from another router is still passed on toward
+    /// its destination, but leaves the route as it was, and is counted in
+    /// [`Counters::not_next_hop`](super::Counters::not_next_hop).
+    /// Router-Busy and Router-Available are always scoped to the routes
+    /// through their sender.
+    pub fn next_hop_rejects(mut self) -> Self {
+        self.engine.next_hop_rejects = true;
+        self
+    }
+
+    /// Drop a global broadcast that repeats one seen within
+    /// [`Duplicates::ttl`] (#1698): off unless this sets it.
+    ///
+    /// In a topology with a loop, routers can pass one global broadcast
+    /// around it until its hop count runs out. With this on, the router
+    /// remembers the last 512 global broadcasts by origin (SNET and SADR,
+    /// or the arrival network and link source) and a hash of the APDU,
+    /// and drops a repeat seen within the time to live, 1 s for
+    /// [`Duplicates::DEFAULT`]: not relayed, not delivered, counted in
+    /// [`Counters::duplicate_drops`](super::Counters::duplicate_drops).
+    /// The standard defines no such suppression, and a sender's own
+    /// identical retry within the time to live is dropped too.
+    ///
+    /// The same record covers the network messages the router passes on
+    /// with no origin, I-Am-Router, Router-Busy and Router-Available
+    /// (#1810), which carry no hop count, so around a loop nothing else
+    /// stops them. A repeat within the time to live is neither applied to
+    /// the table nor passed on. An I-Am-Router is kept by its data alone,
+    /// so two routers announcing the same networks within one time to live
+    /// look like one, and the second is dropped until it announces again.
+    /// A Router-Busy or Router-Available is kept by its sender (arrival
+    /// network and link source) and data, so another router's identical
+    /// message is still applied, and accepting one forgets its opposite
+    /// from the same sender, so Busy, Available, Busy within one time to
+    /// live applies all three; at most four such resets per sender within
+    /// one time to live, so a pair looping round a ring still ends. A
+    /// Who-Is-Router the router passes on for a network it doesn't know
+    /// (#2020) is kept, like a global broadcast, by the origin its SNET and
+    /// SADR name, and its data.
+    ///
+    /// Without this option too, a global broadcast or Who-Is-Router whose
+    /// SNET and SADR name the router itself is dropped, as its own come
+    /// back round a loop, and counted in
+    /// [`Counters::own_source_drops`](super::Counters::own_source_drops)
+    /// (#2021).
+    ///
+    /// Entries are keyed by origin, so in a looped site this router's own
+    /// global broadcast sent from each port's own address (a bare copy per
+    /// port) is a different origin per port to the other routers, and may
+    /// reach their applications once per port. Send it from one port's
+    /// address there
+    /// ([`SourceSelection::Port`](super::SourceSelection::Port)), so every
+    /// copy names one origin.
+    ///
+    /// Sizing: the record must hold every global broadcast the router sees
+    /// within one time to live, or the oldest is forgotten before its
+    /// looped copy returns. 512 covers 512 broadcasts a second at the
+    /// default; a longer time to live needs proportionally fewer a second.
+    /// The relayed Who-Is-Router, I-Am-Router, Router-Busy and
+    /// Router-Available entries share those 512 slots with the global
+    /// broadcasts, the flow-control ones one per sender and message.
+    pub fn duplicates(mut self, policy: Duplicates) -> Self {
+        self.engine.duplicates = Some(policy);
+        self
+    }
+
+    /// The engine's options these select.
+    pub(super) fn engine_options(&self) -> Options {
+        self.engine
+    }
+
     /// The wire-control gate these options select.
     pub(super) fn control_gate(&self) -> ControlGate {
         ControlGate::new(self.policy, self.authorizer.clone())
@@ -200,6 +299,7 @@ impl<A, C> RouterOptions<A, C> {
             policy: self.policy,
             authorizer: self.authorizer,
             network_control: self.network_control,
+            engine: self.engine,
             receivers: PhantomData,
         }
     }
@@ -214,6 +314,7 @@ impl<A, C> fmt::Debug for RouterOptions<A, C> {
                 &self.authorizer.as_ref().map(|_| "<callback>"),
             )
             .field("network_control", &self.network_control)
+            .field("engine", &self.engine)
             .field("apdus", &std::any::type_name::<A>())
             .field("controls", &std::any::type_name::<C>())
             .finish()
@@ -239,7 +340,7 @@ pub struct StartedRouter<
 /// A local APDU receiver type [`BACnetRouter::start`] can return: the raw
 /// [`mpsc::Receiver`] or, after [`RouterOptions::track_admission`], an
 /// [`AdmissionReceiver`]. Sealed.
-pub trait LocalApduReceiver: sealed::Sealed<ReceivedApdu> {}
+pub trait LocalApduReceiver: sealed::Sealed<ReceivedApdu> + sealed::ApduQueue {}
 
 impl LocalApduReceiver for mpsc::Receiver<ReceivedApdu> {}
 impl LocalApduReceiver for AdmissionReceiver<ReceivedApdu> {}
@@ -279,6 +380,43 @@ pub(super) mod sealed {
 
         fn from_queue(rx: mpsc::Receiver<ReceivedApdu>, counters: QueueAdmissionCounters) -> Self {
             AdmissionReceiver::from_apdu_parts(rx, counters)
+        }
+    }
+
+    /// Either local APDU receiver, as one type, for the router's
+    /// [application port](crate::router::RouterApplicationPort).
+    pub enum ApduSource {
+        /// The raw queue.
+        Raw(mpsc::Receiver<ReceivedApdu>),
+        /// The tracked queue, whose accounting it keeps.
+        Tracked(AdmissionReceiver<ReceivedApdu>),
+    }
+
+    impl ApduSource {
+        /// The next APDU, or `None` once the queue is closed and drained.
+        pub(crate) async fn recv(&mut self) -> Option<ReceivedApdu> {
+            match self {
+                Self::Raw(rx) => rx.recv().await,
+                Self::Tracked(rx) => rx.recv().await,
+            }
+        }
+    }
+
+    /// How a local APDU receiver becomes an [`ApduSource`].
+    pub trait ApduQueue {
+        /// This receiver as an [`ApduSource`].
+        fn into_source(self) -> ApduSource;
+    }
+
+    impl ApduQueue for mpsc::Receiver<ReceivedApdu> {
+        fn into_source(self) -> ApduSource {
+            ApduSource::Raw(self)
+        }
+    }
+
+    impl ApduQueue for AdmissionReceiver<ReceivedApdu> {
+        fn into_source(self) -> ApduSource {
+            ApduSource::Tracked(self)
         }
     }
 

@@ -8,17 +8,16 @@
 
 use std::time::Duration;
 
-use bacnet_encoding::apdu::{decode_apdu, encode_apdu, Apdu};
+use bacnet_encoding::apdu::{Apdu, decode_apdu, encode_apdu};
 use bacnet_endpoint::bip::BipEndpointBuilder;
 use bacnet_endpoint::session::SessionRole;
 use bacnet_network::layer::NetworkLayer;
+use bacnet_npdu::NetworkPriority;
 use bacnet_services::read_property::ReadPropertyACK;
 use bacnet_transport::bip::BipTransport;
-use bacnet_types::enums::{
-    ConfirmedServiceChoice, NetworkPriority, ObjectType, PropertyIdentifier,
-};
-use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bacnet_types::MacAddr;
+use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
+use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bytes::BytesMut;
 use std::net::Ipv4Addr;
 
@@ -75,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         property_array_index: None,
         property_value: val.to_vec(),
     }
-    .encode(&mut svc);
+    .encode(&mut svc)?;
     let mut enc = BytesMut::new();
     encode_apdu(
         &mut enc,
@@ -90,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     )?;
     peer_net
-        .send_apdu(&enc, &req.source_mac, false, NetworkPriority::NORMAL)
+        .send_apdu(&enc, &req.source_mac, false, NetworkPriority::Normal)
         .await?;
     let ack = tokio::time::timeout(WAIT, pending).await???;
     assert_eq!(ack.object_identifier, oid(ObjectType::ANALOG_INPUT, 1));

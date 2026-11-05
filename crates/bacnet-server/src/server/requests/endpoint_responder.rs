@@ -1,11 +1,11 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::mutation::{
-    MutationAuthorizationContext, MutationAuthorizer, MutationTarget, MutationTrust,
+    DeviceWriteAuthorizer, MutationAuthorizationContext, MutationTarget, MutationTrust,
 };
+use bacnet_device_core::reply;
 use bacnet_encoding::apdu::{decode_apdu, encode_apdu};
-use bacnet_encoding::npdu::{encode_npdu, Npdu};
 use bacnet_endpoint_core::endpoint_ingress::{EndpointApduDestination, EndpointEgress};
 use bacnet_network::layer::ReceivedApdu;
 use bacnet_services::write_property::WritePropertyRequest;
@@ -19,10 +19,7 @@ fn shutdown_error() -> Error {
 }
 
 fn property_error(class: ErrorClass, code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: class.to_raw() as u32,
-        code: code.to_raw() as u32,
-    }
+    Error::protocol(class, code)
 }
 
 /// Check existence, scope and typed authority under the database write guard.
@@ -35,15 +32,22 @@ fn device_write_target<'a>(
     let object = db
         .get_mut(&write.object_identifier)
         .ok_or_else(|| property_error(ErrorClass::OBJECT, ErrorCode::UNKNOWN_OBJECT))?;
-    if !object.property_list().contains(&write.property_identifier) {
+    // Presence follows the metadata rows, Property_List among them.
+    let present = object
+        .property_metadata()
+        .iter()
+        .any(|row| row.property_identifier == write.property_identifier);
+    if !present {
         return Err(property_error(
             ErrorClass::PROPERTY,
             ErrorCode::UNKNOWN_PROPERTY,
         ));
     }
+    // A session takes `selected` from its database's local Device, which
+    // must match its identity, and neither takes the wildcard instance
+    // (#2171), so the wildcard check this replaced could never fire.
     if write.object_identifier != selected
         || selected.object_type() != ObjectType::DEVICE
-        || selected.instance_number() == ObjectIdentifier::MAX_INSTANCE
         || !matches!(
             write.property_identifier,
             PropertyIdentifier::DESCRIPTION | PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT
@@ -75,10 +79,12 @@ pub struct EndpointResponder {
     db: Option<Arc<RwLock<ObjectDatabase>>>,
     egress: EndpointEgress,
     open: AtomicBool,
-    device_writes: Option<(ObjectIdentifier, MutationAuthorizer)>,
+    device_writes: Option<(ObjectIdentifier, DeviceWriteAuthorizer)>,
     reinitialize: Option<(ReinitializeHandler, Option<String>)>,
+    reinitialize_audit: Option<reinitialize::EndpointReinitializeAudit>,
     registered_port: Option<(ObjectIdentifier, std::sync::Weak<()>)>,
     read_work_limit: usize,
+    identity: Option<bacnet_objects::DeviceIdentity>,
 }
 
 impl Drop for EndpointResponder {
@@ -101,11 +107,20 @@ impl EndpointResponder {
             egress,
             open: AtomicBool::new(true),
             device_writes: None,
+            identity: None,
             reinitialize: None,
+            reinitialize_audit: None,
             registered_port: None,
-            read_work_limit: crate::server::ReadPropertyMultipleBudget::default()
+            read_work_limit: bacnet_device_core::read::ReadPropertyMultipleBudget::default()
                 .max_result_elements,
         }
+    }
+
+    /// Install the immutable Device declaration validated before transport startup.
+    #[doc(hidden)]
+    pub fn with_device(mut self, identity: bacnet_objects::DeviceIdentity) -> Self {
+        self.identity = Some(identity);
+        self
     }
 
     /// Result rows one ReadProperty may expand: its own row plus, for a
@@ -138,7 +153,7 @@ impl EndpointResponder {
     pub fn with_device_writes(
         mut self,
         device: ObjectIdentifier,
-        authorizer: MutationAuthorizer,
+        authorizer: DeviceWriteAuthorizer,
     ) -> Self {
         self.device_writes = Some((device, authorizer));
         self
@@ -153,6 +168,18 @@ impl EndpointResponder {
         password: Option<String>,
     ) -> Self {
         self.reinitialize = Some((handler, password));
+        self
+    }
+
+    /// Record each accepted ReinitializeDevice request through `audit`
+    /// (Clause 19.6, Table 19-5, #1564): a reset, backup or restore step,
+    /// never ACTIVATE_CHANGES, and never a request answered with an Error.
+    #[doc(hidden)]
+    pub fn with_reinitialize_audit(
+        mut self,
+        audit: reinitialize::EndpointReinitializeAudit,
+    ) -> Self {
+        self.reinitialize_audit = Some(audit);
         self
     }
 
@@ -179,17 +206,20 @@ impl EndpointResponder {
             device_write_target(&mut db, *device, &write)?;
         }
         if write.property_array_index.is_some() {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
+            ));
         }
         // Description and Audit_Notification_Recipient, the only targets
         // `device_write_target` admits, are single values.
-        let value = handlers::decode_write_property_value(
+        let value = bacnet_device_core::write::decode_write_property_value(
             write.property_identifier,
+            bacnet_objects::property_metadata::standard_value_type(
+                ObjectType::DEVICE,
+                write.property_identifier,
+            ),
             None,
-            false,
             &write.property_value,
         )?;
         if write.property_identifier == PropertyIdentifier::DESCRIPTION
@@ -198,16 +228,16 @@ impl EndpointResponder {
                 PropertyValue::CharacterString(_) | PropertyValue::Null
             )
         {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         let context = MutationAuthorizationContext {
             source_mac: received.source_mac.clone(),
             source_network: received.source_network.clone(),
-            provenance: received.provenance,
-            trust: MutationTrust::from_provenance(received.provenance),
+            provenance: received.provenance.clone(),
+            trust: MutationTrust::from_provenance(&received.provenance),
             invoke_id: Some(request.invoke_id),
             service_choice: request.service_choice.into(),
             target: MutationTarget::WriteProperty(write),
@@ -271,7 +301,7 @@ impl EndpointResponder {
         // ingress identity and provenance so a future drop is compile-visible.
         let _link_layer_group = received.link_layer_group;
         let _ingress_network = received.ingress_network;
-        let _provenance = received.provenance;
+        let _provenance = &received.provenance;
         let preserved_attributes = received.data_attributes.clone();
         if received.is_group {
             return Ok(false);
@@ -281,19 +311,15 @@ impl EndpointResponder {
         };
 
         let response_route = received.response_route();
-        let checked_response =
-            received.provenance.is_direct_peer() || received.direct_response.is_some();
+        let checked_response = response_route.requires_original_route();
         let invoke_id = request.invoke_id;
         let reinitialization = self
             .reinitialize
             .as_ref()
             .filter(|_| request.service_choice == ConfirmedServiceChoice::REINITIALIZE_DEVICE);
-        let mut response = if request.segmented {
-            Apdu::Abort(AbortPdu {
-                sent_by_server: true,
-                invoke_id,
-                abort_reason: AbortReason::SEGMENTATION_NOT_SUPPORTED,
-            })
+        let mut after_reply = reinitialize::AfterReply::default();
+        let response = if request.segmented {
+            reply::refuse_segmented(invoke_id)
         } else if request.service_choice == ConfirmedServiceChoice::READ_PROPERTY {
             confirmed_response::read_property_response(
                 self.db(),
@@ -302,6 +328,7 @@ impl EndpointResponder {
                 self.reinitialize.is_some(),
                 self.registered_port.as_ref().map(|(oid, _)| *oid),
                 self.read_work_limit,
+                self.identity.as_ref(),
             )
             .await
         } else if let Some((handler, password)) = reinitialization {
@@ -313,16 +340,25 @@ impl EndpointResponder {
             // Close may win while the request waits for the database owner;
             // it is refused then, before the handler runs.
             let still_open = || self.ensure_open();
-            reinitialize::response(
+            let (reply, hooks) = reinitialize::response(
                 self.db(),
                 &request,
                 password,
                 Some(handler),
                 requester,
                 still_open,
-                |_| {}, // Endpoint sessions have no server DCC state.
+                // Endpoint sessions have no server DCC state; only the
+                // Audit record follows acceptance.
+                |context, db| {
+                    let operation = reinitialize::audit_operation(context.state);
+                    if let (Some(audit), Some(operation)) = (&self.reinitialize_audit, operation) {
+                        audit(db, operation, &context.audit_source());
+                    }
+                },
             )
-            .await
+            .await;
+            after_reply = hooks;
+            reply
         } else if request.service_choice == ConfirmedServiceChoice::WRITE_PROPERTY
             && self.device_writes.is_some()
         {
@@ -331,17 +367,10 @@ impl EndpointResponder {
                     invoke_id,
                     service_choice: request.service_choice,
                 }),
-                Err(error) => confirmed_response::error_apdu_from_error(
-                    invoke_id,
-                    request.service_choice,
-                    &error,
-                ),
+                Err(error) => reply::error_apdu(invoke_id, request.service_choice, &error),
             }
         } else {
-            Apdu::Reject(RejectPdu {
-                invoke_id,
-                reject_reason: RejectReason::UNRECOGNIZED_SERVICE,
-            })
+            reply::unrecognized_service(invoke_id)
         };
 
         // Sizing uses the saved link limits after application execution. Invalid
@@ -349,18 +378,37 @@ impl EndpointResponder {
         let max_apdu = response_route
             .max_apdu_length(request.max_apdu_length, received.source_network.as_ref())
             .unwrap_or(request.max_apdu_length);
+        let response = reply::fit(response, max_apdu);
         let mut encoded = BytesMut::new();
         encode_apdu(&mut encoded, &response)?;
-        if matches!(response, Apdu::ComplexAck(_)) && encoded.len() > usize::from(max_apdu) {
-            response = Apdu::Abort(AbortPdu {
-                sent_by_server: true,
-                invoke_id,
-                abort_reason: AbortReason::SEGMENTATION_NOT_SUPPORTED,
-            });
-            encoded.clear();
-            encode_apdu(&mut encoded, &response)?;
+
+        if !response_route.requires_direct_response()
+            && let Some(reply_tx) = received.reply_tx.take()
+        {
+            // An admitted ordinary DER request may still return its
+            // protocol refusal after role closure. Captured router replies
+            // additionally require this responder's original authority.
+            if checked_response {
+                self.ensure_open()?;
+            }
+            if !self.egress.is_open() {
+                return Err(shutdown_error());
+            }
+            let wrapped = response_route.encode_reply_npdu(
+                &encoded,
+                received.source_network.as_ref(),
+                false,
+                NetworkPriority::Normal,
+            )?;
+            // A ReinitializeDevice restart waits for the handoff (#1565).
+            if reply_tx.send(wrapped.freeze()).is_ok() {
+                after_reply.run();
+            }
+            return Ok(true);
         }
 
+        // Each send below completes when the transport has taken the reply;
+        // a failed one returns early, dropping the after-reply hooks unrun.
         if checked_response {
             drop(received.reply_tx.take());
             self.egress
@@ -373,27 +421,7 @@ impl EndpointResponder {
                 .complete()
                 .await
                 .result?;
-            return Ok(true);
-        }
-
-        if let Some(reply_tx) = received.reply_tx.take() {
-            let apdu = encoded.freeze();
-            let npdu = Npdu {
-                is_network_message: false,
-                expecting_reply: false,
-                priority: NetworkPriority::NORMAL,
-                destination: received.source_network,
-                source: None,
-                payload: apdu,
-                ..Npdu::default()
-            };
-            let mut wrapped = BytesMut::new();
-            encode_npdu(&mut wrapped, &npdu)?;
-            let _ = reply_tx.send(wrapped.freeze());
-            return Ok(true);
-        }
-
-        if let Some(source_network) = received.source_network {
+        } else if let Some(source_network) = received.source_network {
             self.egress
                 .send_apdu(
                     encoded.to_vec(),
@@ -403,23 +431,24 @@ impl EndpointResponder {
                         router_mac: received.source_mac,
                     },
                     false,
-                    NetworkPriority::NORMAL,
+                    NetworkPriority::Normal,
                     preserved_attributes,
                 )
                 .await?;
-            return Ok(true);
+        } else {
+            self.egress
+                .send_apdu(
+                    encoded.to_vec(),
+                    EndpointApduDestination::Direct {
+                        destination_mac: received.source_mac,
+                    },
+                    false,
+                    NetworkPriority::Normal,
+                    preserved_attributes,
+                )
+                .await?;
         }
-        self.egress
-            .send_apdu(
-                encoded.to_vec(),
-                EndpointApduDestination::Direct {
-                    destination_mac: received.source_mac,
-                },
-                false,
-                NetworkPriority::NORMAL,
-                preserved_attributes,
-            )
-            .await?;
+        after_reply.run();
         Ok(true)
     }
 

@@ -1,15 +1,15 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use bacnet_encoding::apdu::{self, encode_apdu, AbortPdu, Apdu, SegmentAck, SimpleAck};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::apdu::{self, AbortPdu, Apdu, SegmentAck, SimpleAck, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_transport::port::{ReceivedNpdu, TransportPort, TransportProvenance};
-use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
-use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
+use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
+use bacnet_types::error::{Error, RemoteError};
 use bytes::{Bytes, BytesMut};
-use tokio::sync::{mpsc, Notify};
-use tokio::time::{timeout, Duration};
+use tokio::sync::{Notify, mpsc};
+use tokio::time::{Duration, timeout};
 
 use super::{BACnetClient, ClientConfig};
 
@@ -160,13 +160,13 @@ async fn ready_terminal_before_final_send_aborts_without_polling_final_send() {
     assert_eq!(abort.abort_reason, AbortReason::INVALID_APDU_IN_THIS_STATE);
     assert!(matches!(
         result,
-        Err(Error::Abort { reason })
-            if reason == AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw()
+        Err(Error::Remote(RemoteError::Abort { reason }))
+            if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
     ));
     assert!(
         !final_segment_polled.load(Ordering::Acquire),
         "the final send future was polled after the premature response completed the transaction"
     );
-    assert_eq!(client.tsm.lock().await.pending_count(), 0);
+    assert_eq!(client.tsm.lock().pending_count(), 0);
     client.stop().await.unwrap();
 }

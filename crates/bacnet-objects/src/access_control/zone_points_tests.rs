@@ -2,8 +2,10 @@
 //! BACnetDeviceObjectReference naming Access Points (Clauses 12.32.23 and
 //! 12.32.24, #1306).
 
+use crate::property_metadata::{is_array_property, is_list_property, is_writable_property};
 use bacnet_types::constructed::BACnetDeviceObjectReference;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::RemoteError;
 
 use super::*;
 
@@ -25,9 +27,9 @@ fn read(zone: &AccessZoneObject, property: P) -> PropertyValue {
 
 fn assert_value_out_of_range(result: Result<(), Error>) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::VALUE_OUT_OF_RANGE),
         "expected PROPERTY / VALUE_OUT_OF_RANGE, got {result:?}"
     );
 }
@@ -57,15 +59,15 @@ fn access_zone_entry_and_exit_points_serve_device_object_references() {
         ])])
     );
     for property in [P::ENTRY_POINTS, P::EXIT_POINTS] {
-        assert!(zone.is_list_property(property));
-        assert!(!zone.is_array_property(property));
-        assert!(!zone.is_writable_property(property));
+        assert!(is_list_property(&zone, property));
+        assert!(!is_array_property(&zone, property));
+        assert!(!is_writable_property(&zone, property));
         // Table 12-37 codes both R, so a client's write is refused.
         let served = read(&zone, property);
         let result = zone.write_property(property, None, served.clone(), None);
         assert!(
-            matches!(result, Err(Error::Protocol { code, .. })
-                if code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32),
+            matches!(result, Err(Error::Remote(RemoteError::Error { code, .. }))
+                if code == ErrorCode::WRITE_ACCESS_DENIED),
             "{property:?}: {result:?}"
         );
         assert_eq!(read(&zone, property), served);

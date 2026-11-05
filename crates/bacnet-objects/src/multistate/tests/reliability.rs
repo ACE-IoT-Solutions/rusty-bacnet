@@ -1,8 +1,14 @@
 //! Multi-state Number_Of_States configuration and object-owned Reliability.
 
 use super::super::*;
+use crate::property_metadata::is_writable_property;
+#[cfg(feature = "event-reporting")]
+use crate::traits::EventReporting as _;
 use crate::traits::ReliabilityEvaluation;
-use bacnet_types::enums::{ErrorClass, ErrorCode, EventState, Reliability};
+#[cfg(feature = "event-reporting")]
+use bacnet_types::enums::EventState;
+use bacnet_types::enums::{ErrorClass, ErrorCode, Reliability};
+use bacnet_types::error::RemoteError;
 
 fn read_reliability(object: &dyn BACnetObject) -> u32 {
     match object
@@ -58,14 +64,14 @@ fn write_unsigned(object: &mut dyn BACnetObject, property: PropertyIdentifier, v
 fn assert_unknown_property(result: Result<PropertyValue, Error>) {
     assert!(matches!(
         result,
-        Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
+        Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::UNKNOWN_PROPERTY
     ));
 }
 
 macro_rules! assert_number_of_states_policy {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         object
             .write_property(
@@ -115,9 +121,11 @@ macro_rules! assert_number_of_states_policy {
                 PropertyValue::CharacterString("Retained two".into()),
             ]
         );
-        assert!(object
-            .read_property(PropertyIdentifier::STATE_TEXT, Some(3))
-            .is_err());
+        assert!(
+            object
+                .read_property(PropertyIdentifier::STATE_TEXT, Some(3))
+                .is_err()
+        );
 
         object.set_number_of_states(4).unwrap();
         assert_eq!(
@@ -136,21 +144,28 @@ macro_rules! assert_number_of_states_policy {
                 .unwrap(),
             PropertyValue::CharacterString("State 4".into())
         );
-        assert!(object
-            .read_property(PropertyIdentifier::STATE_TEXT, Some(5))
-            .is_err());
+        assert!(
+            object
+                .read_property(PropertyIdentifier::STATE_TEXT, Some(5))
+                .is_err()
+        );
 
-        assert!(object
-            .write_property(
-                PropertyIdentifier::NUMBER_OF_STATES,
-                None,
-                PropertyValue::Unsigned(3),
-                None,
-            )
-            .is_err());
+        assert!(
+            object
+                .write_property(
+                    PropertyIdentifier::NUMBER_OF_STATES,
+                    None,
+                    PropertyValue::Unsigned(3),
+                    None,
+                )
+                .is_err()
+        );
         // A whole State_Text write changes it (#1443), but no write naming it
         // is taken, so it doesn't count as writable.
-        assert!(!object.is_writable_property(PropertyIdentifier::NUMBER_OF_STATES));
+        assert!(!is_writable_property(
+            &object,
+            PropertyIdentifier::NUMBER_OF_STATES
+        ));
         assert_eq!(
             read_unsigned(&object, PropertyIdentifier::NUMBER_OF_STATES),
             4,
@@ -176,7 +191,10 @@ fn msi_recomputes_range_reliability_synchronously_and_recovers() {
         Reliability::MULTI_STATE_OUT_OF_RANGE.to_raw()
     );
     assert_eq!(
-        msi.evaluate_reliability_internal().unwrap(),
+        msi.reliability_eval()
+            .unwrap()
+            .evaluate_reliability()
+            .unwrap(),
         ReliabilityEvaluation::Unchanged,
         "the periodic safety-net hook must normally have nothing left to do"
     );
@@ -382,35 +400,45 @@ fn msv_configuration_sources_recompute_immediately_and_fault_values_stays_absent
         Reliability::NO_FAULT_DETECTED.to_raw(),
         "the list write route must funnel through the same synchronous setter"
     );
-    assert!(alarms
-        .write_property(
-            PropertyIdentifier::ALARM_VALUES,
-            None,
-            PropertyValue::List(vec![PropertyValue::Unsigned(4)]),
-            None,
-        )
-        .is_err());
+    assert!(
+        alarms
+            .write_property(
+                PropertyIdentifier::ALARM_VALUES,
+                None,
+                PropertyValue::List(vec![PropertyValue::Unsigned(4)]),
+                None,
+            )
+            .is_err()
+    );
     assert_eq!(
         read_reliability(&alarms),
         Reliability::NO_FAULT_DETECTED.to_raw()
     );
 
     assert_unknown_property(alarms.read_property(PropertyIdentifier::FAULT_VALUES, None));
-    assert!(!alarms
-        .property_list()
-        .contains(&PropertyIdentifier::FAULT_VALUES));
-    assert!(!alarms.is_writable_property(PropertyIdentifier::FAULT_VALUES));
+    assert!(!crate::property_metadata::has_property(
+        &alarms.property_metadata(),
+        PropertyIdentifier::FAULT_VALUES
+    ));
+    assert!(!is_writable_property(
+        &alarms,
+        PropertyIdentifier::FAULT_VALUES
+    ));
 }
 
 #[test]
 fn multistate_evaluator_recovers_only_faults_it_owns() {
     let mut msi = MultiStateInputObject::new(1, "MSI-owner", 2).unwrap();
-    msi.set_reliability_internal(Reliability::NO_SENSOR)
+    msi.reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::NO_SENSOR)
         .unwrap();
     msi.set_present_value(3);
     assert_eq!(read_reliability(&msi), Reliability::NO_SENSOR.to_raw());
 
-    msi.set_reliability_internal(Reliability::MULTI_STATE_OUT_OF_RANGE)
+    msi.reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::MULTI_STATE_OUT_OF_RANGE)
         .unwrap();
     msi.set_present_value(3);
     msi.set_present_value(1);
@@ -420,7 +448,9 @@ fn multistate_evaluator_recovers_only_faults_it_owns() {
         "an equal numeric Reliability without ownership must not be claimed or cleared"
     );
 
-    msi.set_reliability_internal(Reliability::NO_FAULT_DETECTED)
+    msi.reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::NO_FAULT_DETECTED)
         .unwrap();
     msi.set_present_value(3);
     assert_eq!(
@@ -515,6 +545,7 @@ fn oos_and_inhibit_suppress_mutations_then_release_current_state_synchronously()
     );
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn synchronous_reliability_is_observed_by_the_existing_intrinsic_event_kernel() {
     let mut msi = MultiStateInputObject::new(1, "MSI-events", 2).unwrap();

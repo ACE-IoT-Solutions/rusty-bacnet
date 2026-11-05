@@ -4,9 +4,10 @@
 
 use super::super::*;
 use super::{make_dest_device, make_time};
+use bacnet_types::MacAddr;
 use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};
 use bacnet_types::enums::ErrorCode;
-use bacnet_types::MacAddr;
+use bacnet_types::error::RemoteError;
 
 #[test]
 fn object_type_is_notification_class() {
@@ -119,7 +120,7 @@ fn write_notification_class_wrong_type() {
 #[test]
 fn property_list_contains_recipient_list() {
     let nc = NotificationClass::new(1, "NC-1").unwrap();
-    let props = nc.property_list();
+    let props = crate::test_rows::listed(&nc.property_metadata());
     assert!(props.contains(&PropertyIdentifier::NOTIFICATION_CLASS));
     assert!(props.contains(&PropertyIdentifier::PRIORITY));
     assert!(props.contains(&PropertyIdentifier::ACK_REQUIRED));
@@ -350,8 +351,8 @@ fn out_of_service_is_unknown() {
     ] {
         assert!(matches!(
             result,
-            Err(Error::Protocol { code, .. })
-                if code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
+            Err(Error::Remote(RemoteError::Error { code, .. }))
+                if code == ErrorCode::UNKNOWN_PROPERTY
         ));
     }
     assert_eq!(

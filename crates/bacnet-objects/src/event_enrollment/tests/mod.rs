@@ -1,11 +1,16 @@
+mod acknowledge;
 mod alert;
 mod atomic_commit;
 mod detection_enable;
 mod enrollment;
 mod enrollment_summary;
+mod event_type;
 mod fault_parameters;
+mod modelled_parameters;
 mod object_name;
 mod reliability_commit;
+mod reporting_options;
 mod status_flags;
 mod time_delay_normal;
 mod timestamps;
+mod writable_rows;

@@ -10,18 +10,21 @@
 //! The capture link carries B/IP-shaped MACs: the session is `10.0.0.1`, the
 //! peer `10.0.0.3`, behind router `10.0.0.9` when routed. The number is
 //! learned through the session's own Network-Number-Is intake.
+//!
+//! The capture link is in memory, so every test runs on paused time and its
+//! timeouts bound virtual time, not the host's speed (#2298).
 use super::*;
 use crate::roles::EndpointApduDestination;
-use bacnet_encoding::apdu::{decode_apdu, encode_apdu, ComplexAck, ConfirmedRequest};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
+use bacnet_encoding::apdu::{ComplexAck, ConfirmedRequest, decode_apdu, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu};
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::bvll::encode_bip_mac;
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
-use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
 use bacnet_types::MacAddr;
+use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
 use bytes::{Bytes, BytesMut};
 use std::net::{Ipv4Addr, SocketAddrV4};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 #[path = "local_network_source_tests.rs"]
 mod source;
@@ -92,10 +95,10 @@ impl TransportPort for Capture {
         true
     }
     fn bip_port(&self) -> Option<bacnet_transport::port::BipPort> {
-        Some(bacnet_transport::port::BipPort {
-            endpoint: host(SELF),
-            mode: bacnet_types::bip_port::BipPortMode::Normal,
-        })
+        Some(bacnet_transport::port::BipPort::new(
+            host(SELF),
+            bacnet_types::bip_port::BipPortMode::Normal,
+        ))
     }
     fn retain_network_port_lease_internal(&mut self, lease: Arc<()>) -> Result<(), Error> {
         self.lease = Some(lease);
@@ -313,7 +316,8 @@ fn ack(request: &ConfirmedRequest, value: u8) -> Apdu {
         property_array_index: None,
         property_value: vec![0x21, value],
     }
-    .encode(&mut service);
+    .encode(&mut service)
+    .unwrap();
     Apdu::ComplexAck(ComplexAck {
         segmented: false,
         more_follows: false,
@@ -340,7 +344,7 @@ fn routed_by_broadcast(network: u16) -> EndpointApduDestination {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn routed_reads_naming_this_network_go_local_and_a_direct_or_relayed_answer_completes_them() {
     for role in [SessionRole::ClientOnly, SessionRole::Both] {
         let mut endpoint = Endpoint::started(role, true).await;
@@ -372,7 +376,7 @@ async fn routed_reads_naming_this_network_go_local_and_a_direct_or_relayed_answe
 /// from another network, from another station here or for another invoke ID
 /// complete nothing, so the station's own answer after them is the one the
 /// read returns.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_relayed_answer_naming_another_network_station_or_invoke_id_completes_nothing() {
     for role in [SessionRole::ClientOnly, SessionRole::Both] {
         let mut endpoint = Endpoint::started(role, true).await;
@@ -410,7 +414,7 @@ async fn a_relayed_answer_naming_another_network_station_or_invoke_id_completes_
 /// While the number is unknown nothing changes: an answer relayed with SNET
 /// 77 is not from the MAC a direct read went to, so only that MAC's own
 /// answer completes it.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn with_the_number_unknown_a_relayed_answer_leaves_a_direct_read_open() {
     for role in [SessionRole::ClientOnly, SessionRole::Both] {
         let mut endpoint = Endpoint::started(role, false).await;
@@ -437,7 +441,7 @@ async fn with_the_number_unknown_a_relayed_answer_leaves_a_direct_read_open() {
 /// learned before the answer comes back, the answer the router relays with
 /// this network as its SNET still completes it, as it would have before
 /// (#1465).
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_read_routed_before_the_number_was_learned_completes_on_its_relayed_answer() {
     for role in [SessionRole::ClientOnly, SessionRole::Both] {
         let mut endpoint = Endpoint::started(role, false).await;
@@ -455,7 +459,7 @@ async fn a_read_routed_before_the_number_was_learned_completes_on_its_relayed_an
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn routed_reads_keep_their_dnet_for_another_network_or_an_unknown_number() {
     for role in [SessionRole::ClientOnly, SessionRole::Both] {
         for learned in [true, false] {
@@ -485,7 +489,7 @@ async fn routed_reads_keep_their_dnet_for_another_network_or_an_unknown_number()
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_registered_ports_configured_number_is_local_from_startup() {
     let port = oid(ObjectType::NETWORK_PORT, 2);
     let identity = crate::DeviceIdentity::new(123, 42)
@@ -497,7 +501,7 @@ async fn a_registered_ports_configured_number_is_local_from_startup() {
     endpoint.session = endpoint
         .session
         .with_database(db)
-        .with_identity(identity)
+        .device(identity)
         .with_registered_network_port(port);
     // No Number control arrives: the port's number is published at startup.
     endpoint.start(false).await;
@@ -514,7 +518,7 @@ async fn a_registered_ports_configured_number_is_local_from_startup() {
     endpoint.stop().await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn answers_keep_the_route_their_request_arrived_by() {
     for role in [SessionRole::ServerOnly, SessionRole::Both] {
         let mut endpoint = Endpoint::started(role, true).await;

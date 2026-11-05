@@ -6,6 +6,8 @@
 //! that it shares one idempotent [`restore`] with normal exit and signal exit,
 //! and so its ordering is testable: it restores the terminal first, then runs
 //! the previous hook, which prints the panic message on a usable screen.
+//! A panic on the threads that serve attached agents' MCP sessions is only
+//! logged: it ends that agent's session, not the TUI (#2203).
 
 use std::ffi::OsStr;
 use std::io::{self, IsTerminal};
@@ -15,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+use ratatui::crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use ratatui::{DefaultTerminal, Terminal};
 
 /// True while raw mode and the alternate screen are on.
@@ -61,15 +63,37 @@ pub(crate) fn check_terminal() -> Result<(), String> {
 /// A boxed panic hook, as `std::panic::take_hook` returns it.
 pub(crate) type PanicHook = Box<dyn Fn(&PanicHookInfo<'_>) + Sync + Send + 'static>;
 
-/// A hook that runs `restore` and then `previous`.
+/// A hook that runs `restore` and then `previous`, except on an attached
+/// agent's session thread ([`restores_terminal`]), where it logs the panic
+/// and leaves the terminal and stderr alone.
 pub(crate) fn chain_panic_hook(
     previous: PanicHook,
     restore: impl Fn() + Sync + Send + 'static,
 ) -> PanicHook {
     Box::new(move |info| {
+        if !restores_terminal(std::thread::current().name()) {
+            tracing::error!("an attached agent's MCP session panicked: {info}");
+            return;
+        }
         restore();
         previous(info);
     })
+}
+
+/// Whether a panic on the thread named `thread` restores the terminal:
+/// yes, unless the thread serves attached agents' MCP sessions
+/// (`bacnet_mcp::attach::SESSION_THREADS`), whose panic ends only the
+/// agent's session.
+pub(crate) fn restores_terminal(thread: Option<&str>) -> bool {
+    #[cfg(feature = "mcp")]
+    {
+        !thread.is_some_and(|name| name.starts_with(bacnet_mcp::attach::SESSION_THREADS))
+    }
+    #[cfg(not(feature = "mcp"))]
+    {
+        let _ = thread;
+        true
+    }
 }
 
 /// Enter raw mode and the alternate screen, after installing the panic hook.
@@ -138,7 +162,7 @@ impl Signals {
     pub(crate) fn install() -> io::Result<Self> {
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{signal, SignalKind};
+            use tokio::signal::unix::{SignalKind, signal};
             let exit = |name, number: i32| SignalExit {
                 name,
                 code: 128 + number,
@@ -216,13 +240,17 @@ mod tests {
             "Windows has no TERM"
         );
         for (stdin, stdout) in [(false, true), (true, false), (false, false)] {
-            assert!(unusable_terminal(stdin, stdout, None)
-                .unwrap()
-                .contains("must both be a terminal"));
+            assert!(
+                unusable_terminal(stdin, stdout, None)
+                    .unwrap()
+                    .contains("must both be a terminal")
+            );
         }
-        assert!(unusable_terminal(true, true, Some(OsStr::new("dumb")))
-            .unwrap()
-            .contains("dumb"));
+        assert!(
+            unusable_terminal(true, true, Some(OsStr::new("dumb")))
+                .unwrap()
+                .contains("dumb")
+        );
     }
 
     #[test]
@@ -244,6 +272,48 @@ mod tests {
         std::panic::set_hook(original);
         assert!(result.is_err());
         assert_eq!(*order.lock().unwrap(), ["restore", "previous hook"]);
+    }
+
+    /// The TUI's own threads restore the terminal; an attached agent's
+    /// session threads don't.
+    #[test]
+    fn only_the_tuis_own_threads_restore_the_terminal() {
+        assert!(restores_terminal(None));
+        assert!(restores_terminal(Some("main")));
+        assert!(restores_terminal(Some("tokio-runtime-worker")));
+        #[cfg(feature = "mcp")]
+        assert!(!restores_terminal(Some(&format!(
+            "{}-1",
+            bacnet_mcp::attach::SESSION_THREADS
+        ))));
+    }
+
+    /// A panic on an agent's session thread leaves the terminal and the
+    /// previous hook alone.
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn a_panic_on_an_agents_thread_leaves_the_terminal_alone() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let previous: PanicHook = {
+            let order = Arc::clone(&order);
+            Box::new(move |_| order.lock().unwrap().push("previous hook"))
+        };
+        let hook = {
+            let order = Arc::clone(&order);
+            chain_panic_hook(previous, move || order.lock().unwrap().push("restore"))
+        };
+        let original = std::panic::take_hook();
+        std::panic::set_hook(hook);
+        let name = format!("{}-7", bacnet_mcp::attach::SESSION_THREADS);
+        let agent = std::thread::Builder::new()
+            .name(name)
+            .spawn(|| panic!("an agent's bug"))
+            .unwrap()
+            .join();
+        std::panic::set_hook(original);
+        assert!(agent.is_err());
+        let order = order.lock().unwrap();
+        assert!(order.is_empty(), "{order:?}");
     }
 
     #[test]

@@ -26,10 +26,10 @@ pub const EXPECTED: Summary = Summary {
     // next master, which is the peer. The peer answers, so the token goes to
     // it. Then the answer to the peer's request.
     sent: [
-        Some((FrameType::BACnetDataNotExpectingReply, PEER)),
-        Some((FrameType::PollForMaster, PEER)),
-        Some((FrameType::Token, PEER)),
-        Some((FrameType::BACnetDataNotExpectingReply, PEER)),
+        Some((FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, PEER)),
+        Some((FrameType::POLL_FOR_MASTER, PEER)),
+        Some((FrameType::TOKEN, PEER)),
+        Some((FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, PEER)),
         None,
         None,
         None,

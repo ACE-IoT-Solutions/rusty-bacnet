@@ -1,5 +1,7 @@
 //! Per-element pre-state selection and successful policy-change exceptions.
 use super::*;
+use bacnet_objects::property_metadata::has_property;
+use bacnet_types::error::RemoteError;
 
 pub(super) struct WriteSelection {
     ordinary: bool,
@@ -26,7 +28,10 @@ impl WriteSelection {
                     let Some(object) = db.get(&oid) else {
                         return false;
                     };
-                    let after = object.audit_object_policy_internal();
+                    let after = object
+                        .audit_policy()
+                        .map(|policy| policy.object_policy())
+                        .unwrap_or_default();
                     match property {
                         PropertyIdentifier::AUDIT_LEVEL => before.level != after.level,
                         PropertyIdentifier::AUDITABLE_OPERATIONS => {
@@ -45,13 +50,11 @@ impl<T: TransportPort + 'static> WriteCommitObserver for WriteAudit<'_, T> {
             return;
         };
         let reporter = &selected_reporter.configuration;
-        let device = db.local_device().identifier();
-        let route = device
-            .and_then(|device| recipient(db, device))
+        let device = crate::local_device::initiating_device(&self.config.device);
+        let route = recipient(db, device)
             .and_then(|value| self.transactions.audit_routes.get()?.resolve(&value));
         let status = Arc::clone(&selected_reporter.status);
-        status.set_configured(device.is_some() && route.is_some());
-        let Some(device) = device else { return };
+        status.set_configured(route.is_some());
         let Some(object) = db.get(&write.oid) else {
             return;
         };
@@ -65,11 +68,15 @@ impl<T: TransportPort + 'static> WriteCommitObserver for WriteAudit<'_, T> {
         // the write.
         let command_priority = (write.property == PropertyIdentifier::PRESENT_VALUE
             && (write.oid.object_type() == ObjectType::CHANNEL
-                || object
-                    .property_list()
-                    .contains(&PropertyIdentifier::PRIORITY_ARRAY)))
+                || has_property(
+                    &object.property_metadata(),
+                    PropertyIdentifier::PRIORITY_ARRAY,
+                )))
         .then_some(write.priority.unwrap_or(16));
-        let object_policy = object.audit_object_policy_internal();
+        let object_policy = object
+            .audit_policy()
+            .map(|policy| policy.object_policy())
+            .unwrap_or_default();
         let policy = object_policy.effective_internal(reporter);
         let ordinary = if reporter_attempt {
             true
@@ -94,7 +101,7 @@ impl<T: TransportPort + 'static> WriteCommitObserver for WriteAudit<'_, T> {
         let selection = WriteSelection {
             ordinary,
             captured_revision: object
-                .audit_reporter_internal()
+                .audit_reporter()
                 .filter(|r| r.captures_changes_internal())
                 .map(|r| {
                     let status = r.status_internal();
@@ -103,11 +110,16 @@ impl<T: TransportPort + 'static> WriteCommitObserver for WriteAudit<'_, T> {
                 }),
             change: mandatory.then_some((write.oid, write.property, object_policy)),
         };
+        // An index on a scalar reads the whole value, as before objects
+        // refused that index themselves (#2274).
+        let read_index = write.array_index.filter(|_| {
+            bacnet_objects::property_metadata::is_array_property(object, write.property)
+        });
         let current_value = object
-            .read_property(write.property, write.array_index)
+            .read_property(write.property, read_index)
             .ok()
             .and_then(|value| small_value(&value));
-        self.pending = Some(PendingWrite {
+        self.pending = Some(Box::new(PendingWrite {
             delay: (!reporter_attempt)
                 .then_some(reporter.maximum_send_delay)
                 .flatten(),
@@ -139,7 +151,7 @@ impl<T: TransportPort + 'static> WriteCommitObserver for WriteAudit<'_, T> {
                 current_value,
                 result: None,
             },
-        });
+        }));
     }
 
     fn commit_policy(
@@ -160,14 +172,13 @@ impl<T: TransportPort + 'static> WriteCommitObserver for WriteAudit<'_, T> {
         // particular, never manufacture an Error for a timeout/Reject/Abort.
         if matches!(
             error,
-            Error::Timeout(_) | Error::Reject { .. } | Error::Abort { .. }
+            Error::Timeout(_)
+                | Error::Remote(RemoteError::Reject { .. })
+                | Error::Remote(RemoteError::Abort { .. })
         ) {
             self.pending = None;
             return;
         }
-        self.complete(
-            db,
-            Some(super::requests::confirmed_response::error_fields(error)),
-        );
+        self.complete(db, Some(bacnet_device_core::reply::error_fields(error)));
     }
 }

@@ -3,7 +3,8 @@
 //! evaluator drives (#163/#137/#166; ASHRAE 135-2020 Clauses 12.12, 13.3).
 
 use super::super::*;
-use bacnet_types::bitstring::EventTransitionBits;
+use crate::property_metadata::is_writable_property;
+use bacnet_types::error::RemoteError;
 
 /// Absent a write, the property reads back the `Event_Parameters`
 /// `Time_Delay` — the Clause 13.3 fallback to pTimeDelay,
@@ -34,7 +35,10 @@ fn time_delay_normal_defaults_to_event_parameters_time_delay() {
 #[test]
 fn time_delay_normal_write_round_trips_and_is_writable() {
     let mut ee = EventEnrollmentObject::new(1, "EE-1", EventType::CHANGE_OF_BITSTRING).unwrap();
-    assert!(ee.is_writable_property(PropertyIdentifier::TIME_DELAY_NORMAL));
+    assert!(is_writable_property(
+        &ee,
+        PropertyIdentifier::TIME_DELAY_NORMAL
+    ));
     ee.write_property(
         PropertyIdentifier::TIME_DELAY_NORMAL,
         None,
@@ -62,8 +66,10 @@ fn time_delay_normal_write_round_trips_and_is_writable() {
 fn time_delay_normal_in_property_list() {
     let ee = EventEnrollmentObject::new(1, "EE-1", EventType::CHANGE_OF_BITSTRING).unwrap();
     assert!(
-        ee.property_list()
-            .contains(&PropertyIdentifier::TIME_DELAY_NORMAL),
+        crate::property_metadata::has_property(
+            &ee.property_metadata(),
+            PropertyIdentifier::TIME_DELAY_NORMAL
+        ),
         "Table 12-14 lists the property (O): it must be advertised"
     );
 }
@@ -91,12 +97,12 @@ fn time_delay_normal_write_validation() {
         )
         .unwrap_err()
     {
-        bacnet_types::error::Error::Protocol { class, code } => {
+        bacnet_types::error::Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(
                 (class, code),
                 (
-                    bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32,
-                    bacnet_types::enums::ErrorCode::INVALID_DATA_TYPE.to_raw() as u32
+                    bacnet_types::enums::ErrorClass::PROPERTY,
+                    bacnet_types::enums::ErrorCode::INVALID_DATA_TYPE
                 ),
                 "Unsigned-typed property fed a Real: PROPERTY/INVALID_DATA_TYPE"
             );
@@ -112,12 +118,12 @@ fn time_delay_normal_write_validation() {
         )
         .unwrap_err()
     {
-        bacnet_types::error::Error::Protocol { class, code } => {
+        bacnet_types::error::Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(
                 (class, code),
                 (
-                    bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32,
-                    bacnet_types::enums::ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32
+                    bacnet_types::enums::ErrorClass::PROPERTY,
+                    bacnet_types::enums::ErrorCode::VALUE_OUT_OF_RANGE
                 ),
                 "unrepresentable Unsigned: PROPERTY/VALUE_OUT_OF_RANGE"
             );
@@ -135,11 +141,12 @@ fn time_delay_normal_write_validation() {
 /// The evaluation-state round trip: pending countdown, COV baseline, and the
 /// last offnormal-causing value are owned by the object and reachable only
 /// through the internal channel.
+#[cfg(feature = "event-reporting")]
 #[test]
 fn enrollment_eval_state_round_trip() {
     let mut ee = EventEnrollmentObject::new(1, "EE-1", EventType::CHANGE_OF_BITSTRING).unwrap();
     assert_eq!(
-        ee.enrollment_eval_state_internal(),
+        ee.enrollment_eval().map(|e| e.eval_state()),
         Some(EventEnrollmentEvalState::default()),
         "construction starts empty"
     );
@@ -159,24 +166,40 @@ fn enrollment_eval_state_round_trip() {
         cov_baseline: Some(PropertyValue::Real(2.5)),
         last_offnormal_value: Some(7),
     };
-    ee.set_enrollment_eval_state_internal(state.clone())
+    ee.enrollment_eval_mut()
+        .unwrap()
+        .set_eval_state(state.clone())
         .unwrap();
-    ee.set_enrollment_eval_source_internal(Some(source))
+    ee.enrollment_eval_mut()
+        .unwrap()
+        .set_eval_source(Some(source))
         .unwrap();
-    assert_eq!(ee.enrollment_eval_state_internal(), Some(state));
-    assert_eq!(ee.enrollment_eval_source_internal(), Some(Some(source)));
+    assert_eq!(ee.enrollment_eval().map(|e| e.eval_state()), Some(state));
+    assert_eq!(
+        ee.enrollment_eval().and_then(|e| e.eval_source()),
+        Some(Some(source))
+    );
 
     // Storing a cleared state clears.
-    ee.set_enrollment_eval_state_internal(EventEnrollmentEvalState::default())
+    ee.enrollment_eval_mut()
+        .unwrap()
+        .set_eval_state(EventEnrollmentEvalState::default())
         .unwrap();
-    ee.set_enrollment_eval_source_internal(None).unwrap();
+    ee.enrollment_eval_mut()
+        .unwrap()
+        .set_eval_source(None)
+        .unwrap();
     assert_eq!(
-        ee.enrollment_eval_state_internal(),
+        ee.enrollment_eval().map(|e| e.eval_state()),
         Some(EventEnrollmentEvalState::default())
     );
-    assert_eq!(ee.enrollment_eval_source_internal(), Some(None));
+    assert_eq!(
+        ee.enrollment_eval().and_then(|e| e.eval_source()),
+        Some(None)
+    );
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn configuration_setters_cancel_pending_countdowns() {
     let mut ee = EventEnrollmentObject::new(1, "EE-1", EventType::CHANGE_OF_BITSTRING).unwrap();
@@ -187,11 +210,13 @@ fn configuration_setters_cancel_pending_countdowns() {
         params_fingerprint: 2,
     };
     let seed = |ee: &mut EventEnrollmentObject| {
-        ee.set_enrollment_eval_state_internal(EventEnrollmentEvalState {
-            pending: Some(pending.clone()),
-            ..Default::default()
-        })
-        .unwrap();
+        ee.enrollment_eval_mut()
+            .unwrap()
+            .set_eval_state(EventEnrollmentEvalState {
+                pending: Some(pending.clone()),
+                ..Default::default()
+            })
+            .unwrap();
     };
 
     seed(&mut ee);
@@ -201,47 +226,57 @@ fn configuration_setters_cancel_pending_countdowns() {
         high_limit: 1.0,
         deadband: 0.0,
     });
-    assert!(ee
-        .enrollment_eval_state_internal()
-        .unwrap()
-        .pending
-        .is_none());
+    assert!(
+        ee.enrollment_eval()
+            .map(|e| e.eval_state())
+            .unwrap()
+            .pending
+            .is_none()
+    );
 
     seed(&mut ee);
     ee.set_time_delay_normal(Some(3));
-    assert!(ee
-        .enrollment_eval_state_internal()
-        .unwrap()
-        .pending
-        .is_none());
+    assert!(
+        ee.enrollment_eval()
+            .map(|e| e.eval_state())
+            .unwrap()
+            .pending
+            .is_none()
+    );
 
     seed(&mut ee);
     ee.set_object_property_reference(None).unwrap();
-    assert!(ee
-        .enrollment_eval_state_internal()
-        .unwrap()
-        .pending
-        .is_none());
+    assert!(
+        ee.enrollment_eval()
+            .map(|e| e.eval_state())
+            .unwrap()
+            .pending
+            .is_none()
+    );
 
     seed(&mut ee);
     let before = ee
         .read_property(PropertyIdentifier::EVENT_PARAMETERS, None)
         .unwrap();
-    assert!(ee
-        .write_property(
+    assert!(
+        ee.write_property(
             PropertyIdentifier::EVENT_PARAMETERS,
             None,
             PropertyValue::Unsigned(1),
             None
         )
-        .is_err());
+        .is_err()
+    );
     assert_eq!(
         ee.read_property(PropertyIdentifier::EVENT_PARAMETERS, None)
             .unwrap(),
         before
     );
     assert_eq!(
-        ee.enrollment_eval_state_internal().unwrap().pending,
+        ee.enrollment_eval()
+            .map(|e| e.eval_state())
+            .unwrap()
+            .pending,
         Some(pending)
     );
 }
@@ -249,6 +284,7 @@ fn configuration_setters_cancel_pending_countdowns() {
 /// Clause 13.2.2.1's disable reset covers the evaluation state: evaluation
 /// is suspended, so a stale countdown or baseline must not
 /// survive into the next enabled period.
+#[cfg(feature = "event-reporting")]
 #[test]
 fn disabling_detection_clears_eval_state_and_refuses_writes() {
     let mut ee = EventEnrollmentObject::new(1, "EE-1", EventType::CHANGE_OF_BITSTRING).unwrap();
@@ -257,19 +293,23 @@ fn disabling_detection_clears_eval_state_and_refuses_writes() {
         PropertyIdentifier::PRESENT_VALUE,
         Some(1),
     );
-    ee.set_enrollment_eval_source_internal(Some(source))
+    ee.enrollment_eval_mut()
+        .unwrap()
+        .set_eval_source(Some(source))
         .unwrap();
-    ee.set_enrollment_eval_state_internal(EventEnrollmentEvalState {
-        pending: Some(EventEnrollmentPending {
-            state: EventState::OFFNORMAL,
-            remaining: 1,
-            condition: 3,
-            params_fingerprint: 1,
-        }),
-        cov_baseline: Some(PropertyValue::Real(1.0)),
-        last_offnormal_value: Some(3),
-    })
-    .unwrap();
+    ee.enrollment_eval_mut()
+        .unwrap()
+        .set_eval_state(EventEnrollmentEvalState {
+            pending: Some(EventEnrollmentPending {
+                state: EventState::OFFNORMAL,
+                remaining: 1,
+                condition: 3,
+                params_fingerprint: 1,
+            }),
+            cov_baseline: Some(PropertyValue::Real(1.0)),
+            last_offnormal_value: Some(3),
+        })
+        .unwrap();
 
     ee.write_property(
         PropertyIdentifier::EVENT_DETECTION_ENABLE,
@@ -279,31 +319,37 @@ fn disabling_detection_clears_eval_state_and_refuses_writes() {
     )
     .unwrap();
     assert_eq!(
-        ee.enrollment_eval_state_internal(),
+        ee.enrollment_eval().map(|e| e.eval_state()),
         Some(EventEnrollmentEvalState::default()),
         "the disable reset clears the evaluation state"
     );
-    assert_eq!(ee.enrollment_eval_source_internal(), Some(None));
+    assert_eq!(
+        ee.enrollment_eval().and_then(|e| e.eval_source()),
+        Some(None)
+    );
 
     // And while disabled the internal write paths refuse — the invariant
-    // holds by construction, as with set_event_state_internal (#130).
-    assert!(ee
-        .set_enrollment_eval_state_internal(EventEnrollmentEvalState {
-            pending: Some(EventEnrollmentPending {
-                state: EventState::OFFNORMAL,
-                remaining: 1,
-                condition: 0,
-                params_fingerprint: 0,
-            }),
-            ..EventEnrollmentEvalState::default()
-        })
-        .is_err());
-    assert!(ee
-        .set_enrollment_eval_source_internal(Some(source))
-        .is_err());
-    assert!(ee
-        .set_acked_transitions_internal(EventTransitionBits::TO_OFFNORMAL, false)
-        .is_err());
+    // holds by construction (#130).
+    assert!(
+        ee.enrollment_eval_mut()
+            .unwrap()
+            .set_eval_state(EventEnrollmentEvalState {
+                pending: Some(EventEnrollmentPending {
+                    state: EventState::OFFNORMAL,
+                    remaining: 1,
+                    condition: 0,
+                    params_fingerprint: 0,
+                }),
+                ..EventEnrollmentEvalState::default()
+            })
+            .is_err()
+    );
+    assert!(
+        ee.enrollment_eval_mut()
+            .unwrap()
+            .set_eval_source(Some(source))
+            .is_err()
+    );
 
     // Re-enabling both reopens the channel and evaluates afresh (the first
     // COV sample after re-enable seeds a new baseline, not a transition).
@@ -314,68 +360,27 @@ fn disabling_detection_clears_eval_state_and_refuses_writes() {
         None,
     )
     .unwrap();
-    ee.set_enrollment_eval_state_internal(EventEnrollmentEvalState {
-        last_offnormal_value: Some(3),
-        ..EventEnrollmentEvalState::default()
-    })
-    .unwrap();
+    ee.enrollment_eval_mut()
+        .unwrap()
+        .set_eval_state(EventEnrollmentEvalState {
+            last_offnormal_value: Some(3),
+            ..EventEnrollmentEvalState::default()
+        })
+        .unwrap();
     assert_eq!(
-        ee.enrollment_eval_state_internal()
+        ee.enrollment_eval()
+            .map(|e| e.eval_state())
             .unwrap()
             .last_offnormal_value,
         Some(3)
     );
 }
 
-/// Clause 13.2.3's bit maintenance through the internal channel: set and
-/// clear per direction, never touching the other bits.
+/// An object that lends no evaluation capability keeps no evaluation state:
+/// the evaluator then has nothing to snapshot or store (#130).
 #[test]
-fn acked_transitions_internal_set_and_clear() {
-    let mut ee = EventEnrollmentObject::new(1, "EE-1", EventType::CHANGE_OF_BITSTRING).unwrap();
-    let read = |ee: &EventEnrollmentObject| match ee
-        .read_property(PropertyIdentifier::ACKED_TRANSITIONS, None)
-        .unwrap()
-    {
-        PropertyValue::BitString { data, .. } => EventTransitionBits::from_bacnet(&data),
-        other => panic!("BitString expected, got {other:?}"),
-    };
-
-    assert_eq!(read(&ee), EventTransitionBits::all());
-    ee.set_acked_transitions_internal(EventTransitionBits::TO_OFFNORMAL, false)
-        .unwrap();
-    assert_eq!(
-        read(&ee),
-        EventTransitionBits::TO_FAULT | EventTransitionBits::TO_NORMAL,
-        "TO_OFFNORMAL cleared (ack owed)"
-    );
-    ee.set_acked_transitions_internal(EventTransitionBits::TO_NORMAL, false)
-        .unwrap();
-    assert_eq!(
-        read(&ee),
-        EventTransitionBits::TO_FAULT,
-        "TO_NORMAL cleared"
-    );
-    ee.set_acked_transitions_internal(EventTransitionBits::TO_OFFNORMAL, true)
-        .unwrap();
-    assert_eq!(
-        read(&ee),
-        EventTransitionBits::TO_OFFNORMAL | EventTransitionBits::TO_FAULT,
-        "TO_OFFNORMAL re-set (acknowledged)"
-    );
-}
-
-/// The trait defaults keep custom downstream objects out of the channel:
-/// evaluation-state writes and ack maintenance fail closed
-/// (`OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED`), like `set_event_state_internal`
-/// (#130).
-#[test]
-fn eval_state_trait_defaults_reject() {
+fn eval_state_non_lenders_keep_none() {
     let mut object = crate::averaging::AveragingObject::new(1, "AVG-1").unwrap();
-    assert!(object.enrollment_eval_state_internal().is_none());
-    assert!(object
-        .set_enrollment_eval_state_internal(EventEnrollmentEvalState::default())
-        .is_err());
-    assert!(object
-        .set_acked_transitions_internal(EventTransitionBits::TO_OFFNORMAL, false)
-        .is_err());
+    assert!(object.enrollment_eval().is_none());
+    assert!(object.enrollment_eval_mut().is_none());
 }

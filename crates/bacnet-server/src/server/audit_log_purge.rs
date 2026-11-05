@@ -46,7 +46,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 ErrorClass::OBJECT,
                 ErrorCode::UNKNOWN_OBJECT,
             )),
-            Some(object) => match object.durable_writes_internal() {
+            Some(object) => match object.durable_writes() {
                 Some(writes) => writes.commit_purge(),
                 None => Err(protocol_error(
                     ErrorClass::OBJECT,
@@ -60,10 +60,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
 }
 
 fn protocol_error(class: ErrorClass, code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: class.to_raw() as u32,
-        code: code.to_raw() as u32,
-    }
+    Error::protocol(class, code)
 }
 
 #[cfg(test)]

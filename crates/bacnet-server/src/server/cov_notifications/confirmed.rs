@@ -4,7 +4,8 @@
 use super::super::cov_notify_context::CovFanoutHandles;
 use super::*;
 use crate::cov::timed::TimedClaim;
-use crate::cov::{BeginRefusal, CovObservation, CovSubscriptionKey, PreparedCovCompletion};
+use bacnet_device_core::cov::{BeginRefusal, Delivery, PreparedCovCompletion};
+use bacnet_device_core::cov::{CovObservation, CovSubscriptionKey};
 
 /// A confirmed notification ready for admission.
 pub(in crate::server) struct ConfirmedReport {
@@ -39,7 +40,90 @@ impl ConfirmedReport {
     }
 }
 
+/// What a confirmed report holds once admitted: its peer's in-flight slot
+/// and the transaction of its invoke ID.
+pub(in crate::server) struct ConfirmedLease {
+    guard: crate::cov::CovInFlightGuard,
+    operation: crate::server::notification_transactions::NotificationOperation,
+    result_rx: tokio::sync::oneshot::Receiver<CovAckResult>,
+}
+
+impl ConfirmedLease {
+    /// The invoke ID the report goes out under.
+    pub(in crate::server) fn invoke_id(&self) -> u8 {
+        self.operation.invoke_id()
+    }
+}
+
+/// A begun confirmed report, ready for its worker.
+pub(in crate::server) struct ConfirmedSend {
+    pub(in crate::server) lease: ConfirmedLease,
+    pub(in crate::server) flight: crate::cov::ConfirmedFlight,
+    /// The encoded APDU.
+    pub(in crate::server) buf: BytesMut,
+    /// Reference whose recipient and current route receive the notification.
+    pub(in crate::server) route: CovSubscriptionSnapshot,
+    pub(in crate::server) claim: Option<TimedClaim>,
+    pub(in crate::server) label: &'static str,
+    pub(in crate::server) revisits: Arc<crate::cov::CovRevisits>,
+    /// When the table began the report: its deadline, and the worker's
+    /// cutoff, run from it.
+    pub(in crate::server) begun: tokio::time::Instant,
+}
+
 impl<T: TransportPort + 'static> BACnetServer<T> {
+    /// Admit a confirmed report to `route` against the peer and global
+    /// in-flight limits and an invoke ID. A refusal is counted or logged,
+    /// and the report isn't sent. Synchronous: it takes leaf mutexes only,
+    /// so the Single fanout calls it under its database and table guards.
+    pub(in crate::server) fn admit_confirmed(
+        handles: &CovFanoutHandles<'_, '_, T>,
+        route: &CovSubscriptionSnapshot,
+        service: ConfirmedServiceChoice,
+        label: &'static str,
+    ) -> Option<ConfirmedLease> {
+        let &CovFanoutHandles {
+            ctx,
+            in_flight_tracker,
+            counters,
+        } = handles;
+        let guard = match in_flight_tracker.try_acquire(
+            route.recipient(),
+            ctx.config.cov_policy.max_confirmed_in_flight_per_peer,
+            ctx.cov_in_flight,
+        ) {
+            Ok(guard) => guard,
+            Err(InFlightAcquireError::PeerLimitExceeded) => {
+                counters
+                    .notifications_throttled_peer
+                    .fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+            Err(InFlightAcquireError::GlobalPoolExhausted) => {
+                warn!(
+                    object = ?route.monitored_object_identifier,
+                    "255 confirmed COV notifications in-flight, skipping {label}"
+                );
+                return None;
+            }
+        };
+        let (operation, result_rx) = match ctx
+            .notification_transactions
+            .reserve(Self::canonical_cov_peer(route), service)
+        {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                warn!(%error, "No free invoke ID for confirmed {label}");
+                return None;
+            }
+        };
+        Some(ConfirmedLease {
+            guard,
+            operation,
+            result_rx,
+        })
+    }
+
     /// Admit `report` against the peer and global in-flight limits, an invoke
     /// ID, the event budget and its coordinate's outstanding-report mark, then
     /// deliver it with the usual retries. `encode` builds the APDU for the
@@ -50,43 +134,13 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         mut report: ConfirmedReport,
         encode: impl FnOnce(u8) -> Result<BytesMut, Error>,
     ) {
-        let &CovFanoutHandles {
-            ctx,
-            in_flight_tracker,
-            counters,
-        } = handles;
+        let counters = handles.counters;
         let label = report.label();
-        let guard = match in_flight_tracker.try_acquire(
-            report.route.recipient(),
-            ctx.config.cov_policy.max_confirmed_in_flight_per_peer,
-            ctx.cov_in_flight,
-        ) {
-            Ok(guard) => guard,
-            Err(InFlightAcquireError::PeerLimitExceeded) => {
-                counters
-                    .notifications_throttled_peer
-                    .fetch_add(1, Ordering::Relaxed);
-                return;
-            }
-            Err(InFlightAcquireError::GlobalPoolExhausted) => {
-                warn!(
-                    object = ?report.route.monitored_object_identifier,
-                    "255 confirmed COV notifications in-flight, skipping {label}"
-                );
-                return;
-            }
+        let Some(lease) = Self::admit_confirmed(handles, &report.route, report.service, label)
+        else {
+            return;
         };
-        let (operation, result_rx) = match ctx
-            .notification_transactions
-            .reserve(Self::canonical_cov_peer(&report.route), report.service)
-        {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                warn!(%error, "No free invoke ID for confirmed {label}");
-                return;
-            }
-        };
-        let buf = match encode(operation.invoke_id()) {
+        let buf = match encode(lease.invoke_id()) {
             Ok(buf) => buf,
             Err(error) => {
                 warn!(%error, "Failed to encode confirmed {label}");
@@ -100,13 +154,19 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             return;
         }
         let (flight, revisits) = {
-            let mut table = ctx.cov_table.write().await;
+            let mut table = handles.ctx.cov_table.write().await;
             let flight = table.begin_confirmed(
                 report.completion,
-                report.observations.iter().map(|(sub, _)| sub),
+                report
+                    .observations
+                    .iter()
+                    .map(|(sub, observation)| (sub, observation.clone())),
             );
             (flight, Arc::clone(table.revisits()))
         };
+        // The instant the table began the report, near enough: its deadline
+        // runs from it, and the worker's cutoff too.
+        let begun = tokio::time::Instant::now();
         let flight = match flight {
             Ok(flight) => {
                 // The coordinate is marked busy: the later parts can queue,
@@ -136,7 +196,43 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 return;
             }
         };
+        Self::spawn_confirmed(
+            handles,
+            ConfirmedSend {
+                lease,
+                flight,
+                buf,
+                route: report.route,
+                claim: report.claim,
+                label,
+                revisits,
+                begun,
+            },
+        );
+    }
 
+    /// Count a begun confirmed report as sent and deliver it with the usual
+    /// retries on a worker of its own, which ends it in the table.
+    pub(in crate::server) fn spawn_confirmed(
+        handles: &CovFanoutHandles<'_, '_, T>,
+        send: ConfirmedSend,
+    ) {
+        let &CovFanoutHandles { ctx, counters, .. } = handles;
+        let ConfirmedSend {
+            lease:
+                ConfirmedLease {
+                    guard,
+                    operation,
+                    result_rx,
+                },
+            flight,
+            buf,
+            route,
+            claim,
+            label,
+            revisits,
+            begun,
+        } = send;
         counters.notifications_sent.fetch_add(1, Ordering::Relaxed);
         counters
             .notifications_confirmed
@@ -157,13 +253,6 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         // dead or refusing subscriber to half the in-flight time at most.
         let hold_off = apdu_timeout * (u32::from(apdu_retries) + 1);
         ctx.notification_transactions.spawn(async move {
-            let ConfirmedReport {
-                route,
-                completion,
-                observations,
-                claim,
-                ..
-            } = report;
             // Whether an attempt got past the DCC check, so went to the link.
             let attempted = std::sync::atomic::AtomicBool::new(false);
             let delivery = run_notification_under_dcc(
@@ -187,16 +276,31 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     }
                 },
             );
+            // However long a send stalls (a BACnet/SC send can wait on a hub
+            // or a direct dial), the report ends half a timeout before the
+            // table's deadline, as one whose retries ran out. Slow but working
+            // sends still end the usual way, by their retries, with the last
+            // answer window whole; the deadline itself is for a worker that
+            // can't report. Past it a stale retry could follow the
+            // coordinate's next report (#2303). The cutoff takes no lock, and
+            // cancels the transaction as a fence does.
+            let cutoff = begun + hold_off + apdu_timeout / 2;
+            let delivery = tokio::time::timeout_at(cutoff, delivery);
             // A renewal or route change replaced this report's incarnation: its
             // retries would only land after the replacement's own report, and
             // its Ack could complete nothing. Dropping the delivery cancels the
             // transaction; there is no hold-off on the orphaned marker.
+            // A fence already ended the report in the table; nothing is
+            // owed back.
             let result = tokio::select! {
-                result = delivery => result,
+                // Logged once, below, as a report whose retries ran out.
+                result = delivery => result.unwrap_or_else(|_| {
+                    debug!(invoke_id = id, "{label} cut off before its deadline");
+                    Ok(NotificationWorkerResult::Exhausted)
+                }),
                 () = flight.fenced() => {
                     debug!(invoke_id = id, "{label} superseded by a new incarnation");
                     drop(claim);
-                    drop(flight);
                     drop(guard);
                     return;
                 }
@@ -208,24 +312,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     if let Some(claim) = claim {
                         claim.commit();
                     }
-                    let completed: Vec<_> = observations
-                        .into_iter()
-                        .filter(|(sub, observation)| {
-                            table.complete_observation(sub, completion, observation.clone())
-                        })
-                        .map(|(sub, _)| sub.key().clone())
-                        .collect();
-                    drop(flight);
-                    // Changes to any reference of a context were held while the
-                    // report was outstanding, not only to those it carried, and
-                    // they still are if every carried reference has gone since.
-                    match route.key().multiple_context() {
-                        Some(context) => table
-                            .multiple_context_references(context)
-                            .map(|sub| sub.key().clone())
-                            .collect(),
-                        None => completed,
-                    }
+                    // Changes to the references were held while the report was
+                    // outstanding: to a context's every reference, not only to
+                    // those it carried, and still if every carried one has gone.
+                    table.delivered(&flight, Delivery::Acknowledged)
                 }
                 Ok(NotificationWorkerResult::Error(_) | NotificationWorkerResult::Exhausted) => {
                     if matches!(result, Ok(NotificationWorkerResult::Error(_))) {
@@ -239,17 +329,21 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     // Return unacknowledged history before the mark clears, so
                     // the next report conveys it again in capture order.
                     drop(claim);
-                    flight.failed(hold_off);
+                    let mut table = cov_table.write().await;
+                    table.delivered(&flight, Delivery::Failed);
                     // Its timestamped history goes out once the hold-off ends.
                     if let Some(context) = route.key().multiple_context() {
                         let until = tokio::time::Instant::now() + hold_off;
-                        cov_table.read().await.timed().hold_until(context, until);
+                        table.timed().hold_until(context, until);
                     }
                     Vec::new()
                 }
                 Ok(NotificationWorkerResult::Closed) => {
                     drop(claim);
-                    drop(flight);
+                    cov_table
+                        .write()
+                        .await
+                        .delivered(&flight, Delivery::NotSent);
                     Vec::new()
                 }
                 // DCC ended the report at an attempt. The subscriber did not
@@ -277,7 +371,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                             .fetch_sub(buf_len, Ordering::Relaxed);
                     }
                     drop(claim);
-                    drop(flight);
+                    cov_table
+                        .write()
+                        .await
+                        .delivered(&flight, Delivery::NotSent);
                     Vec::new()
                 }
             };

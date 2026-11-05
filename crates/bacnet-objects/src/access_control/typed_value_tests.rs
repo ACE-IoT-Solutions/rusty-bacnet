@@ -9,7 +9,9 @@
 //! Reason_For_Disable and so read-only, and has no Present_Value row.
 
 use super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 const P: PropertyIdentifier = PropertyIdentifier::PRESENT_VALUE;
 const PA: PropertyIdentifier = PropertyIdentifier::PRIORITY_ARRAY;
@@ -23,9 +25,9 @@ const OUTSIDE_DOOR_VALUE: [u32; 4] = [4, 200, 1024, u32::MAX];
 
 fn assert_property_error(result: Result<(), Error>, expected: ErrorCode) {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32, "expected {expected:?}");
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected, "expected {expected:?}");
         }
         other => panic!("expected PROPERTY / {expected:?}, got {other:?}"),
     }
@@ -59,10 +61,12 @@ fn access_door_present_value_commands_each_door_value() {
         slots[7],
         PropertyValue::Enumerated(DoorValue::EXTENDED_PULSE_UNLOCK.to_raw())
     );
-    assert!(slots
-        .iter()
-        .enumerate()
-        .all(|(i, slot)| i == 7 || *slot == PropertyValue::Null));
+    assert!(
+        slots
+            .iter()
+            .enumerate()
+            .all(|(i, slot)| i == 7 || *slot == PropertyValue::Null)
+    );
     assert_eq!(read_slot(&door, 0), PropertyValue::Unsigned(16));
 
     // A higher priority outranks slot 8; relinquishing both falls back to
@@ -146,7 +150,7 @@ fn access_credential_status_is_read_only() {
     let mut credential = AccessCredentialObject::new(1, "CRED-1").unwrap();
     // Nothing disables a new credential, so the derived status is ACTIVE;
     // no write reaches it, whatever the value or type (#1073).
-    assert!(!credential.is_writable_property(CS));
+    assert!(!is_writable_property(&credential, CS));
     for value in [
         PropertyValue::Enumerated(BinaryPV::INACTIVE.to_raw()),
         PropertyValue::Enumerated(BinaryPV::ACTIVE.to_raw()),
@@ -168,12 +172,17 @@ fn access_credential_status_is_read_only() {
 #[test]
 fn access_credential_has_no_present_value() {
     let mut credential = AccessCredentialObject::new(1, "CRED-1").unwrap();
-    assert!(!credential.property_list().contains(&P));
-    assert!(!credential
-        .property_metadata()
-        .iter()
-        .any(|row| row.property_identifier == P));
-    assert!(!credential.is_writable_property(P));
+    assert!(!crate::property_metadata::has_property(
+        &credential.property_metadata(),
+        P
+    ));
+    assert!(
+        !credential
+            .property_metadata()
+            .iter()
+            .any(|row| row.property_identifier == P)
+    );
+    assert!(!is_writable_property(&credential, P));
     assert_property_error(
         credential.read_property(P, None).map(|_| ()),
         ErrorCode::UNKNOWN_PROPERTY,

@@ -1,4 +1,6 @@
 use super::super::*;
+use crate::property_metadata::is_writable_property;
+use crate::traits::EventReporting as _;
 
 #[test]
 fn bv_read_present_value_default() {
@@ -131,10 +133,14 @@ fn bv_detection_enable_resets_and_gates_intrinsic_reporting() {
         bv.event_detector.pending.is_none(),
         "evaluate/tick re-armed a countdown while detection is disabled"
     );
-    assert!(bv
-        .property_list()
-        .contains(&PropertyIdentifier::EVENT_DETECTION_ENABLE));
-    assert!(bv.is_writable_property(PropertyIdentifier::EVENT_DETECTION_ENABLE));
+    assert!(crate::property_metadata::has_property(
+        &bv.property_metadata(),
+        PropertyIdentifier::EVENT_DETECTION_ENABLE
+    ));
+    assert!(is_writable_property(
+        &bv,
+        PropertyIdentifier::EVENT_DETECTION_ENABLE
+    ));
 }
 
 // --- BinaryValue commandable tests ---
@@ -219,7 +225,7 @@ fn bv_read_relinquish_default() {
 #[test]
 fn bv_priority_array_in_property_list() {
     let bv = BinaryValueObject::new(1, "BV-1").unwrap();
-    let props = bv.property_list();
+    let props = crate::test_rows::listed(&bv.property_metadata());
     assert!(props.contains(&PropertyIdentifier::PRIORITY_ARRAY));
     assert!(props.contains(&PropertyIdentifier::RELINQUISH_DEFAULT));
 }
@@ -301,9 +307,10 @@ fn bv_description_read_write() {
 #[test]
 fn bv_description_in_property_list() {
     let bv = BinaryValueObject::new(1, "BV-1").unwrap();
-    assert!(bv
-        .property_list()
-        .contains(&PropertyIdentifier::DESCRIPTION));
+    assert!(crate::property_metadata::has_property(
+        &bv.property_metadata(),
+        PropertyIdentifier::DESCRIPTION
+    ));
 }
 
 #[test]
@@ -431,33 +438,35 @@ fn bi_active_inactive_text_write_read() {
 #[test]
 fn bi_active_text_wrong_type_rejected() {
     let mut bi = BinaryInputObject::new(1, "BI-1").unwrap();
-    assert!(bi
-        .write_property(
+    assert!(
+        bi.write_property(
             PropertyIdentifier::ACTIVE_TEXT,
             None,
             PropertyValue::Enumerated(1),
             None,
         )
-        .is_err());
+        .is_err()
+    );
 }
 
 #[test]
 fn bi_inactive_text_wrong_type_rejected() {
     let mut bi = BinaryInputObject::new(1, "BI-1").unwrap();
-    assert!(bi
-        .write_property(
+    assert!(
+        bi.write_property(
             PropertyIdentifier::INACTIVE_TEXT,
             None,
             PropertyValue::Boolean(false),
             None,
         )
-        .is_err());
+        .is_err()
+    );
 }
 
 #[test]
 fn bi_active_inactive_text_in_property_list() {
     let bi = BinaryInputObject::new(1, "BI-1").unwrap();
-    let props = bi.property_list();
+    let props = crate::test_rows::listed(&bi.property_metadata());
     assert!(props.contains(&PropertyIdentifier::ACTIVE_TEXT));
     assert!(props.contains(&PropertyIdentifier::INACTIVE_TEXT));
 }
@@ -509,7 +518,7 @@ fn bo_active_inactive_text_write_read() {
 #[test]
 fn bo_active_inactive_text_in_property_list() {
     let bo = BinaryOutputObject::new(1, "BO-1").unwrap();
-    let props = bo.property_list();
+    let props = crate::test_rows::listed(&bo.property_metadata());
     assert!(props.contains(&PropertyIdentifier::ACTIVE_TEXT));
     assert!(props.contains(&PropertyIdentifier::INACTIVE_TEXT));
 }
@@ -561,7 +570,7 @@ fn bv_active_inactive_text_write_read() {
 #[test]
 fn bv_active_inactive_text_in_property_list() {
     let bv = BinaryValueObject::new(1, "BV-1").unwrap();
-    let props = bv.property_list();
+    let props = crate::test_rows::listed(&bv.property_metadata());
     assert!(props.contains(&PropertyIdentifier::ACTIVE_TEXT));
     assert!(props.contains(&PropertyIdentifier::INACTIVE_TEXT));
 }
@@ -569,14 +578,15 @@ fn bv_active_inactive_text_in_property_list() {
 #[test]
 fn bv_active_text_wrong_type_rejected() {
     let mut bv = BinaryValueObject::new(1, "BV-1").unwrap();
-    assert!(bv
-        .write_property(
+    assert!(
+        bv.write_property(
             PropertyIdentifier::ACTIVE_TEXT,
             None,
             PropertyValue::Real(1.0),
             None,
         )
-        .is_err());
+        .is_err()
+    );
 }
 
 /// #270: a BinaryValue Relinquish_Default write is validated like a commanded
@@ -585,7 +595,10 @@ fn bv_active_text_wrong_type_rejected() {
 #[test]
 fn bv_relinquish_default_write_recaptures_present_value() {
     let mut bv = BinaryValueObject::new(1, "BV-1").unwrap();
-    assert!(bv.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &bv,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
 
     bv.write_property(
         PropertyIdentifier::RELINQUISH_DEFAULT,
@@ -609,9 +622,10 @@ fn bv_relinquish_default_write_recaptures_present_value() {
     // 2 is outside BinaryPV; a wrong type is refused the same way; neither
     // touches the stored default.
     for value in [PropertyValue::Enumerated(2), PropertyValue::Real(1.0)] {
-        assert!(bv
-            .write_property(PropertyIdentifier::RELINQUISH_DEFAULT, None, value, None)
-            .is_err());
+        assert!(
+            bv.write_property(PropertyIdentifier::RELINQUISH_DEFAULT, None, value, None)
+                .is_err()
+        );
         assert_eq!(
             bv.read_property(PropertyIdentifier::RELINQUISH_DEFAULT, None)
                 .unwrap(),

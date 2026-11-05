@@ -1,7 +1,8 @@
 use super::dispatch_context::{DispatchContext, InboundApdu};
 use super::response_admission::{
-    admit_terminal_during_reassembly, complete_terminal_response, current_reassembly_owner,
-    log_coordinated_mismatch, take_current_reassembly, TerminalDispatchOutcome, TerminalResponse,
+    TerminalDispatchOutcome, TerminalResponse, admit_terminal_during_reassembly,
+    complete_terminal_response, current_reassembly_owner, log_coordinated_mismatch,
+    take_current_reassembly,
 };
 use super::segmentation_context::InboundSegmentSource;
 use super::*;
@@ -25,17 +26,21 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             confirmed_cov_ack_policy,
             device_tx,
             device_collision_tx,
-            iam_tx,
+            i_have_tx,
             seg_ack_senders,
+            decode_warning,
+            response_warning,
         } = context;
         let InboundApdu {
             source_mac,
             source_network,
             provenance,
-            direct_response,
+            response_route,
             is_group,
             reply_tx,
         } = inbound;
+        // Each arm moves `tsm_mac` into its reassembly key and borrows it
+        // back: cloning a `MacAddr` copies it a byte at a time (#1978).
         let TransactionPeer {
             tsm_mac,
             canonical: canonical_peer,
@@ -55,7 +60,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 // reassembly IS this transaction's acknowledgment, so a
                 // second one is not answering it. Checked before the TSM
                 // lock: `abort_reassembly` takes that lock itself (#367).
-                let key = (tsm_mac.clone(), ack.invoke_id, provenance);
+                let key = (tsm_mac, ack.invoke_id, provenance);
+                let tsm_mac = &key.0;
                 let coordinator_apdu = Apdu::SimpleAck(ack.clone());
                 admit_terminal_during_reassembly(
                     tsm,
@@ -73,7 +79,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     Self::abort_reassembly(
                         tsm,
                         network,
-                        state.abort_target(&tsm_mac),
+                        state.abort_target(tsm_mac),
                         ack.invoke_id,
                         bacnet_types::enums::AbortReason::INVALID_APDU_IN_THIS_STATE,
                     )
@@ -84,7 +90,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 match complete_terminal_response(
                     tsm,
                     TerminalResponse {
-                        tsm_mac: &tsm_mac,
+                        tsm_mac,
                         invoke_id: ack.invoke_id,
                         peer: &canonical_peer,
                         apdu: &coordinator_apdu,
@@ -96,7 +102,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 .await
                 {
                     TerminalDispatchOutcome::Completion(outcome) => {
-                        log_coordinated_mismatch(&outcome, ack.invoke_id, "SimpleAck");
+                        log_coordinated_mismatch(
+                            &outcome,
+                            ack.invoke_id,
+                            "SimpleAck",
+                            response_warning,
+                        );
                     }
                     TerminalDispatchOutcome::PrematureSegmentedRequestAborted => {
                         Self::send_client_abort(
@@ -120,6 +131,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                             mac: source_mac,
                             network: source_network,
                             provenance,
+                            warning: response_warning,
                         },
                         ack,
                         limits,
@@ -130,7 +142,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     // Clause 5.4.4.4
                     // UnexpectedPDU_Received list: the transaction's answer
                     // is the segmented ComplexACK already under reassembly.
-                    let key = (tsm_mac.clone(), ack.invoke_id, provenance);
+                    let key = (tsm_mac, ack.invoke_id, provenance);
+                    let tsm_mac = &key.0;
                     let coordinator_apdu = Apdu::ComplexAck(ack.clone());
                     admit_terminal_during_reassembly(
                         tsm,
@@ -148,7 +161,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         Self::abort_reassembly(
                             tsm,
                             network,
-                            state.abort_target(&tsm_mac),
+                            state.abort_target(tsm_mac),
                             ack.invoke_id,
                             bacnet_types::enums::AbortReason::INVALID_APDU_IN_THIS_STATE,
                         )
@@ -159,7 +172,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     match complete_terminal_response(
                         tsm,
                         TerminalResponse {
-                            tsm_mac: &tsm_mac,
+                            tsm_mac,
                             invoke_id: ack.invoke_id,
                             peer: &canonical_peer,
                             apdu: &coordinator_apdu,
@@ -173,7 +186,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     .await
                     {
                         TerminalDispatchOutcome::Completion(outcome) => {
-                            log_coordinated_mismatch(&outcome, ack.invoke_id, "ComplexAck");
+                            log_coordinated_mismatch(
+                                &outcome,
+                                ack.invoke_id,
+                                "ComplexAck",
+                                response_warning,
+                            );
                         }
                         TerminalDispatchOutcome::PrematureSegmentedRequestAborted => {
                             Self::send_client_abort(
@@ -195,7 +213,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 // INVALID_APDU_IN_THIS_STATE, not the error content (#367).
                 // Checked before the TSM lock below: `abort_reassembly` takes
                 // that lock itself, and tokio's Mutex is not reentrant.
-                let key = (tsm_mac.clone(), err.invoke_id, provenance);
+                let key = (tsm_mac, err.invoke_id, provenance);
+                let tsm_mac = &key.0;
                 let coordinator_apdu = Apdu::Error(err.clone());
                 admit_terminal_during_reassembly(
                     tsm,
@@ -213,7 +232,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     Self::abort_reassembly(
                         tsm,
                         network,
-                        state.abort_target(&tsm_mac),
+                        state.abort_target(tsm_mac),
                         err.invoke_id,
                         bacnet_types::enums::AbortReason::INVALID_APDU_IN_THIS_STATE,
                     )
@@ -231,7 +250,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 match complete_terminal_response(
                     tsm,
                     TerminalResponse {
-                        tsm_mac: &tsm_mac,
+                        tsm_mac,
                         invoke_id: err.invoke_id,
                         peer: &canonical_peer,
                         apdu: &coordinator_apdu,
@@ -259,7 +278,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 // Same Clause 5.4.4.4 UnexpectedPDU_Received diversion as the
                 // Error arm above ("BACnet-Reject-PDU" is in the same list),
                 // with the same lock-ordering constraint (#367).
-                let key = (tsm_mac.clone(), rej.invoke_id, provenance);
+                let key = (tsm_mac, rej.invoke_id, provenance);
+                let tsm_mac = &key.0;
                 let coordinator_apdu = Apdu::Reject(rej.clone());
                 admit_terminal_during_reassembly(
                     tsm,
@@ -277,7 +297,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     Self::abort_reassembly(
                         tsm,
                         network,
-                        state.abort_target(&tsm_mac),
+                        state.abort_target(tsm_mac),
                         rej.invoke_id,
                         bacnet_types::enums::AbortReason::INVALID_APDU_IN_THIS_STATE,
                     )
@@ -290,13 +310,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 let _ = complete_terminal_response(
                     tsm,
                     TerminalResponse {
-                        tsm_mac: &tsm_mac,
+                        tsm_mac,
                         invoke_id: rej.invoke_id,
                         peer: &canonical_peer,
                         apdu: &coordinator_apdu,
-                        response: TsmResponse::Reject {
-                            reason: rej.reject_reason.to_raw(),
-                        },
+                        response: TsmResponse::remote(rej.remote_error()),
                         phase_gate: false,
                         owner: None,
                     },
@@ -327,18 +345,17 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 // segment would find no transaction and clear the session
                 // anyway — so no test can pin this line alone; it is kept so
                 // the slot frees at the Abort, not at the peer's next move.
-                let key = (tsm_mac.clone(), abt.invoke_id, provenance);
+                let key = (tsm_mac, abt.invoke_id, provenance);
+                let tsm_mac = &key.0;
                 let reassembly_owner = current_reassembly_owner(tsm, seg_state, &key).await;
                 debug!(invoke_id = abt.invoke_id, "Received Abort PDU");
                 // Carries no service choice (Clause 20.1.9).
-                let response = TsmResponse::Abort {
-                    reason: abt.abort_reason.to_raw(),
-                };
+                let response = TsmResponse::remote(abt.remote_error());
                 let coordinator_apdu = Apdu::Abort(abt.clone());
                 let outcome = complete_terminal_response(
                     tsm,
                     TerminalResponse {
-                        tsm_mac: &tsm_mac,
+                        tsm_mac,
                         invoke_id: abt.invoke_id,
                         peer: &canonical_peer,
                         apdu: &coordinator_apdu,
@@ -353,19 +370,16 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     TerminalDispatchOutcome::Completion(CoordinatedCompletion::Completed(
                         CompletionOutcome::Delivered
                     ))
-                ) {
-                    if let Some(owner) = reassembly_owner {
-                        if seg_state
-                            .get(&key)
-                            .is_some_and(|state| state.owner.same_as(&owner))
-                        {
-                            seg_state.remove(&key);
-                        }
-                    }
+                ) && let Some(owner) = reassembly_owner
+                    && seg_state
+                        .get(&key)
+                        .is_some_and(|state| state.owner.same_as(&owner))
+                {
+                    seg_state.remove(&key);
                 }
             }
             Apdu::ConfirmedRequest(req) => {
-                let reply = InboundReply::new(provenance, direct_response, reply_tx);
+                let reply = InboundReply::new(response_route, reply_tx);
                 if is_group {
                     debug!(
                         invoke_id = req.invoke_id,
@@ -415,7 +429,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         Err(e) => {
                             let reject_reason = e.reject_reason();
                             let e = e.into_error();
-                            warn!(error = %e, "Failed to decode ConfirmedCOVNotification");
+                            warn_throttled!(
+                                decode_warning,
+                                error = %e,
+                                "Failed to decode ConfirmedCOVNotification"
+                            );
                             Self::send_confirmed_request_reject(
                                 network,
                                 source_mac,
@@ -436,6 +454,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         source_network,
                         reply,
                         req,
+                        decode_warning,
                     )
                     .await;
                 } else {
@@ -478,38 +497,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                 vendor_id: i_am.vendor_id,
                                 last_seen: std::time::Instant::now(),
                                 source_network: src_net,
-                                source_address: src_addr.clone(),
-                            };
-                            let bip_metadata =
-                                provenance
-                                    .transport_metadata()
-                                    .map(|metadata| match metadata {
-                                        bacnet_transport::port::TransportMetadata::Bip {
-                                            bvlc_function,
-                                            udp_source,
-                                            forwarded_from,
-                                        } => (bvlc_function, udp_source, forwarded_from),
-                                    });
-                            let _ = iam_tx.send(IAmEvent {
-                                device_instance: i_am.object_identifier.instance_number(),
-                                object_identifier: i_am.object_identifier,
-                                max_apdu_length: i_am.max_apdu_length,
-                                segmentation_supported: i_am.segmentation_supported,
-                                vendor_id: i_am.vendor_id,
-                                udp_source_ip: bip_metadata.map(|(_, source, _)| source.0),
-                                udp_source_port: bip_metadata.map(|(_, source, _)| source.1),
-                                source_mac: MacAddr::from_slice(source_mac),
-                                source_network: src_net,
                                 source_address: src_addr,
-                                bvlc_function: bip_metadata.map(|(function, _, _)| function),
-                                forwarded_from_ip: bip_metadata
-                                    .and_then(|(_, _, origin)| origin.map(|origin| origin.0)),
-                                forwarded_from_port: bip_metadata
-                                    .and_then(|(_, _, origin)| origin.map(|origin| origin.1)),
-                                timestamp: std::time::Instant::now(),
-                            });
+                            };
                             let status = {
-                                let mut table = device_table.lock().await;
+                                let mut table = device_table.lock();
                                 table.upsert_with_result(device.clone())
                             };
                             match status {
@@ -535,7 +526,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                             }
                         }
                         Err(e) => {
-                            warn!(error = %e, "Failed to decode IAm");
+                            warn_throttled!(decode_warning, error = %e, "Failed to decode IAm");
                         }
                     }
                 } else if req.service_choice
@@ -556,7 +547,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                             let _ = cov_tx.send(received);
                         }
                         Err(e) => {
-                            warn!(error = %e, "Failed to decode UnconfirmedCOVNotification");
+                            warn_throttled!(
+                                decode_warning,
+                                error = %e,
+                                "Failed to decode UnconfirmedCOVNotification"
+                            );
                         }
                     }
                 } else if req.service_choice
@@ -567,6 +562,15 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         source_mac,
                         source_network,
                         &req.service_request,
+                        decode_warning,
+                    );
+                } else if req.service_choice == UnconfirmedServiceChoice::I_HAVE {
+                    i_have::deliver(
+                        i_have_tx,
+                        source_mac,
+                        source_network,
+                        &req.service_request,
+                        decode_warning,
                     );
                 } else {
                     debug!(
@@ -596,7 +600,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     return;
                 }
                 let invoke_id = sa.invoke_id;
-                let key = (tsm_mac.clone(), invoke_id, provenance);
+                let key = (tsm_mac, invoke_id, provenance);
+                let tsm_mac = &key.0;
 
                 // SEGMENTED_CONF (5.4.4.4) `UnexpectedPDU_Received` lists
                 // a server-side BACnet-SegmentACK-PDU among the inappropriate
@@ -618,7 +623,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     Self::abort_reassembly(
                         tsm,
                         network,
-                        state.abort_target(&tsm_mac),
+                        state.abort_target(tsm_mac),
                         invoke_id,
                         bacnet_types::enums::AbortReason::INVALID_APDU_IN_THIS_STATE,
                     )
@@ -629,39 +634,42 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 // Hold the TSM lock through the route lookup and try_send.
                 // Terminal completion uses this same lock, so a raw sender
                 // entry cannot outlive the authoritative phase for delivery.
-                let tsm_guard = tsm.lock().await;
+                // Both locks are blocking ones, released before any await.
                 let coordinator_apdu = Apdu::SegmentAck(sa.clone());
-                match tsm_guard.coordinated_segment_ack_phase(
-                    &tsm_mac,
-                    invoke_id,
-                    &canonical_peer,
-                    &coordinator_apdu,
-                ) {
-                    SegmentAckPhase::SegmentedRequest(owner) => {
-                        // Lock order is TSM then SegmentACK routes. Setup and
-                        // cleanup never hold both locks. Compat mode: SegmentACK
-                        // delivery stays provenance-agnostic (RB-09 later).
-                        let send_key = (tsm_mac.clone(), invoke_id);
-                        let senders = seg_ack_senders.lock().await;
-                        if let Some(route) = senders
-                            .get(&send_key)
-                            .filter(|route| route.owner.same_as(&owner))
-                        {
-                            let _ = route.sender.try_send(sa);
+                let outstanding = {
+                    let tsm_guard = tsm.lock();
+                    match tsm_guard.coordinated_segment_ack_phase(
+                        tsm_mac,
+                        invoke_id,
+                        &canonical_peer,
+                        &coordinator_apdu,
+                    ) {
+                        SegmentAckPhase::SegmentedRequest(owner) => {
+                            // Lock order is TSM then SegmentACK routes. Setup and
+                            // cleanup never hold both locks. Compat mode: SegmentACK
+                            // delivery stays provenance-agnostic (RB-09 later).
+                            let send_key = (MacAddr::from_slice(tsm_mac), invoke_id);
+                            let senders = seg_ack_senders.lock();
+                            if let Some(route) = senders
+                                .get(&send_key)
+                                .filter(|route| route.owner.same_as(&owner))
+                            {
+                                let _ = route.sender.try_send(sa);
+                            }
+                            return;
                         }
-                        return;
+                        SegmentAckPhase::Outstanding => true,
+                        SegmentAckPhase::CoordinatorRejected => return,
+                        SegmentAckPhase::Idle => false,
                     }
-                    SegmentAckPhase::Outstanding => {
-                        debug!(
-                            invoke_id,
-                            "Discarding duplicate SegmentAck for an outstanding transaction"
-                        );
-                        return;
-                    }
-                    SegmentAckPhase::CoordinatorRejected => return,
-                    SegmentAckPhase::Idle => {}
+                };
+                if outstanding {
+                    debug!(
+                        invoke_id,
+                        "Discarding duplicate SegmentAck for an outstanding transaction"
+                    );
+                    return;
                 }
-                drop(tsm_guard);
 
                 // IDLE (5.4.4.1) `UnexpectedSegmentInfoReceived`: nothing is
                 // outstanding, so a server SegmentACK earns a client Abort.
@@ -700,13 +708,13 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         &address.mac_address,
                         reply_mac,
                         false,
-                        NetworkPriority::NORMAL,
+                        NetworkPriority::Normal,
                     )
                     .await
             }
             _ => {
                 network
-                    .send_apdu(buf, reply_mac, false, NetworkPriority::NORMAL)
+                    .send_apdu(buf, reply_mac, false, NetworkPriority::Normal)
                     .await
             }
         }

@@ -1,6 +1,7 @@
+use crate::property_metadata::is_writable_property;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bacnet_encoding::constructed::{
     decode_event_log_record, decode_log_multiple_record, decode_log_record,
@@ -11,7 +12,7 @@ use bacnet_types::constructed::{
     LogDatum, LogValue,
 };
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{Date, PropertyValue, Time};
 use bytes::BytesMut;
 
@@ -112,7 +113,11 @@ impl Family {
 
     /// The newest record as ReadRange serves it.
     fn served_last(&self) -> Vec<u8> {
-        let records = self.object().log_buffer_internal().unwrap();
+        let records = self
+            .object()
+            .log_buffer()
+            .and_then(|log| log.buffer_records())
+            .unwrap();
         let mut bytes = BytesMut::new();
         records.encode_record(records.record_count() - 1, &mut bytes);
         bytes.to_vec()
@@ -121,8 +126,15 @@ impl Family {
     /// Submit `record` through the trend insertion hook its family serves.
     fn add_trend_record(&mut self, record: BACnetLogRecord) -> Result<(), Error> {
         match self {
-            Self::TrendMultiple(object) => object.add_trend_multiple_record(multiple(record)),
-            _ => self.object_mut().add_trend_record(record),
+            Self::TrendMultiple(object) => object
+                .log_buffer_mut()
+                .unwrap()
+                .add_trend_multiple_record(multiple(record)),
+            _ => self
+                .object_mut()
+                .log_buffer_mut()
+                .unwrap()
+                .add_trend_record(record),
         }
     }
 
@@ -144,7 +156,13 @@ impl Family {
     }
 
     fn bind_clock(&mut self, clock: Arc<dyn ClockReader>) {
-        self.object_mut().bind_clock_internal(Some(clock));
+        self.object_mut()
+            .timed()
+            .unwrap()
+            .bind_clocks(&crate::traits::Clocks {
+                clock: Some(clock),
+                ..crate::traits::Clocks::default()
+            });
     }
 
     fn total(&self) -> u64 {
@@ -165,7 +183,8 @@ impl Family {
 
     fn identities(&self) -> Vec<u64> {
         self.object()
-            .log_record_identities_internal()
+            .log_buffer()
+            .map(|log| log.record_identities())
             .unwrap()
             .iter()
             .map(|identity| identity.sequence_number())
@@ -334,12 +353,12 @@ fn assert_status(object: &Family, status: LogStatus) {
 
 fn assert_protocol(error: Error, class: ErrorClass, code: ErrorCode) {
     match error {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class: actual_class,
             code: actual_code,
-        } => {
-            assert_eq!(actual_class, class.to_raw() as u32);
-            assert_eq!(actual_code, code.to_raw() as u32);
+        }) => {
+            assert_eq!(actual_class, class);
+            assert_eq!(actual_code, code);
         }
         other => panic!("expected protocol error, got {other:?}"),
     }
@@ -700,7 +719,7 @@ fn log_family_writability_matches_runtime_routes() {
         let object = kind.object(3);
         for property in writable {
             assert!(
-                object.object().is_writable_property(property),
+                is_writable_property(object.object(), property),
                 "{kind:?} {property:?}"
             );
         }
@@ -712,19 +731,21 @@ fn log_family_writability_matches_runtime_routes() {
             PropertyIdentifier::RELIABILITY,
         ] {
             assert!(
-                !object.object().is_writable_property(property),
+                !is_writable_property(object.object(), property),
                 "{kind:?} {property:?}"
             );
         }
         // Tables 12-29, 12-35 and 12-31 define no Out_Of_Service (#985,
         // #1064), and Table 12-31 has no Log_Interval either.
-        assert!(!object
-            .object()
-            .is_writable_property(PropertyIdentifier::OUT_OF_SERVICE));
+        assert!(!is_writable_property(
+            object.object(),
+            PropertyIdentifier::OUT_OF_SERVICE
+        ));
         if matches!(kind, FamilyKind::Event) {
-            assert!(!object
-                .object()
-                .is_writable_property(PropertyIdentifier::LOG_INTERVAL));
+            assert!(!is_writable_property(
+                object.object(),
+                PropertyIdentifier::LOG_INTERVAL
+            ));
         }
     }
 }

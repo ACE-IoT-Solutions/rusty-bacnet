@@ -4,6 +4,7 @@ use super::*;
 use bacnet_encoding::constructed::encode_bacnet_property_value;
 use bacnet_objects::lighting::BinaryLightingOutputObject;
 use bacnet_services::common::BACnetPropertyValue;
+use bacnet_types::error::RemoteError;
 use std::time::Duration;
 
 fn encode_value(value: PropertyValue) -> Vec<u8> {
@@ -12,8 +13,14 @@ fn encode_value(value: PropertyValue) -> Vec<u8> {
     bytes.to_vec()
 }
 
+std::thread_local! {
+    /// The monotonic time `advance` has reached, for this test's thread.
+    static NOW: std::cell::Cell<Duration> = const { std::cell::Cell::new(Duration::ZERO) };
+}
+
 fn database() -> (ObjectDatabase, ObjectIdentifier) {
     let mut db = ObjectDatabase::new();
+    db.set_monotonic_clock(Some(std::sync::Arc::new(|| NOW.with(|now| now.get()))));
     let object = BinaryLightingOutputObject::new(1, "BLO-1").unwrap();
     let oid = object.object_identifier();
     db.add(Box::new(object)).unwrap();
@@ -37,7 +44,7 @@ fn wp(
     };
     let mut bytes = BytesMut::new();
     request.encode(&mut bytes).unwrap();
-    handle_write_property(db, &bytes).map(|_| ())
+    sourced_wp(db, &bytes).map(|_| ())
 }
 
 fn wpm(
@@ -59,10 +66,11 @@ fn wpm(
                 priority,
             },
             &mut bytes,
-        );
+        )
+        .unwrap();
     }
     bacnet_encoding::tags::encode_closing_tag(&mut bytes, 1);
-    handle_write_property_multiple(db, &bytes).map(|_| ())
+    sourced_wpm(db, &bytes).map(|_| ())
 }
 
 fn read(
@@ -77,19 +85,26 @@ fn read(
         .unwrap()
 }
 
-fn blink_count(db: &ObjectDatabase, oid: ObjectIdentifier) -> u64 {
-    db.get(&oid).unwrap().lighting_blink_count_internal()
+fn blink_count(db: &mut ObjectDatabase, oid: ObjectIdentifier) -> u64 {
+    db.lighting_blink_count_internal(&oid).unwrap()
 }
 
+/// Move the database's monotonic clock on by `elapsed` and run the object's
+/// pass at the new time.
 fn advance(db: &mut ObjectDatabase, oid: ObjectIdentifier, elapsed: Duration) -> bool {
-    db.get_mut(&oid).unwrap().advance_time_internal(elapsed)
+    let now = NOW.with(|now| {
+        now.set(now.get() + elapsed);
+        now.get()
+    });
+    let object = db.get_mut(&oid).unwrap();
+    object.timed().unwrap().advance_monotonic_time(now)
 }
 
 fn assert_property_error(error: Error, expected: ErrorCode) {
     match error {
-        Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32);
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected);
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }
@@ -97,9 +112,9 @@ fn assert_property_error(error: Error, expected: ErrorCode) {
 
 fn assert_priority_range_error(error: Error) {
     assert!(
-        matches!(error, Error::Protocol { class, code }
-        if class == ErrorClass::SERVICES.to_raw() as u32
-            && code == ErrorCode::PARAMETER_OUT_OF_RANGE.to_raw() as u32),
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
+        if class == ErrorClass::SERVICES
+            && code == ErrorCode::PARAMETER_OUT_OF_RANGE),
         "{error:?}"
     );
 }
@@ -221,12 +236,12 @@ fn write_property_priority_errors_are_atomic_and_wpm_keeps_prior_prefix() {
         .encode(&mut bytes)
         .unwrap();
         bacnet_encoding::primitives::encode_ctx_unsigned(&mut bytes, 4, u64::from(priority));
-        assert_priority_range_error(handle_write_property(&mut db, &bytes).unwrap_err());
+        assert_priority_range_error(sourced_wp(&mut db, &bytes).unwrap_err());
         assert_eq!(
             read(&db, oid, PropertyIdentifier::EGRESS_ACTIVE, None),
             PropertyValue::Boolean(true)
         );
-        assert_eq!(blink_count(&db, oid), 1);
+        assert_eq!(blink_count(&mut db, oid), 1);
     }
 
     assert_priority_range_error(
@@ -368,7 +383,7 @@ fn eligible_warn_warn_off_warn_relinquish_and_stop_execute_over_wp() {
         Some(8),
     )
     .unwrap();
-    assert_eq!(blink_count(&warn_db, warn_oid), 1);
+    assert_eq!(blink_count(&mut warn_db, warn_oid), 1);
     assert_eq!(
         read(
             &warn_db,
@@ -493,7 +508,7 @@ fn successful_wpm_can_arm_one_operation() {
         ],
     )
     .unwrap();
-    assert_eq!(blink_count(&db, oid), 1);
+    assert_eq!(blink_count(&mut db, oid), 1);
     assert_eq!(
         read(&db, oid, PropertyIdentifier::EGRESS_ACTIVE, None),
         PropertyValue::Boolean(true)
@@ -527,7 +542,7 @@ fn failed_wpm_keeps_new_timer_from_successful_prefix() {
         .unwrap_err(),
         ErrorCode::VALUE_OUT_OF_RANGE,
     );
-    assert_eq!(blink_count(&db, oid), 1);
+    assert_eq!(blink_count(&mut db, oid), 1);
     assert_eq!(
         read(&db, oid, PropertyIdentifier::EGRESS_ACTIVE, None),
         PropertyValue::Boolean(true)
@@ -625,7 +640,7 @@ fn present_value_priority_wpm_halts_and_failed_wpm_keeps_prefix() {
         .unwrap_err(),
         ErrorCode::VALUE_OUT_OF_RANGE,
     );
-    assert_eq!(blink_count(&db, oid), 1);
+    assert_eq!(blink_count(&mut db, oid), 1);
     assert_eq!(
         read(&db, oid, PropertyIdentifier::PRIORITY_ARRAY, Some(4)),
         PropertyValue::Enumerated(1),
@@ -663,7 +678,7 @@ fn invalid_command_does_not_halt_existing_operation() {
         .unwrap_err(),
         ErrorCode::VALUE_OUT_OF_RANGE,
     );
-    assert_eq!(blink_count(&db, oid), 1);
+    assert_eq!(blink_count(&mut db, oid), 1);
     assert_eq!(
         read(&db, oid, PropertyIdentifier::EGRESS_ACTIVE, None),
         PropertyValue::Boolean(true)

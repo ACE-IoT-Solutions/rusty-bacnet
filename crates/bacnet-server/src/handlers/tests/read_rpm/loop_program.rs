@@ -3,11 +3,12 @@ use super::*;
 #[test]
 fn rpm_loop_program_metadata_selectors_preserve_bytes_and_budgets() {
     use super::super::property_metadata::assert_rpm_selector_bytes;
-    use bacnet_objects::{loop_obj::LoopObject, program::ProgramObject, traits::BACnetObject};
-    use bacnet_types::primitives::PropertyValue;
     use PropertyIdentifier as P;
+    use bacnet_objects::{loop_obj::LoopObject, program::ProgramObject, traits::BACnetObject};
+    use bacnet_types::enums::EngineeringUnits;
+    use bacnet_types::primitives::PropertyValue;
 
-    // Independent fixtures (Loop in Table 12-20 order, Program in its legacy
+    // Independent fixtures (Loop in Table 12-20 order, Program in its unlimited
     // order): classification must not be inferred from the metadata being
     // exercised. Property_List is read explicitly.
     let loop_all = [
@@ -48,8 +49,9 @@ fn rpm_loop_program_metadata_selectors_preserve_bytes_and_budgets() {
         P::INTEGRAL_CONSTANT_UNITS,
         P::DERIVATIVE_CONSTANT,
         P::DERIVATIVE_CONSTANT_UNITS,
-        P::COV_INCREMENT,
     ];
+    // COV_Increment is required of a Loop that reports COV (Table 12-20
+    // footnote 4, #2193).
     let program_all = [
         P::OBJECT_IDENTIFIER,
         P::OBJECT_NAME,
@@ -64,7 +66,7 @@ fn rpm_loop_program_metadata_selectors_preserve_bytes_and_budgets() {
     ];
     let program_optional = [P::DESCRIPTION, P::REASON_FOR_HALT, P::RELIABILITY];
     for configured in [false, true] {
-        let mut lo = LoopObject::new(1, "LOOP-1", 62).unwrap();
+        let mut lo = LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         let mut program = ProgramObject::new(1, "PRG-1").unwrap();
         if configured {
             let reference = bacnet_types::constructed::BACnetObjectPropertyReference::new_indexed(

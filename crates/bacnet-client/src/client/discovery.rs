@@ -19,7 +19,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         &self,
         device_instance: u32,
     ) -> Result<(Vec<u8>, Option<(u16, Vec<u8>)>), Error> {
-        let dt = self.device_table.lock().await;
+        let dt = self.device_table.lock();
         let device = dt.get(device_instance).ok_or_else(|| {
             Error::Encoding(format!("device {device_instance} not in device table"))
         })?;
@@ -76,8 +76,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             .await
     }
 
-    /// Send a WhoHas broadcast to find an object by identifier or name, asking
-    /// the devices in `range`, or every device for `None` (Clause 16.9, #1483).
+    /// Send a WhoHas as a global broadcast, as [`Self::who_is`] does, so that
+    /// devices behind routers hear it too, to find an object by identifier
+    /// or name, asking the devices in `range`, or every device for `None`
+    /// (Clause 16.9, #1483).
     pub async fn who_has(
         &self,
         object: WhoHasObject,
@@ -86,23 +88,23 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let mut buf = BytesMut::new();
         WhoHasRequest { range, object }.encode(&mut buf)?;
 
-        self.broadcast_unconfirmed(UnconfirmedServiceChoice::WHO_HAS, &buf)
+        self.broadcast_global_unconfirmed(UnconfirmedServiceChoice::WHO_HAS, &buf)
             .await
     }
 
     /// Get a snapshot of all discovered devices.
     pub async fn discovered_devices(&self) -> Vec<DiscoveredDevice> {
-        self.device_table.lock().await.all()
+        self.device_table.lock().all()
     }
 
     /// Look up a discovered device by instance number.
     pub async fn get_device(&self, instance: u32) -> Option<DiscoveredDevice> {
-        self.device_table.lock().await.get(instance).cloned()
+        self.device_table.lock().get(instance).cloned()
     }
 
     /// Clear the discovered devices table.
     pub async fn clear_devices(&self) {
-        self.device_table.lock().await.clear();
+        self.device_table.lock().clear();
     }
 
     /// Manually register a local device in the device table.
@@ -131,7 +133,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         };
         // Placeholder capability defaults (NONE, 1476) are not I-Am evidence;
         // they must never drive a segmentation-capability decision (#371).
-        self.device_table.lock().await.upsert_placeholder(device);
+        self.device_table.lock().upsert_placeholder(device);
         Ok(())
     }
 
@@ -153,7 +155,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// such a registration returns [`Error::Encoding`] and the table is left
     /// unchanged (an empty SADR could never satisfy a routed lookup). A
     /// `remote_network` outside 1..=65534 or a `remote_mac` longer than
-    /// [`NpduAddress::MAX_MAC_LEN`] is refused the same way, since
+    /// [`MAX_MAC_LEN`](bacnet_npdu::MAX_MAC_LEN) is refused the same way, since
     /// [`BACnetClient::confirmed_request_routed`] refuses that destination.
     pub async fn add_routed_device(&self, config: RoutedDeviceConfig) -> Result<(), Error> {
         if config.router_mac.is_empty() {
@@ -182,7 +184,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             source_network: Some(config.remote_network),
             source_address: Some(MacAddr::from_slice(&config.remote_mac)),
         };
-        self.device_table.lock().await.upsert(device);
+        self.device_table.lock().upsert(device);
         Ok(())
     }
 }

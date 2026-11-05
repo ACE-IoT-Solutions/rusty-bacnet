@@ -1,5 +1,5 @@
 use super::*;
-use crate::cov::{CovObservation, CovSample};
+use bacnet_device_core::cov::{CovObservation, CovSample};
 
 fn routed(single: bool, confirmed: bool) -> CovSubscription {
     let mut sub = proposal(
@@ -8,7 +8,7 @@ fn routed(single: bool, confirmed: bool) -> CovSubscription {
         PropertyIdentifier::PRESENT_VALUE,
     );
     sub.monitored_property = single.then_some(PropertyIdentifier::PRESENT_VALUE);
-    sub.expires_at = Some(runtime_clock::now() + Duration::from_secs(600));
+    sub.expires_at = Some(crate::runtime_clock::core_now() + bacnet_time::Duration::from_secs(600));
     sub.subscriber_network = Some(bacnet_encoding::npdu::NpduAddress {
         network: 7,
         mac_address: MacAddr::from_slice(&[4]),
@@ -164,11 +164,13 @@ async fn cov_recipient_route_admitted_confirmed_ack_cannot_overwrite_new_generat
             current.last_notified_observation, None,
             "ordinary/Single renewal resets its observation"
         );
-        assert!(fixture
-            .table
-            .write()
-            .await
-            .complete_for_test(&current, observation(99.0)));
+        assert!(
+            fixture
+                .table
+                .write()
+                .await
+                .complete_for_test(&current, observation(99.0))
+        );
         assert_eq!(
             fixture.routes.lock().unwrap().as_slice(),
             std::slice::from_ref(&old.subscriber_mac)

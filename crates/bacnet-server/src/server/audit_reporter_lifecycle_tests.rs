@@ -24,7 +24,8 @@ fn create(specifier: ObjectSpecifier, values: Vec<BACnetPropertyValue>) -> Bytes
         object_specifier: specifier,
         list_of_initial_values: values,
     }
-    .encode(&mut bytes);
+    .encode(&mut bytes)
+    .unwrap();
     bytes.freeze()
 }
 
@@ -209,7 +210,7 @@ async fn audit_reporter_create_late_initial_value_decode_failure_is_silent_and_r
                 &decoded.list_of_initial_values[1].value,
                 0
             ),
-            Err(Error::Decoding { .. })
+            Err(Error::Decoding(_))
         ));
         let response = dispatch(&fixture.server, ConfirmedServiceChoice::CREATE_OBJECT, data).await;
         let Apdu::Error(error) = response else {
@@ -231,16 +232,18 @@ async fn audit_reporter_create_late_initial_value_decode_failure_is_silent_and_r
             let db = fixture.server.db.read().await;
             assert_eq!(db.len(), initial_count);
             assert!(db.get(&candidate).is_none());
-            assert!(!db
-                .find_by_type(ObjectType::BINARY_VALUE)
-                .contains(&candidate));
+            assert!(
+                !db.find_by_type(ObjectType::BINARY_VALUE)
+                    .contains(&candidate)
+            );
             // Use a different OID: a stale name-index entry for the rolled-back
             // candidate must not look like a successful same-owner name check.
             let other = oid(ObjectType::BINARY_VALUE, 4);
             assert!(db.check_name_available(&other, "x").is_ok());
-            assert!(db
-                .check_name_available(&other, &format!("{:?}-3", ObjectType::BINARY_VALUE))
-                .is_ok());
+            assert!(
+                db.check_name_available(&other, &format!("{:?}-3", ObjectType::BINARY_VALUE))
+                    .is_ok()
+            );
         }
         settle().await;
         assert!(notifications(&fixture.transport.sent).is_empty());
@@ -268,10 +271,10 @@ async fn audit_reporter_lifecycle_execution_errors_preserve_results_and_create_r
         (
             ConfirmedServiceChoice::CREATE_OBJECT,
             AuditOperation::CREATE,
-            create(ObjectSpecifier::Type(ObjectType::ANALOG_VALUE), vec![]),
-            oid(ObjectType::ANALOG_VALUE, 1),
+            create(ObjectSpecifier::Type(ObjectType::ACCESS_POINT), vec![]),
+            oid(ObjectType::ACCESS_POINT, 1),
             ErrorClass::OBJECT,
-            ErrorCode::UNSUPPORTED_OBJECT_TYPE,
+            ErrorCode::DYNAMIC_CREATION_NOT_SUPPORTED,
         ),
         (
             ConfirmedServiceChoice::CREATE_OBJECT,
@@ -318,8 +321,10 @@ async fn audit_reporter_lifecycle_execution_errors_preserve_results_and_create_r
             AuditOperation::DELETE,
             delete(oid(ObjectType::NETWORK_PORT, 1)),
             oid(ObjectType::NETWORK_PORT, 1),
+            // No such port: an absent object is unknown, whatever its type
+            // (#2171).
             ErrorClass::OBJECT,
-            ErrorCode::OBJECT_DELETION_NOT_PERMITTED,
+            ErrorCode::UNKNOWN_OBJECT,
         ),
     ];
     for (index, (service, operation, request, target, class, code)) in cases.into_iter().enumerate()
@@ -521,7 +526,8 @@ async fn audit_reporter_lifecycle_denials_and_decode_failures_are_silent() {
         if policy_denial {
             fixture.server.config_mut().mutation_policy = MutationPolicy::DenyAll;
         } else {
-            fixture.server.config_mut().mutation_authorizer = Some(Arc::new(|_| false));
+            fixture.server.config_mut().policy =
+                Some(Arc::new(crate::FnPolicy::new().mutation(|_| false)));
         }
         for (service, request) in [
             (
@@ -540,7 +546,7 @@ async fn audit_reporter_lifecycle_denials_and_decode_failures_are_silent() {
             assert_eq!(error.error_code, ErrorCode::SERVICE_REQUEST_DENIED);
         }
         fixture.server.config_mut().mutation_policy = MutationPolicy::Permissive;
-        fixture.server.config_mut().mutation_authorizer = None;
+        fixture.server.config_mut().policy = None;
         for service in [
             ConfirmedServiceChoice::CREATE_OBJECT,
             ConfirmedServiceChoice::DELETE_OBJECT,
@@ -587,14 +593,16 @@ async fn audit_reporter_selected_reporter_deletion_is_denied_until_stopped() {
         Some((ErrorClass::OBJECT, ErrorCode::OBJECT_DELETION_NOT_PERMITTED)),
     );
     fixture.server.stop().await.unwrap();
-    assert!(fixture
-        .server
-        .db
-        .write()
-        .await
-        .remove(&target)
-        .unwrap()
-        .is_some());
+    assert!(
+        fixture
+            .server
+            .db
+            .write()
+            .await
+            .remove(&target)
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]

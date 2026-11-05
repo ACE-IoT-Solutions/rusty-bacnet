@@ -2,14 +2,14 @@
 use super::*;
 use bacnet_transport::{
     sc::{LoopbackWebSocket, ScConnectionState, ScReconnectConfig, ScTransport, WebSocketPort},
-    sc_frame::{decode_sc_message, encode_sc_message, ScFunction, ScMessage},
+    sc_frame::{ScFunction, ScMessage, decode_sc_message, encode_sc_message},
 };
 use bytes::{Bytes, BytesMut};
 
 async fn accept(hub: &LoopbackWebSocket, npdu: u16, bvlc: u16) {
     let request = decode_sc_message(&hub.recv().await.unwrap()).unwrap();
     assert_eq!(request.function, ScFunction::ConnectRequest);
-    assert_eq!(&request.payload[22..], &[0x16, 0x49, 0x05, 0xd9]);
+    assert_eq!(&request.payload[22..], &[0x16, 0x49, 0x05, 0xc6]);
     let mut payload = vec![0x10; 6];
     payload.extend_from_slice(&[0x20; 16]);
     payload.extend_from_slice(&bvlc.to_be_bytes());
@@ -95,7 +95,6 @@ async fn sc_server_egress_1474_then_failover_keeps_device_and_iam_1476() {
             initial_delay_ms: 25,
             max_delay_ms: 25,
             max_retries: 1,
-            retry_forever: false,
         })
         .with_failover(backup);
     let mut states = transport.connection_state_changes();
@@ -104,7 +103,14 @@ async fn sc_server_egress_1474_then_failover_keeps_device_and_iam_1476() {
         inner: transport,
         sends: Arc::clone(&sends),
     };
-    let start = BACnetServer::start(ServerConfig::default(), database(Some(1476)), transport);
+    let start = BACnetServer::start(
+        ServerConfig {
+            device: bacnet_objects::DeviceIdentity::new(893, 0).unwrap(),
+            ..Default::default()
+        },
+        database(Some(1476)),
+        transport,
+    );
     let (started, ()) = tokio::join!(start, accept(&primary, 1476, 5705));
     let mut server = started.unwrap();
     server.broadcast_i_am().await.unwrap();

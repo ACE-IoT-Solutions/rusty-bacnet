@@ -1,5 +1,5 @@
 use super::{ElevatorGroupObject, EscalatorObject, LiftObject};
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
@@ -16,8 +16,7 @@ use crate::property_metadata::{
 // ElevatorGroup keeps its legacy order with Machine_Room_ID after
 // Object_Type, its Table 12-76 neighbour among the served rows (#997). Lift
 // and Escalator list their rows in table order (#1021, #1022). PROPERTY_LIST
-// is last so the projection helper omits it while required_properties keeps
-// it. Only implemented rows are described: table rows the objects do not
+// is last. Only implemented rows are described: table rows the objects do not
 // serve (ElevatorGroup audit/tag/profile rows; Escalator event, intrinsic,
 // audit, tag and profile rows; Lift Car_Door_Text, deck, event, intrinsic,
 // audit, tag and profile rows) stay absent until dispatch exists. The Lift
@@ -59,10 +58,9 @@ use crate::property_metadata::{
 // Presence is None throughout: the implementation models no
 // lift-group-conditional, intrinsic-reporting, or paired-text gating on this
 // family, and Car_Load and Car_Load_Units are always served together. The
-// trio is not createable at runtime (the network factory builds only the
-// eight analog/binary/multi-state input/output/value types, so the
-// is_createable=false default holds) and remains deleteable (delete denies
-// only Device and NetworkPort, so the is_deleteable=true default holds);
+// trio is not createable at runtime (the `creation` table has no
+// constructor for it) and remains deleteable (delete denies
+// only Device and NetworkPort, so the builtin_deleteable=true default holds);
 // neither needs an override. COV keeps its default. Group_Members admits an
 // index through the array default (BACnetARRAY per Table 12-76) and serves
 // it through common::read_array (#1034); the Lift

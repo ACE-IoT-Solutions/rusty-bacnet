@@ -3,10 +3,10 @@ use super::super::direct_membership::{DirectMembership, DirectRole};
 use super::*;
 use bacnet_types::error::Error;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
-use tokio::sync::{oneshot, Semaphore};
+use tokio::sync::{Semaphore, oneshot};
 
 struct ReadyPeer {
     incoming: Vec<u8>,
@@ -66,6 +66,7 @@ async fn direct_worker_ready_receive_stream_cannot_starve_queued_sends() {
         #[cfg(feature = "sc-tls")]
         None,
         (1476, 1476),
+        (30_000, 60_000),
     );
     // Enqueue both sends synchronously before the spawned worker's first poll.
     // The peer's receive is also continuously ready. Its finite sentinel ends
@@ -78,7 +79,7 @@ async fn direct_worker_ready_receive_stream_cannot_starve_queued_sends() {
         .send
         .try_send(DirectWrite {
             bytes: incoming.clone().freeze(),
-            scope: None,
+            scopes: [None, None],
             deadline: tokio::time::Instant::now() + Duration::from_secs(1),
             started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             done: a,
@@ -90,7 +91,7 @@ async fn direct_worker_ready_receive_stream_cannot_starve_queued_sends() {
         .send
         .try_send(DirectWrite {
             bytes: incoming.clone().freeze(),
-            scope: None,
+            scopes: [None, None],
             deadline: tokio::time::Instant::now() + Duration::from_secs(1),
             started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             done: b,

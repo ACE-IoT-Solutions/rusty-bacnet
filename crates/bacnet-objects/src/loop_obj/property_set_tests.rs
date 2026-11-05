@@ -3,7 +3,9 @@
 //! units rows that footnotes 1 to 3 pair with each served gain constant.
 
 use super::*;
+use crate::property_metadata::{is_array_property, is_writable_property};
 use bacnet_types::enums::{Action, EngineeringUnits};
+use bacnet_types::error::RemoteError;
 
 const UNITS_ROWS: [PropertyIdentifier; 4] = [
     PropertyIdentifier::CONTROLLED_VARIABLE_UNITS,
@@ -13,7 +15,7 @@ const UNITS_ROWS: [PropertyIdentifier; 4] = [
 ];
 
 fn new_loop() -> LoopObject {
-    LoopObject::new(1, "LOOP-1", 62).unwrap()
+    LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()
 }
 
 fn read(lo: &LoopObject, property: PropertyIdentifier) -> PropertyValue {
@@ -22,8 +24,8 @@ fn read(lo: &LoopObject, property: PropertyIdentifier) -> PropertyValue {
 
 fn assert_property_error(result: Result<(), Error>, expected: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY && code == expected),
         "expected PROPERTY/{expected:?}, got {result:?}"
     );
 }
@@ -56,8 +58,8 @@ fn loop_serves_the_missing_table_12_20_rows_with_their_datatypes() {
         read(&lo, PropertyIdentifier::PRIORITY_FOR_WRITING),
         PropertyValue::Unsigned(16)
     );
-    let list = lo.property_list();
-    let required = lo.required_properties();
+    let list = crate::test_rows::listed(&lo.property_metadata());
+    let required = crate::test_rows::required(&lo.property_metadata());
     for property in [
         PropertyIdentifier::CONTROLLED_VARIABLE_UNITS,
         PropertyIdentifier::ACTION,
@@ -89,7 +91,7 @@ fn loop_serves_the_missing_table_12_20_rows_with_their_datatypes() {
 #[test]
 fn loop_action_takes_direct_or_reverse_in_and_out_of_service() {
     let mut lo = new_loop();
-    assert!(lo.is_writable_property(PropertyIdentifier::ACTION));
+    assert!(is_writable_property(&lo, PropertyIdentifier::ACTION));
     for out_of_service in [false, true] {
         set_out_of_service(&mut lo, out_of_service);
         for action in [Action::REVERSE, Action::DIRECT] {
@@ -161,7 +163,7 @@ fn loop_units_rows_are_application_set_and_read_only() {
             read(&lo, property),
             PropertyValue::Enumerated(units.to_raw())
         );
-        assert!(!lo.is_writable_property(property), "{property:?}");
+        assert!(!is_writable_property(&lo, property), "{property:?}");
         for out_of_service in [false, true] {
             set_out_of_service(&mut lo, out_of_service);
             assert_property_error(
@@ -219,7 +221,10 @@ fn loop_priority_for_writing_is_application_set_in_one_to_sixteen() {
             ErrorCode::VALUE_OUT_OF_RANGE,
         );
     }
-    assert!(!lo.is_writable_property(PropertyIdentifier::PRIORITY_FOR_WRITING));
+    assert!(!is_writable_property(
+        &lo,
+        PropertyIdentifier::PRIORITY_FOR_WRITING
+    ));
     assert_property_error(
         lo.write_property(
             PropertyIdentifier::PRIORITY_FOR_WRITING,
@@ -238,8 +243,9 @@ fn loop_priority_for_writing_is_application_set_in_one_to_sixteen() {
 #[test]
 fn loop_action_is_a_single_value_not_an_array() {
     // ACTION is BACnetARRAY[N] only on Command (Table 12-12).
-    assert!(!new_loop().is_array_property(PropertyIdentifier::ACTION));
-    assert!(crate::command::CommandObject::new(1, "CMD-1")
-        .unwrap()
-        .is_array_property(PropertyIdentifier::ACTION));
+    assert!(!is_array_property(&new_loop(), PropertyIdentifier::ACTION));
+    assert!(is_array_property(
+        &crate::command::CommandObject::new(1, "CMD-1").unwrap(),
+        PropertyIdentifier::ACTION
+    ));
 }

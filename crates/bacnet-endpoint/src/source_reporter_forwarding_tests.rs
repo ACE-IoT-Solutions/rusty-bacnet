@@ -1,12 +1,17 @@
 use super::*;
-use bacnet_objects::audit::{AuditLogQueryPage, AuditLogStorage};
+use bacnet_objects::audit::{AuditLogQueryPage, AuditLogStorage, AuditReporterAuthority};
 use bacnet_objects::clock::{ClockFrame, ClockReader};
 use bacnet_objects::event_enrollment::{EventEnrollmentEvalState, EventEnrollmentMonitoredSource};
-use bacnet_objects::property_metadata::PropertyMetadata;
-use bacnet_objects::traits::MonotonicClock;
+use bacnet_objects::property_metadata::{
+    Datatype, PropertyConformance, PropertyMetadata, PropertyWriteCapability, ValueType,
+    has_property, is_array_property, is_list_property, is_writable_property, property_list,
+    required_properties,
+};
+use bacnet_objects::traits::{AuditLog, Clocks, EnrollmentEval, Timed};
 use bacnet_types::bitstring::{AuditOperationFlags, BACnetPriorityFilter};
 use bacnet_types::constructed::{BACnetAuditLogQueryParameters, BACnetObjectSelector};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 #[test]
 fn typed_device_authority_is_forwarded_without_copying() {
@@ -42,9 +47,11 @@ fn read(object: &dyn BACnetObject, property: PropertyIdentifier) -> PropertyValu
 }
 
 fn denied(result: Result<(), Error>) {
-    assert!(matches!(result, Err(Error::Protocol { class, code })
-        if class == ErrorClass::PROPERTY.to_raw() as u32
-            && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32));
+    assert!(
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+        if class == ErrorClass::PROPERTY
+            && code == ErrorCode::WRITE_ACCESS_DENIED)
+    );
 }
 
 #[tokio::test]
@@ -56,7 +63,9 @@ async fn built_in_configuration_identity_metadata_and_writes_survive_wrapping() 
     let operations = AuditOperationFlags::from_bits(1 << 1).unwrap();
     let original = db.get_mut(&selected()).unwrap();
     original
-        .configure_audit_reporter_internal(
+        .audit_reporter_mut()
+        .expect("an Audit Reporter")
+        .configure(
             AuditLevel::AUDIT_ALL,
             operations,
             true,
@@ -66,46 +75,39 @@ async fn built_in_configuration_identity_metadata_and_writes_survive_wrapping() 
         )
         .unwrap();
     let metadata = original.property_metadata().into_owned();
-    let properties = original.property_list().into_owned();
-    let required = original.required_properties().into_owned();
+    let properties: Vec<_> = property_list(&metadata).collect();
     let values: Vec<_> = properties
         .iter()
         .filter(|&&p| p != PropertyIdentifier::AUDIT_SOURCE_REPORTER)
         .map(|&p| (p, read(original, p)))
         .collect();
-    let reporter_ptr = std::ptr::from_ref(original.audit_reporter_internal().unwrap());
-    let status = original
-        .audit_reporter_internal()
-        .unwrap()
-        .status_internal();
+    let reporter_ptr = std::ptr::from_ref(original.audit_reporter().unwrap());
+    let status = original.audit_reporter().unwrap().status_internal();
     let mut session = session
         .with_database(db)
         .with_source_audit_reporter(selected());
     session.start().await.unwrap();
     {
         let mut db = session.database.as_ref().unwrap().write().await;
+        // The running source keeps its Reporter in the database.
+        assert!(db.check_removable(&selected()).is_err());
         let object = db.get_mut(&selected()).unwrap();
         assert_eq!(object.object_identifier(), selected());
         assert_eq!(object.object_name(), "Reporter-1");
         assert_eq!(object.property_metadata().as_ref(), metadata);
-        assert_eq!(object.property_list().as_ref(), properties);
-        assert_eq!(object.required_properties().as_ref(), required);
         for (property, expected) in values {
             assert_eq!(read(object, property), expected);
         }
-        assert!(std::ptr::eq(
-            reporter_ptr,
-            object.audit_reporter_internal().unwrap()
-        ));
+        assert!(std::ptr::eq(reporter_ptr, object.audit_reporter().unwrap()));
         assert!(Arc::ptr_eq(
             &status,
-            &object.audit_reporter_internal().unwrap().status_internal()
+            &object.audit_reporter().unwrap().status_internal()
         ));
         // Role projection belongs to the adapter; the borrowed configuration
         // object remains an ordinary Reporter, not a leaked promotion capability.
         assert_eq!(
             read(
-                object.audit_reporter_internal().unwrap(),
+                object.audit_reporter().unwrap(),
                 PropertyIdentifier::AUDIT_SOURCE_REPORTER
             ),
             PropertyValue::Boolean(false)
@@ -114,21 +116,25 @@ async fn built_in_configuration_identity_metadata_and_writes_survive_wrapping() 
             read(object, PropertyIdentifier::AUDIT_SOURCE_REPORTER),
             PropertyValue::Boolean(true)
         );
-        assert!(!object.is_deleteable());
-        assert!(!object.is_createable());
-        assert!(!object.is_writable_property(PropertyIdentifier::AUDIT_SOURCE_REPORTER));
+        assert!(!is_writable_property(
+            &*object,
+            PropertyIdentifier::AUDIT_SOURCE_REPORTER
+        ));
         denied(object.write_property(
             PropertyIdentifier::AUDIT_SOURCE_REPORTER,
             None,
             PropertyValue::Boolean(false),
             None,
         ));
-        assert!(!object
-            .property_list()
-            .contains(&PropertyIdentifier::MONITORED_OBJECTS));
-        assert!(object
-            .read_property(PropertyIdentifier::MONITORED_OBJECTS, None)
-            .is_err());
+        assert!(!has_property(
+            &object.property_metadata(),
+            PropertyIdentifier::MONITORED_OBJECTS
+        ));
+        assert!(
+            object
+                .read_property(PropertyIdentifier::MONITORED_OBJECTS, None)
+                .is_err()
+        );
         object
             .write_property(
                 PropertyIdentifier::DESCRIPTION,
@@ -142,25 +148,36 @@ async fn built_in_configuration_identity_metadata_and_writes_survive_wrapping() 
             PropertyValue::CharacterString("kept".into())
         );
         let before = object
-            .property_list()
+            .property_metadata()
             .iter()
-            .map(|&p| (p, read(object, p)))
+            .map(|row| {
+                (
+                    row.property_identifier,
+                    read(object, row.property_identifier),
+                )
+            })
             .collect::<Vec<_>>();
-        assert!(object
-            .configure_audit_reporter_internal(
-                AuditLevel::DEFAULT,
-                AuditOperationFlags::empty(),
-                false,
-                None,
-                BACnetPriorityFilter::all(),
-                None,
-            )
-            .is_err());
+        assert!(
+            object
+                .audit_reporter_mut()
+                .expect("an Audit Reporter")
+                .configure(
+                    AuditLevel::DEFAULT,
+                    AuditOperationFlags::empty(),
+                    false,
+                    None,
+                    BACnetPriorityFilter::all(),
+                    None,
+                )
+                .is_err()
+        );
         for (property, expected) in before {
             assert_eq!(read(object, property), expected);
         }
         object
-            .configure_audit_reporter_internal(
+            .audit_reporter_mut()
+            .expect("an Audit Reporter")
+            .configure(
                 AuditLevel::AUDIT_CONFIG,
                 operations,
                 false,
@@ -173,11 +190,14 @@ async fn built_in_configuration_identity_metadata_and_writes_survive_wrapping() 
             read(object, PropertyIdentifier::AUDIT_LEVEL),
             PropertyValue::Enumerated(AuditLevel::AUDIT_CONFIG.to_raw())
         );
-        assert!(!object
-            .property_list()
-            .contains(&PropertyIdentifier::MONITORED_OBJECTS));
+        assert!(!has_property(
+            &object.property_metadata(),
+            PropertyIdentifier::MONITORED_OBJECTS
+        ));
         object
-            .configure_audit_reporter_internal(
+            .audit_reporter_mut()
+            .expect("an Audit Reporter")
+            .configure(
                 AuditLevel::NONE,
                 operations,
                 true,
@@ -199,13 +219,11 @@ async fn built_in_configuration_identity_metadata_and_writes_survive_wrapping() 
 }
 
 const CUSTOM: PropertyIdentifier = PropertyIdentifier::from_raw(5000);
-const CUSTOM_LIST: PropertyIdentifier = PropertyIdentifier::from_raw(5001);
 
 #[derive(Default)]
 struct Calls {
     clock_bindings: AtomicUsize,
-    monotonic_bindings: AtomicUsize,
-    configurations: AtomicUsize,
+    reporter_lends: AtomicUsize,
 }
 
 impl ClockReader for Calls {
@@ -232,28 +250,14 @@ impl BACnetObject for ExtendedReporter {
     fn object_name(&self) -> &str {
         self.reporter.object_name()
     }
-    fn audit_reporter_internal(&self) -> Option<&AuditReporterObject> {
+    fn audit_reporter(&self) -> Option<&AuditReporterObject> {
         Some(&self.reporter)
     }
-    fn configure_audit_reporter_internal(
-        &mut self,
-        level: AuditLevel,
-        operations: AuditOperationFlags,
-        confirmed: bool,
-        selectors: Option<Vec<BACnetObjectSelector>>,
-        priorities: BACnetPriorityFilter,
-        maximum_send_delay: Option<bacnet_objects::audit::AuditSendDelay>,
-    ) -> Result<(), Error> {
-        self.reporter.configure_audit_reporter_internal(
-            level,
-            operations,
-            confirmed,
-            selectors,
-            priorities,
-            maximum_send_delay,
-        )?;
-        self.calls.configurations.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+    // Configuration goes through the Reporter's own authority, so the custom
+    // object sees each one as a lend.
+    fn audit_reporter_mut(&mut self) -> Option<AuditReporterAuthority<'_>> {
+        self.calls.reporter_lends.fetch_add(1, Ordering::SeqCst);
+        self.reporter.audit_reporter_mut()
     }
     fn read_property(
         &self,
@@ -286,53 +290,64 @@ impl BACnetObject for ExtendedReporter {
         }
     }
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
-        self.reporter.property_metadata()
+        let mut rows = self.reporter.property_metadata().into_owned();
+        rows.push(
+            PropertyMetadata::new(
+                CUSTOM,
+                PropertyConformance::RequiredWrite,
+                None,
+                PropertyWriteCapability::Always,
+            )
+            .with_value_type(ValueType::array(Datatype::Unsigned)),
+        );
+        Cow::Owned(rows)
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        let mut properties = self.reporter.property_list().into_owned();
-        properties.push(CUSTOM);
-        Cow::Owned(properties)
+    fn timed(&mut self) -> Option<&mut dyn Timed> {
+        Some(self)
     }
-    fn required_properties(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[CUSTOM])
+    fn enrollment_eval(&self) -> Option<&dyn EnrollmentEval> {
+        Some(self)
     }
-    fn is_writable_property(&self, p: PropertyIdentifier) -> bool {
-        p == CUSTOM || self.reporter.is_writable_property(p)
+    fn enrollment_eval_mut(&mut self) -> Option<&mut dyn EnrollmentEval> {
+        Some(self)
     }
-    fn is_array_property(&self, p: PropertyIdentifier) -> bool {
-        p == CUSTOM || self.reporter.is_array_property(p)
+    fn audit_log(&self) -> Option<&dyn AuditLog> {
+        Some(self)
     }
-    fn is_list_property(&self, p: PropertyIdentifier) -> bool {
-        p == CUSTOM_LIST || self.reporter.is_list_property(p)
+    fn audit_log_mut(&mut self) -> Option<&mut dyn AuditLog> {
+        Some(self)
     }
-    fn bind_clock_internal(&mut self, _: Option<Arc<dyn ClockReader>>) {
-        self.calls.clock_bindings.fetch_add(1, Ordering::SeqCst);
+}
+
+impl AuditLog for ExtendedReporter {
+    fn storage(&self) -> &dyn AuditLogStorage {
+        self
     }
-    fn bind_monotonic_clock_internal(&mut self, _: Option<Arc<MonotonicClock>>) {
-        self.calls.monotonic_bindings.fetch_add(1, Ordering::SeqCst);
+}
+
+impl EnrollmentEval for ExtendedReporter {
+    fn eval_state(&self) -> EventEnrollmentEvalState {
+        self.eval.clone()
     }
-    fn enrollment_eval_state_internal(&self) -> Option<EventEnrollmentEvalState> {
-        Some(self.eval.clone())
-    }
-    fn set_enrollment_eval_state_internal(
-        &mut self,
-        state: EventEnrollmentEvalState,
-    ) -> Result<(), Error> {
+    fn set_eval_state(&mut self, state: EventEnrollmentEvalState) -> Result<(), Error> {
         self.eval = state;
         Ok(())
     }
-    fn enrollment_eval_source_internal(&self) -> Option<Option<EventEnrollmentMonitoredSource>> {
+    fn eval_source(&self) -> Option<Option<EventEnrollmentMonitoredSource>> {
         Some(self.source)
     }
-    fn set_enrollment_eval_source_internal(
+    fn set_eval_source(
         &mut self,
         source: Option<EventEnrollmentMonitoredSource>,
     ) -> Result<(), Error> {
         self.source = source;
         Ok(())
     }
-    fn audit_log_storage_internal(&self) -> Option<&dyn AuditLogStorage> {
-        Some(self)
+}
+
+impl Timed for ExtendedReporter {
+    fn bind_clocks(&mut self, _: &Clocks) {
+        self.calls.clock_bindings.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -374,7 +389,7 @@ async fn custom_capabilities_clocks_indexes_and_private_state_are_retained() {
     }))
     .unwrap();
     db.set_clock_reader(Some(calls.clone()));
-    db.set_monotonic_clock_internal(Some(Arc::new(|| Duration::from_secs(99))));
+    db.set_monotonic_clock(Some(Arc::new(|| Duration::from_secs(99))));
     db.set_enrollment_eval_state_invalidated(selected(), true);
     db.set_enrollment_eval_source(selected(), Some(monitored));
     let mut objects = db.list_objects();
@@ -382,17 +397,12 @@ async fn custom_capabilities_clocks_indexes_and_private_state_are_retained() {
     let mut reporters = db.find_by_type(ObjectType::AUDIT_REPORTER);
     reporters.sort_by_key(|oid| oid.instance_number());
     let clock_binds = calls.clock_bindings.load(Ordering::SeqCst);
-    let monotonic_binds = calls.monotonic_bindings.load(Ordering::SeqCst);
-    let capability = std::ptr::from_ref(
-        db.get(&selected())
-            .unwrap()
-            .audit_reporter_internal()
-            .unwrap(),
-    );
+    let capability = std::ptr::from_ref(db.get(&selected()).unwrap().audit_reporter().unwrap());
     let storage = std::ptr::from_ref(
         db.get(&selected())
             .unwrap()
-            .audit_log_storage_internal()
+            .audit_log()
+            .map(|log| log.storage())
             .unwrap(),
     )
     .cast::<()>();
@@ -415,33 +425,28 @@ async fn custom_capabilities_clocks_indexes_and_private_state_are_retained() {
             selected()
         );
         assert!(db.find_by_name("Reporter-1").is_none());
-        assert!(db
-            .check_name_available(&target(), "Custom Reporter")
-            .is_err());
+        assert!(
+            db.check_name_available(&target(), "Custom Reporter")
+                .is_err()
+        );
         assert!(db.enrollment_eval_state_invalidated(&selected()));
         assert_eq!(db.enrollment_eval_source(&selected()), Some(monitored));
         assert_eq!(calls.clock_bindings.load(Ordering::SeqCst), clock_binds);
-        assert_eq!(
-            calls.monotonic_bindings.load(Ordering::SeqCst),
-            monotonic_binds
-        );
+        assert!(db.check_removable(&selected()).is_err());
         let object = db.get_mut(&selected()).unwrap();
-        assert!(std::ptr::eq(
-            capability,
-            object.audit_reporter_internal().unwrap()
-        ));
+        assert!(std::ptr::eq(capability, object.audit_reporter().unwrap()));
         assert_eq!(
             storage,
-            std::ptr::from_ref(object.audit_log_storage_internal().unwrap()).cast::<()>()
+            std::ptr::from_ref(object.audit_log().map(|log| log.storage()).unwrap()).cast::<()>()
         );
         assert_eq!(object.object_name(), "Custom Reporter");
         assert_eq!(object.object_identifier(), selected());
-        assert!(object.property_list().contains(&CUSTOM));
-        assert_eq!(object.required_properties().as_ref(), &[CUSTOM]);
-        assert!(object.is_array_property(CUSTOM));
-        assert!(object.is_list_property(CUSTOM_LIST));
-        assert!(!object.is_list_property(CUSTOM));
-        assert!(object.is_writable_property(CUSTOM));
+        let rows = object.property_metadata();
+        assert!(has_property(&rows, CUSTOM));
+        assert!(required_properties(&rows).any(|p| p == CUSTOM));
+        assert!(is_array_property(&*object, CUSTOM));
+        assert!(!is_list_property(&*object, CUSTOM));
+        assert!(is_writable_property(&*object, CUSTOM));
         assert_eq!(read(object, CUSTOM), PropertyValue::Unsigned(7));
         object
             .write_property(CUSTOM, Some(3), PropertyValue::Unsigned(42), Some(7))
@@ -454,7 +459,9 @@ async fn custom_capabilities_clocks_indexes_and_private_state_are_retained() {
         let operations = AuditOperationFlags::from_bits((1 << 1) | (1 << 63)).unwrap();
         let priorities = BACnetPriorityFilter::from_bits(1 << 7);
         object
-            .configure_audit_reporter_internal(
+            .audit_reporter_mut()
+            .expect("an Audit Reporter")
+            .configure(
                 AuditLevel::AUDIT_ALL,
                 operations,
                 true,
@@ -463,7 +470,7 @@ async fn custom_capabilities_clocks_indexes_and_private_state_are_retained() {
                 None,
             )
             .unwrap();
-        assert_eq!(calls.configurations.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.reporter_lends.load(Ordering::SeqCst), 1);
         assert_eq!(
             read(object, PropertyIdentifier::AUDIT_LEVEL),
             PropertyValue::Enumerated(AuditLevel::AUDIT_ALL.to_raw())
@@ -472,31 +479,42 @@ async fn custom_capabilities_clocks_indexes_and_private_state_are_retained() {
             read(object, PropertyIdentifier::ISSUE_CONFIRMED_NOTIFICATIONS),
             PropertyValue::Boolean(true)
         );
-        let reporter = object.audit_reporter_internal().unwrap();
+        let reporter = object.audit_reporter().unwrap();
         assert!(reporter.monitors_object_internal(target()));
         assert!(reporter.reports_write_internal(PropertyIdentifier::PRESENT_VALUE, Some(8)));
         assert!(!reporter.reports_write_internal(PropertyIdentifier::PRESENT_VALUE, Some(16)));
         let before = object
-            .property_list()
+            .property_metadata()
             .iter()
-            .map(|&p| (p, read(object, p)))
+            .map(|row| {
+                (
+                    row.property_identifier,
+                    read(object, row.property_identifier),
+                )
+            })
             .collect::<Vec<_>>();
-        assert!(object
-            .configure_audit_reporter_internal(
-                AuditLevel::DEFAULT,
-                AuditOperationFlags::empty(),
-                false,
-                None,
-                BACnetPriorityFilter::all(),
-                None,
-            )
-            .is_err());
-        assert_eq!(calls.configurations.load(Ordering::SeqCst), 1);
+        assert!(
+            object
+                .audit_reporter_mut()
+                .expect("an Audit Reporter")
+                .configure(
+                    AuditLevel::DEFAULT,
+                    AuditOperationFlags::empty(),
+                    false,
+                    None,
+                    BACnetPriorityFilter::all(),
+                    None,
+                )
+                .is_err()
+        );
+        assert_eq!(calls.reporter_lends.load(Ordering::SeqCst), 2);
         for (property, expected) in before {
             assert_eq!(read(object, property), expected);
         }
         object
-            .configure_audit_reporter_internal(
+            .audit_reporter_mut()
+            .expect("an Audit Reporter")
+            .configure(
                 AuditLevel::NONE,
                 operations,
                 false,
@@ -505,15 +523,15 @@ async fn custom_capabilities_clocks_indexes_and_private_state_are_retained() {
                 None,
             )
             .unwrap();
-        assert_eq!(calls.configurations.load(Ordering::SeqCst), 2);
-        assert!(!object
-            .property_list()
-            .contains(&PropertyIdentifier::MONITORED_OBJECTS));
+        assert_eq!(calls.reporter_lends.load(Ordering::SeqCst), 3);
+        assert!(!has_property(
+            &object.property_metadata(),
+            PropertyIdentifier::MONITORED_OBJECTS
+        ));
         assert_eq!(
             read(object, PropertyIdentifier::AUDIT_SOURCE_REPORTER),
             PropertyValue::Boolean(true)
         );
-        assert!(!object.is_deleteable());
     }
     session.stop().await.unwrap();
 }

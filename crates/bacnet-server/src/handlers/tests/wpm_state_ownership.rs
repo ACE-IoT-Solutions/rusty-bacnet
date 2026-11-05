@@ -28,7 +28,7 @@ fn prefix_failure(
         None,
     ));
     prefix.push(suffix);
-    let WritePropertyMultipleOutcome::Error {
+    let WpmOutcome::Error {
         error,
         first_failed_write_attempt,
         committed_oids,
@@ -86,7 +86,7 @@ fn wpm_file_resize_and_network_configuration_keep_committed_state() {
     assert_eq!(
         db.get(&file_oid)
             .unwrap()
-            .file_storage_internal()
+            .file_storage()
             .unwrap()
             .read_stream(0, 10)
             .unwrap()
@@ -103,14 +103,15 @@ fn wpm_file_resize_and_network_configuration_keep_committed_state() {
     let before = port
         .read_property(PropertyIdentifier::BACNET_IP_UDP_PORT, None)
         .unwrap();
-    assert!(port
-        .write_property(
+    assert!(
+        port.write_property(
             PropertyIdentifier::BACNET_IP_UDP_PORT,
             None,
             PropertyValue::Unsigned(65536),
             None
         )
-        .is_err());
+        .is_err()
+    );
     assert_eq!(
         port.read_property(PropertyIdentifier::BACNET_IP_UDP_PORT, None)
             .unwrap(),
@@ -145,7 +146,7 @@ fn wpm_file_resize_and_network_configuration_keep_committed_state() {
             ],
         ),
     );
-    let WritePropertyMultipleOutcome::Error {
+    let WpmOutcome::Error {
         error,
         first_failed_write_attempt,
         committed_oids,

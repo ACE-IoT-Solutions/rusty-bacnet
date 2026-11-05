@@ -1,7 +1,7 @@
 //! A BBMD forwards its own broadcasts to BDT peers and foreign devices (#937).
 
 use super::*;
-use crate::port_ownership::{restart, ATTEMPTS};
+use crate::port_ownership::{ATTEMPTS, restart};
 use tokio::time::timeout;
 
 /// A global-broadcast Who-Is NPDU.
@@ -98,7 +98,7 @@ fn hand_wired_bbmd(
     let bbmd = Arc::new(std::sync::Mutex::new(state));
     transport.own_broadcast = Some(OwnBroadcastForwarder::new(Arc::clone(&bbmd), dispatcher));
     transport.bbmd = Some(bbmd);
-    transport.socket = Some(Arc::clone(socket));
+    transport.wire_for_test(Arc::clone(socket));
     (transport, rx)
 }
 
@@ -355,8 +355,7 @@ async fn plain_and_foreign_device_modes_do_not_forward_own_broadcasts() {
     let bbmd = udp().await;
     let mut foreign = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST);
     foreign.register_as_foreign_device(ForeignDeviceConfig {
-        bbmd_ip: Ipv4Addr::LOCALHOST,
-        bbmd_port: port_of(&bbmd),
+        bbmd: (Ipv4Addr::LOCALHOST, port_of(&bbmd)).into(),
         renewal_interval: None,
         ttl: 60,
     });
@@ -366,6 +365,12 @@ async fn plain_and_foreign_device_modes_do_not_forward_own_broadcasts() {
         recv_bvll(&bbmd).await.function,
         BvlcFunction::REGISTER_FOREIGN_DEVICE
     );
+    // Accept the registration, which a foreign device's broadcasts wait for
+    // (#1622).
+    let device = SocketAddrV4::new(Ipv4Addr::LOCALHOST, foreign.port);
+    bbmd.send_to(&[0x81, 0x00, 0x00, 0x06, 0x00, 0x00], device)
+        .await
+        .unwrap();
     // A foreign device still hands its broadcast to its BBMD only.
     foreign.send_broadcast(NPDU).await.unwrap();
     let frame = recv_bvll(&bbmd).await;

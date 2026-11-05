@@ -4,12 +4,13 @@
 //! VALUE_OUT_OF_RANGE.
 
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::multistate::{
     MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject,
 };
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
-use PropertyIdentifier as P;
+use bacnet_types::error::RemoteError;
 
 fn octets(value: &PropertyValue) -> Vec<u8> {
     let mut bytes = BytesMut::new();
@@ -101,9 +102,9 @@ fn label(db: &ObjectDatabase, oid: ObjectIdentifier, index: u32) -> PropertyValu
 }
 
 fn out_of_range(result: Result<(), Error>) -> bool {
-    matches!(result, Err(Error::Protocol { class, code })
-        if class == ErrorClass::PROPERTY.to_raw() as u32
-            && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32)
+    matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+        if class == ErrorClass::PROPERTY
+            && code == ErrorCode::VALUE_OUT_OF_RANGE)
 }
 
 fn db() -> (ObjectDatabase, [ObjectIdentifier; 3]) {

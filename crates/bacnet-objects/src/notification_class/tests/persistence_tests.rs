@@ -3,14 +3,18 @@
 
 use super::super::*;
 use super::make_dest_device;
-use super::storage::{persistent, MemoryPersistence};
+use super::storage::{MemoryPersistence, persistent};
 use bacnet_encoding::constructed::encode_destination_list;
 use bacnet_types::constructed::{BACnetAddress, BACnetDestination, BACnetRecipient};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 use bytes::BytesMut;
+#[cfg(feature = "std")]
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+#[cfg(feature = "std")]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 pub(super) fn framed(list: &[BACnetDestination]) -> PropertyValue {
     let mut buf = BytesMut::new();
@@ -37,12 +41,12 @@ fn address_destination(mac: &[u8]) -> BACnetDestination {
 
 pub(super) fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     match result {
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             class: got_class,
             code: got_code,
-        }) => assert_eq!(
+        })) => assert_eq!(
             (got_class, got_code),
-            (class.to_raw() as u32, code.to_raw() as u32),
+            (class, code),
             "expected {class:?} / {code:?}"
         ),
         other => panic!("expected {class:?} / {code:?}, got {other:?}"),
@@ -116,9 +120,9 @@ fn configured_destinations_apply_at_every_start_until_a_write() {
     // Writes to other properties save nothing.
     first
         .write_property(
-            PropertyIdentifier::DESCRIPTION,
+            PropertyIdentifier::NOTIFICATION_CLASS,
             None,
-            PropertyValue::CharacterString("alarms".into()),
+            PropertyValue::Unsigned(9),
             None,
         )
         .unwrap();
@@ -195,14 +199,19 @@ fn a_saved_recipient_list_a_write_would_refuse_refuses_the_class() {
             class,
             NotificationClassSnapshot {
                 recipient_list: Some(saved),
+                description: None,
             },
         );
         assert!(NotificationClass::with_persistence(1, "NC", storage).is_err());
     }
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+// std: the file backend.
+#[cfg(feature = "std")]
 fn temp_file() -> PathBuf {
     let serial = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir()
@@ -213,6 +222,8 @@ fn temp_file() -> PathBuf {
         .join("recipients")
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn file_persistence_round_trips_and_refuses_another_objects_file() {
     let path = temp_file();
@@ -225,12 +236,14 @@ fn file_persistence_round_trips_and_refuses_another_objects_file() {
             make_dest_device(3),
             address_destination(&[1, 2, 3, 4, 0xBA, 0xC0]),
         ]),
+        description: None,
     };
     // The list may be empty, or absent.
     for saved in [
         snapshot.clone(),
         NotificationClassSnapshot {
             recipient_list: Some(Vec::new()),
+            description: None,
         },
         NotificationClassSnapshot::default(),
     ] {
@@ -280,6 +293,8 @@ fn file_persistence_round_trips_and_refuses_another_objects_file() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn file_persistence_keeps_a_class_list_across_a_rebuild() {
     let path = temp_file();
@@ -300,6 +315,8 @@ fn file_persistence_keeps_a_class_list_across_a_rebuild() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn file_persistence_refuses_a_file_past_its_size_or_entry_caps() {
     use crate::notification_class::persistence::MAX_FILE_BYTES;
@@ -314,22 +331,28 @@ fn file_persistence_refuses_a_file_past_its_size_or_entry_caps() {
         .collect();
     let full = NotificationClassSnapshot {
         recipient_list: Some(destinations.clone()),
+        description: None,
     };
     storage.save(class, &full).unwrap();
     assert_eq!(storage.load(class).unwrap(), Some(full.clone()));
 
-    // One destination past the cap is refused. The backend saves what it is
-    // given, so a file like this can only come from elsewhere.
+    // One destination past the cap is refused, and never saved: a file
+    // like this, written here by hand, can only come from elsewhere.
     let mut too_many = destinations;
     too_many.push(make_dest_device(999));
-    storage
-        .save(
-            class,
-            &NotificationClassSnapshot {
-                recipient_list: Some(too_many),
-            },
-        )
-        .unwrap();
+    let past_cap = NotificationClassSnapshot {
+        recipient_list: Some(too_many),
+        description: None,
+    };
+    assert!(matches!(
+        storage.save(class, &past_cap),
+        Err(Error::OutOfRange(_))
+    ));
+    let mut bytes = std::fs::read(&path).unwrap();
+    let mut extra = BytesMut::new();
+    encode_destination_list(&mut extra, &[make_dest_device(999)]).unwrap();
+    bytes.extend_from_slice(&extra);
+    std::fs::write(&path, &bytes).unwrap();
     assert!(refusal(&storage).contains("more entries than the cap"));
 
     // A file past the size cap is refused before any of it is decoded; one

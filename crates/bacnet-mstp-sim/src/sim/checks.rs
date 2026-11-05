@@ -1,12 +1,14 @@
 //! The invariants checked continuously while a scenario runs.
 
 use bacnet_mstp_codec::FrameType;
-use bacnet_mstp_core::MasterState;
+use bacnet_mstp_core::{Duration, MasterState, MstpCounters};
 
 use super::master::PendingTx;
 use super::{NodeKind, Sim};
 use crate::line::{Driver, TxId};
-use crate::report::{Collision, CollisionClass, Episode, ViolationKind, WireFrame};
+use crate::report::{
+    Collision, CollisionClass, Episode, PostDriveOverlap, ViolationKind, WireFrame,
+};
 use crate::trace::{Millis, TraceKind, Who};
 
 /// States in which a master acts on the token it holds. A master in
@@ -23,6 +25,59 @@ pub(crate) fn holds_token(state: MasterState) -> bool {
 }
 
 impl Sim {
+    /// Counters that must not move: adapter errors, delivery drops and
+    /// frames from the station's own address ever, and late deadlines while
+    /// the adapter is punctual. An adapter that may service deadlines late
+    /// must still do so within `bound`, as the core measures it, so lateness
+    /// of the core's own making can't hide behind the adapter's.
+    pub(super) fn check_counters(
+        &mut self,
+        node: usize,
+        counters: &MstpCounters,
+        punctual: bool,
+        bound: Option<Duration>,
+    ) {
+        let station = self.nodes[node].station;
+        let master = self.master_mut(node).expect("a master");
+        let new_late = counters.late_deadlines - master.late_seen;
+        master.late_seen = counters.late_deadlines;
+        let lateness = counters.deadline_lateness.max;
+        let new_lateness = lateness > master.lateness_seen;
+        master.lateness_seen = lateness;
+        let mut wrong = Vec::new();
+        if counters.adapter_errors != 0 {
+            wrong.push(format!("adapter_errors {}", counters.adapter_errors));
+        }
+        if counters.internal_errors != 0 {
+            wrong.push(format!("internal_errors {}", counters.internal_errors));
+        }
+        if counters.delivery_drops != 0 {
+            wrong.push(format!("delivery_drops {}", counters.delivery_drops));
+        }
+        // Every simulated station has its own address, so a frame from this
+        // one's is its own echo leaking past the adapter.
+        if counters.own_address_frames != 0 {
+            wrong.push(format!(
+                "own_address_frames {}",
+                counters.own_address_frames
+            ));
+        }
+        if punctual && new_late != 0 {
+            wrong.push(format!("{new_late} more late_deadlines"));
+        }
+        if let Some(bound) = bound.filter(|&bound| new_lateness && lateness >= bound) {
+            wrong.push(format!(
+                "a deadline serviced {lateness:?} late, past the adapter's {bound:?}"
+            ));
+        }
+        if !wrong.is_empty() {
+            self.violation(
+                ViolationKind::CoreCounter,
+                format!("station {station}: {}", wrong.join(", ")),
+            );
+        }
+    }
+
     /// Every frame decodes unless a fault touched it, and, until the run is
     /// perturbed, every master that heard a clean frame whole counted it.
     /// A master without extended frames counts no extended frame as
@@ -58,6 +113,10 @@ impl Sim {
             let after = core.counters().frames_received;
             let takes = core.config().extended_frames
                 || !frame.frame_type().is_some_and(FrameType::is_cobs);
+            if listened_throughout && master.host.is_some() {
+                self.host_expect_frame(node, before, takes);
+                continue;
+            }
             if listened_throughout && after != before + u32::from(takes) {
                 missed.push(format!("station {station} counted {}", after - before));
             }
@@ -90,11 +149,33 @@ impl Sim {
             meta.collided_with.push(driver);
         }
         let class = self.classify(tx, driver, other_tx, other);
+        let host_timing = self
+            .report
+            .violations
+            .iter()
+            .rev()
+            .take_while(|violation| violation.at == self.now)
+            .filter_map(|violation| violation.host_timing)
+            .find(|evidence| {
+                driver == Driver::Station(evidence.station)
+                    || other == Driver::Station(evidence.station)
+            });
         let collision = Collision {
             at: self.now,
             driver,
             other,
             class,
+            host_timing,
+            post_drive: other_tx
+                .and_then(|tx| self.line.owner(tx))
+                .and_then(|owner| {
+                    (owner.data_end <= self.now && self.now < owner.release).then_some(
+                        PostDriveOverlap {
+                            data_end: owner.data_end,
+                            release: owner.release,
+                        },
+                    )
+                }),
         };
         self.report.collisions.push(collision);
         self.note(
@@ -109,9 +190,10 @@ impl Sim {
             CollisionClass::Unexplained => false,
         };
         if !tolerated {
-            self.violation(
+            self.violation_with_host(
                 ViolationKind::Collision,
                 format!("{driver:?} started an octet over {other:?} ({class:?})"),
+                host_timing,
             );
         }
     }
@@ -143,8 +225,10 @@ impl Sim {
         // check uses. A core that dispatched after hearing the other frame is
         // at fault whatever its adapter.
         let dispatched = |tx: Option<TxId>| tx.and_then(|tx| self.meta.get(&tx)?.dispatched);
+        // The nominal octet time, even for a node whose UART is skewed: at
+        // most 1% off, too little to change this classification.
         let first_heard = |tx: Option<TxId>| {
-            tx.and_then(|tx| self.line.get(tx))
+            tx.and_then(|tx| self.line.owner(tx))
                 .map(|t| t.start + self.timing.octet())
         };
         let slow_first = |slow: &super::master::MasterNode, own: Option<TxId>, theirs| {
@@ -164,6 +248,11 @@ impl Sim {
     /// character on the line, its own included, and its core hands the frame
     /// over no sooner than that either. Every character reaches the core
     /// before it confirms a start, so neither has an excuse (#1625).
+    ///
+    /// Both are measured on the node's own clock, which is all its core can
+    /// keep time by: at a one percent clock error that moves the start by
+    /// under half a bit time, far inside the 25 bit times by which
+    /// Tturnaround exceeds Tpostdrive.
     pub(super) fn check_turnaround(&mut self, node: usize, pending: &PendingTx) {
         let now = self.now;
         let station = self.nodes[node].station;
@@ -171,9 +260,15 @@ impl Sim {
             return;
         };
         let turnaround = master.spec.config.t_turnaround;
-        if let Some(before) = pending.activity_at_dispatch {
-            if pending.dispatched - before < turnaround {
-                self.violation(
+        let clock = master.clock;
+        let unread_until = master
+            .host
+            .as_ref()
+            .and_then(super::host::HostState::unread_until);
+        if let Some(before) = pending.activity_at_dispatch
+            && clock.span(before, pending.dispatched) < turnaround
+        {
+            self.violation(
                     ViolationKind::Turnaround,
                     format!(
                         "station {station}'s core handed a frame over {} us after line activity at {}, Tturnaround {} us",
@@ -182,22 +277,36 @@ impl Sim {
                         turnaround.as_micros()
                     ),
                 );
-                return;
-            }
+            return;
         }
         let Some(last) = self.line.last_activity() else {
             return;
         };
-        if now - last >= turnaround {
+        if clock.span(last, now) >= turnaround {
             return;
         }
-        let detail = format!(
+        let mut detail = format!(
             "station {station} started {} us after line activity at {}, Tturnaround {} us",
             (now - last).as_micros(),
             Millis(last),
             turnaround.as_micros()
         );
-        self.violation(ViolationKind::Turnaround, detail);
+        if let Some(ready) = unread_until.filter(|ready| *ready > now) {
+            detail.push_str(&format!(
+                "; host input not readable until {}",
+                Millis(ready)
+            ));
+        }
+        let evidence = unread_until
+            .filter(|ready| *ready > now)
+            .map(|readable_at| crate::HostTimingFailure {
+                station,
+                wire_activity: last,
+                start: now,
+                readable_at,
+                turnaround,
+            });
+        self.violation_with_host(ViolationKind::Turnaround, detail, evidence);
     }
 
     /// A punctual master answers a Token or Poll For Master addressed to it
@@ -217,17 +326,25 @@ impl Sim {
         let Some((header, end)) = self.last_clean_frame() else {
             return;
         };
+        // A rebooted receiver owes no response to the preceding incarnation's
+        // last frame. The physical log intentionally survives power cycles.
+        if self.nodes[node]
+            .listening_since
+            .is_none_or(|since| since > end)
+        {
+            return;
+        }
         if header.destination != station
             || !matches!(
                 header.frame_type,
-                FrameType::Token | FrameType::PollForMaster
+                FrameType::TOKEN | FrameType::POLL_FOR_MASTER
             )
         {
             return;
         }
-        let answering_poll = header.frame_type == FrameType::PollForMaster;
+        let answering_poll = header.frame_type == FrameType::POLL_FOR_MASTER;
         let sends_reply = super::decode_whole(&pending.octets)
-            .is_some_and(|(header, _)| header.frame_type == FrameType::ReplyToPollForMaster);
+            .is_some_and(|(header, _)| header.frame_type == FrameType::REPLY_TO_POLL_FOR_MASTER);
         if answering_poll && !sends_reply {
             return;
         }
@@ -241,6 +358,37 @@ impl Sim {
                     limit.as_micros()
                 ),
             );
+        }
+    }
+
+    /// Host receive timeouts do not extend the peer's 250 ms first-reply
+    /// obligation. Measure from the request's physical end, not its read.
+    pub(super) fn check_host_reply_delay(&mut self, node: usize, pending: &PendingTx) {
+        let NodeKind::Master(master) = &self.nodes[node].kind else {
+            return;
+        };
+        if master.host.is_none() || !pending.while_answering {
+            return;
+        }
+        let limit = master.spec.config.t_reply_delay;
+        let station = self.nodes[node].station;
+        let Some(request) = pending.reply_to else {
+            self.violation(
+                ViolationKind::ContractBroken,
+                format!("host station {station}: answer lacks an accepted wire request"),
+            );
+            return;
+        };
+        let answers_request = super::decode_whole(&pending.octets)
+            .is_some_and(|(header, _)| header.destination == request.source);
+        if request.incarnation == master.incarnation
+            && answers_request
+            && self.now - request.end > limit
+        {
+            self.violation(ViolationKind::ReplyDelay, format!(
+                "host station {station} started a reply {} us after request #{} from {} ending at {}, T_reply_delay {} us",
+                (self.now - request.end).as_micros(), request.id.generation(), request.source,
+                Millis(request.end), limit.as_micros()));
         }
     }
 
@@ -323,7 +471,7 @@ mod tests {
 
     fn token(from: u8, to: u8) -> Vec<u8> {
         let mut wire = [0u8; 8];
-        Frame::new(FrameType::Token, to, from, &[])
+        Frame::new(FrameType::TOKEN, to, from, &[])
             .encode_into(&mut wire)
             .expect("a Token encodes");
         wire.to_vec()
@@ -350,8 +498,14 @@ mod tests {
         let octet = sim.timing.octet();
         let t0 = Instant::from_micros(1_000_000);
         sim.now = t0;
-        let first =
-            sim.begin_transmission(Driver::Station(0), token(0, 3), None, Some((t0, false)));
+        let first = sim.begin_transmission(
+            Driver::Station(0),
+            token(0, 3),
+            None,
+            Some((t0, false)),
+            Duration::ZERO,
+            Duration::ZERO,
+        );
         sim.nodes[0].driving = Some(first);
         sim.octet_start(first, 0);
         sim.now = t0 + octet;
@@ -362,6 +516,8 @@ mod tests {
             token(3, 0),
             None,
             Some((t0 + dispatched, false)),
+            Duration::ZERO,
+            Duration::ZERO,
         );
         sim.nodes[1].driving = Some(second);
         sim.octet_start(second, 0);

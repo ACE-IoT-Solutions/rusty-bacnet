@@ -1,5 +1,5 @@
 use super::*;
-use crate::cov::{CovObservation, CovSample, SubscriberEndpoint};
+use bacnet_device_core::cov::{CovObservation, CovSample, SubscriberEndpoint};
 
 fn routed(confirmed: bool) -> CovSubscription {
     let mut sub = proposal(
@@ -22,7 +22,7 @@ async fn migrate(fixture: &Fixture, old: &CovSubscriptionSnapshot) -> CovSubscri
         .subscribe_multiple(
             old.key().multiple_context().unwrap(),
             &route,
-            runtime_clock::now() + Duration::from_secs(600),
+            crate::runtime_clock::core_now() + bacnet_time::Duration::from_secs(600),
             1,
             None,
             vec![],
@@ -153,11 +153,13 @@ async fn cov_multiple_route_admitted_confirmed_worker_may_finish_on_old_route() 
         "the move fenced an outstanding report that may have been delivered, so \
          the kept reference reports afresh (#923)"
     );
-    assert!(fixture
-        .table
-        .write()
-        .await
-        .complete_for_test(&current, observation(99.0)));
+    assert!(
+        fixture
+            .table
+            .write()
+            .await
+            .complete_for_test(&current, observation(99.0))
+    );
     assert_eq!(
         fixture.routes.lock().unwrap().as_slice(),
         std::slice::from_ref(&old.subscriber_mac)

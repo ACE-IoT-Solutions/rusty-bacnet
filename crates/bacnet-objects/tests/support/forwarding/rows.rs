@@ -1,29 +1,18 @@
 //! One row per `BACnetObject` method: a call with fixed arguments, and its
 //! answer rendered as text. Capabilities render as the address they borrow.
 
-use super::fixtures::{address, clock, day, monotonic, noon, oid, schedule_write, waker};
-use super::probe::{CUSTOM, CUSTOM_LIST};
-use bacnet_objects::access_control::{AccessControlInput, DoorStateReport};
-use bacnet_objects::accumulator::InputReading;
-use bacnet_objects::command::WriteFailure;
+use super::capabilities::CAPABILITY_ROWS;
+use super::fixtures::{address, noon, oid};
+use super::probe::CUSTOM;
 use bacnet_objects::command_source::CommandOrigin;
 use bacnet_objects::event::{EventStateChange, EventTransition, EventTransitionCommit};
-use bacnet_objects::event_enrollment::{
-    EventEnrollmentEvalState, EventEnrollmentReliabilityCommit,
-};
-use bacnet_objects::schedule::ScheduleTargetOutcome;
 use bacnet_objects::traits::BACnetObject;
-use bacnet_types::bitstring::{AuditOperationFlags, BACnetPriorityFilter, EventTransitionBits};
 use bacnet_types::constructed::{
-    BACnetDeviceObjectReference, BACnetEventLogRecord, BACnetLogMultipleRecord, BACnetLogRecord,
-    EventLogDatum, LogData, LogDatum, LogValue,
+    BACnetEventLogRecord, BACnetLogMultipleRecord, BACnetLogRecord, EventLogDatum, LogData,
+    LogDatum, LogValue,
 };
-use bacnet_types::enums::{
-    AuditLevel, DoorStatus, EventState, LifeSafetyOperation, ObjectType, PropertyIdentifier as P,
-    Reliability,
-};
+use bacnet_types::enums::{EventState, ObjectType};
 use bacnet_types::primitives::{BACnetTimeStamp, Date, PropertyValue};
-use std::time::Duration;
 
 /// A row for a method that takes `&self`.
 pub type Query = fn(&dyn BACnetObject) -> String;
@@ -46,7 +35,7 @@ impl Row {
     }
 }
 
-/// Every row, the queries first.
+/// Every row, the queries first, then the capability rows.
 pub fn rows() -> impl Iterator<Item = (&'static str, Row)> {
     let queries = QUERIES
         .iter()
@@ -54,10 +43,24 @@ pub fn rows() -> impl Iterator<Item = (&'static str, Row)> {
     let commands = COMMANDS
         .iter()
         .map(|&(name, command)| (name, Row::Command(command)));
-    queries.chain(commands)
+    let capabilities = CAPABILITY_ROWS.iter().copied();
+    queries.chain(commands).chain(capabilities)
 }
 
-fn commit() -> EventTransitionCommit {
+/// Every row a read-only view can run: the `&self` queries, and the rows of
+/// capability methods it reaches through an accessor that takes `&self`.
+/// DeviceReadView's tests run these; SourceReporter's run every row.
+#[allow(dead_code)]
+pub fn queries() -> impl Iterator<Item = (&'static str, Query)> {
+    let capabilities = CAPABILITY_ROWS.iter().filter_map(|&(name, row)| match row {
+        Row::Query(query) => Some((name, query)),
+        Row::Command(_) => None,
+    });
+    QUERIES.iter().copied().chain(capabilities)
+}
+
+/// The transition commit the rows hand over.
+pub fn commit() -> EventTransitionCommit {
     EventTransitionCommit {
         change: EventStateChange {
             from: EventState::NORMAL,
@@ -70,7 +73,7 @@ fn commit() -> EventTransitionCommit {
     }
 }
 
-fn multiple_record() -> BACnetLogMultipleRecord {
+pub fn multiple_record() -> BACnetLogMultipleRecord {
     BACnetLogMultipleRecord {
         date: record().date,
         time: noon(),
@@ -78,7 +81,7 @@ fn multiple_record() -> BACnetLogMultipleRecord {
     }
 }
 
-fn record() -> BACnetLogRecord {
+pub fn record() -> BACnetLogRecord {
     BACnetLogRecord {
         date: Date {
             year: 126,
@@ -92,7 +95,7 @@ fn record() -> BACnetLogRecord {
     }
 }
 
-fn event_log_record() -> BACnetEventLogRecord {
+pub fn event_log_record() -> BACnetEventLogRecord {
     BACnetEventLogRecord {
         date: Date {
             year: 126,
@@ -106,11 +109,11 @@ fn event_log_record() -> BACnetEventLogRecord {
 }
 
 pub const QUERIES: &[(&str, Query)] = &[
-    ("audit_object_policy_internal", |o| {
-        format!("{:?}", o.audit_object_policy_internal())
+    ("audit_policy", |o| {
+        format!("{:?}", o.audit_policy().map(address))
     }),
-    ("audit_reporter_internal", |o| {
-        format!("{:?}", o.audit_reporter_internal().map(address))
+    ("audit_reporter", |o| {
+        format!("{:?}", o.audit_reporter().map(address))
     }),
     ("object_identifier", |o| {
         format!("{:?}", o.object_identifier())
@@ -122,126 +125,28 @@ pub const QUERIES: &[(&str, Query)] = &[
     ("property_metadata", |o| {
         format!("{:?}", o.property_metadata())
     }),
-    ("property_list", |o| format!("{:?}", o.property_list())),
-    ("next_monotonic_deadline_internal", |o| {
-        format!("{:?}", o.next_monotonic_deadline_internal())
+    ("command_runner", |o| {
+        format!("{:?}", o.command_runner().map(address))
     }),
-    ("cov_snapshot_internal", |o| {
-        format!(
-            "{:?}",
-            o.cov_snapshot_internal()
-                .map(|snapshot| snapshot.object_name().to_owned())
-        )
+    ("event_reporting", |o| {
+        format!("{:?}", o.event_reporting().map(address))
     }),
-    ("lighting_blink_count_internal", |o| {
-        o.lighting_blink_count_internal().to_string()
+    ("enrollment_eval", |o| {
+        format!("{:?}", o.enrollment_eval().map(address))
     }),
-    ("is_writable_property", |o| {
-        format!(
-            "{:?}",
-            [CUSTOM, P::DESCRIPTION].map(|p| o.is_writable_property(p))
-        )
+    ("cov", |o| format!("{:?}", o.cov().map(address))),
+    ("calendar_state", |o| {
+        format!("{:?}", o.calendar_state().map(address))
     }),
-    ("is_array_property", |o| {
-        format!(
-            "{:?}",
-            [CUSTOM, P::PRIORITY_ARRAY].map(|p| o.is_array_property(p))
-        )
+    ("audit_log", |o| format!("{:?}", o.audit_log().map(address))),
+    ("file_configuration", |o| {
+        format!("{:?}", o.file_configuration().map(address))
     }),
-    ("is_list_property", |o| {
-        format!(
-            "{:?}",
-            [CUSTOM_LIST, P::DATE_LIST].map(|p| o.is_list_property(p))
-        )
+    ("file_storage", |o| {
+        format!("{:?}", o.file_storage().map(address))
     }),
-    ("is_createable", |o| o.is_createable().to_string()),
-    ("creation_only_properties", |o| {
-        format!("{:?}", o.creation_only_properties())
-    }),
-    ("is_deleteable", |o| o.is_deleteable().to_string()),
-    ("required_properties", |o| {
-        format!("{:?}", o.required_properties())
-    }),
-    ("supports_cov", |o| o.supports_cov().to_string()),
-    // Rendered beside `supports_cov`: the probe's false must differ both from
-    // an all-default object (false, false) and from an adapter that kept the
-    // default, which follows the forwarded `supports_cov` (true, true).
-    ("supports_subscribe_cov_property", |o| {
-        format!(
-            "{:?}",
-            [o.supports_cov(), o.supports_subscribe_cov_property()]
-        )
-    }),
-    ("staging_generation_internal", |o| {
-        format!("{:?}", o.staging_generation_internal())
-    }),
-    ("command_generation_internal", |o| {
-        format!("{:?}", o.command_generation_internal())
-    }),
-    ("enrollment_summary_capability_internal", |o| {
-        format!("{:?}", o.enrollment_summary_capability_internal())
-    }),
-    ("supports_cov_property", |o| {
-        format!(
-            "{:?}",
-            [CUSTOM, P::DESCRIPTION].map(|p| o.supports_cov_property(p))
-        )
-    }),
-    ("cov_increment", |o| format!("{:?}", o.cov_increment())),
-    ("cov_reported_properties", |o| {
-        format!("{:?}", o.cov_reported_properties())
-    }),
-    ("calendar_state_internal", |o| {
-        format!("{:?}", o.calendar_state_internal(day()))
-    }),
-    ("retry_refusals_naming", |o| {
-        format!(
-            "{:?}",
-            o.retry_refusals_naming(oid(ObjectType::ANALOG_VALUE, 9))
-        )
-    }),
-    ("enrollment_eval_state_internal", |o| {
-        format!("{:?}", o.enrollment_eval_state_internal())
-    }),
-    ("enrollment_eval_source_internal", |o| {
-        format!("{:?}", o.enrollment_eval_source_internal())
-    }),
-    ("input_reference_internal", |o| {
-        format!("{:?}", o.input_reference_internal())
-    }),
-    ("reliability_evaluation_inhibited_internal", |o| {
-        o.reliability_evaluation_inhibited_internal().to_string()
-    }),
-    ("audit_log_storage_internal", |o| {
-        format!("{:?}", o.audit_log_storage_internal().map(address))
-    }),
-    ("audit_log_forwarding_internal", |o| {
-        format!(
-            "{:?}",
-            o.audit_log_forwarding_internal()
-                .map(|forwarding| address(forwarding.as_ref()))
-        )
-    }),
-    ("file_configuration_internal", |o| {
-        format!("{:?}", o.file_configuration_internal().map(address))
-    }),
-    ("file_storage_internal", |o| {
-        format!("{:?}", o.file_storage_internal().map(address))
-    }),
-    ("log_record_identities_internal", |o| {
-        format!("{:?}", o.log_record_identities_internal())
-    }),
-    ("log_buffer_internal", |o| {
-        format!("{:?}", o.log_buffer_internal().map(address))
-    }),
-    ("logs_received_event_notifications_internal", |o| {
-        o.logs_received_event_notifications_internal().to_string()
-    }),
-    ("buffer_ready_report_internal", |o| {
-        format!("{:?}", o.buffer_ready_report_internal())
-    }),
-    ("event_algorithm_inhibit_reference_internal", |o| {
-        format!("{:?}", o.event_algorithm_inhibit_reference_internal())
+    ("log_buffer", |o| {
+        format!("{:?}", o.log_buffer().map(address))
     }),
 ];
 
@@ -253,33 +158,15 @@ pub const COMMANDS: &[(&str, Command)] = &[
                 .map(|device| device.object_identifier())
         )
     }),
-    ("audit_policy_authority_internal", |o| {
-        // The probe's policy level is NONE, so raising it prepares a write.
-        let level = PropertyValue::Enumerated(AuditLevel::AUDIT_ALL.to_raw());
-        let prepared = o.audit_policy_authority_internal().map(|policy| {
-            let write = policy.prepare(P::AUDIT_LEVEL, None, &level, None);
-            write.map(|write| write.is_some())
-        });
-        format!("{prepared:?}")
+    ("audit_policy_mut", |o| {
+        format!("{:?}", o.audit_policy_mut().map(|policy| address(policy)))
     }),
-    ("audit_reporter_authority_internal", |o| {
+    // The probe lends its own Reporter's authority, instance 17.
+    ("audit_reporter_mut", |o| {
         format!(
             "{:?}",
-            o.audit_reporter_authority_internal()
+            o.audit_reporter_mut()
                 .map(|reporter| reporter.object_identifier())
-        )
-    }),
-    ("configure_audit_reporter_internal", |o| {
-        format!(
-            "{:?}",
-            o.configure_audit_reporter_internal(
-                AuditLevel::AUDIT_CONFIG,
-                AuditOperationFlags::from_bits(1 << 1).unwrap(),
-                true,
-                None,
-                BACnetPriorityFilter::from_bits(1 << 7),
-                None,
-            )
         )
     }),
     ("write_property", |o| {
@@ -304,251 +191,55 @@ pub const COMMANDS: &[(&str, Command)] = &[
             )
         )
     }),
-    ("initialize_property", |o| {
-        let value = PropertyValue::CharacterString("probe".into());
-        format!("{:?}", o.initialize_property(CUSTOM, value))
+    ("timed", |o| {
+        format!("{:?}", o.timed().map(|timed| address(timed)))
     }),
-    ("bind_clock_internal", |o| {
-        format!("{:?}", o.bind_clock_internal(Some(clock())))
+    ("staging_source", |o| {
+        format!("{:?}", o.staging_source().map(|source| address(source)))
     }),
-    ("advance_time_internal", |o| {
-        o.advance_time_internal(Duration::from_secs(5)).to_string()
+    ("command_runner_mut", |o| {
+        format!("{:?}", o.command_runner_mut().map(|runner| address(runner)))
     }),
-    ("bind_monotonic_clock_internal", |o| {
-        format!("{:?}", o.bind_monotonic_clock_internal(Some(monotonic())))
+    ("local_input", |o| {
+        format!("{:?}", o.local_input().map(|input| address(input)))
     }),
-    ("bind_deadline_waker_internal", |o| {
-        format!("{:?}", o.bind_deadline_waker_internal(Some(waker())))
+    ("access_events", |o| {
+        format!("{:?}", o.access_events().map(|events| address(events)))
     }),
-    ("advance_monotonic_time_internal", |o| {
-        o.advance_monotonic_time_internal(Duration::from_secs(33))
-            .to_string()
-    }),
-    ("set_tracking_cov_increment_internal", |o| {
-        format!("{:?}", o.set_tracking_cov_increment_internal(Some(0.25)))
-    }),
-    ("take_staging_write_plan_internal", |o| {
-        format!("{:?}", o.take_staging_write_plan_internal())
-    }),
-    ("complete_staging_write_plan_internal", |o| {
-        o.complete_staging_write_plan_internal(7, true).to_string()
-    }),
-    ("take_command_run_internal", |o| {
-        format!("{:?}", o.take_command_run_internal())
-    }),
-    ("record_command_write_internal", |o| {
-        o.record_command_write_internal(11, 2, false).to_string()
-    }),
-    ("remember_member_datatype_internal", |o| {
-        let reference = bacnet_types::constructed::BACnetDeviceObjectPropertyReference::new_local(
-            oid(ObjectType::BINARY_OUTPUT, 4),
-            P::PRESENT_VALUE.to_raw(),
-        );
-        let datatype = Some(bacnet_objects::channel::MemberDatatype::Enumerated);
+    ("life_safety", |o| {
         format!(
             "{:?}",
-            o.remember_member_datatype_internal(3, &reference, datatype)
+            o.life_safety().map(|life_safety| address(life_safety))
         )
     }),
-    ("complete_command_run_internal", |o| {
-        o.complete_command_run_internal(11, Err(WriteFailure::Communication))
-            .to_string()
-    }),
-    ("set_overridden", |o| {
-        format!("{:?}", o.set_overridden(true))
-    }),
-    ("evaluate_intrinsic_reporting", |o| {
-        format!("{:?}", o.evaluate_intrinsic_reporting())
-    }),
-    ("tick_intrinsic_reporting", |o| {
-        format!("{:?}", o.tick_intrinsic_reporting())
-    }),
-    ("commit_event_transition_internal", |o| {
-        format!("{:?}", o.commit_event_transition_internal(commit()))
-    }),
-    ("commit_event_enrollment_reliability_internal", |o| {
-        let commit = EventEnrollmentReliabilityCommit {
-            reliability: Reliability::OVER_RANGE,
-            transition: Some(commit()),
-        };
+    ("event_reporting_mut", |o| {
         format!(
             "{:?}",
-            o.commit_event_enrollment_reliability_internal(commit)
+            o.event_reporting_mut().map(|reporting| address(reporting))
         )
     }),
-    ("tick_schedule", |o| {
-        let calendars =
-            |calendar: bacnet_types::primitives::ObjectIdentifier| calendar.instance_number() == 4;
-        format!("{:?}", o.tick_schedule(day(), noon(), &calendars))
+    ("enrollment_eval_mut", |o| {
+        format!("{:?}", o.enrollment_eval_mut().map(|eval| address(eval)))
     }),
-    ("take_owed_schedule_writes", |o| {
-        format!("{:?}", o.take_owed_schedule_writes())
+    ("reliability_eval", |o| {
+        format!("{:?}", o.reliability_eval().map(|eval| address(eval)))
     }),
-    ("complete_schedule_write", |o| {
-        let outcomes = [ScheduleTargetOutcome::DatatypeRefused];
-        o.complete_schedule_write(&schedule_write(2), &outcomes)
-            .to_string()
+    ("schedule_runner", |o| {
+        format!("{:?}", o.schedule_runner().map(|runner| address(runner)))
     }),
-    ("acknowledge_alarm", |o| {
-        format!("{:?}", o.acknowledge_alarm(EventTransitionBits::TO_FAULT))
+    ("audit_log_mut", |o| {
+        format!("{:?}", o.audit_log_mut().map(|log| address(log)))
     }),
-    ("acknowledge_alarm_correlated_internal", |o| {
-        let timestamp = BACnetTimeStamp::SequenceNumber(42);
-        format!(
-            "{:?}",
-            o.acknowledge_alarm_correlated_internal(EventState::HIGH_LIMIT, &timestamp)
-        )
+    ("durable_writes", |o| {
+        format!("{:?}", o.durable_writes().map(|writes| address(writes)))
     }),
-    ("acknowledge_alarm_correlated_detailed_internal", |o| {
-        let timestamp = BACnetTimeStamp::SequenceNumber(42);
-        format!(
-            "{:?}",
-            o.acknowledge_alarm_correlated_detailed_internal(EventState::HIGH_LIMIT, &timestamp)
-        )
+    ("file_configuration_mut", |o| {
+        format!("{:?}", o.file_configuration_mut().map(|file| address(file)))
     }),
-    ("apply_life_safety_operation", |o| {
-        format!(
-            "{:?}",
-            o.apply_life_safety_operation(LifeSafetyOperation::SILENCE)
-        )
+    ("file_storage_mut", |o| {
+        format!("{:?}", o.file_storage_mut().map(|file| address(file)))
     }),
-    ("set_life_safety_operation_expected_internal", |o| {
-        format!(
-            "{:?}",
-            o.set_life_safety_operation_expected_internal(LifeSafetyOperation::SILENCE)
-        )
-    }),
-    ("set_event_state_internal", |o| {
-        format!("{:?}", o.set_event_state_internal(EventState::OFFNORMAL))
-    }),
-    ("set_enrollment_eval_state_internal", |o| {
-        format!(
-            "{:?}",
-            o.set_enrollment_eval_state_internal(EventEnrollmentEvalState::default())
-        )
-    }),
-    ("set_enrollment_eval_source_internal", |o| {
-        let source = (oid(ObjectType::ANALOG_INPUT, 2), P::PRESENT_VALUE, None);
-        format!("{:?}", o.set_enrollment_eval_source_internal(Some(source)))
-    }),
-    ("set_acked_transitions_internal", |o| {
-        format!(
-            "{:?}",
-            o.set_acked_transitions_internal(EventTransitionBits::TO_NORMAL, true)
-        )
-    }),
-    ("evaluate_reliability_internal", |o| {
-        format!("{:?}", o.evaluate_reliability_internal())
-    }),
-    ("set_reliability_internal", |o| {
-        format!("{:?}", o.set_reliability_internal(Reliability::OVER_RANGE))
-    }),
-    ("set_present_value_internal", |o| {
-        format!(
-            "{:?}",
-            o.set_present_value_internal(PropertyValue::Real(21.5))
-        )
-    }),
-    ("set_present_value_from_internal", |o| {
-        let origin = CommandOrigin::Local {
-            owner_device: oid(ObjectType::DEVICE, 9),
-            initiating_object: None,
-        };
-        format!(
-            "{:?}",
-            o.set_present_value_from_internal(PropertyValue::Real(22.5), &origin)
-        )
-    }),
-    ("set_tracking_value_internal", |o| {
-        format!(
-            "{:?}",
-            o.set_tracking_value_internal(PropertyValue::Unsigned(4))
-        )
-    }),
-    ("report_access_input_internal", |o| {
-        let report = DoorStateReport {
-            door_status: Some(DoorStatus::OPENED),
-            ..DoorStateReport::default()
-        };
-        format!(
-            "{:?}",
-            o.report_access_input_internal(AccessControlInput::DoorState(report))
-        )
-    }),
-    ("set_controlled_variable_value_internal", |o| {
-        format!(
-            "{:?}",
-            o.set_controlled_variable_value_internal(PropertyValue::Real(3.5))
-        )
-    }),
-    ("add_averaging_sample_internal", |o| {
-        format!(
-            "{:?}",
-            o.add_averaging_sample_internal(Some(PropertyValue::Real(3.0)))
-        )
-    }),
-    ("take_due_averaging_sample_internal", |o| {
-        format!(
-            "{:?}",
-            o.take_due_averaging_sample_internal(Duration::from_secs(42))
-        )
-    }),
-    ("set_input_usable_internal", |o| {
-        format!("{:?}", o.set_input_usable_internal(false))
-    }),
-    ("follow_event_algorithm_inhibit_internal", |o| {
-        format!("{:?}", o.follow_event_algorithm_inhibit_internal(true))
-    }),
-    ("take_input_reading_internal", |o| {
-        let reading = InputReading {
-            value: -41,
-            wraps_after: Some(99),
-        };
-        format!("{:?}", o.take_input_reading_internal(Some(reading)))
-    }),
-    ("set_audit_log_parent_internal", |o| {
-        let parent = BACnetDeviceObjectReference {
-            device_identifier: None,
-            object_identifier: oid(ObjectType::DEVICE, 9),
-        };
-        format!("{:?}", o.set_audit_log_parent_internal(parent))
-    }),
-    ("audit_log_notification_sink_internal", |o| {
-        format!(
-            "{:?}",
-            o.audit_log_notification_sink_internal()
-                .map(|sink| address(sink))
-        )
-    }),
-    ("durable_writes_internal", |o| {
-        format!(
-            "{:?}",
-            o.durable_writes_internal().map(|writes| address(writes))
-        )
-    }),
-    ("file_configuration_internal_mut", |o| {
-        format!(
-            "{:?}",
-            o.file_configuration_internal_mut()
-                .map(|file| address(file))
-        )
-    }),
-    ("file_storage_internal_mut", |o| {
-        format!(
-            "{:?}",
-            o.file_storage_internal_mut().map(|file| address(file))
-        )
-    }),
-    ("add_trend_record", |o| {
-        format!("{:?}", o.add_trend_record(record()))
-    }),
-    ("add_trend_multiple_record", |o| {
-        format!("{:?}", o.add_trend_multiple_record(multiple_record()))
-    }),
-    ("add_event_log_record", |o| {
-        format!("{:?}", o.add_event_log_record(event_log_record()))
-    }),
-    ("refresh_log_window_internal", |o| {
-        o.refresh_log_window_internal().to_string()
+    ("log_buffer_mut", |o| {
+        format!("{:?}", o.log_buffer_mut().map(|log| address(log)))
     }),
 ];

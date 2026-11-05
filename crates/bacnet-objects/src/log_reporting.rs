@@ -18,13 +18,12 @@
 //! An object adopts it in three steps: hold one and lend it to its
 //! `LogLifecycle`, which restarts Records_Since_Notification at a purge;
 //! offer each read and write to its `read` and `write`; and invoke
-//! `impl_buffer_ready_reporting!` with the field and the log buffer.
+//! `impl_buffer_ready_reporting!` with the log's type, the field and the log
+//! buffer, lending the capability with `crate::traits::lend_event_reporting!()`.
 
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::constructed::BACnetObjectPropertyReference;
-use bacnet_types::enums::{
-    ErrorClass, ErrorCode, EventState, EventType, NotifyType, PropertyIdentifier as P,
-};
+use bacnet_types::enums::{EventState, EventType, NotifyType, PropertyIdentifier as P};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{BACnetTimeStamp, PropertyValue};
 
@@ -35,6 +34,8 @@ use crate::event::{
     EnrollmentSummaryCapability, EventStateChange, EventTransitionCommit,
     EventTransitionCommitError, TransitionOutcome,
 };
+use crate::log_persistence::LogReportingSettings;
+use crate::prelude::String;
 use crate::property_metadata::{
     PropertyConformance::Optional,
     PropertyMetadata,
@@ -128,6 +129,43 @@ pub(crate) struct BufferReadyReporting {
     event_detection_enable: bool,
     /// The counts of the last committed report, for its event values.
     report: Option<BufferReadyReport>,
+    /// The settings a write has set (#1952).
+    written: Written,
+    /// The Description a write set, which a durable log keeps beside these
+    /// settings (#2364): the text the log serves, until
+    /// [`unwrite`](Self::unwrite). Always `None` without storage, since only
+    /// a durable log's staging sets it.
+    kept_description: Option<String>,
+}
+
+/// The reporting settings a write has set, now or before a restart
+/// (#1952): on a log with storage, the ones its snapshot keeps and its
+/// setters leave alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Written {
+    notification_class: bool,
+    event_enable: bool,
+    notify_type: bool,
+    event_detection_enable: bool,
+    message_texts: bool,
+    inhibit_reference: bool,
+    inhibit: bool,
+}
+
+impl Written {
+    /// The flag a write of `property` sets, if any.
+    fn flag(&mut self, property: P) -> Option<&mut bool> {
+        Some(match property {
+            P::NOTIFICATION_CLASS => &mut self.notification_class,
+            P::EVENT_ENABLE => &mut self.event_enable,
+            P::NOTIFY_TYPE => &mut self.notify_type,
+            P::EVENT_DETECTION_ENABLE => &mut self.event_detection_enable,
+            P::EVENT_MESSAGE_TEXTS_CONFIG => &mut self.message_texts,
+            P::EVENT_ALGORITHM_INHIBIT_REF => &mut self.inhibit_reference,
+            P::EVENT_ALGORITHM_INHIBIT => &mut self.inhibit,
+            _ => return None,
+        })
+    }
 }
 
 impl Default for BufferReadyReporting {
@@ -147,6 +185,8 @@ impl Default for BufferReadyReporting {
             history: EventHistory::default(),
             event_detection_enable: true,
             report: None,
+            written: Written::default(),
+            kept_description: None,
         }
     }
 }
@@ -187,6 +227,117 @@ impl BufferReadyReporting {
     pub(crate) fn restart_from(&mut self, total: u32) {
         self.last_notify_record = total;
         self.count_restarted_at = total;
+    }
+
+    /// Last_Notify_Record, and the Total_Record_Count
+    /// Records_Since_Notification counts from, as a durable log saves them.
+    pub(crate) fn counts(&self) -> (u32, u32) {
+        (self.last_notify_record, self.count_restarted_at)
+    }
+
+    /// Notification_Threshold, which a durable log saves with the counts.
+    pub(crate) fn notification_threshold(&self) -> u32 {
+        self.notification_threshold
+    }
+
+    /// Take back the two counts [`counts`](Self::counts) gave, as a log
+    /// reopened from storage does (#1541), so BUFFER_READY carries on from
+    /// the saved Last_Notify_Record.
+    pub(crate) fn resume(&mut self, last_notify_record: u32, count_restarted_at: u32) {
+        self.last_notify_record = last_notify_record;
+        self.count_restarted_at = count_restarted_at;
+    }
+
+    /// Whether a write has set `property`, one of the settings a durable
+    /// log keeps (#1952).
+    pub(crate) fn written(&self, property: P) -> bool {
+        if property == P::DESCRIPTION {
+            return self.kept_description.is_some();
+        }
+        let mut written = self.written;
+        written.flag(property).is_some_and(|flag| *flag)
+    }
+
+    /// Keep `text`, a written Description a durable log saved (#2364).
+    pub(crate) fn keep_description(&mut self, text: String) {
+        self.kept_description = Some(text);
+    }
+
+    /// The settings a write has set, as a durable log saves them; the two
+    /// COV settings, a Trend Log's, are left `None` (#1952).
+    pub(crate) fn saved(&self) -> LogReportingSettings {
+        let written = self.written;
+        let options = &self.history.options;
+        LogReportingSettings {
+            notification_class: written
+                .notification_class
+                .then_some(self.notification_class),
+            event_enable: written.event_enable.then_some(self.event_enable),
+            notify_type: written.notify_type.then_some(self.notify_type),
+            event_detection_enable: written
+                .event_detection_enable
+                .then_some(self.event_detection_enable),
+            event_message_texts_config: written
+                .message_texts
+                .then(|| options.message_texts_config().clone()),
+            event_algorithm_inhibit_ref: written
+                .inhibit_reference
+                .then(|| options.inhibit_reference().cloned())
+                .flatten(),
+            event_algorithm_inhibit: written.inhibit.then(|| options.inhibited()),
+            client_cov_increment: None,
+            cov_resubscription_interval: None,
+            description: self.kept_description.clone(),
+        }
+    }
+
+    /// Take back the settings a log saved (#1952), each marked written
+    /// again. The snapshot was checked as it loaded.
+    pub(crate) fn restore(&mut self, saved: &LogReportingSettings) {
+        if let Some(class) = saved.notification_class {
+            self.notification_class = class;
+            self.written.notification_class = true;
+        }
+        if let Some(enable) = saved.event_enable {
+            self.event_enable = enable;
+            self.written.event_enable = true;
+        }
+        if let Some(notify_type) = saved.notify_type {
+            self.notify_type = notify_type;
+            self.written.notify_type = true;
+        }
+        if let Some(enable) = saved.event_detection_enable {
+            self.event_detection_enable = enable;
+            self.written.event_detection_enable = true;
+        }
+        let options = &mut self.history.options;
+        if let Some(texts) = &saved.event_message_texts_config {
+            options.restore_message_texts_config(texts.clone());
+            self.written.message_texts = true;
+        }
+        if let Some(reference) = &saved.event_algorithm_inhibit_ref {
+            options.restore_inhibit_reference(Some(reference.clone()));
+            self.written.inhibit_reference = true;
+        }
+        if let Some(inhibit) = saved.event_algorithm_inhibit {
+            options.restore_inhibit(inhibit);
+            self.written.inhibit = true;
+        }
+        if saved.description.is_some() {
+            self.kept_description.clone_from(&saved.description);
+        }
+    }
+
+    /// Event_Message_Texts_Config, whose strings a durable log caps (#1952).
+    pub(crate) fn message_texts_config(&self) -> &[String; 3] {
+        self.history.options.message_texts_config()
+    }
+
+    /// Mark every setting as one no write has set, so a durable log's
+    /// setters apply again (#1952). The values stay.
+    pub(crate) fn unwrite(&mut self) {
+        self.written = Written::default();
+        self.kept_description = None;
     }
 
     /// Serve one of the event rows for a log whose Total_Record_Count is
@@ -234,7 +385,25 @@ impl BufferReadyReporting {
     /// Event_Time_Stamps and Event_Message_Texts back to their starting
     /// values (Clause 12.27.26). TRUE again starts the algorithm afresh,
     /// counting from the current Total_Record_Count.
+    ///
+    /// A write it takes marks its setting written (#1952).
     pub(crate) fn write(
+        &mut self,
+        property: P,
+        array_index: Option<u32>,
+        value: &PropertyValue,
+        total: u32,
+    ) -> Option<Result<(), Error>> {
+        let result = self.write_row(property, array_index, value, total)?;
+        if result.is_ok()
+            && let Some(flag) = self.written.flag(property)
+        {
+            *flag = true;
+        }
+        Some(result)
+    }
+
+    fn write_row(
         &mut self,
         property: P,
         array_index: Option<u32>,
@@ -315,7 +484,8 @@ impl BufferReadyReporting {
     /// Commit one report made at Total_Record_Count `total` through the
     /// shared kernel, then move Last_Notify_Record to `total` and restart
     /// Records_Since_Notification. Any target other than NORMAL is refused
-    /// as unsupported: the algorithm has no other state.
+    /// as unsupported, since the algorithm has no other state; with detection
+    /// off the kernel refuses a NORMAL one too.
     pub(crate) fn commit(
         &mut self,
         commit: EventTransitionCommit,
@@ -325,6 +495,7 @@ impl BufferReadyReporting {
             return Err(EventTransitionCommitError::Unsupported);
         }
         EventTransitionState::new(
+            self.event_detection_enable,
             &mut self.event_state,
             &mut self.acked_transitions,
             &mut self.history,
@@ -352,16 +523,10 @@ impl BufferReadyReporting {
         timestamp: &BACnetTimeStamp,
     ) -> Result<Option<EventStateChange>, Error> {
         if !self.event_detection_enable {
-            return Err(common::protocol_error(
-                ErrorClass::OBJECT,
-                ErrorCode::NO_ALARM_CONFIGURED,
-            ));
+            return Err(crate::traits::no_alarm_configured());
         }
-        self.history.acknowledge_correlated_detailed(
-            &mut self.acked_transitions,
-            event_state,
-            timestamp,
-        )
+        self.history
+            .acknowledge_correlated(&mut self.acked_transitions, event_state, timestamp)
     }
 
     /// The property Event_Algorithm_Inhibit follows, if any.
@@ -398,63 +563,57 @@ fn unsigned32(value: &PropertyValue) -> Result<u32, Error> {
     }
 }
 
-/// Implement the `BACnetObject` intrinsic-reporting hooks of a log that
-/// holds a [`BufferReadyReporting`] in `$reporting` and its records in the
-/// [`LogRecordBuffer`](crate::log_buffer::LogRecordBuffer) `$buffer`.
+/// Implement the [`EventReporting`](crate::traits::EventReporting) of
+/// `$object`, a log that holds a [`BufferReadyReporting`] in `$reporting`
+/// and its records in the
+/// [`LogRecordBuffer`](crate::log_buffer::LogRecordBuffer) `$buffer`. The
+/// log lends it with `crate::traits::lend_event_reporting!()`.
 macro_rules! impl_buffer_ready_reporting {
-    ($reporting:ident, $buffer:ident) => {
-        fn enrollment_summary_capability_internal(
-            &self,
-        ) -> Option<$crate::event::EnrollmentSummaryCapability> {
-            Some(self.$reporting.enrollment_summary())
-        }
+    ($object:ty, $reporting:ident, $buffer:ident) => {
+        impl $crate::traits::EventReporting for $object {
+            fn enrollment_summary_capability(
+                &self,
+            ) -> Option<$crate::event::EnrollmentSummaryCapability> {
+                Some(self.$reporting.enrollment_summary())
+            }
 
-        fn evaluate_intrinsic_reporting(&mut self) -> Option<$crate::event::TransitionOutcome> {
-            self.$reporting.propose(self.$buffer.total_record_count())
-        }
+            fn evaluate_intrinsic_reporting(&mut self) -> Option<$crate::event::TransitionOutcome> {
+                self.$reporting.propose(self.$buffer.total_record_count())
+            }
 
-        fn tick_intrinsic_reporting(&mut self) -> Option<$crate::event::TransitionOutcome> {
-            self.$reporting.propose(self.$buffer.total_record_count())
-        }
+            fn tick_intrinsic_reporting(&mut self) -> Option<$crate::event::TransitionOutcome> {
+                self.$reporting.propose(self.$buffer.total_record_count())
+            }
 
-        fn commit_event_transition_internal(
-            &mut self,
-            commit: $crate::event::EventTransitionCommit,
-        ) -> Result<(), $crate::event::EventTransitionCommitError> {
-            let total = self.$buffer.total_record_count();
-            self.$reporting.commit(commit, total)
-        }
+            fn commit_event_transition(
+                &mut self,
+                commit: $crate::event::EventTransitionCommit,
+            ) -> Result<(), $crate::event::EventTransitionCommitError> {
+                let total = self.$buffer.total_record_count();
+                self.$reporting.commit(commit, total)
+            }
 
-        fn acknowledge_alarm_correlated_internal(
-            &mut self,
-            event_state: bacnet_types::enums::EventState,
-            timestamp: &bacnet_types::primitives::BACnetTimeStamp,
-        ) -> Result<(), bacnet_types::error::Error> {
-            self.$reporting
-                .acknowledge(event_state, timestamp)
-                .map(|_| ())
-        }
+            fn acknowledge_alarm(
+                &mut self,
+                event_state: bacnet_types::enums::EventState,
+                timestamp: &bacnet_types::primitives::BACnetTimeStamp,
+            ) -> Result<Option<$crate::event::EventStateChange>, bacnet_types::error::Error> {
+                self.$reporting.acknowledge(event_state, timestamp)
+            }
 
-        fn acknowledge_alarm_correlated_detailed_internal(
-            &mut self,
-            event_state: bacnet_types::enums::EventState,
-            timestamp: &bacnet_types::primitives::BACnetTimeStamp,
-        ) -> Result<Option<$crate::event::EventStateChange>, bacnet_types::error::Error> {
-            self.$reporting.acknowledge(event_state, timestamp)
-        }
+            fn buffer_ready_report(&self) -> Option<$crate::log_reporting::BufferReadyReport> {
+                self.$reporting.report()
+            }
 
-        fn buffer_ready_report_internal(&self) -> Option<$crate::log_reporting::BufferReadyReport> {
-            self.$reporting.report()
-        }
+            fn event_algorithm_inhibit_reference(
+                &self,
+            ) -> Option<bacnet_types::constructed::BACnetObjectPropertyReference> {
+                self.$reporting.inhibit_reference()
+            }
 
-        fn event_algorithm_inhibit_reference_internal(
-            &self,
-        ) -> Option<bacnet_types::constructed::BACnetObjectPropertyReference> {
-            self.$reporting.inhibit_reference()
-        }
-
-        fn follow_event_algorithm_inhibit_internal(&mut self, inhibit: bool) -> bool {
-            self.$reporting.follow_inhibit(inhibit)
+            fn follow_event_algorithm_inhibit(&mut self, inhibit: bool) -> bool {
+                self.$reporting.follow_inhibit(inhibit)
+            }
         }
     };
 }

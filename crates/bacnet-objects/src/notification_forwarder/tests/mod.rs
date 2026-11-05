@@ -1,18 +1,24 @@
 //! Notification Forwarder object tests (#1225).
 
 use super::*;
+use crate::traits::MonotonicClock;
 use bacnet_encoding::constructed::{
     encode_destination_list, encode_event_notification_subscription_list, encode_port_permission,
 };
+use bacnet_types::MacAddr;
 use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{BACnetAddress, BACnetRecipient};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::Time;
-use bacnet_types::MacAddr;
 
+// std: these hold a save open on the writer thread.
+#[cfg(feature = "std")]
 mod fold_tests;
 mod persistence_tests;
 mod properties;
+#[cfg(feature = "durable-writes")]
+mod rebind_tests;
 mod recipient_list_restart_tests;
 mod selection_tests;
 mod staging_tests;
@@ -92,10 +98,10 @@ fn port(port_id: u8, enabled: bool) -> PropertyValue {
 fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     match result {
         Err(
-            Error::Protocol {
+            Error::Remote(RemoteError::Error {
                 class: got_class,
                 code: got_code,
-            }
+            })
             | Error::Structured {
                 class: got_class,
                 code: got_code,
@@ -103,7 +109,7 @@ fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode)
             },
         ) => assert_eq!(
             (got_class, got_code),
-            (class.to_raw() as u32, code.to_raw() as u32),
+            (class, code),
             "expected {class:?} / {code:?}"
         ),
         other => panic!("expected {class:?} / {code:?}, got {other:?}"),

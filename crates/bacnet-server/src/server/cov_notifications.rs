@@ -1,7 +1,8 @@
 use super::cov_notify_context::{CovFanoutHandles, CovNotifyContext};
 use super::*;
 use crate::cov::InFlightAcquireError;
-use confirmed::ConfirmedReport;
+use bacnet_device_core::cov::{CovReport, Delivery, Evaluation, EventBudget};
+use confirmed::ConfirmedSend;
 
 mod confirmed;
 mod life_safety;
@@ -9,71 +10,6 @@ mod multiple;
 mod multiple_chunks;
 mod multiple_items;
 mod revisit;
-
-#[derive(Debug)]
-pub(super) struct EventBudget {
-    max_notifications: usize,
-    max_bytes: usize,
-    notifications_sent: usize,
-    bytes_sent: usize,
-}
-
-impl EventBudget {
-    pub(super) fn new(policy: &CovPolicy) -> Self {
-        Self {
-            max_notifications: policy.max_notifications_per_event,
-            max_bytes: policy.max_notification_bytes_per_event,
-            notifications_sent: 0,
-            bytes_sent: 0,
-        }
-    }
-
-    pub(super) fn with_limits(max_notifications: usize, max_bytes: usize) -> Self {
-        Self {
-            max_notifications,
-            max_bytes,
-            notifications_sent: 0,
-            bytes_sent: 0,
-        }
-    }
-
-    pub(super) fn remaining_notifications(&self) -> usize {
-        self.max_notifications
-            .saturating_sub(self.notifications_sent)
-    }
-
-    pub(super) fn remaining_bytes(&self) -> usize {
-        self.max_bytes.saturating_sub(self.bytes_sent)
-    }
-
-    pub(super) fn is_exhausted(&self) -> bool {
-        self.notifications_sent >= self.max_notifications || self.bytes_sent >= self.max_bytes
-    }
-
-    pub(super) fn try_consume(&mut self, bytes: usize) -> bool {
-        if self.notifications_sent >= self.max_notifications {
-            return false;
-        }
-        if self.bytes_sent.saturating_add(bytes) > self.max_bytes {
-            return false;
-        }
-        self.notifications_sent += 1;
-        self.bytes_sent = self.bytes_sent.saturating_add(bytes);
-        true
-    }
-
-    pub(super) fn refund(&mut self, bytes: usize) {
-        self.notifications_sent = self.notifications_sent.saturating_sub(1);
-        self.bytes_sent = self.bytes_sent.saturating_sub(bytes);
-    }
-
-    pub(super) fn consume_sub_budget(&mut self, sub_budget: &EventBudget) {
-        self.notifications_sent = self
-            .notifications_sent
-            .saturating_add(sub_budget.notifications_sent);
-        self.bytes_sent = self.bytes_sent.saturating_add(sub_budget.bytes_sent);
-    }
-}
 
 impl<T: TransportPort + 'static> BACnetServer<T> {
     pub(super) async fn send_cov_apdu(
@@ -90,7 +26,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     &destination.mac_address,
                     &sub.subscriber_mac,
                     expecting_reply,
-                    NetworkPriority::NORMAL,
+                    NetworkPriority::Normal,
                 )
                 .await
         } else {
@@ -99,7 +35,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     apdu,
                     &sub.subscriber_mac,
                     expecting_reply,
-                    NetworkPriority::NORMAL,
+                    NetworkPriority::Normal,
                 )
                 .await
         }
@@ -284,6 +220,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         .await;
     }
 
+    /// Report a change of `oid` to its ordinary and Single subscriptions
+    /// `subs`, as [`evaluate`](bacnet_device_core::cov::evaluate()) decides
+    /// under the database and table guards, then send each report with
+    /// both dropped.
     pub(super) async fn fire_cov_notifications_for_subscriptions(
         handles: &CovFanoutHandles<'_, '_, T>,
         oid: &ObjectIdentifier,
@@ -307,265 +247,126 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         if budget.is_exhausted() {
             return;
         }
-
-        let device_oid = {
-            let db = db.read().await;
-            db.selected_device()
-                .unwrap_or_else(|| ObjectIdentifier::new(ObjectType::DEVICE, 0).unwrap())
+        let evaluation = Evaluation {
+            device: crate::local_device::initiating_device(&config.device),
+            force,
         };
-        let ordinary = if subs.iter().any(|sub| sub.monitored_property.is_none()) {
+        let (reports, revisits, begun) = {
             let db = if snapshot.is_none() {
                 Some(db.read().await)
             } else {
                 None
             };
-            let object = match snapshot.or_else(|| db.as_deref()?.get(oid)) {
-                Some(o) => o,
-                None => return,
+            let Some(object) = snapshot.or_else(|| db.as_deref()?.get(oid)) else {
+                return;
             };
-
-            // Present_Value leads, except on an Access Point (Access_Event).
-            let lead = crate::cov::reported::lead(oid.object_type());
-            let prepared = (|| {
-                let leading = object.read_property(lead.property(), None).ok()?;
-                let sample = crate::cov::CovSample::new(&leading).ok()?;
-                let flags = crate::cov::flags::PreparedFlags::read(object).ok()?;
-                let reported = crate::cov::reported::PreparedReported::read(object).ok()?;
-                let mut buf = BytesMut::new();
-                encode_property_value(&mut buf, sample.value()).ok()?;
-                let mut values = vec![BACnetPropertyValue {
-                    property_identifier: lead.property(),
-                    property_array_index: None,
-                    value: buf.to_vec(),
-                    priority: None,
-                }];
-                if let Some(encoded) = &flags.encoded {
-                    values.push(BACnetPropertyValue {
-                        property_identifier: PropertyIdentifier::STATUS_FLAGS,
-                        property_array_index: None,
-                        value: encoded.clone(),
-                        priority: None,
-                    });
+            // Lock order: the database (read), then the table (write), for
+            // one synchronous evaluation; both drop before any send (design
+            // §4.5). Tokio's RwLock is fair, so waiting here for the table
+            // while holding the database is safe only because no path holds
+            // a table guard and then waits for the database: every
+            // acquisition takes the database first, or takes the table
+            // alone and awaits nothing else under it (#2303 PR 2a audit).
+            // The admission below takes leaf mutexes only (in-flight slots,
+            // invoke IDs) and awaits nothing, and nothing here runs beside
+            // an unpolled future that holds a guard (#1494).
+            let mut table = cov_table.write().await;
+            // An unconfirmed report needs nothing of the host before its send.
+            let reports = table.evaluate(object, subs, evaluation, budget, |sub, _| {
+                if !sub.issue_confirmed_notifications {
+                    return Some(None);
                 }
-                // Table 13-1 extras follow the leading value and flags, in the
-                // object's order.
-                values.extend(reported.values);
-                let observation = flags.observation(sample).with_triggers(reported.triggers);
-                let increment = object.cov_increment();
-                // Reserve every ordinary reference while the shared observation
-                // is still guarded, before a preceding property send can await.
-                let completions = subs
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, sub)| {
-                        if sub.monitored_property.is_some()
-                            || (!force
-                                && !(lead.triggers()
-                                    && CovSubscriptionTable::should_notify(
-                                        sub,
-                                        Some(observation.sample()),
-                                        sub.cov_increment.map(f64::from).or(increment),
-                                    ))
-                                && !observation
-                                    .flags_changed(sub.last_notified_observation.as_ref())
-                                && !observation
-                                    .triggers_changed(sub.last_notified_observation.as_ref()))
-                        {
-                            return None;
-                        }
-                        sub.prepare_completion()
-                            .map(|completion| (index, completion))
-                    })
-                    .collect::<HashMap<_, _>>();
-                Some((values, observation, completions))
-            })();
-            prepared
-        } else {
-            None
+                Self::admit_confirmed(
+                    handles,
+                    sub,
+                    ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION,
+                    "COV notification",
+                )
+                .map(Some)
+            });
+            (
+                reports,
+                Arc::clone(table.revisits()),
+                tokio::time::Instant::now(),
+            )
         };
 
-        for (index, sub) in subs.iter().enumerate() {
-            let (notification_values, current_observation, completion) = if let Some(property) =
-                sub.monitored_property
-            {
-                let db = if snapshot.is_none() {
-                    Some(db.read().await)
-                } else {
-                    None
-                };
-                let Some(object) = snapshot.or_else(|| db.as_deref()?.get(oid)) else {
-                    continue;
-                };
-                let Ok(flags) = crate::cov::flags::PreparedFlags::read(object) else {
-                    continue;
-                };
-                let (values, observation) = if crate::cov::value_source::applies(object, property) {
-                    if sub.monitored_property_array_index.is_some() {
-                        continue;
-                    }
-                    let Ok(prepared) =
-                        crate::cov::value_source::PreparedValueSource::read(object, &flags)
-                    else {
-                        continue;
-                    };
-                    if !force && !prepared.reports(sub.last_notified_observation.as_ref()) {
-                        continue;
-                    }
-                    (prepared.values(), prepared.observation)
-                } else {
-                    let prepared = if property == PropertyIdentifier::STATUS_FLAGS {
-                        flags.selected(object, sub.monitored_property_array_index)
-                    } else {
-                        object
-                            .read_property(property, sub.monitored_property_array_index)
-                            .and_then(|value| {
-                                crate::cov::prepare::prepare_value(
-                                    object,
-                                    property,
-                                    sub.monitored_property_array_index,
-                                    sub.cov_increment,
-                                    &value,
-                                )
-                            })
-                    };
-                    let Ok(prepared) = prepared else {
-                        continue;
-                    };
-                    let observation = flags.observation(prepared.sample.clone());
-                    if !force
-                        && !prepared
-                            .reports(sub.last_notified_observation.as_ref().map(|o| o.sample()))
-                        && !observation.flags_changed(sub.last_notified_observation.as_ref())
-                    {
-                        continue;
-                    }
-                    let mut values = vec![BACnetPropertyValue {
-                        property_identifier: property,
-                        property_array_index: sub.monitored_property_array_index,
-                        value: prepared.encoded,
-                        priority: None,
-                    }];
-                    if property != PropertyIdentifier::STATUS_FLAGS {
-                        if let Some(encoded) = flags.encoded {
-                            values.push(BACnetPropertyValue {
-                                property_identifier: PropertyIdentifier::STATUS_FLAGS,
-                                property_array_index: None,
-                                value: encoded,
-                                priority: None,
-                            });
-                        }
-                    }
-                    (values, observation)
-                };
-                let Some(completion) = sub.prepare_completion() else {
-                    continue;
-                };
-                (values, observation, completion)
-            } else {
-                let Some((values, observation, completions)) = &ordinary else {
-                    continue;
-                };
-                let Some(completion) = completions.get(&index) else {
-                    continue;
-                };
-                (values.clone(), observation.clone(), *completion)
-            };
-
-            // Resolve after every awaited read/callback and before fresh admission.
-            // A confirmed reference with an outstanding report waits for it (#896).
-            let time_remaining = {
-                let table = cov_table.read().await;
-                table
-                    .remaining_lifetime(sub, runtime_clock::now())
-                    .and_then(crate::cov::CovTimeRemaining::wire_seconds)
-                    .filter(|_| table.confirmed_idle(sub))
-            };
-            let Some(time_remaining) = time_remaining else {
-                continue;
-            };
-            if budget.is_exhausted() {
-                counters
-                    .notifications_throttled_fanout
-                    .fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-
-            let notification = COVNotificationRequest {
-                subscriber_process_identifier: sub.subscriber_process_identifier,
-                initiating_device_identifier: device_oid,
-                monitored_object_identifier: *oid,
-                time_remaining,
-                list_of_values: notification_values,
-            };
-
-            let mut service_buf = BytesMut::new();
-            notification.encode(&mut service_buf);
-
-            if sub.issue_confirmed_notifications {
-                let max_apdu_length = apdu::max_apdu_header_at_or_below(config.max_apdu_length)
-                    .expect("validated local APDU capacity");
-                let service_request = service_buf.freeze();
-                Self::send_confirmed_cov(
-                    handles,
-                    budget,
-                    ConfirmedReport {
-                        service: ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION,
-                        route: sub.clone(),
-                        completion,
-                        observations: vec![(sub.clone(), current_observation)],
-                        claim: None,
-                        deferred: Vec::new(),
-                    },
-                    |invoke_id| {
-                        let pdu = Apdu::ConfirmedRequest(ConfirmedRequestPdu {
-                            segmented: false,
-                            more_follows: false,
-                            segmented_response_accepted: false,
-                            max_segments: None,
-                            max_apdu_length,
-                            invoke_id,
-                            sequence_number: None,
-                            proposed_window_size: None,
-                            service_choice: ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION,
-                            service_request,
-                        });
-                        let mut buf = BytesMut::new();
-                        encode_apdu(&mut buf, &pdu)?;
-                        Ok(buf)
-                    },
-                )
-                .await;
-            } else {
-                let pdu = Apdu::UnconfirmedRequest(UnconfirmedRequestPdu {
-                    service_choice: UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION,
-                    service_request: service_buf.freeze(),
+        // Every confirmed worker starts before any unconfirmed send is
+        // awaited: a report's retry window runs from `begun`, the instant
+        // its flight began, so a stalled send ahead of it would eat into it.
+        let mut unconfirmed = Vec::with_capacity(reports.len());
+        for (report, flight) in reports {
+            let CovReport {
+                index,
+                params,
+                token,
+                lease,
+            } = report;
+            let sub = &subs[index];
+            if let Some(lease) = lease {
+                let flight = flight.expect("a confirmed report's flight began with its lease");
+                let max_apdu_length =
+                    apdu::max_apdu_header_at_or_below(u32::from(config.device.max_apdu_length()))
+                        .expect("validated local APDU capacity");
+                let pdu = Apdu::ConfirmedRequest(ConfirmedRequestPdu {
+                    segmented: false,
+                    more_follows: false,
+                    segmented_response_accepted: false,
+                    max_segments: None,
+                    max_apdu_length,
+                    invoke_id: lease.invoke_id(),
+                    sequence_number: None,
+                    proposed_window_size: None,
+                    service_choice: ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION,
+                    service_request: params,
                 });
-
                 let mut buf = BytesMut::new();
                 encode_apdu(&mut buf, &pdu).expect("valid APDU encoding");
-
-                if !budget.try_consume(buf.len()) {
-                    counters
-                        .notifications_throttled_fanout
-                        .fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-
-                counters.notifications_sent.fetch_add(1, Ordering::Relaxed);
-                counters
-                    .notifications_unconfirmed
-                    .fetch_add(1, Ordering::Relaxed);
-                counters
-                    .notification_bytes_sent
-                    .fetch_add(buf.len() as u64, Ordering::Relaxed);
-
-                if let Err(e) = Self::send_cov_apdu(network, &buf, sub, false).await {
-                    warn!(error = %e, "Failed to send COV notification");
-                } else {
-                    let mut table = cov_table.write().await;
-                    table.complete_observation(sub, completion, current_observation);
-                }
+                Self::spawn_confirmed(
+                    handles,
+                    ConfirmedSend {
+                        lease,
+                        flight,
+                        buf,
+                        route: sub.clone(),
+                        claim: None,
+                        label: "COV notification",
+                        revisits: Arc::clone(&revisits),
+                        begun,
+                    },
+                );
+            } else {
+                unconfirmed.push((sub, params, token));
             }
+        }
+        for (sub, params, token) in unconfirmed {
+            let pdu = Apdu::UnconfirmedRequest(UnconfirmedRequestPdu {
+                service_choice: UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION,
+                service_request: params,
+            });
+            let mut buf = BytesMut::new();
+            encode_apdu(&mut buf, &pdu).expect("valid APDU encoding");
+
+            counters.notifications_sent.fetch_add(1, Ordering::Relaxed);
+            counters
+                .notifications_unconfirmed
+                .fetch_add(1, Ordering::Relaxed);
+            counters
+                .notification_bytes_sent
+                .fetch_add(buf.len() as u64, Ordering::Relaxed);
+
+            // The observation completes once the send succeeds (#826).
+            let outcome = match Self::send_cov_apdu(network, &buf, sub, false).await {
+                Ok(()) => Delivery::Sent,
+                Err(e) => {
+                    warn!(error = %e, "Failed to send COV notification");
+                    Delivery::NotSent
+                }
+            };
+            cov_table
+                .write()
+                .await
+                .delivered_unconfirmed(token, outcome);
         }
     }
 }

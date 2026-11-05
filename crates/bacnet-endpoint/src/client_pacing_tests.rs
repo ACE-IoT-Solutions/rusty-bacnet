@@ -4,8 +4,8 @@
 //! spaced, other devices don't wait, zero changes nothing, and a retry keeps
 //! the turn its request took.
 use super::*;
-use bacnet_encoding::apdu::{decode_apdu, encode_apdu, ComplexAck};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::apdu::{ComplexAck, decode_apdu, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
 use bacnet_types::MacAddr;
@@ -51,7 +51,8 @@ impl Devices {
             property_array_index: read.property_array_index,
             property_value: vec![0x21, 42],
         }
-        .encode(&mut service_ack);
+        .encode(&mut service_ack)
+        .unwrap();
         let mut apdu = BytesMut::new();
         encode_apdu(
             &mut apdu,

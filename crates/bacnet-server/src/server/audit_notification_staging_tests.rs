@@ -4,7 +4,7 @@
 //! once its records and receipt are durable.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, mpsc};
 use std::time::Duration;
 
 use bacnet_objects::audit::{AuditLogObject, AuditLogPersistence, AuditLogSnapshot};
@@ -12,7 +12,7 @@ use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_types::enums::AuditOperation;
 
 use super::super::*;
-use super::{count, dispatch, notification, oid, request_bytes, FixedClock};
+use super::{FixedClock, count, dispatch, notification, oid, request_bytes};
 
 /// Long enough for any wait here, including a reader that expects the
 /// database while a commit runs: a loaded runner cannot fail it.
@@ -77,7 +77,9 @@ fn database(storage: Arc<HeldStorage>) -> Arc<RwLock<ObjectDatabase>> {
 fn config(sink: ObjectIdentifier) -> ServerConfig {
     ServerConfig {
         audit_notification_sink: Some(sink),
-        audit_notification_authorizer: Some(Arc::new(|_| true)),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().audit_notification(|_| true),
+        )),
         ..ServerConfig::default()
     }
 }

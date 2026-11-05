@@ -94,7 +94,7 @@ fn maintenance_polls_come_every_npoll_token_uses() {
     }
     // Station 3's maintenance polls walk 4..=9, one per token use, and
     // start over after reaching its successor.
-    let polls: Vec<u8> = sent_by(frames, 3, FrameType::PollForMaster)
+    let polls: Vec<u8> = sent_by(frames, 3, FrameType::POLL_FOR_MASTER)
         .into_iter()
         .skip(7)
         .take(12)
@@ -119,7 +119,7 @@ fn adjacent_successors_never_poll() {
     let late_polls = frames
         .iter()
         .filter(|frame| frame.start > formed)
-        .filter(|frame| frame.frame_type() == Some(FrameType::PollForMaster))
+        .filter(|frame| frame.frame_type() == Some(FrameType::POLL_FOR_MASTER))
         .count();
     assert_eq!(late_polls, 0);
     assert!(token_passes(frames).len() > 1_000);

@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_device_core::write::policy::write_policy;
 use bacnet_encoding::constructed::{
     decode_calendar_entry, decode_calendar_entry_list, decode_destination, decode_destination_list,
     decode_device_object_property_reference, decode_event_notification_subscription,
@@ -7,29 +8,29 @@ use bacnet_encoding::constructed::{
     encode_recipient,
 };
 use bacnet_encoding::primitives::decode_application_value;
+use bacnet_objects::property_metadata::{Datatype, ValueType};
+use bacnet_objects::property_metadata::{is_array_property, is_list_property};
 use bacnet_services::list_manipulation::ListElementRequest;
 use bacnet_types::constructed::{
     BACnetCalendarEntry, BACnetDestination, BACnetDeviceObjectPropertyReference,
     BACnetEventNotificationSubscription,
 };
+use bacnet_types::error::RemoteError;
 use bytes::Bytes;
 use std::collections::hash_map::{Entry, HashMap};
-use std::mem::{discriminant, Discriminant};
+use std::mem::{Discriminant, discriminant};
 
 fn protocol_error(class: ErrorClass, code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: class.to_raw() as u32,
-        code: code.to_raw() as u32,
-    }
+    Error::protocol(class, code)
 }
 
 /// A refusal of the element at `position` (from 1) of the request's List of
 /// Elements, sent as a ChangeList-Error with that First Failed Element Number.
 /// Every other refusal of these services goes out with element number 0.
 fn element_error(class: ErrorClass, code: ErrorCode, position: u32) -> Error {
-    Error::protocol(
-        class.to_raw() as u32,
-        code.to_raw() as u32,
+    Error::with_detail(
+        class,
+        code,
         Some(ErrorDetail::FirstFailedElementNumber(position)),
     )
 }
@@ -52,7 +53,7 @@ fn position(index: usize) -> u32 {
 /// Forwarder's Subscribed_Recipients, where an element naming an entry already
 /// present renews that entry. Nothing changes when any element is refused. A
 /// refusal of one element is `Error::Structured` naming its position; a
-/// refusal of the request or its target is `Error::Protocol`.
+/// refusal of the request or its target is `Error::protocol`.
 pub fn handle_add_list_element(db: &mut ObjectDatabase, service_data: &[u8]) -> Result<(), Error> {
     handle_list_element_observed(db, service_data, false, |_, _, _| {}).map(|_| ())
 }
@@ -70,8 +71,8 @@ pub fn handle_remove_list_element(
 }
 
 /// How a list's elements travel in the request and how the object holds them.
-#[derive(Clone, Copy)]
-enum ElementCodec {
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ListCodec {
     /// Consecutive application-tagged values, held as `PropertyValue::List`.
     Values,
     /// BACnetDestination entries, held as the framed list in `ApplicationData`.
@@ -87,40 +88,33 @@ enum ElementCodec {
     Subscriptions,
 }
 
-impl ElementCodec {
-    /// The codec the property's datatype implies, known even when the object
-    /// is missing. Only a BACnetLIST of BACnetDestination, the Recipient_List
-    /// of Notification Class and Notification Forwarder (Tables 12-24 and
-    /// 12-58), takes the destination codec, only Calendar's Date_List, a
-    /// BACnetLIST of BACnetCalendarEntry (Table 12-11), the calendar codec,
-    /// only the Schedule's List_Of_Object_Property_References, a BACnetLIST
-    /// of BACnetDeviceObjectPropertyReference (Table 12-28), the reference
-    /// codec, and only the Notification Forwarder's Subscribed_Recipients, a
-    /// BACnetLIST of BACnetEventNotificationSubscription (Table 12-58), the
-    /// subscription codec.
-    fn for_datatype(object_type: ObjectType, property: PropertyIdentifier) -> Self {
-        match property {
-            PropertyIdentifier::RECIPIENT_LIST
-                if matches!(
-                    object_type,
-                    ObjectType::NOTIFICATION_CLASS | ObjectType::NOTIFICATION_FORWARDER
-                ) =>
-            {
-                Self::Destinations
-            }
-            PropertyIdentifier::DATE_LIST if object_type == ObjectType::CALENDAR => {
-                Self::CalendarEntries
-            }
-            PropertyIdentifier::LIST_OF_OBJECT_PROPERTY_REFERENCES
-                if object_type == ObjectType::SCHEDULE =>
-            {
-                Self::References
-            }
-            PropertyIdentifier::SUBSCRIBED_RECIPIENTS
-                if object_type == ObjectType::NOTIFICATION_FORWARDER =>
-            {
-                Self::Subscriptions
-            }
+impl ListCodec {
+    /// The codec for the request's target list: the one for the list's
+    /// datatype ([`ObjectDatabase::value_type`]) where the server's write
+    /// policy reads its elements as that datatype
+    /// ([`typed_list_elements`](bacnet_device_core::write::policy::WritePolicy::typed_list_elements)),
+    /// and application values
+    /// otherwise. Known even when the object is missing.
+    fn for_request(db: &ObjectDatabase, request: &ListElementRequest) -> Self {
+        let oid = request.object_identifier;
+        let property = request.property_identifier;
+        Self::for_target(
+            write_policy(oid.object_type(), property).typed_list_elements,
+            db.value_type(&oid, property),
+        )
+    }
+
+    /// [`Self::for_request`]'s choice. Only a BACnetLIST of
+    /// BACnetDestination, of BACnetCalendarEntry, of
+    /// BACnetDeviceObjectPropertyReference or of
+    /// BACnetEventNotificationSubscription has a typed codec here; a test
+    /// holds every typed policy entry to one of them.
+    fn for_target(typed_elements: bool, value_type: Option<ValueType>) -> Self {
+        match value_type.filter(|_| typed_elements).map(|v| v.datatype) {
+            Some(Datatype::Destination) => Self::Destinations,
+            Some(Datatype::CalendarEntry) => Self::CalendarEntries,
+            Some(Datatype::DeviceObjectPropertyReference) => Self::References,
+            Some(Datatype::EventNotificationSubscription) => Self::Subscriptions,
             _ => Self::Values,
         }
     }
@@ -520,7 +514,7 @@ fn edit_subscriptions(
 /// what remains, which holds no element of the request.
 fn object_refusal(error: Error, remove: bool, added: &Added) -> Error {
     let (class, code, named) = match error {
-        Error::Protocol { class, code } => (class, code, None),
+        Error::Remote(RemoteError::Error { class, code }) => (class, code, None),
         Error::Structured {
             class,
             code,
@@ -532,10 +526,10 @@ fn object_refusal(error: Error, remove: bool, added: &Added) -> Error {
         other => return other,
     };
     let code = if !remove
-        && class == ErrorClass::RESOURCES.to_raw() as u32
-        && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY.to_raw() as u32
+        && class == ErrorClass::RESOURCES
+        && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY
     {
-        ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT.to_raw() as u32
+        ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT
     } else {
         code
     };
@@ -546,14 +540,13 @@ fn object_refusal(error: Error, remove: bool, added: &Added) -> Error {
         ErrorCode::VALUE_OUT_OF_RANGE,
         ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT,
     ]
-    .iter()
-    .any(|element_code| element_code.to_raw() as u32 == code);
+    .contains(&code);
     let element = match named {
         _ if remove => None,
         Some(named) => added.request_position(named),
         None => added.first_position().filter(|_| about_elements),
     };
-    Error::protocol(
+    Error::with_detail(
         class,
         code,
         element.map(ErrorDetail::FirstFailedElementNumber),
@@ -591,7 +584,7 @@ impl Refusal {
 fn list_target(
     db: &ObjectDatabase,
     request: &ListElementRequest,
-    codec: ElementCodec,
+    codec: ListCodec,
 ) -> Result<PropertyValue, Refusal> {
     let object = db.get(&request.object_identifier).ok_or_else(|| {
         Refusal::unread(protocol_error(
@@ -606,7 +599,7 @@ fn list_target(
             .read_property(property, index)
             .map_err(Refusal::unread)
     };
-    if index.is_some() && !object.is_array_property(property) {
+    if index.is_some() && !is_array_property(object, property) {
         // Read the whole property first so an unknown one keeps its error.
         return Err(Refusal::read(
             ErrorClass::PROPERTY,
@@ -617,7 +610,7 @@ fn list_target(
     let current = read(index)?;
     // An indexed array element is never a list: 135-2020 defines no
     // BACnetARRAY of BACnetLIST property.
-    if index.is_some() || !object.is_list_property(property) {
+    if index.is_some() || !is_list_property(object, property) {
         return Err(Refusal::read(
             ErrorClass::SERVICES,
             ErrorCode::PROPERTY_IS_NOT_A_LIST,
@@ -643,7 +636,7 @@ fn localize_edits(db: &ObjectDatabase, edits: &mut Elements) {
     if let Elements::References(members) = edits {
         let local = db.local_device();
         for member in members {
-            crate::local_references::localize_member(member, local);
+            bacnet_device_core::write::localize_member(member, local);
         }
     }
 }
@@ -658,10 +651,7 @@ pub(crate) fn edited_list_value(
     remove: bool,
 ) -> Option<PropertyValue> {
     let request = ListElementRequest::decode(service_data).ok()?;
-    let codec = ElementCodec::for_datatype(
-        request.object_identifier.object_type(),
-        request.property_identifier,
-    );
+    let codec = ListCodec::for_request(db, &request);
     let current = list_target(db, &request, codec).ok()?;
     let mut edits = codec.decode(&request.list_of_elements).ok()?;
     localize_edits(db, &mut edits);
@@ -682,10 +672,7 @@ pub(crate) fn handle_list_element_observed(
     mut before: impl FnMut(&ObjectDatabase, &ListElementRequest, Option<&PropertyValue>),
 ) -> Result<ObjectIdentifier, Error> {
     let request = ListElementRequest::decode(service_data).map_err(Error::into_request_reject)?;
-    let codec = ElementCodec::for_datatype(
-        request.object_identifier.object_type(),
-        request.property_identifier,
-    );
+    let codec = ListCodec::for_request(db, &request);
     let target = list_target(db, &request, codec);
     // Every request decodes its elements once, with the codec its datatype
     // implies; a refused request reaches the observer only if they decode.
@@ -718,3 +705,6 @@ pub(crate) fn handle_list_element_observed(
         .map_err(|error| object_refusal(error, remove, &added))?;
     Ok(request.object_identifier)
 }
+
+#[cfg(test)]
+mod codec_tests;

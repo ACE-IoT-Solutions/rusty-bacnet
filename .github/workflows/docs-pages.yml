@@ -6,6 +6,8 @@ on:
     paths:
       - 'website/**'
       - '.github/workflows/docs-pages.yml'
+      # The embedded page's size test reads the firmware budgets (#1771).
+      - 'firmware/link/*-budget.toml'
   workflow_dispatch:
     inputs:
       publish:
@@ -29,7 +31,7 @@ jobs:
   validate:
     name: Docs validation
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     permissions:
       contents: read
     defaults:

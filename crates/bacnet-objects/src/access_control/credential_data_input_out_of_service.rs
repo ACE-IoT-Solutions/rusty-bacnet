@@ -44,7 +44,7 @@
 //!   and Reliability it serves (`common::write_out_of_service_with_restore`).
 //! - Meanwhile a read the application reports (`set_present_value`) replaces
 //!   the Present_Value and Update_Time put aside, not those served. A
-//!   Reliability it works out (`set_reliability_internal`) is refused, as on
+//!   Reliability it works out (`ReliabilityEval::set_reliability`) is refused, as on
 //!   the other Reliability carriers.
 //! - On the TRUE-to-FALSE edge all three go back to the values put aside, so
 //!   the reader's state is served again at once and the simulation is gone.
@@ -55,14 +55,15 @@
 //! that leaves or returns to NO_FAULT_DETECTED flips the FAULT flag and
 //! reports, and the return to service reports when it changes any of them.
 
+use crate::prelude::*;
 use bacnet_encoding::constructed::decode_authentication_factor;
 use bacnet_types::constructed::BACnetAuthenticationFactor;
 use bacnet_types::enums::{PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{BACnetTimeStamp, PropertyValue};
 
-use super::credential_data_input_formats::{is_declared, SupportedFormat};
-use super::{simulated_reliability, UpdateClock};
+use super::credential_data_input_formats::{SupportedFormat, is_declared};
+use super::{UpdateClock, simulated_reliability};
 use crate::common;
 
 /// The values a client can simulate while Out_Of_Service is TRUE, plus the

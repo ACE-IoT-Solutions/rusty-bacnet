@@ -7,7 +7,7 @@ use bacnet_types::enums::{
     ErrorClass, ErrorCode, LifeSafetyOperation, LifeSafetyState, PropertyIdentifier as P,
     Reliability, SilencedState,
 };
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::PropertyValue;
 
 use crate::traits::BACnetObject;
@@ -41,9 +41,9 @@ fn set_out_of_service(object: &mut dyn BACnetObject, out_of_service: bool) {
 
 fn assert_property_error(result: Result<(), Error>, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code: actual })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && actual == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code: actual }))
+            if class == ErrorClass::PROPERTY
+                && actual == code),
         "expected PROPERTY / {code:?}, got {result:?}"
     );
 }
@@ -174,7 +174,9 @@ fn return_to_service_serves_the_device_values_again() {
     let mut point = point();
     point.set_tracking_value(LifeSafetyState::PRE_ALARM);
     point
-        .set_reliability_internal(Reliability::OVER_RANGE)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::OVER_RANGE)
         .unwrap();
     set_out_of_service(&mut point, true);
     write(
@@ -193,7 +195,10 @@ fn return_to_service_serves_the_device_values_again() {
     // held, and the application's Reliability is refused.
     point.set_tracking_value(LifeSafetyState::FAULT);
     assert_property_error(
-        point.set_reliability_internal(Reliability::NO_FAULT_DETECTED),
+        point
+            .reliability_eval()
+            .unwrap()
+            .set_reliability(Reliability::NO_FAULT_DETECTED),
         ErrorCode::WRITE_ACCESS_DENIED,
     );
     assert_eq!(
@@ -281,9 +286,13 @@ fn reset_out_of_service_sees_the_simulation_and_holds_a_committed_tracking_value
         )
         .unwrap();
         object
-            .set_life_safety_operation_expected_internal(LifeSafetyOperation::RESET)
+            .life_safety()
+            .unwrap()
+            .set_life_safety_operation_expected(LifeSafetyOperation::RESET)
             .unwrap();
         let outcome = object
+            .life_safety()
+            .unwrap()
             .apply_life_safety_operation(LifeSafetyOperation::RESET)
             .unwrap();
         // Present_Value and Silenced commit as in service; the simulated

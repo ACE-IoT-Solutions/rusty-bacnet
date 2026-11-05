@@ -2,7 +2,7 @@
 
 use super::device_bindings::BindingFreshness;
 use super::event_recipient_route::{ConfirmedRecipientRoute, RecipientRoute};
-use super::notification_transactions::{run_notification_worker, NotificationWorkerResult};
+use super::notification_transactions::{NotificationWorkerResult, run_notification_worker};
 use super::*;
 use bacnet_objects::audit::AuditLogForwarding;
 use bacnet_objects::database::LocalDevice;
@@ -18,7 +18,7 @@ const DEADLINE: Duration = Duration::from_secs(3);
 /// (`is_group`) gives no route, so no copy goes there (#1493).
 fn resolve(
     profile: &AuditLogForwarding,
-    local: LocalDevice,
+    local: Option<LocalDevice>,
     bindings: &DeviceBindingTable,
     local_mac: &[u8],
     local_network: Option<u16>,
@@ -26,8 +26,8 @@ fn resolve(
 ) -> Option<ConfirmedRecipientRoute> {
     let parent = profile.parent();
     let device = parent.device_identifier?;
+    let local = local?;
     if device.object_type() != ObjectType::DEVICE
-        || local.identifier().is_none()
         || local.is_local(Some(device))
         || parent.object_identifier.object_type() != ObjectType::AUDIT_LOG
     {
@@ -49,6 +49,18 @@ fn resolve(
     Some(route)
 }
 
+/// This device, while its Device object is in the database: the identity's
+/// once the server has bound it (#2227). Without that object there is no
+/// device to tell a parent from, so forwarding stays unconfigured, as it
+/// does in a database without any Device.
+fn present_local(db: &ObjectDatabase) -> Option<LocalDevice> {
+    let local = db.local_device();
+    local
+        .identifier()
+        .is_some_and(|device| db.get(&device).is_some())
+        .then_some(local)
+}
+
 pub(super) fn initialize<T: TransportPort>(
     db: &ObjectDatabase,
     config: &ServerConfig,
@@ -59,13 +71,13 @@ pub(super) fn initialize<T: TransportPort>(
         .audit_notification_sink
         .filter(|sink| sink.object_type() == ObjectType::AUDIT_LOG)
         .and_then(|sink| db.get(&sink))
-        .and_then(|object| object.audit_log_forwarding_internal())
+        .and_then(|object| object.audit_log().and_then(|log| log.forwarding()))
     {
         // Before the link starts, while no local network number is known.
         profile.status().set_configured(
             resolve(
                 &profile,
-                db.local_device(),
+                present_local(db),
                 bindings,
                 transport.local_mac(),
                 None,
@@ -78,7 +90,7 @@ pub(super) fn initialize<T: TransportPort>(
 
 pub(super) struct ForwardBatch {
     profile: Arc<AuditLogForwarding>,
-    local: LocalDevice,
+    local: Option<LocalDevice>,
     payload: Bytes,
 }
 
@@ -93,8 +105,11 @@ impl ForwardBatch {
             return None;
         }
         Some(Self {
-            profile: db.get(&sink)?.audit_log_forwarding_internal()?,
-            local: db.local_device(),
+            profile: db
+                .get(&sink)?
+                .audit_log()
+                .and_then(|log| log.forwarding())?,
+            local: present_local(db),
             payload,
         })
     }
@@ -176,7 +191,7 @@ impl ForwardBatch {
                     match (&route.local_target, &route.remote) {
                         (Some(mac), None) => {
                             network
-                                .send_apdu(&bytes, mac, true, NetworkPriority::NORMAL)
+                                .send_apdu(&bytes, mac, true, NetworkPriority::Normal)
                                 .await
                         }
                         (None, Some((net, mac, Some(router)))) => {
@@ -187,7 +202,7 @@ impl ForwardBatch {
                                     mac,
                                     router,
                                     true,
-                                    NetworkPriority::NORMAL,
+                                    NetworkPriority::Normal,
                                 )
                                 .await
                         }

@@ -76,7 +76,7 @@ fn state(now: Instant, first: &[u8]) -> SegmentedRequestState {
     SegmentedRequestState {
         source_mac: MacAddr::new(),
         source_network: None,
-        direct_response: None,
+        route: bacnet_network::response_route::ResponseRoute::unverified(),
         payload,
         provenance: TransportProvenance::unverified(),
         last_activity: now,
@@ -204,9 +204,11 @@ fn request_payload_owner_checked_aggregate_and_charge_fail_closed() {
         .unwrap()
         .payload;
     payload.saved_payload_bytes = usize::MAX;
-    assert!(payload
-        .save_new(1, Bytes::from_static(b"x"), Some(0))
-        .is_err());
+    assert!(
+        payload
+            .save_new(1, Bytes::from_static(b"x"), Some(0))
+            .is_err()
+    );
     assert_eq!(payload.receiver.received_count(), 1);
     assert_eq!(payload.saved_payload_bytes(), usize::MAX);
     assert_eq!(saved_request_payload_bytes(&receivers), None);
@@ -279,7 +281,7 @@ fn request_payload_owner_discard_classification_preserves_payload_and_progress()
     // classification must not touch progress, accepted count or saved bytes.
     state.last_activity = now + Duration::from_secs(1);
     for seq in [1, 1, 1, 1, 5] {
-        classify_non_next_segment(&mut state, 23, seq);
+        classify_non_next_segment(&mut state, 23, seq, &Default::default());
         assert_eq!(state.last_progress, now);
         assert_eq!(state.last_activity, now + Duration::from_secs(1));
         assert_eq!(state.accepted_segments, 2);

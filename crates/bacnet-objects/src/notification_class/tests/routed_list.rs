@@ -5,6 +5,7 @@
 
 use super::super::*;
 use super::{make_dest_device, make_time};
+use crate::property_metadata::PropertyMetadata;
 use std::borrow::Cow;
 
 const CAP: usize = MAX_RECIPIENT_LIST_DESTINATIONS;
@@ -72,8 +73,8 @@ impl BACnetObject for CustomClass {
         ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[
             PropertyIdentifier::NOTIFICATION_CLASS,
             PropertyIdentifier::RECIPIENT_LIST,
         ])
@@ -120,13 +121,15 @@ fn custom_class_past_the_cap_routes_none_of_its_list() {
         );
         assert!(plain.is_empty(), "{count}");
         assert_eq!(strict, None, "{count}");
-        assert!(filter_recipient_list(
-            &served,
-            EventTransition::ToOffnormal,
-            DaysOfWeek::MONDAY,
-            &make_time(12, 0),
-        )
-        .is_empty());
+        assert!(
+            filter_recipient_list(
+                &served,
+                EventTransition::ToOffnormal,
+                DaysOfWeek::MONDAY,
+                &make_time(12, 0),
+            )
+            .is_empty()
+        );
     }
 }
 

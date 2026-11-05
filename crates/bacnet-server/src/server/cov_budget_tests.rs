@@ -11,22 +11,25 @@ use bacnet_services::cov_multiple::{
     COVReference, COVSubscriptionSpecification, SubscribeCOVPropertyMultipleRequest,
 };
 use bacnet_types::constructed::PropertyReference;
-use bacnet_types::enums::ObjectType;
+use bacnet_types::enums::{EngineeringUnits, ObjectType};
 
 fn test_db_with_ao() -> (Arc<RwLock<ObjectDatabase>>, ObjectIdentifier) {
     let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, 1234).unwrap();
     let ao_oid = ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, 1).unwrap();
     let mut db = ObjectDatabase::new();
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "COV-Test".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("COV-Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
     device.set_object_list(vec![device_oid, ao_oid]);
     db.add(Box::new(device)).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     (Arc::new(RwLock::new(db)), ao_oid)
 }
 
@@ -150,7 +153,10 @@ async fn fair_distribution_between_single_and_multiple_notifications() {
                         subscriber_process_identifier: i as u32,
                         monitored_object_identifier: ao_oid,
                         issue_confirmed_notifications: false,
-                        expires_at: Some(Instant::now() + Duration::from_secs(3600)),
+                        expires_at: Some(
+                            crate::runtime_clock::core_now()
+                                + bacnet_time::Duration::from_secs(3600),
+                        ),
                         last_notified_observation: None,
                         monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
                         monitored_property_array_index: None,
@@ -207,21 +213,25 @@ async fn expired_subscription_releases_quota_on_handle_subscribe_cov() {
     let ao_oid = ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, 1).unwrap();
     let mut db = ObjectDatabase::new();
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "COV-Test".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("COV-Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
     device.set_object_list(vec![device_oid, ao_oid]);
     db.add(Box::new(device)).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
 
     let policy = CovPolicy {
         max_subscriptions_per_peer: 1,
         ..Default::default()
     };
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 0).unwrap())
         .database(db)
         .transport(transport)
         .cov_policy(policy)
@@ -241,7 +251,9 @@ async fn expired_subscription_releases_quota_on_handle_subscribe_cov() {
                 subscriber_process_identifier: 1,
                 monitored_object_identifier: ao_oid,
                 issue_confirmed_notifications: false,
-                expires_at: Some(Instant::now() - Duration::from_secs(1)),
+                expires_at: Some(
+                    crate::runtime_clock::core_now() - bacnet_time::Duration::from_secs(1),
+                ),
                 last_notified_observation: None,
                 monitored_property: None,
                 monitored_property_array_index: None,
@@ -278,21 +290,25 @@ async fn expired_subscription_purged_before_cov_property_multiple_admission() {
     let ao_oid = ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, 1).unwrap();
     let mut db = ObjectDatabase::new();
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "COV-Test".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("COV-Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
     device.set_object_list(vec![device_oid, ao_oid]);
     db.add(Box::new(device)).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
 
     let policy = CovPolicy {
         max_subscriptions_per_peer: 1,
         ..Default::default()
     };
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 0).unwrap())
         .database(db)
         .transport(transport)
         .cov_policy(policy)
@@ -313,7 +329,9 @@ async fn expired_subscription_purged_before_cov_property_multiple_admission() {
                     subscriber_process_identifier: 1,
                     monitored_object_identifier: ao_oid,
                     issue_confirmed_notifications: false,
-                    expires_at: Some(Instant::now() - Duration::from_secs(1)),
+                    expires_at: Some(
+                        crate::runtime_clock::core_now() - bacnet_time::Duration::from_secs(1),
+                    ),
                     last_notified_observation: None,
                     monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
                     monitored_property_array_index: None,
@@ -420,7 +438,9 @@ async fn unlimited_policy_half_cap_computation_does_not_overflow() {
                     subscriber_process_identifier: 2,
                     monitored_object_identifier: ao_oid,
                     issue_confirmed_notifications: false,
-                    expires_at: Some(Instant::now() + Duration::from_secs(3600)),
+                    expires_at: Some(
+                        crate::runtime_clock::core_now() + bacnet_time::Duration::from_secs(3600),
+                    ),
                     last_notified_observation: None,
                     monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
                     monitored_property_array_index: None,
@@ -533,7 +553,10 @@ async fn life_safety_fair_budget_partitioning_between_single_and_multiple() {
                         subscriber_process_identifier: i as u32,
                         monitored_object_identifier: point_oid,
                         issue_confirmed_notifications: false,
-                        expires_at: Some(Instant::now() + Duration::from_secs(3600)),
+                        expires_at: Some(
+                            crate::runtime_clock::core_now()
+                                + bacnet_time::Duration::from_secs(3600),
+                        ),
                         last_notified_observation: None,
                         monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
                         monitored_property_array_index: None,

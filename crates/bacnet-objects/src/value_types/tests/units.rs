@@ -5,13 +5,15 @@
 //! through `set_units`, and has no network write route.
 
 use super::super::*;
+use crate::property_metadata::{is_array_property, is_writable_property};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 fn assert_error<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32, "expected {expected:?}");
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected, "expected {expected:?}");
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }
@@ -25,7 +27,7 @@ fn units(object: &dyn BACnetObject) -> PropertyValue {
 
 /// Run the Units checks on one freshly built numeric value object.
 macro_rules! assert_units_row {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         let kind = object.object_identifier().object_type();
         assert_eq!(
@@ -33,11 +35,15 @@ macro_rules! assert_units_row {
             PropertyValue::Enumerated(EngineeringUnits::NO_UNITS.to_raw()),
             "{kind:?}"
         );
-        assert!(object.property_list().contains(&PropertyIdentifier::UNITS));
-        assert!(object
-            .required_properties()
-            .contains(&PropertyIdentifier::UNITS));
-        assert!(!object.is_array_property(PropertyIdentifier::UNITS));
+        assert!(crate::property_metadata::has_property(
+            &object.property_metadata(),
+            PropertyIdentifier::UNITS
+        ));
+        assert!(
+            crate::property_metadata::required_properties(&object.property_metadata())
+                .any(|required| required == PropertyIdentifier::UNITS)
+        );
+        assert!(!is_array_property(&object, PropertyIdentifier::UNITS));
 
         object.set_units(EngineeringUnits::DEGREES_CELSIUS).unwrap();
         assert_eq!(object.units(), EngineeringUnits::DEGREES_CELSIUS);
@@ -58,7 +64,7 @@ macro_rules! assert_units_row {
         }
 
         // No network write route, whatever the value's datatype.
-        assert!(!object.is_writable_property(PropertyIdentifier::UNITS));
+        assert!(!is_writable_property(&object, PropertyIdentifier::UNITS));
         for value in [
             PropertyValue::Enumerated(EngineeringUnits::PERCENT.to_raw()),
             PropertyValue::Unsigned(98),
@@ -89,7 +95,10 @@ fn non_numeric_value_types_have_no_units() {
         Box::new(BitStringValueObject::new(1, "BSV-1").unwrap()),
     ];
     for object in objects {
-        assert!(!object.property_list().contains(&PropertyIdentifier::UNITS));
+        assert!(!crate::property_metadata::has_property(
+            &object.property_metadata(),
+            PropertyIdentifier::UNITS
+        ));
         assert_error(
             object.read_property(PropertyIdentifier::UNITS, None),
             ErrorCode::UNKNOWN_PROPERTY,

@@ -1,6 +1,7 @@
 //! Splitting a written array or list whose elements are constructed values
 //! that reach the object as raw octets (`PropertyValue::ApplicationData`).
 
+use crate::prelude::*;
 use bacnet_encoding::tags::{self, Tag};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
@@ -21,6 +22,20 @@ pub(crate) fn chunks(value: &PropertyValue) -> Result<Vec<&[u8]>, Error> {
             })
             .collect(),
         _ => Err(super::invalid_data_type_error()),
+    }
+}
+
+/// The octets of a written list whose value reads as one framed
+/// `ApplicationData` (Recipient_List, Subscribed_Recipients): that octet
+/// string, or a non-empty list of framed elements, joined (#2272). Such a
+/// property reads empty as no octets, never as a list, so an empty list is
+/// the wrong datatype, as #1125 made it for the old flat layout.
+pub(crate) fn framed_octets(value: &PropertyValue) -> Result<Vec<u8>, Error> {
+    match value {
+        PropertyValue::List(elements) if elements.is_empty() => {
+            Err(super::invalid_data_type_error())
+        }
+        _ => Ok(chunks(value)?.concat()),
     }
 }
 

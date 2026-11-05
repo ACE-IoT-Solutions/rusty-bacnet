@@ -1,4 +1,4 @@
-//! Routed paths refuse MACs past `NpduAddress::MAX_MAC_LEN` up front (#1267).
+//! Routed paths refuse MACs past `bacnet_npdu::MAX_MAC_LEN` up front (#1267).
 use super::*;
 
 /// A router MAC or forwarding source one octet past the bound fails a routed
@@ -6,7 +6,7 @@ use super::*;
 /// router MAC.
 #[tokio::test]
 async fn over_long_routed_path_macs_fail_before_registration_or_emission() {
-    let too_long = vec![2; NpduAddress::MAX_MAC_LEN + 1];
+    let too_long = vec![2; bacnet_npdu::MAX_MAC_LEN + 1];
     for (local, router) in [
         (vec![1; 6], too_long.clone()),
         (too_long.clone(), vec![2; 6]),
@@ -29,7 +29,7 @@ async fn over_long_routed_path_macs_fail_before_registration_or_emission() {
             .await;
         assert!(matches!(result, Err(Error::Encoding(_))), "{result:?}");
         assert!(outbound.try_recv().is_err());
-        assert_eq!(client.tsm.lock().await.pending_count(), 0);
+        assert_eq!(client.tsm.lock().pending_count(), 0);
         for refused in [
             client
                 .configure_routed_path_max_npdu(&too_long, DNET, 1497)

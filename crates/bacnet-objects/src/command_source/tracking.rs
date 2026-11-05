@@ -12,6 +12,10 @@ use bacnet_types::{
 };
 use bytes::BytesMut;
 
+/// The state Last_Command_Time follows, taken before and after a command.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CommandEffect<T>(T, Option<usize>, BACnetValueSource);
+
 #[derive(Debug, Clone)]
 pub(crate) struct ValueSourceTracking {
     sources: [BACnetValueSource; 16],
@@ -21,8 +25,8 @@ pub(crate) struct ValueSourceTracking {
 impl Default for ValueSourceTracking {
     fn default() -> Self {
         Self {
-            sources: std::array::from_fn(|_| BACnetValueSource::None),
-            owners: std::array::from_fn(|_| None),
+            sources: core::array::from_fn(|_| BACnetValueSource::None),
+            owners: core::array::from_fn(|_| None),
             sequence: 0,
         }
     }
@@ -63,26 +67,68 @@ impl ValueSourceTracking {
         priority: Option<u8>,
         origin: &CommandOrigin,
     ) -> Result<(), Error> {
-        let index = priority_index(priority)?;
-        origin.validate()?;
+        let index = Self::admit(priority, origin)?;
+        // What [`Self::effect`] compares, without copying the published
+        // source: of the sources, only slot `index`'s changes here, so the
+        // source moves exactly when that slot is active after the command
+        // and its replaced source differs (#2342).
         let before = (
             common::recalculate_from_priority_array(slots, fallback),
             active(slots),
-            self.current(slots),
         );
         slots[index] = value;
         // A relinquishment is a command: retain its writer at this inactive slot.
-        self.sources[index] = origin.published_source();
-        self.owners[index] = Some(origin.clone());
+        let replaced = self.replace(index, origin);
         let after = (
             common::recalculate_from_priority_array(slots, fallback),
             active(slots),
-            self.current(slots),
         );
-        if before != after {
+        if before != after || (after.1 == Some(index) && replaced != self.sources[index]) {
             self.sequence = self.sequence.wrapping_add(1);
         }
         Ok(())
+    }
+    /// The slot index a command at `priority` (16 when absent) acts on, once
+    /// its origin is a well-formed writer. Nothing changes before this passes.
+    pub(crate) fn admit(priority: Option<u8>, origin: &CommandOrigin) -> Result<usize, Error> {
+        let index = priority_index(priority)?;
+        origin.validate()?;
+        Ok(index)
+    }
+    /// What Last_Command_Time follows in `slots`: the effective value, the
+    /// active slot and the published source.
+    pub(crate) fn effect<T: Copy>(&self, slots: &[Option<T>; 16], fallback: T) -> CommandEffect<T> {
+        CommandEffect(
+            common::recalculate_from_priority_array(slots, fallback),
+            active(slots),
+            self.current(slots),
+        )
+    }
+    /// Record `origin` as the writer of slot `index`.
+    pub(crate) fn record(&mut self, index: usize, origin: &CommandOrigin) {
+        self.replace(index, origin);
+    }
+    /// [`Self::record`], returning the source slot `index` had.
+    fn replace(&mut self, index: usize, origin: &CommandOrigin) -> BACnetValueSource {
+        self.owners[index] = Some(origin.clone());
+        core::mem::replace(&mut self.sources[index], origin.published_source())
+    }
+    /// Clear slot `index`'s writer for an application command that names
+    /// none: the slot's source reads NONE and no one may correct it.
+    pub(crate) fn record_unsourced(&mut self, index: usize) {
+        self.sources[index] = BACnetValueSource::None;
+        self.owners[index] = None;
+    }
+    /// Move Last_Command_Time on when a command, or the deferred end of one
+    /// (a lighting egress), changed what [`Self::effect`] sees.
+    pub(crate) fn settle<T: PartialEq>(
+        &mut self,
+        before: CommandEffect<T>,
+        after: CommandEffect<T>,
+    ) {
+        if before != after {
+            self.sequence = self.sequence.wrapping_add(1);
+        }
     }
     pub(crate) fn correct(
         &mut self,
@@ -154,7 +200,7 @@ impl ValueSourceTracking {
 
 // Family-specific extraction validates the value before the shared state changes.
 macro_rules! write_sourced_priority {
-    ($self:expr, $value:expr, $priority:expr, $origin:expr, $extract:expr) => {{
+    ($self:expr_2021, $value:expr_2021, $priority:expr_2021, $origin:expr_2021, $extract:expr_2021) => {{
         let prio = $priority.unwrap_or(16);
         if !(1..=16).contains(&prio) {
             return Err($crate::common::value_out_of_range_error());
@@ -175,6 +221,10 @@ macro_rules! write_sourced_priority {
     }};
 }
 pub(crate) use write_sourced_priority;
+
+#[cfg(test)]
+#[path = "tracking_differential_tests.rs"]
+mod differential_tests;
 
 #[cfg(test)]
 mod tests {
@@ -206,5 +256,44 @@ mod tests {
             .command(&mut slots, 0, Some(2), Some(8), &origin)
             .unwrap();
         assert_eq!(tracking.sequence, 1);
+    }
+
+    /// Last_Command_Time moves when only the active slot's writer changes,
+    /// and not when an inactive slot's writer changes (#2342: `command`
+    /// compares the replaced source instead of copying it).
+    #[test]
+    fn command_source_sequence_follows_the_active_writer() {
+        use bacnet_types::constructed::BACnetAddress;
+        let remote = |last: u8| CommandOrigin::Remote {
+            actual_address: BACnetAddress {
+                network_number: 0,
+                mac_address: bacnet_types::MacAddr::from_slice(&[10, 0, 0, last, 0xBA, 0xC0]),
+            },
+            binding: super::super::CommandDeviceBinding::Unknown,
+        };
+        let mut tracking = ValueSourceTracking::default();
+        let mut slots = [None; 16];
+        tracking
+            .command(&mut slots, 0, Some(1), Some(8), &remote(1))
+            .unwrap();
+        assert_eq!(tracking.sequence, 1);
+        // The same value at the same slot from the same writer: no change.
+        tracking
+            .command(&mut slots, 0, Some(1), Some(8), &remote(1))
+            .unwrap();
+        assert_eq!(tracking.sequence, 1);
+        // Another writer at the active slot: the published source changed.
+        tracking
+            .command(&mut slots, 0, Some(1), Some(8), &remote(2))
+            .unwrap();
+        assert_eq!(tracking.sequence, 2);
+        // A relinquished, inactive slot changing writer: nothing effective did.
+        tracking
+            .command(&mut slots, 0, None, Some(9), &remote(3))
+            .unwrap();
+        tracking
+            .command(&mut slots, 0, None, Some(9), &remote(4))
+            .unwrap();
+        assert_eq!(tracking.sequence, 2);
     }
 }

@@ -1,7 +1,8 @@
 use super::*;
-use crate::server::test_transport::{SendMode, SentFrame, TestTransport, BIP_LOCAL_MAC};
+use crate::server::test_transport::{BIP_LOCAL_MAC, SendMode, SentFrame, TestTransport};
 use bacnet_encoding::{apdu::decode_apdu, npdu::decode_npdu};
 use bacnet_objects::analog::AnalogValueObject;
+use bacnet_types::enums::EngineeringUnits;
 use bytes::Bytes;
 use std::sync::Mutex as StdMutex;
 use tokio::sync::Notify;
@@ -64,11 +65,13 @@ fn proposal(
         issue_confirmed_notifications: confirmed,
         // A Multiple context always has a finite lifetime.
         expires_at: (kind == CovNotificationKind::Multiple)
-            .then(|| Instant::now() + Duration::from_secs(3600)),
+            .then(|| crate::runtime_clock::core_now() + bacnet_time::Duration::from_secs(3600)),
         last_notified_observation: Some(
-            crate::cov::CovObservation::new(
-                crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(1.0))
-                    .unwrap(),
+            bacnet_device_core::cov::CovObservation::new(
+                bacnet_device_core::cov::CovSample::new(
+                    &bacnet_types::primitives::PropertyValue::Real(1.0),
+                )
+                .unwrap(),
                 None,
             )
             .unwrap(),
@@ -99,7 +102,7 @@ struct Fixture {
 impl Fixture {
     fn new(hold: bool) -> Self {
         let mut db = clocked_test_database();
-        let mut av = AnalogValueObject::new(3, "value", 95).unwrap();
+        let mut av = AnalogValueObject::new(3, "value", EngineeringUnits::NO_UNITS).unwrap();
         av.set_relinquish_default(10.0).unwrap();
         db.add(Box::new(av)).unwrap();
         let sent = Arc::new(StdMutex::new(Vec::new()));
@@ -230,12 +233,14 @@ async fn stale_completion(
 ) {
     let fixture = Fixture::new(!confirmed);
     let original = proposal(kind, confirmed, property);
-    let mut snapshots = vec![fixture
-        .table
-        .write()
-        .await
-        .admit_for_test(original.clone(), 0)
-        .unwrap()];
+    let mut snapshots = vec![
+        fixture
+            .table
+            .write()
+            .await
+            .admit_for_test(original.clone(), 0)
+            .unwrap(),
+    ];
     if kind == CovNotificationKind::Multiple {
         snapshots.push(
             fixture
@@ -257,6 +262,12 @@ async fn stale_completion(
     } else {
         None
     };
+    // Start the single poll below on a fresh Tokio coop budget. The callers
+    // loop over many cases inside one task poll, and once the budget runs out
+    // even an uncontended lock pends, so whether the send happened in that
+    // poll would depend on how many awaits earlier cases took (#2217 removed
+    // one and moved the point where it ran out).
+    tokio::task::yield_now().await;
     let mut work = Box::pin(fixture.fire(initial, &snapshots));
     assert!(futures_util::poll!(work.as_mut()).is_pending());
     if !confirmed {
@@ -270,10 +281,10 @@ async fn stale_completion(
         if !matches!(change, Change::Remove) {
             let mut renewed = original;
             renewed.last_notified_observation = Some(
-                crate::cov::CovObservation::new(
-                    crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(
-                        99.0,
-                    ))
+                bacnet_device_core::cov::CovObservation::new(
+                    bacnet_device_core::cov::CovSample::new(
+                        &bacnet_types::primitives::PropertyValue::Real(99.0),
+                    )
                     .unwrap(),
                     None,
                 )
@@ -301,7 +312,23 @@ async fn stale_completion(
         if matches!(change, Change::Remove) {
             assert!(table.get_subscription(snapshots[0].key()).is_none());
         } else {
-            assert_eq!(table.get_subscription(snapshots[0].key()).unwrap().last_notified_observation,Some(crate::cov::CovObservation::new(crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(99.0)).unwrap(), None).unwrap()),"stale completion initial={initial} kind={kind:?} confirmed={confirmed} change={change:?}");
+            assert_eq!(
+                table
+                    .get_subscription(snapshots[0].key())
+                    .unwrap()
+                    .last_notified_observation,
+                Some(
+                    bacnet_device_core::cov::CovObservation::new(
+                        bacnet_device_core::cov::CovSample::new(
+                            &bacnet_types::primitives::PropertyValue::Real(99.0)
+                        )
+                        .unwrap(),
+                        None
+                    )
+                    .unwrap()
+                ),
+                "stale completion initial={initial} kind={kind:?} confirmed={confirmed} change={change:?}"
+            );
         }
         if kind == CovNotificationKind::Multiple {
             assert_eq!(
@@ -310,10 +337,10 @@ async fn stale_completion(
                     .unwrap()
                     .last_notified_observation,
                 Some(
-                    crate::cov::CovObservation::new(
-                        crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(
-                            0.0
-                        ))
+                    bacnet_device_core::cov::CovObservation::new(
+                        bacnet_device_core::cov::CovSample::new(
+                            &bacnet_types::primitives::PropertyValue::Real(0.0)
+                        )
                         .unwrap(),
                         Some(&PropertyValue::BitString {
                             unused_bits: 4,
@@ -385,3 +412,7 @@ mod value_source_contract;
 mod completion_order;
 
 mod noncommandable_value_source;
+
+mod single_source_value_source;
+
+mod lighting_value_source;

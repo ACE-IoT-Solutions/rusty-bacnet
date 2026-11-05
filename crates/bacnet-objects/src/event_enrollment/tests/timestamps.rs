@@ -1,9 +1,11 @@
 //! Event timestamp and property-metadata contracts for enrollment objects.
 
 use super::super::*;
+use crate::property_metadata::is_writable_property;
 use crate::property_metadata::{PropertyConformance, PropertyMetadata, PropertyWriteCapability};
 use bacnet_encoding::primitives::decode_timestamp_choice;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{BACnetTimeStamp, Date, Time};
 
 fn alert_source() -> ObjectIdentifier {
@@ -119,29 +121,37 @@ fn assert_property_error<T: std::fmt::Debug>(
     context: &str,
 ) {
     match result.expect_err(context) {
-        Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32, "{context}");
-            assert_eq!(code, expected.to_raw() as u32, "{context}");
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::PROPERTY, "{context}");
+            assert_eq!(code, expected, "{context}");
         }
         other => panic!("{context}: expected property error, got {other:?}"),
     }
 }
 
+/// Both enrollment types serve the optional Event_Message_Texts (Event
+/// Enrollment since #1507, Alert Enrollment since #1865).
 fn assert_history_surface(object: &mut dyn BACnetObject, label: &str) {
-    let properties = object.property_list();
+    let properties = crate::test_rows::listed(&object.property_metadata());
     assert!(
         properties.contains(&PropertyIdentifier::EVENT_TIME_STAMPS),
         "{label}: Event_Time_Stamps missing from Property_List"
     );
     assert!(
-        !properties.contains(&PropertyIdentifier::EVENT_MESSAGE_TEXTS),
-        "{label}: optional Event_Message_Texts must remain absent"
+        properties.contains(&PropertyIdentifier::EVENT_MESSAGE_TEXTS),
+        "{label}: Event_Message_Texts missing from Property_List"
     );
-    assert_property_error(
-        object.read_property(PropertyIdentifier::EVENT_MESSAGE_TEXTS, None),
-        ErrorCode::UNKNOWN_PROPERTY,
-        &format!("{label}: Event_Message_Texts read"),
+    assert_eq!(
+        object
+            .read_property(PropertyIdentifier::EVENT_MESSAGE_TEXTS, None)
+            .unwrap(),
+        PropertyValue::List(vec![PropertyValue::CharacterString(String::new()); 3]),
+        "{label}: Event_Message_Texts starts empty"
     );
+    assert!(!is_writable_property(
+        &*object,
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS
+    ));
     assert_property_error(
         object.write_property(
             PropertyIdentifier::EVENT_TIME_STAMPS,
@@ -152,7 +162,10 @@ fn assert_history_surface(object: &mut dyn BACnetObject, label: &str) {
         ErrorCode::WRITE_ACCESS_DENIED,
         &format!("{label}: Event_Time_Stamps write"),
     );
-    assert!(!object.is_writable_property(PropertyIdentifier::EVENT_TIME_STAMPS));
+    assert!(!is_writable_property(
+        &*object,
+        PropertyIdentifier::EVENT_TIME_STAMPS
+    ));
 }
 
 #[test]
@@ -275,7 +288,10 @@ fn assert_complete_metadata(
         .copied()
         .filter(|property| *property != PropertyIdentifier::PROPERTY_LIST)
         .collect();
-    assert_eq!(object.property_list().as_ref(), projection.as_slice());
+    assert_eq!(
+        crate::test_rows::listed(&object.property_metadata()),
+        crate::test_rows::listed_from(projection.as_slice())
+    );
 
     for row in metadata.iter() {
         object
@@ -288,7 +304,7 @@ fn assert_complete_metadata(
             });
         assert_eq!(
             row.write_capability.is_writable(),
-            object.is_writable_property(row.property_identifier),
+            is_writable_property(object, row.property_identifier),
             "{label}: {:?} writability",
             row.property_identifier
         );
@@ -321,6 +337,10 @@ fn enrollment_property_metadata_is_complete_and_pins_timestamp_requirements() {
         PropertyIdentifier::EVENT_DETECTION_ENABLE,
         PropertyIdentifier::NOTIFICATION_CLASS,
         PropertyIdentifier::EVENT_TIME_STAMPS,
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS,
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG,
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF,
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT,
         PropertyIdentifier::FAULT_TYPE,
         PropertyIdentifier::FAULT_PARAMETERS,
         PropertyIdentifier::TIME_DELAY_NORMAL,
@@ -344,6 +364,10 @@ fn enrollment_property_metadata_is_complete_and_pins_timestamp_requirements() {
         PropertyIdentifier::ACKED_TRANSITIONS,
         PropertyIdentifier::NOTIFY_TYPE,
         PropertyIdentifier::EVENT_TIME_STAMPS,
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS,
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG,
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF,
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT,
         PropertyIdentifier::PROPERTY_LIST,
     ];
     assert_complete_metadata(&alert, &alert_ids, "Alert Enrollment");
@@ -391,38 +415,4 @@ fn enrollment_property_metadata_is_complete_and_pins_timestamp_requirements() {
         metadata_row(&alert, PropertyIdentifier::NOTIFY_TYPE).write_capability,
         PropertyWriteCapability::Always
     );
-}
-
-#[test]
-fn alert_to_normal_acknowledgment_cannot_be_cleared() {
-    let mut alert = AlertEnrollmentObject::new(1, "AE-1", alert_source()).unwrap();
-
-    alert
-        .set_acked_transitions_internal(EventTransitionBits::TO_NORMAL, false)
-        .unwrap();
-    assert_eq!(alert.acked_transitions, EventTransitionBits::all());
-
-    alert
-        .set_acked_transitions_internal(EventTransitionBits::TO_OFFNORMAL, false)
-        .unwrap();
-    assert_eq!(
-        alert.acked_transitions,
-        EventTransitionBits::TO_FAULT | EventTransitionBits::TO_NORMAL
-    );
-    alert
-        .set_acked_transitions_internal(EventTransitionBits::TO_FAULT, false)
-        .unwrap();
-    assert_eq!(alert.acked_transitions, EventTransitionBits::TO_NORMAL);
-    alert
-        .set_acked_transitions_internal(EventTransitionBits::TO_OFFNORMAL, true)
-        .unwrap();
-    alert
-        .set_acked_transitions_internal(EventTransitionBits::TO_FAULT, true)
-        .unwrap();
-    assert_eq!(alert.acked_transitions, EventTransitionBits::all());
-
-    alert.set_event_detection_enable(false);
-    assert!(alert
-        .set_acked_transitions_internal(EventTransitionBits::TO_NORMAL, false)
-        .is_err());
 }

@@ -1,11 +1,14 @@
 //! Incremental decoding over caller-owned storage.
 
+use core::fmt;
+
 use crate::decode::{check_frame, decode_extended_in_place};
-use crate::frame::{wire_length, DATA_OFFSET};
+use crate::frame::{DATA_OFFSET, wire_length};
 use crate::{Frame, FrameError, FrameHeader, PREAMBLE};
 
 /// The outcome of one [`StreamDecoder::push_slice`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "the event may be a frame, which the next push drops"]
 pub enum DecodeEvent<'a> {
     /// Nothing complete and nothing to discard: push more octets.
     NeedMore,
@@ -58,7 +61,7 @@ pub enum DecodeEvent<'a> {
 }
 
 /// Receive phase represented by the decoder's retained bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StreamPhase {
     /// Searching for the first preamble octet; retained bytes are only noise.
     Sync,
@@ -140,8 +143,8 @@ pub enum StreamPhase {
 /// use bacnet_mstp_codec::{DecodeEvent, Frame, FrameType, StreamDecoder};
 ///
 /// let mut wire = [0u8; 16];
-/// Frame::new(FrameType::Token, 1, 0, &[]).encode_into(&mut wire[..8])?;
-/// Frame::new(FrameType::Token, 2, 1, &[]).encode_into(&mut wire[8..])?;
+/// Frame::new(FrameType::TOKEN, 1, 0, &[]).encode_into(&mut wire[..8])?;
+/// Frame::new(FrameType::TOKEN, 2, 1, &[]).encode_into(&mut wire[8..])?;
 ///
 /// let mut storage = [0u8; 64];
 /// let mut decoder = StreamDecoder::new(&mut storage);
@@ -162,6 +165,11 @@ pub enum StreamPhase {
 /// ```
 pub struct StreamDecoder<'a> {
     storage: &'a mut [u8],
+    /// Where the buffered octets begin. Octets the decoder is done with are
+    /// dropped by moving this past them, not by shifting the rest down, and
+    /// it goes back to 0 whenever nothing is buffered.
+    start: usize,
+    /// How many octets are buffered, from `start`.
     length: usize,
     /// Wire length of the frame the last push delivered, which the next
     /// push commits.
@@ -172,6 +180,20 @@ pub struct StreamDecoder<'a> {
     /// Reserved COBS types are checked and yielded, not skipped; see
     /// [`Self::with_reserved_cobs`].
     reserved_cobs: bool,
+}
+
+/// The decoder's counts, phase and mode; the storage's contents are left out.
+impl fmt::Debug for StreamDecoder<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StreamDecoder")
+            .field("capacity", &self.capacity())
+            .field("buffered", &self.length)
+            .field("pending", &self.pending)
+            .field("skip", &self.skip)
+            .field("phase", &self.phase())
+            .field("reserved_cobs", &self.reserved_cobs)
+            .finish()
+    }
 }
 
 /// Offset of the destination octet: after the preamble and the type octet.
@@ -199,9 +221,11 @@ enum InternalEvent {
 
 impl<'a> StreamDecoder<'a> {
     /// Create an empty decoder over `storage`.
+    #[must_use]
     pub const fn new(storage: &'a mut [u8]) -> Self {
         Self {
             storage,
+            start: 0,
             length: 0,
             pending: 0,
             skip: 0,
@@ -218,9 +242,10 @@ impl<'a> StreamDecoder<'a> {
     /// treat as unexpected. So a reserved type whose header passes is
     /// buffered like an extended frame: when it fits the storage and its
     /// encoded fields check out, it comes out as a [`DecodeEvent::Frame`]
-    /// with its [`FrameType::Unknown`](crate::FrameType::Unknown) type and
-    /// its decoded data, and otherwise it is dropped and skipped by count,
-    /// with [`FrameError::DataCrcMismatch`] or [`FrameError::FrameTooLong`].
+    /// with its type, which no [`FrameType`](crate::FrameType) constant
+    /// names, and its decoded data, and otherwise it is dropped and skipped
+    /// by count, with [`FrameError::DataCrcMismatch`] or
+    /// [`FrameError::FrameTooLong`].
     /// [`FrameError::UnsupportedCobsFrame`] never comes out.
     ///
     /// A decoder from [`Self::new`] skips them by count as soon as their
@@ -234,33 +259,38 @@ impl<'a> StreamDecoder<'a> {
 
     /// Whether the decoder checks reserved COBS types; see
     /// [`Self::with_reserved_cobs`].
+    #[must_use]
     pub const fn checks_reserved_cobs(&self) -> bool {
         self.reserved_cobs
     }
 
     /// Number of buffered octets, including a frame awaiting the next push.
     /// Octets of a frame being skipped by count are never buffered.
+    #[must_use]
     pub const fn buffered_len(&self) -> usize {
         self.length
     }
 
     /// Capacity of the caller-owned receive buffer.
+    #[must_use]
     pub const fn capacity(&self) -> usize {
         self.storage.len()
     }
 
     /// Return the semantic receive phase, excluding retained resync noise.
+    #[must_use]
     pub fn phase(&self) -> StreamPhase {
         if self.skip != 0 {
             return StreamPhase::Data;
         }
-        if self.pending != 0 || self.length == 0 || self.storage[0] != PREAMBLE[0] {
+        let buffered = self.buffered();
+        if self.pending != 0 || buffered.first() != Some(&PREAMBLE[0]) {
             return StreamPhase::Sync;
         }
         if self.length == 1 {
             return StreamPhase::Preamble;
         }
-        if self.storage[1] != PREAMBLE[1] {
+        if buffered[1] != PREAMBLE[1] {
             return StreamPhase::Sync;
         }
         if self.length < DATA_OFFSET {
@@ -272,6 +302,7 @@ impl<'a> StreamDecoder<'a> {
 
     /// Clear all buffered input, the pending frame and any skip.
     pub fn reset(&mut self) {
+        self.start = 0;
         self.length = 0;
         self.pending = 0;
         self.skip = 0;
@@ -298,9 +329,12 @@ impl<'a> StreamDecoder<'a> {
             });
         }
         self.skip -= skipped;
-        let end = self.length + rest.len();
-        self.storage[self.length..end].copy_from_slice(rest);
-        self.length = end;
+        if self.start + self.length + rest.len() > self.storage.len() {
+            self.compact();
+        }
+        let end = self.start + self.length;
+        self.storage[end..end + rest.len()].copy_from_slice(rest);
+        self.length += rest.len();
         match self.try_decode() {
             InternalEvent::NeedMore => DecodeEvent::NeedMore,
             InternalEvent::Frame {
@@ -310,7 +344,7 @@ impl<'a> StreamDecoder<'a> {
             } => DecodeEvent::Frame {
                 frame: Frame {
                     header,
-                    data: &self.storage[DATA_OFFSET..DATA_OFFSET + data_length],
+                    data: &self.buffered()[DATA_OFFSET..DATA_OFFSET + data_length],
                 },
                 consumed,
             },
@@ -336,7 +370,7 @@ impl<'a> StreamDecoder<'a> {
     }
 
     fn try_decode(&mut self) -> InternalEvent {
-        let buffered = &self.storage[..self.length];
+        let buffered = self.buffered();
         let Some(&first) = buffered.first() else {
             return InternalEvent::NeedMore;
         };
@@ -353,7 +387,8 @@ impl<'a> StreamDecoder<'a> {
         }
         let error = match check_frame(buffered, self.reserved_cobs) {
             Ok(valid) => {
-                decode_extended_in_place(&mut self.storage[..self.length], &valid);
+                let end = self.start + self.length;
+                decode_extended_in_place(&mut self.storage[self.start..end], &valid);
                 self.pending = valid.consumed;
                 return InternalEvent::Frame {
                     header: valid.header,
@@ -375,7 +410,7 @@ impl<'a> StreamDecoder<'a> {
             | FrameError::Oversize { .. }
             | FrameError::UnsupportedCobsFrame { .. }
             | FrameError::Truncated { .. }
-            | FrameError::DataCrcMismatch { .. } => Some(self.storage[DESTINATION_INDEX]),
+            | FrameError::DataCrcMismatch { .. } => Some(self.buffered()[DESTINATION_INDEX]),
             // check_frame never returns these: they come from decode_frame,
             // from encoding or from the stream decoder itself.
             FrameError::ExtendedFrame { .. }
@@ -434,9 +469,10 @@ impl<'a> StreamDecoder<'a> {
 
     /// The Length field of the header at the front, which is complete.
     fn declared_length(&self) -> usize {
+        let buffered = self.buffered();
         usize::from(u16::from_be_bytes([
-            self.storage[LENGTH_INDEX],
-            self.storage[LENGTH_INDEX + 1],
+            buffered[LENGTH_INDEX],
+            buffered[LENGTH_INDEX + 1],
         ]))
     }
 
@@ -453,6 +489,7 @@ impl<'a> StreamDecoder<'a> {
             self.discard(total);
         } else {
             self.skip = total - self.length;
+            self.start = 0;
             self.length = 0;
         }
         InternalEvent::Malformed {
@@ -462,9 +499,38 @@ impl<'a> StreamDecoder<'a> {
         }
     }
 
+    /// The buffered octets.
+    fn buffered(&self) -> &[u8] {
+        &self.storage[self.start..self.start + self.length]
+    }
+
+    /// Drop the first `count` buffered octets, without moving the rest.
     fn discard(&mut self, count: usize) {
         let count = count.min(self.length);
-        self.storage.copy_within(count..self.length, 0);
+        self.start += count;
         self.length -= count;
+        if self.length == 0 {
+            self.start = 0;
+        }
+    }
+
+    /// Move the buffered octets to the front of the storage, to make room
+    /// after them. They go a piece at a time, each piece no longer than the
+    /// free octets in front of it, so no copy overlaps its source: a plain
+    /// copy does each, not a `memmove`.
+    fn compact(&mut self) {
+        let gap = self.start;
+        if gap == 0 {
+            return;
+        }
+        let end = self.start + self.length;
+        let mut from = gap;
+        while from < end {
+            let count = gap.min(end - from);
+            let (front, back) = self.storage.split_at_mut(from);
+            front[from - gap..from - gap + count].copy_from_slice(&back[..count]);
+            from += count;
+        }
+        self.start = 0;
     }
 }

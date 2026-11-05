@@ -3,6 +3,7 @@ use crate::server::test_transport::TestTransport;
 use bacnet_objects::audit::{
     AuditLogObject, AuditLogPersistence, AuditLogQueryPage, AuditLogSnapshot, AuditLogStorage,
 };
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_types::{
     constructed::{BACnetAuditLogDatum, BACnetAuditLogRecord, BACnetAuditLogRecordResult},
     primitives::{Date, Time},
@@ -125,8 +126,8 @@ impl BACnetObject for Probe {
     fn object_name(&self) -> &str {
         "query log"
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
     fn read_property(&self, _: PropertyIdentifier, _: Option<u32>) -> Result<PropertyValue, Error> {
         panic!("query must not reread properties")
@@ -140,8 +141,17 @@ impl BACnetObject for Probe {
     ) -> Result<(), Error> {
         panic!("query must not mutate the log")
     }
-    fn audit_log_storage_internal(&self) -> Option<&dyn AuditLogStorage> {
+    fn audit_log(&self) -> Option<&dyn bacnet_objects::traits::AuditLog> {
         (self.mode != "no capability").then_some(self)
+    }
+    fn audit_log_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::AuditLog> {
+        (self.mode != "no capability").then_some(self)
+    }
+}
+
+impl bacnet_objects::traits::AuditLog for Probe {
+    fn storage(&self) -> &dyn AuditLogStorage {
+        self
     }
 }
 
@@ -232,6 +242,7 @@ pub(super) async fn ingress(
         SOURCE,
         Apdu::ConfirmedRequest(req),
         bacnet_network::layer::ReceivedApdu {
+            router_response: None,
             direct_response: None,
             apdu: Bytes::new(),
             source_mac: MacAddr::from_slice(SOURCE),

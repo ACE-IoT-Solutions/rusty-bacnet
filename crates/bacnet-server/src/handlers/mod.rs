@@ -4,7 +4,6 @@
 //! ObjectDatabase and returns the encoded response bytes.
 
 use std::collections::HashSet;
-use std::time::Duration;
 
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_encoding::primitives::encode_property_value;
@@ -12,33 +11,33 @@ use bacnet_objects::database::ObjectDatabase;
 use bacnet_services::alarm_event::{
     AcknowledgeAlarmRequest, EventSummary, GetEventInformationAck, GetEventInformationRequest,
 };
-use bacnet_services::cov::SubscribeCOVRequest;
 use bacnet_services::device_mgmt::{DeviceCommunicationControlRequest, ReinitializeDeviceRequest};
 use bacnet_services::object_mgmt::{CreateObjectRequest, DeleteObjectRequest, ObjectSpecifier};
-use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
+#[cfg(test)]
+use bacnet_services::read_property::ReadPropertyRequest;
+#[cfg(test)]
 use bacnet_services::rpm::{
-    ReadAccessResult, ReadPropertyMultipleACK, ReadPropertyMultipleRequest, ReadResultElement,
+    ReadPropertyMultipleACK, ReadPropertyMultipleRequest, ReadResultElement,
 };
-use bacnet_services::who_has::{IHaveRequest, WhoHasObject, WhoHasRequest};
-use bacnet_services::wpm::{WritePropertyMultipleCursor, WritePropertyMultipleEvent};
+#[cfg(test)]
 use bacnet_services::write_property::WritePropertyRequest;
+use bacnet_types::MacAddr;
 use bacnet_types::constructed::BACnetObjectPropertyReference;
 use bacnet_types::enums::{
     EnableDisable, ErrorClass, ErrorCode, EventState, EventType, ObjectType, PropertyIdentifier,
     RejectReason,
 };
-use bacnet_types::error::{Error, ErrorDetail};
+use bacnet_types::error::{Error, ErrorDetail, RemoteError};
 use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier, PropertyValue};
-use bacnet_types::MacAddr;
 
 use bytes::BytesMut;
 
-use crate::cov::active::LiveCovSelection;
-use crate::cov::{
-    CovNotificationKind, CovSubscription, CovSubscriptionKey, CovSubscriptionSnapshot,
-    CovSubscriptionTable, MultipleContextKey, SubscriberEndpoint,
-};
+use crate::cov::CovSubscriptionTable;
 use crate::device_view::DeviceReadContext;
+use bacnet_device_core::cov::{
+    CovNotificationKind, CovSubscriptionKey, MultipleContextKey, SubscriberEndpoint,
+};
+use bacnet_device_core::cov::{CovSubscription, CovSubscriptionSnapshot};
 
 mod alarm_event;
 mod audit_log_query;
@@ -46,16 +45,14 @@ mod audit_notification;
 mod cov;
 pub(crate) mod device_mgmt;
 mod file;
-mod group_present_value;
 mod list;
 mod object_mgmt;
-mod read_budget;
-pub(crate) use read_budget::ReadFailure;
+#[cfg(test)]
 mod read_property;
 mod read_range;
+#[cfg(test)]
 mod rpm_budget;
-pub(crate) use rpm_budget::RpmPlan;
-pub(crate) mod relinquish;
+#[cfg(test)]
 mod write_property;
 
 pub use alarm_event::*;
@@ -66,9 +63,11 @@ pub use device_mgmt::*;
 pub use file::*;
 pub use list::*;
 pub use object_mgmt::*;
-pub use read_property::*;
+#[cfg(test)]
+pub(crate) use read_property::*;
 pub use read_range::*;
-pub use write_property::*;
+#[cfg(test)]
+pub(crate) use write_property::*;
 
 #[cfg(test)]
 mod tests;

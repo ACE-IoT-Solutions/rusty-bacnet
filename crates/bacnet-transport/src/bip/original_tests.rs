@@ -1,73 +1,85 @@
 use super::*;
 use bytes::Bytes;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 #[test]
 fn original_function_must_match_actual_ipv4_destination() {
     let local = Ipv4Addr::new(192, 0, 2, 10);
     let broadcast = Ipv4Addr::new(192, 0, 2, 255);
 
-    assert!(admitted_delivery(
-        BvlcFunction::ORIGINAL_UNICAST_NPDU,
-        local.into(),
-        local,
-        broadcast,
-        &[local],
-        false,
-        None,
-    )
-    .is_some());
-    assert!(admitted_delivery(
-        BvlcFunction::ORIGINAL_UNICAST_NPDU,
-        broadcast.into(),
-        local,
-        broadcast,
-        &[local],
-        false,
-        None,
-    )
-    .is_none());
-    assert!(admitted_delivery(
-        BvlcFunction::ORIGINAL_BROADCAST_NPDU,
-        local.into(),
-        local,
-        broadcast,
-        &[local],
-        false,
-        None,
-    )
-    .is_none());
-    assert!(admitted_delivery(
-        BvlcFunction::ORIGINAL_BROADCAST_NPDU,
-        broadcast.into(),
-        local,
-        broadcast,
-        &[local],
-        false,
-        None,
-    )
-    .is_some());
+    assert!(
+        admitted_delivery(
+            BvlcFunction::ORIGINAL_UNICAST_NPDU,
+            local.into(),
+            local,
+            broadcast,
+            &[local],
+            false,
+            None,
+        )
+        .is_some()
+    );
+    assert!(
+        admitted_delivery(
+            BvlcFunction::ORIGINAL_UNICAST_NPDU,
+            broadcast.into(),
+            local,
+            broadcast,
+            &[local],
+            false,
+            None,
+        )
+        .is_none()
+    );
+    assert!(
+        admitted_delivery(
+            BvlcFunction::ORIGINAL_BROADCAST_NPDU,
+            local.into(),
+            local,
+            broadcast,
+            &[local],
+            false,
+            None,
+        )
+        .is_none()
+    );
+    assert!(
+        admitted_delivery(
+            BvlcFunction::ORIGINAL_BROADCAST_NPDU,
+            broadcast.into(),
+            local,
+            broadcast,
+            &[local],
+            false,
+            None,
+        )
+        .is_some()
+    );
 
-    assert!(admitted_delivery(
-        BvlcFunction::ORIGINAL_UNICAST_NPDU,
-        Ipv4Addr::new(192, 0, 2, 11).into(),
-        local,
-        broadcast,
-        &[local, Ipv4Addr::new(192, 0, 2, 11)],
-        true,
-        None,
-    )
-    .is_some());
-    assert!(admitted_delivery(
-        BvlcFunction::ORIGINAL_UNICAST_NPDU,
-        broadcast.into(),
-        local,
-        broadcast,
-        &[local],
-        true,
-        Some(true),
-    )
-    .is_none());
+    assert!(
+        admitted_delivery(
+            BvlcFunction::ORIGINAL_UNICAST_NPDU,
+            Ipv4Addr::new(192, 0, 2, 11).into(),
+            local,
+            broadcast,
+            &[local, Ipv4Addr::new(192, 0, 2, 11)],
+            true,
+            None,
+        )
+        .is_some()
+    );
+    assert!(
+        admitted_delivery(
+            BvlcFunction::ORIGINAL_UNICAST_NPDU,
+            broadcast.into(),
+            local,
+            broadcast,
+            &[local],
+            true,
+            Some(true),
+        )
+        .is_none()
+    );
     // A wildcard bind takes unicast only to a listed address, on every OS
     // (#952). Windows flagging the datagram as unicast delivery is not
     // enough on its own any more.
@@ -99,8 +111,35 @@ fn original_function_must_match_actual_ipv4_destination() {
         BvlcFunction::DELETE_FOREIGN_DEVICE_TABLE_ENTRY,
         BvlcFunction::DISTRIBUTE_BROADCAST_TO_NETWORK,
     ] {
-        assert!(admitted_delivery(
-            function,
+        assert!(
+            admitted_delivery(
+                function,
+                local.into(),
+                local,
+                broadcast,
+                &[local],
+                false,
+                None,
+            )
+            .is_some()
+        );
+        assert!(
+            admitted_delivery(
+                function,
+                broadcast.into(),
+                local,
+                broadcast,
+                &[local],
+                false,
+                Some(true),
+            )
+            .is_none()
+        );
+    }
+
+    assert!(
+        admitted_delivery(
+            BvlcFunction::FORWARDED_NPDU,
             local.into(),
             local,
             broadcast,
@@ -108,9 +147,11 @@ fn original_function_must_match_actual_ipv4_destination() {
             false,
             None,
         )
-        .is_some());
-        assert!(admitted_delivery(
-            function,
+        .is_some()
+    );
+    assert!(
+        admitted_delivery(
+            BvlcFunction::FORWARDED_NPDU,
             broadcast.into(),
             local,
             broadcast,
@@ -118,29 +159,8 @@ fn original_function_must_match_actual_ipv4_destination() {
             false,
             Some(true),
         )
-        .is_none());
-    }
-
-    assert!(admitted_delivery(
-        BvlcFunction::FORWARDED_NPDU,
-        local.into(),
-        local,
-        broadcast,
-        &[local],
-        false,
-        None,
-    )
-    .is_some());
-    assert!(admitted_delivery(
-        BvlcFunction::FORWARDED_NPDU,
-        broadcast.into(),
-        local,
-        broadcast,
-        &[local],
-        false,
-        Some(true),
-    )
-    .is_some());
+        .is_some()
+    );
 }
 
 async fn recv_bvll(socket: &UdpSocket) -> BvllMessage {
@@ -163,18 +183,13 @@ async fn original_unicast_npdu_uses_udp_sender_source_mac_and_ignores_self() {
     let local_port = socket.local_addr().unwrap().port();
     let (npdu_tx, mut npdu_rx) = mpsc::channel(1);
     let ctx = RecvContext {
-        local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local_port),
-        socket,
-        npdu_tx,
-        bbmd: None,
-        broadcast_addr: Ipv4Addr::LOCALHOST,
-        broadcast_port: local_port,
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
+        ..RecvContext::for_test(
+            socket,
+            npdu_tx,
+            SocketAddrV4::new(Ipv4Addr::from(Ipv4Addr::LOCALHOST.octets()), local_port),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, local_port),
+            None,
+        )
     };
     let sender = ([192, 0, 2, 30], 0xBAC0);
     let msg = BvllMessage {
@@ -248,25 +263,20 @@ async fn original_broadcast_npdu_bbmd_forwards_to_bdt_and_fdt_without_local_echo
     );
 
     let ctx = RecvContext {
-        local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local_port),
-        socket: bbmd_socket,
-        npdu_tx,
-        bbmd: Some(Arc::new(std::sync::Mutex::new(state))),
-        broadcast_addr: Ipv4Addr::LOCALHOST,
-        broadcast_port: local_broadcast_port,
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
+        ..RecvContext::for_test(
+            bbmd_socket,
+            npdu_tx,
+            SocketAddrV4::new(Ipv4Addr::from(Ipv4Addr::LOCALHOST.octets()), local_port),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, local_broadcast_port),
+            Some(Arc::new(std::sync::Mutex::new(state))),
+        )
     };
     let msg = BvllMessage {
         function: BvlcFunction::ORIGINAL_BROADCAST_NPDU,
         payload: Bytes::from_static(&[0x01, 0x20, 0xDE, 0xAD, 0xBE, 0xEF]),
     };
 
-    handle_bvll_message(&msg, sender, Delivery::Unicast, &ctx).await;
+    handle_bvll_message(&msg, sender, Delivery::Broadcast, &ctx).await;
 
     let received = timeout(Duration::from_secs(2), npdu_rx.recv())
         .await
@@ -367,22 +377,18 @@ async fn original_broadcast_npdu_bbmd_fanout_deduplicates_and_throttles() {
         Arc::clone(&counters),
     ));
     let ctx = RecvContext {
-        local_mac: encode_bip_mac(Ipv4Addr::LOCALHOST.octets(), local_port),
-        socket: bbmd_socket,
-        npdu_tx,
-        bbmd: Some(Arc::new(std::sync::Mutex::new(state))),
-        broadcast_addr: Ipv4Addr::LOCALHOST,
-        broadcast_port: local_broadcast_port,
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
         fanout: Some(fanout::FanoutDispatcher::new(
             fanout_tx,
             limiter,
             Arc::clone(&counters),
         )),
-        force_dbtn_forward_failure: false,
-        group_sources: super::groups::GroupSources::detached(),
-        drops: Arc::default(),
+        ..RecvContext::for_test(
+            bbmd_socket,
+            npdu_tx,
+            SocketAddrV4::new(Ipv4Addr::from(Ipv4Addr::LOCALHOST.octets()), local_port),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, local_broadcast_port),
+            Some(Arc::new(std::sync::Mutex::new(state))),
+        )
     };
     let msg = BvllMessage {
         function: BvlcFunction::ORIGINAL_BROADCAST_NPDU,

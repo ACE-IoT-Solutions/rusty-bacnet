@@ -37,11 +37,11 @@ impl TransportPort for ObservedBip {
         Ok(self.input_override.take().unwrap_or(real))
     }
     async fn stop(&mut self) -> Result<(), Error> {
-        if let Some(gates) = &self.gates {
-            if gates.hold_stop.load(Ordering::SeqCst) {
-                gates.stop_entered.notify_one();
-                gates.stop_release.acquire().await.unwrap().forget();
-            }
+        if let Some(gates) = &self.gates
+            && gates.hold_stop.load(Ordering::SeqCst)
+        {
+            gates.stop_entered.notify_one();
+            gates.stop_release.acquire().await.unwrap().forget();
         }
         self.bip.stop().await?;
         if let Some(gates) = &self.gates {
@@ -66,11 +66,11 @@ impl TransportPort for ObservedBip {
         self.bip.send_unicast(mac, npdu).await
     }
     async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        if let Some(gates) = &self.gates {
-            if gates.hold_send.load(Ordering::SeqCst) {
-                gates.send_entered.notify_one();
-                gates.send_release.acquire().await.unwrap().forget();
-            }
+        if let Some(gates) = &self.gates
+            && gates.hold_send.load(Ordering::SeqCst)
+        {
+            gates.send_entered.notify_one();
+            gates.send_release.acquire().await.unwrap().forget();
         }
         self.bip.send_broadcast(npdu).await?;
         self.sent
@@ -133,7 +133,7 @@ impl Fixture {
             input_override,
         };
         let owner = if full {
-            let mut config = identity.server_config();
+            let mut config = crate::identity::server_config(&identity);
             config.registered_network_port = registered.then_some(selected());
             Owner::Server(
                 bacnet_server::server::BACnetServer::start(config, db, transport)
@@ -145,7 +145,7 @@ impl Fixture {
                 EndpointSession::new(transport, SessionRole::Both, SessionConfig::default())
                     .unwrap()
                     .with_database(db)
-                    .with_identity(identity);
+                    .device(identity);
             if registered {
                 session = session.with_registered_network_port(selected());
             }
@@ -207,49 +207,59 @@ impl Fixture {
 }
 #[tokio::test]
 async fn network_number_full_server_answers_configured_local_what_is() {
-    let mut fixture = Fixture::start(true, true, 17).await;
-    fixture.send(0x0a, &[1, 0x80, 0x12]).await;
-    fixture.response(17, 1).await;
-    fixture.stop().await;
-    assert_eq!(
-        tokio::runtime::Handle::current()
-            .metrics()
-            .num_alive_tasks(),
-        0
-    );
-    assert!(fixture
-        .database()
-        .write()
-        .await
-        .remove(&selected())
-        .unwrap()
-        .is_some());
-    let _rebound = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, fixture.address.port()))
-        .await
-        .unwrap();
+    port_retry::rerun_on_lost_port(async || {
+        let mut fixture = Fixture::start(true, true, 17).await;
+        fixture.send(0x0a, &[1, 0x80, 0x12]).await;
+        fixture.response(17, 1).await;
+        fixture.stop().await;
+        assert_eq!(
+            tokio::runtime::Handle::current()
+                .metrics()
+                .num_alive_tasks(),
+            0
+        );
+        assert!(
+            fixture
+                .database()
+                .write()
+                .await
+                .remove(&selected())
+                .unwrap()
+                .is_some()
+        );
+        UdpSocket::bind((Ipv4Addr::UNSPECIFIED, fixture.address.port()))
+            .await
+            .map(drop)
+    })
+    .await;
 }
 #[tokio::test]
 async fn network_number_endpoint_answers_configured_local_what_is() {
-    let mut fixture = Fixture::start(false, true, 17).await;
-    fixture.send(0x04, &[1, 0x80, 0x12]).await;
-    fixture.response(17, 1).await;
-    fixture.stop().await;
-    assert_eq!(
-        tokio::runtime::Handle::current()
-            .metrics()
-            .num_alive_tasks(),
-        0
-    );
-    assert!(fixture
-        .database()
-        .write()
-        .await
-        .remove(&selected())
-        .unwrap()
-        .is_some());
-    let _rebound = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, fixture.address.port()))
-        .await
-        .unwrap();
+    port_retry::rerun_on_lost_port(async || {
+        let mut fixture = Fixture::start(false, true, 17).await;
+        fixture.send(0x04, &[1, 0x80, 0x12]).await;
+        fixture.response(17, 1).await;
+        fixture.stop().await;
+        assert_eq!(
+            tokio::runtime::Handle::current()
+                .metrics()
+                .num_alive_tasks(),
+            0
+        );
+        assert!(
+            fixture
+                .database()
+                .write()
+                .await
+                .remove(&selected())
+                .unwrap()
+                .is_some()
+        );
+        UdpSocket::bind((Ipv4Addr::UNSPECIFIED, fixture.address.port()))
+            .await
+            .map(drop)
+    })
+    .await;
 }
 
 impl Fixture {
@@ -280,7 +290,7 @@ impl Fixture {
     }
     async fn read_pair(&self, number: u16, quality: u32) {
         use bacnet_encoding::{
-            apdu::{decode_apdu, Apdu},
+            apdu::{Apdu, decode_apdu},
             primitives::decode_application_value,
         };
         use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
@@ -374,13 +384,14 @@ async fn network_number_real_owners_learn_precedence_and_refuse_invalid_controls
         f.query(1, 0).await;
         f.quiet().await;
         f.stop().await;
-        assert!(f
-            .database()
-            .write()
-            .await
-            .remove(&selected())
-            .unwrap()
-            .is_some());
+        assert!(
+            f.database()
+                .write()
+                .await
+                .remove(&selected())
+                .unwrap()
+                .is_some()
+        );
         let mut restarted = Fixture::start(full, true, 0).await;
         restarted.read_pair(0, 0).await;
         restarted.send(0x0a, &[1, 0x80, 0x12]).await;
@@ -438,35 +449,35 @@ impl Gates {
 #[tokio::test]
 async fn network_number_real_owner_stop_cancel_joins_control_and_keeps_socket_lease() {
     for full in [true, false] {
-        let gates = Gates::new();
-        let mut f = Fixture::start_gated(full, true, 17, Some(gates.clone())).await;
-        f.send(0x0a, &[1, 0x80, 0x12]).await;
-        tokio::time::timeout(Duration::from_secs(1), gates.send_entered.notified())
-            .await
-            .unwrap();
-        let db = f.database();
-        assert!(db.write().await.remove(&selected()).is_err());
-        {
-            let stop = f.stop();
-            tokio::pin!(stop);
-            tokio::select! { biased; _ = &mut stop => panic!("held transport cleanup completed"), _ = gates.stop_entered.notified() => {} }
-        }
-        // Caller stop cancellation does not release a still-owned socket.
-        assert!(db.write().await.remove(&selected()).is_err());
-        gates.send_release.add_permits(1);
-        gates.stop_release.add_permits(1);
-        tokio::time::timeout(Duration::from_secs(1), f.stop())
-            .await
-            .unwrap();
-        assert!(
-            f.sent.try_recv().is_err(),
-            "aborted control never reached inner send"
-        );
-        assert!(db.write().await.remove(&selected()).unwrap().is_some());
-        let rebound = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, f.address.port()))
-            .await
-            .unwrap();
-        drop(rebound);
+        port_retry::rerun_on_lost_port(async || {
+            let gates = Gates::new();
+            let mut f = Fixture::start_gated(full, true, 17, Some(gates.clone())).await;
+            f.send(0x0a, &[1, 0x80, 0x12]).await;
+            tokio::time::timeout(Duration::from_secs(1), gates.send_entered.notified())
+                .await
+                .unwrap();
+            let db = f.database();
+            assert!(db.write().await.remove(&selected()).is_err());
+            {
+                let stop = f.stop();
+                tokio::pin!(stop);
+                tokio::select! { biased; _ = &mut stop => panic!("held transport cleanup completed"), _ = gates.stop_entered.notified() => {} }
+            }
+            // Caller stop cancellation does not release a still-owned socket.
+            assert!(db.write().await.remove(&selected()).is_err());
+            gates.send_release.add_permits(1);
+            gates.stop_release.add_permits(1);
+            tokio::time::timeout(Duration::from_secs(1), f.stop())
+                .await
+                .unwrap();
+            assert!(
+                f.sent.try_recv().is_err(),
+                "aborted control never reached inner send"
+            );
+            assert!(db.write().await.remove(&selected()).unwrap().is_some());
+            UdpSocket::bind((Ipv4Addr::UNSPECIFIED, f.address.port())).await.map(drop)
+        })
+        .await;
     }
 }
 #[tokio::test]
@@ -491,9 +502,11 @@ async fn network_number_held_database_cancels_control_before_endpoint_settlement
         } else {
             // Endpoint stop now waits for the database's durable settlement,
             // but first aborts and joins the queued Number control task.
-            assert!(tokio::time::timeout(Duration::from_millis(20), f.stop())
-                .await
-                .is_err());
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), f.stop())
+                    .await
+                    .is_err()
+            );
             let Owner::Endpoint(endpoint) = &f.owner else {
                 unreachable!()
             };
@@ -577,15 +590,74 @@ async fn network_number_endpoint_held_learning_preserves_audit_ack_progress() {
 #[tokio::test]
 async fn network_number_bare_drop_cancels_held_control_without_leaking_lease() {
     for full in [true, false] {
-        let gates = Gates::new();
-        let f = Fixture::start_gated(full, true, 17, Some(gates.clone())).await;
-        f.send(0x0a, &[1, 0x80, 0x12]).await;
-        tokio::time::timeout(Duration::from_secs(1), gates.send_entered.notified())
+        port_retry::rerun_on_lost_port(async || {
+            let gates = Gates::new();
+            let f = Fixture::start_gated(full, true, 17, Some(gates.clone())).await;
+            f.send(0x0a, &[1, 0x80, 0x12]).await;
+            tokio::time::timeout(Duration::from_secs(1), gates.send_entered.notified())
+                .await
+                .unwrap();
+            let db = f.database();
+            let address = f.address;
+            drop(f); // No send/stop gate release: task aborts must destroy these owners.
+            tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    if db.write().await.remove(&selected()).is_ok() {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
             .await
             .unwrap();
+            UdpSocket::bind((Ipv4Addr::UNSPECIFIED, address.port()))
+                .await
+                .map(drop)
+        })
+        .await;
+    }
+}
+#[tokio::test]
+async fn network_number_endpoint_input_closed_keeps_admitted_control_lease_until_completion() {
+    port_retry::rerun_on_lost_port(async || {
+        let gates = Gates::new();
+        gates.hold_send.store(false, Ordering::SeqCst);
+        gates.hold_stop.store(false, Ordering::SeqCst);
+        let (input, receiver) = mpsc::channel(4);
+        let mut f =
+            Fixture::start_options(false, true, 17, Some(gates.clone()), Some(receiver)).await;
         let db = f.database();
-        let address = f.address;
-        drop(f); // No send/stop gate release: task aborts must destroy these owners.
+        let guard = db.read().await;
+        input
+            .send(ReceivedNpdu {
+                direct_response: None,
+                npdu: bytes::Bytes::from_static(&[1, 0x80, 0x12]),
+                source_mac: bacnet_types::MacAddr::from_slice(&[127, 0, 0, 1, 0xba, 0xc0]),
+                link_layer_group: false,
+                data_attributes: vec![],
+                provenance: bacnet_transport::port::TransportProvenance::unverified(),
+                reply_tx: None,
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while db.try_read().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(input);
+        tokio::time::timeout(Duration::from_secs(1), gates.stop_finished.notified())
+            .await
+            .unwrap();
+        assert_eq!(
+            guard.registered_port_internal(),
+            Some(selected()),
+            "control still owns the lease after actual socket cleanup"
+        );
+        let _rebound = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, f.address.port())).await?;
+        drop(guard);
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 if db.write().await.remove(&selected()).is_ok() {
@@ -596,65 +668,12 @@ async fn network_number_bare_drop_cancels_held_control_without_leaking_lease() {
         })
         .await
         .unwrap();
-        let _rebound = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, address.port()))
-            .await
-            .unwrap();
-    }
-}
-#[tokio::test]
-async fn network_number_endpoint_input_closed_keeps_admitted_control_lease_until_completion() {
-    let gates = Gates::new();
-    gates.hold_send.store(false, Ordering::SeqCst);
-    gates.hold_stop.store(false, Ordering::SeqCst);
-    let (input, receiver) = mpsc::channel(4);
-    let mut f = Fixture::start_options(false, true, 17, Some(gates.clone()), Some(receiver)).await;
-    let db = f.database();
-    let guard = db.read().await;
-    input
-        .send(ReceivedNpdu {
-            direct_response: None,
-            npdu: bytes::Bytes::from_static(&[1, 0x80, 0x12]),
-            source_mac: bacnet_types::MacAddr::from_slice(&[127, 0, 0, 1, 0xba, 0xc0]),
-            link_layer_group: false,
-            data_attributes: vec![],
-            provenance: bacnet_transport::port::TransportProvenance::unverified(),
-            reply_tx: None,
-        })
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(1), async {
-        while db.try_read().is_ok() {
-            tokio::task::yield_now().await;
-        }
+        assert!(
+            f.sent.try_recv().is_err(),
+            "closed ingress refuses the control response"
+        );
+        f.stop().await;
+        Ok(())
     })
-    .await
-    .unwrap();
-    drop(input);
-    tokio::time::timeout(Duration::from_secs(1), gates.stop_finished.notified())
-        .await
-        .unwrap();
-    assert_eq!(
-        guard.registered_bip_port_internal(),
-        Some(selected()),
-        "control still owns the lease after actual socket cleanup"
-    );
-    let _rebound = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, f.address.port()))
-        .await
-        .unwrap();
-    drop(guard);
-    tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if db.write().await.remove(&selected()).is_ok() {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .unwrap();
-    assert!(
-        f.sent.try_recv().is_err(),
-        "closed ingress refuses the control response"
-    );
-    f.stop().await;
+    .await;
 }

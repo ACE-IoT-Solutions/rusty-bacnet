@@ -1,6 +1,6 @@
 use bacnet_types::enums::AccessZoneOccupancyState;
 
-use super::zone_occupancy::{adjusted, Occupancy};
+use super::zone_occupancy::{Occupancy, adjusted};
 use super::zone_out_of_service::ZoneState;
 use super::*;
 use crate::event::state_reporting::{ChangeOfStateReporting, ListedStates};
@@ -55,6 +55,10 @@ pub struct AccessZoneObject {
     out_of_service: bool,
     /// Intrinsic reporting on Occupancy_State.
     reporting: ChangeOfStateReporting,
+    /// The reporting settings a write set, kept in storage once the zone
+    /// opts in (#2331).
+    #[cfg(feature = "event-reporting")]
+    reporting_store: crate::write_config::reporting::ReportingStore,
 }
 
 impl AccessZoneObject {
@@ -76,6 +80,8 @@ impl AccessZoneObject {
             exit_points: Vec::new(),
             out_of_service: false,
             reporting: ChangeOfStateReporting::new(ALARM_STATES),
+            #[cfg(feature = "event-reporting")]
+            reporting_store: Default::default(),
         })
     }
 
@@ -197,6 +203,8 @@ impl AccessZoneObject {
     }
 }
 
+crate::event::state_reporting::keep_change_of_state_reporting!(AccessZoneObject);
+
 impl BACnetObject for AccessZoneObject {
     fn object_identifier(&self) -> ObjectIdentifier {
         self.oid
@@ -211,6 +219,7 @@ impl BACnetObject for AccessZoneObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = crate::common::read_identity_properties!(self, property, array_index)
         {
             return result;
@@ -273,6 +282,8 @@ impl BACnetObject for AccessZoneObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        crate::write_config::reporting::admit(self, property, array_index, &value)?;
         // The zone starts in service and only this write moves Out_Of_Service,
         // so the entry edge is always seen and there is no fallback.
         if let Some(result) = common::write_out_of_service_with_restore(
@@ -314,32 +325,32 @@ impl BACnetObject for AccessZoneObject {
             _ => Err(common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                array_index,
             )),
         }
+    }
+
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.durable_capability()
     }
 
     fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
         super::metadata_topology::for_access_zone_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
+    crate::traits::lend_event_reporting!();
 
-    crate::event::impl_change_of_state_reporting!(
-        reporting,
-        Self::watched_state,
-        Self::served_reliability
-    );
+    crate::traits::lend_reliability_eval!();
+}
 
+impl crate::traits::ReliabilityEval for AccessZoneObject {
     /// The Reliability the zone's fault detection works out. Like the other
     /// Reliability carriers, the zone refuses it with WRITE_ACCESS_DENIED
     /// while Out_Of_Service is TRUE, so a client's simulated value stays
     /// served; the return to service brings back the value from before. A
     /// value outside the BACnetReliability production is refused with
     /// VALUE_OUT_OF_RANGE.
-    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
         if self.out_of_service {
             return Err(common::write_access_denied_error());
         }
@@ -347,6 +358,13 @@ impl BACnetObject for AccessZoneObject {
         Ok(())
     }
 }
+
+crate::event::impl_change_of_state_reporting!(
+    AccessZoneObject,
+    reporting,
+    Self::watched_state,
+    Self::served_reliability
+);
 
 /// The states Alarm_Values can hold: a BACnetAccessZoneOccupancyState other
 /// than NORMAL.

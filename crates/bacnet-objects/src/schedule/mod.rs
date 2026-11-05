@@ -1,5 +1,7 @@
 //! Schedule (type 17) and Calendar (type 6) objects per ASHRAE 135-2020.
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
 use bacnet_encoding::constructed::{
     encode_daily_schedule, encode_date_range, encode_special_event,
 };
@@ -13,10 +15,10 @@ use bacnet_types::enums::{
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, StatusFlags, Time};
 use bytes::BytesMut;
-use std::borrow::Cow;
 
-use crate::common::{self, read_property_list_property};
-use crate::traits::BACnetObject;
+use crate::common;
+use crate::property_metadata::read_property_list;
+use crate::traits::{BACnetObject, ScheduleRunner};
 
 mod calendar;
 mod calendar_metadata;
@@ -56,6 +58,10 @@ pub use evaluation::{ScheduleTargetOutcome, ScheduleWrite};
 /// priority sends the current value to the new targets and relinquishes the
 /// slots it leaves behind (see
 /// [`set_object_property_references`](Self::set_object_property_references)).
+/// Removing the object from the database, by DeleteObject, the
+/// application's own `remove` or an `add` that replaces it, relinquishes
+/// every slot it holds ([`ScheduleRunner::take_relinquish_writes`]); the
+/// bundled server skips a slot another writer has taken since (#2264).
 ///
 /// Reliability is CONFIGURATION_ERROR while the non-NULL values in the two
 /// schedules and Schedule_Default are not all of one datatype, or while a
@@ -318,6 +324,7 @@ impl BACnetObject for ScheduleObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         match property {
             p if p == PropertyIdentifier::OBJECT_IDENTIFIER => {
                 Ok(PropertyValue::ObjectIdentifier(self.oid))
@@ -400,12 +407,12 @@ impl BACnetObject for ScheduleObject {
                 Ok(PropertyValue::Unsigned(self.priority_for_writing as u64))
             }
             p if p == PropertyIdentifier::PROPERTY_LIST => {
-                read_property_list_property(&self.property_list(), array_index)
+                read_property_list(&self.property_metadata(), array_index)
             }
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -416,6 +423,7 @@ impl BACnetObject for ScheduleObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if property == PropertyIdentifier::PRESENT_VALUE {
             return self.write_present_value(array_index, value);
         }
@@ -462,7 +470,7 @@ impl BACnetObject for ScheduleObject {
         // client has supplied a replacement Reliability value while Out_Of_Service
         // is TRUE. In service the property reports the object's
         // own consistency evaluation (CONFIGURATION_ERROR et al.), so a network
-        // write is refused; the internal route is `set_reliability_internal`
+        // write is refused; the internal route is `ReliabilityEval::set_reliability`
         // with the complementary guard.
         if property == PropertyIdentifier::RELIABILITY {
             if !self.out_of_service {
@@ -476,10 +484,10 @@ impl BACnetObject for ScheduleObject {
                 self.reliability = v;
                 return Ok(());
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         if let Some(result) = common::write_out_of_service_with_reliability_restore(
             &mut self.out_of_service,
@@ -500,7 +508,6 @@ impl BACnetObject for ScheduleObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
@@ -508,32 +515,30 @@ impl BACnetObject for ScheduleObject {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
+    crate::traits::lend_reliability_eval!();
 
-    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
-        // While Out_Of_Service is TRUE the client owns the simulated value;
-        // refusing here keeps the internal consistency evaluation from
-        // clobbering the simulation.
-        if self.out_of_service {
+    crate::traits::lend_schedule_runner!();
+}
+
+/// Object_Name is read-only over the network, but a client names the
+/// Schedule it creates (#2208). Its other properties are writable.
+impl crate::creation::Creatable for ScheduleObject {
+    const CREATION_ONLY_PROPERTIES: &'static [PropertyIdentifier] =
+        &[PropertyIdentifier::OBJECT_NAME];
+
+    fn initialize_property(
+        &mut self,
+        property: PropertyIdentifier,
+        value: PropertyValue,
+    ) -> Result<(), Error> {
+        if property != PropertyIdentifier::OBJECT_NAME {
             return Err(common::write_access_denied_error());
         }
-        if !common::is_reliability_value_valid(reliability) {
-            return Err(common::value_out_of_range_error());
-        }
-        self.reliability = reliability;
-        // The caller owns this value; the consistency check leaves it alone.
-        self.owns_configuration_error = false;
-        Ok(())
+        common::initialize_object_name(&mut self.name, &value)
     }
+}
 
-    fn evaluate_reliability_internal(
-        &mut self,
-    ) -> Result<crate::traits::ReliabilityEvaluation, Error> {
-        Ok(self.recompute_reliability())
-    }
-
+impl ScheduleRunner for ScheduleObject {
     fn take_owed_schedule_writes(&mut self) -> Vec<ScheduleWrite> {
         self.take_owed_writes()
     }
@@ -548,6 +553,10 @@ impl BACnetObject for ScheduleObject {
 
     fn retry_refusals_naming(&self, target: ObjectIdentifier) -> Option<ScheduleWrite> {
         self.retry_refused_naming(target)
+    }
+
+    fn take_relinquish_writes(&mut self) -> Vec<ScheduleWrite> {
+        self.relinquish_all()
     }
 
     fn tick_schedule(
@@ -570,7 +579,7 @@ impl BACnetObject for ScheduleObject {
             self.held = None;
             return None;
         };
-        let entered = !std::mem::replace(&mut self.in_effective_period, true);
+        let entered = !core::mem::replace(&mut self.in_effective_period, true);
         if !entered && !self.rewrite_owed && value == self.present_value {
             // Nothing new for the list; offer the value again only to the
             // references that refused it (`reliability.rs`, #1436).
@@ -578,6 +587,28 @@ impl BACnetObject for ScheduleObject {
         }
         self.present_value = value.clone();
         self.command(value)
+    }
+}
+
+impl crate::traits::ReliabilityEval for ScheduleObject {
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
+        // While Out_Of_Service is TRUE the client owns the simulated value;
+        // refusing here keeps the internal consistency evaluation from
+        // clobbering the simulation.
+        if self.out_of_service {
+            return Err(common::write_access_denied_error());
+        }
+        if !common::is_reliability_value_valid(reliability) {
+            return Err(common::value_out_of_range_error());
+        }
+        self.reliability = reliability;
+        // The caller owns this value; the consistency check leaves it alone.
+        self.owns_configuration_error = false;
+        Ok(())
+    }
+
+    fn evaluate_reliability(&mut self) -> Result<crate::traits::ReliabilityEvaluation, Error> {
+        Ok(self.recompute_reliability())
     }
 }
 

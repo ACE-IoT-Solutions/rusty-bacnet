@@ -3,7 +3,7 @@
 //! This is local operation observation, not physical delivery or peer receipt.
 use super::*;
 use crate::server::test_transport::{SendMode, SentFrame, StartMode, TestTransport};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_objects::value_types::CharacterStringValueObject;
 use bacnet_services::read_property::ReadPropertyRequest;
@@ -47,9 +47,6 @@ impl BACnetObject for CountedValue {
         self.inner.write_property(p, i, v, priority)?;
         self.writes.fetch_add(1, Ordering::AcqRel);
         Ok(())
-    }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        self.inner.property_list()
     }
     fn property_metadata(&self) -> Cow<'_, [bacnet_objects::property_metadata::PropertyMetadata]> {
         self.inner.property_metadata()

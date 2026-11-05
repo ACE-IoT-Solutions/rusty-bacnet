@@ -2,13 +2,14 @@ use super::enrollment_summary_support::*;
 use super::*;
 use crate::server::GetEnrollmentSummaryBudget;
 use bacnet_objects::event::EnrollmentSummaryCapability;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::enums::EventType;
 use std::borrow::Cow;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 struct Counted(SummaryFixture, Arc<AtomicUsize>);
@@ -35,13 +36,23 @@ impl BACnetObject for Counted {
         self.1.fetch_add(1, Ordering::SeqCst);
         self.0.write_property(p, i, v, priority)
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
         self.1.fetch_add(1, Ordering::SeqCst);
-        self.0.property_list()
+        self.0.property_metadata()
     }
-    fn enrollment_summary_capability_internal(&self) -> Option<EnrollmentSummaryCapability> {
+
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::EventReporting for Counted {
+    fn enrollment_summary_capability(&self) -> Option<EnrollmentSummaryCapability> {
         self.1.fetch_add(1, Ordering::SeqCst);
-        self.0.enrollment_summary_capability_internal()
+        self.0.enrollment_summary_capability()
     }
 }
 fn candidate(instance: u32) -> SummaryFixture {

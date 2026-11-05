@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 use bacnet_encoding::constructed::encode_authentication_factor;
 use bacnet_types::constructed::{BACnetAuthenticationFactor, BACnetAuthenticationPolicy};
@@ -9,6 +9,14 @@ use super::point_authorization::Authorization;
 use super::point_event_time::next_event_time;
 use super::*;
 use crate::clock::ClockReader;
+
+#[path = "point_event_batch.rs"]
+mod event_batch;
+pub use event_batch::CommittedAccessEvent;
+
+#[cfg(test)]
+#[path = "point_event_batch_tests.rs"]
+mod event_batch_tests;
 
 // AccessPointObject (type 33)
 // ---------------------------------------------------------------------------
@@ -89,6 +97,7 @@ pub const MAX_AUTHENTICATION_POLICIES: u32 = 256;
 /// value served at the edge, follows only those writes, and the return to
 /// service serves the derived value again. Status_Flags carries FAULT from
 /// the value served.
+#[derive(Clone)]
 pub struct AccessPointObject {
     oid: ObjectIdentifier,
     name: String,
@@ -385,6 +394,7 @@ impl BACnetObject for AccessPointObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = read_common_properties!(self, property, array_index) {
             return result;
         }
@@ -433,6 +443,7 @@ impl BACnetObject for AccessPointObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         let was_out_of_service = self.out_of_service;
         if let Some(result) =
             common::write_out_of_service(&mut self.out_of_service, property, &value)
@@ -458,13 +469,16 @@ impl BACnetObject for AccessPointObject {
             return Ok(());
         }
         if let Some(result) = self.authorization.write(property, array_index, &value) {
-            self.refresh_reliability();
+            // Only a write the point took can change what Reliability
+            // follows; a refused one changes nothing (#2258).
+            if result.is_ok() {
+                self.refresh_reliability();
+            }
             return result;
         }
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
@@ -472,34 +486,57 @@ impl BACnetObject for AccessPointObject {
         super::metadata_topology::for_access_point_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
+    // Table 13-1 lists Access Point, so it takes SubscribeCOV; its report
+    // leads with Access_Event, as the point has no Present_Value.
+    crate::traits::lend_cov_reporting!();
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
     }
 
-    /// Table 13-1 lists Access Point, so it takes SubscribeCOV; its report
-    /// leads with Access_Event, as the point has no Present_Value.
-    fn supports_cov(&self) -> bool {
-        true
+    fn local_input(&mut self) -> Option<&mut dyn crate::traits::LocalInput> {
+        Some(self)
     }
 
-    fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
-        self.clock = clock;
+    fn access_events(&mut self) -> Option<&mut dyn crate::traits::AccessEvents> {
+        Some(self)
     }
+}
 
-    /// Take an access event the application reports (#1132), through
-    /// [`Self::set_access_event`]. Refused with WRITE_ACCESS_DENIED while
-    /// Out_Of_Service is TRUE (Clause 12.31.8) or Reliability isn't
-    /// NO_FAULT_DETECTED (Clause 12.31.7), since the point performs no
-    /// authentication then, and any other record with
-    /// OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
-    fn report_access_input_internal(&mut self, input: AccessControlInput) -> Result<(), Error> {
-        let AccessControlInput::AccessEvent(report) = input else {
-            return Err(common::optional_functionality_not_supported_error());
+impl crate::traits::CovReporting for AccessPointObject {}
+
+/// Take an access event the application reports (#1132), through
+/// [`Self::set_access_event`]. Refused with WRITE_ACCESS_DENIED while
+/// Out_Of_Service is TRUE (Clause 12.31.8) or Reliability isn't
+/// NO_FAULT_DETECTED (Clause 12.31.7), since the point performs no
+/// authentication then, and any other record with
+/// OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
+impl crate::traits::LocalInput for AccessPointObject {
+    fn apply_local_input(&mut self, input: crate::traits::LocalInputValue) -> Result<(), Error> {
+        let crate::traits::LocalInputValue::AccessControl(AccessControlInput::AccessEvent(report)) =
+            input
+        else {
+            return Err(crate::traits::not_supported());
         };
         if self.out_of_service || self.reliability != Reliability::NO_FAULT_DETECTED {
             return Err(common::write_access_denied_error());
         }
         self.set_access_event(report)
+    }
+}
+
+impl crate::traits::AccessEvents for AccessPointObject {
+    fn record_access_event_batch(
+        &mut self,
+        reports: &[AccessEventReport],
+    ) -> Result<Vec<CommittedAccessEvent>, Error> {
+        self.record_event_batch(reports)
+    }
+}
+
+impl crate::traits::Timed for AccessPointObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.clock = clocks.clock.clone();
     }
 }
 

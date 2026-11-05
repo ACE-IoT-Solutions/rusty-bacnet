@@ -2,15 +2,19 @@
 //!
 //! MAC addresses are opaque byte slices whose format depends on the transport:
 //! - BACnet/IP (Annex J): 6 bytes (4-byte IPv4 + 2-byte port, big-endian)
+//! - BACnet/IPv6 (Annex U): 3 bytes, the node's VMAC (U.1.3); the transport
+//!   maps it to the IPv6 address and port itself
 //! - BACnet/Ethernet (Clause 7): 6 bytes (IEEE 802 MAC)
 //! - MS/TP (Clause 9): 1 byte (station address 0-254)
+//! - BACnet/SC (Annex AB): 6 bytes, the node's VMAC
 
-pub use crate::direct_response::{DirectResponse, DirectResponseScope};
-use bacnet_types::error::Error;
+pub use crate::direct_response::{DirectResponse, DirectResponseScope, ResponseScopeGuard};
+pub use crate::principal::ScPrincipal;
+use bacnet_npdu::NpduLimits;
 use bacnet_types::MacAddr;
+use bacnet_types::error::Error;
 use bytes::Bytes;
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::{mpsc, oneshot, watch};
 
 /// An owned copy of a link's group-destination rule
@@ -19,51 +23,6 @@ use tokio::sync::{mpsc, oneshot, watch};
 /// any state for the send (#1479). Clones share one rule.
 #[derive(Clone, Default)]
 pub struct GroupDestinations(Option<Arc<GroupRule>>);
-/// Coarse transport lifecycle state for operational monitoring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TransportHealthState {
-    /// The transport is not currently carrying traffic.
-    #[default]
-    Down,
-    /// A connection attempt is in progress.
-    Connecting,
-    /// A previously active transport is attempting recovery.
-    Reconnecting,
-    /// The transport is operational.
-    Up,
-    /// Background processing terminated and requires operator attention.
-    Failed,
-}
-
-/// Current operational health of a transport port.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransportHealth {
-    /// Coarse lifecycle state.
-    pub state: TransportHealthState,
-    /// Human-readable current activity.
-    pub detail: Option<String>,
-    /// Active endpoint role for failover-capable transports.
-    pub active_hub: Option<String>,
-    /// Most recent operational error.
-    pub last_error: Option<String>,
-    /// Current reconnect attempt number, or zero outside recovery.
-    pub attempt: u64,
-    /// Instant at which the current operational connection became active.
-    pub since: Option<Instant>,
-}
-
-impl Default for TransportHealth {
-    fn default() -> Self {
-        Self {
-            state: TransportHealthState::Down,
-            detail: None,
-            active_hub: None,
-            last_error: None,
-            attempt: 0,
-            since: None,
-        }
-    }
-}
 
 /// The predicate inside a [`GroupDestinations`].
 type GroupRule = dyn Fn(&[u8]) -> bool + Send + Sync;
@@ -76,7 +35,7 @@ impl GroupDestinations {
 
     /// No rule: nothing matches. A sender holding this leaves the check to the
     /// send path, which asks the transport itself.
-    pub fn unknown() -> Self {
+    pub const fn unknown() -> Self {
         Self(None)
     }
 
@@ -109,20 +68,6 @@ pub struct DataAttribute {
     pub data: Vec<u8>,
 }
 
-/// Transport-specific ingress details that are useful to raw observers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TransportMetadata {
-    /// BACnet/IP BVLC envelope and UDP peer details.
-    Bip {
-        /// Raw BVLC function code.
-        bvlc_function: u8,
-        /// UDP datagram sender, which may be a BBMD rather than the NPDU origin.
-        udp_source: ([u8; 4], u16),
-        /// Embedded origin from a Forwarded-NPDU envelope.
-        forwarded_from: Option<([u8; 4], u16)>,
-    },
-}
-
 /// Verified immediate direct-SC peer and connection incarnation.
 ///
 /// The fingerprint is SHA-256 of the exact verified leaf DER, not of the
@@ -151,6 +96,12 @@ impl DirectScIdentity {
     /// as an identity across processes; no ordering contract is exposed.
     pub fn incarnation(self) -> u64 {
         self.incarnation
+    }
+
+    /// This hop's leaf-certificate principal, without the connection
+    /// incarnation. For a routed request it is the forwarding router's.
+    pub fn principal(self) -> ScPrincipal {
+        ScPrincipal::from_leaf_sha256(self.leaf_sha256)
     }
 
     // Only the sc-tls direct accept and dial paths mint verified identities.
@@ -186,24 +137,66 @@ impl std::fmt::Debug for DirectScIdentity {
 /// transport that forwards a verified envelope is part of that trust boundary.
 /// Data attributes remain wire values and cannot upgrade provenance.
 ///
+/// With `sc-tls`, direct SC provenance also holds the verified leaf
+/// certificate (`leaf_certificate()`). A connection's direct provenance is
+/// built once and shared, so a clone is a reference count. Equality and
+/// hashing follow the [`DirectScIdentity`], whose SHA-256 already names that
+/// certificate.
+///
 /// ```compile_fail
 /// use bacnet_transport::port::TransportProvenance;
 /// let forged = TransportProvenance::verified_hub_channel();
 /// ```
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct TransportProvenance {
     kind: ProvenanceKind,
-    metadata: Option<TransportMetadata>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum ProvenanceKind {
     Unverified,
     // Constructed only by sc-tls direct ingress.
     #[cfg_attr(not(feature = "sc-tls"), allow(dead_code))]
-    DirectPeer(DirectScIdentity),
+    DirectPeer(Arc<VerifiedDirectPeer>),
     HubChannel,
     RelayedOrigin,
+}
+
+/// One direct connection's verified identity and leaf certificate, shared by
+/// every NPDU it admits. Equality and hashing use the identity alone: its
+/// SHA-256 names the certificate.
+struct VerifiedDirectPeer {
+    identity: DirectScIdentity,
+    // Read only through `leaf_certificate()`, with `sc-tls`.
+    #[cfg_attr(not(feature = "sc-tls"), allow(dead_code))]
+    certificate: LeafCertificate,
+}
+
+impl PartialEq for VerifiedDirectPeer {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity == other.identity
+    }
+}
+impl Eq for VerifiedDirectPeer {}
+impl std::hash::Hash for VerifiedDirectPeer {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.identity.hash(state);
+    }
+}
+
+/// The verified leaf certificate direct SC provenance carries (#1965):
+/// present with `sc-tls` when the TLS layer supplied it, empty otherwise.
+#[derive(Default)]
+pub(crate) struct LeafCertificate(
+    #[cfg(feature = "sc-tls")] Option<Arc<crate::sc_tls::ScPeerCertificate>>,
+);
+
+impl LeafCertificate {
+    /// The verified leaf `certificate` of a direct SC connection.
+    #[cfg(feature = "sc-tls")]
+    pub(crate) fn verified(certificate: Arc<crate::sc_tls::ScPeerCertificate>) -> Self {
+        Self(Some(certificate))
+    }
 }
 
 impl TransportProvenance {
@@ -211,32 +204,21 @@ impl TransportProvenance {
     pub fn unverified() -> Self {
         Self {
             kind: ProvenanceKind::Unverified,
-            metadata: None,
         }
     }
 
-    /// Unverified BACnet/IP origin with the observed BVLC and UDP envelope.
-    pub(crate) fn unverified_bip(
-        bvlc_function: u8,
-        udp_source: ([u8; 4], u16),
-        forwarded_from: Option<([u8; 4], u16)>,
+    /// Only built-in verified direct TLS ingress may mint this principal-bearing
+    /// value, once per connection: clones share it.
+    #[cfg(any(test, feature = "sc-tls"))]
+    pub(crate) fn verified_direct_peer(
+        identity: DirectScIdentity,
+        certificate: LeafCertificate,
     ) -> Self {
         Self {
-            kind: ProvenanceKind::Unverified,
-            metadata: Some(TransportMetadata::Bip {
-                bvlc_function,
-                udp_source,
-                forwarded_from,
-            }),
-        }
-    }
-
-    /// Only built-in verified direct TLS ingress may mint this principal-bearing value.
-    #[cfg(any(test, feature = "sc-tls"))]
-    pub(crate) fn verified_direct_peer(identity: DirectScIdentity) -> Self {
-        Self {
-            kind: ProvenanceKind::DirectPeer(identity),
-            metadata: None,
+            kind: ProvenanceKind::DirectPeer(Arc::new(VerifiedDirectPeer {
+                identity,
+                certificate,
+            })),
         }
     }
 
@@ -246,62 +228,82 @@ impl TransportProvenance {
     pub(crate) fn verified_hub_channel() -> Self {
         Self {
             kind: ProvenanceKind::HubChannel,
-            metadata: None,
         }
     }
 
     pub(crate) fn verified_relayed_origin() -> Self {
         Self {
             kind: ProvenanceKind::RelayedOrigin,
-            metadata: None,
         }
     }
 
-    /// Transport-specific raw ingress details, when the built-in transport supplies them.
-    pub fn transport_metadata(self) -> Option<TransportMetadata> {
-        self.metadata
-    }
-
     /// Verified direct identity, absent on unverified and both Hub scopes.
-    pub fn direct_sc_identity(self) -> Option<DirectScIdentity> {
-        match self.kind {
-            ProvenanceKind::DirectPeer(identity) => Some(identity),
+    pub fn direct_sc_identity(&self) -> Option<DirectScIdentity> {
+        match &self.kind {
+            ProvenanceKind::DirectPeer(peer) => Some(peer.identity),
             _ => None,
         }
     }
 
+    /// The immediate direct-SC hop's verified leaf certificate, the one
+    /// [`Self::principal`] fingerprints: for a routed request, the router
+    /// that forwarded it. `None` for every other ingress, a hub's relayed
+    /// origins and its own channel included. The server's policy contexts
+    /// withhold it for routed requests, as they do the principal.
+    #[cfg(feature = "sc-tls")]
+    pub fn leaf_certificate(&self) -> Option<&crate::sc_tls::ScPeerCertificate> {
+        match &self.kind {
+            ProvenanceKind::DirectPeer(peer) => peer.certificate.0.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The immediate direct-SC hop's leaf-certificate principal: for a routed
+    /// request, the router that forwarded it. `None` for every other ingress,
+    /// a hub's relayed origins and its own channel included. The server's
+    /// policy contexts withhold it from `principal()` for routed requests.
+    pub fn principal(&self) -> Option<ScPrincipal> {
+        self.direct_sc_identity().map(DirectScIdentity::principal)
+    }
+
     /// True only for the unverified legacy variant.
-    pub fn is_unverified(self) -> bool {
+    pub fn is_unverified(&self) -> bool {
         self.kind == ProvenanceKind::Unverified
     }
 
     /// True only for direct-SC ingress with a verified identity.
-    pub fn is_direct_peer(self) -> bool {
-        matches!(self.kind, ProvenanceKind::DirectPeer(_))
+    pub fn is_direct_peer(&self) -> bool {
+        matches!(self.kind, ProvenanceKind::DirectPeer(..))
     }
 
     /// True only for the Hub admission callback's own TLS-client channel.
-    pub fn is_hub_channel(self) -> bool {
+    pub fn is_hub_channel(&self) -> bool {
         self.kind == ProvenanceKind::HubChannel
     }
 
     /// True only for the verified relayed-origin variant.
-    pub fn is_relayed_origin(self) -> bool {
+    pub fn is_relayed_origin(&self) -> bool {
         self.kind == ProvenanceKind::RelayedOrigin
     }
 
     /// True for any verified scope; this does not imply a direct principal.
-    pub fn is_verified(self) -> bool {
+    pub fn is_verified(&self) -> bool {
         self.kind != ProvenanceKind::Unverified
     }
 
     /// Human-readable scope, with no identity material.
-    pub fn scope(self) -> &'static str {
+    pub fn scope(&self) -> &'static str {
         match self.kind {
             ProvenanceKind::Unverified => "unverified legacy origin (no assertion)",
-            ProvenanceKind::DirectPeer(_) => "authenticated immediate direct SC-TLS peer and connection incarnation",
-            ProvenanceKind::HubChannel => "authenticated Hub admission TLS-client channel (scope only)",
-            ProvenanceKind::RelayedOrigin => "independently validated SC-hub relayed origin (post source_admission; hub peer is not the leaf)",
+            ProvenanceKind::DirectPeer(..) => {
+                "authenticated immediate direct SC-TLS peer and connection incarnation"
+            }
+            ProvenanceKind::HubChannel => {
+                "authenticated Hub admission TLS-client channel (scope only)"
+            }
+            ProvenanceKind::RelayedOrigin => {
+                "independently validated SC-hub relayed origin (post source_admission; hub peer is not the leaf)"
+            }
         }
     }
 }
@@ -314,7 +316,7 @@ impl std::fmt::Debug for TransportProvenance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let label = match self.kind {
             ProvenanceKind::Unverified => "unverified",
-            ProvenanceKind::DirectPeer(_) => "verified-direct-peer",
+            ProvenanceKind::DirectPeer(..) => "verified-direct-peer",
             ProvenanceKind::HubChannel => "verified-hub-channel",
             ProvenanceKind::RelayedOrigin => "verified-relayed-origin",
         };
@@ -384,7 +386,7 @@ impl Clone for ReceivedNpdu {
             source_mac: self.source_mac.clone(),
             link_layer_group: self.link_layer_group,
             data_attributes: self.data_attributes.clone(),
-            provenance: self.provenance,
+            provenance: self.provenance.clone(),
             direct_response: self.direct_response.clone(),
             reply_tx: None, // oneshot::Sender is not Clone; clones lose the reply channel
         }
@@ -408,12 +410,74 @@ impl std::fmt::Debug for ReceivedNpdu {
 
 /// What a B/IP transport reports for registration as a Network Port
 /// ([`TransportPort::bip_port`]).
-#[derive(Debug, Clone)]
+///
+/// It is `#[non_exhaustive]`: outside this crate, build it with
+/// [`BipPort::new`] and add what the port lends with the `with_` methods.
+#[derive(Clone)]
+#[non_exhaustive]
 pub struct BipPort {
     /// The IPv4 address and UDP port: configured before start, announced
     /// after.
     pub endpoint: std::net::SocketAddrV4,
     /// The B/IP mode, with what its Network Port properties need.
+    pub mode: bacnet_types::bip_port::BipPortMode,
+    /// The port's B/IP multicast group (Annex J.8), lent when the transport
+    /// can use multicast at all, on or off: the Network Port then serves
+    /// BACnet_IP_Multicast_Address. `None` for a port that can't.
+    pub multicast: Option<std::sync::Arc<dyn bacnet_types::bip_port::IpMulticast>>,
+}
+
+impl BipPort {
+    /// A port at `endpoint` in `mode`, lending no multicast group.
+    pub fn new(
+        endpoint: std::net::SocketAddrV4,
+        mode: bacnet_types::bip_port::BipPortMode,
+    ) -> Self {
+        Self {
+            endpoint,
+            mode,
+            multicast: None,
+        }
+    }
+
+    /// This port, lending `multicast` as its B/IP multicast group.
+    pub fn with_multicast(
+        self,
+        multicast: Option<std::sync::Arc<dyn bacnet_types::bip_port::IpMulticast>>,
+    ) -> Self {
+        Self { multicast, ..self }
+    }
+}
+
+impl std::fmt::Debug for BipPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let group = self
+            .multicast
+            .as_ref()
+            .map(|multicast| std::net::Ipv4Addr::from(multicast.group()));
+        f.debug_struct("BipPort")
+            .field("endpoint", &self.endpoint)
+            .field("mode", &self.mode)
+            .field("multicast", &group)
+            .finish()
+    }
+}
+
+/// What a B/IPv6 transport reports for registration as a Network Port
+/// ([`TransportPort::bip6_port`]).
+#[derive(Debug, Clone)]
+pub struct Bip6Port {
+    /// The IPv6 address and UDP port: configured before start, bound
+    /// after. The scope ID and flow label are not part of the port's
+    /// identity and are zero.
+    pub endpoint: std::net::SocketAddrV6,
+    /// The node's 3-octet VMAC (Annex U.1.3): known before start only when
+    /// it comes from a configured Device instance, always after.
+    pub vmac: Option<[u8; 3]>,
+    /// The multicast group broadcasts go to; the transport sends them to
+    /// it at its own UDP port.
+    pub multicast_group: std::net::Ipv6Addr,
+    /// The B/IPv6 mode, with what its Network Port properties need.
     pub mode: bacnet_types::bip_port::BipPortMode,
 }
 
@@ -422,29 +486,6 @@ pub struct BipPort {
 /// Implementations handle the data-link framing (e.g., BVLL for BACnet/IP)
 /// and expose a simple send/receive interface for NPDU bytes.
 pub trait TransportPort: Send + Sync {
-    /// Stable, human-readable transport kind.
-    fn transport_kind(&self) -> &'static str {
-        std::any::type_name::<Self>()
-    }
-
-    /// Optional identity of the data-link segment attached to this port.
-    fn topology_id(&self) -> Option<String> {
-        None
-    }
-
-    /// Current health snapshot. Stateless transports are considered up.
-    fn health(&self) -> TransportHealth {
-        TransportHealth {
-            state: TransportHealthState::Up,
-            ..TransportHealth::default()
-        }
-    }
-
-    /// Subscribe to health changes when the transport maintains a live signal.
-    fn health_changes(&self) -> Option<watch::Receiver<TransportHealth>> {
-        None
-    }
-
     /// Configured broadcast endpoint when this link uses IPv4 BACnet/IP.
     /// `None` means the link does not expose that capability. Wrappers must
     /// forward the underlying value. After `start`, the port is the actual
@@ -481,9 +522,19 @@ pub trait TransportPort: Send + Sync {
         None
     }
 
+    /// Explicit capability for registration as one IPv6 Network Port, with
+    /// the B/IPv6 mode the port reports (Clause 12.56.39): the B/IPv6
+    /// counterpart of [`bip_port`](Self::bip_port), under the same
+    /// contract. A transport should report at most one of the two; when
+    /// one reports both, registration takes the B/IP port and ignores this
+    /// one. The default refuses registration.
+    fn bip6_port(&self) -> Option<Bip6Port> {
+        None
+    }
+
     /// Retain selected Network Port protection through the last socket owner.
     /// Must be installed once before start, only on a transport that reports
-    /// a [`bip_port`](Self::bip_port).
+    /// a [`bip_port`](Self::bip_port) or a [`bip6_port`](Self::bip6_port).
     /// Successful stop releases it after quiescence; abort/drop must retain it
     /// in every surviving socket worker. Custom implementors own this contract.
     #[doc(hidden)]
@@ -525,6 +576,20 @@ pub trait TransportPort: Send + Sync {
     fn abort(&mut self) {}
 
     /// Send NPDU bytes to a specific MAC address (unicast).
+    ///
+    /// When [`Error::SendTooLong`] is returned, the NPDU or its encoded link
+    /// frame exceeded a bound before any bytes were sent or queued for
+    /// writing. BACnet/SC uses it for NPDU and frame-length checks; other
+    /// transports may return their existing error variants. Wrappers must
+    /// preserve `SendTooLong`. Other variants do not identify a definite
+    /// length refusal for the router.
+    ///
+    /// B/IP refuses a MAC that is one of its group addresses
+    /// ([`Self::is_group_destination`]) with an error, sending nothing
+    /// (#1677): its receivers drop an Original-Unicast-NPDU that wasn't sent
+    /// to their own address. Send a local broadcast with
+    /// [`Self::send_broadcast`] instead, as `NetworkLayer::send_apdu` and
+    /// `BACnetRouter` do for an Unconfirmed-Request.
     fn send_unicast(
         &self,
         npdu: &[u8],
@@ -541,10 +606,14 @@ pub trait TransportPort: Send + Sync {
         mac: &'a [u8],
         _data_attributes: &'a [DataAttribute],
     ) -> impl std::future::Future<Output = Result<(), Error>> + Send + 'a {
-        async move { self.send_unicast(npdu, mac).await }
+        // The send's own future, not one wrapping it: every response future
+        // above this carries its size (#1713).
+        self.send_unicast(npdu, mac)
     }
 
     /// Broadcast NPDU bytes on the local network.
+    /// [`Error::SendTooLong`], when returned, has the same meaning as in
+    /// [`Self::send_unicast`].
     fn send_broadcast(
         &self,
         npdu: &[u8],
@@ -569,6 +638,11 @@ pub trait TransportPort: Send + Sync {
     ///
     /// Implementations and wrappers must report their actual local capacity.
     /// Negotiation, reconnects and failover must not change this declaration.
+    /// A stack reads it once, at start (a server fixes its Device's
+    /// Max_APDU_Length_Accepted from it, #2093). A transport whose paths can
+    /// shrink later, such as a router's application port, keeps the value it
+    /// was made with and lets the path refuse what no longer fits (#2087);
+    /// [`Self::egress_apdu_limit`] is the limit that follows such changes.
     fn local_receive_apdu_capacity(&self) -> u16;
 
     /// Current outgoing APDU limit for the transport's ordinary send path.
@@ -577,12 +651,53 @@ pub trait TransportPort: Send + Sync {
         1476
     }
 
-    /// Current encoded-NPDU limit for this transport's ordinary send path.
+    /// The longest NPDU this link sends, to one node and to every node.
     ///
-    /// `None` means the transport does not expose a useful dispatch-time
-    /// bound. Connected transports may update this value after negotiation;
-    /// wrappers must delegate it when they preserve the underlying send path.
-    fn max_npdu_length(&self) -> Option<usize> {
+    /// `bacnet_network`'s `BACnetRouter` reads it when it starts the port,
+    /// and follows it after that through [`Self::max_npdu_changes`]. It
+    /// answers an NPDU it would route here that is longer than that with a
+    /// reject (reason 4, Clause 6.4.4, #1665), where it used to hand it to a
+    /// send that failed. The default, [`NpduLimits::STANDARD`], is what
+    /// B/IPv6 and Ethernet carry; a link that carries less must override
+    /// it, or a router assumes 1,497 octets. MS/TP reports 501 octets
+    /// without extended frames, and B/IP its node's budget for each kind of
+    /// send.
+    ///
+    /// BACnet/SC reports, once started, what its hub connection carries
+    /// with no data options: the hub's Max-NPDU-Length within its
+    /// Max-BVLC-Length less the encapsulation. Data attributes a router
+    /// forwards with an NPDU (Table 6-1, note 1) take more of the BVLC, so
+    /// one at this limit with attributes can still fail the transport's
+    /// Max-BVLC-Length check. A failover or reconnect can change it, which
+    /// [`Self::max_npdu_changes`] publishes (#1696). A direct connection's
+    /// own limit isn't part of it.
+    ///
+    /// Wrappers must delegate.
+    fn max_npdu(&self) -> NpduLimits {
+        NpduLimits::default()
+    }
+
+    /// The changes to [`Self::max_npdu`] while the transport runs, for a
+    /// link whose limit can change after start, or `None`, the default,
+    /// when it never does.
+    ///
+    /// The receiver holds the limit `max_npdu` reports once started, and
+    /// changes only when that limit does. `BACnetRouter` takes one for each
+    /// port after starting it, and gives the port each new limit as soon as
+    /// it is published: every frame it routes after that goes by it, so an
+    /// NPDU too long for the new limit draws reason 4. A send already on
+    /// the port's queue when the limit falls can still be refused by the
+    /// transport as too long; [`Error::SendTooLong`] lets the router count
+    /// it and return reason 4 to an eligible origin. Forwarded rejects and
+    /// fan-outs never draw another reject.
+    ///
+    /// BACnet/SC returns one: its limit comes from the hub connection, and
+    /// it publishes the new one whenever it connects to a hub that carries
+    /// more or less, the first time, on failover to the other hub, and on
+    /// reconnect. The other built-in transports keep the default.
+    ///
+    /// Wrappers must delegate.
+    fn max_npdu_changes(&self) -> Option<watch::Receiver<NpduLimits>> {
         None
     }
 
@@ -603,10 +718,11 @@ pub trait TransportPort: Send + Sync {
     /// Whether a send to `mac` with no DNET reaches a group of nodes rather
     /// than one: this link's broadcast MAC, or any other broadcast or
     /// multicast address the medium carries, such as a B/IP limited
-    /// broadcast, an IPv6 multicast group or an Ethernet multicast MAC
-    /// (#1493). Such a send is a local broadcast, which may carry only an
-    /// Unconfirmed-Request (Clause 6.3), so a sender that takes a
-    /// caller-chosen MAC refuses anything else to it (#1479). The server binds
+    /// broadcast or an Ethernet multicast MAC (#1493). A B/IPv6 MAC is a
+    /// 3-octet VMAC, which never names a group. Such a send is a local
+    /// broadcast, which may carry only an Unconfirmed-Request (Clause 6.3),
+    /// so a sender that takes a caller-chosen MAC refuses anything else to it
+    /// (#1479). The server binds
     /// no device to one, and the confirmed requests it starts itself, to
     /// event recipients, Channel and Command targets, audit recipients and
     /// bound devices, never go to one (#1493). Its replies and COV
@@ -616,7 +732,15 @@ pub trait TransportPort: Send + Sync {
     /// routed request's SADR names a node on another network, which this
     /// link can't judge: a reply to a group SADR is dropped only where the
     /// final router is a `BACnetRouter`, which delivers only an
-    /// Unconfirmed-Request to a DADR that is a group on its delivery port.
+    /// Unconfirmed-Request to a DADR that is a group on its delivery port,
+    /// as that port's local broadcast when it is one of
+    /// [`Self::local_broadcast_destinations`], and drops anything else,
+    /// network messages included.
+    ///
+    /// B/IP refuses [`Self::send_unicast`] to a group address (#1677), so a
+    /// sender must broadcast there: `NetworkLayer::send_apdu` sends an
+    /// Unconfirmed-Request for one of [`Self::local_broadcast_destinations`]
+    /// through [`Self::send_broadcast`] itself.
     ///
     /// [`Self::is_broadcast_mac`] keeps its narrower meaning, this link's own
     /// broadcast, which routing and recipient checks rely on. The default is
@@ -631,5 +755,16 @@ pub trait TransportPort: Send + Sync {
     /// [`GroupDestinations::unknown`], which leaves the check to the send path.
     fn group_destinations(&self) -> GroupDestinations {
         GroupDestinations::unknown()
+    }
+
+    /// The group destinations a send with no DNET may reach as this link's
+    /// local broadcast instead: `NetworkLayer::send_apdu` and `BACnetRouter`
+    /// send an Unconfirmed-Request for one through [`Self::send_broadcast`]
+    /// (#1677). It is a part of [`Self::group_destinations`], and the default
+    /// is all of it. B/IP keeps the groups at the link's own UDP port: one
+    /// at another port belongs to another B/IP network, so a send there is
+    /// refused, not turned into this one's broadcast.
+    fn local_broadcast_destinations(&self) -> GroupDestinations {
+        self.group_destinations()
     }
 }

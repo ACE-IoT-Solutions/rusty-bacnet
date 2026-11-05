@@ -7,9 +7,10 @@ use crate::binary::BinaryOutputObject;
 use crate::multistate::MultiStateOutputObject;
 use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
 use crate::traits::BACnetObject;
-use bacnet_types::enums::ObjectType;
+use bacnet_types::enums::{EngineeringUnits, ObjectType};
 use std::borrow::Cow;
 use std::sync::Arc;
+#[cfg(feature = "durable-writes")]
 use std::time::Duration;
 
 const KINDS: [ObjectType; 3] = [
@@ -21,6 +22,7 @@ const ROWS: [P; 3] = [P::TAGS, P::PROFILE_LOCATION, P::PROFILE_NAME];
 
 trait ProfileOutput: BACnetObject {
     fn provision(&mut self, profile: ObjectProfile) -> Result<(), Error>;
+    #[cfg(feature = "durable-writes")]
     fn wait(&self);
 }
 macro_rules! profile_output {
@@ -29,6 +31,7 @@ macro_rules! profile_output {
             fn provision(&mut self, profile: ObjectProfile) -> Result<(), Error> {
                 self.set_profile(profile)
             }
+            #[cfg(feature = "durable-writes")]
             fn wait(&self) {
                 self.wait_for_tag_saves();
             }
@@ -41,7 +44,7 @@ profile_output!(MultiStateOutputObject);
 
 fn object(kind: ObjectType, store: Option<Arc<Memory>>) -> Result<Box<dyn ProfileOutput>, Error> {
     macro_rules! build {
-        ($ty:ty $(, $extra:expr)?) => {
+        ($ty:ty $(, $extra:expr_2021)?) => {
             Ok(Box::new(match store {
                 None => <$ty>::new(1, "output" $(, $extra)?)?,
                 Some(store) => <$ty>::with_tags_persistence(1, "output", $($extra,)? store)?,
@@ -49,7 +52,7 @@ fn object(kind: ObjectType, store: Option<Arc<Memory>>) -> Result<Box<dyn Profil
         };
     }
     match kind {
-        ObjectType::ANALOG_OUTPUT => build!(AnalogOutputObject, 95),
+        ObjectType::ANALOG_OUTPUT => build!(AnalogOutputObject, EngineeringUnits::NO_UNITS),
         ObjectType::BINARY_OUTPUT => build!(BinaryOutputObject),
         ObjectType::MULTI_STATE_OUTPUT => build!(MultiStateOutputObject, 3),
         _ => unreachable!(),
@@ -99,8 +102,7 @@ fn all_outputs_eight_masks_and_oos_states_preserve_existing_metadata() {
                     expected
                 );
                 assert_eq!(
-                    object
-                        .property_list()
+                    crate::test_rows::listed(&object.property_metadata())
                         .iter()
                         .filter(|p| ROWS.contains(p))
                         .copied()
@@ -154,15 +156,15 @@ fn all_outputs_eight_masks_and_oos_states_preserve_existing_metadata() {
                     .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Boolean(!oos), None)
                     .unwrap();
                 assert_eq!(object.property_metadata().as_ref(), metadata);
-                assert!(!object.advance_monotonic_time_internal(Duration::from_secs(20)));
-                assert!(object.cov_snapshot_internal().is_none());
+                assert!(object.timed().is_none());
                 assert!(object.read_property(P::VALUE_SOURCE, None).is_ok());
-                assert!(object.durable_writes_internal().is_none());
+                assert!(object.durable_writes().is_none());
             }
         }
     }
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn output_saved_overrides_need_provisioning_and_invalid_replacement_preserves_state() {
     for kind in KINDS {
@@ -179,8 +181,11 @@ fn output_saved_overrides_need_provisioning_and_invalid_replacement_preserves_st
                 object.read_property(P::TAGS, None),
                 ErrorCode::UNKNOWN_PROPERTY,
             );
-            assert!(!object.property_list().contains(&P::TAGS));
-            assert!(object.durable_writes_internal().is_some());
+            assert!(!crate::property_metadata::has_property(
+                &object.property_metadata(),
+                P::TAGS
+            ));
+            assert!(object.durable_writes().is_some());
             object.provision(optional(7)).unwrap();
             let count = saved
                 .as_ref()
@@ -270,6 +275,7 @@ fn output_invalid_and_oversized_tags_make_no_save_attempts() {
     }
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn output_monotonic_hooks_correct_expired_stages_without_output_changes() {
     for kind in KINDS {
@@ -289,14 +295,20 @@ fn output_monotonic_hooks_correct_expired_stages_without_output_changes() {
         let command_before = command_tests::state(object.as_ref());
         let wait = staged(
             object
-                .durable_writes_internal()
+                .durable_writes()
                 .unwrap()
                 .stage_writes(&[whole("never-served")]),
         );
         wait.block();
         assert_eq!(store.saved(), Some(snapshot("never-served")));
-        assert!(!object.advance_monotonic_time_internal(Duration::ZERO));
-        assert!(!object.advance_monotonic_time_internal(Duration::from_secs(11)));
+        object
+            .durable_writes()
+            .unwrap()
+            .expire_staged(Duration::ZERO);
+        object
+            .durable_writes()
+            .unwrap()
+            .expire_staged(Duration::from_secs(11));
         object.wait();
         assert_eq!(store.saved(), Some(snapshot("saved")));
         assert_eq!(command_tests::state(object.as_ref()), command_before);

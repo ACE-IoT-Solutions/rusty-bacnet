@@ -9,10 +9,13 @@ use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::elevator::ElevatorGroupObject;
 use bacnet_objects::multistate::MultiStateValueObject;
 use bacnet_objects::notification_class::NotificationClass;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::schedule::ScheduleObject;
 use bacnet_objects::value_types::DateTimeValueObject;
 use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{BACnetDestination, BACnetRecipient};
+use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::error::RemoteError;
 
 const POSITION: Option<RangeSpec> = Some(RangeSpec::ByPosition {
     reference_index: 1,
@@ -43,12 +46,12 @@ fn assert_refused(
     context: &str,
 ) {
     match result {
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             class: got_class,
             code: got_code,
-        }) => assert_eq!(
+        })) => assert_eq!(
             (got_class, got_code),
-            (class.to_raw() as u32, code.to_raw() as u32),
+            (class, code),
             "{context}: expected {class:?}/{code:?}"
         ),
         other => panic!("{context}: expected {class:?}/{code:?}, got {other:?}"),
@@ -64,9 +67,9 @@ fn assert_not_a_list(
     for &(oid, property, index) in cases {
         for range in [None, POSITION, SEQUENCE, by_time()] {
             let result = call_with_index(db, oid, property, index, range.clone());
-            if !matches!(&result, Err(Error::Protocol { class, code })
-                if *class == ErrorClass::SERVICES.to_raw() as u32
-                    && *code == ErrorCode::PROPERTY_IS_NOT_A_LIST.to_raw() as u32)
+            if !matches!(&result, Err(Error::Remote(RemoteError::Error { class, code }))
+                if *class == ErrorClass::SERVICES
+                    && *code == ErrorCode::PROPERTY_IS_NOT_A_LIST)
             {
                 panic!("{oid:?} {property:?} index {index:?} {range:?}: {result:?}");
             }
@@ -141,10 +144,10 @@ impl BACnetObject for FixedList {
         if property == self.property {
             Ok(self.value.clone())
         } else {
-            Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            })
+            Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            ))
         }
     }
 
@@ -155,18 +158,28 @@ impl BACnetObject for FixedList {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Owned(vec![self.property])
-    }
-
-    fn is_list_property(&self, property: PropertyIdentifier) -> bool {
-        property == self.property
+    // The listed property is a BACnetLIST: a vendor one states it on its
+    // row, of a datatype with no element codec; a standard one is a list
+    // already.
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        let rows = crate::test_rows::read_only(&[self.property]);
+        let standard = bacnet_objects::property_metadata::standard_value_type(
+            self.oid.object_type(),
+            self.property,
+        );
+        if standard.is_some_and(|value_type| value_type.is_list()) {
+            return rows;
+        }
+        let list = bacnet_objects::property_metadata::ValueType::list(
+            bacnet_objects::property_metadata::Datatype::Any,
+        );
+        crate::test_rows::typed(rows, &[(self.property, list)])
     }
 }
 
@@ -176,8 +189,7 @@ fn read_range_refuses_whole_arrays_and_array_elements_as_not_a_list() {
     let device = add(
         &mut db,
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "DEV-1".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("DEV-1"),
             ..Default::default()
         })
         .unwrap(),
@@ -206,7 +218,10 @@ fn read_range_refuses_whole_arrays_and_array_elements_as_not_a_list() {
 #[test]
 fn read_range_refuses_scalars_and_constructed_values_as_not_a_list() {
     let (mut db, msv) = msv_db();
-    let ai = add(&mut db, AnalogInputObject::new(1, "AI-1", 62).unwrap());
+    let ai = add(
+        &mut db,
+        AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    );
     let dtv = add(&mut db, DateTimeValueObject::new(1, "DTV-1").unwrap());
     let group = add(&mut db, ElevatorGroupObject::new(1, "EG-1").unwrap());
     let schedule = add(
@@ -513,8 +528,7 @@ fn read_range_standalone_device_cov_lists_page_as_read_property_reads_them() {
     let device = add(
         &mut db,
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "DEV-1".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("DEV-1"),
             ..Default::default()
         })
         .unwrap(),

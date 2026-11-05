@@ -6,29 +6,31 @@ use bacnet_objects::analog::AnalogOutputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
-use bacnet_types::enums::{ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 use bytes::BytesMut;
 use std::net::Ipv4Addr;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 #[tokio::test]
 async fn cov_subscribe_and_notification() {
     // Set up a server with an AnalogOutput (writable without out-of-service)
     let mut db = ObjectDatabase::new();
-    let ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
+    let ao = AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     db.add(Box::new(ao)).unwrap();
 
     // Add a device object so COV notifications have an initiating-device-identifier
     let dev = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "Test-Dev".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("Test-Dev"),
         ..DeviceConfig::default()
     })
     .unwrap();
     db.add(Box::new(dev)).unwrap();
 
     let mut server = BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 0).unwrap())
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .database(db)
@@ -70,11 +72,13 @@ async fn cov_subscribe_and_notification() {
             .monitored_object_identifier,
         ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, 1).unwrap()
     );
-    assert!(initial_notification
-        .notification
-        .list_of_values
-        .iter()
-        .any(|pv| pv.property_identifier == PropertyIdentifier::PRESENT_VALUE));
+    assert!(
+        initial_notification
+            .notification
+            .list_of_values
+            .iter()
+            .any(|pv| pv.property_identifier == PropertyIdentifier::PRESENT_VALUE)
+    );
 
     // Write a new value to AO:1 — this should trigger a COV notification
     let mut value_buf = BytesMut::new();
@@ -106,11 +110,13 @@ async fn cov_subscribe_and_notification() {
         ObjectIdentifier::new(ObjectType::DEVICE, 1234).unwrap()
     );
     // Should contain at least Present_Value
-    assert!(received
-        .notification
-        .list_of_values
-        .iter()
-        .any(|pv| pv.property_identifier == PropertyIdentifier::PRESENT_VALUE));
+    assert!(
+        received
+            .notification
+            .list_of_values
+            .iter()
+            .any(|pv| pv.property_identifier == PropertyIdentifier::PRESENT_VALUE)
+    );
 
     // Cleanup
     server.stop().await.unwrap();

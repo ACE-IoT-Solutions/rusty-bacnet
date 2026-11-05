@@ -1,3 +1,5 @@
+use bacnet_objects::property_metadata::PropertyMetadata;
+use bacnet_types::error::RemoteError;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,7 +19,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::*;
-use crate::life_safety_cov::LifeSafetyCovChange;
+use bacnet_device_core::cov::life_safety::LifeSafetyCovChange;
 
 fn request(
     operation: LifeSafetyOperation,
@@ -41,10 +43,10 @@ fn read(db: &ObjectDatabase, oid: ObjectIdentifier, property: PropertyIdentifier
 fn assert_protocol_error(error: Error, class: ErrorClass, code: ErrorCode) {
     assert!(matches!(
         error,
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class: actual_class,
             code: actual_code,
-        } if actual_class == class.to_raw() as u32 && actual_code == code.to_raw() as u32
+        }) if actual_class == class && actual_code == code
     ));
 }
 
@@ -189,10 +191,16 @@ impl BACnetObject for ResetHookSpy {
         Err(Error::Encoding("unused reset-spy write".into()))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 
+    fn life_safety(&mut self) -> Option<&mut dyn bacnet_objects::traits::LifeSafety> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::LifeSafety for ResetHookSpy {
     fn apply_life_safety_operation(
         &mut self,
         _operation: LifeSafetyOperation,

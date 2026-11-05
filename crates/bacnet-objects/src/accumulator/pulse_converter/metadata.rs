@@ -1,21 +1,21 @@
 use super::PulseConverterObject;
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
 use crate::property_metadata::{
     PropertyConformance::{Optional, RequiredRead, RequiredWrite},
     PropertyMetadata,
+    PropertyPresenceCondition::CovReporting,
     PropertyWriteCapability::{Always, ReadOnly, WhenOutOfService},
 };
 
 // Canonical effective rows for the Pulse Converter (type 24, ASHRAE 135-2020
 // §12.23 Table 12-27; printed pp. 301-307 / PDF pp. 303-309).
-// Order preserves the legacy projection, with the count rows #1092 added
+// Order preserves the earlier row order, with the count rows #1092 added
 // (Count, Update_Time, Count_Change_Time, Count_Before_Change) after
 // Adjust_Value and COV_Period after COV_Increment, as the table orders them;
-// PROPERTY_LIST is appended so the projection helper omits it while
-// required_properties keeps it. Only implemented rows are described: the
+// PROPERTY_LIST is appended last. Only implemented rows are described: the
 // table rows the object does not serve (intrinsic-reporting, event-message,
 // Reliability_Evaluation_Inhibit, audit, tag and profile rows) are all
 // optional and stay absent until dispatch exists.
@@ -39,7 +39,7 @@ use crate::property_metadata::{
 // effects of those, so RequiredRead/ReadOnly.
 // Input_Reference and COV_Increment are table O with arms (Optional/Always).
 // COV_Increment and COV_Period are footnote 2 rows, present because the
-// object reports COV (supports_cov and cov_increment). COV_Period is served
+// object reports COV (it lends `cov()`, with an increment). COV_Period is served
 // as a constant 0 with no write arm (Optional/ReadOnly): zero means no
 // periodic notifications (Clause 13.1), which the server does not send.
 // Reliability is table O, and since it can report the Input_Reference
@@ -47,14 +47,12 @@ use crate::property_metadata::{
 // TRUE (Clause 12.23.10), so Optional/WhenOutOfService.
 // Presence is None throughout: the implementation models no commandable,
 // intrinsic-reporting, or paired-text gating. The object is not createable at
-// runtime (the network factory builds only the eight analog/binary/
-// multi-state input/output/value types) and remains deleteable (delete denies
+// runtime (the `creation` table has no constructor for it) and remains deleteable (delete denies
 // only Device and NetworkPort); neither needs an override. Array gating keeps
 // the default: Property_List admits an index (BACnetARRAY per Table 12-27)
-// while every other served row rejects one. COV keeps its overrides:
-// supports_cov=true plus cov_increment()=Some, and the COV gating path
-// (read_property plus supports_cov_property to supports_cov) never consults
-// metadata.
+// while every other served row rejects one. COV keeps its `cov()` lend, with
+// an increment, and the COV gating path (read_property plus
+// `CovReporting::supports_cov_property`) never consults metadata.
 const PULSE_CONVERTER_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::OBJECT_IDENTIFIER, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::OBJECT_NAME, RequiredRead, None, ReadOnly),
@@ -68,8 +66,9 @@ const PULSE_CONVERTER_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::UPDATE_TIME, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::COUNT_CHANGE_TIME, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::COUNT_BEFORE_CHANGE, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::COV_INCREMENT, Optional, None, Always),
-    PropertyMetadata::new(P::COV_PERIOD, Optional, None, ReadOnly),
+    crate::property_metadata::COV_INCREMENT_ROW,
+    // Table 12-27 footnote 2 ties COV_Period to COV reporting too (#2193).
+    PropertyMetadata::new(P::COV_PERIOD, Optional, Some(CovReporting), ReadOnly),
     PropertyMetadata::new(P::INPUT_REFERENCE, Optional, None, Always),
     PropertyMetadata::new(P::STATUS_FLAGS, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::EVENT_STATE, RequiredRead, None, ReadOnly),

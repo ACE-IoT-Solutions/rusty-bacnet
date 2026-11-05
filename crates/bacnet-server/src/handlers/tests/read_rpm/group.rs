@@ -1,4 +1,5 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     group::{GlobalGroupObject, GroupObject, StructuredViewObject},
     traits::BACnetObject,
@@ -6,8 +7,8 @@ use bacnet_objects::{
 use bacnet_types::constructed::{
     AccessResult, BACnetDeviceObjectPropertyReference, PropertyReference, ReadAccessSpecification,
 };
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 const EMPTY: &[u8] = &[];
 
@@ -34,9 +35,9 @@ pub(super) fn assert_cases(
     }
     .encode(&mut request)
     .unwrap();
-    let mut legacy = BytesMut::new();
-    handle_read_property_multiple(db, &request, &mut legacy).unwrap();
-    let ack = ReadPropertyMultipleACK::decode(&legacy).unwrap();
+    let mut unlimited = BytesMut::new();
+    handle_read_property_multiple(db, &request, &mut unlimited).unwrap();
+    let ack = ReadPropertyMultipleACK::decode(&unlimited).unwrap();
     assert_eq!(ack.list_of_read_access_results.len(), 1);
     let access = &ack.list_of_read_access_results[0];
     assert_eq!(access.object_identifier, oid);
@@ -76,28 +77,31 @@ pub(super) fn assert_cases(
             Err(expected) => {
                 assert!(result.property_value.is_none());
                 assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
-                assert!(matches!(rp, Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32));
+                assert!(
+                    matches!(rp, Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == ErrorClass::PROPERTY && code == expected)
+                );
                 assert!(response.is_empty());
             }
         }
     }
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+    use crate::handlers::rpm_budget::handle_rpm_budgeted;
+    use bacnet_device_core::read::ReadFailure;
     let members = group_member_rows(db, oid, cases.iter().map(|&(p, i, _)| (p, i)));
-    let budget = crate::server::ReadPropertyMultipleBudget {
+    let budget = bacnet_device_core::read::ReadPropertyMultipleBudget {
         max_result_elements: cases.len() + members,
-        max_service_ack_bytes: legacy.len(),
+        max_service_ack_bytes: unlimited.len(),
     };
     let mut bounded = BytesMut::new();
     handle_rpm_budgeted(db, &request, &mut bounded, budget).unwrap();
-    assert_eq!(bounded, legacy);
+    assert_eq!(bounded, unlimited);
     let mut prefix = BytesMut::from(&b"prefix"[..]);
     assert!(matches!(
         handle_rpm_budgeted(
             db,
             &request,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
                 max_result_elements: budget.max_result_elements - 1,
                 ..budget
             }
@@ -110,8 +114,8 @@ pub(super) fn assert_cases(
             db,
             &request,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
-                max_service_ack_bytes: legacy.len() - 1,
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
+                max_service_ack_bytes: unlimited.len() - 1,
                 ..budget
             }
         ),

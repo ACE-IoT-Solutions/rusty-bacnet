@@ -1,14 +1,14 @@
 //! CreateObject applies each initial value the way WriteProperty applies its
 //! value (#1389, #1416): the array index is checked against the new object,
-//! the value is decoded whole with the object's list classification, the
+//! the value is decoded whole by its value type on the object, the
 //! raw-octet properties reach the object as their octets, and a NULL the
 //! property leaves as it is counts as applied. The first initial value that
 //! can't be applied is named by its position, and nothing is created
 //! (Clause 15.3).
 
 use super::*;
-use bacnet_services::common::BACnetPropertyValue;
 use PropertyIdentifier as P;
+use bacnet_services::common::BACnetPropertyValue;
 
 pub(super) fn initial(
     property: P,
@@ -44,7 +44,8 @@ pub(super) fn request(object_type: ObjectType, values: Vec<BACnetPropertyValue>)
         object_specifier: ObjectSpecifier::Type(object_type),
         list_of_initial_values: values,
     }
-    .encode(&mut request);
+    .encode(&mut request)
+    .unwrap();
     request
 }
 
@@ -159,6 +160,7 @@ fn a_raw_octet_initial_value_reaches_the_object_whole() {
     let mut target = None;
     handle_create_object_observed(
         &mut db,
+        &Default::default(),
         &request(
             ObjectType::ANALOG_OUTPUT,
             vec![
@@ -231,6 +233,7 @@ fn a_null_initial_value_still_relinquishes_a_commandable_present_value() {
     let mut target = None;
     handle_create_object_observed(
         &mut db,
+        &Default::default(),
         &request(
             ObjectType::ANALOG_OUTPUT,
             vec![
@@ -317,6 +320,7 @@ fn the_first_initial_value_that_fails_is_named_and_nothing_is_created() {
         let mut target = None;
         let refusal = handle_create_object_observed(
             &mut db,
+            &Default::default(),
             &request(object_type, values),
             &mut BytesMut::new(),
             &mut target,

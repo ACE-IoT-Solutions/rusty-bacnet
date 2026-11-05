@@ -11,8 +11,9 @@ fn bindings() -> Vec<DeviceBinding> {
 fn device(instance: u32) -> Box<DeviceObject> {
     Box::new(
         DeviceObject::new(DeviceConfig {
-            instance,
-            name: format!("replacement-{instance}"),
+            identity: bacnet_objects::DeviceIdentity::new(instance, 0)
+                .expect("valid Device identity")
+                .with_name(format!("replacement-{instance}")),
             ..Default::default()
         })
         .unwrap(),
@@ -21,16 +22,18 @@ fn device(instance: u32) -> Box<DeviceObject> {
 
 #[tokio::test]
 async fn audit_reporter_identity_startup_requires_a_concrete_local_device() {
-    for devices in [&[][..], &[ObjectIdentifier::MAX_INSTANCE][..]] {
-        assert!(
-            try_server(reporter(), devices, Some(recipient()), bindings())
-                .await
-                .is_err()
-        );
-    }
-    assert!(try_server(reporter(), &[10], None, bindings())
-        .await
-        .is_err());
+    // No database holds a Device at the wildcard instance (#2171), so the
+    // only database without a concrete Device is one without a Device.
+    assert!(
+        try_server(reporter(), &[], Some(recipient()), bindings())
+            .await
+            .is_err()
+    );
+    assert!(
+        try_server(reporter(), &[10], None, bindings())
+            .await
+            .is_err()
+    );
     let mut fixture = try_server(reporter(), &[10], Some(recipient()), bindings())
         .await
         .unwrap();
@@ -50,9 +53,10 @@ async fn audit_reporter_identity_startup_requires_a_concrete_local_device() {
     fixture.server.stop().await.unwrap();
 }
 
-/// With several Devices the lowest is this device, whichever was added first
-/// (#1204). Records name it, and the runtime keeps it the lowest: a new Device
-/// is refused and it can't be removed.
+/// With several Devices the identity's is this device, whichever was added
+/// first; startup requires it to be the lowest (#1204). Records name it (#2217),
+/// and the runtime keeps it the lowest: a new Device is refused and it can't be
+/// removed.
 #[tokio::test]
 async fn audit_reporter_identity_is_the_lowest_of_several_devices() {
     let lowest = oid(ObjectType::DEVICE, 100);
@@ -94,9 +98,10 @@ async fn audit_reporter_identity_active_membership_rejects_mutation_before_callb
         oid(ObjectType::AUDIT_REPORTER, 1),
     ] {
         assert!(db.remove(&target).is_err());
-        assert!(db
-            .with_object_adapter(&target, |_| panic!("protected callback ran"))
-            .is_err());
+        assert!(
+            db.with_object_adapter(&target, |_| panic!("protected callback ran"))
+                .is_err()
+        );
     }
     assert!(db.add(device(10)).is_err());
     assert!(db.add(device(11)).is_err());
@@ -115,10 +120,11 @@ async fn audit_reporter_identity_active_membership_rejects_mutation_before_callb
     assert_eq!(notifications(&fixture.transport.sent).len(), 1);
     fixture.server.stop().await.unwrap();
     let mut db = fixture.server.db.write().await;
-    assert!(db
-        .remove(&oid(ObjectType::AUDIT_REPORTER, 1))
-        .unwrap()
-        .is_some());
+    assert!(
+        db.remove(&oid(ObjectType::AUDIT_REPORTER, 1))
+            .unwrap()
+            .is_some()
+    );
     assert!(db.remove(&oid(ObjectType::DEVICE, 10)).unwrap().is_some());
     db.add(device(11)).unwrap();
 }
@@ -138,15 +144,17 @@ async fn audit_reporter_identity_drop_releases_membership_after_task_frames_end(
     settle().await;
     let mut db = database.write().await;
     db.add(device(11)).unwrap();
-    assert!(db
-        .remove(&oid(ObjectType::AUDIT_REPORTER, 1))
-        .unwrap()
-        .is_some());
-    assert!(!db
-        .get(&oid(ObjectType::DEVICE, 10))
-        .unwrap()
-        .property_list()
-        .contains(&PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT));
+    assert!(
+        db.remove(&oid(ObjectType::AUDIT_REPORTER, 1))
+            .unwrap()
+            .is_some()
+    );
+    assert!(!bacnet_objects::property_metadata::has_property(
+        &db.get(&oid(ObjectType::DEVICE, 10))
+            .unwrap()
+            .property_metadata(),
+        PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT
+    ));
 }
 
 #[tokio::test]

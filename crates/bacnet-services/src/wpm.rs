@@ -38,7 +38,7 @@ pub use error::WritePropertyMultipleError;
 /// This stack's server doesn't: it walks the cursor itself and answers that
 /// priority with an Error, PARAMETER_OUT_OF_RANGE, as it answers
 /// WriteProperty's. Clause 20.1.8 leaves that choice to the implementation.
-fn failure_kind(failure: WritePropertyMultipleFailureKind) -> DecodingKind {
+pub(crate) fn failure_kind(failure: WritePropertyMultipleFailureKind) -> DecodingKind {
     use RejectReason as R;
     match failure {
         WritePropertyMultipleFailureKind::PriorityOutOfRange => DecodingKind::OutOfRange,
@@ -81,24 +81,18 @@ impl WritePropertyMultipleRequest {
     pub fn validate(&self) -> Result<(), Error> {
         use bacnet_types::enums::PropertyIdentifier as P;
         if self.list_of_write_access_specs.is_empty() {
-            return Err(Error::Encoding(
-                "WPM requires at least one object specification".into(),
-            ));
+            return Err(Error::encode("WPM requires at least one object specification"));
         }
         for spec in &self.list_of_write_access_specs {
             if spec.list_of_properties.is_empty() {
-                return Err(Error::Encoding(
-                    "WPM requires at least one property per object".into(),
-                ));
+                return Err(Error::encode("WPM requires at least one property per object"));
             }
             for property in &spec.list_of_properties {
                 if matches!(
                     property.property_identifier,
                     P::ALL | P::REQUIRED | P::OPTIONAL
                 ) {
-                    return Err(Error::Encoding(
-                        "WPM does not accept ALL, REQUIRED or OPTIONAL selectors".into(),
-                    ));
+                    return Err(Error::encode("WPM does not accept ALL, REQUIRED or OPTIONAL selectors"));
                 }
                 crate::write_property::validate_priority(property.priority)?;
             }
@@ -111,11 +105,15 @@ impl WritePropertyMultipleRequest {
     /// remains separate and may preserve external empty-list/no-op requests.
     pub fn encode(&self, buf: &mut BytesMut) -> Result<(), Error> {
         self.validate()?;
+        let start = buf.len();
         for spec in &self.list_of_write_access_specs {
             primitives::encode_ctx_object_id(buf, 0, &spec.object_identifier);
             tags::encode_opening_tag(buf, 1);
             for prop_val in &spec.list_of_properties {
-                encode_bacnet_property_value(prop_val, buf);
+                if let Err(refused) = encode_bacnet_property_value(prop_val, buf) {
+                    buf.truncate(start);
+                    return Err(refused);
+                }
             }
             tags::encode_closing_tag(buf, 1);
         }
@@ -132,13 +130,10 @@ impl WritePropertyMultipleRequest {
         let mut specs = Vec::new();
         let mut current = None;
 
-        while let Some(event) = cursor.next_event().map_err(|error| {
-            Error::decoding_kind(
-                failure_kind(error.kind),
-                error.offset,
-                format!("WPM {:?}: {}", error.stage, error.message),
-            )
-        })? {
+        while let Some(event) = cursor
+            .next_event()
+            .map_err(|error| Error::Decoding(error.error))?
+        {
             match event {
                 WritePropertyMultipleEvent::ObjectStart(object_identifier) => {
                     current = Some(WriteAccessSpecification {
@@ -247,32 +242,40 @@ mod tests {
                 ],
             }],
         };
-        let mut buf = BytesMut::new();
-        req.encode(&mut buf).unwrap();
+        // The inner `ff ff 2f` could end the value, so the encoder refuses it
+        // (#2376) and leaves the buffer as it was.
+        let mut buf = BytesMut::from(&[0xaa][..]);
+        assert!(req.encode(&mut buf).is_err());
+        assert_eq!(buf.as_ref(), [0xaa]);
 
-        assert_eq!(WritePropertyMultipleRequest::decode(&buf).unwrap(), req);
+        // From an older peer it still decodes: `02` after that pair is no
+        // valid next field.
+        let wire = [
+            0x0c, 0x02, 0x40, 0x00, 0x01, 0x1e, 0x09, 0x53, 0x2e, 0xfe, 0xff, 1, 0xff, 0xff, 0x2f,
+            2, 0xff, 0xff, 0x2f, 0x09, 0x11, 0x2e, 0x21, 8, 0x2f, 0x1f,
+        ];
+        assert_eq!(WritePropertyMultipleRequest::decode(&wire).unwrap(), req);
     }
 
     #[test]
-    fn ambiguous_legacy_event_parameters_are_rejected() {
-        let req = WritePropertyMultipleRequest {
-            list_of_write_access_specs: vec![WriteAccessSpecification {
-                object_identifier: ObjectIdentifier::new(ObjectType::EVENT_ENROLLMENT, 1).unwrap(),
-                list_of_properties: vec![BACnetPropertyValue {
-                    property_identifier: PropertyIdentifier::EVENT_PARAMETERS,
-                    property_array_index: None,
-                    value: vec![
-                        0xfe, 0xff, 0xaa, 0xff, 0xff, 0x2f, 0x09, 0x53, 0x2e, 0xfe, 0xff, 0xbb,
-                        0xff, 0xff,
-                    ],
-                    priority: None,
-                }],
-            }],
+    fn an_older_peers_legacy_value_with_two_possible_ends_is_read_to_the_first() {
+        // An older peer's value holding `ff ff 2f` and then what looks like a
+        // next property value: either pair could end it, and the first does.
+        let wire = [
+            0x0c, 0x02, 0x40, 0x00, 0x01, 0x1e, 0x09, 0x53, 0x2e, 0xfe, 0xff, 0xaa, 0xff, 0xff,
+            0x2f, 0x09, 0x53, 0x2e, 0xfe, 0xff, 0xbb, 0xff, 0xff, 0x2f, 0x1f,
+        ];
+        let legacy = |marker| BACnetPropertyValue {
+            property_identifier: PropertyIdentifier::EVENT_PARAMETERS,
+            property_array_index: None,
+            value: vec![0xfe, 0xff, marker, 0xff, 0xff],
+            priority: None,
         };
-        let mut buf = BytesMut::new();
-        req.encode(&mut buf).unwrap();
-
-        assert!(WritePropertyMultipleRequest::decode(&buf).is_err());
+        let req = WritePropertyMultipleRequest::decode(&wire).unwrap();
+        assert_eq!(
+            req.list_of_write_access_specs[0].list_of_properties,
+            [legacy(0xaa), legacy(0xbb)]
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -46,6 +46,11 @@ pub(super) static EVENT_ENROLLMENT_PROPERTIES: &[PropertyMetadata] = &[
         None,
         ReadOnly,
     ),
+    // Writable though Table 12-14 codes it R: Clause 12.1.2 lets an R
+    // property take writes unless its description forbids them, Clause 12.12
+    // doesn't, and Annex K's AE-AVM-A BIBB (Table K-17) expects a workstation
+    // to write it. The intrinsic limits (High_Limit, Time_Delay and so on)
+    // have no rows: an Event Enrollment carries them in Event_Parameters.
     PropertyMetadata::new(
         PropertyIdentifier::EVENT_DETECTION_ENABLE,
         RequiredRead,
@@ -63,6 +68,34 @@ pub(super) static EVENT_ENROLLMENT_PROPERTIES: &[PropertyMetadata] = &[
         RequiredRead,
         None,
         ReadOnly,
+    ),
+    // Table 12-14 lists the message texts and the reporting options as plain
+    // optional rows, with no intrinsic-reporting footnote; the shared
+    // `ReportingOptions` serves them (#1507). Its footnote 1 asks for
+    // Event_Algorithm_Inhibit wherever the reference row is present.
+    PropertyMetadata::new(
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS,
+        Optional,
+        None,
+        ReadOnly,
+    ),
+    PropertyMetadata::new(
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG,
+        Optional,
+        None,
+        Always,
+    ),
+    PropertyMetadata::new(
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF,
+        Optional,
+        None,
+        Always,
+    ),
+    PropertyMetadata::new(
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT,
+        Optional,
+        None,
+        Always,
     ),
     // Table 12-14 marks these O2, whose condition is not yet representable in
     // the shared metadata enum; keep the implemented rows optional.
@@ -152,6 +185,33 @@ pub(super) static ALERT_ENROLLMENT_PROPERTIES: &[PropertyMetadata] = &[
         RequiredRead,
         None,
         ReadOnly,
+    ),
+    // Table 12-61 lists the message texts and the reporting options as plain
+    // optional rows, as Table 12-14 does; the shared `ReportingOptions`
+    // serves them here too (#1865).
+    PropertyMetadata::new(
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS,
+        Optional,
+        None,
+        ReadOnly,
+    ),
+    PropertyMetadata::new(
+        PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG,
+        Optional,
+        None,
+        Always,
+    ),
+    PropertyMetadata::new(
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF,
+        Optional,
+        None,
+        Always,
+    ),
+    PropertyMetadata::new(
+        PropertyIdentifier::EVENT_ALGORITHM_INHIBIT,
+        Optional,
+        None,
+        Always,
     ),
     PropertyMetadata::new(
         PropertyIdentifier::PROPERTY_LIST,

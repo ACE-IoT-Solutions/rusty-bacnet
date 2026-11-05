@@ -82,12 +82,16 @@ async fn assert_missing_source_unicast_rejected(must_understand: bool) {
     // COMMUNICATION / PARAMETER_OUT_OF_RANGE, and empty error detail.
     assert_eq!(
         recv(&ws_hub).await,
-        [0x00, 0x00, 0x22, 0x33, 0x01, 0x01, 0x00, 0x00, 0x07, 0x00, 0x50]
+        [
+            0x00, 0x00, 0x22, 0x33, 0x01, 0x01, 0x00, 0x00, 0x07, 0x00, 0x50
+        ]
     );
     assert_valid_sentinel(&mut rx, &ws_hub, None).await;
-    assert!(timeout(Duration::from_millis(25), ws_hub.recv())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(25), ws_hub.recv())
+            .await
+            .is_err()
+    );
     assert_eq!(
         transport.connection().unwrap().lock().await.state,
         ScConnectionState::Connected
@@ -111,9 +115,11 @@ async fn hub_npdu_missing_source_broadcast_is_silent_with_or_without_options() {
     for must_understand in [false, true] {
         send(&ws_hub, &npdu(None, Some(BROADCAST_VMAC), must_understand)).await;
         assert_valid_sentinel(&mut rx, &ws_hub, Some(BROADCAST_VMAC)).await;
-        assert!(timeout(Duration::from_millis(25), ws_hub.recv())
-            .await
-            .is_err());
+        assert!(
+            timeout(Duration::from_millis(25), ws_hub.recv())
+                .await
+                .is_err()
+        );
     }
     assert_eq!(
         transport.connection().unwrap().lock().await.state,
@@ -163,9 +169,10 @@ fn hub_connection_never_returns_missing_or_reserved_npdu_source() {
     let before = conn.clone();
     for source in [None, Some([0; 6]), Some(BROADCAST_VMAC)] {
         for destination in [None, Some(BROADCAST_VMAC)] {
-            assert!(conn
-                .handle_received(&npdu(source, destination, false))
-                .is_none());
+            assert!(
+                conn.handle_received(&npdu(source, destination, false))
+                    .is_none()
+            );
             assert_eq!(conn.state, before.state);
             assert_eq!(conn.hub_vmac, before.hub_vmac);
             assert_eq!(conn.next_message_id, before.next_message_id);
@@ -217,7 +224,10 @@ fn invalid_source_messages() -> Vec<ScMessage> {
     messages
 }
 
-#[tokio::test]
+// The heartbeat tests below run on tokio's paused clock, which the transport's
+// heartbeat deadline follows (#2124). On real time a stalled runner could pass
+// the 1 s ACK deadline before the test answered the probe (#2310).
+#[tokio::test(start_paused = true)]
 async fn hub_npdu_invalid_sources_do_not_refresh_liveness() {
     let (mut transport, mut rx, ws_hub) = start_with_heartbeat_timing().await;
     assert_valid_sentinel(&mut rx, &ws_hub, None).await;
@@ -226,8 +236,8 @@ async fn hub_npdu_invalid_sources_do_not_refresh_liveness() {
     let mut next = 0;
     let mut interval = tokio::time::interval(Duration::from_millis(20));
 
-    // Keep malformed traffic flowing through the real std::Instant timeout.
-    // A state notification proves timeout; a generous bound catches refreshes.
+    // Keep malformed traffic flowing past the 1 s timeout. A state
+    // notification proves timeout; a generous bound catches refreshes.
     timeout(Duration::from_secs(3), async {
         loop {
             tokio::select! {
@@ -254,7 +264,7 @@ async fn hub_npdu_invalid_sources_do_not_refresh_liveness() {
     transport.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn hub_npdu_invalid_sources_do_not_clear_pending_heartbeat() {
     let (mut transport, mut rx, ws_hub) = start_with_heartbeat_timing().await;
     assert_valid_sentinel(&mut rx, &ws_hub, None).await;

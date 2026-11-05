@@ -85,7 +85,9 @@ fn wpm_prefix_commit_keeps_out_of_service_transition() {
     let mut db = make_db_with_ai();
     let oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
     let obj = db.get_mut(&oid).unwrap();
-    obj.set_reliability_internal(Reliability::OVER_RANGE)
+    obj.reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::OVER_RANGE)
         .unwrap();
     obj.write_property(
         PropertyIdentifier::OUT_OF_SERVICE,
@@ -164,7 +166,7 @@ fn create_object_by_type_assigns_next_instance() {
         list_of_initial_values: vec![],
     };
     let mut buf = BytesMut::new();
-    req.encode(&mut buf);
+    req.encode(&mut buf).unwrap();
 
     let mut ack_buf = BytesMut::new();
     let result = handle_create_object(&mut db, &buf, &mut ack_buf);
@@ -185,7 +187,7 @@ fn create_object_by_identifier() {
         list_of_initial_values: vec![],
     };
     let mut buf = BytesMut::new();
-    req.encode(&mut buf);
+    req.encode(&mut buf).unwrap();
 
     let mut ack_buf = BytesMut::new();
     let result = handle_create_object(&mut db, &buf, &mut ack_buf);
@@ -202,7 +204,7 @@ fn create_object_duplicate_fails() {
         list_of_initial_values: vec![],
     };
     let mut buf = BytesMut::new();
-    req.encode(&mut buf);
+    req.encode(&mut buf).unwrap();
 
     let mut ack_buf = BytesMut::new();
     let result = handle_create_object(&mut db, &buf, &mut ack_buf);
@@ -217,7 +219,7 @@ fn create_unsupported_type_fails() {
         list_of_initial_values: vec![],
     };
     let mut buf = BytesMut::new();
-    req.encode(&mut buf);
+    req.encode(&mut buf).unwrap();
 
     let mut ack_buf = BytesMut::new();
     let result = handle_create_object(&mut db, &buf, &mut ack_buf);
@@ -240,7 +242,7 @@ fn create_object_with_initial_values() {
         }],
     };
     let mut buf = BytesMut::new();
-    req.encode(&mut buf);
+    req.encode(&mut buf).unwrap();
 
     let mut ack_buf = BytesMut::new();
     handle_create_object(&mut db, &buf, &mut ack_buf).unwrap();
@@ -279,7 +281,7 @@ fn create_object_bad_initial_value_rolls_back() {
         }],
     };
     let mut buf = BytesMut::new();
-    req.encode(&mut buf);
+    req.encode(&mut buf).unwrap();
 
     // The refusal names the initial value, the first (#1047).
     assert_eq!(
@@ -298,8 +300,9 @@ fn create_object_bad_initial_value_rolls_back() {
 /// slot to overwrite. Returns the db and the AO's object identifier.
 fn make_db_with_commandable_ao() -> (ObjectDatabase, ObjectIdentifier) {
     use bacnet_objects::analog::AnalogOutputObject;
+    use bacnet_types::enums::EngineeringUnits;
     let mut db = ObjectDatabase::new();
-    let mut ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
+    let mut ao = AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     // Establish an active command at priority 8.
     ao.write_property_from(
         PropertyIdentifier::PRESENT_VALUE,
@@ -449,8 +452,9 @@ fn wpm_prefix_commit_keeps_relinquished_priority_slot() {
 #[test]
 fn wpm_prefix_commit_keeps_noncommandable_present_value_analoginput() {
     use bacnet_objects::analog::AnalogInputObject;
+    use bacnet_types::enums::EngineeringUnits;
     let mut db = ObjectDatabase::new();
-    let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.write_property(
         PropertyIdentifier::OUT_OF_SERVICE,
         None,

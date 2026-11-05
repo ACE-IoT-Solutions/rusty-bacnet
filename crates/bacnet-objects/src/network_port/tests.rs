@@ -1,6 +1,10 @@
 use super::*;
-use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
+use crate::property_metadata::is_array_property;
+use crate::property_metadata::{
+    PropertyConformance, PropertyPresenceCondition, PropertyWriteCapability,
+};
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::RemoteError;
 
 // Independent Clause12.56 profile oracle, not copied from production metadata.
 const ALL: &[P] = &[
@@ -31,7 +35,7 @@ fn bip(config: BipPortConfig) -> NetworkPortObject {
 }
 fn error(result: Result<PropertyValue, Error>, expected: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::PROPERTY && code == expected),
         "{result:?}"
     );
 }
@@ -64,25 +68,44 @@ fn configured_bip_contract_requires_application_properties() {
 #[test]
 fn configured_bip_metadata_exact_sets_and_indexed_list() {
     let object = bip(Default::default());
-    assert_eq!(object.property_list().as_ref(), ALL);
+    assert_eq!(
+        crate::test_rows::listed(&object.property_metadata()),
+        crate::test_rows::listed_from(ALL)
+    );
     let metadata = object.property_metadata();
     assert_eq!(metadata.len(), ALL.len() + 1);
     let required: Vec<_> = ALL
         .iter()
         .copied()
-        .filter(|p| !matches!(*p, P::DESCRIPTION | P::LINK_SPEED))
+        .filter(|p| *p != P::DESCRIPTION)
         .collect();
-    let actual: Vec<_> = object
-        .required_properties()
+    let actual: Vec<_> = crate::test_rows::required(&object.property_metadata())
         .iter()
         .copied()
         .filter(|p| *p != P::PROPERTY_LIST)
         .collect();
     assert_eq!(actual, required);
     for row in metadata.iter() {
+        // Footnotes 3 and 25 of Table 12-71 require these optional rows of
+        // a non-PTP application port, which every port here is (#2174), and
+        // footnotes 5 and 6 the B/IP rows (#2191).
+        let condition = match row.property_identifier {
+            P::NETWORK_NUMBER | P::NETWORK_NUMBER_QUALITY | P::APDU_LENGTH => {
+                Some(PropertyPresenceCondition::ApplicationProtocolLevel)
+            }
+            P::MAC_ADDRESS => Some(PropertyPresenceCondition::NotPointToPoint),
+            P::BACNET_IP_MODE
+            | P::IP_ADDRESS
+            | P::IP_DEFAULT_GATEWAY
+            | P::IP_SUBNET_MASK
+            | P::BACNET_IP_UDP_PORT
+            | P::IP_DNS_SERVER => Some(PropertyPresenceCondition::BacnetIpPort),
+            _ => None,
+        };
+        assert_eq!(row.presence_condition, condition);
         assert_eq!(
             row.conformance,
-            if matches!(row.property_identifier, P::DESCRIPTION | P::LINK_SPEED) {
+            if row.property_identifier == P::DESCRIPTION || condition.is_some() {
                 PropertyConformance::Optional
             } else {
                 PropertyConformance::RequiredRead
@@ -123,8 +146,9 @@ fn configured_bip_metadata_exact_sets_and_indexed_list() {
         object.read_property(P::PROPERTY_LIST, Some(19)),
         ErrorCode::INVALID_ARRAY_INDEX,
     );
-    assert!(!object.is_createable());
-    assert!(!object.is_deleteable());
+    assert!(!crate::creation::builtin_deleteable(
+        object.object_identifier().object_type()
+    ));
 }
 
 #[test]
@@ -151,15 +175,17 @@ fn configured_bip_numeric_boundaries_and_quality() {
             PropertyValue::Enumerated(quality)
         );
     }
-    assert!(NetworkPortObject::new_bip(
-        1,
-        "NP",
-        BipPortConfig {
-            network_number: 65535,
-            ..Default::default()
-        }
-    )
-    .is_err());
+    assert!(
+        NetworkPortObject::new_bip(
+            1,
+            "NP",
+            BipPortConfig {
+                network_number: 65535,
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
     for length in [50, 51, 1497, u32::MAX] {
         let object = bip(BipPortConfig {
             apdu_length: length,
@@ -171,15 +197,17 @@ fn configured_bip_numeric_boundaries_and_quality() {
         );
     }
     for length in [0, 49] {
-        assert!(NetworkPortObject::new_bip(
-            1,
-            "NP",
-            BipPortConfig {
-                apdu_length: length,
-                ..Default::default()
-            }
-        )
-        .is_err());
+        assert!(
+            NetworkPortObject::new_bip(
+                1,
+                "NP",
+                BipPortConfig {
+                    apdu_length: length,
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
     }
 }
 
@@ -207,7 +235,7 @@ fn configured_bip_dns_array_and_derived_mac() {
             dns_servers: dns.clone(),
             ..Default::default()
         });
-        assert!(object.is_array_property(P::IP_DNS_SERVER));
+        assert!(is_array_property(&object, P::IP_DNS_SERVER));
         assert_eq!(
             object.read_property(P::IP_DNS_SERVER, Some(0)).unwrap(),
             PropertyValue::Unsigned(dns.len() as u64)
@@ -235,15 +263,17 @@ fn configured_bip_dns_array_and_derived_mac() {
             );
         }
     }
-    assert!(NetworkPortObject::new_bip(
-        1,
-        "NP",
-        BipPortConfig {
-            dns_servers: vec![],
-            ..Default::default()
-        }
-    )
-    .is_err());
+    assert!(
+        NetworkPortObject::new_bip(
+            1,
+            "NP",
+            BipPortConfig {
+                dns_servers: vec![],
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -256,7 +286,7 @@ fn configured_snapshot_refuses_activation_writes_without_state_change() {
             result.unwrap();
         } else {
             assert!(
-                matches!(result,Err(Error::Protocol {code,..}) if code==ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32),
+                matches!(result,Err(Error::Remote(RemoteError::Error {code,..})) if code==ErrorCode::WRITE_ACCESS_DENIED),
                 "{p:?}"
             );
         }
@@ -264,19 +294,23 @@ fn configured_snapshot_refuses_activation_writes_without_state_change() {
     }
     for p in [P::COMMAND_NP, P::MAX_APDU_LENGTH_ACCEPTED] {
         assert!(
-            matches!(object.write_property(p,None,PropertyValue::Unsigned(1),None),Err(Error::Protocol {code,..}) if code==ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
+            matches!(object.write_property(p,None,PropertyValue::Unsigned(1),None),Err(Error::Remote(RemoteError::Error {code,..})) if code==ErrorCode::UNKNOWN_PROPERTY)
         );
     }
     assert_eq!(
         object.read_property(P::CHANGES_PENDING, None).unwrap(),
         PropertyValue::Boolean(false)
     );
-    assert!(object
-        .write_property(P::DESCRIPTION, None, PropertyValue::Unsigned(1), None)
-        .is_err());
-    assert!(object
-        .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Unsigned(1), None)
-        .is_err());
+    assert!(
+        object
+            .write_property(P::DESCRIPTION, None, PropertyValue::Unsigned(1), None)
+            .is_err()
+    );
+    assert!(
+        object
+            .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Unsigned(1), None)
+            .is_err()
+    );
 }
 
 #[test]
@@ -307,7 +341,10 @@ fn non_bip_application_rows_do_not_claim_ipv4_fields() {
                 )
             })
             .collect();
-        assert_eq!(object.property_list().as_ref(), expected);
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(&expected)
+        );
         for row in object.property_metadata().iter() {
             object.read_property(row.property_identifier, None).unwrap();
         }
@@ -330,13 +367,15 @@ fn non_bip_application_rows_do_not_claim_ipv4_fields() {
             P::MAX_APDU_LENGTH_ACCEPTED,
         ] {
             error(object.read_property(p, None), ErrorCode::UNKNOWN_PROPERTY);
-            assert!(object
-                .write_property(p, None, PropertyValue::Unsigned(1), None)
-                .is_err());
+            assert!(
+                object
+                    .write_property(p, None, PropertyValue::Unsigned(1), None)
+                    .is_err()
+            );
         }
         // The classification follows the datatype, not this object's rows:
         // IP_DNS_SERVER is an array the non-B/IP port doesn't hold.
-        assert!(object.is_array_property(P::IP_DNS_SERVER));
+        assert!(is_array_property(&object, P::IP_DNS_SERVER));
         error(
             object.read_property(P::IP_DNS_SERVER, Some(1)),
             ErrorCode::UNKNOWN_PROPERTY,

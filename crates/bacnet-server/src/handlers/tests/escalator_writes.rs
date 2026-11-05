@@ -2,6 +2,7 @@ use super::*;
 use bacnet_objects::elevator::EscalatorObject;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::{WriteAccessSpecification, WritePropertyMultipleRequest};
+use bacnet_types::error::RemoteError;
 
 fn encode_value(value: PropertyValue) -> Vec<u8> {
     let mut buf = BytesMut::new();
@@ -58,9 +59,9 @@ fn write_multiple(
 
 fn assert_property_error(error: Error, expected: ErrorCode) {
     match error {
-        Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32);
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected);
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }

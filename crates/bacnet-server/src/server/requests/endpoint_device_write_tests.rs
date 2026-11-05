@@ -2,6 +2,7 @@ use super::*;
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_endpoint_core::endpoint_ingress::EndpointIngress;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportProvenance;
@@ -44,6 +45,7 @@ fn received(request: ConfirmedRequestPdu) -> ReceivedApdu {
     let mut bytes = BytesMut::new();
     encode_apdu(&mut bytes, &Apdu::ConfirmedRequest(request)).unwrap();
     ReceivedApdu {
+        router_response: None,
         direct_response: None,
         apdu: bytes.freeze(),
         source_mac: MacAddr::from_slice(&[2]),
@@ -62,7 +64,7 @@ fn received(request: ConfirmedRequestPdu) -> ReceivedApdu {
 }
 
 async fn fixture(
-    authorizer: Option<MutationAuthorizer>,
+    authorizer: Option<DeviceWriteAuthorizer>,
 ) -> (EndpointResponder, EndpointIngress<LoopbackTransport>) {
     let (transport, _peer) = LoopbackTransport::pair(vec![1], vec![2]);
     let mut ingress = EndpointIngress::new(transport, 4);
@@ -70,7 +72,7 @@ async fn fixture(
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 123,
+            identity: bacnet_objects::DeviceIdentity::new(123, 0).expect("valid Device identity"),
             ..Default::default()
         })
         .unwrap(),
@@ -157,7 +159,7 @@ async fn endpoint_device_write_authorizes_exact_context_and_preserves_reply_tx()
 #[tokio::test]
 async fn endpoint_device_write_default_refusal_and_panic_never_mutate() {
     for mode in 0..3 {
-        let authorizer: Option<MutationAuthorizer> = match mode {
+        let authorizer: Option<DeviceWriteAuthorizer> = match mode {
             0 => None,
             1 => Some(Arc::new(|_| false)),
             _ => Some(Arc::new(|_| panic!("policy panic"))),
@@ -241,8 +243,11 @@ impl BACnetObject for TrapObject {
     fn object_name(&self) -> &str {
         "write trap"
     }
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        std::borrow::Cow::Borrowed(&[PropertyIdentifier::DESCRIPTION])
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::rows(
+            &[PropertyIdentifier::DESCRIPTION],
+            &[PropertyIdentifier::DESCRIPTION],
+        )
     }
     fn read_property(&self, _: PropertyIdentifier, _: Option<u32>) -> Result<PropertyValue, Error> {
         Ok(PropertyValue::CharacterString("trap".into()))
@@ -298,7 +303,8 @@ async fn endpoint_device_write_revalidates_lower_level_authority_before_policy()
                     authority: if case == "mismatched-authority" {
                         Some(
                             DeviceObject::new(DeviceConfig {
-                                instance: 456,
+                                identity: bacnet_objects::DeviceIdentity::new(456, 0)
+                                    .expect("valid Device identity"),
                                 ..Default::default()
                             })
                             .unwrap(),
@@ -519,7 +525,8 @@ async fn endpoint_device_write_direct_and_routed_egress_preserve_destination() {
         let mut db = ObjectDatabase::new();
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance: 123,
+                identity: bacnet_objects::DeviceIdentity::new(123, 0)
+                    .expect("valid Device identity"),
                 ..Default::default()
             })
             .unwrap(),
@@ -540,7 +547,7 @@ async fn endpoint_device_write_direct_and_routed_egress_preserve_destination() {
         let npdu = decode_npdu(sent.npdu).unwrap();
         assert_eq!(npdu.destination, destination);
         assert!(!npdu.expecting_reply);
-        assert_eq!(npdu.priority, NetworkPriority::NORMAL);
+        assert_eq!(npdu.priority, NetworkPriority::Normal);
         assert!(
             matches!(decode_apdu(npdu.payload).unwrap(),Apdu::SimpleAck(ack) if ack.invoke_id == 71)
         );

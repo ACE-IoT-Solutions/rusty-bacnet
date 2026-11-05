@@ -1,23 +1,55 @@
 //! Pre-start execution profile and authority for the endpoint Device responder.
 
 use super::*;
-use bacnet_server::mutation::MutationAuthorizer;
+use bacnet_server::mutation::DeviceWriteAuthorizer;
 use bacnet_server::server::ReinitializeContext;
-use bacnet_types::enums::ServiceSupported;
+use bacnet_types::enums::{AuditOperation, ServiceSupported};
+
+/// The services the session's server role, its bounded Device responder,
+/// executes on every session, as `BACnetServicesSupported` bits (Clause 21).
+///
+/// The responder is not the full `bacnet-server` service set: everything not
+/// here or in [`RESPONDER_OPT_IN_SERVICES`] is refused.
+pub const RESPONDER_SERVICES: &[ServiceSupported] = &[ServiceSupported::READ_PROPERTY];
+
+/// A service the session's server role executes only once an
+/// [`EndpointSession`] method enables it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponderOptIn {
+    /// The service, as its `BACnetServicesSupported` bit.
+    pub service: ServiceSupported,
+    /// The name of the [`EndpointSession`] method that enables it.
+    pub method: &'static str,
+}
+
+/// The services the server role executes only once enabled, with the method
+/// that enables each. The local Device and the session identity then
+/// advertise them too.
+pub const RESPONDER_OPT_IN_SERVICES: &[ResponderOptIn] = &[
+    ResponderOptIn {
+        service: ServiceSupported::WRITE_PROPERTY,
+        method: "with_device_writes",
+    },
+    ResponderOptIn {
+        service: ServiceSupported::REINITIALIZE_DEVICE,
+        method: "with_reinitialize",
+    },
+];
 
 impl<T: TransportPort + 'static> EndpointSession<T> {
     /// Enables authorized writes to the local Device's `Description` and installed Audit recipient.
     ///
     /// The callback is mandatory and receives the existing redacted mutation
     /// context. A refusal or panic denies the request before mutation. It must
-    /// be fast, nonblocking and side-effect-free; see [`MutationAuthorizer`].
+    /// be fast, nonblocking and side-effect-free; see [`DeviceWriteAuthorizer`].
     /// Other objects/properties and WritePropertyMultiple remain unsupported.
     /// An authorized NULL relinquishment succeeds without changing Description.
     /// Recipient writes require the complete source runtime installed by source selection.
     ///
     /// Startup requires a server role and a concrete built-in local Device in
     /// the attached database ([`ObjectDatabase::local_device`]: the lowest
-    /// instance when it holds several). Writes reach only that Device; any
+    /// instance when it holds several, which preflight requires to be the
+    /// identity's). Writes reach only that Device; any
     /// other Device is out of scope. A composed identity must match it and
     /// contain only the services the responder executes. Validation errors
     /// precede configuration mutation and transport startup, allowing correction
@@ -26,7 +58,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     ///
     /// # Panics
     /// Panics if startup has already consumed the session configuration.
-    pub fn with_device_writes(mut self, authorizer: MutationAuthorizer) -> Self {
+    pub fn with_device_writes(mut self, authorizer: DeviceWriteAuthorizer) -> Self {
         self.assert_configurable();
         self.device_write_authorizer = Some(authorizer);
         self
@@ -39,15 +71,17 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// [`with_device_writes`](Self::with_device_writes). The handler follows
     /// the rules on
     /// [`ReinitializeHandler`](bacnet_server::server::ReinitializeHandler).
-    /// The SimpleACK goes out only after it returns, so schedule any restart
-    /// for after the reply instead of restarting inline. It runs synchronously
+    /// The SimpleACK goes out only after it returns, so register any restart
+    /// with [`ReinitializeContext::after_reply`] instead of restarting
+    /// inline: the hook runs once the egress has sent the SimpleACK, on the
+    /// same dispatch task, and never for a refusal. It runs synchronously
     /// on the session's single dispatch task, so a slow or blocking handler
     /// stalls the whole session: hand slow work such as backup files to a
     /// task. Without a password set by
     /// [`with_reinit_password`](Self::with_reinit_password) any peer reaches
     /// it, and the Device-write authorizer doesn't cover this service, so
-    /// restrict sources through the context. Refuse with [`Error::Protocol`];
-    /// a panic or an [`Error::Reject`] is answered SERVICES / OTHER and the
+    /// restrict sources through the context. Refuse with [`Error::protocol`];
+    /// a panic or an [`Error::reject`] is answered SERVICES / OTHER and the
     /// session keeps serving.
     ///
     /// # Panics
@@ -77,16 +111,48 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         self
     }
 
-    /// The services the responder executes with the capabilities enabled on this session.
-    fn executed_services(&self) -> Vec<ServiceSupported> {
-        let mut services = vec![ServiceSupported::READ_PROPERTY];
-        if self.device_write_authorizer.is_some() {
-            services.push(ServiceSupported::WRITE_PROPERTY);
+    /// Reports a reset the application carries out for its own reasons, not
+    /// at a peer's ReinitializeDevice request: a DEVICE_RESET Audit record
+    /// from this device, with no invoke ID (Clause 19.6, Table 19-5 covers
+    /// resets for any reason, #1837). The counterpart of
+    /// `BACnetServer::report_device_reset_local`.
+    ///
+    /// An accepted WARMSTART or COLDSTART is recorded already; don't report
+    /// it again. The record goes through the session's source Reporter
+    /// ([`with_source_audit_reporter`](Self::with_source_audit_reporter)),
+    /// filtered by its Audit_Level and Auditable_Operations as a peer's
+    /// reset's is, and nothing is recorded without one. It returns once the
+    /// record is admitted, not delivered, so call it before the restart
+    /// begins and give delivery time before the process exits.
+    ///
+    /// # Errors
+    /// [`Error::Encoding`] when the session is not running.
+    pub async fn report_device_reset_local(&self) -> Result<(), Error> {
+        if !self.is_running() {
+            return Err(Error::Encoding("endpoint session is not running".into()));
         }
-        if self.reinitialize.is_some() {
-            services.push(ServiceSupported::REINITIALIZE_DEVICE);
-        }
-        services
+        let (Some(source), Some(database)) = (&self.source_audit, &self.database) else {
+            return Ok(());
+        };
+        // Synchronous under the guard: no await while it is held.
+        let mut db = database.write().await;
+        source.device_operation(&mut db, AuditOperation::DEVICE_RESET, None);
+        Ok(())
+    }
+
+    /// The services the responder executes with the capabilities enabled on
+    /// this session: [`RESPONDER_SERVICES`], then each enabled entry of
+    /// [`RESPONDER_OPT_IN_SERVICES`].
+    pub(crate) fn executed_services(&self) -> Vec<ServiceSupported> {
+        let enabled = |service: ServiceSupported| {
+            (service == ServiceSupported::WRITE_PROPERTY && self.device_write_authorizer.is_some())
+                || (service == ServiceSupported::REINITIALIZE_DEVICE && self.reinitialize.is_some())
+        };
+        let opt_in = RESPONDER_OPT_IN_SERVICES
+            .iter()
+            .map(|opt_in| opt_in.service)
+            .filter(|service| enabled(*service));
+        RESPONDER_SERVICES.iter().copied().chain(opt_in).collect()
     }
 
     pub(super) async fn validate_segmentation(&self) -> Result<(), Error> {
@@ -126,6 +192,24 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             return Err(Error::Encoding(
                 "a ReinitializeDevice password requires a ReinitializeDevice handler".into(),
             ));
+        }
+        // An empty password could never match: a request's empty password
+        // decodes as none (#2094).
+        if self.reinit_password.as_deref() == Some("") {
+            return Err(Error::Encoding(
+                "reinit_password is empty; leave it unset for no password".into(),
+            ));
+        }
+        // Past the 20-character limit no request could carry it (#2060).
+        if self
+            .reinit_password
+            .as_deref()
+            .is_some_and(|password| !bacnet_services::device_mgmt::password_fits(password))
+        {
+            return Err(Error::Encoding(format!(
+                "reinit_password exceeds the {}-character limit",
+                bacnet_services::device_mgmt::MAX_PASSWORD_CHARS
+            )));
         }
         // Names the enabled capabilities that need the Device.
         let (capability, subject) = match (writes, reinitialize) {

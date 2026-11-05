@@ -10,7 +10,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
 use bytes::BytesMut;
 
-use super::fake_device::{client_with_device, DEVICE_MAC};
+use super::fake_device::{DEVICE_MAC, client_with_device};
 
 fn trend_log() -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::TREND_LOG, 1).unwrap()
@@ -124,7 +124,7 @@ async fn lenient_still_refuses_an_answer_that_does_not_decode() {
         .await
         .unwrap_err();
     assert!(
-        matches!(error, Error::Decoding { .. } | Error::BufferTooShort { .. }),
+        matches!(error, Error::Decoding(_) | Error::BufferTooShort { .. }),
         "{error:?}"
     );
     client.stop().await.unwrap();

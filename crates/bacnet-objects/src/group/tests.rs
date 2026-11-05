@@ -2,6 +2,7 @@
 
 use super::*;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 // -----------------------------------------------------------------------
 // GroupObject tests
@@ -27,7 +28,7 @@ fn group_object_type() {
 #[test]
 fn group_property_list() {
     let g = GroupObject::new(1, "G").unwrap();
-    let props = g.property_list();
+    let props = crate::test_rows::listed(&g.property_metadata());
     assert!(props.contains(&PropertyIdentifier::LIST_OF_GROUP_MEMBERS));
     assert!(props.contains(&PropertyIdentifier::PRESENT_VALUE));
     // Table 12-17 has no Status_Flags (#1064).
@@ -98,7 +99,7 @@ fn global_group_member_names() {
 #[test]
 fn global_group_property_list() {
     let gg = GlobalGroupObject::new(1, "GG").unwrap();
-    let props = gg.property_list();
+    let props = crate::test_rows::listed(&gg.property_metadata());
     assert!(props.contains(&PropertyIdentifier::GROUP_MEMBERS));
     assert!(props.contains(&PropertyIdentifier::PRESENT_VALUE));
     assert!(props.contains(&PropertyIdentifier::GROUP_MEMBER_NAMES));
@@ -188,9 +189,9 @@ fn structured_view_add_subordinates() {
         for index in [3, u32::MAX] {
             let error = sv.read_property(property, Some(index)).unwrap_err();
             assert!(
-                matches!(error, Error::Protocol { class, code }
-                    if class == ErrorClass::PROPERTY.to_raw() as u32
-                        && code == ErrorCode::INVALID_ARRAY_INDEX.to_raw() as u32),
+                matches!(error, Error::Remote(RemoteError::Error { class, code })
+                    if class == ErrorClass::PROPERTY
+                        && code == ErrorCode::INVALID_ARRAY_INDEX),
                 "{property:?}[{index}]: {error:?}"
             );
         }
@@ -200,9 +201,9 @@ fn structured_view_add_subordinates() {
                 .write_property(property, index, elements[0].clone(), None)
                 .unwrap_err();
             assert!(
-                matches!(error, Error::Protocol { class, code }
-                    if class == ErrorClass::PROPERTY.to_raw() as u32
-                        && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32),
+                matches!(error, Error::Remote(RemoteError::Error { class, code })
+                    if class == ErrorClass::PROPERTY
+                        && code == ErrorCode::WRITE_ACCESS_DENIED),
                 "{property:?}[{index:?}] write: {error:?}"
             );
         }
@@ -229,9 +230,9 @@ fn structured_view_add_subordinate_refuses_a_non_device_device_identifier() {
             "Elsewhere",
         );
         assert!(
-            matches!(result, Err(Error::Protocol { class, code })
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32),
+            matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+                if class == ErrorClass::PROPERTY
+                    && code == ErrorCode::VALUE_OUT_OF_RANGE),
             "{object_type:?}: {result:?}"
         );
         for property in [
@@ -297,9 +298,9 @@ fn structured_view_set_subordinates_replaces_both_arrays_or_nothing() {
         (not_a_device, "Elsewhere".to_string()),
     ]);
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::VALUE_OUT_OF_RANGE),
         "{result:?}"
     );
     assert_eq!(sv.subordinates().count(), 2);
@@ -339,7 +340,7 @@ fn structured_view_node_subtype() {
 #[test]
 fn structured_view_property_list() {
     let sv = StructuredViewObject::new(1, "SV").unwrap();
-    let props = sv.property_list();
+    let props = crate::test_rows::listed(&sv.property_metadata());
     assert!(props.contains(&PropertyIdentifier::NODE_TYPE));
     assert!(props.contains(&PropertyIdentifier::NODE_SUBTYPE));
     assert!(props.contains(&PropertyIdentifier::SUBORDINATE_LIST));

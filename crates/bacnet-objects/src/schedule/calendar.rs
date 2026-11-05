@@ -1,7 +1,8 @@
 //! Calendar (type 6), Clause 12.9.
 
-use std::borrow::Cow;
-use std::sync::Arc;
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
 
 use bacnet_types::calendar::SpecificDate;
 use bacnet_types::constructed::BACnetCalendarEntry;
@@ -11,7 +12,8 @@ use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::{calendar_metadata, date_list};
 use crate::clock::ClockReader;
-use crate::common::{self, read_property_list_property};
+use crate::common;
+use crate::property_metadata::read_property_list;
 use crate::traits::BACnetObject;
 
 /// BACnet Calendar object.
@@ -115,6 +117,7 @@ impl BACnetObject for CalendarObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         match property {
             p if p == PropertyIdentifier::OBJECT_IDENTIFIER => {
                 Ok(PropertyValue::ObjectIdentifier(self.oid))
@@ -133,12 +136,12 @@ impl BACnetObject for CalendarObject {
             }
             p if p == PropertyIdentifier::DATE_LIST => Ok(date_list::read(&self.date_list)),
             p if p == PropertyIdentifier::PROPERTY_LIST => {
-                read_property_list_property(&self.property_list(), array_index)
+                read_property_list(&self.property_metadata(), array_index)
             }
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -149,6 +152,7 @@ impl BACnetObject for CalendarObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
@@ -166,7 +170,6 @@ impl BACnetObject for CalendarObject {
         Err(common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
@@ -174,15 +177,41 @@ impl BACnetObject for CalendarObject {
         calendar_metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
+    fn calendar_state(&self) -> Option<&dyn crate::traits::CalendarState> {
+        Some(self)
     }
 
-    fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
-        self.clock = clock;
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
     }
+}
 
-    fn calendar_state_internal(&self, day: SpecificDate) -> Option<bool> {
-        Some(self.is_active_on(day))
+/// Object_Name is read-only over the network, but a client names the
+/// Calendar it creates (#2208).
+impl crate::creation::Creatable for CalendarObject {
+    const CREATION_ONLY_PROPERTIES: &'static [PropertyIdentifier] =
+        &[PropertyIdentifier::OBJECT_NAME];
+
+    fn initialize_property(
+        &mut self,
+        property: PropertyIdentifier,
+        value: PropertyValue,
+    ) -> Result<(), Error> {
+        if property != PropertyIdentifier::OBJECT_NAME {
+            return Err(common::write_access_denied_error());
+        }
+        common::initialize_object_name(&mut self.name, &value)
+    }
+}
+
+impl crate::traits::CalendarState for CalendarObject {
+    fn state_on(&self, day: SpecificDate) -> bool {
+        self.is_active_on(day)
+    }
+}
+
+impl crate::traits::Timed for CalendarObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.clock = clocks.clock.clone();
     }
 }

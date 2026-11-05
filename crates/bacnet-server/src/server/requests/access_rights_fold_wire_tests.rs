@@ -11,13 +11,18 @@ async fn a_write_property_multiple_refused_at_its_second_write_puts_storage_back
     let (fixture, rights) = served_by(&storage).await;
     let first = [zone_rule(1), zone_rule(2)];
     // The first and third attempts stage one save together. The second is
-    // refused, since Description takes a character string, so the request
-    // makes its first write and never its third.
+    // refused, since Global_Identifier takes an unsigned, so the request
+    // makes its first write and never its third. (A refused Description
+    // would end the staging there, as the object keeps it, #2364.)
     let request = write_property_multiple(
         rights,
         vec![
             attempt(P::POSITIVE_ACCESS_RULES, None, encoded(&first)),
-            attempt(P::DESCRIPTION, None, value(PropertyValue::Unsigned(1))),
+            attempt(
+                P::GLOBAL_IDENTIFIER,
+                None,
+                value(PropertyValue::CharacterString("x".into())),
+            ),
             attempt(P::LOG_ENABLE, None, value(PropertyValue::Boolean(false))),
         ],
     );
@@ -56,12 +61,16 @@ async fn a_write_another_path_cannot_make_leaves_a_staged_save_to_its_request() 
         let mut db = written.expect("the database was held while it saved");
         let object = db.get_mut(&rights).unwrap();
         let past_end = PropertyValue::ApplicationData(encoded(&[zone_rule(9)]));
-        assert!(object
-            .write_property(P::POSITIVE_ACCESS_RULES, Some(5), past_end, None)
-            .is_err());
-        assert!(object
-            .write_property(P::LOG_ENABLE, None, PropertyValue::Null, None)
-            .is_err());
+        assert!(
+            object
+                .write_property(P::POSITIVE_ACCESS_RULES, Some(5), past_end, None)
+                .is_err()
+        );
+        assert!(
+            object
+                .write_property(P::LOG_ENABLE, None, PropertyValue::Null, None)
+                .is_err()
+        );
     }
     // Let every save through, so one queued meanwhile can't hold the test.
     drop(go);

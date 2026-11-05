@@ -1,5 +1,5 @@
 use super::BinaryValueObject;
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
@@ -159,7 +159,7 @@ mod tests {
     use crate::property_metadata::PropertyConformance::RequiredWrite;
     use crate::traits::BACnetObject;
     use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType};
-    use bacnet_types::error::Error;
+    use bacnet_types::error::{Error, RemoteError};
     use bacnet_types::primitives::PropertyValue;
 
     fn objects() -> [Box<dyn BACnetObject>; 2] {
@@ -171,8 +171,8 @@ mod tests {
 
     fn assert_error(error: Error, expected: ErrorCode) {
         assert!(
-            matches!(error, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32),
+            matches!(error, Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::PROPERTY && code == expected),
             "expected {expected:?}, got {error:?}"
         );
     }
@@ -230,9 +230,12 @@ mod tests {
                     )
                     .unwrap();
                 assert_eq!(object.property_metadata().as_ref(), original);
-                assert_eq!(object.property_list().as_ref(), expected);
+                assert_eq!(
+                    crate::test_rows::listed(&object.property_metadata()),
+                    crate::test_rows::listed_from(&expected)
+                );
                 assert_eq!(original.len(), expected.len() + 1);
-                let required = object.required_properties();
+                let required = crate::test_rows::required(&object.property_metadata());
                 for row in &original {
                     let p = row.property_identifier;
                     let condition = match p {
@@ -383,7 +386,7 @@ mod tests {
                     };
                     assert_eq!(row.write_capability, capability, "{p:?}");
                     assert_eq!(
-                        object.is_writable_property(p),
+                        crate::property_metadata::is_writable_property(&*object, p),
                         capability.is_writable(),
                         "{p:?}"
                     );

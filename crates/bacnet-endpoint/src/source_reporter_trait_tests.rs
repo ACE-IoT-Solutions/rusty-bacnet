@@ -11,7 +11,7 @@ mod forwarding;
 
 use bacnet_types::enums::ObjectType;
 use forwarding::fixtures::oid;
-use forwarding::probe::{take, CallLog, Probe};
+use forwarding::probe::{CallLog, Probe, take};
 use forwarding::rows::rows;
 
 /// What one row answered, and the calls the probe logged for it.
@@ -32,8 +32,6 @@ fn outcomes(object: &mut dyn BACnetObject, log: &CallLog) -> Vec<Outcome> {
 
 #[test]
 fn every_method_reaches_the_wrapped_object() {
-    // The method an active source answers without asking the wrapped object.
-    const OWN_ANSWERS: [&str; 1] = ["is_deleteable"];
     let log = CallLog::default();
     let probe = Probe::new(ObjectType::ANALOG_VALUE, log.clone());
     let mut object: Box<dyn BACnetObject> = Box::new(probe);
@@ -50,17 +48,61 @@ fn every_method_reaches_the_wrapped_object() {
     let sealed = outcomes(object.as_mut(), &log);
     for ((expected, active), sealed) in direct.iter().zip(&active).zip(&sealed) {
         let name = expected.0;
-        assert_eq!(
-            sealed, expected,
-            "{name}: SourceReporter must forward it, arguments and answer unchanged"
-        );
-        if OWN_ANSWERS.contains(&name) {
-            assert_ne!(active, expected, "{name}: an active source answers it");
-        } else {
+        for outcome in [active, sealed] {
             assert_eq!(
-                active, expected,
+                outcome, expected,
                 "{name}: SourceReporter must forward it, arguments and answer unchanged"
             );
         }
     }
+}
+
+/// A wrapped object that advertises Audit_Source_Reporter as writable:
+/// while the source is active, the adapter's rows say it isn't.
+struct WritableSource;
+
+impl BACnetObject for WritableSource {
+    fn object_identifier(&self) -> ObjectIdentifier {
+        oid(ObjectType::AUDIT_REPORTER, 1)
+    }
+    fn object_name(&self) -> &str {
+        "writable-source"
+    }
+    fn read_property(&self, _: PropertyIdentifier, _: Option<u32>) -> Result<PropertyValue, Error> {
+        Ok(PropertyValue::Boolean(false))
+    }
+    fn write_property(
+        &mut self,
+        _: PropertyIdentifier,
+        _: Option<u32>,
+        _: PropertyValue,
+        _: Option<u8>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        let source = [PropertyIdentifier::AUDIT_SOURCE_REPORTER];
+        crate::test_rows::rows(&source, &source)
+    }
+}
+
+#[test]
+fn an_active_source_rows_keep_audit_source_reporter_read_only() {
+    use bacnet_objects::property_metadata::is_writable_property;
+    let source = PropertyIdentifier::AUDIT_SOURCE_REPORTER;
+    let mut object: Box<dyn BACnetObject> = Box::new(WritableSource);
+    assert!(is_writable_property(&*object, source));
+    let owner = AuditOwnership::for_source(
+        oid(ObjectType::DEVICE, 123),
+        oid(ObjectType::AUDIT_REPORTER, 1),
+    );
+    install(&mut object, &owner).unwrap();
+    assert!(!is_writable_property(&*object, source));
+    assert!(
+        object
+            .write_property(source, None, PropertyValue::Boolean(true), None)
+            .is_err()
+    );
+    owner.seal();
+    assert!(is_writable_property(&*object, source));
 }

@@ -3,11 +3,9 @@ use bacnet_endpoint_core::endpoint_ingress::{
     EndpointApduDestination, EndpointEgressAdmissionError, EndpointIngress,
 };
 use bacnet_network::response_route::ResponseRoute;
+use bacnet_npdu::NetworkPriority;
 use bacnet_transport::{port::DirectResponseScope, sc::WebSocketPort};
-use bacnet_types::{
-    enums::{NetworkPriority, PropertyIdentifier},
-    MacAddr,
-};
+use bacnet_types::{MacAddr, enums::PropertyIdentifier};
 
 #[tokio::test]
 async fn checked_response_queue_is_bounded_caller_owned_and_does_not_retarget() {
@@ -27,7 +25,7 @@ async fn checked_response_queue_is_bounded_caller_owned_and_does_not_retarget() 
                 destination_mac: MacAddr::from_slice(&[1]),
             },
             false,
-            NetworkPriority::NORMAL,
+            NetworkPriority::Normal,
             Vec::new(),
         )
         .unwrap();
@@ -81,12 +79,14 @@ async fn checked_response_queue_is_bounded_caller_owned_and_does_not_retarget() 
     f.listener.stop().await;
     assert_eq!(f.listener.active_connections(), 0);
     // Holding the original capability did not retain A's socket or membership.
-    assert!(admitted
-        .direct_response
-        .unwrap()
-        .send(&[1, 0, 0x60, 4, 9], &DirectResponseScope::default())
-        .await
-        .is_err());
+    assert!(
+        admitted
+            .direct_response
+            .unwrap()
+            .send(&[1, 0, 0x60, 4, 9], &DirectResponseScope::default())
+            .await
+            .is_err()
+    );
 }
 
 async fn session_pending_response(stop: bool) {
@@ -134,10 +134,12 @@ async fn session_pending_response(stop: bool) {
     assert!(f.generic.try_recv().is_err());
     f.listener.stop().await;
     assert_eq!(f.listener.active_connections(), 0);
-    assert!(saved
-        .send(&[1, 0, 0x60, 10, 9], &DirectResponseScope::default())
-        .await
-        .is_err());
+    assert!(
+        saved
+            .send(&[1, 0, 0x60, 10, 9], &DirectResponseScope::default())
+            .await
+            .is_err()
+    );
 }
 #[tokio::test]
 async fn live_session_stop_cancels_queued_original_response_and_retained_handle() {

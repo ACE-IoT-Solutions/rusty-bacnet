@@ -1,6 +1,7 @@
 //! Shared resident storage and identity projection for BACnet log objects.
 
-use std::collections::VecDeque;
+use crate::prelude::*;
+use alloc::collections::VecDeque;
 
 use bacnet_encoding::constructed::{
     encode_event_log_record, encode_log_multiple_record, encode_log_record,
@@ -35,10 +36,7 @@ pub(crate) const TOTAL_RECORD_COUNT_METADATA: PropertyMetadata =
 /// names the property as present but not readable this way
 /// (Clause 15.5.1.3.1).
 pub(crate) fn log_buffer_read_denied() -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY.to_raw() as u32,
-        code: ErrorCode::READ_ACCESS_DENIED.to_raw() as u32,
-    }
+    Error::protocol(ErrorClass::PROPERTY, ErrorCode::READ_ACCESS_DENIED)
 }
 
 /// A log object's Log_Buffer as ReadRange pages it: the resident records,
@@ -46,7 +44,7 @@ pub(crate) fn log_buffer_read_denied() -> Error {
 /// with the identity ReadRange selects it by.
 ///
 /// The records align element for element with
-/// [`crate::traits::BACnetObject::log_record_identities_internal`]. A page
+/// [`crate::traits::LogBuffer::record_identities`]. A page
 /// encodes only the records it visits, and the built-in logs find them
 /// without walking the whole buffer, so a narrow window over a full log
 /// stays cheap (#1536).
@@ -160,7 +158,7 @@ pub const ANY_VALUE_MAX_OCTETS: usize = 256;
 
 /// Stable object-owned identity for one resident log record.
 ///
-/// Identity views returned by [`crate::traits::BACnetObject::log_record_identities_internal`]
+/// Identity views returned by [`crate::traits::LogBuffer::record_identities`]
 /// are ordered oldest-to-newest and align element-for-element with the owning
 /// object's resident records and `LOG_BUFFER` projection. Sequence numbers are
 /// always nonzero. Event and Trend logs count in Unsigned32 and wrap from

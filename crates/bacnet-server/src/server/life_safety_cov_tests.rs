@@ -29,7 +29,7 @@ fn subscription(
         issue_confirmed_notifications: false,
         // A Multiple context always has a finite lifetime.
         expires_at: (kind == CovNotificationKind::Multiple)
-            .then(|| Instant::now() + Duration::from_secs(3600)),
+            .then(|| crate::runtime_clock::core_now() + bacnet_time::Duration::from_secs(3600)),
         last_notified_observation: None,
         monitored_property: property,
         monitored_property_array_index: None,
@@ -194,9 +194,9 @@ async fn exact_single_cov_filters_whole_and_property_payloads() {
         .await
         .get_mut(&point_oid())
         .unwrap()
-        .set_life_safety_operation_expected_internal(
-            bacnet_types::enums::LifeSafetyOperation::SILENCE,
-        )
+        .life_safety()
+        .unwrap()
+        .set_life_safety_operation_expected(bacnet_types::enums::LifeSafetyOperation::SILENCE)
         .unwrap();
     fixture
         .fire(&[PropertyIdentifier::OPERATION_EXPECTED])
@@ -392,7 +392,9 @@ impl DispatchFixture {
             comm_state: Arc::new(CommState::default()),
             dcc_timer: Arc::new(Mutex::new(crate::server::dcc_timer::TimerSlot::default())),
             config: Arc::new(ServerConfig {
-                life_safety_operation_authorizer: Some(Arc::new(|_| true)),
+                policy: Some(Arc::new(
+                    crate::FnPolicy::new().life_safety_operation(|_| true),
+                )),
                 ..ServerConfig::default()
             }),
             source_mac: MacAddr::from_slice(&[127, 0, 0, 1, 0xBA, 0xD0]),
@@ -652,7 +654,9 @@ async fn operation_ack_precedes_exact_cov_and_duplicate_replays_ack_without_seco
         let mut db = fixture.db.write().await;
         db.get_mut(&point_oid())
             .unwrap()
-            .set_life_safety_operation_expected_internal(LifeSafetyOperation::SILENCE)
+            .life_safety()
+            .unwrap()
+            .set_life_safety_operation_expected(LifeSafetyOperation::SILENCE)
             .unwrap();
     }
     let silence = LifeSafetyOperationRequest {

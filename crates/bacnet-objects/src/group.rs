@@ -4,6 +4,8 @@
 //! - GlobalGroupObject (type 26) — Clause 12.50
 //! - StructuredViewObject (type 29) — Clause 12.29
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
 use bacnet_encoding::constructed::{
     encode_property_access_result, encode_read_access_specification,
 };
@@ -16,13 +18,14 @@ use bacnet_types::enums::{EventState, ObjectType, PropertyIdentifier, Reliabilit
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 use bytes::BytesMut;
-use std::borrow::Cow;
 
 use crate::common::{self, read_common_properties, read_identity_properties};
 use crate::device_reference;
 use crate::traits::BACnetObject;
 
 mod metadata;
+mod structured_view_creation;
+pub use structured_view_creation::MAX_SUBORDINATES;
 
 // ---------------------------------------------------------------------------
 // GroupObject (type 11)
@@ -38,8 +41,8 @@ pub enum GroupMemberRefusal {
     NestsGroupPresentValue,
 }
 
-impl std::fmt::Display for GroupMemberRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for GroupMemberRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NoProperties => f.write_str("the member lists no properties"),
             Self::NestsGroupPresentValue => f.write_str(
@@ -50,7 +53,7 @@ impl std::fmt::Display for GroupMemberRefusal {
     }
 }
 
-impl std::error::Error for GroupMemberRefusal {}
+impl core::error::Error for GroupMemberRefusal {}
 
 impl From<GroupMemberRefusal> for Error {
     fn from(_: GroupMemberRefusal) -> Self {
@@ -151,6 +154,7 @@ impl BACnetObject for GroupObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // Table 12-17 has no Status_Flags, Reliability or Out_Of_Service (#1064).
         if let Some(result) = read_identity_properties!(self, property, array_index) {
             return result;
@@ -187,26 +191,22 @@ impl BACnetObject for GroupObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            _array_index,
         ))
     }
 
     fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
         metadata::for_group_object(self)
-    }
-
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
     }
 }
 
@@ -360,6 +360,7 @@ impl BACnetObject for GlobalGroupObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = read_common_properties!(self, property, array_index) {
             return result;
         }
@@ -398,10 +399,11 @@ impl BACnetObject for GlobalGroupObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) =
             common::write_out_of_service(&mut self.out_of_service, property, &value)
         {
@@ -413,16 +415,11 @@ impl BACnetObject for GlobalGroupObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            _array_index,
         ))
     }
 
     fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
         metadata::for_global_group_object(self)
-    }
-
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
     }
 }
 
@@ -450,6 +447,9 @@ pub struct StructuredViewObject {
     subordinate_list: Vec<BACnetDeviceObjectReference>,
     /// Per-child annotations (parallel to subordinate_list).
     subordinate_annotations: Vec<String>,
+    /// Whether a CreateObject initial value gave Subordinate_List (0) and
+    /// Subordinate_Annotations (1), so the other must then match its size.
+    creation_given: [bool; 2],
 }
 
 impl StructuredViewObject {
@@ -464,6 +464,7 @@ impl StructuredViewObject {
             node_subtype: String::new(),
             subordinate_list: Vec::new(),
             subordinate_annotations: Vec::new(),
+            creation_given: [false; 2],
         })
     }
 
@@ -523,6 +524,7 @@ impl BACnetObject for StructuredViewObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // Table 12-34 has no Status_Flags, Reliability or Out_Of_Service (#1064).
         if let Some(result) = read_identity_properties!(self, property, array_index) {
             return result;
@@ -556,26 +558,35 @@ impl BACnetObject for StructuredViewObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            _array_index,
         ))
     }
 
     fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
         metadata::for_structured_view_object(self)
     }
+}
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
+impl crate::creation::Creatable for StructuredViewObject {
+    const CREATION_ONLY_PROPERTIES: &'static [PropertyIdentifier] =
+        structured_view_creation::CREATION_ONLY;
+
+    fn initialize_property(
+        &mut self,
+        property: PropertyIdentifier,
+        value: PropertyValue,
+    ) -> Result<(), Error> {
+        structured_view_creation::initialize(self, property, value)
     }
 }
 

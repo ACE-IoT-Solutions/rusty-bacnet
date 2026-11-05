@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 import rusty_bacnet
-from rusty_bacnet import BACnetServer, ObjectIdentifier, ObjectType
+from rusty_bacnet import (BACnetServer, ObjectIdentifier, ObjectType, PropertyIdentifier,
+                          PropertyValue)
 
 
 def stub_method() -> ast.FunctionDef:
@@ -34,10 +35,19 @@ class AlertEnrollmentApiTests(unittest.TestCase):
         parameters = list(
             inspect.signature(BACnetServer.add_alert_enrollment).parameters.values()
         )
+        # Then the keyword-only reporting-settings storage (#2331).
         self.assertEqual(
             [parameter.name for parameter in parameters],
-            ["self", "instance", "name", "initial_source"],
+            [
+                "self",
+                "instance",
+                "name",
+                "initial_source",
+                "storage_path",
+                "clear_written_reporting",
+            ],
         )
+        parameters = parameters[:4]
         self.assertTrue(
             all(parameter.default is inspect.Parameter.empty for parameter in parameters)
         )
@@ -67,6 +77,32 @@ class AlertEnrollmentApiTests(unittest.TestCase):
             invalid_call(2, "missing source")
         with self.assertRaises(TypeError):
             invalid_call(3, "wrong source", 7)
+
+
+class AlertEnrollmentReportingOptionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reporting_options_are_served_and_written(self) -> None:
+        # Table 12-61 lists the message texts and the inhibit pair (#1865).
+        P = PropertyIdentifier
+        server = BACnetServer(9601, interface="127.0.0.1", port=0,
+                              broadcast_address="127.0.0.1")
+        server.add_alert_enrollment(1, "AE-1", ObjectIdentifier(ObjectType.ANALOG_INPUT, 7))
+        await server.start()
+        try:
+            alert = ObjectIdentifier(ObjectType.ALERT_ENROLLMENT, 1)
+            empty = PropertyValue.list([PropertyValue.character_string("")] * 3)
+            self.assertEqual(await server.read_property(alert, P.EVENT_MESSAGE_TEXTS), empty)
+            config = PropertyValue.list([PropertyValue.character_string(text)
+                                         for text in ("Alert", "", "Clear")])
+            await server.write_property_local(alert, P.EVENT_MESSAGE_TEXTS_CONFIG, config,
+                                              source_object=None)
+            self.assertEqual(await server.read_property(alert, P.EVENT_MESSAGE_TEXTS_CONFIG),
+                             config)
+            await server.write_property_local(alert, P.EVENT_ALGORITHM_INHIBIT,
+                                              PropertyValue.boolean(True), source_object=None)
+            inhibit = await server.read_property(alert, P.EVENT_ALGORITHM_INHIBIT)
+            self.assertEqual((inhibit.tag, inhibit.value), ("boolean", True))
+        finally:
+            await server.stop()
 
 
 if __name__ == "__main__":

@@ -2,11 +2,15 @@
 
 use core::fmt;
 
+use crate::SinkFull;
+
 /// A frame could not be encoded or decoded.
 ///
 /// Encode and decode share the variants that mean the same thing in both
-/// directions; the caller knows which one it asked for.
+/// directions; the caller knows which one it asked for. Later releases may
+/// add variants, so a match outside this crate needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FrameError {
     /// Decode: the input ended before the header was complete.
     TooShort {
@@ -102,15 +106,24 @@ pub enum FrameError {
         /// The decoder's storage capacity.
         capacity: usize,
     },
-    /// There was no room for the octets: an encode sink is too small for the
-    /// frame, or a stream decoder's free storage is too small for a pushed
-    /// slice. Nothing was stored.
+    /// There was no room for the octets. It comes from three places:
+    ///
+    /// - Encode, before writing: the sink reports a capacity, and the frame
+    ///   doesn't fit it. `needed` is the frame's wire length, `available`
+    ///   the sink's remaining capacity, and nothing was written.
+    /// - Encode, part way through: one of the sink's own writes failed with
+    ///   a [`SinkFull`], as a growable sink's can, since it is never checked
+    ///   up front. `needed` and `available` are that write's, as the sink
+    ///   reported them, and the octets of the earlier writes stay in the
+    ///   sink (see [`FrameSink`](crate::FrameSink)).
+    /// - Stream decode: a pushed slice is longer than the decoder's free
+    ///   storage. `needed` is the slice less the octets of a frame the
+    ///   decoder is skipping, `available` the decoder's capacity less what
+    ///   it already buffers, and none of the slice was taken.
     BufferExhausted {
-        /// Octets this call had to store: the encoded frame, or the pushed
-        /// slice less the octets of a frame the decoder is skipping.
+        /// Octets the refused call or write had to store.
         needed: usize,
-        /// Free room at the time of the call: the sink's remaining capacity,
-        /// or the decoder's capacity less what it already buffers.
+        /// Room there was for them.
         available: usize,
     },
 }
@@ -164,3 +177,12 @@ impl fmt::Display for FrameError {
 }
 
 impl core::error::Error for FrameError {}
+
+impl From<SinkFull> for FrameError {
+    fn from(full: SinkFull) -> Self {
+        Self::BufferExhausted {
+            needed: full.needed,
+            available: full.available,
+        }
+    }
+}

@@ -1,7 +1,9 @@
-use super::value_source::{decoded, FIELDS};
+use super::value_source::{FIELDS, decoded};
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
+use bacnet_types::enums::EngineeringUnits;
 use std::borrow::Cow;
 
 #[derive(Default)]
@@ -22,18 +24,15 @@ impl BACnetObject for Probe {
     fn object_name(&self) -> &str {
         "command COV probe"
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        let mut list = self.inner.property_list().into_owned();
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        let mut rows = self.inner.property_metadata().into_owned();
         if self.state.lock().unwrap().noncommandable {
-            list.retain(|p| *p != PropertyIdentifier::PRIORITY_ARRAY);
+            rows.retain(|row| row.property_identifier != PropertyIdentifier::PRIORITY_ARRAY);
         }
-        Cow::Owned(list)
+        Cow::Owned(rows)
     }
-    fn supports_cov(&self) -> bool {
-        true
-    }
-    fn cov_increment(&self) -> Option<f64> {
-        Some(2.0)
+    fn cov(&self) -> Option<&dyn bacnet_objects::traits::CovReporting> {
+        Some(self)
     }
     fn read_property(&self, p: PropertyIdentifier, i: Option<u32>) -> Result<PropertyValue, Error> {
         let mut state = self.state.lock().unwrap();
@@ -56,12 +55,18 @@ impl BACnetObject for Probe {
         Err(Error::Encoding("read only probe".into()))
     }
 }
+
+impl bacnet_objects::traits::CovReporting for Probe {
+    fn cov_increment(&self) -> Option<f64> {
+        Some(2.0)
+    }
+}
 async fn fixture(
     kind: CovNotificationKind,
 ) -> (Fixture, Arc<StdMutex<State>>, CovSubscriptionSnapshot) {
     let f = Fixture::new(false);
     let state = Arc::new(StdMutex::new(State::default()));
-    let mut av = AnalogValueObject::new(3, "probe", 95).unwrap();
+    let mut av = AnalogValueObject::new(3, "probe", EngineeringUnits::NO_UNITS).unwrap();
     av.set_relinquish_default(10.0).unwrap();
     let mut db = clocked_test_database();
     db.add(Box::new(Probe {
@@ -78,7 +83,7 @@ async fn fixture(
 async fn baseline(
     f: &Fixture,
     sub: &CovSubscriptionSnapshot,
-) -> Option<crate::cov::CovObservation> {
+) -> Option<bacnet_device_core::cov::CovObservation> {
     f.table
         .read()
         .await
@@ -265,12 +270,16 @@ async fn multiple_dedup_qualification_and_timestamps(noncommandable: bool) {
     }
     if noncommandable {
         let state = state.lock().unwrap();
-        assert!(!state
-            .reads
-            .contains_key(&PropertyIdentifier::LAST_COMMAND_TIME));
-        assert!(!state
-            .reads
-            .contains_key(&PropertyIdentifier::CURRENT_COMMAND_PRIORITY));
+        assert!(
+            !state
+                .reads
+                .contains_key(&PropertyIdentifier::LAST_COMMAND_TIME)
+        );
+        assert!(
+            !state
+                .reads
+                .contains_key(&PropertyIdentifier::CURRENT_COMMAND_PRIORITY)
+        );
     }
     let pv = snapshots
         .iter()
@@ -452,10 +461,12 @@ async fn value_source_cov_multiple_timestamped_sibling_merges_flags_only_when_qu
         .collect();
     assert_eq!(pv_times, vec![Some(prepared.local_time)]);
     assert_eq!(baseline(&f, &pv).await, pv_before);
-    assert!(baseline(&f, &source)
-        .await
-        .unwrap()
-        .source_companions()
-        .is_some());
+    assert!(
+        baseline(&f, &source)
+            .await
+            .unwrap()
+            .source_companions()
+            .is_some()
+    );
     f.finish(false).await;
 }

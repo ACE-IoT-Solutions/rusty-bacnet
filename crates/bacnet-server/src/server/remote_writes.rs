@@ -42,13 +42,13 @@
 //! for an I-Am, and the binding table's guard is never held across a send or
 //! a wait.
 
-use super::binding_probes::{can_look_for, DeviceLookup, LookupMiss, LookupStart};
+use super::binding_probes::{DeviceLookup, LookupMiss, LookupStart, can_look_for};
 use super::device_bindings::{DeviceBindingTable, DeviceResolution};
 use super::event_recipient_route::{
     ConfirmedRecipientRoute, ConfirmedRouteRefusal, RecipientRoute,
 };
 use super::notification_transactions::{
-    run_attempts, Attempt, AttemptsEnd, NotificationReserveError,
+    Attempt, AttemptsEnd, NotificationReserveError, run_attempts,
 };
 use super::*;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
@@ -86,7 +86,7 @@ pub(crate) enum RemoteRequestError {
     /// The server is stopping.
     Stopping,
     /// The device answered with an Error, Reject or Abort, saying this.
-    Refused(Refusal),
+    Refused(RemoteError),
     /// No answer to the first attempt or any retry.
     Unanswered,
     /// The runner has no network to send on: a run made without a server.
@@ -94,6 +94,10 @@ pub(crate) enum RemoteRequestError {
     /// A read's answer doesn't decode, or names another property than the
     /// one asked for.
     Malformed,
+    /// The run that asked for the write is no longer current: its object was
+    /// deleted, replaced or started another run before an attempt went out
+    /// (#2265). Nothing more was sent.
+    Withdrawn,
 }
 
 impl fmt::Display for RemoteRequestError {
@@ -113,6 +117,7 @@ impl fmt::Display for RemoteRequestError {
             Self::Unanswered => "the device didn't answer",
             Self::NoNetwork => "no network to send the request on",
             Self::Malformed => "the device's answer doesn't fit the read",
+            Self::Withdrawn => "the run that asked for it is no longer current",
         };
         formatter.write_str(reason)
     }
@@ -163,9 +168,35 @@ pub(super) struct RemoteWriter<'a, T: TransportPort + 'static> {
     pub(super) max_apdu: u32,
 }
 
+/// A run a write is made for, checked once the route is known, before its
+/// invoke ID is leased, and again before each retry (#2265): a run that went
+/// stale while the write waited for a binding, or between retries, sends
+/// nothing more. The database's read guard is taken for the check alone,
+/// never across a send or a wait, so an attempt that passed its check is
+/// still sent if the run goes stale before the send.
+#[derive(Clone, Copy)]
+pub(super) struct RunCheck<'a> {
+    pub(super) db: &'a Arc<RwLock<ObjectDatabase>>,
+    pub(super) run: &'a bacnet_objects::command::CommandRun,
+}
+
+impl RunCheck<'_> {
+    async fn withdrawn(check: Option<Self>) -> bool {
+        match check {
+            Some(check) => !crate::command_lists::is_current(&*check.db.read().await, check.run),
+            None => false,
+        }
+    }
+}
+
 impl<T: TransportPort + 'static> RemoteWriter<'_, T> {
-    /// Send `write` and wait for the device's answer.
-    pub(super) async fn write(&self, write: &RemoteWrite) -> Result<(), RemoteRequestError> {
+    /// Send `write` and wait for the device's answer, on behalf of `run`
+    /// when one is given.
+    pub(super) async fn write(
+        &self,
+        write: &RemoteWrite,
+        run: Option<RunCheck<'_>>,
+    ) -> Result<(), RemoteRequestError> {
         let mut service = BytesMut::new();
         write
             .request
@@ -173,7 +204,7 @@ impl<T: TransportPort + 'static> RemoteWriter<'_, T> {
             .map_err(|_| RemoteRequestError::Unencodable)?;
         // A write's lease admits no ComplexAck, so any answer taken is a
         // SimpleAck.
-        self.request(write.device, WRITE_PROPERTY, service)
+        self.request(write.device, WRITE_PROPERTY, service, run)
             .await
             .map(drop)
     }
@@ -188,7 +219,7 @@ impl<T: TransportPort + 'static> RemoteWriter<'_, T> {
     ) -> Result<PropertyValue, RemoteRequestError> {
         let mut service = BytesMut::new();
         request.encode(&mut service);
-        let Some(data) = self.request(device, READ_PROPERTY, service).await? else {
+        let Some(data) = self.request(device, READ_PROPERTY, service, None).await? else {
             return Err(RemoteRequestError::Malformed);
         };
         let ack = ReadPropertyACK::decode(&data).map_err(|_| RemoteRequestError::Malformed)?;
@@ -214,11 +245,15 @@ impl<T: TransportPort + 'static> RemoteWriter<'_, T> {
         device: ObjectIdentifier,
         service_choice: ConfirmedServiceChoice,
         parameters: BytesMut,
+        run: Option<RunCheck<'_>>,
     ) -> Result<Option<Bytes>, RemoteRequestError> {
         if self.initiation_restricted() {
             return Err(RemoteRequestError::Disabled);
         }
         let route = self.route(device).await?;
+        if RunCheck::withdrawn(run).await {
+            return Err(RemoteRequestError::Withdrawn);
+        }
         // Checked before an invoke ID is leased.
         let capacity = usize::try_from(self.max_apdu).unwrap_or(usize::MAX);
         if CONFIRMED_HEADER_LEN + parameters.len() > capacity {
@@ -272,6 +307,11 @@ impl<T: TransportPort + 'static> RemoteWriter<'_, T> {
                 if let Some(reason) = withdrawn {
                     return Attempt::Withdrawn(reason);
                 }
+                // The first attempt was checked before the lease; each retry
+                // is checked again, with no guard held over the send.
+                if attempt > 0 && RunCheck::withdrawn(run).await {
+                    return Attempt::Withdrawn(RemoteRequestError::Withdrawn);
+                }
                 match send(network, apdu, route, invoke_id, attempt).await {
                     Ok(()) => Attempt::Sent,
                     Err(()) => Attempt::NotSent,
@@ -308,7 +348,7 @@ impl<T: TransportPort + 'static> RemoteWriter<'_, T> {
         }
         let wait = match lookup.start(device).await {
             LookupStart::Resolved(resolution) => {
-                return self.confirmed(resolution, RemoteRequestError::Unbound)
+                return self.confirmed(resolution, RemoteRequestError::Unbound);
             }
             LookupStart::Waiting(wait) => wait,
             LookupStart::NotLooking => return Err(RemoteRequestError::Unbound),
@@ -370,7 +410,7 @@ async fn send<T: TransportPort + 'static>(
     invoke_id: u8,
     attempt: u8,
 ) -> Result<(), ()> {
-    let priority = NetworkPriority::NORMAL;
+    let priority = NetworkPriority::Normal;
     let sent = match (&route.local_target, &route.remote) {
         (Some(mac), None) => network.send_apdu(apdu, mac, true, priority).await,
         (None, Some((dnet, dadr, Some(router)))) => {

@@ -1,8 +1,11 @@
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
+use bacnet_objects::traits::EventReporting as _;
 use bacnet_types::bitstring::EventTransitionBits;
+use bacnet_types::error::RemoteError;
 
 use bacnet_encoding::primitives;
-use bacnet_encoding::tags::{encode_tag, TagClass};
+use bacnet_encoding::tags::{TagClass, encode_tag};
 use bacnet_objects::analog::{AnalogOutputObject, AnalogValueObject};
 use bacnet_objects::binary::{BinaryInputObject, BinaryOutputObject, BinaryValueObject};
 use bacnet_objects::event::{EnrollmentSummaryCapability, EventStateChange, EventTransitionCommit};
@@ -12,7 +15,7 @@ use bacnet_objects::multistate::{
 };
 use bacnet_services::alarm_event::AcknowledgeAlarmRequest;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetEventParameter};
-use bacnet_types::enums::EventType;
+use bacnet_types::enums::{EngineeringUnits, EventType};
 
 fn add_committed<O: BACnetObject + 'static>(
     db: &mut ObjectDatabase,
@@ -22,7 +25,9 @@ fn add_committed<O: BACnetObject + 'static>(
 ) -> ObjectIdentifier {
     let oid = object.object_identifier();
     object
-        .commit_event_transition_internal(EventTransitionCommit {
+        .event_reporting_mut()
+        .unwrap()
+        .commit_event_transition(EventTransitionCommit {
             change: EventStateChange {
                 from: EventState::NORMAL,
                 to: state,
@@ -110,8 +115,8 @@ fn snapshot(
 fn assert_protocol(error: Error, class: ErrorClass, code: ErrorCode) {
     assert!(matches!(
         error,
-        Error::Protocol { class: actual_class, code: actual_code }
-            if actual_class == class.to_raw() as u32 && actual_code == code.to_raw() as u32
+        Error::Remote(RemoteError::Error { class: actual_class, code: actual_code })
+            if actual_class == class && actual_code == code
     ));
 }
 
@@ -132,8 +137,11 @@ fn configured_event_enrollment() -> EventEnrollmentObject {
     object
 }
 
-struct LegacyCoarseAckObject {
+/// Accepts every acknowledgment without a transition, when it lends event
+/// reporting at all.
+struct UncorrelatedAckObject {
     oid: ObjectIdentifier,
+    lends: bool,
 }
 
 struct MalformedDetailedAckObject {
@@ -174,18 +182,26 @@ impl BACnetObject for MalformedDetailedAckObject {
         Err(Error::Encoding("test object is read-only".into()))
     }
 
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        std::borrow::Cow::Borrowed(&[])
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 
-    fn enrollment_summary_capability_internal(&self) -> Option<EnrollmentSummaryCapability> {
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::EventReporting for MalformedDetailedAckObject {
+    fn enrollment_summary_capability(&self) -> Option<EnrollmentSummaryCapability> {
         Some(EnrollmentSummaryCapability {
             event_type: EventType::OUT_OF_RANGE,
             last_transition: None,
         })
     }
-
-    fn acknowledge_alarm_correlated_detailed_internal(
+    fn acknowledge_alarm(
         &mut self,
         _event_state: EventState,
         _timestamp: &BACnetTimeStamp,
@@ -197,13 +213,13 @@ impl BACnetObject for MalformedDetailedAckObject {
     }
 }
 
-impl BACnetObject for LegacyCoarseAckObject {
+impl BACnetObject for UncorrelatedAckObject {
     fn object_identifier(&self) -> ObjectIdentifier {
         self.oid
     }
 
     fn object_name(&self) -> &str {
-        "legacy-coarse-ack"
+        "uncorrelated-ack"
     }
 
     fn read_property(
@@ -211,9 +227,7 @@ impl BACnetObject for LegacyCoarseAckObject {
         _property: PropertyIdentifier,
         _array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
-        Err(Error::Encoding(
-            "legacy test object has no properties".into(),
-        ))
+        Err(Error::Encoding("test object has no properties".into()))
     }
 
     fn write_property(
@@ -223,27 +237,37 @@ impl BACnetObject for LegacyCoarseAckObject {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Encoding("legacy test object is read-only".into()))
+        Err(Error::Encoding("test object is read-only".into()))
     }
 
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        std::borrow::Cow::Borrowed(&[])
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 
-    fn acknowledge_alarm_correlated_internal(
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        if self.lends { Some(self) } else { None }
+    }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        if self.lends { Some(self) } else { None }
+    }
+}
+
+impl bacnet_objects::traits::EventReporting for UncorrelatedAckObject {
+    fn acknowledge_alarm(
         &mut self,
         _event_state: EventState,
         _timestamp: &BACnetTimeStamp,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> Result<Option<EventStateChange>, Error> {
+        Ok(None)
     }
 }
 
 #[test]
-fn legacy_coarse_hook_accepts_without_inventing_notification_context() {
+fn uncorrelated_acknowledgment_accepts_without_inventing_notification_context() {
     let oid = ObjectIdentifier::new(ObjectType::ACCUMULATOR, 91).unwrap();
     let mut db = ObjectDatabase::new();
-    db.add(Box::new(LegacyCoarseAckObject { oid })).unwrap();
+    db.add(Box::new(UncorrelatedAckObject { oid, lends: true }))
+        .unwrap();
 
     let accepted = handle_acknowledge_alarm(
         &mut db,
@@ -257,6 +281,28 @@ fn legacy_coarse_hook_accepts_without_inventing_notification_context() {
 
     assert_eq!(accepted.event_object_identifier, oid);
     assert_eq!(accepted.notification, None);
+}
+
+/// An object that lends no event reporting has no alarm to acknowledge,
+/// whatever it would answer if it lent one.
+#[test]
+fn an_object_lending_no_event_reporting_has_no_alarm_configured() {
+    let oid = ObjectIdentifier::new(ObjectType::ACCUMULATOR, 93).unwrap();
+    let mut db = ObjectDatabase::new();
+    db.add(Box::new(UncorrelatedAckObject { oid, lends: false }))
+        .unwrap();
+
+    let error = handle_acknowledge_alarm(
+        &mut db,
+        &encode_request(
+            oid,
+            EventState::HIGH_LIMIT,
+            BACnetTimeStamp::SequenceNumber(42),
+        ),
+    )
+    .unwrap_err();
+
+    assert_protocol(error, ErrorClass::OBJECT, ErrorCode::NO_ALARM_CONFIGURED);
 }
 
 #[test]
@@ -288,7 +334,7 @@ fn supported_families_acknowledge_only_the_correlated_transition() {
         (
             add_committed(
                 &mut db,
-                AnalogInputObject::new(1, "AI-ack", 62).unwrap(),
+                AnalogInputObject::new(1, "AI-ack", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
                 EventState::HIGH_LIMIT,
                 stamp.clone(),
             ),
@@ -297,7 +343,7 @@ fn supported_families_acknowledge_only_the_correlated_transition() {
         (
             add_committed(
                 &mut db,
-                AnalogOutputObject::new(1, "AO-ack", 62).unwrap(),
+                AnalogOutputObject::new(1, "AO-ack", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
                 EventState::HIGH_LIMIT,
                 stamp.clone(),
             ),
@@ -306,7 +352,7 @@ fn supported_families_acknowledge_only_the_correlated_transition() {
         (
             add_committed(
                 &mut db,
-                AnalogValueObject::new(1, "AV-ack", 62).unwrap(),
+                AnalogValueObject::new(1, "AV-ack", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
                 EventState::HIGH_LIMIT,
                 stamp.clone(),
             ),
@@ -394,9 +440,10 @@ fn supported_families_acknowledge_only_the_correlated_transition() {
 
 #[test]
 fn fault_recovery_acknowledgment_uses_historical_change_of_reliability() {
-    let mut object = AnalogInputObject::new(2, "AI-fault-recovery", 62).unwrap();
+    let mut object =
+        AnalogInputObject::new(2, "AI-fault-recovery", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     object
-        .commit_event_transition_internal(EventTransitionCommit {
+        .commit_event_transition(EventTransitionCommit {
             change: EventStateChange {
                 from: EventState::NORMAL,
                 to: EventState::FAULT,
@@ -408,7 +455,7 @@ fn fault_recovery_acknowledgment_uses_historical_change_of_reliability() {
         })
         .unwrap();
     object
-        .commit_event_transition_internal(EventTransitionCommit {
+        .commit_event_transition(EventTransitionCommit {
             change: EventStateChange {
                 from: EventState::FAULT,
                 to: EventState::NORMAL,
@@ -445,7 +492,7 @@ fn state_and_timestamp_mismatches_return_exact_errors_without_mutation() {
     let mut db = ObjectDatabase::new();
     let oid = add_committed(
         &mut db,
-        AnalogInputObject::new(1, "AI-invalid", 62).unwrap(),
+        AnalogInputObject::new(1, "AI-invalid", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
         EventState::LOW_LIMIT,
         BACnetTimeStamp::SequenceNumber(42),
     );
@@ -526,8 +573,10 @@ fn unknown_uninitialized_and_unsupported_objects_fail_closed() {
     }
 
     let oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 8).unwrap();
-    db.add(Box::new(AnalogInputObject::new(8, "AI-empty", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogInputObject::new(8, "AI-empty", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     let before = snapshot(&db, oid);
     let error = handle_acknowledge_alarm(
         &mut db,
@@ -564,7 +613,7 @@ fn disabled_analog_input_returns_no_alarm_configured_before_correlation() {
     let mut db = ObjectDatabase::new();
     let oid = add_committed(
         &mut db,
-        AnalogInputObject::new(1, "AI-disabled", 62).unwrap(),
+        AnalogInputObject::new(1, "AI-disabled", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
         EventState::HIGH_LIMIT,
         BACnetTimeStamp::SequenceNumber(42),
     );
@@ -597,7 +646,7 @@ fn invalid_source_text_is_sanitized_but_malformed_source_framing_is_rejected() {
     let mut db = ObjectDatabase::new();
     let oid = add_committed(
         &mut db,
-        AnalogInputObject::new(1, "AI-source", 62).unwrap(),
+        AnalogInputObject::new(1, "AI-source", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
         EventState::HIGH_LIMIT,
         BACnetTimeStamp::SequenceNumber(42),
     );
@@ -614,6 +663,9 @@ fn invalid_source_text_is_sanitized_but_malformed_source_framing_is_rejected() {
 
     let before = snapshot(&db, oid);
     let error = handle_acknowledge_alarm(&mut db, &encode_request_with_raw_source(oid, &[]));
-    assert!(matches!(error, Err(Error::Reject { .. })), "{error:?}");
+    assert!(
+        matches!(error, Err(Error::Remote(RemoteError::Reject { .. }))),
+        "{error:?}"
+    );
     assert_eq!(snapshot(&db, oid), before);
 }

@@ -3,7 +3,9 @@
 //! Priority_For_Writing, the Table 12-36 required rows #1307 adds (Clauses
 //! 12.31.10, 12.31.11, 12.31.14 and 12.31.33).
 
+use crate::property_metadata::{is_array_property, is_writable_property};
 use bacnet_types::enums::{AuthorizationMode, ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::RemoteError;
 
 use super::*;
 
@@ -36,9 +38,9 @@ const STANDARD_MODES: [AuthorizationMode; 6] = [
 
 fn assert_error(result: Result<(), Error>, expected: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == expected.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == expected),
         "expected {expected:?}, got {result:?}"
     );
 }
@@ -52,19 +54,23 @@ fn access_point_serves_policy_mode_and_priority_defaults() {
     assert_eq!(read(&point, MODE), mode(AuthorizationMode::AUTHORIZE));
     assert_eq!(read(&point, PRIORITY), PropertyValue::Unsigned(16));
     for property in [POLICY, POLICIES, MODE, PRIORITY] {
-        assert!(point.property_list().contains(&property), "{property:?}");
         assert!(
-            point.required_properties().contains(&property),
+            crate::property_metadata::has_property(&point.property_metadata(), property),
             "{property:?}"
         );
-        assert!(!point.is_array_property(property), "{property:?}");
+        assert!(
+            crate::property_metadata::required_properties(&point.property_metadata())
+                .any(|required| required == property),
+            "{property:?}"
+        );
+        assert!(!is_array_property(&point, property), "{property:?}");
     }
     // A client picks the policy and the mode; the count and the priority
     // are the application's.
-    assert!(point.is_writable_property(POLICY));
-    assert!(point.is_writable_property(MODE));
-    assert!(!point.is_writable_property(POLICIES));
-    assert!(!point.is_writable_property(PRIORITY));
+    assert!(is_writable_property(&point, POLICY));
+    assert!(is_writable_property(&point, MODE));
+    assert!(!is_writable_property(&point, POLICIES));
+    assert!(!is_writable_property(&point, PRIORITY));
 }
 
 #[test]

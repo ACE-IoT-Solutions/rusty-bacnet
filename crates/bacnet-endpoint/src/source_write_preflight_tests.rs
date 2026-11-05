@@ -1,6 +1,7 @@
 use super::*;
+use bacnet_types::error::RemoteError;
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_write_preflight_is_silent_with_and_without_reporter() {
     let (mut peer, mut requests) = network().await;
     let (mut sink, mut records) = network().await;
@@ -8,10 +9,7 @@ async fn source_write_preflight_is_silent_with_and_without_reporter() {
         let mut endpoint = if reported {
             session(write_database(false), SessionRole::ClientOnly, &sink)
         } else {
-            BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
-                .role(SessionRole::ClientOnly)
-                .build_session()
-                .unwrap()
+            bare_session(SessionRole::ClientOnly, SessionConfig::default())
         };
         endpoint.start().await.unwrap();
         let client = endpoint.cloned_client_handle().unwrap();
@@ -22,20 +20,22 @@ async fn source_write_preflight_is_silent_with_and_without_reporter() {
             (vec![0], Some(0)),
             (vec![0], Some(17)),
         ] {
-            assert!(client
-                .write_property(
-                    peer.local_mac(),
-                    WritePropertyRequest {
-                        object_identifier: target(),
-                        property_identifier: PropertyIdentifier::PRESENT_VALUE,
-                        property_array_index: None,
-                        property_value: value,
-                        priority,
-                    },
-                    Commandability::Commandable,
-                )
-                .await
-                .is_err());
+            assert!(
+                client
+                    .write_property(
+                        peer.local_mac(),
+                        WritePropertyRequest {
+                            object_identifier: target(),
+                            property_identifier: PropertyIdentifier::PRESENT_VALUE,
+                            property_array_index: None,
+                            property_value: value,
+                            priority,
+                        },
+                        Commandability::Commandable,
+                    )
+                    .await
+                    .is_err()
+            );
             assert_eq!(endpoint.active_leases(), 0);
         }
         for mac in [
@@ -44,20 +44,22 @@ async fn source_write_preflight_is_silent_with_and_without_reporter() {
             encode_bip_mac([127, 0, 0, 1], 0).to_vec(),
             encode_bip_mac([224, 0, 0, 1], 47808).to_vec(),
         ] {
-            assert!(client
-                .write_property(
-                    &mac,
-                    WritePropertyRequest {
-                        object_identifier: target(),
-                        property_identifier: PropertyIdentifier::PRESENT_VALUE,
-                        property_array_index: None,
-                        property_value: vec![0],
-                        priority: None,
-                    },
-                    Commandability::Noncommandable,
-                )
-                .await
-                .is_err());
+            assert!(
+                client
+                    .write_property(
+                        &mac,
+                        WritePropertyRequest {
+                            object_identifier: target(),
+                            property_identifier: PropertyIdentifier::PRESENT_VALUE,
+                            property_array_index: None,
+                            property_value: vec![0],
+                            priority: None,
+                        },
+                        Commandability::Noncommandable,
+                    )
+                    .await
+                    .is_err()
+            );
         }
         assert!(requests.try_recv().is_err());
         assert!(records.try_recv().is_err());
@@ -90,7 +92,7 @@ async fn source_write_preflight_is_silent_with_and_without_reporter() {
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_write_before_admission_cancel_and_after_admission_retry_are_bounded() {
     let (mut peer, mut requests) = network().await;
     let (mut sink, mut records) = network().await;
@@ -105,19 +107,15 @@ async fn source_write_before_admission_cancel_and_after_admission_retry_are_boun
         PropertyIdentifier::PRESENT_VALUE,
         None,
     );
-    timeout(WAIT, async {
-        while session
+    eventually(WAIT, "a source operation is in use", async || {
+        session
             .source_audit
             .as_ref()
             .unwrap()
             .available_operations()
-            == 64
-        {
-            tokio::task::yield_now().await;
-        }
+            != 64
     })
-    .await
-    .unwrap();
+    .await;
     pending.abort();
     let _ = pending.await;
     drop(guard);
@@ -152,16 +150,18 @@ async fn source_write_before_admission_cancel_and_after_admission_retry_are_boun
         record.source_timestamp,
         Some(BACnetTimeStamp::SequenceNumber(0))
     );
-    assert!(timeout(Duration::from_millis(150), records.recv())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(150), records.recv())
+            .await
+            .is_err()
+    );
     assert_eq!(session.active_leases(), 0);
     session.stop().await.unwrap();
     peer.stop().await.unwrap();
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn endpoint_write_non_bip_without_reporter_is_refused_and_reads_remain_available() {
     use bacnet_transport::loopback::LoopbackTransport;
     let (transport, peer) = LoopbackTransport::pair(vec![1], vec![2]);
@@ -171,22 +171,24 @@ async fn endpoint_write_non_bip_without_reporter_is_refused_and_reads_remain_ava
     let mut requests = peer.start().await.unwrap();
     session.start().await.unwrap();
     let client = session.cloned_client_handle().unwrap();
-    assert!(client
-        .write_property(
-            &encode_bip_mac([127, 0, 0, 1], 47808),
-            WritePropertyRequest {
-                object_identifier: target(),
-                property_identifier: PropertyIdentifier::PRESENT_VALUE,
-                property_array_index: None,
-                property_value: vec![0],
-                priority: None,
-            },
-            Commandability::Noncommandable,
-        )
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("IPv4 B/IP"));
+    assert!(
+        client
+            .write_property(
+                &encode_bip_mac([127, 0, 0, 1], 47808),
+                WritePropertyRequest {
+                    object_identifier: target(),
+                    property_identifier: PropertyIdentifier::PRESENT_VALUE,
+                    property_array_index: None,
+                    property_value: vec![0],
+                    priority: None,
+                },
+                Commandability::Noncommandable,
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("IPv4 B/IP")
+    );
     assert_eq!(session.active_leases(), 0);
     assert!(requests.try_recv().is_err());
     let read = tokio::spawn(async move {
@@ -198,7 +200,7 @@ async fn endpoint_write_non_bip_without_reporter_is_refused_and_reads_remain_ava
     let (invoke, rp) = read_request(&envelope);
     let mut encoded = BytesMut::new();
     encode_apdu(&mut encoded, &ack(invoke, &rp)).unwrap();
-    peer.send_apdu(&encoded, &[1], false, NetworkPriority::NORMAL)
+    peer.send_apdu(&encoded, &[1], false, NetworkPriority::Normal)
         .await
         .unwrap();
     assert!(read.await.unwrap().is_ok());
@@ -206,10 +208,11 @@ async fn endpoint_write_non_bip_without_reporter_is_refused_and_reads_remain_ava
     peer.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_write_empty_recipient_list_success_and_empty_scalar_remote_error() {
     use bacnet_objects::{analog::AnalogValueObject, notification_class::NotificationClass};
     use bacnet_server::server::{BACnetServer, ServerConfig};
+    use bacnet_types::enums::EngineeringUnits;
     let (mut sink, mut records) = network().await;
     let mut db = crate::DeviceIdentity::new(456, 42)
         .unwrap()
@@ -217,12 +220,17 @@ async fn source_write_empty_recipient_list_success_and_empty_scalar_remote_error
         .unwrap();
     db.add(Box::new(NotificationClass::new(1, "empty-list").unwrap()))
         .unwrap();
-    db.add(Box::new(AnalogValueObject::new(7, "scalar", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogValueObject::new(7, "scalar", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     let mut remote = BACnetServer::start_clockless(
-        ServerConfig::default(),
+        ServerConfig {
+            device: bacnet_objects::DeviceIdentity::new(456, 42).unwrap(),
+            ..Default::default()
+        },
         db,
-        BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST),
+        BusPort::new(),
     )
     .await
     .unwrap();
@@ -253,7 +261,10 @@ async fn source_write_empty_recipient_list_success_and_empty_scalar_remote_error
             .await;
         assert_eq!(result.is_ok(), success);
         if !success {
-            assert!(matches!(result, Err(Error::Protocol { .. })));
+            assert!(matches!(
+                result,
+                Err(Error::Remote(RemoteError::Error { .. }))
+            ));
         }
         let (record, _) = notification(&receive(&mut records).await, false);
         assert_eq!(record.target_value, Some(vec![]));
@@ -266,7 +277,7 @@ async fn source_write_empty_recipient_list_success_and_empty_scalar_remote_error
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_write_wrong_service_error_cannot_finish_or_steal_retry_identity() {
     let (mut peer, mut requests) = network().await;
     let (mut sink, mut records) = network().await;

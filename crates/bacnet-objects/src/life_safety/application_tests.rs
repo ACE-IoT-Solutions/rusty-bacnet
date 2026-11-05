@@ -1,15 +1,14 @@
 //! The application's Present_Value and Tracking_Value route through the
-//! boxed object (#1123): `set_present_value_internal` and
-//! `set_tracking_value_internal` on a Point or Zone held as
-//! `Box<dyn BACnetObject>`.
+//! boxed object (#1123): the `LocalInput` Present_Value and Tracking_Value
+//! inputs on a Point or Zone held as `Box<dyn BACnetObject>`.
 
 use std::sync::{Arc, Mutex};
 
 use bacnet_types::enums::{
-    ErrorClass, ErrorCode, LifeSafetyOperation, LifeSafetyState, PropertyIdentifier as P,
-    SilencedState,
+    EngineeringUnits, ErrorClass, ErrorCode, LifeSafetyOperation, LifeSafetyState,
+    PropertyIdentifier as P, SilencedState,
 };
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::PropertyValue;
 
 use crate::traits::BACnetObject;
@@ -45,8 +44,8 @@ fn set_out_of_service(object: &mut dyn BACnetObject, out_of_service: bool) {
 
 fn assert_error(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class: c, code: e })
-            if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class: c, code: e }))
+            if c == class && e == code),
         "expected {class:?} / {code:?}, got {result:?}"
     );
 }
@@ -62,12 +61,18 @@ fn untouched(object: &dyn BACnetObject) -> [PropertyValue; 3] {
 
 fn assert_values_take_effect(object: &mut dyn BACnetObject) {
     object
-        .set_life_safety_operation_expected_internal(LifeSafetyOperation::RESET)
+        .life_safety()
+        .unwrap()
+        .set_life_safety_operation_expected(LifeSafetyOperation::RESET)
         .unwrap();
     let before = untouched(object);
 
     object
-        .set_present_value_internal(state(LifeSafetyState::ALARM))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(state(
+            LifeSafetyState::ALARM,
+        )))
         .unwrap();
     assert_eq!(
         read(object, P::PRESENT_VALUE),
@@ -82,14 +87,22 @@ fn assert_values_take_effect(object: &mut dyn BACnetObject) {
     // A latching application keeps Present_Value on ALARM while the live
     // state returns to QUIET through Tracking_Value.
     object
-        .set_tracking_value_internal(state(LifeSafetyState::PRE_ALARM))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::TrackingValue(state(
+            LifeSafetyState::PRE_ALARM,
+        )))
         .unwrap();
     assert_eq!(
         read(object, P::TRACKING_VALUE),
         state(LifeSafetyState::PRE_ALARM)
     );
     object
-        .set_tracking_value_internal(state(LifeSafetyState::QUIET))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::TrackingValue(state(
+            LifeSafetyState::QUIET,
+        )))
         .unwrap();
     assert_eq!(
         read(object, P::PRESENT_VALUE),
@@ -100,10 +113,18 @@ fn assert_values_take_effect(object: &mut dyn BACnetObject) {
     // The proprietary range reads back verbatim.
     for raw in [256, 65_535] {
         object
-            .set_present_value_internal(PropertyValue::Enumerated(raw))
+            .local_input()
+            .unwrap()
+            .apply_local_input(crate::traits::LocalInputValue::present_value(
+                PropertyValue::Enumerated(raw),
+            ))
             .unwrap();
         object
-            .set_tracking_value_internal(PropertyValue::Enumerated(raw))
+            .local_input()
+            .unwrap()
+            .apply_local_input(crate::traits::LocalInputValue::TrackingValue(
+                PropertyValue::Enumerated(raw),
+            ))
             .unwrap();
         assert_eq!(
             read(object, P::PRESENT_VALUE),
@@ -124,10 +145,18 @@ fn point_and_zone_take_application_present_and_tracking_values_through_the_box()
 
 fn assert_bad_values_are_refused(object: &mut dyn BACnetObject) {
     object
-        .set_present_value_internal(state(LifeSafetyState::FAULT))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(state(
+            LifeSafetyState::FAULT,
+        )))
         .unwrap();
     object
-        .set_tracking_value_internal(state(LifeSafetyState::FAULT))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::TrackingValue(state(
+            LifeSafetyState::FAULT,
+        )))
         .unwrap();
     // 35..=255 are reserved for ASHRAE; past 65535 is outside the datatype.
     let refused = [
@@ -145,12 +174,18 @@ fn assert_bad_values_are_refused(object: &mut dyn BACnetObject) {
     ];
     for (value, code) in refused {
         assert_error(
-            object.set_present_value_internal(value.clone()),
+            object
+                .local_input()
+                .unwrap()
+                .apply_local_input(crate::traits::LocalInputValue::present_value(value.clone())),
             ErrorClass::PROPERTY,
             code,
         );
         assert_error(
-            object.set_tracking_value_internal(value),
+            object
+                .local_input()
+                .unwrap()
+                .apply_local_input(crate::traits::LocalInputValue::TrackingValue(value)),
             ErrorClass::PROPERTY,
             code,
         );
@@ -173,10 +208,14 @@ fn application_values_outside_the_state_range_or_datatype_are_refused_unchanged(
 
 #[test]
 fn other_objects_refuse_the_tracking_value_hook() {
-    let mut input: Box<dyn BACnetObject> =
-        Box::new(crate::analog::AnalogInputObject::new(1, "AI-1", 62).unwrap());
+    let mut input: Box<dyn BACnetObject> = Box::new(
+        crate::analog::AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS)
+            .unwrap(),
+    );
     assert_error(
-        input.set_tracking_value_internal(state(LifeSafetyState::ALARM)),
+        input.local_input().unwrap().apply_local_input(
+            crate::traits::LocalInputValue::TrackingValue(state(LifeSafetyState::ALARM)),
+        ),
         ErrorClass::OBJECT,
         ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
     );
@@ -186,7 +225,11 @@ fn assert_out_of_service_rule(object: &mut dyn BACnetObject) {
     set_out_of_service(object, true);
     // The application's Tracking_Value is set aside while out of service.
     object
-        .set_tracking_value_internal(state(LifeSafetyState::ALARM))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::TrackingValue(state(
+            LifeSafetyState::ALARM,
+        )))
         .unwrap();
     assert_eq!(
         read(object, P::TRACKING_VALUE),
@@ -202,7 +245,11 @@ fn assert_out_of_service_rule(object: &mut dyn BACnetObject) {
         )
         .unwrap();
     object
-        .set_tracking_value_internal(state(LifeSafetyState::PRE_ALARM))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::TrackingValue(state(
+            LifeSafetyState::PRE_ALARM,
+        )))
         .unwrap();
     assert_eq!(
         read(object, P::TRACKING_VALUE),
@@ -210,7 +257,11 @@ fn assert_out_of_service_rule(object: &mut dyn BACnetObject) {
     );
     // Present_Value isn't decoupled, so it is served at once.
     object
-        .set_present_value_internal(state(LifeSafetyState::ALARM))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(state(
+            LifeSafetyState::ALARM,
+        )))
         .unwrap();
     assert_eq!(
         read(object, P::PRESENT_VALUE),
@@ -269,15 +320,27 @@ fn reset_executor_sees_the_values_the_route_left_and_commits_after_them() {
         Box::new(zone) as Box<dyn BACnetObject>,
     ] {
         object
-            .set_present_value_internal(state(LifeSafetyState::ALARM))
+            .local_input()
+            .unwrap()
+            .apply_local_input(crate::traits::LocalInputValue::present_value(state(
+                LifeSafetyState::ALARM,
+            )))
             .unwrap();
         object
-            .set_tracking_value_internal(state(LifeSafetyState::QUIET))
+            .local_input()
+            .unwrap()
+            .apply_local_input(crate::traits::LocalInputValue::TrackingValue(state(
+                LifeSafetyState::QUIET,
+            )))
             .unwrap();
         object
-            .set_life_safety_operation_expected_internal(LifeSafetyOperation::RESET)
+            .life_safety()
+            .unwrap()
+            .set_life_safety_operation_expected(LifeSafetyOperation::RESET)
             .unwrap();
         let outcome = object
+            .life_safety()
+            .unwrap()
             .apply_life_safety_operation(LifeSafetyOperation::RESET)
             .unwrap();
         assert_eq!(

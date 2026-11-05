@@ -23,16 +23,16 @@ fn tester(sim: &mut Sim, next: u8, first: Vec<ScriptSend>) {
             return;
         }
         match frame.frame_type {
-            FrameType::PollForMaster => sends.push(ScriptSend::frame(
+            FrameType::POLL_FOR_MASTER => sends.push(ScriptSend::frame(
                 PAUSE,
-                FrameType::ReplyToPollForMaster,
+                FrameType::REPLY_TO_POLL_FOR_MASTER,
                 frame.source,
                 5,
                 &[],
             )),
-            FrameType::Token => match first.take() {
+            FrameType::TOKEN => match first.take() {
                 Some(first) => sends.extend(first),
-                None => sends.push(ScriptSend::frame(PAUSE, FrameType::Token, next, 5, &[])),
+                None => sends.push(ScriptSend::frame(PAUSE, FrameType::TOKEN, next, 5, &[])),
             },
             _ => {}
         }
@@ -49,34 +49,36 @@ fn tester(sim: &mut Sim, next: u8, first: Vec<ScriptSend>) {
 #[test]
 fn a_token_that_arrives_during_an_answer_is_used_after_it() {
     let mut sim = Sim::new(SimConfig::new(BAUD));
-    sim.add_master(MasterSpec::new(3, 7, BAUD).reply(ReplyPolicy::Answer {
-        delay: millis(50),
-        payload: ANSWER.to_vec(),
-    }));
+    sim.add_master(
+        MasterSpec::new(3, 7, BAUD).application(ReplyPolicy::Answer {
+            delay: millis(50),
+            payload: ANSWER.to_vec(),
+        }),
+    );
     tester(
         &mut sim,
         3,
         vec![
             ScriptSend::frame(
                 PAUSE,
-                FrameType::BACnetDataExpectingReply,
+                FrameType::BACNET_DATA_EXPECTING_REPLY,
                 3,
                 5,
                 &npdu(true, 1),
             ),
-            ScriptSend::frame(millis(8), FrameType::Token, 3, 5, &[]),
+            ScriptSend::frame(millis(8), FrameType::TOKEN, 3, 5, &[]),
         ],
     );
     sim.run_until(ms(2_000));
     let frames = sim.frames();
     let index = frames
         .iter()
-        .position(|frame| frame.is(FrameType::BACnetDataExpectingReply, 5, 3))
+        .position(|frame| frame.is(FrameType::BACNET_DATA_EXPECTING_REPLY, 5, 3))
         .expect("the request");
-    assert!(frames[index + 1].is(FrameType::Token, 5, 3));
+    assert!(frames[index + 1].is(FrameType::TOKEN, 5, 3));
     let answer = &frames[index + 2];
     assert!(
-        answer.is(FrameType::BACnetDataNotExpectingReply, 3, 5),
+        answer.is(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 3, 5),
         "{answer}"
     );
     assert_eq!(answer.data, ANSWER);
@@ -102,22 +104,22 @@ fn a_broadcast_request_is_delivered_and_left_unanswered() {
         vec![
             ScriptSend::frame(
                 PAUSE,
-                FrameType::BACnetDataExpectingReply,
+                FrameType::BACNET_DATA_EXPECTING_REPLY,
                 0xFF,
                 5,
                 &npdu(true, 2),
             ),
-            ScriptSend::frame(millis(300), FrameType::Token, 0, 5, &[]),
+            ScriptSend::frame(millis(300), FrameType::TOKEN, 0, 5, &[]),
         ],
     );
     sim.run_until(ms(2_500));
     let frames = sim.frames();
     let index = frames
         .iter()
-        .position(|frame| frame.is(FrameType::BACnetDataExpectingReply, 5, 0xFF))
+        .position(|frame| frame.is(FrameType::BACNET_DATA_EXPECTING_REPLY, 5, 0xFF))
         .expect("the broadcast request");
     let next = &frames[index + 1];
-    assert!(next.is(FrameType::Token, 5, 0), "{next}");
+    assert!(next.is(FrameType::TOKEN, 5, 0), "{next}");
     for station in [0, 3] {
         let delivered: Vec<bool> = sim
             .deliveries(station)

@@ -6,12 +6,14 @@ fn object_audit_policy_snapshot_is_forwarded_from_the_original_instance() {
         analog::AnalogValueObject,
         audit::{AuditPriorityPolicy, ObjectAuditPolicy},
     };
+    use bacnet_types::enums::EngineeringUnits;
     let policy = ObjectAuditPolicy {
         level: Some(AuditLevel::NONE),
         operations: Some(AuditOperationFlags::empty()),
         priority_filter: Some(AuditPriorityPolicy::Inherit),
     };
-    let mut value = AnalogValueObject::new(7, "wrapped AV", 62).unwrap();
+    let mut value =
+        AnalogValueObject::new(7, "wrapped AV", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     value.set_audit_policy(policy);
     let mut object: Box<dyn BACnetObject> = Box::new(value);
     let owner = bacnet_objects::database::AuditOwnership::for_source(
@@ -19,7 +21,13 @@ fn object_audit_policy_snapshot_is_forwarded_from_the_original_instance() {
         selected(),
     );
     source_reporter::install(&mut object, &owner).unwrap();
-    assert_eq!(object.audit_object_policy_internal(), policy);
+    assert_eq!(
+        object
+            .audit_policy()
+            .map(|policy| policy.object_policy())
+            .unwrap_or_default(),
+        policy
+    );
     object
         .write_property(
             PropertyIdentifier::AUDIT_LEVEL,
@@ -29,7 +37,11 @@ fn object_audit_policy_snapshot_is_forwarded_from_the_original_instance() {
         )
         .unwrap();
     assert_eq!(
-        object.audit_object_policy_internal().level,
+        object
+            .audit_policy()
+            .map(|policy| policy.object_policy())
+            .unwrap_or_default()
+            .level,
         Some(AuditLevel::AUDIT_ALL)
     );
     assert_eq!(
@@ -40,7 +52,11 @@ fn object_audit_policy_snapshot_is_forwarded_from_the_original_instance() {
     );
     owner.seal();
     assert_eq!(
-        object.audit_object_policy_internal().level,
+        object
+            .audit_policy()
+            .map(|policy| policy.object_policy())
+            .unwrap_or_default()
+            .level,
         Some(AuditLevel::AUDIT_ALL)
     );
 }
@@ -48,7 +64,9 @@ fn object_audit_policy_snapshot_is_forwarded_from_the_original_instance() {
 #[test]
 fn sealed_policy_authority_forwards_assignment_and_dropped_preparation() {
     use bacnet_objects::{analog::AnalogValueObject, audit::ObjectAuditPolicy};
-    let mut value = AnalogValueObject::new(7, "wrapped", 62).unwrap();
+    use bacnet_types::enums::EngineeringUnits;
+    let mut value =
+        AnalogValueObject::new(7, "wrapped", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     value.set_audit_policy(ObjectAuditPolicy {
         level: Some(AuditLevel::NONE),
         ..Default::default()
@@ -61,24 +79,34 @@ fn sealed_policy_authority_forwards_assignment_and_dropped_preparation() {
     source_reporter::install(&mut object, &owner).unwrap();
     let value = PropertyValue::Enumerated(AuditLevel::AUDIT_ALL.to_raw());
     object
-        .audit_policy_authority_internal()
+        .audit_policy_mut()
+        .and_then(|policy| policy.policy_authority())
         .unwrap()
         .prepare(PropertyIdentifier::AUDIT_LEVEL, None, &value, None)
         .unwrap()
         .unwrap();
     assert_eq!(
-        object.audit_object_policy_internal().level,
+        object
+            .audit_policy()
+            .map(|policy| policy.object_policy())
+            .unwrap_or_default()
+            .level,
         Some(AuditLevel::NONE)
     );
     object
-        .audit_policy_authority_internal()
+        .audit_policy_mut()
+        .and_then(|policy| policy.policy_authority())
         .unwrap()
         .prepare(PropertyIdentifier::AUDIT_LEVEL, None, &value, None)
         .unwrap()
         .unwrap()
         .commit();
     assert_eq!(
-        object.audit_object_policy_internal().level,
+        object
+            .audit_policy()
+            .map(|policy| policy.object_policy())
+            .unwrap_or_default()
+            .level,
         Some(AuditLevel::AUDIT_ALL)
     );
 }

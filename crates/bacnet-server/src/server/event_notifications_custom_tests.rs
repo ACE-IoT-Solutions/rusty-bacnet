@@ -1,12 +1,13 @@
 //! A custom implementation using only public object-contract types.
 use super::*;
 use bacnet_objects::event::{EventTransitionCommit, EventTransitionCommitError, TransitionOutcome};
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_services::alarm_event::NotificationParameters;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::primitives::StatusFlags;
 use std::borrow::Cow;
-use std::sync::atomic::AtomicU8;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::AtomicU8;
 
 struct CustomProposal {
     oid: ObjectIdentifier,
@@ -85,10 +86,10 @@ impl BACnetObject for CustomProposal {
                 || p == PropertyIdentifier::EVENT_MESSAGE_TEXTS =>
             {
                 let Some(index @ 1..=3) = index else {
-                    return Err(Error::Protocol {
-                        class: ErrorClass::PROPERTY.to_raw().into(),
-                        code: ErrorCode::INVALID_ARRAY_INDEX.to_raw().into(),
-                    });
+                    return Err(Error::protocol(
+                        ErrorClass::PROPERTY,
+                        ErrorCode::INVALID_ARRAY_INDEX,
+                    ));
                 };
                 let index = index as usize - 1;
                 if p == PropertyIdentifier::EVENT_MESSAGE_TEXTS {
@@ -104,10 +105,10 @@ impl BACnetObject for CustomProposal {
                 }
             }
             _ => {
-                return Err(Error::Protocol {
-                    class: ErrorClass::PROPERTY.to_raw().into(),
-                    code: ErrorCode::UNKNOWN_PROPERTY.to_raw().into(),
-                })
+                return Err(Error::protocol(
+                    ErrorClass::PROPERTY,
+                    ErrorCode::UNKNOWN_PROPERTY,
+                ));
             }
         };
         Ok(value)
@@ -119,14 +120,24 @@ impl BACnetObject for CustomProposal {
         _: PropertyValue,
         _: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw().into(),
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw().into(),
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
+
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::EventReporting for CustomProposal {
     fn evaluate_intrinsic_reporting(&mut self) -> Option<TransitionOutcome> {
         if self.delay == 0 {
             return self.proposal();
@@ -145,7 +156,7 @@ impl BACnetObject for CustomProposal {
             None
         }
     }
-    fn commit_event_transition_internal(
+    fn commit_event_transition(
         &mut self,
         commit: EventTransitionCommit,
     ) -> Result<(), EventTransitionCommitError> {
@@ -199,9 +210,19 @@ impl BACnetObject for UnsupportedProposal {
     ) -> Result<(), Error> {
         self.0.write_property(p, i, v, priority)
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        self.0.property_list()
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        self.0.property_metadata()
     }
+
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::EventReporting for UnsupportedProposal {
     fn evaluate_intrinsic_reporting(&mut self) -> Option<TransitionOutcome> {
         self.0.evaluate_intrinsic_reporting()
     }
@@ -238,8 +259,7 @@ fn database(
     .unwrap();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1,
-            name: "Custom Device".into(),
+            identity: bacnet_objects::DeviceIdentity::default().with_name("Custom Device"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -351,6 +371,8 @@ async fn unsupported_custom_proposal_runtime_is_silent_unchanged_and_retryable()
             .await
             .get_mut(&oid())
             .unwrap()
+            .event_reporting_mut()
+            .expect("lends event reporting")
             .evaluate_intrinsic_reporting()
             .unwrap();
         let sent = broadcasts_from_per_write_path(&db, DccState::Enable).await;
@@ -365,6 +387,8 @@ async fn unsupported_custom_proposal_runtime_is_silent_unchanged_and_retryable()
             guard
                 .get_mut(&oid())
                 .unwrap()
+                .event_reporting_mut()
+                .expect("lends event reporting")
                 .evaluate_intrinsic_reporting(),
             Some(proposal)
         );
@@ -378,9 +402,11 @@ async fn failed_custom_commit_retries_through_per_write_runtime() {
     let (db, commits) = database(0, mode.clone(), false, true);
     let before = snapshot(&db);
     let db = Arc::new(RwLock::new(db));
-    assert!(broadcasts_from_per_write_path(&db, DccState::Enable)
-        .await
-        .is_empty());
+    assert!(
+        broadcasts_from_per_write_path(&db, DccState::Enable)
+            .await
+            .is_empty()
+    );
     assert_eq!(snapshot(&*db.read().await), before);
     assert_eq!(db.read().await.reserve_event_sequence_number().number(), 0);
     assert!(commits.lock().unwrap().is_empty());
@@ -397,9 +423,11 @@ async fn custom_immediate_proposal_commits_exact_history_before_distribution() {
     let sent = broadcasts_from_per_write_path(&db, DccState::Enable).await;
     let notification = decode_broadcast_notification(&sent);
     assert_committed(&*db.read().await, &notification, &commits.lock().unwrap());
-    assert!(broadcasts_from_per_write_path(&db, DccState::Enable)
-        .await
-        .is_empty());
+    assert!(
+        broadcasts_from_per_write_path(&db, DccState::Enable)
+            .await
+            .is_empty()
+    );
     assert_eq!(commits.lock().unwrap().len(), 1);
 }
 
@@ -422,11 +450,14 @@ async fn delayed_runtime(fail_first: bool, unsupported: bool) {
     let mode = Arc::new(AtomicU8::new(if fail_first { 2 } else { 1 }));
     let (mut db, commits) = database(2, mode.clone(), unsupported, true);
     let before = snapshot(&db);
-    assert!(db
-        .get_mut(&oid())
-        .unwrap()
-        .evaluate_intrinsic_reporting()
-        .is_none());
+    assert!(
+        db.get_mut(&oid())
+            .unwrap()
+            .event_reporting_mut()
+            .expect("lends event reporting")
+            .evaluate_intrinsic_reporting()
+            .is_none()
+    );
     assert_eq!(snapshot(&db), before);
     let (transport, sent) = recording_transport();
     let mut server = BACnetServer::start_clockless(ServerConfig::default(), db, transport)
@@ -455,6 +486,8 @@ async fn delayed_runtime(fail_first: bool, unsupported: bool) {
                 .await
                 .get_mut(&oid())
                 .unwrap()
+                .event_reporting_mut()
+                .expect("lends event reporting")
                 .tick_intrinsic_reporting()
                 .unwrap();
             assert_eq!(proposal.change.from, EventState::NORMAL);

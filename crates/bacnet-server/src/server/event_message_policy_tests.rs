@@ -7,13 +7,34 @@ use bacnet_objects::multistate::{
     MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject,
 };
 use bacnet_objects::traits::BACnetObject;
-use bacnet_types::enums::{EventState, EventType};
+use bacnet_types::enums::{EngineeringUnits, EventState, EventType};
 
 fn builtin_intrinsic_objects() -> Vec<Box<dyn BACnetObject>> {
     vec![
-        Box::new(AnalogInputObject::new(41, "localized analog input", 0).unwrap()),
-        Box::new(AnalogOutputObject::new(41, "localized analog output", 0).unwrap()),
-        Box::new(AnalogValueObject::new(41, "localized analog value", 0).unwrap()),
+        Box::new(
+            AnalogInputObject::new(
+                41,
+                "localized analog input",
+                EngineeringUnits::SQUARE_METERS,
+            )
+            .unwrap(),
+        ),
+        Box::new(
+            AnalogOutputObject::new(
+                41,
+                "localized analog output",
+                EngineeringUnits::SQUARE_METERS,
+            )
+            .unwrap(),
+        ),
+        Box::new(
+            AnalogValueObject::new(
+                41,
+                "localized analog value",
+                EngineeringUnits::SQUARE_METERS,
+            )
+            .unwrap(),
+        ),
         Box::new(BinaryInputObject::new(41, "localized binary input").unwrap()),
         Box::new(BinaryOutputObject::new(41, "localized binary output").unwrap()),
         Box::new(BinaryValueObject::new(41, "localized binary value").unwrap()),
@@ -90,7 +111,17 @@ fn all_eleven_builtin_families_store_each_policy_message_in_only_its_coordinate(
     let objects = builtin_intrinsic_objects();
     assert_eq!(objects.len(), 11);
 
-    for object in objects {
+    for mut object in objects {
+        // Binary and Multi-state Output start with detection off, which
+        // refuses every commit away from NORMAL (#2271).
+        object
+            .write_property(
+                PropertyIdentifier::EVENT_DETECTION_ENABLE,
+                None,
+                PropertyValue::Boolean(true),
+                None,
+            )
+            .unwrap();
         let oid = object.object_identifier();
         let mut db = ObjectDatabase::new();
         db.add(object).unwrap();
@@ -122,7 +153,7 @@ fn policy_format_uses_object_and_state_display_including_unknown_state_numbers()
     let unknown = EventState::from_raw(65_535);
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
-        AnalogInputObject::new(7, "name is not policy", 0).unwrap(),
+        AnalogInputObject::new(7, "name is not policy", EngineeringUnits::SQUARE_METERS).unwrap(),
     ))
     .unwrap();
 
@@ -146,16 +177,20 @@ fn policy_format_uses_object_and_state_display_including_unknown_state_numbers()
 fn stale_commit_does_not_mutate_committed_event_properties() {
     let oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 8).unwrap();
     let mut db = ObjectDatabase::new();
-    db.add(Box::new(AnalogInputObject::new(8, "AI-8", 0).unwrap()))
-        .unwrap();
-    assert!(commit(
-        &mut db,
-        oid,
-        EventState::NORMAL,
-        EventState::HIGH_LIMIT,
-        true,
-    )
-    .is_some());
+    db.add(Box::new(
+        AnalogInputObject::new(8, "AI-8", EngineeringUnits::SQUARE_METERS).unwrap(),
+    ))
+    .unwrap();
+    assert!(
+        commit(
+            &mut db,
+            oid,
+            EventState::NORMAL,
+            EventState::HIGH_LIMIT,
+            true,
+        )
+        .is_some()
+    );
     let before = committed_properties(&db, oid);
 
     assert!(commit(&mut db, oid, EventState::NORMAL, EventState::FAULT, true,).is_none());

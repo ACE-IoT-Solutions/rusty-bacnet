@@ -9,10 +9,12 @@
 //! Device member, and they give the same answers through the same
 //! single-reference decoder (#1395).
 
+use crate::traits::Timed;
+use bacnet_types::error::RemoteError;
 use std::sync::Arc;
 
 use bacnet_types::constructed::BACnetStageLimitValue;
-use bacnet_types::enums::{ErrorClass, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{EngineeringUnits, ErrorClass, ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{Date, Time};
 
 use super::*;
@@ -61,15 +63,16 @@ impl ClockReader for FixedClock {
 }
 
 /// The class and code of a refusal, whether or not it names an element.
-fn class_and_code(error: &Error) -> (u32, u32) {
+fn class_and_code(error: &Error) -> (ErrorClass, ErrorCode) {
     match error {
-        Error::Protocol { class, code } | Error::Structured { class, code, .. } => (*class, *code),
+        Error::Remote(RemoteError::Error { class, code })
+        | Error::Structured { class, code, .. } => (*class, *code),
         other => panic!("expected a protocol error, got {other:?}"),
     }
 }
 
-fn property_code(code: ErrorCode) -> Option<(u32, u32)> {
-    Some((ErrorClass::PROPERTY.to_raw() as u32, code.to_raw() as u32))
+fn property_code(code: ErrorCode) -> Option<(ErrorClass, ErrorCode)> {
+    Some((ErrorClass::PROPERTY, code))
 }
 
 /// Which Clause 21 production the property holds.
@@ -134,7 +137,10 @@ fn averaging() -> Box<dyn BACnetObject> {
 
 fn trend_log() -> Box<dyn BACnetObject> {
     let mut log = TrendLogObject::new(1, "TL-1", 8).unwrap();
-    log.bind_clock_internal(Some(Arc::new(FixedClock)));
+    log.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(FixedClock)),
+        ..crate::traits::Clocks::default()
+    });
     Box::new(log)
 }
 
@@ -145,7 +151,10 @@ fn trend_log_multiple() -> Box<dyn BACnetObject> {
         P::PRESENT_VALUE.to_raw(),
     ))
     .unwrap();
-    log.bind_clock_internal(Some(Arc::new(FixedClock)));
+    log.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(FixedClock)),
+        ..crate::traits::Clocks::default()
+    });
     Box::new(log)
 }
 
@@ -173,7 +182,7 @@ fn staging() -> Box<dyn BACnetObject> {
     let config = StagingConfig {
         present_value: 5.0,
         min_present_value: -1.0,
-        units: 62,
+        units: EngineeringUnits::DEGREES_CELSIUS,
         priority_for_writing: 8,
         stages: vec![stage(10.0, false), stage(20.0, true)],
         target_references: vec![oid(ObjectType::BINARY_OUTPUT, 1).into()],
@@ -186,7 +195,7 @@ fn loop_object() -> Box<dyn BACnetObject> {
     let reference = |object_type| {
         BACnetObjectPropertyReference::new(oid(object_type, 1), P::PRESENT_VALUE.to_raw())
     };
-    let mut lo = LoopObject::new(1, "LOOP-1", 62).unwrap();
+    let mut lo = LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     lo.set_controlled_variable_reference(reference(ObjectType::ANALOG_INPUT));
     lo.set_manipulated_variable_reference(reference(ObjectType::ANALOG_OUTPUT));
     lo.set_setpoint_reference(reference(ObjectType::ANALOG_VALUE));
@@ -194,7 +203,7 @@ fn loop_object() -> Box<dyn BACnetObject> {
 }
 
 fn pulse_converter() -> Box<dyn BACnetObject> {
-    let mut pc = PulseConverterObject::new(1, "PC-1", 62).unwrap();
+    let mut pc = PulseConverterObject::new(1, "PC-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     pc.set_input_reference(BACnetObjectPropertyReference::new(
         oid(ObjectType::ACCUMULATOR, 1),
         P::PRESENT_VALUE.to_raw(),
@@ -323,7 +332,7 @@ const WRITABLE: [Writable; 13] = [
 ];
 
 /// The class and code of a refusal, or `None` for acceptance.
-type Answer = Option<(u32, u32)>;
+type Answer = Option<(ErrorClass, ErrorCode)>;
 
 /// One row of the write table: the value, built for a user, and the answer
 /// every user gives it, one for a single-reference value and one for a list

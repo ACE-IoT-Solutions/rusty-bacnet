@@ -2,21 +2,28 @@
 //! initial value sets although WriteProperty can't change them (#1429).
 
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::analog::{AnalogInputObject, AnalogOutputObject, AnalogValueObject};
 use bacnet_objects::binary::BinaryValueObject;
 use bacnet_objects::multistate::{
     MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject,
 };
-use PropertyIdentifier as P;
+use bacnet_types::enums::EngineeringUnits;
 
 fn pics() -> Pics {
     let mut db = ObjectDatabase::new();
-    db.add(Box::new(AnalogInputObject::new(1, "ai", 95).unwrap()))
-        .unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "ao", 95).unwrap()))
-        .unwrap();
-    db.add(Box::new(AnalogValueObject::new(1, "av", 95).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogInputObject::new(1, "ai", EngineeringUnits::NO_UNITS).unwrap(),
+    ))
+    .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "ao", EngineeringUnits::NO_UNITS).unwrap(),
+    ))
+    .unwrap();
+    db.add(Box::new(
+        AnalogValueObject::new(1, "av", EngineeringUnits::NO_UNITS).unwrap(),
+    ))
+    .unwrap();
     db.add(Box::new(BinaryValueObject::new(1, "bv").unwrap()))
         .unwrap();
     db.add(Box::new(MultiStateInputObject::new(1, "msi", 2).unwrap()))
@@ -45,12 +52,40 @@ fn each_createable_type_lists_what_only_creation_sets() {
     for (object_type, expected) in [
         (ObjectType::ANALOG_INPUT, vec![P::UNITS]),
         (ObjectType::ANALOG_OUTPUT, vec![P::UNITS]),
-        // Not createable, so nothing is set at creation.
-        (ObjectType::ANALOG_VALUE, vec![]),
+        // Createable since #2172, with Units as its siblings take it.
+        (ObjectType::ANALOG_VALUE, vec![P::UNITS]),
+        // The numeric value types take Units the same way; the PICS lists
+        // them with no instance in the database.
+        (ObjectType::INTEGER_VALUE, vec![P::UNITS]),
+        (ObjectType::POSITIVE_INTEGER_VALUE, vec![P::UNITS]),
+        (ObjectType::LARGE_ANALOG_VALUE, vec![P::UNITS]),
+        (ObjectType::CHARACTERSTRING_VALUE, vec![]),
         (ObjectType::BINARY_VALUE, vec![]),
         (ObjectType::MULTI_STATE_INPUT, vec![]),
         (ObjectType::MULTI_STATE_OUTPUT, vec![]),
         (ObjectType::MULTI_STATE_VALUE, vec![]),
+        // The configuration types serve these read-only (#2208).
+        (ObjectType::CALENDAR, vec![P::OBJECT_NAME]),
+        (ObjectType::SCHEDULE, vec![P::OBJECT_NAME]),
+        (
+            ObjectType::NOTIFICATION_CLASS,
+            vec![P::OBJECT_NAME, P::PRIORITY, P::ACK_REQUIRED],
+        ),
+        (ObjectType::TREND_LOG, vec![P::OBJECT_NAME, P::BUFFER_SIZE]),
+        (
+            ObjectType::EVENT_ENROLLMENT,
+            vec![P::OBJECT_PROPERTY_REFERENCE],
+        ),
+        (
+            ObjectType::STRUCTURED_VIEW,
+            vec![
+                P::OBJECT_NAME,
+                P::NODE_TYPE,
+                P::NODE_SUBTYPE,
+                P::SUBORDINATE_LIST,
+                P::SUBORDINATE_ANNOTATIONS,
+            ],
+        ),
     ] {
         assert_eq!(set(object_type), expected, "{object_type:?}");
     }
@@ -102,6 +137,6 @@ fn each_createable_type_lists_what_only_creation_sets() {
     assert!(markdown.contains("### BINARY_VALUE\n\n- Createable: true\n- Deleteable: true\n\n|"));
     assert_eq!(
         text.matches("Whole value set only by CreateObject").count(),
-        2
+        12
     );
 }

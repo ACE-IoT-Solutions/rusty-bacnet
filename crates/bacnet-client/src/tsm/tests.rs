@@ -1,5 +1,6 @@
 use super::*;
-use tokio::time::{timeout, Duration};
+use bacnet_types::{enums::RejectReason, error::RemoteError};
+use tokio::time::{Duration, timeout};
 
 fn assert_initial_response_aborted(
     admission: SegmentedResponseAdmission,
@@ -145,12 +146,23 @@ async fn a_response_without_a_service_choice_completes_any_transaction() {
         invoke_id,
         ConfirmedServiceChoice::READ_PROPERTY,
     );
-    let outcome =
-        tsm.complete_transaction(&mac, invoke_id, None, TsmResponse::Reject { reason: 9 });
+    let outcome = tsm.complete_transaction(
+        &mac,
+        invoke_id,
+        None,
+        TsmResponse::remote(RemoteError::Reject {
+            reason: RejectReason::UNRECOGNIZED_SERVICE,
+        }),
+    );
     assert_eq!(outcome, CompletionOutcome::Delivered);
     assert!(matches!(
         rx.await.unwrap(),
-        TsmResponse::Reject { reason: 9 }
+        TsmResponse::Remote {
+            error: RemoteError::Reject {
+                reason: RejectReason::UNRECOGNIZED_SERVICE
+            },
+            ..
+        }
     ));
 }
 
@@ -175,8 +187,8 @@ async fn segmented_request_rejects_premature_terminal_response_kinds() {
         );
         assert!(matches!(
             registration.response.await.unwrap(),
-            TsmResponse::Abort { reason }
-                if reason == AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw()
+            TsmResponse::Remote { error: RemoteError::Abort { reason }, .. }
+                if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
         ));
         assert_eq!(tsm.pending_count(), 0);
         assert_eq!(tsm.allocate_invoke_id(&mac), Some(invoke_id));
@@ -202,8 +214,8 @@ async fn segmented_complex_ack_zero_is_rejected_until_all_segments_are_sent() {
     ));
     assert!(matches!(
         registration.response.await.unwrap(),
-        TsmResponse::Abort { reason }
-            if reason == AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw()
+        TsmResponse::Remote { error: RemoteError::Abort { reason }, .. }
+            if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
     ));
     assert_eq!(tsm.pending_count(), 0);
 }
@@ -230,8 +242,8 @@ async fn awaiting_response_initial_segment_admission_matrix() {
         );
         assert!(matches!(
             registration.response.await.unwrap(),
-            TsmResponse::Abort { reason }
-                if reason == AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw()
+            TsmResponse::Remote { error: RemoteError::Abort { reason }, .. }
+                if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
         ));
         assert_eq!(tsm.pending_count(), 0);
         assert_eq!(tsm.allocate_invoke_id(&mac), Some(invoke_id));
@@ -293,8 +305,8 @@ async fn segmented_request_initial_segment_admission_matrix() {
         );
         assert!(matches!(
             registration.response.await.unwrap(),
-            TsmResponse::Abort { reason }
-                if reason == AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw()
+            TsmResponse::Remote { error: RemoteError::Abort { reason }, .. }
+                if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
         ));
         assert_eq!(tsm.pending_count(), 0);
     }
@@ -331,8 +343,8 @@ async fn sent_all_segments_still_applies_initial_segment_admission() {
         );
         assert!(matches!(
             registration.response.await.unwrap(),
-            TsmResponse::Abort { reason }
-                if reason == AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw()
+            TsmResponse::Remote { error: RemoteError::Abort { reason }, .. }
+                if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
         ));
         assert_eq!(tsm.pending_count(), 0);
     }
@@ -401,8 +413,8 @@ async fn invalid_initial_segment_resolves_final_send_polling() {
             .expect("final-send admission waiter remained blocked");
         assert!(matches!(
             registration.response.await.unwrap(),
-            TsmResponse::Abort { reason }
-                if reason == AbortReason::INVALID_APDU_IN_THIS_STATE.to_raw()
+            TsmResponse::Remote { error: RemoteError::Abort { reason }, .. }
+                if reason == AbortReason::INVALID_APDU_IN_THIS_STATE
         ));
     }
 }
@@ -411,9 +423,13 @@ async fn invalid_initial_segment_resolves_final_send_polling() {
 async fn reject_and_abort_are_valid_throughout_segmented_request() {
     let mac = MacAddr::from_slice(&[127, 0, 0, 1, 0xBA, 0xC0]);
 
-    for response in [
-        TsmResponse::Reject { reason: 3 },
-        TsmResponse::Abort { reason: 4 },
+    for error in [
+        RemoteError::Reject {
+            reason: RejectReason::INVALID_PARAMETER_DATA_TYPE,
+        },
+        RemoteError::Abort {
+            reason: AbortReason::SEGMENTATION_NOT_SUPPORTED,
+        },
     ] {
         let mut tsm = Tsm::new(TsmConfig::default());
         let invoke_id = tsm.allocate_invoke_id(&mac).unwrap();
@@ -423,12 +439,12 @@ async fn reject_and_abort_are_valid_throughout_segmented_request() {
             ConfirmedServiceChoice::READ_PROPERTY,
         );
         assert_eq!(
-            tsm.complete_transaction(&mac, invoke_id, None, response),
+            tsm.complete_transaction(&mac, invoke_id, None, TsmResponse::remote(error)),
             CompletionOutcome::Delivered
         );
         assert!(matches!(
             registration.response.await.unwrap(),
-            TsmResponse::Reject { reason: 3 } | TsmResponse::Abort { reason: 4 }
+            TsmResponse::Remote { error: got, detail: None } if got == error
         ));
         assert_eq!(tsm.pending_count(), 0);
     }
@@ -545,7 +561,7 @@ fn segmented_admission_and_request_timeout_are_serialized() {
         .begin_segmented_response(&mac, invoke_id, &registration.owner)
         .unwrap();
     assert_eq!(
-        *registration.progress.borrow(),
+        registration.progress.current(),
         TransactionProgress::SegmentedResponse { generation }
     );
     assert_eq!(
@@ -621,7 +637,7 @@ fn stale_segment_timer_generation_cannot_cancel_new_activity() {
     );
     assert_eq!(tsm.pending_count(), 1);
     assert_eq!(
-        *registration.progress.borrow(),
+        registration.progress.current(),
         TransactionProgress::SegmentedResponse {
             generation: current_generation
         }
@@ -676,9 +692,10 @@ async fn stale_owner_cannot_mutate_reused_transaction_key() {
         tsm.record_segmented_response_activity(&mac, invoke_id, &first.owner),
         None
     );
-    assert!(tsm
-        .begin_final_segment_send(&mac, invoke_id, &first.owner)
-        .is_none());
+    assert!(
+        tsm.begin_final_segment_send(&mac, invoke_id, &first.owner)
+            .is_none()
+    );
     assert!(!tsm.finish_segmented_request(&mac, invoke_id, &first.owner));
     assert!(!tsm.reset_segmented_response(&mac, invoke_id, &first.owner));
     assert_eq!(
@@ -693,7 +710,7 @@ async fn stale_owner_cannot_mutate_reused_transaction_key() {
     );
     assert_eq!(tsm.pending_count(), 1);
     assert_eq!(
-        *replacement.progress.borrow(),
+        replacement.progress.current(),
         TransactionProgress::SegmentedResponse { generation }
     );
     assert_eq!(

@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_encoding::constructed::encode_bacnet_property_value;
+use bacnet_types::error::RemoteError;
 
 use bacnet_objects::analog::{AnalogOutputObject, AnalogValueObject};
 use bacnet_objects::binary::{BinaryInputObject, BinaryOutputObject, BinaryValueObject};
@@ -13,6 +14,7 @@ use bacnet_services::wpm::{
     WriteAccessSpecification, WritePropertyAttempt, WritePropertyMultipleRequest,
 };
 use bacnet_types::constructed::BACnetObjectPropertyReference;
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::primitives::BACnetTimeStamp;
 
 fn encode_value(value: &PropertyValue) -> Vec<u8> {
@@ -33,12 +35,10 @@ fn encode_request(oid: ObjectIdentifier, properties: Vec<BACnetPropertyValue>) -
     bytes
 }
 
-fn detailed(db: &mut ObjectDatabase, request: &[u8]) -> WritePropertyMultipleOutcome {
-    let mut snapshots = crate::life_safety_cov::LifeSafetyCovSnapshots::default();
-    handle_write_property_multiple_observed(
+fn detailed(db: &mut ObjectDatabase, request: &[u8]) -> WpmOutcome {
+    write::write_property_multiple(
         db,
         request,
-        &mut snapshots,
         None,
         None,
         None,
@@ -47,15 +47,15 @@ fn detailed(db: &mut ObjectDatabase, request: &[u8]) -> WritePropertyMultipleOut
 }
 
 fn assert_protocol(error: Error, class: ErrorClass, code: ErrorCode) {
-    let Error::Protocol {
+    let Error::Remote(RemoteError::Error {
         class: actual_class,
         code: actual_code,
-    } = error
+    }) = error
     else {
         panic!("expected protocol error, got {error:?}");
     };
-    assert_eq!(actual_class, class.to_raw() as u32);
-    assert_eq!(actual_code, code.to_raw() as u32);
+    assert_eq!(actual_class, class);
+    assert_eq!(actual_code, code);
 }
 
 fn assert_reference(
@@ -96,7 +96,7 @@ fn event_enrollment_prefix_commits_before_read_only_first_failure() {
         ],
     );
 
-    let WritePropertyMultipleOutcome::Error {
+    let WpmOutcome::Error {
         error,
         first_failed_write_attempt,
         committed_oids,
@@ -124,9 +124,9 @@ fn event_enrollment_prefix_commits_before_read_only_first_failure() {
 fn acked_transitions_objects() -> Vec<Box<dyn BACnetObject>> {
     let source = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
     vec![
-        Box::new(AnalogInputObject::new(1, "AI", 62).unwrap()),
-        Box::new(AnalogOutputObject::new(1, "AO", 62).unwrap()),
-        Box::new(AnalogValueObject::new(1, "AV", 62).unwrap()),
+        Box::new(AnalogInputObject::new(1, "AI", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
+        Box::new(AnalogOutputObject::new(1, "AO", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
+        Box::new(AnalogValueObject::new(1, "AV", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
         Box::new(BinaryInputObject::new(1, "BI").unwrap()),
         Box::new(BinaryOutputObject::new(1, "BO").unwrap()),
         Box::new(BinaryValueObject::new(1, "BV").unwrap()),
@@ -158,15 +158,16 @@ fn seed_unacknowledged(object: &mut dyn BACnetObject) {
         )
         .unwrap();
     if object.object_identifier().object_type() == ObjectType::ALERT_ENROLLMENT {
+        // No route outside bacnet-objects changes an Alert Enrollment's
+        // Event_State or Acked_Transitions, so it stays at its initial
+        // condition, all transitions acknowledged.
+        return;
+    }
+    {
         object
-            .set_event_state_internal(EventState::OFFNORMAL)
-            .unwrap();
-        object
-            .set_acked_transitions_internal(EventTransition::ToOffnormal.bit_mask(), false)
-            .unwrap();
-    } else {
-        object
-            .commit_event_transition_internal(EventTransitionCommit {
+            .event_reporting_mut()
+            .unwrap()
+            .commit_event_transition(EventTransitionCommit {
                 change: EventStateChange {
                     from: EventState::NORMAL,
                     to: EventState::OFFNORMAL,
@@ -273,16 +274,17 @@ fn acked_transitions_wpm_authorizer_allow_retains_prefix_and_stops_at_denial() {
                 allowed.borrow_mut().push(attempt.clone());
                 Ok(())
             };
-            let mut snapshots = crate::life_safety_cov::LifeSafetyCovSnapshots::default();
-            let WritePropertyMultipleOutcome::Error {
+            let WpmOutcome::Error {
                 error,
                 first_failed_write_attempt,
                 committed_oids,
-            } = handle_write_property_multiple_authorized(
+            } = write::write_property_multiple(
                 &mut db,
                 &request,
-                &mut snapshots,
                 Some(&authorize),
+                None,
+                None,
+                None,
             )
             else {
                 panic!("expected Acked_Transitions WPM denial for {oid:?}");
@@ -341,7 +343,7 @@ fn unknown_object_is_semantic_result_with_actual_reference_before_any_commit() {
         }],
     );
 
-    let WritePropertyMultipleOutcome::Error {
+    let WpmOutcome::Error {
         error,
         first_failed_write_attempt,
         committed_oids,
@@ -416,7 +418,7 @@ fn semantic_index_value_name_and_write_arm_failures_keep_exact_reference() {
                 priority: None,
             }],
         );
-        let WritePropertyMultipleOutcome::Error {
+        let WpmOutcome::Error {
             error,
             first_failed_write_attempt,
             committed_oids,
@@ -451,7 +453,7 @@ fn malformed_before_first_write_rejects_without_mutation() {
 
     assert!(matches!(
         detailed(&mut db, &request),
-        WritePropertyMultipleOutcome::Reject { reason }
+        WpmOutcome::Reject { reason }
             if reason == RejectReason::MISSING_REQUIRED_PARAMETER
     ));
     assert_ne!(
@@ -487,7 +489,7 @@ fn malformed_after_prefix_uses_exact_or_sentinel_reference_and_keeps_prefix() {
 
     let mut exact_wire = encode_request(oid, vec![first.clone(), second.clone()]);
     let mut second_wire = BytesMut::new();
-    encode_bacnet_property_value(&second, &mut second_wire);
+    encode_bacnet_property_value(&second, &mut second_wire).unwrap();
     let second_start = exact_wire
         .windows(second_wire.len())
         .position(|window| window == second_wire.as_ref())
@@ -495,7 +497,7 @@ fn malformed_after_prefix_uses_exact_or_sentinel_reference_and_keeps_prefix() {
     let value_close = second_start + second_wire.iter().rposition(|byte| *byte == 0x2f).unwrap();
     exact_wire[value_close] = 0x3f;
     let mut db = make_db();
-    let WritePropertyMultipleOutcome::Error {
+    let WpmOutcome::Error {
         error,
         first_failed_write_attempt,
         committed_oids,
@@ -515,7 +517,7 @@ fn malformed_after_prefix_uses_exact_or_sentinel_reference_and_keeps_prefix() {
     let mut sentinel_wire = encode_request(oid, vec![first]);
     sentinel_wire.extend_from_slice(&[0xff]);
     let mut db = make_db();
-    let WritePropertyMultipleOutcome::Error {
+    let WpmOutcome::Error {
         first_failed_write_attempt,
         committed_oids,
         ..
@@ -554,6 +556,7 @@ mod state_ownership;
 #[test]
 fn unknown_writes_wpm_reports_coordinate_and_retains_successful_prefix() {
     use bacnet_objects::schedule::ScheduleObject;
+    use bacnet_types::enums::EngineeringUnits;
     for value in [PropertyValue::Null, PropertyValue::Unsigned(17)] {
         for (property, expected) in [
             (
@@ -566,7 +569,9 @@ fn unknown_writes_wpm_reports_coordinate_and_retains_successful_prefix() {
             ),
         ] {
             let objects: Vec<Box<dyn BACnetObject>> = vec![
-                Box::new(AnalogInputObject::new(1, "AI", 62).unwrap()),
+                Box::new(
+                    AnalogInputObject::new(1, "AI", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+                ),
                 Box::new(ScheduleObject::new(1, "Schedule", PropertyValue::Real(0.0)).unwrap()),
             ];
             for object in objects {
@@ -594,7 +599,7 @@ fn unknown_writes_wpm_reports_coordinate_and_retains_successful_prefix() {
                         ),
                     ],
                 );
-                let WritePropertyMultipleOutcome::Error {
+                let WpmOutcome::Error {
                     error,
                     first_failed_write_attempt,
                     committed_oids,
@@ -648,7 +653,7 @@ fn unknown_writes_file_record_count_wpm_prefix_and_coordinate() {
                     },
                 ],
             );
-            let WritePropertyMultipleOutcome::Error {
+            let WpmOutcome::Error {
                 error,
                 first_failed_write_attempt,
                 committed_oids,

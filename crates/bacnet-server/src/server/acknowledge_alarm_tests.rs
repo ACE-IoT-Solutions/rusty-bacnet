@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_objects::traits::EventReporting as _;
 use bacnet_types::bitstring::EventTransitionBits;
 
 use bacnet_encoding::apdu::decode_apdu;
@@ -11,7 +12,7 @@ use bacnet_objects::multistate::{
 };
 use bacnet_objects::traits::BACnetObject;
 use bacnet_services::alarm_event::AcknowledgeAlarmRequest;
-use bacnet_types::enums::EventState;
+use bacnet_types::enums::{EngineeringUnits, EventState};
 use bacnet_types::primitives::BACnetTimeStamp;
 
 fn request(oid: ObjectIdentifier, state: EventState) -> AcknowledgeAlarmRequest {
@@ -124,7 +125,9 @@ async fn binary_and_multistate_families_return_simple_ack() {
             .unwrap();
         let oid = object.object_identifier();
         object
-            .commit_event_transition_internal(EventTransitionCommit {
+            .event_reporting_mut()
+            .unwrap()
+            .commit_event_transition(EventTransitionCommit {
                 change: EventStateChange {
                     from: EventState::NORMAL,
                     to: EventState::OFFNORMAL,
@@ -164,9 +167,9 @@ async fn binary_and_multistate_families_return_simple_ack() {
 
 #[tokio::test]
 async fn post_issuance_reused_and_new_invoke_ids_are_idempotent_success() {
-    let mut ai = AnalogInputObject::new(1, "AI-ack", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "AI-ack", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     let oid = ai.object_identifier();
-    ai.commit_event_transition_internal(EventTransitionCommit {
+    ai.commit_event_transition(EventTransitionCommit {
         change: EventStateChange {
             from: EventState::NORMAL,
             to: EventState::HIGH_LIMIT,

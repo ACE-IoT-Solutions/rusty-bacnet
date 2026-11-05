@@ -6,19 +6,20 @@ use bacnet_encoding::primitives::encode_property_value;
 use bacnet_services::rpm::ReadAccessResult;
 use bacnet_types::constructed::{
     AccessResult, BACnetAccessRule, BACnetActionCommand, BACnetActionList,
-    BACnetAuthenticationFactorFormat, BACnetAuthenticationPolicy, BACnetCOVSubscription,
-    BACnetCalendarEntry, BACnetDateRange, BACnetDestination, BACnetDeviceObjectPropertyReference,
-    BACnetDeviceObjectReference, BACnetNameValue, BACnetPortPermission, BACnetPrescale,
-    BACnetPropertyAccessResult, BACnetRecipient, BACnetScale, BACnetSpecialEvent,
+    BACnetAuthenticationFactor, BACnetAuthenticationFactorFormat, BACnetAuthenticationPolicy,
+    BACnetCOVSubscription, BACnetCalendarEntry, BACnetDateRange, BACnetDestination,
+    BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference, BACnetEventParameter,
+    BACnetNameValue, BACnetObjectPropertyReference, BACnetPortPermission, BACnetPrescale,
+    BACnetPropertyAccessResult, BACnetRecipient, BACnetScale, BACnetShedLevel, BACnetSpecialEvent,
     BACnetStageLimitValue, BACnetTimeValue, BACnetValueSource, ReadAccessSpecification,
     SpecialEventPeriod,
 };
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{BACnetTimeStamp, PropertyValue};
 use bytes::BytesMut;
+use pyo3::IntoPyObjectExt;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
-use pyo3::IntoPyObjectExt;
 
 use super::audit_projection::recipient_to_py;
 use super::date::date_value;
@@ -26,8 +27,7 @@ use super::read_value::decode_read_value;
 use super::rpm_wpm::read_access_result_to_py;
 use super::timestamp::time_value;
 use super::{
-    PyBACnetTimeStamp, PyErrorClass, PyErrorCode, PyObjectIdentifier, PyPropertyIdentifier,
-    PyPropertyValue,
+    IntEnumValue, PyBACnetTimeStamp, PyObjectIdentifier, PyPropertyIdentifier, PyPropertyValue,
 };
 
 /// One element, decoded.
@@ -44,6 +44,7 @@ pub(super) enum Decoded {
     StageLimitValue(BACnetStageLimitValue),
     AccessRule(BACnetAccessRule),
     DeviceObjectPropertyReference(BACnetDeviceObjectPropertyReference),
+    ObjectPropertyReference(BACnetObjectPropertyReference),
     PropertyAccessResult(BACnetPropertyAccessResult),
     Recipient(BACnetRecipient),
     DailySchedule(Vec<BACnetTimeValue>),
@@ -57,6 +58,9 @@ pub(super) enum Decoded {
     Prescale(BACnetPrescale),
     /// The Device, then its network number and MAC.
     AddressBinding(super::constructed_read::AddressBinding),
+    ShedLevel(BACnetShedLevel),
+    AuthenticationFactor(BACnetAuthenticationFactor),
+    EventParameter(BACnetEventParameter),
 }
 
 impl Decoded {
@@ -116,6 +120,11 @@ impl Decoded {
                     .into_any()
                     .unbind()
             }
+            Self::ObjectPropertyReference(reference) => {
+                object_property_reference_to_py(py, &reference)?
+                    .into_any()
+                    .unbind()
+            }
             Self::PropertyAccessResult(result) => property_access_result_to_py(py, result)?
                 .into_any()
                 .unbind(),
@@ -154,6 +163,38 @@ impl Decoded {
                 dict.set_item("network_number", network_number)?;
                 dict.set_item("mac_address", PyBytes::new(py, &mac_address))?;
                 dict.into_any().unbind()
+            }
+            Self::ShedLevel(level) => {
+                let dict = PyDict::new(py);
+                match level {
+                    BACnetShedLevel::Percent(percent) => {
+                        dict.set_item("kind", "percent")?;
+                        dict.set_item("value", percent)?;
+                    }
+                    BACnetShedLevel::Level(level) => {
+                        dict.set_item("kind", "level")?;
+                        dict.set_item("value", level)?;
+                    }
+                    BACnetShedLevel::Amount(amount) => {
+                        dict.set_item("kind", "amount")?;
+                        dict.set_item("value", f64::from(amount))?;
+                    }
+                }
+                dict.into_any().unbind()
+            }
+            // The triple `report_credential_read_local` takes.
+            Self::AuthenticationFactor(factor) => any(
+                py,
+                (
+                    factor.format_type.to_raw(),
+                    factor.format_class,
+                    PyBytes::new(py, &factor.value),
+                ),
+            )?,
+            Self::EventParameter(parameter) => {
+                super::event_parameter_py::event_parameter_to_py(py, &parameter)?
+                    .into_any()
+                    .unbind()
             }
         })
     }
@@ -269,7 +310,7 @@ fn action_command_to_py<'py>(
 
 /// An object reference: an `ObjectIdentifier`, or a `(device, object)` pair
 /// when it names a device, the forms `door_members` takes.
-fn object_reference_to_py(
+pub(super) fn object_reference_to_py(
     py: Python<'_>,
     reference: &BACnetDeviceObjectReference,
 ) -> PyResult<Py<PyAny>> {
@@ -282,7 +323,7 @@ fn object_reference_to_py(
 
 /// A property reference, in the `DeviceObjectPropertyReference` mapping, with
 /// every key present.
-fn property_reference_to_py<'py>(
+pub(super) fn property_reference_to_py<'py>(
     py: Python<'py>,
     reference: &BACnetDeviceObjectPropertyReference,
 ) -> PyResult<Bound<'py, PyDict>> {
@@ -302,6 +343,26 @@ fn property_reference_to_py<'py>(
             .device_identifier
             .map(PyObjectIdentifier::from_rust),
     )?;
+    Ok(dict)
+}
+
+/// A reference that names no device, as `object_identifier`,
+/// `property_identifier` and `property_array_index`: the
+/// `DeviceObjectPropertyReference` mapping without its `device_identifier`.
+fn object_property_reference_to_py<'py>(
+    py: Python<'py>,
+    reference: &BACnetObjectPropertyReference,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item(
+        "object_identifier",
+        PyObjectIdentifier::from_rust(reference.object_identifier),
+    )?;
+    dict.set_item(
+        "property_identifier",
+        property_identifier(reference.property_identifier),
+    )?;
+    dict.set_item("property_array_index", reference.property_array_index)?;
     Ok(dict)
 }
 
@@ -349,10 +410,7 @@ fn property_access_result_to_py(
         }
         AccessResult::Error { class, code } => {
             dict.set_item("value", py.None())?;
-            dict.set_item(
-                "error",
-                (PyErrorClass { inner: *class }, PyErrorCode { inner: *code }),
-            )?;
+            dict.set_item("error", (IntEnumValue(*class), IntEnumValue(*code)))?;
         }
     }
     Ok(dict)

@@ -3,13 +3,20 @@
 //! offnormal and normal transitions but not fault detection (Clause
 //! 13.2.2.1), and a configured text is what a transition stores.
 
+use crate::traits::EventReporting as _;
+use crate::traits::Timed;
 use bacnet_types::bitstring::LimitEnable;
-use bacnet_types::enums::{EventState, EventType, PropertyIdentifier as P, Reliability};
+use bacnet_types::enums::{EngineeringUnits, EventState, PropertyIdentifier as P};
+#[cfg(feature = "event-reporting")]
+use bacnet_types::enums::{EventType, Reliability};
 use bacnet_types::primitives::{BACnetTimeStamp, PropertyValue};
 
-use super::{commit_test_proposal, EventTransitionCommit, TransitionOutcome};
+#[cfg(feature = "event-reporting")]
+use super::commit_test_proposal;
+use super::{EventTransitionCommit, TransitionOutcome};
 use crate::access_control::AccessZoneObject;
 use crate::analog::AnalogInputObject;
+#[cfg(feature = "event-reporting")]
 use crate::binary::{BinaryOutputObject, BinaryValueObject};
 use crate::event_log::EventLogObject;
 use crate::traits::BACnetObject;
@@ -26,6 +33,7 @@ fn inhibit(object: &mut dyn BACnetObject, on: bool) {
     );
 }
 
+#[cfg(feature = "event-reporting")]
 fn state(object: &dyn BACnetObject) -> EventState {
     match object.read_property(P::EVENT_STATE, None).unwrap() {
         PropertyValue::Enumerated(raw) => EventState::from_raw(raw),
@@ -33,6 +41,7 @@ fn state(object: &dyn BACnetObject) -> EventState {
     }
 }
 
+#[cfg(feature = "event-reporting")]
 /// Propose and commit one transition, returning where it went.
 fn step(object: &mut dyn BACnetObject, outcome: Option<TransitionOutcome>) -> Option<EventState> {
     outcome.map(|outcome| commit_test_proposal(object, outcome).change.to)
@@ -40,7 +49,7 @@ fn step(object: &mut dyn BACnetObject, outcome: Option<TransitionOutcome>) -> Op
 
 /// An Analog Input above its High_Limit, with the delays given.
 fn high_input(time_delay: u32) -> AnalogInputObject {
-    let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     write(&mut ai, P::HIGH_LIMIT, PropertyValue::Real(80.0));
     write(
         &mut ai,
@@ -60,6 +69,7 @@ fn high_input(time_delay: u32) -> AnalogInputObject {
     ai
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn an_inhibited_algorithm_proposes_no_offnormal_transition_but_still_faults() {
     let mut ai = high_input(0);
@@ -93,6 +103,7 @@ fn an_inhibited_algorithm_proposes_no_offnormal_transition_but_still_faults() {
     assert_eq!(step(&mut ai, offnormal), Some(EventState::HIGH_LIMIT));
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn turning_the_inhibit_on_returns_an_offnormal_object_to_normal_at_once() {
     let mut ai = high_input(0);
@@ -108,6 +119,7 @@ fn turning_the_inhibit_on_returns_an_offnormal_object_to_normal_at_once() {
     assert_eq!(ai.tick_intrinsic_reporting(), None);
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn a_condition_has_to_last_its_whole_delay_after_the_inhibit_clears() {
     let mut ai = high_input(2);
@@ -124,6 +136,7 @@ fn a_condition_has_to_last_its_whole_delay_after_the_inhibit_clears() {
     assert_eq!(step(&mut ai, outcome), Some(EventState::HIGH_LIMIT));
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn the_change_of_state_and_command_failure_detectors_take_the_inhibit_too() {
     // A Binary Value in its alarm state.
@@ -152,16 +165,29 @@ fn the_change_of_state_and_command_failure_detectors_take_the_inhibit_too() {
     for object in [&mut bv as &mut dyn BACnetObject, &mut bo] {
         let name = object.object_name().to_owned();
         inhibit(object, true);
-        assert_eq!(object.evaluate_intrinsic_reporting(), None, "{name}");
+        assert_eq!(
+            object
+                .event_reporting_mut()
+                .expect("lends event reporting")
+                .evaluate_intrinsic_reporting(),
+            None,
+            "{name}"
+        );
         inhibit(object, false);
-        let offnormal = object.evaluate_intrinsic_reporting();
+        let offnormal = object
+            .event_reporting_mut()
+            .expect("lends event reporting")
+            .evaluate_intrinsic_reporting();
         assert_eq!(
             step(object, offnormal),
             Some(EventState::OFFNORMAL),
             "{name}"
         );
         inhibit(object, true);
-        let normal = object.evaluate_intrinsic_reporting();
+        let normal = object
+            .event_reporting_mut()
+            .expect("lends event reporting")
+            .evaluate_intrinsic_reporting();
         assert_eq!(step(object, normal), Some(EventState::NORMAL), "{name}");
     }
 }
@@ -193,14 +219,15 @@ fn an_access_zone_takes_the_rows_and_the_inhibit() {
         P::EVENT_DETECTION_ENABLE,
         PropertyValue::Boolean(false),
     );
-    assert!(zone
-        .write_property(
+    assert!(
+        zone.write_property(
             P::EVENT_ALGORITHM_INHIBIT,
             None,
             PropertyValue::Boolean(false),
             None
         )
-        .is_err());
+        .is_err()
+    );
     assert_eq!(
         zone.read_property(P::EVENT_MESSAGE_TEXTS_CONFIG, None)
             .unwrap(),
@@ -228,8 +255,7 @@ fn a_configured_text_is_the_message_a_transition_stores() {
         timestamp: BACnetTimeStamp::SequenceNumber(1),
         message_text: Some("server text".into()),
     };
-    ai.commit_event_transition_internal(commit(offnormal))
-        .unwrap();
+    ai.commit_event_transition(commit(offnormal)).unwrap();
     assert_eq!(
         ai.read_property(P::EVENT_MESSAGE_TEXTS, Some(1)).unwrap(),
         PropertyValue::CharacterString("Too hot".into())
@@ -238,7 +264,7 @@ fn a_configured_text_is_the_message_a_transition_stores() {
     write(&mut ai, P::TIME_DELAY_NORMAL, PropertyValue::Unsigned(0));
     ai.set_present_value(10.0);
     let normal = ai.evaluate_intrinsic_reporting().unwrap();
-    ai.commit_event_transition_internal(commit(normal)).unwrap();
+    ai.commit_event_transition(commit(normal)).unwrap();
     assert_eq!(
         ai.read_property(P::EVENT_MESSAGE_TEXTS, Some(3)).unwrap(),
         PropertyValue::CharacterString("server text".into())
@@ -248,14 +274,20 @@ fn a_configured_text_is_the_message_a_transition_stores() {
 #[test]
 fn an_inhibited_log_holds_its_buffer_ready_report() {
     let mut log = EventLogObject::new(1, "EL-1", 8).unwrap();
-    log.bind_clock_internal(Some(std::sync::Arc::new(FixedClock)));
+    log.bind_clocks(&crate::traits::Clocks {
+        clock: Some(std::sync::Arc::new(FixedClock)),
+        ..crate::traits::Clocks::default()
+    });
     write(
         &mut log,
         P::NOTIFICATION_THRESHOLD,
         PropertyValue::Unsigned(1),
     );
     inhibit(&mut log, true);
-    log.add_event_log_record(record()).unwrap();
+    log.log_buffer_mut()
+        .unwrap()
+        .add_event_log_record(record())
+        .unwrap();
     assert_eq!(log.tick_intrinsic_reporting(), None);
     assert_eq!(log.evaluate_intrinsic_reporting(), None);
     // The record still counts, so the report falls due once it clears.

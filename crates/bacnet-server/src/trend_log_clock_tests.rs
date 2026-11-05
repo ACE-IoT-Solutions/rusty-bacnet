@@ -4,7 +4,7 @@ use bacnet_objects::clock::{ClockFrame, ClockReader};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_objects::trend::TrendLogObject;
 use bacnet_types::constructed::BACnetDeviceObjectPropertyReference;
-use bacnet_types::enums::PropertyIdentifier;
+use bacnet_types::enums::{EngineeringUnits, PropertyIdentifier};
 use bacnet_types::primitives::{Date, Time};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use std::sync::Mutex;
@@ -38,7 +38,7 @@ fn frame() -> ClockFrame {
 
 fn database(clock: Arc<dyn ClockReader>) -> (Arc<RwLock<ObjectDatabase>>, ObjectIdentifier) {
     let mut db = ObjectDatabase::new();
-    let mut target = AnalogValueObject::new(1, "AV", 95).unwrap();
+    let mut target = AnalogValueObject::new(1, "AV", EngineeringUnits::NO_UNITS).unwrap();
     target
         .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
@@ -70,7 +70,7 @@ fn database(clock: Arc<dyn ClockReader>) -> (Arc<RwLock<ObjectDatabase>>, Object
     db.add(Box::new(trend)).unwrap();
     db.set_clock_reader(Some(clock));
     let origin = tokio::time::Instant::now();
-    db.set_monotonic_clock_internal(Some(Arc::new(move || {
+    db.set_monotonic_clock(Some(Arc::new(move || {
         tokio::time::Instant::now().duration_since(origin)
     })));
     (Arc::new(RwLock::new(db)), oid)
@@ -78,7 +78,10 @@ fn database(clock: Arc<dyn ClockReader>) -> (Arc<RwLock<ObjectDatabase>>, Object
 
 /// The records ReadRange serves, each as its encoded bytes.
 fn served(obj: &dyn BACnetObject) -> Vec<Vec<u8>> {
-    let records = obj.log_buffer_internal().unwrap();
+    let records = obj
+        .log_buffer()
+        .and_then(|log| log.buffer_records())
+        .unwrap();
     (0..records.record_count())
         .map(|index| {
             let mut bytes = bytes::BytesMut::new();
@@ -115,7 +118,7 @@ async fn ordinary_poll_uses_exact_device_local_timestamp_and_hundredths() {
     poll_trend_logs(&db).await;
     let guard = db.read().await;
     let obj = guard.get(&oid).unwrap();
-    let identities = obj.log_record_identities_internal().unwrap();
+    let identities = obj.log_buffer().map(|log| log.record_identities()).unwrap();
     assert_eq!(identities.len(), 1);
     assert_eq!(identities[0].date(), expected.local_date);
     assert_eq!(identities[0].time(), expected.local_time);
@@ -144,7 +147,8 @@ async fn ordinary_poll_uses_exact_device_local_timestamp_and_hundredths() {
     let identities = guard
         .get(&oid)
         .unwrap()
-        .log_record_identities_internal()
+        .log_buffer()
+        .map(|log| log.record_identities())
         .unwrap();
     assert_eq!(identities.len(), 2);
     assert_eq!(identities[1].time(), next.local_time);

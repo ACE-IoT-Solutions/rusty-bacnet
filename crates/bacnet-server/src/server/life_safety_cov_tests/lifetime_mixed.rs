@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -15,8 +16,8 @@ impl BACnetObject for ReadProbe {
     fn object_name(&self) -> &str {
         self.inner.object_name()
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        self.inner.property_list()
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        self.inner.property_metadata()
     }
     fn read_property(
         &self,
@@ -30,10 +31,10 @@ impl BACnetObject for ReadProbe {
             self.selected_reads.fetch_add(1, Ordering::Relaxed);
         }
         if property == PropertyIdentifier::OPERATION_EXPECTED && self.fail.load(Ordering::Acquire) {
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::READ_ACCESS_DENIED.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::READ_ACCESS_DENIED,
+            ));
         }
         self.inner.read_property(property, index)
     }
@@ -46,11 +47,8 @@ impl BACnetObject for ReadProbe {
     ) -> Result<(), Error> {
         self.inner.write_property(property, index, value, priority)
     }
-    fn supports_cov(&self) -> bool {
-        true
-    }
-    fn supports_cov_property(&self, property: PropertyIdentifier) -> bool {
-        self.inner.supports_cov_property(property)
+    fn cov(&self) -> Option<&dyn bacnet_objects::traits::CovReporting> {
+        self.inner.cov()
     }
 }
 
@@ -117,7 +115,7 @@ async fn mixed_case(initial: bool, confirmed: bool, retain_value: bool) {
     a.issue_confirmed_notifications = confirmed;
     // On tokio's clock, which both callers pause, so the notification reports
     // exactly the 100 s however long the runner stalls (#1556).
-    a.expires_at = Some(runtime_clock::now() + Duration::from_secs(100));
+    a.expires_at = Some(crate::runtime_clock::core_now() + bacnet_time::Duration::from_secs(100));
     let mut b = a.clone();
     b.monitored_object_identifier = second_oid;
     b.monitored_property = Some(PropertyIdentifier::OPERATION_EXPECTED);
@@ -127,14 +125,16 @@ async fn mixed_case(initial: bool, confirmed: bool, retain_value: bool) {
     let fixture = DispatchFixture::new(db, [a, b]).await;
     // Both selected reads succeed initially. The later failure is not a fixture
     // that was already invalid when accepted by the table.
-    assert!(fixture
-        .db
-        .read()
-        .await
-        .get(&second_oid)
-        .unwrap()
-        .read_property(PropertyIdentifier::OPERATION_EXPECTED, None)
-        .is_ok());
+    assert!(
+        fixture
+            .db
+            .read()
+            .await
+            .get(&second_oid)
+            .unwrap()
+            .read_property(PropertyIdentifier::OPERATION_EXPECTED, None)
+            .is_ok()
+    );
     let snapshots = {
         let table = fixture.cov_table.read().await;
         // Put the soon-stale timestamped candidate first, testing representative selection.
@@ -203,21 +203,27 @@ async fn mixed_case(initial: bool, confirmed: bool, retain_value: bool) {
                 PropertyIdentifier::STATUS_FLAGS
             ]
         );
-        assert!(item
-            .list_of_values
-            .iter()
-            .all(|value| value.time_of_change.is_none()));
+        assert!(
+            item.list_of_values
+                .iter()
+                .all(|value| value.time_of_change.is_none())
+        );
     } else {
-        assert!(fixture.take_apdus().is_empty(), "a live failed read cannot authorize the stale successful value or a companion-only payload");
+        assert!(
+            fixture.take_apdus().is_empty(),
+            "a live failed read cannot authorize the stale successful value or a companion-only payload"
+        );
         assert_eq!(fixture.transactions.active_count(), 0);
         let table = fixture.cov_table.read().await;
         assert_eq!(table.counters().snapshot().notifications_sent, 0);
         assert_eq!(table.counters().snapshot().notification_bytes_sent, 0);
-        assert!(table
-            .get_subscription(&b_key)
-            .unwrap()
-            .last_notified_observation
-            .is_none());
+        assert!(
+            table
+                .get_subscription(&b_key)
+                .unwrap()
+                .last_notified_observation
+                .is_none()
+        );
     }
     fixture.transactions.close();
     while fixture.transactions.join_next().await.is_some() {}

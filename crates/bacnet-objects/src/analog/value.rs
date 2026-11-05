@@ -4,9 +4,10 @@ use crate::common::{
     write_generic_event_properties,
 };
 use crate::object_profile::{ObjectProfile, ProfileState, TagsPersistence};
+use crate::prelude::*;
 use crate::present_value_access::PresentValueAccess;
 use crate::property_metadata::PropertyMetadata;
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 mod metadata;
 #[cfg(test)]
@@ -24,7 +25,7 @@ pub struct AnalogValueObject {
     name: String,
     description: String,
     present_value: f32,
-    units: u32,
+    units: EngineeringUnits,
     out_of_service: bool,
     status_flags: StatusFlags,
     access: PresentValueAccess,
@@ -47,6 +48,10 @@ pub struct AnalogValueObject {
     min_pres_value: Option<f32>,
     max_pres_value: Option<f32>,
     pub(crate) event_history: EventHistory,
+    /// The reporting settings a write set, kept in storage once the
+    /// object opts in (#2331).
+    #[cfg(feature = "event-reporting")]
+    reporting_store: crate::write_config::reporting::ReportingStore,
     /// Value source tracking.
     value_source: crate::command_source::ValueSourceTracking,
     /// The last writer of a noncommandable Present_Value, once tracked (#1552).
@@ -62,7 +67,11 @@ impl AnalogValueObject {
     }
 
     /// Create a new Analog Value object with a commandable Present_Value.
-    pub fn new(instance: u32, name: impl Into<String>, units: u32) -> Result<Self, Error> {
+    pub fn new(
+        instance: u32,
+        name: impl Into<String>,
+        units: EngineeringUnits,
+    ) -> Result<Self, Error> {
         Self::with_access(instance, name, units, PresentValueAccess::Commandable)
     }
 
@@ -70,7 +79,7 @@ impl AnalogValueObject {
     pub fn with_access(
         instance: u32,
         name: impl Into<String>,
-        units: u32,
+        units: EngineeringUnits,
         access: PresentValueAccess,
     ) -> Result<Self, Error> {
         let oid = ObjectIdentifier::new(ObjectType::ANALOG_VALUE, instance)?;
@@ -97,6 +106,8 @@ impl AnalogValueObject {
             min_pres_value: None,
             max_pres_value: None,
             event_history: EventHistory::default(),
+            #[cfg(feature = "event-reporting")]
+            reporting_store: Default::default(),
             value_source: crate::command_source::ValueSourceTracking::default(),
             write_source: crate::command_source::SingleValueSource::default(),
         })
@@ -109,7 +120,7 @@ impl AnalogValueObject {
     pub fn with_tags_persistence(
         instance: u32,
         name: impl Into<String>,
-        units: u32,
+        units: EngineeringUnits,
         access: PresentValueAccess,
         persistence: Arc<dyn TagsPersistence>,
     ) -> Result<Self, Error> {
@@ -138,16 +149,11 @@ impl AnalogValueObject {
     /// On, the object serves Value_Source: the last writer, network or
     /// local, which alone may then correct it. A write must name its writer
     /// (`write_property_from`), and an application update through
-    /// `set_present_value_internal` leaves no source (NONE). A commandable
+    /// its `LocalInput` with no origin leaves no source (NONE). A commandable
     /// object always tracks its sources through Priority_Array, so this
     /// changes nothing on one.
     pub fn set_value_source_tracking(&mut self, enabled: bool) {
         self.write_source.set_enabled(enabled);
-    }
-
-    /// Set the description string.
-    pub fn set_description(&mut self, desc: impl Into<String>) {
-        self.description = desc.into();
     }
 
     /// Set minimum engineering-bound metadata; this is not a reliability fault limit.
@@ -221,18 +227,10 @@ impl AnalogValueObject {
     }
 }
 
-impl BACnetObject for AnalogValueObject {
-    fn audit_policy_authority_internal(
-        &mut self,
-    ) -> Option<crate::audit::AuditPolicyAuthority<'_>> {
-        Some(crate::audit::AuditPolicyAuthority::new(
-            &mut self.audit_policy,
-        ))
-    }
+crate::write_config::reporting::impl_reporting_persistence!(AnalogValueObject);
 
-    fn audit_object_policy_internal(&self) -> crate::audit::ObjectAuditPolicy {
-        self.audit_policy
-    }
+impl BACnetObject for AnalogValueObject {
+    crate::traits::lend_audit_policy!();
 
     fn object_identifier(&self) -> ObjectIdentifier {
         self.oid
@@ -247,6 +245,7 @@ impl BACnetObject for AnalogValueObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if metadata::excludes(self, property) {
             return Err(common::unknown_property_error());
         }
@@ -303,7 +302,9 @@ impl BACnetObject for AnalogValueObject {
             p if p == PropertyIdentifier::PRESENT_VALUE => {
                 Ok(PropertyValue::Real(self.present_value))
             }
-            p if p == PropertyIdentifier::UNITS => Ok(PropertyValue::Enumerated(self.units)),
+            p if p == PropertyIdentifier::UNITS => {
+                Ok(PropertyValue::Enumerated(self.units.to_raw()))
+            }
             p if p == PropertyIdentifier::PRIORITY_ARRAY => {
                 common::read_priority_array!(self, array_index, PropertyValue::Real)
             }
@@ -336,13 +337,7 @@ impl BACnetObject for AnalogValueObject {
         priority: Option<u8>,
         origin: &crate::command_source::CommandOrigin,
     ) -> Result<(), Error> {
-        if matches!(
-            property,
-            PropertyIdentifier::PRESENT_VALUE | PropertyIdentifier::VALUE_SOURCE
-        ) && array_index.is_some()
-        {
-            return Err(common::property_is_not_an_array_error());
-        }
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if property == PropertyIdentifier::VALUE_SOURCE {
             return match self.access {
                 PresentValueAccess::Commandable => {
@@ -384,6 +379,8 @@ impl BACnetObject for AnalogValueObject {
         value: PropertyValue,
         priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        crate::write_config::reporting::admit(self, property, array_index, &value)?;
         if metadata::excludes(self, property) {
             return Err(common::unknown_property_error());
         }
@@ -484,72 +481,51 @@ impl BACnetObject for AnalogValueObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
-        self.profile.capability()
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: std::time::Duration) -> bool {
-        self.profile.expire(now);
-        false
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.durable_capability()
     }
 
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
+    crate::traits::lend_cov_reporting!();
 
-    fn supports_cov(&self) -> bool {
-        true
-    }
+    crate::traits::lend_event_reporting!();
 
+    crate::traits::lend_reliability_eval!();
+
+    fn local_input(&mut self) -> Option<&mut dyn crate::traits::LocalInput> {
+        Some(self)
+    }
+}
+
+impl crate::creation::Creatable for AnalogValueObject {
+    const CREATION_ONLY_PROPERTIES: &'static [PropertyIdentifier] = super::CREATION_ONLY;
+
+    fn initialize_property(
+        &mut self,
+        property: PropertyIdentifier,
+        value: PropertyValue,
+    ) -> Result<(), Error> {
+        super::initialize_units(&mut self.units, property, value)
+    }
+}
+
+impl crate::traits::CovReporting for AnalogValueObject {
     fn cov_increment(&self) -> Option<f64> {
         Some(f64::from(self.cov_increment))
     }
+}
 
-    crate::event::impl_builtin_intrinsic_reporting!(
-        event_detector,
-        event_history,
-        [present_value],
-        reliability,
-        event_detection_enable,
-        OutOfRangeDetector::ALGORITHM
-    );
+crate::traits::impl_audit_policy!(AnalogValueObject);
 
-    fn acknowledge_alarm(
-        &mut self,
-        transition_bit: bacnet_types::bitstring::EventTransitionBits,
-    ) -> Result<(), bacnet_types::error::Error> {
-        self.event_detector.acked_transitions |=
-            transition_bit & bacnet_types::bitstring::EventTransitionBits::all();
-        Ok(())
-    }
-
-    fn acknowledge_alarm_correlated_internal(
-        &mut self,
-        event_state: EventState,
-        timestamp: &BACnetTimeStamp,
-    ) -> Result<(), Error> {
-        if !self.event_detection_enable {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
-            });
-        }
-        self.event_history.acknowledge_correlated(
-            &mut self.event_detector.acked_transitions,
-            event_state,
-            timestamp,
-        )
-    }
-
-    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
+impl crate::traits::ReliabilityEval for AnalogValueObject {
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
         if self.out_of_service || self.reliability_inhibit.enabled() {
             return Err(common::write_access_denied_error());
         }
@@ -561,32 +537,7 @@ impl BACnetObject for AnalogValueObject {
         Ok(())
     }
 
-    fn set_present_value_internal(&mut self, value: PropertyValue) -> Result<(), Error> {
-        match self.access {
-            PresentValueAccess::Commandable => {
-                Err(common::optional_functionality_not_supported_error())
-            }
-            _ if self.out_of_service => Err(common::write_access_denied_error()),
-            PresentValueAccess::ReadOnly | PresentValueAccess::Writable => {
-                self.present_value = Self::checked_present_value(value)?;
-                self.write_source.forget();
-                Ok(())
-            }
-        }
-    }
-
-    fn set_present_value_from_internal(
-        &mut self,
-        value: PropertyValue,
-        origin: &crate::command_source::CommandOrigin,
-    ) -> Result<(), Error> {
-        self.write_source.admit(origin)?;
-        self.set_present_value_internal(value)?;
-        self.write_source.record(origin);
-        Ok(())
-    }
-
-    fn evaluate_reliability_internal(&mut self) -> Result<ReliabilityEvaluation, Error> {
+    fn evaluate_reliability(&mut self) -> Result<ReliabilityEvaluation, Error> {
         if self.out_of_service || self.reliability_inhibit.enabled() {
             return Ok(ReliabilityEvaluation::Unchanged);
         }
@@ -594,14 +545,52 @@ impl BACnetObject for AnalogValueObject {
             .evaluate(self.present_value, &mut self.reliability)
     }
 
-    fn reliability_evaluation_inhibited_internal(&self) -> bool {
+    fn reliability_evaluation_inhibited(&self) -> bool {
         self.reliability_inhibit.enabled()
     }
+}
 
-    /// AnalogValue is NOT createable: `handle_create_object` has no branch for
-    /// it, so PICS must not advertise createability the runtime rejects.
-    fn is_createable(&self) -> bool {
-        false
+crate::event::impl_builtin_intrinsic_reporting!(
+    AnalogValueObject,
+    event_detector,
+    event_history,
+    [present_value],
+    reliability,
+    event_detection_enable,
+    OutOfRangeDetector::ALGORITHM
+);
+
+/// The Present_Value the application supplies while it isn't commandable,
+/// published as Value_Source from `origin` when the object tracks its
+/// source (#1552).
+impl crate::traits::LocalInput for AnalogValueObject {
+    fn apply_local_input(&mut self, input: crate::traits::LocalInputValue) -> Result<(), Error> {
+        let crate::traits::LocalInputValue::PresentValue { value, origin } = input else {
+            return Err(crate::traits::not_supported());
+        };
+        let Some(origin) = origin else {
+            return self.apply_local_present_value(value);
+        };
+        self.write_source.admit(&origin)?;
+        self.apply_local_present_value(value)?;
+        self.write_source.record(&origin);
+        Ok(())
+    }
+}
+
+impl AnalogValueObject {
+    /// The application's Present_Value, refused while it's commandable or
+    /// Out_Of_Service is TRUE.
+    fn apply_local_present_value(&mut self, value: PropertyValue) -> Result<(), Error> {
+        match self.access {
+            PresentValueAccess::Commandable => Err(crate::traits::not_supported()),
+            _ if self.out_of_service => Err(common::write_access_denied_error()),
+            PresentValueAccess::ReadOnly | PresentValueAccess::Writable => {
+                self.present_value = Self::checked_present_value(value)?;
+                self.write_source.forget();
+                Ok(())
+            }
+        }
     }
 }
 
@@ -613,7 +602,7 @@ mod detection_enable_reset_tests {
     /// disabling event detection must still restore their Clause 13.2.2.1 initial conditions.
     #[test]
     fn av_disabling_detection_resets_event_history() {
-        let mut av = AnalogValueObject::new(1, "AV-1", 62).unwrap();
+        let mut av = AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         assert_eq!(
             av.read_property(PropertyIdentifier::EVENT_DETECTION_ENABLE, None)
                 .unwrap(),
@@ -674,28 +663,30 @@ mod detection_enable_reset_tests {
 #[cfg(test)]
 mod fault_out_of_range_non_finite_tests {
     use super::*;
-    use bacnet_types::enums::{ErrorClass, ErrorCode, Reliability};
+    use bacnet_types::enums::{EngineeringUnits, ErrorClass, ErrorCode, Reliability};
+    use bacnet_types::error::RemoteError;
 
     fn assert_value_out_of_range(result: Result<ReliabilityEvaluation, Error>) {
         assert!(matches!(
             result,
-            Err(Error::Protocol { class, code })
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32
+            Err(Error::Remote(RemoteError::Error { class, code }))
+                if class == ErrorClass::PROPERTY
+                    && code == ErrorCode::VALUE_OUT_OF_RANGE
         ));
     }
 
     #[test]
     fn av_non_finite_monitored_values_preserve_reliability_status_and_ownership() {
         for non_finite in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            let mut normal = AnalogValueObject::new(1, "AV-normal", 62).unwrap();
+            let mut normal =
+                AnalogValueObject::new(1, "AV-normal", EngineeringUnits::DEGREES_CELSIUS).unwrap();
             normal.configure_fault_out_of_range(10.0, 20.0).unwrap();
             let status_before = normal
                 .read_property(PropertyIdentifier::STATUS_FLAGS, None)
                 .unwrap();
             normal.present_value = non_finite;
 
-            assert_value_out_of_range(normal.evaluate_reliability_internal());
+            assert_value_out_of_range(normal.reliability_eval().unwrap().evaluate_reliability());
             assert_eq!(normal.present_value.to_bits(), non_finite.to_bits());
             assert_eq!(normal.reliability, Reliability::NO_FAULT_DETECTED);
             assert_eq!(
@@ -708,23 +699,32 @@ mod fault_out_of_range_non_finite_tests {
 
             normal.present_value = 9.0;
             assert_eq!(
-                normal.evaluate_reliability_internal().unwrap(),
+                normal
+                    .reliability_eval()
+                    .unwrap()
+                    .evaluate_reliability()
+                    .unwrap(),
                 ReliabilityEvaluation::Changed {
                     old_reliability: Reliability::NO_FAULT_DETECTED,
                     new_reliability: Reliability::UNDER_RANGE,
                 }
             );
 
-            let mut owned = AnalogValueObject::new(2, "AV-owned", 62).unwrap();
+            let mut owned =
+                AnalogValueObject::new(2, "AV-owned", EngineeringUnits::DEGREES_CELSIUS).unwrap();
             owned.configure_fault_out_of_range(10.0, 20.0).unwrap();
             owned.present_value = 9.0;
-            owned.evaluate_reliability_internal().unwrap();
+            owned
+                .reliability_eval()
+                .unwrap()
+                .evaluate_reliability()
+                .unwrap();
             let status_before = owned
                 .read_property(PropertyIdentifier::STATUS_FLAGS, None)
                 .unwrap();
             owned.present_value = non_finite;
 
-            assert_value_out_of_range(owned.evaluate_reliability_internal());
+            assert_value_out_of_range(owned.reliability_eval().unwrap().evaluate_reliability());
             assert_eq!(owned.present_value.to_bits(), non_finite.to_bits());
             assert_eq!(owned.reliability, Reliability::UNDER_RANGE);
             assert_eq!(
@@ -740,7 +740,11 @@ mod fault_out_of_range_non_finite_tests {
 
             owned.present_value = 21.0;
             assert_eq!(
-                owned.evaluate_reliability_internal().unwrap(),
+                owned
+                    .reliability_eval()
+                    .unwrap()
+                    .evaluate_reliability()
+                    .unwrap(),
                 ReliabilityEvaluation::Changed {
                     old_reliability: Reliability::UNDER_RANGE,
                     new_reliability: Reliability::OVER_RANGE,

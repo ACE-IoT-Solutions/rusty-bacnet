@@ -1,6 +1,8 @@
 use super::*;
+use bacnet_device_core::read::ReadPropertyMultipleBudget;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::enums::ServiceSupported;
+use bacnet_types::error::RemoteError;
 use std::borrow::Cow;
 
 const SERVICES: PropertyIdentifier = PropertyIdentifier::PROTOCOL_SERVICES_SUPPORTED;
@@ -42,7 +44,6 @@ fn expected_services(clock: bool) -> Vec<u8> {
 /// Opaque custom reader: executor-owned rows must never delegate into it.
 struct CustomDevice {
     oid: ObjectIdentifier,
-    metadata: bool,
 }
 impl BACnetObject for CustomDevice {
     fn object_identifier(&self) -> ObjectIdentifier {
@@ -71,32 +72,32 @@ impl BACnetObject for CustomDevice {
     ) -> Result<(), Error> {
         panic!("read-only fixture")
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Owned(vec![PropertyIdentifier::DESCRIPTION, ACTIVE, MULTIPLE])
-    }
     fn property_metadata(&self) -> Cow<'_, [bacnet_objects::property_metadata::PropertyMetadata]> {
         use bacnet_objects::property_metadata::{
-            PropertyConformance, PropertyMetadata, PropertyWriteCapability,
+            Datatype, PropertyConformance, PropertyMetadata, PropertyWriteCapability, ValueType,
         };
-        if !self.metadata {
-            return Cow::Borrowed(&[]);
-        }
+        // Every row but Property_List claims to be an array, and the owned
+        // ones claim it too: the executor serves those from its own rows.
         Cow::Owned(
-            self.property_list()
-                .iter()
-                .map(|property| {
-                    PropertyMetadata::new(
-                        *property,
-                        PropertyConformance::RequiredWrite,
-                        None,
-                        PropertyWriteCapability::Always,
-                    )
-                })
-                .collect(),
+            [
+                PropertyIdentifier::DESCRIPTION,
+                ACTIVE,
+                MULTIPLE,
+                SERVICES,
+                BINDINGS,
+            ]
+            .iter()
+            .map(|property| {
+                PropertyMetadata::new(
+                    *property,
+                    PropertyConformance::RequiredWrite,
+                    None,
+                    PropertyWriteCapability::Always,
+                )
+                .with_value_type(ValueType::array(Datatype::Unsigned))
+            })
+            .collect(),
         )
-    }
-    fn is_array_property(&self, property: PropertyIdentifier) -> bool {
-        property != LIST
     }
 }
 
@@ -251,7 +252,8 @@ async fn device_execution_view_survives_public_profile_mutation_and_same_oid_rep
             .set_services_supported(&[ServiceSupported::VT_OPEN]);
         assert_profile(&mut wire, device(), clock).await;
         let mut replacement = DeviceObject::new(DeviceConfig {
-            instance: device().instance_number(),
+            identity: bacnet_objects::DeviceIdentity::new(device().instance_number(), 0)
+                .expect("valid Device identity"),
             ..Default::default()
         })
         .unwrap();
@@ -263,27 +265,22 @@ async fn device_execution_view_survives_public_profile_mutation_and_same_oid_rep
             .add(Box::new(replacement))
             .unwrap();
         assert_profile(&mut wire, wildcard(), clock).await;
-        for metadata in [false, true] {
-            wire.server
-                .database()
-                .write()
-                .await
-                .add(Box::new(CustomDevice {
-                    oid: device(),
-                    metadata,
-                }))
-                .unwrap();
-            assert_profile(&mut wire, device(), clock).await;
-            assert_eq!(
-                value(
-                    &wire
-                        .read(device(), PropertyIdentifier::DESCRIPTION, None)
-                        .await
-                        .unwrap()
-                ),
-                PropertyValue::CharacterString("custom-description".into())
-            );
-        }
+        wire.server
+            .database()
+            .write()
+            .await
+            .add(Box::new(CustomDevice { oid: device() }))
+            .unwrap();
+        assert_profile(&mut wire, device(), clock).await;
+        assert_eq!(
+            value(
+                &wire
+                    .read(device(), PropertyIdentifier::DESCRIPTION, None)
+                    .await
+                    .unwrap()
+            ),
+            PropertyValue::CharacterString("custom-description".into())
+        );
         wire.server.stop().await.unwrap();
     }
 }
@@ -294,8 +291,9 @@ async fn device_execution_view_owns_selected_live_and_other_empty_cov_values() {
     let other = ObjectIdentifier::new(ObjectType::DEVICE, 900).unwrap();
     for target in [device(), other] {
         let mut replacement = DeviceObject::new(DeviceConfig {
-            instance: target.instance_number(),
-            name: format!("declared-empty-{}", target.instance_number()),
+            identity: bacnet_objects::DeviceIdentity::new(target.instance_number(), 0)
+                .expect("valid Device identity")
+                .with_name(format!("declared-empty-{}", target.instance_number())),
             ..Default::default()
         })
         .unwrap();
@@ -311,10 +309,7 @@ async fn device_execution_view_owns_selected_live_and_other_empty_cov_values() {
         .database()
         .write()
         .await
-        .add(Box::new(CustomDevice {
-            oid: other,
-            metadata: true,
-        }))
+        .add(Box::new(CustomDevice { oid: other }))
         .unwrap();
     simple_ack(
         wire.send(&direct(), subscribe_cov(20, av(1), Some(false), Some(300)))
@@ -333,11 +328,13 @@ async fn device_execution_view_owns_selected_live_and_other_empty_cov_values() {
         .await,
     );
     for property in [ACTIVE, MULTIPLE] {
-        assert!(!wire
-            .read(device(), property, None)
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            !wire
+                .read(device(), property, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert!(wire.read(other, property, None).await.unwrap().is_empty());
         assert_eq!(
             wire.server
@@ -356,16 +353,20 @@ async fn device_execution_view_owns_selected_live_and_other_empty_cov_values() {
             ack.list_of_read_access_results[0].object_identifier,
             device()
         );
-        assert!(!ack.list_of_read_access_results[0].list_of_results[0]
-            .property_value
-            .as_ref()
-            .unwrap()
-            .is_empty());
-        assert!(ack.list_of_read_access_results[1].list_of_results[0]
-            .property_value
-            .as_ref()
-            .unwrap()
-            .is_empty());
+        assert!(
+            !ack.list_of_read_access_results[0].list_of_results[0]
+                .property_value
+                .as_ref()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            ack.list_of_read_access_results[1].list_of_results[0]
+                .property_value
+                .as_ref()
+                .unwrap()
+                .is_empty()
+        );
     }
     assert_profile(&mut wire, other, true).await;
     wire.server.stop().await.unwrap();
@@ -374,14 +375,11 @@ async fn device_execution_view_owns_selected_live_and_other_empty_cov_values() {
 #[test]
 fn device_execution_view_rpm_budgets_count_canonical_rows_and_preserve_output() {
     use crate::device_view::{DeviceExecution, DeviceReadContext};
+    use bacnet_device_core::read::ReadScope;
     use bacnet_services::rpm::ReadPropertyMultipleRequest;
     use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
     let mut db = ObjectDatabase::new();
-    db.add(Box::new(CustomDevice {
-        oid: device(),
-        metadata: true,
-    }))
-    .unwrap();
+    db.add(Box::new(CustomDevice { oid: device() })).unwrap();
     let view = DeviceReadContext::new(&db, DeviceExecution::FullServer);
     let request = |property| ReadPropertyMultipleRequest {
         list_of_read_access_specs: vec![ReadAccessSpecification {
@@ -412,30 +410,41 @@ fn device_execution_view_rpm_budgets_count_canonical_rows_and_preserve_output() 
     ] {
         let mut out = BytesMut::from(&b"unchanged"[..]);
         let mut observations = 0;
-        let result =
-            crate::handlers::RpmPlan::new(&db, &request, budget.max_result_elements, Some(&view))
-                .and_then(|plan| {
-                    plan.read_observed(
-                        &db,
-                        Some(&view),
-                        &mut out,
-                        budget.max_service_ack_bytes,
-                        |_, _, _, _| observations += 1,
-                    )
-                });
+        let result = bacnet_device_core::read::RpmPlan::new(
+            &db,
+            &ReadScope::UNLIMITED,
+            Some(&view),
+            &request,
+            budget.max_result_elements,
+        )
+        .and_then(|plan| {
+            plan.read(
+                &db,
+                Some(&view),
+                &mut out,
+                budget.max_service_ack_bytes,
+                |_, _, _, _| observations += 1,
+            )
+        });
         assert!(matches!(
             (&result, work_failure),
-            (Err(crate::handlers::ReadFailure::Work), true)
-                | (Err(crate::handlers::ReadFailure::Bytes), false)
+            (Err(bacnet_device_core::read::ReadFailure::Work), true)
+                | (Err(bacnet_device_core::read::ReadFailure::Bytes), false)
         ));
         assert_eq!(out.as_ref(), b"unchanged");
         assert_eq!(observations, 0);
     }
     let mut out = BytesMut::new();
-    crate::handlers::RpmPlan::new(&db, &request(PropertyIdentifier::ALL), 5, Some(&view))
-        .unwrap()
-        .read_observed(&db, Some(&view), &mut out, 4096, |_, _, _, _| {})
-        .unwrap();
+    bacnet_device_core::read::RpmPlan::new(
+        &db,
+        &ReadScope::UNLIMITED,
+        Some(&view),
+        &request(PropertyIdentifier::ALL),
+        5,
+    )
+    .unwrap()
+    .read(&db, Some(&view), &mut out, 4096, |_, _, _, _| {})
+    .unwrap();
     let ack = bacnet_services::rpm::ReadPropertyMultipleACK::decode(&out).unwrap();
     let properties: Vec<_> = ack.list_of_read_access_results[0]
         .list_of_results
@@ -458,7 +467,8 @@ fn device_execution_view_rpm_budgets_count_canonical_rows_and_preserve_output() 
 fn device_execution_view_keeps_context_free_helpers_on_raw_declared_profile() {
     let mut db = ObjectDatabase::new();
     let mut object = DeviceObject::new(DeviceConfig {
-        instance: device().instance_number(),
+        identity: bacnet_objects::DeviceIdentity::new(device().instance_number(), 0)
+            .expect("valid Device identity"),
         ..Default::default()
     })
     .unwrap();
@@ -472,7 +482,7 @@ fn device_execution_view_keeps_context_free_helpers_on_raw_declared_profile() {
     }
     .encode(&mut request);
     assert!(
-        matches!(crate::handlers::handle_read_property(&db, &request, &mut BytesMut::new()), Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY.to_raw() as u32 && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
+        matches!(crate::handlers::handle_read_property(&db, &request, &mut BytesMut::new()), Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::PROPERTY && code == ErrorCode::UNKNOWN_PROPERTY)
     );
     let mut request = BytesMut::new();
     bacnet_services::rpm::ReadPropertyMultipleRequest {
@@ -490,9 +500,11 @@ fn device_execution_view_keeps_context_free_helpers_on_raw_declared_profile() {
     crate::handlers::handle_read_property_multiple(&db, &request, &mut raw).unwrap();
     let ack = bacnet_services::rpm::ReadPropertyMultipleACK::decode(&raw).unwrap();
     let rows = &ack.list_of_read_access_results[0].list_of_results;
-    assert!(!rows
-        .iter()
-        .any(|row| [ACTIVE, MULTIPLE].contains(&row.property_identifier)));
+    assert!(
+        !rows
+            .iter()
+            .any(|row| [ACTIVE, MULTIPLE].contains(&row.property_identifier))
+    );
     let services = rows
         .iter()
         .find(|row| row.property_identifier == SERVICES)

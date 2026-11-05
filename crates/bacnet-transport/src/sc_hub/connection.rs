@@ -1,7 +1,7 @@
 //! Connection acceptance and WebSocket upgrade loop for the BACnet/SC hub.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::time::Instant;
 
 use futures_util::StreamExt;
@@ -9,13 +9,13 @@ use tokio::sync::Mutex;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, warn};
 
-use crate::sc_frame::{Vmac, BACNET_SC_HUB_SUBPROTOCOL};
+use crate::sc_frame::{BACNET_SC_HUB_SUBPROTOCOL, Vmac};
 use crate::sc_tls::boxed;
 
 use super::context::{HubConnectionContext, HubListener, PeerConnection};
 use super::heartbeat;
 use super::helpers::{offers_websocket_subprotocol, websocket_subprotocol_error_response};
-use super::{handle_client, Clients, DeviceUuid};
+use super::{Clients, DeviceUuid, handle_client};
 
 // ---------------------------------------------------------------------------
 // Accept loop
@@ -52,6 +52,8 @@ pub(super) async fn accept_loop_with_counter(
         let clients_for_hb = clients.clone();
         #[cfg(test)]
         let scans = tasks.probe_scans.clone();
+        #[cfg(test)]
+        let sweeps = tasks.probe_sweeps.clone();
         let mut hb_shutdown = tasks.subscribe();
         let next_msg_id = std::sync::atomic::AtomicU16::new(0x8000); // hub message IDs start high
         tasks.spawner().spawn(async move {
@@ -67,6 +69,8 @@ pub(super) async fn accept_loop_with_counter(
                         #[cfg(test)]
                         scans.fetch_add(1, Ordering::Release);
                         heartbeat::sweep(&clients_for_hb, &next_msg_id, &heartbeat::SocketIo(timing)).await;
+                        #[cfg(test)]
+                        sweeps.fetch_add(1, Ordering::Release);
                     }
                 }
             }
@@ -92,7 +96,10 @@ pub(super) async fn accept_loop_with_counter(
         let current = active_connections.load(std::sync::atomic::Ordering::Relaxed);
         if current >= total_active {
             super::outcomes::increment(&clients.outcomes.total_active_accept_drops);
-            warn!("Hub: rejecting connection from {peer_addr} — max active connections ({total_active}) reached");
+            crate::warn_throttled!(
+                admission.connection_warning,
+                "Hub: rejecting connection from {peer_addr} — max active connections ({total_active}) reached"
+            );
             drop(tcp_stream);
             continue;
         }
@@ -103,7 +110,8 @@ pub(super) async fn accept_loop_with_counter(
         let registered = clients.lock().await.len();
         if current.saturating_sub(registered) >= limits.max_handshakes {
             super::outcomes::increment(&clients.outcomes.handshake_accept_drops);
-            warn!(
+            crate::warn_throttled!(
+                admission.connection_warning,
                 "Hub: rejecting connection from {peer_addr} — max handshakes ({}) reached",
                 limits.max_handshakes
             );
@@ -198,7 +206,6 @@ pub(super) async fn serve_connection(
 ) {
     let clients = &ctx.clients;
     let tls_deadline = admission.tls_deadline;
-    let max_bvlc_length = ctx.timing.max_bvlc_length;
     // TLS handshake
     let tls_stream = match boxed(|| {
         super::deadlines::before(tls_deadline, acceptor.accept(tcp_stream).into_fallible())
@@ -207,7 +214,10 @@ pub(super) async fn serve_connection(
     {
         Ok(Ok(s)) => s,
         Ok(Err((e, tcp_stream))) => {
-            warn!("Hub TLS handshake failed for {peer_addr}: {e}");
+            crate::warn_throttled!(
+                ctx.admission.connection_warning,
+                "Hub TLS handshake failed for {peer_addr}: {e}"
+            );
             crate::tls_reject::close_after_alert(tcp_stream, tls_deadline).await;
             return;
         }
@@ -247,7 +257,9 @@ pub(super) async fn serve_connection(
                     );
                     Ok(response)
                 },
-                Some(crate::sc_limits::websocket(max_bvlc_length as usize)),
+                Some(crate::sc_limits::websocket(
+                    crate::sc_limits::DEFAULT_MAX_BVLC_LENGTH as usize,
+                )),
             ),
         )
     })
@@ -255,7 +267,10 @@ pub(super) async fn serve_connection(
     {
         Ok(Ok(ws)) => ws,
         Ok(Err(e)) => {
-            warn!("Hub WebSocket upgrade failed for {peer_addr}: {e}");
+            crate::warn_throttled!(
+                ctx.admission.connection_warning,
+                "Hub WebSocket upgrade failed for {peer_addr}: {e}"
+            );
             return;
         }
         Err(()) => {

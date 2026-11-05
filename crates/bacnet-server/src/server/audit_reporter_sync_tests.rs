@@ -16,14 +16,17 @@ async fn target_reporter_off_runtime_silent_change_commits_without_worker() {
         let reporter = database.get_mut(&reporter_id).unwrap();
         let mut operations = AuditOperationFlags::empty();
         operations.insert(AuditOperation::WRITE);
-        reporter.configure_audit_reporter_internal(
-            AuditLevel::NONE,
-            operations,
-            false,
-            None,
-            BACnetPriorityFilter::all(),
-            None,
-        )?;
+        reporter
+            .audit_reporter_mut()
+            .expect("an Audit Reporter")
+            .configure(
+                AuditLevel::NONE,
+                operations,
+                false,
+                None,
+                BACnetPriorityFilter::all(),
+                None,
+            )?;
         reporter.write_property(
             PropertyIdentifier::DESCRIPTION,
             None,
@@ -43,16 +46,20 @@ async fn target_reporter_off_runtime_silent_change_commits_without_worker() {
         );
         // A notification-producing change still rejects before committing when
         // no runtime is available; the silent path must not weaken this guard.
-        assert!(reporter
-            .configure_audit_reporter_internal(
-                AuditLevel::AUDIT_ALL,
-                operations,
-                false,
-                None,
-                BACnetPriorityFilter::all(),
-                None,
-            )
-            .is_err());
+        assert!(
+            reporter
+                .audit_reporter_mut()
+                .expect("an Audit Reporter")
+                .configure(
+                    AuditLevel::AUDIT_ALL,
+                    operations,
+                    false,
+                    None,
+                    BACnetPriorityFilter::all(),
+                    None,
+                )
+                .is_err()
+        );
         assert_eq!(
             reporter.read_property(PropertyIdentifier::AUDIT_LEVEL, None)?,
             PropertyValue::Enumerated(AuditLevel::NONE.to_raw())
@@ -64,10 +71,12 @@ async fn target_reporter_off_runtime_silent_change_commits_without_worker() {
     assert!(outcome.is_ok(), "silent active change failed: {outcome:?}");
     settle().await;
     assert!(fixture.transport.sent.lock().unwrap().is_empty());
-    assert!(fixture
-        .server
-        .notification_transactions
-        .delivery_workers_idle());
+    assert!(
+        fixture
+            .server
+            .notification_transactions
+            .delivery_workers_idle()
+    );
     assert_eq!(
         fixture.server.notification_transactions.audit_resources(),
         (false, 0, 64)
@@ -89,14 +98,16 @@ async fn target_reporter_off_runtime_silent_change_commits_without_worker() {
         std::thread::spawn(move || {
             let mut database = database.blocking_write();
             let reporter = database.get_mut(&reporter_id).unwrap();
-            assert!(reporter
-                .write_property(
-                    PropertyIdentifier::DESCRIPTION,
-                    None,
-                    PropertyValue::CharacterString("must not commit".into()),
-                    None,
-                )
-                .is_err());
+            assert!(
+                reporter
+                    .write_property(
+                        PropertyIdentifier::DESCRIPTION,
+                        None,
+                        PropertyValue::CharacterString("must not commit".into()),
+                        None,
+                    )
+                    .is_err()
+            );
             assert_eq!(
                 reporter
                     .read_property(PropertyIdentifier::DESCRIPTION, None)

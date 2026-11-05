@@ -1,10 +1,13 @@
+use super::bus_port::BusPort;
 use super::*;
-use bacnet_encoding::apdu::{decode_apdu, encode_apdu, ConfirmedRequest};
-use bacnet_encoding::npdu::{encode_npdu, Npdu};
+use bacnet_encoding::apdu::{ConfirmedRequest, decode_apdu, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, encode_npdu};
+use bacnet_npdu::NetworkPriority;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::ReceivedNpdu;
-use bacnet_types::enums::{ConfirmedServiceChoice, NetworkPriority, ServiceSupported};
+use bacnet_types::enums::{ConfirmedServiceChoice, ServiceSupported};
+use bacnet_types::error::RemoteError;
 use bytes::BytesMut;
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
@@ -67,6 +70,16 @@ fn session(
     )
 }
 
+/// A client on the in-memory link, so a test that talks to an endpoint
+/// through it runs on paused time (#2298).
+pub(super) async fn bus_client() -> bacnet_client::client::BACnetClient<BusPort> {
+    bacnet_client::client::BACnetClient::generic_builder()
+        .transport(BusPort::new())
+        .build()
+        .await
+        .unwrap()
+}
+
 fn oid(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap()
 }
@@ -75,8 +88,9 @@ fn database(instances: &[u32]) -> ObjectDatabase {
     for &instance in instances {
         db.add(Box::new(
             DeviceObject::new(DeviceConfig {
-                instance,
-                name: format!("device-{instance}"),
+                identity: bacnet_objects::DeviceIdentity::new(instance, 42)
+                    .expect("valid Device identity")
+                    .with_name(format!("device-{instance}")),
                 ..Default::default()
             })
             .unwrap(),
@@ -118,7 +132,7 @@ async fn device_write_profile_matches_execution_with_and_without_identity() {
                 .with_database(database(&[123]))
                 .with_device_writes(Arc::new(|_| true));
             if identity {
-                session = session.with_identity(crate::DeviceIdentity::new(123, 42).unwrap());
+                session = session.device(crate::DeviceIdentity::new(123, 42).unwrap());
             }
             session.start().await.unwrap();
             assert_eq!(starts.load(Ordering::SeqCst), 1);
@@ -144,10 +158,8 @@ async fn device_write_profile_matches_execution_with_and_without_identity() {
 async fn device_write_preflight_errors_are_atomic_and_retryable() {
     for case in [
         "client",
-        "missing",
         "empty",
         "lower device",
-        "wildcard",
         "mismatch",
         "services",
         "source",
@@ -163,13 +175,12 @@ async fn device_write_preflight_errors_are_atomic_and_retryable() {
                 "empty" => &[],
                 // Device 50 is the local Device, so identity 123 is a mismatch.
                 "lower device" => &[123, 50],
-                "wildcard" => &[ObjectIdentifier::MAX_INSTANCE],
                 _ => &[123],
             }));
         }
         let identity =
             crate::DeviceIdentity::new(if case == "mismatch" { 456 } else { 123 }, 42).unwrap();
-        session = session.with_identity(if case == "services" {
+        session = session.device(if case == "services" {
             identity.with_services(&[ServiceSupported::WRITE_PROPERTY_MULTIPLE])
         } else {
             identity
@@ -205,7 +216,7 @@ async fn device_write_preflight_errors_are_atomic_and_retryable() {
         if case != "client" && case != "source" {
             session = session
                 .with_database(database(&[123]))
-                .with_identity(crate::DeviceIdentity::new(123, 42).unwrap());
+                .device(crate::DeviceIdentity::new(123, 42).unwrap());
             session.start().await.unwrap();
             assert_eq!(starts.load(Ordering::SeqCst), 1);
             session.stop().await.unwrap();
@@ -213,7 +224,7 @@ async fn device_write_preflight_errors_are_atomic_and_retryable() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn endpoint_device_write_actual_ingress_rejects_source_reporter_and_stops() {
     let (session, mut peer, _) = session(SessionRole::Both);
     let mut db = database(&[123]);
@@ -273,7 +284,7 @@ async fn endpoint_device_write_actual_ingress_rejects_source_reporter_and_stops(
             &mut bytes,
             &Npdu {
                 expecting_reply: true,
-                priority: NetworkPriority::NORMAL,
+                priority: NetworkPriority::Normal,
                 payload: apdu.freeze(),
                 ..Default::default()
             },
@@ -324,14 +335,16 @@ async fn endpoint_device_write_actual_ingress_rejects_source_reporter_and_stops(
 
 #[test]
 fn bip_device_writes_cannot_be_discarded_by_bare_transport_build() {
-    assert!(crate::bip::BipEndpointBuilder::new(
-        std::net::Ipv4Addr::LOCALHOST,
-        0,
-        std::net::Ipv4Addr::BROADCAST
-    )
-    .device_writes(Arc::new(|_| true))
-    .build_transport()
-    .is_err());
+    assert!(
+        crate::bip::BipEndpointBuilder::new(
+            std::net::Ipv4Addr::LOCALHOST,
+            0,
+            std::net::Ipv4Addr::BROADCAST
+        )
+        .device_writes(Arc::new(|_| true))
+        .build_transport()
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -344,8 +357,10 @@ async fn device_write_rejects_device_shaped_custom_object_without_authority() {
         fn object_name(&self) -> &str {
             self.0.object_name()
         }
-        fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-            self.0.property_list()
+        fn property_metadata(
+            &self,
+        ) -> std::borrow::Cow<'_, [bacnet_objects::property_metadata::PropertyMetadata]> {
+            self.0.property_metadata()
         }
         fn read_property(
             &self,
@@ -368,7 +383,7 @@ async fn device_write_rejects_device_shaped_custom_object_without_authority() {
     let mut db = ObjectDatabase::new();
     db.add(Box::new(DeviceShaped(
         DeviceObject::new(DeviceConfig {
-            instance: 123,
+            identity: bacnet_objects::DeviceIdentity::new(123, 0).expect("valid Device identity"),
             ..Default::default()
         })
         .unwrap(),
@@ -385,8 +400,8 @@ async fn device_write_rejects_device_shaped_custom_object_without_authority() {
     );
 }
 
-#[tokio::test]
-async fn bip_device_write_authorized_round_trip_and_service_readback() {
+#[tokio::test(start_paused = true)]
+async fn device_write_authorized_round_trip_and_service_readback() {
     use std::net::Ipv4Addr;
     let mut session =
         crate::bip::BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
@@ -396,20 +411,14 @@ async fn bip_device_write_authorized_round_trip_and_service_readback() {
                 context.source_network.is_none()
                     && context.trust == bacnet_server::mutation::MutationTrust::Unverified
             }))
-            .build_session()
+            .build_session_over(BusPort::new())
             .unwrap();
     session.start().await.unwrap();
-    // The endpoint bound port 0; the client talks to the port it actually got.
     let port = session.bip_local_address().unwrap().port();
-    let mut client = bacnet_client::client::BACnetClient::bip_builder()
-        .interface(Ipv4Addr::LOCALHOST)
-        .port(0)
-        .build()
-        .await
-        .unwrap();
+    let mut client = bus_client().await;
     let mac = bacnet_transport::bvll::encode_bip_mac([127, 0, 0, 1], port);
     let mut value = BytesMut::new();
-    bacnet_encoding::primitives::encode_app_character_string(&mut value, "B/IP update").unwrap();
+    bacnet_encoding::primitives::encode_app_character_string(&mut value, "bus update").unwrap();
     tokio::time::timeout(
         Duration::from_secs(3),
         client.write_property(
@@ -426,7 +435,7 @@ async fn bip_device_write_authorized_round_trip_and_service_readback() {
     .unwrap();
     assert_eq!(
         read(&session, PropertyIdentifier::DESCRIPTION).await,
-        PropertyValue::CharacterString("B/IP update".into())
+        PropertyValue::CharacterString("bus update".into())
     );
     client
         .write_property(
@@ -441,7 +450,7 @@ async fn bip_device_write_authorized_round_trip_and_service_readback() {
         .unwrap();
     assert_eq!(
         read(&session, PropertyIdentifier::DESCRIPTION).await,
-        PropertyValue::CharacterString("B/IP update".into())
+        PropertyValue::CharacterString("bus update".into())
     );
     let ack = client
         .read_property(
@@ -462,25 +471,20 @@ async fn bip_device_write_authorized_round_trip_and_service_readback() {
 
 /// With several Devices the lowest is this device (#1204): writes reach it,
 /// and only it advertises WriteProperty, whichever Device was added first.
-#[tokio::test]
-async fn bip_device_writes_reach_the_lowest_of_several_devices() {
+#[tokio::test(start_paused = true)]
+async fn device_writes_reach_the_lowest_of_several_devices() {
     use std::net::Ipv4Addr;
     let mut session =
         crate::bip::BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
             .role(SessionRole::ServerOnly)
             .database(database(&[456, 123]))
-            .identity(crate::DeviceIdentity::new(123, 42).unwrap())
+            .device(crate::DeviceIdentity::new(123, 42).unwrap())
             .device_writes(Arc::new(|_| true))
-            .build_session()
+            .build_session_over(BusPort::new())
             .unwrap();
     session.start().await.unwrap();
     let port = session.bip_local_address().unwrap().port();
-    let mut client = bacnet_client::client::BACnetClient::bip_builder()
-        .interface(Ipv4Addr::LOCALHOST)
-        .port(0)
-        .build()
-        .await
-        .unwrap();
+    let mut client = bus_client().await;
     let mac = bacnet_transport::bvll::encode_bip_mac([127, 0, 0, 1], port);
     let mut value = BytesMut::new();
     bacnet_encoding::primitives::encode_app_character_string(&mut value, "lowest").unwrap();
@@ -505,8 +509,8 @@ async fn bip_device_writes_reach_the_lowest_of_several_devices() {
     assert!(
         matches!(
             refused,
-            Error::Protocol { code, .. }
-                if code == bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+            Error::Remote(RemoteError::Error { code, .. })
+                if code == bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED
         ),
         "{refused:?}"
     );

@@ -79,10 +79,7 @@ pub(crate) async fn admit<H: RunHost>(
         );
     }
     end_refused(host, refused).await;
-    Err(Error::Protocol {
-        class: ErrorClass::OBJECT.to_raw() as u32,
-        code: ErrorCode::BUSY.to_raw() as u32,
-    })
+    Err(Error::protocol(ErrorClass::OBJECT, ErrorCode::BUSY))
 }
 
 /// End refused runs as if none of their writes had been made: a Command's

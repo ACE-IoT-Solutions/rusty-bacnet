@@ -1,5 +1,6 @@
 use super::*;
-use crate::handlers::{WriteCommitObserver, WriteTarget};
+use bacnet_device_core::write::{WriteCommitObserver, WriteTarget};
+use bacnet_types::enums::EngineeringUnits;
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
@@ -46,14 +47,8 @@ impl BACnetObject for SourcedObject {
         self.inner
             .write_property_from(property, index, value, priority, origin)
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        self.inner.property_list()
-    }
     fn property_metadata(&self) -> Cow<'_, [bacnet_objects::property_metadata::PropertyMetadata]> {
         self.inner.property_metadata()
-    }
-    fn is_array_property(&self, property: PropertyIdentifier) -> bool {
-        self.inner.is_array_property(property)
     }
 }
 
@@ -86,7 +81,9 @@ fn indexed_absence_keeps_wpm_prefix_coordinate_and_skips_authorizer_observer_sou
     for malformed in [false, true] {
         let objects: Vec<(Box<dyn BACnetObject>, PropertyIdentifier)> = vec![
             (
-                Box::new(AnalogInputObject::new(1, "input", 62).unwrap()),
+                Box::new(
+                    AnalogInputObject::new(1, "input", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+                ),
                 VENDOR,
             ),
             (
@@ -122,14 +119,8 @@ fn indexed_absence_keeps_wpm_prefix_coordinate_and_skips_authorizer_observer_sou
             let origin = crate::command_source::test_origin();
             let mut observer = Observer(events.clone());
             assert_error(
-                handle_write_property_observed(
-                    &mut db,
-                    &bytes,
-                    Some(&mut observer),
-                    None,
-                    Some(&origin),
-                )
-                .map(|_| ()),
+                write::write_property(&mut db, &bytes, Some(&mut observer), None, Some(&origin))
+                    .map(|_| ()),
                 ErrorCode::UNKNOWN_PROPERTY,
             );
             assert!(
@@ -178,14 +169,13 @@ fn indexed_absence_keeps_wpm_prefix_coordinate_and_skips_authorizer_observer_sou
                 events.lock().unwrap().push("authorize");
                 Ok(())
             };
-            let WritePropertyMultipleOutcome::Error {
+            let WpmOutcome::Error {
                 error,
                 first_failed_write_attempt,
                 committed_oids,
-            } = handle_write_property_multiple_observed(
+            } = write::write_property_multiple(
                 &mut db,
                 &bytes,
-                &mut crate::life_safety_cov::LifeSafetyCovSnapshots::default(),
                 Some(&authorize),
                 Some(&mut observer),
                 None,

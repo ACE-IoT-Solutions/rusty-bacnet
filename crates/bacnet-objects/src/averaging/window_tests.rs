@@ -3,6 +3,7 @@
 //! discard the samples.
 use super::*;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 use PropertyIdentifier as P;
 
@@ -66,8 +67,8 @@ fn empty() -> (u32, u32, u32, PropertyValue, PropertyValue) {
 
 fn assert_error(error: Error, code: ErrorCode) {
     assert!(
-        matches!(error, Error::Protocol { class, code: c }
-            if class == ErrorClass::PROPERTY.to_raw() as u32 && c == code.to_raw() as u32),
+        matches!(error, Error::Remote(RemoteError::Error { class, code: c })
+            if class == ErrorClass::PROPERTY && c == code),
         "expected PROPERTY/{code:?}, got {error:?}"
     );
 }

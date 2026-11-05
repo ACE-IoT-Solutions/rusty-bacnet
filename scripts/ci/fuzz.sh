@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Checks, builds and runs the codecs' cargo-fuzz targets (#1610) with the
-# nightly toolchain that .github/ci-pins.env pins as RUST_FUZZ_NIGHTLY.
-# .github/workflows/fuzz.yml runs it, and it runs the same way locally (see
-# docs/ci.md, "Fuzzing"):
+# Checks, builds and runs the cargo-fuzz targets of the codecs (#1610), the
+# MS/TP master core (#1640), the APDU, value and service codecs and the
+# object crate's persistence restores (#2180) with the nightly toolchain
+# that .github/ci-pins.env pins as RUST_FUZZ_NIGHTLY.
+# .github/workflows/fuzz.yml runs it, and it runs the
+# same way locally (see docs/ci.md, "Fuzzing"):
 #
 #   fuzz.sh list                     one "<crate> <target>" line per target
 #   fuzz.sh matrix                   the same as a JSON array, for fuzz.yml
-#   fuzz.sh check                    each fuzz crate's lockfile, rustfmt, clippy
+#   fuzz.sh check                    each fuzz crate's lockfile, rustfmt, clippy,
+#                                    and its tests, which replay saved
+#                                    regression and seed inputs
 #   fuzz.sh build [<target>]         build every target, or one
 #   fuzz.sh run <target> <seconds> [<libFuzzer flag>...]
 #                                    fuzz one target for that many seconds
@@ -19,7 +23,7 @@
 #                                    possible; --check fails instead
 #
 # The fuzz crates are crates/*/fuzz, each a workspace of its own with its own
-# Cargo.lock, which records the workspace version of the codec it fuzzes and
+# Cargo.lock, which records the workspace version of the crate it fuzzes and
 # the workspace's requirements for its dependencies: a version bump or a moved
 # requirement leaves it stale until `fuzz.sh lock`. Every build checks it
 # first, and so does ci.yml's Lint job, with `lock --check`. `lock` needs no
@@ -27,7 +31,9 @@
 #
 # With FUZZ_WORK set, corpora go in $FUZZ_WORK/corpus/<target> and failing
 # inputs in $FUZZ_WORK/artifacts/<target>; without it, in the fuzz crate's
-# corpus/ and artifacts/, cargo-fuzz's defaults, which git ignores.
+# corpus/ and artifacts/, cargo-fuzz's defaults, which git ignores. A fuzz
+# crate's seeds/<target>, when it has one, is read on every run besides,
+# and its flags/<target> holds libFuzzer flags for that target's runs.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -96,6 +102,26 @@ cargo_fuzz() {
   cargo "+$nightly" fuzz "$subcommand" --target "$host" "$@"
 }
 
+# sanitizer TARGET: the sanitizer TARGET builds with (#2233). The object
+# crate's restore targets, named here, build with none; every other target,
+# a new one in bacnet-objects/fuzz included, keeps cargo-fuzz's default,
+# address. The restore targets assert no panic and a round trip, which need
+# no sanitizer. The workspace crates they link (bacnet-objects,
+# bacnet-types, bacnet-encoding, bacnet-npdu) all #![forbid(unsafe_code)];
+# AddressSanitizer would add checks for out-of-bounds access, use after
+# free and leaks only in the unsafe code of the rest they link: std, bytes,
+# smallvec, tracing, tracing-core and once_cell, libc (errno constants
+# only), and libfuzzer-sys with arbitrary, all fuzzed and audited upstream.
+# Without it a run makes about 2.7 times the executions. The harness's own
+# global allocator keeps libFuzzer's 2,048 MB limit on a single allocation.
+sanitizer() {
+  case $1 in
+    log_restore | log_restore_file | audit_restore | audit_restore_file \
+      | object_file_restore | object_file_restore_file) echo none ;;
+    *) echo address ;;
+  esac
+}
+
 # locked CRATE: fail unless CRATE's fuzz lockfile is current. Any cargo can
 # tell, so this runs whichever the caller has.
 locked() {
@@ -147,18 +173,31 @@ case $command in
       locked "$crate"
       nightly_cargo fmt --manifest-path "$manifest" --check
       nightly_cargo clippy --locked --manifest-path "$manifest" --all-targets -- -D warnings
+      nightly_cargo test --locked --manifest-path "$manifest" --quiet
     done ;;
   build)
     [ "$#" -le 1 ] || usage
     if [ "$#" -eq 1 ]; then
       crate=$(crate_of "$1")
       locked "$crate"
-      (cd "$root/crates/$crate" && cargo_fuzz build "$1")
+      (cd "$root/crates/$crate" && cargo_fuzz build -s "$(sanitizer "$1")" "$1")
     else
       for crate in "${crates[@]}"; do
         echo "==> $crate"
         locked "$crate"
-        (cd "$root/crates/$crate" && cargo_fuzz build)
+        # One build for a crate whose targets share the default sanitizer;
+        # otherwise each target with its own.
+        mixed=
+        for target in $(targets "$crate"); do
+          [ "$(sanitizer "$target")" = address ] || mixed=1
+        done
+        if [ -z "$mixed" ]; then
+          (cd "$root/crates/$crate" && cargo_fuzz build)
+        else
+          for target in $(targets "$crate"); do
+            (cd "$root/crates/$crate" && cargo_fuzz build -s "$(sanitizer "$target")" "$target")
+          done
+        fi
       done
     fi ;;
   run)
@@ -169,12 +208,31 @@ case $command in
     locked "$crate"
     corpus=$(work corpus "$target")
     artifacts=$(work artifacts "$target")
+    # Seed inputs checked in beside the fuzz crate, seeds/<target>, go after
+    # the corpus: libFuzzer reads them first and writes only to the corpus.
+    seeds=$root/crates/$crate/fuzz/seeds/$target
+    if [ -d "$seeds" ]; then
+      corpus=${corpus:-$root/crates/$crate/fuzz/corpus/$target}
+      mkdir -p "$corpus"
+    else
+      seeds=
+    fi
+    # A target's own libFuzzer flags, one per line, in flags/<target>
+    # beside the fuzz crate's targets; the caller's flags come after them,
+    # so they win.
+    flags=()
+    flags_file=$root/crates/$crate/fuzz/flags/$target
+    if [ -f "$flags_file" ]; then
+      while IFS= read -r flag; do
+        [ -n "$flag" ] && flags+=("$flag")
+      done < "$flags_file"
+    fi
     # A positional corpus directory replaces cargo-fuzz's default one; a
     # later -artifact_prefix overrides the one cargo-fuzz passes. A single
     # input that runs 10 seconds is a hang.
-    in_crate "$crate" "$target" cargo_fuzz run "$target" ${corpus:+"$corpus"} -- \
+    in_crate "$crate" "$target" cargo_fuzz run -s "$(sanitizer "$target")" "$target" ${corpus:+"$corpus"} ${seeds:+"$seeds"} -- \
       -max_total_time="$seconds" -timeout=10 -print_final_stats=1 \
-      ${artifacts:+"-artifact_prefix=$artifacts/"} "$@" ;;
+      ${artifacts:+"-artifact_prefix=$artifacts/"} ${flags[@]+"${flags[@]}"} "$@" ;;
   tmin)
     [ "$#" -ge 1 ] || usage
     target=$1; shift
@@ -193,7 +251,7 @@ case $command in
     for input in "${inputs[@]}"; do
       input=$(cd "$(dirname "$input")" && pwd)/$(basename "$input")
       echo "==> minimizing $input"
-      in_crate "$crate" "$target" cargo_fuzz tmin "$target" "$input" -- -timeout=10 \
+      in_crate "$crate" "$target" cargo_fuzz tmin -s "$(sanitizer "$target")" "$target" "$input" -- -timeout=10 \
         ${artifacts:+"-artifact_prefix=$artifacts/"} || status=1
     done
     exit "$status" ;;
@@ -206,7 +264,7 @@ case $command in
     locked "$crate"
     corpus=$(work corpus "$target")
     before=$(find "${corpus:-$root/crates/$crate/fuzz/corpus/$target}" -type f | wc -l)
-    in_crate "$crate" "$target" cargo_fuzz cmin "$target" ${corpus:+"$corpus"} -- -timeout=10
+    in_crate "$crate" "$target" cargo_fuzz cmin -s "$(sanitizer "$target")" "$target" ${corpus:+"$corpus"} -- -timeout=10
     after=$(find "${corpus:-$root/crates/$crate/fuzz/corpus/$target}" -type f | wc -l)
     echo "corpus of $target: $((before)) inputs before, $((after)) after" ;;
   lock)
@@ -215,12 +273,12 @@ case $command in
       --check) for crate in "${crates[@]}"; do locked "$crate"; done ;;
       '')
         # Without --locked, cargo re-resolves only the entries the manifests
-        # no longer allow, the codec's own version included, and keeps every
-        # other dependency where the lockfile has it. That fails when a moved
-        # requirement lands on a dependency the fuzz crate names itself too
-        # (bytes, heapless): its locked version satisfies the fuzz crate, so
-        # cargo keeps it. Then unlock the codec's dependencies and resolve
-        # them again.
+        # no longer allow, the fuzzed crate's own version included, and
+        # keeps every other dependency where the lockfile has it. That fails
+        # when a moved requirement lands on a dependency the fuzz crate names
+        # itself too (bytes, heapless): its locked version satisfies the fuzz
+        # crate, so cargo keeps it. Then unlock the fuzzed crate's
+        # dependencies and resolve them again.
         for crate in "${crates[@]}"; do
           manifest=$root/crates/$crate/fuzz/Cargo.toml
           if ! cargo fetch --quiet --manifest-path "$manifest" 2>/dev/null; then

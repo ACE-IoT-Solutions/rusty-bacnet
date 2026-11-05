@@ -4,6 +4,7 @@
 
 use super::super::*;
 use bacnet_types::enums::ObjectType;
+use bacnet_types::error::RemoteError;
 
 // CharacterStringValueObject
 // -----------------------------------------------------------------------
@@ -82,15 +83,9 @@ fn characterstring_value_priority_array_omitted_index_is_write_access_denied() {
         )
         .unwrap_err()
     {
-        Error::Protocol { class, code } => {
-            assert_eq!(
-                class,
-                bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32
-            );
-            assert_eq!(
-                code,
-                bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
-            );
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, bacnet_types::enums::ErrorClass::PROPERTY);
+            assert_eq!(code, bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED);
         }
         other => panic!("expected PROPERTY/WRITE_ACCESS_DENIED, got {other:?}"),
     }
@@ -112,15 +107,9 @@ fn characterstring_value_priority_array_omitted_index_is_write_access_denied() {
         )
         .unwrap_err()
     {
-        Error::Protocol { class, code } => {
-            assert_eq!(
-                class,
-                bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32
-            );
-            assert_eq!(
-                code,
-                bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
-            );
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, bacnet_types::enums::ErrorClass::PROPERTY);
+            assert_eq!(code, bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED);
         }
         other => panic!("expected PROPERTY/WRITE_ACCESS_DENIED, got {other:?}"),
     }

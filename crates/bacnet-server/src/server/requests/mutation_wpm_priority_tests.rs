@@ -1,9 +1,10 @@
-use super::mutation_tests::{apdu, oid, Fixture};
+use super::mutation_tests::{Fixture, apdu, oid};
 use super::*;
 use bacnet_encoding::{primitives, tags};
 use bacnet_objects::analog::AnalogOutputObject;
 use bacnet_services::wpm::WritePropertyMultipleError;
 use bacnet_types::constructed::BACnetObjectPropertyReference;
+use bacnet_types::enums::EngineeringUnits;
 use std::sync::atomic::AtomicUsize;
 
 fn write_value(bytes: &mut BytesMut, value: f32, index: Option<u32>) {
@@ -45,7 +46,9 @@ async fn fixture() -> (Fixture, Arc<AtomicUsize>) {
         .db
         .write()
         .await
-        .add(Box::new(AnalogOutputObject::new(7, "AO", 62).unwrap()))
+        .add(Box::new(
+            AnalogOutputObject::new(7, "AO", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+        ))
         .unwrap();
     (fixture, calls)
 }

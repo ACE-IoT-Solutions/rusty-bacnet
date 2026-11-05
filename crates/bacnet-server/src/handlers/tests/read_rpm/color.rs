@@ -1,11 +1,12 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     color::{ColorObject, ColorTemperatureObject},
     traits::BACnetObject,
 };
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 // Shared RP-vs-RPM parity plus budget parity over one case table.
 type ExpectedRead = Result<&'static [u8], ErrorCode>;
@@ -30,9 +31,9 @@ fn assert_cases(
     }
     .encode(&mut request)
     .unwrap();
-    let mut legacy = BytesMut::new();
-    handle_read_property_multiple(db, &request, &mut legacy).unwrap();
-    let ack = ReadPropertyMultipleACK::decode(&legacy).unwrap();
+    let mut unlimited = BytesMut::new();
+    handle_read_property_multiple(db, &request, &mut unlimited).unwrap();
+    let ack = ReadPropertyMultipleACK::decode(&unlimited).unwrap();
     assert_eq!(ack.list_of_read_access_results.len(), 1);
     let access = &ack.list_of_read_access_results[0];
     assert_eq!(access.object_identifier, oid);
@@ -72,27 +73,30 @@ fn assert_cases(
             Err(expected) => {
                 assert!(result.property_value.is_none());
                 assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
-                assert!(matches!(rp, Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32));
+                assert!(
+                    matches!(rp, Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == ErrorClass::PROPERTY && code == expected)
+                );
                 assert!(response.is_empty());
             }
         }
     }
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
-    let budget = crate::server::ReadPropertyMultipleBudget {
+    use crate::handlers::rpm_budget::handle_rpm_budgeted;
+    use bacnet_device_core::read::ReadFailure;
+    let budget = bacnet_device_core::read::ReadPropertyMultipleBudget {
         max_result_elements: cases.len(),
-        max_service_ack_bytes: legacy.len(),
+        max_service_ack_bytes: unlimited.len(),
     };
     let mut bounded = BytesMut::new();
     handle_rpm_budgeted(db, &request, &mut bounded, budget).unwrap();
-    assert_eq!(bounded, legacy);
+    assert_eq!(bounded, unlimited);
     let mut prefix = BytesMut::from(&b"prefix"[..]);
     assert!(matches!(
         handle_rpm_budgeted(
             db,
             &request,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
                 max_result_elements: cases.len() - 1,
                 ..budget
             }
@@ -105,8 +109,8 @@ fn assert_cases(
             db,
             &request,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
-                max_service_ack_bytes: legacy.len() - 1,
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
+                max_service_ack_bytes: unlimited.len() - 1,
                 ..budget
             }
         ),
@@ -200,7 +204,12 @@ fn rpm_color_indexed_reads_and_bytes_are_unchanged() {
                 Some(0),
                 Err(ErrorCode::PROPERTY_IS_NOT_AN_ARRAY),
             ),
-            (P::IN_PROGRESS, None, Ok(&[0x91, 0])),
+            // Undriven until a write or the device start drives it (#1526).
+            (
+                P::IN_PROGRESS,
+                None,
+                Ok(if configured { &[0x91, 0] } else { &[0x91, 3] }),
+            ),
             (
                 P::IN_PROGRESS,
                 Some(0),
@@ -353,7 +362,11 @@ fn rpm_color_temperature_indexed_reads_and_bytes_are_unchanged() {
                 Some(0),
                 Err(ErrorCode::PROPERTY_IS_NOT_AN_ARRAY),
             ),
-            (P::IN_PROGRESS, None, Ok(&[0x91, 0])),
+            (
+                P::IN_PROGRESS,
+                None,
+                Ok(if configured { &[0x91, 0] } else { &[0x91, 3] }),
+            ),
             (
                 P::IN_PROGRESS,
                 Some(0),

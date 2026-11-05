@@ -12,13 +12,14 @@ use super::cov_wire_test_support::*;
 use super::*;
 use bacnet_objects::binary::BinaryOutputObject;
 use bacnet_objects::life_safety::LifeSafetyPointObject;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::staging::{StagingConfig, StagingObject};
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
 use bacnet_services::life_safety::LifeSafetyOperationRequest;
 use bacnet_services::wpm::{WriteAccessSpecification, WritePropertyMultipleRequest};
 use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetStageLimitValue};
-use bacnet_types::enums::LifeSafetyOperation;
+use bacnet_types::enums::{EngineeringUnits, LifeSafetyOperation};
 use bacnet_types::primitives::Time;
 
 type Row = (PropertyIdentifier, Vec<u8>, Option<Time>);
@@ -215,7 +216,7 @@ fn faulted_staging(db: &mut ObjectDatabase) {
             StagingConfig {
                 present_value: 5.0,
                 min_present_value: 0.0,
-                units: 62,
+                units: EngineeringUnits::DEGREES_CELSIUS,
                 priority_for_writing: 8,
                 stages: vec![stage(vec![false], 10.0), stage(vec![true], 20.0)],
                 target_references: vec![BACnetDeviceObjectReference {
@@ -357,7 +358,9 @@ async fn life_safety_wpm_reports_each_exact_change_of_an_a_b_a_request() {
 async fn life_safety_operation_change_reports_its_commit_time() {
     let mut h = Harness::start_with(
         ServerConfig {
-            life_safety_operation_authorizer: Some(Arc::new(|_| true)),
+            policy: Some(Arc::new(
+                crate::FnPolicy::new().life_safety_operation(|_| true),
+            )),
             ..ServerConfig::default()
         },
         life_safety_point,
@@ -434,10 +437,10 @@ impl bacnet_objects::traits::BACnetObject for WritablePoint {
             },
             PropertyIdentifier::OUT_OF_SERVICE => PropertyValue::Boolean(self.out_of_service),
             _ => {
-                return Err(Error::Protocol {
-                    class: bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32,
-                    code: bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-                })
+                return Err(Error::protocol(
+                    bacnet_types::enums::ErrorClass::PROPERTY,
+                    bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY,
+                ));
             }
         })
     }
@@ -457,28 +460,38 @@ impl bacnet_objects::traits::BACnetObject for WritablePoint {
                 self.out_of_service = value;
             }
             _ => {
-                return Err(Error::Protocol {
-                    class: bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32,
-                    code: bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-                })
+                return Err(Error::protocol(
+                    bacnet_types::enums::ErrorClass::PROPERTY,
+                    bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED,
+                ));
             }
         }
         Ok(())
     }
 
-    fn supports_cov(&self) -> bool {
-        true
+    fn cov(&self) -> Option<&dyn bacnet_objects::traits::CovReporting> {
+        Some(self)
     }
 
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        std::borrow::Cow::Borrowed(&[
-            PropertyIdentifier::OBJECT_IDENTIFIER,
-            PropertyIdentifier::OBJECT_NAME,
-            PropertyIdentifier::OBJECT_TYPE,
-            PropertyIdentifier::PRESENT_VALUE,
-            PropertyIdentifier::STATUS_FLAGS,
-            PropertyIdentifier::OUT_OF_SERVICE,
-        ])
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::rows(
+            &[
+                PropertyIdentifier::PRESENT_VALUE,
+                PropertyIdentifier::STATUS_FLAGS,
+                PropertyIdentifier::OUT_OF_SERVICE,
+            ],
+            &[
+                PropertyIdentifier::PRESENT_VALUE,
+                PropertyIdentifier::OUT_OF_SERVICE,
+            ],
+        )
+    }
+}
+
+// A custom Life Safety Point takes the standardized property surface.
+impl bacnet_objects::traits::CovReporting for WritablePoint {
+    fn supports_cov_property(&self, property: PropertyIdentifier) -> bool {
+        bacnet_objects::life_safety::COV_PROPERTIES.contains(&property)
     }
 }
 

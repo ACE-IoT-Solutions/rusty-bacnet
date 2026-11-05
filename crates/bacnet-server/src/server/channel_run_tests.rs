@@ -11,21 +11,22 @@ use super::channel_wire_tests::{
 use super::command_action_wire_tests::ao;
 use super::cov_wire_test_support::*;
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::enums::WriteStatus;
 use std::borrow::Cow;
 use std::sync::Mutex as StdMutex;
 
-type Log = Arc<StdMutex<Vec<(PropertyIdentifier, PropertyValue)>>>;
+pub(super) type Log = Arc<StdMutex<Vec<(PropertyIdentifier, PropertyValue)>>>;
 
 /// A vendor-type object that holds a REAL in every property and takes any
 /// write, logging each one in order.
-struct Recorder {
-    oid: ObjectIdentifier,
-    log: Log,
+pub(super) struct Recorder {
+    pub(super) oid: ObjectIdentifier,
+    pub(super) log: Log,
 }
 
-fn rec() -> ObjectIdentifier {
+pub(super) fn rec() -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::from_raw(600), 1).unwrap()
 }
 
@@ -64,8 +65,11 @@ impl BACnetObject for Recorder {
         Ok(())
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        // Vendor members 1000 to 1003 and Lighting_Command, all writable.
+        let mut served: Vec<_> = (1000..=1003).map(PropertyIdentifier::from_raw).collect();
+        served.push(PropertyIdentifier::LIGHTING_COMMAND);
+        crate::test_rows::rows(&served, &served)
     }
 }
 

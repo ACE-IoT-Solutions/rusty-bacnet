@@ -1,5 +1,5 @@
 use super::ScheduleObject;
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
@@ -44,17 +44,17 @@ pub(super) fn for_object(_object: &ScheduleObject) -> Cow<'_, [PropertyMetadata]
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collections::HashSet;
     use crate::traits::BACnetObject;
     use bacnet_types::enums::{ErrorClass, ErrorCode};
-    use bacnet_types::error::Error;
+    use bacnet_types::error::{Error, RemoteError};
     use bacnet_types::primitives::PropertyValue;
-    use std::collections::HashSet;
 
     fn assert_error(error: Error, expected: ErrorCode) {
         assert!(
-            matches!(error, Error::Protocol { class, code }
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == expected.to_raw() as u32),
+            matches!(error, Error::Remote(RemoteError::Error { class, code })
+                if class == ErrorClass::PROPERTY
+                    && code == expected),
             "expected {expected:?}, got {error:?}"
         );
     }
@@ -96,8 +96,14 @@ mod tests {
         let metadata = object.property_metadata();
         assert!(matches!(metadata, Cow::Borrowed(_)));
         assert_eq!(metadata.len(), 16);
-        assert_eq!(object.property_list().as_ref(), all);
-        assert_eq!(object.required_properties().as_ref(), required);
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(&all)
+        );
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            required
+        );
         assert_eq!(
             metadata
                 .iter()
@@ -106,9 +112,10 @@ mod tests {
                 .len(),
             metadata.len()
         );
-        assert!(!object.is_createable());
-        assert!(object.is_deleteable());
-        assert!(!object.supports_cov());
+        assert!(crate::creation::builtin_deleteable(
+            object.object_identifier().object_type()
+        ));
+        assert!(!object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
         for row in metadata.iter() {
             assert_eq!(row.presence_condition, None);
             assert_eq!(
@@ -181,7 +188,7 @@ mod tests {
                 };
                 assert_eq!(row.write_capability, capability, "{p:?}");
                 assert_eq!(
-                    object.is_writable_property(p),
+                    crate::property_metadata::is_writable_property(&object, p),
                     capability.is_writable(),
                     "{p:?}"
                 );
@@ -243,7 +250,7 @@ mod tests {
                 P::RELIABILITY_EVALUATION_INHIBIT,
                 P::ALL,
             ] {
-                assert!(!object.is_writable_property(p));
+                assert!(!crate::property_metadata::is_writable_property(&object, p));
                 assert_error(
                     object.read_property(p, None).unwrap_err(),
                     ErrorCode::UNKNOWN_PROPERTY,
@@ -267,7 +274,11 @@ mod tests {
         let original = object.property_metadata().into_owned();
         let evaluated = Reliability::CONFIGURATION_ERROR;
         let simulated = Reliability::NO_FAULT_DETECTED.to_raw();
-        object.set_reliability_internal(evaluated).unwrap();
+        object
+            .reliability_eval()
+            .unwrap()
+            .set_reliability(evaluated)
+            .unwrap();
         object
             .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Boolean(true), None)
             .unwrap();
@@ -284,7 +295,11 @@ mod tests {
             PropertyValue::Enumerated(simulated)
         );
         assert_error(
-            object.set_reliability_internal(evaluated).unwrap_err(),
+            object
+                .reliability_eval()
+                .unwrap()
+                .set_reliability(evaluated)
+                .unwrap_err(),
             ErrorCode::WRITE_ACCESS_DENIED,
         );
         // Repeated OOS writes must not replace the saved evaluated Reliability.
@@ -304,7 +319,7 @@ mod tests {
                 ErrorCode::INVALID_ARRAY_INDEX,
             ),
         ] {
-            assert!(object.is_array_property(p));
+            assert!(crate::property_metadata::is_array_property(&object, p));
             assert_error(
                 object
                     .write_property(p, Some(index), PropertyValue::List(vec![]), None)

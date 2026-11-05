@@ -16,26 +16,26 @@ use tokio::sync::mpsc;
 use tracing::Level;
 
 use super::frame::{encoded, raw_frame};
-use super::receive::{receive_failed, Receiver, Reply};
+use super::receive::{Receiver, Reply, receive_failed};
 use super::receive_counters::ReceiveDrops;
 use super::reply_limit::REPLIES_PER_DESTINATION;
+use super::resolver::Resolver;
 use super::socket::{Bip6Socket, Inbound};
-use super::vmac_table::VmacTable;
 use super::*;
 use crate::log_capture::LogCapture;
 use crate::port::{ReceivedNpdu, TransportPort};
 use crate::udp_metadata::ReceivedDatagram;
 use crate::warn_throttle::WARNING_INTERVAL;
 
-const LOCAL_VMAC: Bip6Vmac = Bip6Vmac::new([0x00, 0x06, 0x50]);
+pub(super) const LOCAL_VMAC: Bip6Vmac = Bip6Vmac::new([0x00, 0x06, 0x50]);
 const PEER_VMAC: Bip6Vmac = Bip6Vmac::new([0x00, 0x06, 0x51]);
 const OTHER_VMAC: Bip6Vmac = Bip6Vmac::new([0x00, 0x06, 0x52]);
 const LOCAL_PORT: u16 = 0xBAC0;
 /// A Who-Is.
-const NPDU: &[u8] = &[0x01, 0x00, 0x10, 0x08];
-const GROUP: Ipv6Addr = BACNET_IPV6_MULTICAST_SITE_LOCAL;
+pub(super) const NPDU: &[u8] = &[0x01, 0x00, 0x10, 0x08];
+pub(super) const GROUP: Ipv6Addr = BACNET_IPV6_MULTICAST_SITE_LOCAL;
 
-fn local_ip() -> Ipv6Addr {
+pub(super) fn local_ip() -> Ipv6Addr {
     Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x10)
 }
 
@@ -45,7 +45,7 @@ fn own() -> SocketAddrV6 {
 }
 
 /// Another node on the link.
-fn peer() -> SocketAddrV6 {
+pub(super) fn peer() -> SocketAddrV6 {
     SocketAddrV6::new(
         Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x30),
         0xBAC0,
@@ -55,12 +55,12 @@ fn peer() -> SocketAddrV6 {
 }
 
 /// The BBMD a foreign-device node registers with.
-fn bbmd() -> SocketAddrV6 {
+pub(super) fn bbmd() -> SocketAddrV6 {
     SocketAddrV6::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1), 0xBAC0, 0, 0)
 }
 
 /// A node on another link: a Forwarded-NPDU's origin, or an asker.
-fn station() -> SocketAddrV6 {
+pub(super) fn station() -> SocketAddrV6 {
     SocketAddrV6::new(
         Ipv6Addr::new(0x2001, 0xdb8, 0, 9, 0, 0, 0, 0x20),
         0xBAC0,
@@ -75,9 +75,9 @@ fn group_source() -> SocketAddrV6 {
 }
 
 /// A receiver and the network layer's end of its channel.
-struct Node {
+pub(super) struct Node {
     receiver: Receiver,
-    rx: mpsc::Receiver<ReceivedNpdu>,
+    pub(super) rx: mpsc::Receiver<ReceivedNpdu>,
 }
 
 impl Node {
@@ -85,20 +85,29 @@ impl Node {
     /// whose channel to the network layer holds `capacity` NPDUs. Its
     /// socket is never used: replies are returned, not sent.
     async fn new(foreign: bool, capacity: usize) -> Self {
-        let socket = Bip6Socket::bind(Ipv6Addr::LOCALHOST, 0, None)
+        let target = foreign.then(|| super::foreign_target::ForeignTarget::at(bbmd()));
+        Self::with_target(target, capacity).await
+    }
+
+    /// [`Node::new`], registering as `target` says, if it is a foreign device.
+    pub(super) async fn with_target(
+        target: Option<Arc<super::foreign_target::ForeignTarget>>,
+        capacity: usize,
+    ) -> Self {
+        let socket = Bip6Socket::bind(Ipv6Addr::LOCALHOST, 0, super::socket::Role::Normal)
             .await
             .unwrap();
         let (tx, rx) = mpsc::channel(capacity);
         let receiver = Receiver {
             socket: Arc::new(socket),
             tx,
-            local_mac: encode_bip6_mac(local_ip(), LOCAL_PORT),
+            local_port: LOCAL_PORT,
             vmac: LOCAL_VMAC,
             local_ip: local_ip(),
             unicast_ips: vec![local_ip()],
             wildcard_bind: false,
-            foreign_bbmd: foreign.then(|| (*bbmd().ip(), bbmd().port())),
-            vmac_table: VmacTable::new(),
+            foreign_bbmd: target,
+            neighbours: Resolver::with_own(LOCAL_VMAC),
             forwarded_group_origin_drops: Arc::default(),
             drops: Arc::default(),
             nak_quota: Default::default(),
@@ -108,33 +117,44 @@ impl Node {
     }
 
     /// Feed `datagram` from `from`, sent to `to`.
-    async fn feed(&self, datagram: &[u8], from: SocketAddrV6, to: Ipv6Addr) -> Option<Reply> {
+    pub(super) async fn feed(
+        &self,
+        datagram: &[u8],
+        from: SocketAddrV6,
+        to: Ipv6Addr,
+    ) -> Option<Reply> {
         let received = ReceivedDatagram {
             len: datagram.len(),
             peer: SocketAddr::V6(from),
             destination: IpAddr::V6(to),
             arrival_index: Some(1),
             os_group_delivery: None,
+            arrival_stamp: None,
         };
         self.receiver.handle_datagram(datagram, &received).await
     }
 
     /// Feed `message` from `from`, sent to `to`.
-    async fn send(&self, message: Bvll6<'_>, from: SocketAddrV6, to: Ipv6Addr) -> Option<Reply> {
+    pub(super) async fn send(
+        &self,
+        message: Bvll6<'_>,
+        from: SocketAddrV6,
+        to: Ipv6Addr,
+    ) -> Option<Reply> {
         self.feed(&encoded(&message).unwrap(), from, to).await
     }
 
-    fn counters(&self) -> Bip6ReceiveCounters {
+    pub(super) fn counters(&self) -> Bip6ReceiveCounters {
         self.receiver.drops.snapshot()
     }
 
-    fn nothing_handed_up(&mut self) {
+    pub(super) fn nothing_handed_up(&mut self) {
         assert!(self.rx.try_recv().is_err(), "an NPDU was handed up");
     }
 }
 
 /// Counters where only what `set` writes moved.
-fn only(set: impl FnOnce(&mut Bip6ReceiveCounters)) -> Bip6ReceiveCounters {
+pub(super) fn only(set: impl FnOnce(&mut Bip6ReceiveCounters)) -> Bip6ReceiveCounters {
     let mut counters = Bip6ReceiveCounters::default();
     set(&mut counters);
     counters
@@ -155,7 +175,7 @@ fn broadcast() -> Bvll6<'static> {
     }
 }
 
-fn forwarded(origin: SocketAddrV6, npdu: &[u8]) -> BytesMut {
+pub(super) fn forwarded(origin: SocketAddrV6, npdu: &[u8]) -> BytesMut {
     encoded(&Bvll6::ForwardedNpdu {
         original_source: PEER_VMAC,
         original_address: origin.into(),
@@ -164,7 +184,7 @@ fn forwarded(origin: SocketAddrV6, npdu: &[u8]) -> BytesMut {
     .unwrap()
 }
 
-fn forwarded_resolution(target: Bip6Vmac, asker: SocketAddrV6) -> Bvll6<'static> {
+pub(super) fn forwarded_resolution(target: Bip6Vmac, asker: SocketAddrV6) -> Bvll6<'static> {
     Bvll6::ForwardedAddressResolution {
         original_source: PEER_VMAC,
         target,
@@ -233,6 +253,7 @@ async fn failed_reads_and_unusable_metadata_count_as_receive_errors() {
         destination: IpAddr::V6(local_ip()),
         arrival_index: Some(1),
         os_group_delivery: None,
+        arrival_stamp: None,
     };
     assert_eq!(node.receiver.handle_datagram(&frame, &received).await, None);
     node.nothing_handed_up();
@@ -405,7 +426,7 @@ async fn a_forwarded_npdu_that_is_not_an_npdu_counts_as_malformed() {
     node.feed(&forwarded(station(), &[0x02, 0x00]), peer(), GROUP)
         .await;
     node.nothing_handed_up();
-    assert_eq!(node.receiver.vmac_table.lookup(&PEER_VMAC).await, None);
+    assert_eq!(node.receiver.neighbours.lookup(PEER_VMAC), None);
     assert_eq!(node.counters(), only(|c| c.malformed_forwarded_npdu = 3));
 }
 
@@ -453,6 +474,30 @@ async fn a_request_from_an_unanswerable_source_counts_as_unanswerable() {
     assert_eq!(node.counters(), only(|c| c.unanswerable_request = 3));
 }
 
+/// An NPDU from a source no answer could reach is never learned, so its
+/// source MAC would name a VMAC this node can't reach at that address. It
+/// is dropped and counted, not handed up (#1637); from an answerable
+/// source the same frame goes up.
+#[tokio::test]
+async fn an_npdu_from_an_unanswerable_source_counts_as_unanswerable_source() {
+    let mut node = Node::new(false, 8).await;
+    let sources = [
+        group_source(),
+        SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0xBAC0, 0, 0),
+        SocketAddrV6::new("::ffff:192.0.2.30".parse().unwrap(), 0xBAC0, 0, 0),
+        SocketAddrV6::new(*peer().ip(), 0, 0, 0),
+    ];
+    for source in sources {
+        node.send(unicast_to(LOCAL_VMAC), source, local_ip()).await;
+        node.send(broadcast(), source, GROUP).await;
+    }
+    node.nothing_handed_up();
+    assert_eq!(node.counters(), only(|c| c.unanswerable_source = 8));
+    assert_eq!(node.receiver.neighbours.lookup(PEER_VMAC), None);
+    node.send(unicast_to(LOCAL_VMAC), peer(), local_ip()).await;
+    assert_eq!(node.rx.try_recv().unwrap().npdu.as_ref(), NPDU);
+}
+
 #[tokio::test]
 async fn frames_from_this_node_count_as_own_echo() {
     let mut node = Node::new(false, 8).await;
@@ -473,7 +518,7 @@ async fn a_forwarded_npdu_from_this_node_counts_as_own_echo() {
         let mut node = Node::new(foreign, 8).await;
         node.feed(&forwarded(own(), NPDU), from, to).await;
         node.nothing_handed_up();
-        assert_eq!(node.receiver.vmac_table.lookup(&PEER_VMAC).await, None);
+        assert_eq!(node.receiver.neighbours.lookup(PEER_VMAC), None);
         assert_eq!(
             node.counters(),
             only(|c| c.own_echo = 1),
@@ -565,7 +610,8 @@ async fn the_channel_full_warning_goes_out_at_most_once_per_interval() {
 
 /// Anyone can send a Virtual-Address-Resolution-ACK from this node's VMAC,
 /// or a BVLC-Result NAK, so neither logs above debug more than once per
-/// interval. Neither is a drop.
+/// interval. The ACK is dropped and counted as from this node's VMAC; the
+/// NAK is handled, not a drop.
 #[tokio::test(start_paused = true)]
 async fn collision_and_nak_logs_go_out_at_most_once_per_interval() {
     let (logs, _guard) = LogCapture::start();
@@ -607,7 +653,7 @@ async fn collision_and_nak_logs_go_out_at_most_once_per_interval() {
         [Level::ERROR, Level::DEBUG, Level::DEBUG, Level::ERROR]
     );
     assert_eq!(naks[3].fields["naks"], "3");
-    assert_eq!(node.counters(), Bip6ReceiveCounters::default());
+    assert_eq!(node.counters(), only(|c| c.own_vmac_source = 4));
 }
 
 /// Through a running transport's socket: a datagram larger than the receive
@@ -617,7 +663,7 @@ async fn collision_and_nak_logs_go_out_at_most_once_per_interval() {
 async fn a_running_transport_reports_its_drops() {
     let mut transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(0x0650));
     let _rx = transport.start().await.unwrap();
-    let (_, port) = decode_bip6_mac(transport.local_mac()).unwrap();
+    let port = transport.local_address().unwrap().port();
     let to = SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0);
     let sender = UdpSocket::bind("[::1]:0").await.unwrap();
 

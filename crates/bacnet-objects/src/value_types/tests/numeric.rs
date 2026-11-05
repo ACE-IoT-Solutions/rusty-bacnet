@@ -3,7 +3,9 @@
 //! Split out to keep every file under the 700-LOC cap.
 
 use super::super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::enums::ObjectType;
+use bacnet_types::error::RemoteError;
 
 // -----------------------------------------------------------------------
 // IntegerValueObject
@@ -182,7 +184,10 @@ fn large_analog_value_object_type() {
 fn scalar_value_relinquish_default_write_recaptures_present_value() {
     // IntegerValue (i32 bounds via Signed extraction)
     let mut iv = IntegerValueObject::new(1, "IV-1").unwrap();
-    assert!(iv.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &iv,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
     iv.write_property(
         PropertyIdentifier::RELINQUISH_DEFAULT,
         None,
@@ -202,14 +207,15 @@ fn scalar_value_relinquish_default_write_recaptures_present_value() {
         "with an empty priority array, PV must resolve to the written default"
     );
     // Wrong type refuses with state untouched.
-    assert!(iv
-        .write_property(
+    assert!(
+        iv.write_property(
             PropertyIdentifier::RELINQUISH_DEFAULT,
             None,
             PropertyValue::Unsigned(42),
             None,
         )
-        .is_err());
+        .is_err()
+    );
     assert_eq!(
         iv.read_property(PropertyIdentifier::RELINQUISH_DEFAULT, None)
             .unwrap(),
@@ -225,7 +231,10 @@ fn scalar_value_relinquish_default_write_recaptures_present_value() {
 
     // PositiveIntegerValue (u64 bounds via Unsigned extraction)
     let mut piv = PositiveIntegerValueObject::new(1, "PIV-1").unwrap();
-    assert!(piv.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &piv,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
     piv.write_property(
         PropertyIdentifier::RELINQUISH_DEFAULT,
         None,
@@ -241,7 +250,10 @@ fn scalar_value_relinquish_default_write_recaptures_present_value() {
 
     // LargeAnalogValue: Double, non-finite refused as VALUE_OUT_OF_RANGE.
     let mut lav = LargeAnalogValueObject::new(1, "LAV-1").unwrap();
-    assert!(lav.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &lav,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
     lav.write_property(
         PropertyIdentifier::RELINQUISH_DEFAULT,
         None,
@@ -264,15 +276,9 @@ fn scalar_value_relinquish_default_write_recaptures_present_value() {
             )
             .expect_err("non-finite Relinquish_Default must refuse")
         {
-            Error::Protocol { class, code } => {
-                assert_eq!(
-                    class,
-                    bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32
-                );
-                assert_eq!(
-                    code,
-                    bacnet_types::enums::ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32
-                );
+            Error::Remote(RemoteError::Error { class, code }) => {
+                assert_eq!(class, bacnet_types::enums::ErrorClass::PROPERTY);
+                assert_eq!(code, bacnet_types::enums::ErrorCode::VALUE_OUT_OF_RANGE);
             }
             other => panic!("expected PROPERTY / VALUE_OUT_OF_RANGE, got {other:?}"),
         }

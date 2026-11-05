@@ -3,6 +3,7 @@
 use super::super::*;
 use bacnet_objects::event::{EnrollmentSummaryCapability, EventTransition};
 use bacnet_objects::notification_class::resolve_enrollment_summary_class_internal;
+use bacnet_objects::property_metadata::has_property;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_services::enrollment_summary::{
     EnrollmentSummaryEntry, GetEnrollmentSummaryAck, GetEnrollmentSummaryRequest,
@@ -83,13 +84,16 @@ fn visit_entries<E: From<Error>>(
     mut emit: impl FnMut(EnrollmentSummaryEntry) -> Result<(), E>,
 ) -> Result<(), E> {
     for (_oid, object) in db.iter_objects() {
-        let Some(capability) = object.enrollment_summary_capability_internal() else {
+        let Some(capability) = object
+            .event_reporting()
+            .and_then(|reporting| reporting.enrollment_summary_capability())
+        else {
             continue;
         };
         let object_identifier = object.object_identifier();
-        let advertised = object.property_list();
+        let advertised = object.property_metadata();
 
-        if advertised.contains(&PropertyIdentifier::EVENT_DETECTION_ENABLE) {
+        if has_property(&advertised, PropertyIdentifier::EVENT_DETECTION_ENABLE) {
             match read_required(
                 object,
                 object_identifier,
@@ -102,7 +106,7 @@ fn visit_entries<E: From<Error>>(
                         object_identifier,
                         "Event_Detection_Enable is not Boolean",
                     )
-                    .into())
+                    .into());
                 }
             }
         }
@@ -285,8 +289,5 @@ fn operational_problem(
     detail: impl std::fmt::Display,
 ) -> Error {
     tracing::warn!(?object_identifier, reason = %detail, "GetEnrollmentSummary projection failed");
-    Error::Protocol {
-        class: ErrorClass::DEVICE.to_raw() as u32,
-        code: ErrorCode::OPERATIONAL_PROBLEM.to_raw() as u32,
-    }
+    Error::protocol(ErrorClass::DEVICE, ErrorCode::OPERATIONAL_PROBLEM)
 }

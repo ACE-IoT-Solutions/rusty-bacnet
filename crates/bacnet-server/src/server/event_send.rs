@@ -4,10 +4,10 @@
 
 use super::event_forwarding::ForwardingBudget;
 use super::event_recipient_route::{
-    network_priority_for_event, ConfirmedRecipientRoute, ConfirmedRouteRefusal, RecipientRoute,
+    ConfirmedRecipientRoute, ConfirmedRouteRefusal, RecipientRoute, network_priority_for_event,
 };
 use super::event_suppression::EventSuppression;
-use super::notification_transactions::{run_attempts, Attempt, NotificationReserveError};
+use super::notification_transactions::{Attempt, NotificationReserveError, run_attempts};
 use super::*;
 use bacnet_types::constructed::BACnetRecipient;
 
@@ -129,6 +129,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             suppressions,
             retry_timeout_ms,
             local_apdu_capacity,
+            device: _,
         } = ctx;
         let notification_class = outbound.notification_class;
         let network_priority = network_priority_for_event(outbound.priority);

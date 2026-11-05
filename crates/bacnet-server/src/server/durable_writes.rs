@@ -3,8 +3,15 @@
 //! A Notification Forwarder saves a written Recipient_List or
 //! Subscribed_Recipients, a Notification Class a written Recipient_List
 //! (#1315), an Access Rights object a written rule array, Enable (#1392) or
-//! Accompaniment (#1393), and an Audit Log a Log_Enable or Buffer_Size
-//! change, before serving it, and refuses the write if the save fails. So
+//! Accompaniment (#1393), an Audit Log a Log_Enable or Buffer_Size change,
+//! a Timer or Channel the configuration a peer writes to it (#2243), a
+//! Color or Color Temperature a written default (#1956), a Trend Log,
+//! Trend Log Multiple or Event Log a written reporting setting (#1952),
+//! an analog, binary or multi-state object, Access Door, Access Zone,
+//! Event or Alert Enrollment a written reporting setting (#2331), and those
+//! objects, a Timer, a Channel, the three logs, a Notification Class or
+//! Forwarder and an Access Rights object a written Description (#2364),
+//! before serving it, and refuses the write if the save fails. So
 //! that the save never runs while the database guard is held, a request
 //! that makes such a write stages it first ([`DurableWrites`]): under the
 //! guard the object queues the save, the request awaits it with the guard
@@ -18,9 +25,9 @@
 //! WritePropertyMultiple that provisions an Access Rights object saves its
 //! rule arrays and Enable together, off the guard.
 //!
-//! Under a mutation authorizer, a WritePropertyMultiple decides each attempt
-//! it would stage before staging it, and stages only those allowed (#1321).
-//! The handler then answers each such attempt from the decision made ahead
+//! Under a policy that decides mutations, a WritePropertyMultiple decides its
+//! attempts before staging any, and stages only those allowed (#1321, #2032).
+//! The handler then answers each attempt from the decision made ahead
 //! instead of asking again (`mutations::wpm_ahead`).
 //!
 //! Other requests read and write the database while the save runs. One that
@@ -81,9 +88,22 @@ enum TargetValue {
 /// Whether a bundled object of `oid`'s type may save a write of `property`
 /// first. A forwarder saves its Recipient_List and Subscribed_Recipients, a
 /// Notification Class its Recipient_List, an Audit Log its Log_Enable and
-/// Buffer_Size, and an Access Rights object its two rule arrays, Enable
-/// (property 133, named `LOG_ENABLE`) and Accompaniment. Under an
-/// authorizer, only these attempts of a WritePropertyMultiple are decided
+/// Buffer_Size, an Access Rights object its two rule arrays, Enable
+/// (property 133, named `LOG_ENABLE`) and Accompaniment, a Timer its
+/// State_Change_Values, List_Of_Object_Property_References and
+/// Default_Timeout (#2312), and a
+/// Channel its members, Execution_Delay, Channel_Number, Control_Groups and
+/// Allow_Group_Delay_Inhibit (#2243), a colour object its default
+/// (#1956), with Tags as the other objects with a profile do, the three
+/// logs the reporting settings they keep (#1952), a Trend Log its two COV
+/// settings too, the nine analog, binary and multi-state object types
+/// those reporting settings beside their Tags, and Access Door, Access Zone,
+/// Event Enrollment and Alert Enrollment the same reporting settings
+/// (#2331). A Timer, a Channel, the thirteen types with a reporting store,
+/// the three logs, a Notification Class, a forwarder and an Access Rights
+/// object keep a written Description too (#2364).
+/// Under a policy
+/// that decides mutations, only these attempts of a WritePropertyMultiple are decided
 /// ahead of the handler (#1321).
 ///
 /// An object type that takes up [`DurableWrites`] is listed here too, or
@@ -95,18 +115,30 @@ fn may_save(oid: ObjectIdentifier, property: PropertyIdentifier) -> bool {
     match oid.object_type() {
         ObjectType::NOTIFICATION_FORWARDER => matches!(
             property,
-            PropertyIdentifier::RECIPIENT_LIST | PropertyIdentifier::SUBSCRIBED_RECIPIENTS
+            PropertyIdentifier::RECIPIENT_LIST
+                | PropertyIdentifier::SUBSCRIBED_RECIPIENTS
+                | PropertyIdentifier::DESCRIPTION
         ),
         ObjectType::AUDIT_LOG => matches!(
             property,
             PropertyIdentifier::LOG_ENABLE | PropertyIdentifier::BUFFER_SIZE
         ),
-        ObjectType::NOTIFICATION_CLASS => property == PropertyIdentifier::RECIPIENT_LIST,
-        ObjectType::COLOR
-        | ObjectType::COLOR_TEMPERATURE
-        | ObjectType::LIGHTING_OUTPUT
-        | ObjectType::BINARY_LIGHTING_OUTPUT
-        | ObjectType::ANALOG_VALUE
+        ObjectType::NOTIFICATION_CLASS => matches!(
+            property,
+            PropertyIdentifier::RECIPIENT_LIST | PropertyIdentifier::DESCRIPTION
+        ),
+        // A colour object saves a written default with its output (#1956).
+        ObjectType::COLOR => {
+            matches!(
+                property,
+                PropertyIdentifier::TAGS | PropertyIdentifier::DEFAULT_COLOR
+            )
+        }
+        ObjectType::COLOR_TEMPERATURE => matches!(
+            property,
+            PropertyIdentifier::TAGS | PropertyIdentifier::DEFAULT_COLOR_TEMPERATURE
+        ),
+        ObjectType::ANALOG_VALUE
         | ObjectType::BINARY_VALUE
         | ObjectType::MULTI_STATE_VALUE
         | ObjectType::ANALOG_INPUT
@@ -114,25 +146,84 @@ fn may_save(oid: ObjectIdentifier, property: PropertyIdentifier) -> bool {
         | ObjectType::MULTI_STATE_INPUT
         | ObjectType::ANALOG_OUTPUT
         | ObjectType::BINARY_OUTPUT
-        | ObjectType::MULTI_STATE_OUTPUT
-        | ObjectType::DEVICE => property == PropertyIdentifier::TAGS,
+        | ObjectType::MULTI_STATE_OUTPUT => {
+            property == PropertyIdentifier::TAGS || kept_with_reporting(property)
+        }
+        ObjectType::LIGHTING_OUTPUT | ObjectType::BINARY_LIGHTING_OUTPUT | ObjectType::DEVICE => {
+            property == PropertyIdentifier::TAGS
+        }
         ObjectType::ACCESS_RIGHTS => matches!(
             property,
             PropertyIdentifier::POSITIVE_ACCESS_RULES
                 | PropertyIdentifier::NEGATIVE_ACCESS_RULES
                 | PropertyIdentifier::LOG_ENABLE
                 | PropertyIdentifier::ACCOMPANIMENT
+                | PropertyIdentifier::DESCRIPTION
         ),
+        ObjectType::TIMER => matches!(
+            property,
+            PropertyIdentifier::STATE_CHANGE_VALUES
+                | PropertyIdentifier::LIST_OF_OBJECT_PROPERTY_REFERENCES
+                | PropertyIdentifier::DEFAULT_TIMEOUT
+                | PropertyIdentifier::DESCRIPTION
+        ),
+        ObjectType::CHANNEL => matches!(
+            property,
+            PropertyIdentifier::LIST_OF_OBJECT_PROPERTY_REFERENCES
+                | PropertyIdentifier::EXECUTION_DELAY
+                | PropertyIdentifier::CHANNEL_NUMBER
+                | PropertyIdentifier::CONTROL_GROUPS
+                | PropertyIdentifier::ALLOW_GROUP_DELAY_INHIBIT
+                | PropertyIdentifier::DESCRIPTION
+        ),
+        ObjectType::TREND_LOG => {
+            kept_with_reporting(property)
+                || matches!(
+                    property,
+                    PropertyIdentifier::CLIENT_COV_INCREMENT
+                        | PropertyIdentifier::COV_RESUBSCRIPTION_INTERVAL
+                )
+        }
+        ObjectType::TREND_LOG_MULTIPLE
+        | ObjectType::EVENT_LOG
+        | ObjectType::ACCESS_DOOR
+        | ObjectType::ACCESS_ZONE
+        | ObjectType::EVENT_ENROLLMENT
+        | ObjectType::ALERT_ENROLLMENT => kept_with_reporting(property),
         _ => false,
     }
 }
 
-/// Whether a bundled object of `oid`'s type holds `property` as a
-/// BACnetLIST. No type [`may_save`] admits departs from the standard
-/// classification, so a value decodes here as the handler decodes it after
-/// asking the object.
-fn held_as_list(oid: ObjectIdentifier, property: PropertyIdentifier) -> bool {
-    bacnet_objects::traits::standard_list_property(oid.object_type(), property)
+/// What the logs (#1952) and the objects with a reporting store (#2331)
+/// keep: the reporting settings, and Description beside them (#2364).
+fn kept_with_reporting(property: PropertyIdentifier) -> bool {
+    reporting_row(property) || property == PropertyIdentifier::DESCRIPTION
+}
+
+/// The reporting settings every intrinsic reporter keeps once written: the
+/// logs (#1952) and the objects with a reporting store (#2331).
+fn reporting_row(property: PropertyIdentifier) -> bool {
+    matches!(
+        property,
+        PropertyIdentifier::NOTIFICATION_CLASS
+            | PropertyIdentifier::EVENT_ENABLE
+            | PropertyIdentifier::NOTIFY_TYPE
+            | PropertyIdentifier::EVENT_DETECTION_ENABLE
+            | PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG
+            | PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF
+            | PropertyIdentifier::EVENT_ALGORITHM_INHIBIT
+    )
+}
+
+/// The value type of `property` on a bundled object of `oid`'s type. No
+/// type [`may_save`] admits states its own value type on a row, so the
+/// standard one is the object's, and a value decodes here as the handler
+/// decodes it after asking the object.
+fn value_type(
+    oid: ObjectIdentifier,
+    property: PropertyIdentifier,
+) -> Option<bacnet_objects::property_metadata::ValueType> {
+    bacnet_objects::property_metadata::standard_value_type(oid.object_type(), property)
 }
 
 impl DurableTarget {
@@ -144,10 +235,10 @@ impl DurableTarget {
         if !may_save(request.object_identifier, request.property_identifier) {
             return Vec::new();
         }
-        let Ok(value) = handlers::decode_write_property_value(
+        let Ok(value) = bacnet_device_core::write::decode_write_property_value(
             request.property_identifier,
+            value_type(request.object_identifier, request.property_identifier),
             request.property_array_index,
-            held_as_list(request.object_identifier, request.property_identifier),
             &request.property_value,
         ) else {
             return Vec::new();
@@ -195,10 +286,10 @@ impl DurableTarget {
             if !may_save(oid, property) {
                 continue;
             }
-            let Ok(value) = handlers::decode_write_property_value(
+            let Ok(value) = bacnet_device_core::write::decode_write_property_value(
                 property,
+                value_type(oid, property),
                 reference.property_array_index,
-                held_as_list(oid, property),
                 &attempt.value,
             ) else {
                 break;
@@ -293,7 +384,7 @@ impl TargetValue {
         property: PropertyIdentifier,
     ) -> Option<PropertyValue> {
         match self {
-            Self::Written(value) => Some(crate::local_references::localize(
+            Self::Written(value) => Some(bacnet_device_core::write::localize(
                 db,
                 oid,
                 property,
@@ -316,7 +407,7 @@ fn stage_group(group: &[DurableTarget], db: &mut ObjectDatabase) -> Option<Stage
     let first = group.first()?;
     let oid = first.oid;
     if matches!(first.change, Change::Purge) {
-        return Some(db.get_mut(&oid)?.durable_writes_internal()?.stage_purge());
+        return Some(db.get_mut(&oid)?.durable_writes()?.stage_purge());
     }
     let mut writes = Vec::with_capacity(group.len());
     for target in group {
@@ -341,11 +432,7 @@ fn stage_group(group: &[DurableTarget], db: &mut ObjectDatabase) -> Option<Stage
     if writes.is_empty() {
         return None;
     }
-    Some(
-        db.get_mut(&oid)?
-            .durable_writes_internal()?
-            .stage_writes(&writes),
-    )
+    Some(db.get_mut(&oid)?.durable_writes()?.stage_writes(&writes))
 }
 
 /// The objects a request staged writes on, each with the wait its stage
@@ -359,10 +446,7 @@ impl StagedWrites {
     /// staged write was not taken saves the state it serves at once.
     pub(super) fn release(self, db: &mut ObjectDatabase) {
         for (oid, staged) in self.0 {
-            if let Some(writes) = db
-                .get_mut(&oid)
-                .and_then(|object| object.durable_writes_internal())
-            {
+            if let Some(writes) = db.get_mut(&oid).and_then(|object| object.durable_writes()) {
                 writes.release_staged_write(&staged);
             }
         }
@@ -532,7 +616,7 @@ fn settle_all(db: &mut ObjectDatabase) -> Vec<(ObjectIdentifier, SaveWait)> {
     let mut waits = Vec::new();
     db.for_each_object_mut(|oid, object| {
         if let Some(wait) = object
-            .durable_writes_internal()
+            .durable_writes()
             .and_then(|writes| writes.settle_forgotten_writes())
             .filter(|wait| !wait.is_ready())
         {

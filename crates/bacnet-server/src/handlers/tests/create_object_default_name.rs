@@ -5,8 +5,8 @@
 
 use super::create_object_initial_values::{create, initial, read, text};
 use super::*;
-use bacnet_objects::binary::BinaryInputObject;
 use PropertyIdentifier as P;
+use bacnet_objects::binary::BinaryInputObject;
 
 fn ai_1() -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap()
@@ -76,7 +76,8 @@ fn a_taken_default_name_takes_the_first_free_suffix() {
         ),
         list_of_initial_values: vec![initial(P::DESCRIPTION, None, &text("d"))],
     }
-    .encode(&mut request);
+    .encode(&mut request)
+    .unwrap();
     handle_create_object(&mut db, &request, &mut ack).unwrap();
     let oid = ObjectIdentifier::new(ObjectType::BINARY_VALUE, 1).unwrap();
     assert_eq!(name_of(&db, oid), text("BINARY_VALUE-1 (3)"));

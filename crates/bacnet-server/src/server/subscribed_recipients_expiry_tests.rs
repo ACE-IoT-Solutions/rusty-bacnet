@@ -38,8 +38,9 @@ async fn start_server() -> (BACnetServer<TestTransport>, ObjectIdentifier) {
     let forwarder = TestForwarder::new(1);
     let oid = forwarder.object_identifier();
     let device = DeviceObject::new(DeviceConfig {
-        instance: 100,
-        name: "Forwarder-device".into(),
+        identity: bacnet_objects::DeviceIdentity::new(100, 0)
+            .expect("valid Device identity")
+            .with_name("Forwarder-device"),
         ..DeviceConfig::default()
     })
     .unwrap();
@@ -47,6 +48,7 @@ async fn start_server() -> (BACnetServer<TestTransport>, ObjectIdentifier) {
     db.add(Box::new(device)).unwrap();
     db.add(Box::new(forwarder)).unwrap();
     let config = ServerConfig {
+        device: bacnet_objects::DeviceIdentity::new(100, 0).unwrap(),
         enable_event_enrollment: false,
         ..ServerConfig::default()
     };
@@ -66,10 +68,10 @@ async fn state(
     server: &BACnetServer<TestTransport>,
     oid: ObjectIdentifier,
 ) -> (Option<Duration>, PropertyValue) {
-    let db = server.database().read().await;
-    let object = db.get(&oid).unwrap();
+    let mut db = server.database().write().await;
+    let object = db.get_mut(&oid).unwrap();
     (
-        object.next_monotonic_deadline_internal(),
+        object.timed().unwrap().next_monotonic_deadline(),
         object.read_property(SUBSCRIBED_RECIPIENTS, None).unwrap(),
     )
 }
@@ -89,9 +91,11 @@ async fn the_operation_task_drops_each_subscription_at_its_deadline() {
     let added_at = {
         let mut db = server.database().write().await;
         crate::handlers::handle_add_list_element(&mut db, &request).unwrap();
-        db.get(&oid)
+        db.get_mut(&oid)
             .unwrap()
-            .next_monotonic_deadline_internal()
+            .timed()
+            .unwrap()
+            .next_monotonic_deadline()
             .unwrap()
             - MINUTE
     };

@@ -24,17 +24,17 @@ use std::any::Any;
 use std::future::Future;
 use std::net::SocketAddrV4;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use bacnet_encoding::apdu::{decode_apdu, Apdu};
-use bacnet_encoding::npdu::{decode_npdu, Npdu};
-use bacnet_transport::port::{BipPort, ReceivedNpdu, TransportPort};
+use bacnet_encoding::apdu::{Apdu, decode_apdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu};
+use bacnet_transport::port::{Bip6Port, BipPort, ReceivedNpdu, TransportPort};
+use bacnet_types::MacAddr;
 use bacnet_types::bip_port::BipPortMode;
 use bacnet_types::error::Error;
-use bacnet_types::MacAddr;
 use bytes::Bytes;
-use tokio::sync::{mpsc, Notify, Semaphore};
+use tokio::sync::{Notify, Semaphore, mpsc};
 
 /// The boxed future a send or stop hook returns.
 type HookFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
@@ -193,6 +193,9 @@ impl SendLog {
 struct Shared {
     sent: SendLog,
     starts: AtomicUsize,
+    /// What `local_receive_apdu_capacity` reports; see
+    /// [`TestTransportHandle::set_receive_capacity`].
+    receive_capacity: AtomicU16,
     fail_next: AtomicBool,
     block_next: AtomicBool,
     blocked: Semaphore,
@@ -204,6 +207,7 @@ impl Default for Shared {
         Self {
             sent: SendLog::default(),
             starts: AtomicUsize::new(0),
+            receive_capacity: AtomicU16::new(1476),
             fail_next: AtomicBool::new(false),
             block_next: AtomicBool::new(false),
             blocked: Semaphore::new(0),
@@ -245,6 +249,14 @@ impl TestTransportHandle {
     /// Calls to `start`, counted before the start mode runs.
     pub(crate) fn starts(&self) -> usize {
         self.shared.starts.load(Ordering::SeqCst)
+    }
+
+    /// Change what the transport reports as its receive capacity (1476 at
+    /// first), as a real link might after start (#2093).
+    pub(crate) fn set_receive_capacity(&self, capacity: u16) {
+        self.shared
+            .receive_capacity
+            .store(capacity, Ordering::SeqCst);
     }
 
     /// Fail the next recorded send only.
@@ -296,6 +308,8 @@ pub(crate) struct TestTransport {
     number_controls: bool,
     /// See [`TestTransportBuilder::bip_port`].
     bip_port: Option<BipPort>,
+    /// See [`TestTransportBuilder::bip6_port`].
+    bip6_port: Option<Bip6Port>,
     /// A registered Network Port's lease, held until the transport drops.
     port_lease: Option<Arc<()>>,
 }
@@ -333,6 +347,7 @@ impl TestTransport {
                 shared: Arc::default(),
                 number_controls: false,
                 bip_port: None,
+                bip6_port: None,
                 port_lease: None,
             },
         }
@@ -396,13 +411,17 @@ impl TransportPort for TestTransport {
         self.bip_port.clone()
     }
 
+    fn bip6_port(&self) -> Option<Bip6Port> {
+        self.bip6_port.clone()
+    }
+
     fn retain_network_port_lease_internal(&mut self, lease: Arc<()>) -> Result<(), Error> {
-        match self.bip_port {
-            Some(_) => {
+        match (&self.bip_port, &self.bip6_port) {
+            (Some(_), _) | (_, Some(_)) => {
                 self.port_lease = Some(lease);
                 Ok(())
             }
-            None => Err(Error::Encoding("not a B/IP test link".into())),
+            (None, None) => Err(Error::Encoding("not a B/IP test link".into())),
         }
     }
 
@@ -449,7 +468,7 @@ impl TransportPort for TestTransport {
     }
 
     fn local_receive_apdu_capacity(&self) -> u16 {
-        1476
+        self.shared.receive_capacity.load(Ordering::SeqCst)
     }
 
     fn is_broadcast_mac(&self, mac: &[u8]) -> bool {
@@ -558,10 +577,7 @@ impl TestTransportBuilder {
     /// Report `endpoint` as a NORMAL B/IP bind, so a server can register a
     /// Network Port on this link; the transport then holds the port's lease.
     pub(crate) fn normal_bip(self, endpoint: SocketAddrV4) -> Self {
-        self.bip_port(BipPort {
-            endpoint,
-            mode: BipPortMode::Normal,
-        })
+        self.bip_port(BipPort::new(endpoint, BipPortMode::Normal))
     }
 
     /// Report `port`, a B/IP bind in any mode, for a server to register a
@@ -569,6 +585,13 @@ impl TestTransportBuilder {
     /// mode's tables are whatever view the test lends.
     pub(crate) fn bip_port(mut self, port: BipPort) -> Self {
         self.transport.bip_port = Some(port);
+        self
+    }
+
+    /// Report `port`, a B/IPv6 bind in any mode, as
+    /// [`bip_port`](Self::bip_port) does a B/IP one.
+    pub(crate) fn bip6_port(mut self, port: Bip6Port) -> Self {
+        self.transport.bip6_port = Some(port);
         self
     }
 

@@ -1,3 +1,4 @@
+use bacnet_types::error::RemoteError;
 use std::time::Duration;
 
 use bacnet_types::{
@@ -21,22 +22,24 @@ fn slot(object: &BinaryLightingOutputObject, priority: u8) -> PropertyValue {
 
 fn write_present(object: &mut BinaryLightingOutputObject, value: u32, priority: u8) {
     object
-        .write_property(
+        .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
             None,
             PropertyValue::Enumerated(value),
             Some(priority),
+            &crate::command_source::test_origin(),
         )
         .unwrap();
 }
 
 fn command(object: &mut BinaryLightingOutputObject, priority: u8, value: PropertyValue) {
     object
-        .write_property(
+        .write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
             None,
             value,
             Some(priority),
+            &crate::command_source::test_origin(),
         )
         .unwrap();
 }
@@ -66,9 +69,9 @@ fn armed(operation: u32) -> BinaryLightingOutputObject {
 
 fn assert_property_error(error: Error, expected: ErrorCode) {
     match error {
-        Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32);
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected);
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }
@@ -90,7 +93,7 @@ fn same_priority_commands_win_after_both_operation_kinds() {
                 read(&object, PropertyIdentifier::EGRESS_ACTIVE),
                 PropertyValue::Boolean(false)
             );
-            assert!(!object.advance_time_internal(Duration::from_secs(10)));
+            assert!(!object.advance_time(Duration::from_secs(10)));
         }
     }
 }
@@ -120,7 +123,7 @@ fn lower_priority_command_preserves_each_operation_and_remaining_time() {
         (4, PropertyValue::Null),
     ] {
         let mut object = armed(operation);
-        assert!(!object.advance_time_internal(Duration::from_millis(1_500)));
+        assert!(!object.advance_time(Duration::from_millis(1_500)));
         command(&mut object, 10, PropertyValue::Enumerated(ON));
 
         assert_eq!(slot(&object, 8), PropertyValue::Enumerated(ON));
@@ -129,8 +132,8 @@ fn lower_priority_command_preserves_each_operation_and_remaining_time() {
             read(&object, PropertyIdentifier::EGRESS_ACTIVE),
             PropertyValue::Boolean(true)
         );
-        assert!(!object.advance_time_internal(Duration::from_millis(3_499)));
-        assert!(object.advance_time_internal(Duration::from_millis(1)));
+        assert!(!object.advance_time(Duration::from_millis(3_499)));
+        assert!(object.advance_time(Duration::from_millis(1)));
         assert_eq!(slot(&object, 8), completed_slot);
     }
 }
@@ -139,8 +142,8 @@ fn lower_priority_command_preserves_each_operation_and_remaining_time() {
 fn read_only_array_writes_preserve_each_operation_and_remaining_time() {
     for operation in [3, 4] {
         let mut object = armed(operation);
-        assert!(!object.advance_time_internal(Duration::from_millis(1_500)));
-        let blink_count = object.lighting_blink_count_internal();
+        assert!(!object.advance_time(Duration::from_millis(1_500)));
+        let blink_count = object.lighting_blink_count();
 
         let before = read(&object, PropertyIdentifier::PRIORITY_ARRAY);
         for index in [
@@ -208,12 +211,12 @@ fn read_only_array_writes_preserve_each_operation_and_remaining_time() {
 
         assert_eq!(slot(&object, 8), PropertyValue::Enumerated(ON));
         assert_eq!(slot(&object, 4), PropertyValue::Null);
-        assert_eq!(object.lighting_blink_count_internal(), blink_count);
+        assert_eq!(object.lighting_blink_count(), blink_count);
         assert_eq!(
             read(&object, PropertyIdentifier::EGRESS_ACTIVE),
             PropertyValue::Boolean(true)
         );
-        assert!(!object.advance_time_internal(Duration::from_millis(3_499)));
-        assert!(object.advance_time_internal(Duration::from_millis(1)));
+        assert!(!object.advance_time(Duration::from_millis(3_499)));
+        assert!(object.advance_time(Duration::from_millis(1)));
     }
 }

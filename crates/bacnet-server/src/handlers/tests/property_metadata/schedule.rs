@@ -1,11 +1,11 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{schedule::ScheduleObject, traits::BACnetObject};
 use bacnet_types::constructed::{
     BACnetCalendarEntry, BACnetDateRange, BACnetObjectPropertyReference, BACnetSpecialEvent,
     BACnetTimeValue, SpecialEventPeriod,
 };
 use bacnet_types::primitives::{Date, PropertyValue, Time};
-use PropertyIdentifier as P;
 
 fn schedule_object(configuration: u8, out_of_service: bool) -> ScheduleObject {
     let mut object = ScheduleObject::new(7, "SCH-7", PropertyValue::Unsigned(42)).unwrap();
@@ -119,31 +119,5 @@ fn rpm_schedule_metadata_selectors_preserve_bytes_and_budgets() {
                 assert_rpm_selector_bytes(&db, oid, selector, expected);
             }
         }
-    }
-}
-
-#[test]
-fn rpm_schedule_metadata_does_not_enable_create_object() {
-    use bacnet_services::object_mgmt::{CreateObjectRequest, ObjectSpecifier};
-
-    let oid = ObjectIdentifier::new(ObjectType::SCHEDULE, 7).unwrap();
-    for object_specifier in [
-        ObjectSpecifier::Type(ObjectType::SCHEDULE),
-        ObjectSpecifier::Identifier(oid),
-    ] {
-        let mut db = ObjectDatabase::new();
-        let mut request = BytesMut::new();
-        CreateObjectRequest {
-            object_specifier,
-            list_of_initial_values: vec![],
-        }
-        .encode(&mut request);
-        let mut response = BytesMut::new();
-        let result = handle_create_object(&mut db, &request, &mut response);
-        assert!(matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::OBJECT.to_raw() as u32
-                && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE.to_raw() as u32));
-        assert!(response.is_empty());
-        assert!(db.is_empty());
     }
 }

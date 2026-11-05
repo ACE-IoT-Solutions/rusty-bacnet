@@ -3,7 +3,9 @@
 //! Split out to keep every file under the 700-LOC cap.
 
 use super::super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::enums::ObjectType;
+use bacnet_types::error::RemoteError;
 
 // DateValueObject
 // -----------------------------------------------------------------------
@@ -200,6 +202,64 @@ fn datetime_value_priority_array() {
     );
 }
 
+/// #2098: each set Priority_Array slot of a date-time value type is the
+/// BACnetPriorityValue date-time choice, context tag 1 around the Date and
+/// Time, so a whole read is sixteen elements. Present_Value stays bare.
+#[test]
+fn datetime_priority_array_slots_carry_the_context_one_choice() {
+    let date = Date {
+        year: 126,
+        month: 10,
+        day: 25,
+        day_of_week: 7,
+    };
+    let time = Time {
+        hour: 7,
+        minute: 30,
+        second: 0,
+        hundredths: 0,
+    };
+    let set = PropertyValue::List(vec![PropertyValue::Date(date), PropertyValue::Time(time)]);
+    let wrapped =
+        PropertyValue::ApplicationData(vec![0x1E, 0xA4, 126, 10, 25, 7, 0xB4, 7, 30, 0, 0, 0x1F]);
+    let mut dtv = DateTimeValueObject::new(1, "DTV-1").unwrap();
+    let mut dtpv = DateTimePatternValueObject::new(1, "DTPV-1").unwrap();
+    let objects: [&mut dyn BACnetObject; 2] = [&mut dtv, &mut dtpv];
+    for obj in objects {
+        obj.write_property(
+            PropertyIdentifier::PRESENT_VALUE,
+            None,
+            set.clone(),
+            Some(8),
+        )
+        .unwrap();
+        let PropertyValue::List(slots) = obj
+            .read_property(PropertyIdentifier::PRIORITY_ARRAY, None)
+            .unwrap()
+        else {
+            panic!("a whole Priority_Array read is a list");
+        };
+        assert_eq!(slots.len(), 16);
+        assert_eq!(slots[7], wrapped);
+        assert!(
+            slots
+                .iter()
+                .enumerate()
+                .all(|(i, slot)| i == 7 || *slot == PropertyValue::Null)
+        );
+        assert_eq!(
+            obj.read_property(PropertyIdentifier::PRIORITY_ARRAY, Some(8))
+                .unwrap(),
+            wrapped
+        );
+        assert_eq!(
+            obj.read_property(PropertyIdentifier::PRESENT_VALUE, None)
+                .unwrap(),
+            set
+        );
+    }
+}
+
 // -----------------------------------------------------------------------
 // DatePatternValueObject (non-commandable)
 // -----------------------------------------------------------------------
@@ -241,7 +301,7 @@ fn date_pattern_value_object_type() {
 #[test]
 fn date_pattern_value_has_priority_array() {
     let obj = DatePatternValueObject::new(1, "DPV-1").unwrap();
-    let props = obj.property_list();
+    let props = crate::test_rows::listed(&obj.property_metadata());
     assert!(props.contains(&PropertyIdentifier::PRIORITY_ARRAY));
     assert!(props.contains(&PropertyIdentifier::RELINQUISH_DEFAULT));
 }
@@ -334,7 +394,7 @@ fn datetime_pattern_value_object_type() {
 #[test]
 fn datetime_pattern_value_has_priority_array() {
     let obj = DateTimePatternValueObject::new(1, "DTPV-1").unwrap();
-    let props = obj.property_list();
+    let props = crate::test_rows::listed(&obj.property_metadata());
     assert!(props.contains(&PropertyIdentifier::PRIORITY_ARRAY));
     assert!(props.contains(&PropertyIdentifier::RELINQUISH_DEFAULT));
 }
@@ -366,7 +426,10 @@ fn datetime_value_relinquish_default_write_recaptures_present_value() {
     let datetime = PropertyValue::List(vec![PropertyValue::Date(dt.0), PropertyValue::Time(dt.1)]);
 
     let mut obj = DateTimeValueObject::new(1, "DTV-1").unwrap();
-    assert!(obj.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &obj,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
     obj.write_property(
         PropertyIdentifier::RELINQUISH_DEFAULT,
         None,
@@ -396,15 +459,9 @@ fn datetime_value_relinquish_default_write_recaptures_present_value() {
         )
         .expect_err("a bare Date is not a BACnetDateTime")
     {
-        Error::Protocol { class, code } => {
-            assert_eq!(
-                class,
-                bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32
-            );
-            assert_eq!(
-                code,
-                bacnet_types::enums::ErrorCode::INVALID_DATA_TYPE.to_raw() as u32
-            );
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, bacnet_types::enums::ErrorClass::PROPERTY);
+            assert_eq!(code, bacnet_types::enums::ErrorCode::INVALID_DATA_TYPE);
         }
         other => panic!("expected PROPERTY / INVALID_DATA_TYPE, got {other:?}"),
     }
@@ -416,7 +473,10 @@ fn datetime_value_relinquish_default_write_recaptures_present_value() {
 
     // The pattern-typed sibling carries the arm as well.
     let mut pat = DateTimePatternValueObject::new(1, "DTPV-1").unwrap();
-    assert!(pat.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &pat,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
     pat.write_property(PropertyIdentifier::RELINQUISH_DEFAULT, None, datetime, None)
         .unwrap();
 }
@@ -425,7 +485,10 @@ fn datetime_value_relinquish_default_write_recaptures_present_value() {
 #[test]
 fn date_value_relinquish_default_write_recaptures_present_value() {
     let mut dv = DateValueObject::new(1, "DV-1").unwrap();
-    assert!(dv.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &dv,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
     let d = Date {
         year: 124,
         month: 12,
@@ -451,14 +514,15 @@ fn date_value_relinquish_default_write_recaptures_present_value() {
         "with an empty priority array, PV must resolve to the written default"
     );
     // Wrong-typed write refuses and leaves state untouched.
-    assert!(dv
-        .write_property(
+    assert!(
+        dv.write_property(
             PropertyIdentifier::RELINQUISH_DEFAULT,
             None,
             PropertyValue::Unsigned(1241225),
             None,
         )
-        .is_err());
+        .is_err()
+    );
     assert_eq!(
         dv.read_property(PropertyIdentifier::RELINQUISH_DEFAULT, None)
             .unwrap(),

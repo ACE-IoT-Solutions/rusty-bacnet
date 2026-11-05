@@ -1,8 +1,10 @@
 //! Group (type 11) List_Of_Group_Members and Present_Value (#1134).
 
 use super::*;
+use crate::property_metadata::{is_array_property, is_list_property};
 use bacnet_types::constructed::PropertyReference;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(object_type, instance).unwrap()
@@ -28,9 +30,9 @@ fn member(
 
 fn assert_property_error(error: Error, expected: ErrorCode) {
     assert!(
-        matches!(error, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == expected.to_raw() as u32),
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::PROPERTY
+                && code == expected),
         "expected {expected:?}, got {error:?}"
     );
 }
@@ -87,8 +89,8 @@ fn group_lists_refuse_an_array_index() {
         PropertyIdentifier::LIST_OF_GROUP_MEMBERS,
         PropertyIdentifier::PRESENT_VALUE,
     ] {
-        assert!(!group.is_array_property(property));
-        assert!(group.is_list_property(property));
+        assert!(!is_array_property(&group, property));
+        assert!(is_list_property(&group, property));
         for index in [0, 1, u32::MAX] {
             assert_property_error(
                 group.read_property(property, Some(index)).unwrap_err(),

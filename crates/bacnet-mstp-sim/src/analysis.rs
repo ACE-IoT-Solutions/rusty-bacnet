@@ -29,7 +29,7 @@ pub struct Hold {
 pub fn token_passes(frames: &[WireFrame]) -> Vec<(Instant, u8, u8)> {
     frames
         .iter()
-        .filter(|frame| frame.is_clean() && frame.frame_type() == Some(FrameType::Token))
+        .filter(|frame| frame.is_clean() && frame.frame_type() == Some(FrameType::TOKEN))
         .filter_map(|frame| Some((frame.start, frame.source()?, frame.destination()?)))
         .collect()
 }
@@ -42,7 +42,7 @@ pub fn token_users(frames: &[WireFrame], since: Instant) -> BTreeSet<u8> {
     frames
         .windows(2)
         .filter(|pair| pair[0].start >= since && pair[0].is_clean())
-        .filter(|pair| pair[0].frame_type() == Some(FrameType::Token))
+        .filter(|pair| pair[0].frame_type() == Some(FrameType::TOKEN))
         .filter_map(|pair| {
             let to = pair[0].destination()?;
             (pair[1].driver == Driver::Station(to)).then_some(to)
@@ -61,7 +61,7 @@ pub fn holds(frames: &[WireFrame], station: u8) -> Vec<Hold> {
             continue;
         };
         let ours = frame.driver == Driver::Station(station);
-        if header.frame_type == FrameType::Token && header.destination == station {
+        if header.frame_type == FrameType::TOKEN && header.destination == station {
             if let Some(open) = current.take() {
                 holds.push(open);
             }
@@ -89,20 +89,17 @@ pub fn holds(frames: &[WireFrame], station: u8) -> Vec<Hold> {
             continue;
         };
         match header.frame_type {
-            FrameType::Token => {
+            FrameType::TOKEN => {
                 hold.passed_to = Some(header.destination);
                 holds.extend(current.take());
             }
-            FrameType::PollForMaster => hold.polls += 1,
-            FrameType::BACnetDataExpectingReply
-            | FrameType::BACnetDataNotExpectingReply
-            | FrameType::BACnetExtendedDataExpectingReply
-            | FrameType::BACnetExtendedDataNotExpectingReply
-            | FrameType::TestRequest
-            | FrameType::Unknown(_) => hold.info_frames += 1,
-            FrameType::ReplyToPollForMaster
-            | FrameType::TestResponse
-            | FrameType::ReplyPostponed => {}
+            FrameType::POLL_FOR_MASTER => hold.polls += 1,
+            FrameType::REPLY_TO_POLL_FOR_MASTER
+            | FrameType::TEST_RESPONSE
+            | FrameType::REPLY_POSTPONED => {}
+            // The data types, Test_Request, and every type no constant
+            // names: reserved and proprietary.
+            _ => hold.info_frames += 1,
         }
     }
     holds.extend(current);
@@ -125,4 +122,98 @@ pub fn holds_between_polls(holds: &[Hold]) -> Vec<usize> {
         .map(|pair| pair[1] - pair[0] - 1)
         .filter(|&gap| gap > 0)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use bacnet_mstp_codec::{FrameHeader, FrameType};
+    use bacnet_mstp_core::Instant;
+
+    use super::{Hold, holds};
+    use crate::line::Driver;
+    use crate::report::WireFrame;
+
+    /// What a frame a station sends while it holds the token does to the
+    /// hold.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Routing {
+        /// It passes the token on.
+        Passes,
+        /// It counts as a poll.
+        Poll,
+        /// It counts as an information frame.
+        Info,
+        /// It counts as neither.
+        Neither,
+    }
+
+    /// A clean frame at `at_ms` milliseconds.
+    fn frame(frame_type: FrameType, source: u8, destination: u8, at_ms: u64) -> WireFrame {
+        WireFrame {
+            driver: Driver::Station(source),
+            start: Instant::from_millis(at_ms),
+            end: Instant::from_millis(at_ms + 1),
+            octets: Vec::new(),
+            header: Some(FrameHeader::new(frame_type, destination, source)),
+            data: Vec::new(),
+            collided: false,
+            corrupted: false,
+            truncated: false,
+            generation: false,
+        }
+    }
+
+    /// Every named frame type, one reserved, one reserved COBS-encoded and
+    /// one proprietary, sent by station 1 between the Token it receives and
+    /// the Token it passes to 2. The named list must be the codec's whole
+    /// set, in order, so a type the codec names later fails here until its
+    /// routing is decided, as the exhaustive match once did.
+    #[test]
+    fn holds_route_every_frame_type() {
+        let named = [
+            (FrameType::TOKEN, Routing::Passes),
+            (FrameType::POLL_FOR_MASTER, Routing::Poll),
+            (FrameType::REPLY_TO_POLL_FOR_MASTER, Routing::Neither),
+            (FrameType::TEST_REQUEST, Routing::Info),
+            (FrameType::TEST_RESPONSE, Routing::Neither),
+            (FrameType::BACNET_DATA_EXPECTING_REPLY, Routing::Info),
+            (FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, Routing::Info),
+            (FrameType::REPLY_POSTPONED, Routing::Neither),
+            (
+                FrameType::BACNET_EXTENDED_DATA_EXPECTING_REPLY,
+                Routing::Info,
+            ),
+            (
+                FrameType::BACNET_EXTENDED_DATA_NOT_EXPECTING_REPLY,
+                Routing::Info,
+            ),
+        ];
+        let all: Vec<FrameType> = FrameType::ALL_NAMED.iter().map(|&(_, t)| t).collect();
+        assert_eq!(named.map(|(frame_type, _)| frame_type).to_vec(), all);
+        let unnamed = [8, 34, 128].map(|raw| (FrameType::from_raw(raw), Routing::Info));
+
+        for (frame_type, routing) in named.into_iter().chain(unnamed) {
+            // A Token sent mid-hold goes to station 3, so it is told apart
+            // from the closing Token to 2, which then falls outside a hold.
+            let destination = if routing == Routing::Passes { 3 } else { 4 };
+            let frames = [
+                frame(FrameType::TOKEN, 0, 1, 0),
+                frame(frame_type, 1, destination, 10),
+                frame(FrameType::TOKEN, 1, 2, 20),
+            ];
+            let (info_frames, polls, passed_to) = match routing {
+                Routing::Passes => (0, 0, 3),
+                Routing::Poll => (0, 1, 2),
+                Routing::Info => (1, 0, 2),
+                Routing::Neither => (0, 0, 2),
+            };
+            let expected = Hold {
+                start: Instant::from_millis(1),
+                info_frames,
+                polls,
+                passed_to: Some(passed_to),
+            };
+            assert_eq!(holds(&frames, 1), [expected], "{frame_type:?}");
+        }
+    }
 }

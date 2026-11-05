@@ -1,80 +1,200 @@
-//! Source runtime's Device mutation owner and immutable direct B/IP route facts.
+//! Source runtime's Device mutation owner and immutable route facts: direct
+//! on IPv4 B/IP or any other link (#2357), or behind a router (#2371).
+use super::routers::{Hop, SourceRoute, SourceRouters, routed_unicast};
 use super::*;
 use bacnet_network::network_number::LocalNetworkNumber;
 use bacnet_objects::clock::ClockFrame;
 use bacnet_objects::database::{AuditOwnership, EventSequence};
 use bacnet_objects::device::{AuditRecipientChangeSink, AuditWriteSource};
+use bacnet_transport::port::GroupDestinations;
 use bacnet_types::enums::{ConfirmedServiceChoice, ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 use std::collections::HashMap;
 use std::net::SocketAddrV4;
 
+/// Which MACs on the session's link can be a source Audit recipient: a
+/// direct unicast destination there.
+#[derive(Clone, Debug)]
+pub(crate) enum SourceLink {
+    /// IPv4 B/IP, by the link's broadcast endpoint.
+    Bip(SocketAddrV4),
+    /// Any other link (B/IPv6, BACnet/SC, MS/TP and the rest), by its own
+    /// MAC and group-destination rule (#2357).
+    Other {
+        /// This node's MAC, in the link's format; empty while it is learned
+        /// only at start (B/IPv6's VMAC), when the length and self checks
+        /// wait for it.
+        local: MacAddr,
+        /// The transport's group destinations.
+        groups: GroupDestinations,
+    },
+}
+
+impl SourceLink {
+    /// Whether `mac` is a direct unicast destination on this link.
+    ///
+    /// - IPv4 B/IP: a unicast address and nonzero port, and never the link's
+    ///   broadcast address, at any port, as the server's Device bindings
+    ///   refuse it (#2348).
+    /// - Any other link: a MAC as long as this node's, not this node's own,
+    ///   not a group destination by the transport's rule, not the all-ones
+    ///   broadcast of a one-octet (MS/TP's 255) or six-octet (SC's broadcast
+    ///   VMAC, Ethernet's broadcast) link, and not a six-octet all-zero MAC,
+    ///   which names no device: SC reserves that VMAC for one not yet known
+    ///   (Annex AB.1.5.2, H.7.3), and it is no Ethernet station either.
+    pub(crate) fn unicast(&self, mac: &[u8]) -> bool {
+        match self {
+            Self::Bip(broadcast) => {
+                bacnet_server::server::valid_bip_audit_address(&BACnetAddress {
+                    network_number: 0,
+                    mac_address: MacAddr::from_slice(mac),
+                }) && mac[..4] != broadcast.ip().octets()
+            }
+            Self::Other { local, groups } => {
+                let reserved = match mac.len() {
+                    1 => mac == [0xFF],
+                    6 => mac == [0xFF; 6] || mac == [0; 6],
+                    _ => false,
+                };
+                !mac.is_empty()
+                    && (local.is_empty() || (mac.len() == local.len() && mac != local.as_slice()))
+                    && !groups.contains(mac)
+                    && !reserved
+            }
+        }
+    }
+}
+
 pub(crate) struct SourceRoutes {
-    devices: HashMap<ObjectIdentifier, MacAddr>,
-    broadcast: SocketAddrV4,
+    devices: HashMap<ObjectIdentifier, SourceRoute>,
+    link: SourceLink,
     local_network: LocalNetworkNumber,
+    routers: Arc<SourceRouters>,
 }
 impl SourceRoutes {
+    /// IPv4 B/IP routes, with `broadcast` the link's broadcast endpoint.
     pub(crate) fn new(
         bindings: &[(ObjectIdentifier, SocketAddrV4)],
         broadcast: SocketAddrV4,
     ) -> Result<Self, Error> {
+        let bindings: Vec<_> = bindings
+            .iter()
+            .map(|(device, address)| {
+                (
+                    *device,
+                    MacAddr::from_slice(&bacnet_transport::bvll::encode_bip_mac(
+                        address.ip().octets(),
+                        address.port(),
+                    )),
+                )
+            })
+            .collect();
+        Self::for_link(&bindings, SourceLink::Bip(broadcast))
+    }
+    /// Routes on `link`, each binding a Device to a MAC there.
+    pub(crate) fn for_link(
+        bindings: &[(ObjectIdentifier, MacAddr)],
+        link: SourceLink,
+    ) -> Result<Self, Error> {
         let mut routes = Self {
             devices: HashMap::new(),
-            broadcast,
+            link,
             local_network: LocalNetworkNumber::default(),
+            routers: Arc::default(),
         };
-        for (device, address) in bindings {
-            if device.object_type() != ObjectType::DEVICE
-                || device.instance_number() == ObjectIdentifier::MAX_INSTANCE
-            {
-                return Err(Error::Encoding(
-                    "source Audit binding requires a concrete Device".into(),
-                ));
-            }
-            let mac = MacAddr::from_slice(&bacnet_transport::bvll::encode_bip_mac(
-                address.ip().octets(),
-                address.port(),
-            ));
-            if !routes.valid_address(&mac) {
+        for (device, mac) in bindings {
+            if !routes.valid_address(mac) {
                 return Err(denied());
             }
-            if routes.devices.insert(*device, mac).is_some() {
-                return Err(Error::Encoding(
-                    "duplicate source Audit Device binding".into(),
-                ));
-            }
+            routes.bind(*device, SourceRoute::Direct(mac.clone()))?;
         }
         Ok(routes)
     }
-    /// Take the started link's broadcast endpoint and the layer's number
-    /// slot, which the session's Number owner publishes into.
-    pub(crate) fn finalize(&mut self, broadcast: SocketAddrV4, local_network: LocalNetworkNumber) {
-        self.broadcast = broadcast;
+    /// Add routed bindings, each a Device behind a router by its network
+    /// number and its MAC there (#2371). Refused with SERVICES /
+    /// SERVICE_REQUEST_DENIED unless [`routed_unicast`]: network 0, the
+    /// global network 65535, an empty MAC or one past 18 octets.
+    pub(crate) fn bind_routed(
+        mut self,
+        bindings: &[(ObjectIdentifier, u16, MacAddr)],
+    ) -> Result<Self, Error> {
+        for (device, network, mac) in bindings {
+            if !routed_unicast(*network, mac) {
+                return Err(denied());
+            }
+            self.routers.track(*network);
+            self.bind(
+                *device,
+                SourceRoute::Routed {
+                    network: *network,
+                    mac: mac.clone(),
+                },
+            )?;
+        }
+        Ok(self)
+    }
+    fn bind(&mut self, device: ObjectIdentifier, route: SourceRoute) -> Result<(), Error> {
+        if device.object_type() != ObjectType::DEVICE
+            || device.instance_number() == ObjectIdentifier::MAX_INSTANCE
+        {
+            return Err(Error::Encoding(
+                "source Audit binding requires a concrete Device".into(),
+            ));
+        }
+        if self.devices.insert(device, route).is_some() {
+            return Err(Error::Encoding(
+                "duplicate source Audit Device binding".into(),
+            ));
+        }
+        Ok(())
+    }
+    /// The routers learned for the routed bindings' networks.
+    pub(crate) fn routers(&self) -> &Arc<SourceRouters> {
+        &self.routers
+    }
+    /// Whether these are IPv4 B/IP routes.
+    pub(crate) fn is_bip(&self) -> bool {
+        matches!(self.link, SourceLink::Bip(_))
+    }
+    /// The link's unicast rule.
+    pub(crate) fn link(&self) -> &SourceLink {
+        &self.link
+    }
+    /// Take the started link's facts (B/IP's broadcast endpoint, another
+    /// link's own MAC) and the layer's number slot, which the session's
+    /// Number owner publishes into.
+    pub(crate) fn finalize(&mut self, link: SourceLink, local_network: LocalNetworkNumber) {
+        self.routers.finalize(link.clone(), local_network.clone());
+        self.link = link;
         self.local_network = local_network;
     }
+    /// A direct unicast MAC on the link ([`SourceLink::unicast`]).
     fn valid_address(&self, mac: &[u8]) -> bool {
-        bacnet_server::server::valid_bip_audit_address(&BACnetAddress {
-            network_number: 0,
-            mac_address: MacAddr::from_slice(mac),
-        }) && !(mac[..4] == self.broadcast.ip().octets()
-            && mac[4..] == self.broadcast.port().to_be_bytes())
+        self.link.unicast(mac)
     }
-    /// The direct B/IP MAC a recipient is sent to, if it has one. An address
+    /// The route a recipient's records take, if it has one. An address
     /// naming this network by its number, once the number is known, is a
     /// station on this link like a local address (#1403), so its records go
-    /// there with no DNET. Each call reads the number as it is then, so a
-    /// number learned after startup applies from the next record. An address
-    /// on any other network has no route.
-    pub(crate) fn resolve(&self, recipient: &BACnetRecipient) -> Option<MacAddr> {
+    /// there with no DNET; so does a routed binding to it. Each call reads
+    /// the number as it is then, so a number learned after startup applies
+    /// from the next record. A Device bound behind a router on another
+    /// network goes there through it (#2371); an address on another network
+    /// has no route.
+    pub(crate) fn resolve(&self, recipient: &BACnetRecipient) -> Option<SourceRoute> {
         let here = |network: u16| network == 0 || Some(network) == self.local_network.get();
         let mac = match recipient {
-            BACnetRecipient::Device(device) => self.devices.get(device)?,
+            BACnetRecipient::Device(device) => match self.devices.get(device)? {
+                SourceRoute::Direct(mac) => mac,
+                SourceRoute::Routed { network, mac } if here(*network) => mac,
+                routed => return Some(routed.clone()),
+            },
             BACnetRecipient::Address(address) if here(address.network_number) => {
                 &address.mac_address
             }
             _ => return None,
         };
-        self.valid_address(mac).then(|| mac.clone())
+        self.valid_address(mac)
+            .then(|| SourceRoute::Direct(mac.clone()))
     }
     /// Whether `recipient` is an Address on a network numbered 1 to 65534
     /// that is not the session's number in force, with a MAC this source
@@ -106,10 +226,7 @@ impl SourceRoutes {
     }
 }
 fn denied() -> Error {
-    Error::Protocol {
-        class: ErrorClass::SERVICES.to_raw() as u32,
-        code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
-    }
+    Error::protocol(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED)
 }
 
 pub(crate) struct SourceRecipient {
@@ -117,11 +234,11 @@ pub(crate) struct SourceRecipient {
     pub(super) device: ObjectIdentifier,
     pub(super) status: Arc<AuditReporterStatus>,
     pub(super) sequence: Arc<EventSequence>,
-    pub(super) routes: SourceRoutes,
+    pub(crate) routes: SourceRoutes,
     pub(super) notifications: Weak<NotificationTransactions>,
     pub(super) egress: EndpointEgress,
     pub(super) max_apdu: u16,
-    pub(super) failures: Arc<AuditFailureQueue<MacAddr>>,
+    pub(super) failures: Arc<AuditFailureQueue<SourceRoute>>,
 }
 impl SourceRecipient {
     pub(crate) fn write_local(
@@ -136,9 +253,11 @@ impl SourceRecipient {
                 // A MAC past BACnetAddress::MAX_MAC_LEN does not encode; the
                 // Device refuses it the same way when a write carries one.
                 bacnet_encoding::constructed::encode_recipient(&mut bytes, &recipient).map_err(
-                    |_| Error::Protocol {
-                        class: ErrorClass::PROPERTY.to_raw() as u32,
-                        code: ErrorCode::INVALID_DATA_ENCODING.to_raw() as u32,
+                    |_| {
+                        Error::Remote(RemoteError::Error {
+                            class: ErrorClass::PROPERTY,
+                            code: ErrorCode::INVALID_DATA_ENCODING,
+                        })
                     },
                 )?;
                 PropertyValue::ApplicationData(bytes.to_vec())
@@ -151,9 +270,9 @@ impl SourceRecipient {
             .write_audit_recipient(None, value, None, None)
     }
 
-    /// The direct MAC the Device's current Audit_Notification_Recipient
-    /// resolves to now, if any.
-    pub(crate) fn recipient_route(&self, db: &ObjectDatabase) -> Option<MacAddr> {
+    /// The route the Device's current Audit_Notification_Recipient resolves
+    /// to now, if any.
+    pub(crate) fn recipient_route(&self, db: &ObjectDatabase) -> Option<SourceRoute> {
         let value = db
             .get(&self.device)?
             .read_property(PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT, None)
@@ -174,10 +293,13 @@ impl SourceRecipient {
     }
 
     pub(crate) fn seal(&self) {
-        if let Some(notifications) = self.notifications.upgrade() {
-            notifications.seal_audit_owner(&self.owner);
-        } else {
-            self.owner.seal();
+        match self.notifications.upgrade() {
+            Some(notifications) => {
+                notifications.seal_audit_owner(&self.owner);
+            }
+            _ => {
+                self.owner.seal();
+            }
         }
     }
     pub(crate) fn uninstall(self: &Arc<Self>, db: &mut ObjectDatabase) {
@@ -256,7 +378,7 @@ impl SourceRecipient {
                         Some(route) if confirmed => Some(
                             notifications
                                 .reserve(
-                                    CanonicalPeer::direct(route),
+                                    route.peer(),
                                     ConfirmedServiceChoice::CONFIRMED_AUDIT_NOTIFICATION,
                                 )
                                 .map_err(|_| denied())?,
@@ -273,6 +395,7 @@ impl SourceRecipient {
                 }
                 *current = new;
                 let egress = self.egress.clone();
+                let routers = Arc::clone(self.routes.routers());
                 let deadline = tokio::time::Instant::now() + delivery::DEADLINE;
                 let first_completion = delivery::Completion::new(Arc::clone(&self.status), token);
                 let second_completion = delivery::Completion::new(Arc::clone(&self.status), token);
@@ -280,21 +403,27 @@ impl SourceRecipient {
                 let first = attempts.next().unwrap();
                 let second = attempts.next().unwrap();
                 Ok(async move {
-                    let run = |(target, permit, reserved, bytes): (Option<MacAddr>, _, _, _),
-                               completion: delivery::Completion| {
-                        let egress = egress.clone();
-                        async move {
-                            let _permit: tokio::sync::OwnedSemaphorePermit = permit;
-                            let sent = match target {
-                                Some(route) => delivery::admit_encoded(
-                                    &egress, route, bytes, confirmed, deadline,
-                                ),
-                                None => delivery::admit_global_broadcast(&egress, bytes, deadline),
-                            };
-                            completion
-                                .finish(delivery::finish_send(sent, reserved, deadline).await);
-                        }
-                    };
+                    let run =
+                        |(target, permit, reserved, bytes): (Option<SourceRoute>, _, _, _),
+                         completion: delivery::Completion| {
+                            let egress = egress.clone();
+                            let routers = Arc::clone(&routers);
+                            async move {
+                                let _permit: tokio::sync::OwnedSemaphorePermit = permit;
+                                let (sent, hop) = match target {
+                                    Some(route) => delivery::admit_encoded(
+                                        &egress, &routers, &route, bytes, confirmed, deadline,
+                                    ),
+                                    None => (
+                                        delivery::admit_global_broadcast(&egress, bytes, deadline),
+                                        Hop::none(),
+                                    ),
+                                };
+                                completion.finish(
+                                    delivery::finish_send(sent, hop, reserved, deadline).await,
+                                );
+                            }
+                        };
                     tokio::join!(run(first, first_completion), run(second, second_completion));
                 })
             })

@@ -95,21 +95,34 @@ class EndpointStubParityTests(unittest.TestCase):
                            "network_port_instance", "max_apdu", "segmentation",
                            "services", "device_uuid", "queue_capacity",
                            "apdu_timeout_ms", "apdu_retries", "registered_network_port",
-                           "read_work_limit", "share_port_by_address",
-                           "min_request_interval_ms"]),
+                           "read_work_limit", "share_port_by_address", "share_wildcard_port",
+                           "min_request_interval_ms", "bbmd", "foreign_device", "multicast",
+                           "on_reinitialize", "after_reinitialize", "reinit_password",
+                           "device_write_policy", "source_audit_reporter",
+                           "audit_recipient", "audit_device_bindings"]),
             (ScEndpoint, ["device_instance", "sc_hub", "sc_vmac", "sc_ca_cert",
                           "sc_client_cert", "sc_client_key", "sc_device_uuid",
                           "device_name", "vendor_id", "sc_heartbeat_interval_ms",
                           "sc_heartbeat_timeout_ms", "network_number",
                           "network_port_instance", "max_apdu", "segmentation",
                           "services", "queue_capacity", "read_work_limit",
-                          "min_request_interval_ms"]),
+                          "min_request_interval_ms", "on_reinitialize",
+                          "after_reinitialize", "reinit_password",
+                          "device_write_policy", "source_audit_reporter",
+                          "audit_recipient", "audit_device_bindings", "reconnect",
+                          "sc_failover_hub", "sc_connect_timeout_ms"]),
             (MstpEndpoint, ["device_instance", "serial_port", "device_name", "vendor_id",
                             "mstp_baud", "mstp_mac", "mstp_max_master",
                             "mstp_max_info_frames", "max_apdu", "segmentation",
                             "services", "device_uuid", "queue_capacity",
                             "apdu_timeout_ms", "apdu_retries", "read_work_limit",
-                            "min_request_interval_ms"]),
+                            "min_request_interval_ms", "mstp_extended_frames",
+                            "mstp_echo", "mstp_echo_grace_ms",
+                            "mstp_transmit_latency_pad_ms", "mstp_usage_timeout_ms",
+                            "mstp_reply_timeout_ms", "on_reinitialize",
+                            "after_reinitialize", "reinit_password",
+                            "device_write_policy", "source_audit_reporter",
+                            "audit_recipient", "audit_device_bindings"]),
         ]
         for cls, expected in cases:
             with self.subTest(cls=cls.__name__):
@@ -132,11 +145,13 @@ class EndpointStubParityTests(unittest.TestCase):
         # Native Future-returning owner methods.
         for cls, methods in (
             (BipEndpoint, ["start", "close", "client", "server", "local_address",
-                           "status", "broadcast_i_am"]),
+                           "status", "foreign_registration", "broadcast_i_am",
+                           "report_device_reset_local"]),
             (ScEndpoint, ["start", "close", "client", "server", "local_address",
-                          "status", "broadcast_i_am"]),
+                          "status", "broadcast_i_am", "report_device_reset_local",
+                          "connection_events", "connection_status"]),
             (MstpEndpoint, ["start", "close", "client", "server", "local_address",
-                            "status", "broadcast_i_am"]),
+                            "status", "broadcast_i_am", "report_device_reset_local"]),
         ):
             for name in methods:
                 with self.subTest(cls=cls.__name__, method=name):
@@ -162,6 +177,48 @@ class EndpointStubParityTests(unittest.TestCase):
                     self.assertEqual(
                         runtime_arg_kinds(getattr(cls, name)), stub_arg_kinds(method)
                     )
+        # The object builders take the server builders' keywords (#1867),
+        # keyword-only.
+        value_keywords = ["present_value_access", "value_source_tracking", "audit_level",
+                          "auditable_operations", "audit_priority_filter"]
+        profile_keywords = ["tags", "profile_location", "profile_name"]
+        builders = {
+            "add_analog_input": (["instance", "name", "units", "present_value"],
+                                 profile_keywords),
+            "add_analog_value": (["instance", "name", "units"],
+                                 value_keywords + profile_keywords),
+            "add_binary_input": (["instance", "name"], profile_keywords),
+            "add_binary_value": (["instance", "name"], value_keywords + profile_keywords),
+        }
+        positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
+        keyword = inspect.Parameter.KEYWORD_ONLY
+        for cls in (BipEndpoint, ScEndpoint, MstpEndpoint):
+            for name, (leading, keywords) in builders.items():
+                with self.subTest(cls=cls.__name__, builder=name):
+                    expected = ([(arg, positional) for arg in leading]
+                                + [(arg, keyword) for arg in keywords])
+                    self.assertEqual(runtime_arg_kinds(getattr(cls, name)), expected)
+                    method = stub_method(classes[cls.__name__], name)
+                    self.assertEqual(stub_arg_kinds(method), expected)
+        # Every endpoint selects a source Audit Reporter (#2348, #2357).
+        expected = [("instance", positional), ("name", positional),
+                    ("audit_level", keyword), ("auditable_operations", keyword),
+                    ("issue_confirmed_notifications", keyword)]
+        for cls in (BipEndpoint, ScEndpoint, MstpEndpoint):
+            with self.subTest(cls=cls.__name__, method="add_audit_reporter"):
+                self.assertEqual(runtime_arg_kinds(cls.add_audit_reporter), expected)
+                reporter_stub = stub_method(classes[cls.__name__], "add_audit_reporter")
+                self.assertEqual(stub_arg_kinds(reporter_stub), expected)
+                # The level and operations are required, as on the server's
+                # configure_audit_reporters: a default would silently record nothing.
+                parameters = inspect.signature(cls.add_audit_reporter).parameters
+                for name in ("audit_level", "auditable_operations"):
+                    self.assertIs(parameters[name].default, inspect.Parameter.empty, name)
+                stub_defaults = dict(zip((arg.arg for arg in reporter_stub.args.kwonlyargs),
+                                         reporter_stub.args.kw_defaults))
+                self.assertIsNone(stub_defaults["audit_level"])
+                self.assertIsNone(stub_defaults["auditable_operations"])
+                self.assertIsNotNone(stub_defaults["issue_confirmed_notifications"])
         # Roles.
         self.assertEqual(
             list(inspect.signature(EndpointClient.read_property).parameters),

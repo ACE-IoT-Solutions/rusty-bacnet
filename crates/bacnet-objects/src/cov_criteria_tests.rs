@@ -4,7 +4,7 @@
 //! Staging is pinned in `staging/tests.rs` instead, since building one takes
 //! a stage ladder.
 
-use bacnet_types::enums::{ObjectType, PropertyIdentifier as P};
+use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier as P};
 
 use crate::access_control::{AccessDoorObject, AccessPointObject, CredentialDataInputObject};
 use crate::accumulator::PulseConverterObject;
@@ -27,9 +27,9 @@ fn table_13_1_objects() -> Vec<Box<dyn BACnetObject>> {
     vec![
         Box::new(AccessDoorObject::new(1, "door").unwrap()),
         Box::new(AccessPointObject::new(1, "point").unwrap()),
-        Box::new(AnalogInputObject::new(1, "ai", 62).unwrap()),
-        Box::new(AnalogOutputObject::new(1, "ao", 62).unwrap()),
-        Box::new(AnalogValueObject::new(1, "av", 62).unwrap()),
+        Box::new(AnalogInputObject::new(1, "ai", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
+        Box::new(AnalogOutputObject::new(1, "ao", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
+        Box::new(AnalogValueObject::new(1, "av", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
         Box::new(IntegerValueObject::new(1, "iv").unwrap()),
         Box::new(LargeAnalogValueObject::new(1, "lav").unwrap()),
         Box::new(LightingOutputObject::new(1, "lo").unwrap()),
@@ -53,8 +53,8 @@ fn table_13_1_objects() -> Vec<Box<dyn BACnetObject>> {
         Box::new(TimePatternValueObject::new(1, "tpv").unwrap()),
         Box::new(CredentialDataInputObject::new(1, "cdi").unwrap()),
         Box::new(LoadControlObject::new(1, "lc").unwrap()),
-        Box::new(LoopObject::new(1, "loop", 62).unwrap()),
-        Box::new(PulseConverterObject::new(1, "pc", 62).unwrap()),
+        Box::new(LoopObject::new(1, "loop", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
+        Box::new(PulseConverterObject::new(1, "pc", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
     ]
 }
 
@@ -62,8 +62,11 @@ fn table_13_1_objects() -> Vec<Box<dyn BACnetObject>> {
 fn every_table_13_1_object_type_takes_subscribe_cov() {
     for object in table_13_1_objects() {
         let object_type = object.object_identifier().object_type();
-        assert!(object.supports_cov(), "{object_type:?}");
-        assert!(object.supports_subscribe_cov_property(), "{object_type:?}");
+        assert!(
+            object.cov().is_some_and(|cov| cov.supports_subscribe_cov()),
+            "{object_type:?}"
+        );
+        assert!(object.cov().is_some(), "{object_type:?}");
     }
 }
 
@@ -107,7 +110,7 @@ fn table_13_1_extra_values_follow_each_row() {
             .find(|(row, _)| *row == object_type)
             .map_or(&[][..], |(_, reported)| *reported);
         assert_eq!(
-            object.cov_reported_properties(),
+            crate::cov_reporting_tests::reported(&*object),
             expected,
             "{object_type:?}"
         );

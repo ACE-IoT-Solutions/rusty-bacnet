@@ -1,96 +1,153 @@
 use super::TimerObject;
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
 use crate::property_metadata::{
     PropertyConformance::{Optional, RequiredRead},
     PropertyMetadata,
-    PropertyWriteCapability::{Always, ReadOnly},
+    PropertyPresenceCondition::PresentValueWritableInService,
+    PropertyWriteCapability::{Always, ReadOnly, WhenOutOfService},
 };
 
-// Preserve the legacy 13-property order, then append the already-readable
-// Event_State. Present_Value and Initial_Timeout keep their unconditional
-// network write routes; Timer_State/Timer_Running stay application-managed
-// with no behavior fix. Only Description, Present_Value, Initial_Timeout,
-// and Out_Of_Service have network write routes.
-const BASE: &[PropertyMetadata] = &[
-    PropertyMetadata::new(P::OBJECT_IDENTIFIER, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::OBJECT_NAME, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::DESCRIPTION, Optional, None, Always),
-    PropertyMetadata::new(P::OBJECT_TYPE, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::PRESENT_VALUE, RequiredRead, None, Always),
-    PropertyMetadata::new(P::TIMER_STATE, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::TIMER_RUNNING, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::INITIAL_TIMEOUT, Optional, None, Always),
-    PropertyMetadata::new(P::UPDATE_TIME, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::EXPIRATION_TIME, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::STATUS_FLAGS, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::OUT_OF_SERVICE, Optional, None, Always),
-    PropertyMetadata::new(P::RELIABILITY, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::EVENT_STATE, Optional, None, ReadOnly),
-    PropertyMetadata::new(P::PROPERTY_LIST, RequiredRead, None, ReadOnly),
-];
+// Table 12-75, in its order. Present_Value is writable in service, so
+// footnote 2 makes Timer_State and Timer_Running writable too (both keep
+// the table's R), and footnote 4 requires the Min_Pres_Value and
+// Max_Pres_Value range (O, with that condition). Footnote 1 makes
+// Reliability writable out of service. Update_Time's footnote applies only
+// with intrinsic reporting, which this Timer lacks (#2174). Initial_Timeout
+// is set by each start, so a client can't write it; Default_Timeout takes
+// writes within the range (#2192).
+/// Table 12-75's rows with `$extra` before Property_List, so each set is a
+/// static slice.
+macro_rules! timer_rows {
+    ($($extra:expr),* $(,)?) => {
+        &[
+            PropertyMetadata::new(P::OBJECT_IDENTIFIER, RequiredRead, None, ReadOnly),
+            PropertyMetadata::new(P::OBJECT_NAME, RequiredRead, None, ReadOnly),
+            PropertyMetadata::new(P::DESCRIPTION, Optional, None, Always),
+            PropertyMetadata::new(P::OBJECT_TYPE, RequiredRead, None, ReadOnly),
+            PropertyMetadata::new(P::PRESENT_VALUE, RequiredRead, None, Always),
+            PropertyMetadata::new(P::STATUS_FLAGS, RequiredRead, None, ReadOnly),
+            PropertyMetadata::new(P::EVENT_STATE, Optional, None, ReadOnly),
+            PropertyMetadata::new(P::RELIABILITY, Optional, None, WhenOutOfService),
+            PropertyMetadata::new(P::OUT_OF_SERVICE, Optional, None, Always),
+            PropertyMetadata::new(P::TIMER_STATE, RequiredRead, None, Always),
+            PropertyMetadata::new(P::TIMER_RUNNING, RequiredRead, None, Always),
+            PropertyMetadata::new(P::UPDATE_TIME, Optional, None, ReadOnly),
+            PropertyMetadata::new(P::LAST_STATE_CHANGE, Optional, None, ReadOnly),
+            PropertyMetadata::new(P::EXPIRATION_TIME, Optional, None, ReadOnly),
+            PropertyMetadata::new(P::INITIAL_TIMEOUT, Optional, None, ReadOnly),
+            PropertyMetadata::new(P::DEFAULT_TIMEOUT, Optional, None, Always),
+            PropertyMetadata::new(
+                P::MIN_PRES_VALUE,
+                Optional,
+                Some(PresentValueWritableInService),
+                ReadOnly,
+            ),
+            PropertyMetadata::new(
+                P::MAX_PRES_VALUE,
+                Optional,
+                Some(PresentValueWritableInService),
+                ReadOnly,
+            ),
+            $($extra,)*
+            PropertyMetadata::new(P::PROPERTY_LIST, RequiredRead, None, ReadOnly),
+        ]
+    };
+}
 
-pub(super) fn for_object(_object: &TimerObject) -> Cow<'_, [PropertyMetadata]> {
-    Cow::Borrowed(BASE)
+const BASE: &[PropertyMetadata] = timer_rows!();
+
+// Table 12-75 footnote 5: the three come together. The table leaves their
+// write access open; State_Change_Values and the references take writes, and
+// Priority_For_Writing is set with them (#2206).
+const WITH_STATE_CHANGE: &[PropertyMetadata] = timer_rows!(
+    PropertyMetadata::new(P::STATE_CHANGE_VALUES, Optional, None, Always),
+    PropertyMetadata::new(
+        P::LIST_OF_OBJECT_PROPERTY_REFERENCES,
+        Optional,
+        None,
+        Always
+    ),
+    PropertyMetadata::new(P::PRIORITY_FOR_WRITING, Optional, None, ReadOnly),
+);
+
+pub(super) fn for_object(object: &TimerObject) -> Cow<'_, [PropertyMetadata]> {
+    Cow::Borrowed(match object.config.set {
+        Some(_) => WITH_STATE_CHANGE,
+        None => BASE,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collections::HashSet;
+    use crate::property_metadata::PropertyWriteCapability;
     use crate::traits::BACnetObject;
     use bacnet_types::enums::{ErrorClass, ErrorCode};
-    use bacnet_types::error::Error;
+    use bacnet_types::error::{Error, RemoteError};
     use bacnet_types::primitives::PropertyValue;
-    use std::collections::HashSet;
 
     fn assert_error(error: Error, expected: ErrorCode) {
         assert!(
-            matches!(error, Error::Protocol { class, code }
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == expected.to_raw() as u32),
+            matches!(error, Error::Remote(RemoteError::Error { class, code })
+                if class == ErrorClass::PROPERTY
+                    && code == expected),
             "expected {expected:?}, got {error:?}"
         );
     }
 
+    const ALL: [P; 18] = [
+        P::OBJECT_IDENTIFIER,
+        P::OBJECT_NAME,
+        P::DESCRIPTION,
+        P::OBJECT_TYPE,
+        P::PRESENT_VALUE,
+        P::STATUS_FLAGS,
+        P::EVENT_STATE,
+        P::RELIABILITY,
+        P::OUT_OF_SERVICE,
+        P::TIMER_STATE,
+        P::TIMER_RUNNING,
+        P::UPDATE_TIME,
+        P::LAST_STATE_CHANGE,
+        P::EXPIRATION_TIME,
+        P::INITIAL_TIMEOUT,
+        P::DEFAULT_TIMEOUT,
+        P::MIN_PRES_VALUE,
+        P::MAX_PRES_VALUE,
+    ];
+
+    /// Table 12-75's R rows, and the range footnote 4 requires.
+    const REQUIRED: [P; 10] = [
+        P::OBJECT_IDENTIFIER,
+        P::OBJECT_NAME,
+        P::OBJECT_TYPE,
+        P::PRESENT_VALUE,
+        P::STATUS_FLAGS,
+        P::TIMER_STATE,
+        P::TIMER_RUNNING,
+        P::MIN_PRES_VALUE,
+        P::MAX_PRES_VALUE,
+        P::PROPERTY_LIST,
+    ];
+
     #[test]
     fn property_metadata_timer_exact_sets_readable_rows_and_indexed_list() {
         let object = TimerObject::new(1, "TMR-1").unwrap();
-        let all = [
-            P::OBJECT_IDENTIFIER,
-            P::OBJECT_NAME,
-            P::DESCRIPTION,
-            P::OBJECT_TYPE,
-            P::PRESENT_VALUE,
-            P::TIMER_STATE,
-            P::TIMER_RUNNING,
-            P::INITIAL_TIMEOUT,
-            P::UPDATE_TIME,
-            P::EXPIRATION_TIME,
-            P::STATUS_FLAGS,
-            P::OUT_OF_SERVICE,
-            P::RELIABILITY,
-            P::EVENT_STATE,
-        ];
-        let required = [
-            P::OBJECT_IDENTIFIER,
-            P::OBJECT_NAME,
-            P::OBJECT_TYPE,
-            P::PRESENT_VALUE,
-            P::TIMER_STATE,
-            P::TIMER_RUNNING,
-            P::UPDATE_TIME,
-            P::EXPIRATION_TIME,
-            P::STATUS_FLAGS,
-            P::RELIABILITY,
-            P::PROPERTY_LIST,
-        ];
         let metadata = object.property_metadata();
         assert!(matches!(metadata, Cow::Borrowed(_)));
-        assert_eq!(metadata.len(), 15);
-        assert_eq!(object.property_list().as_ref(), all);
-        assert_eq!(object.required_properties().as_ref(), required);
+        assert_eq!(metadata.len(), ALL.len() + 1);
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(&ALL)
+        );
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            REQUIRED
+        );
         assert_eq!(
             metadata
                 .iter()
@@ -99,40 +156,46 @@ mod tests {
                 .len(),
             metadata.len()
         );
-        assert!(!object.is_createable());
-        assert!(object.is_deleteable());
-        assert!(!object.supports_cov());
+        assert!(crate::creation::builtin_deleteable(
+            object.object_identifier().object_type()
+        ));
+        assert!(!object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
         for row in metadata.iter() {
-            assert_eq!(row.presence_condition, None);
+            let p = row.property_identifier;
+            let ranged = matches!(p, P::MIN_PRES_VALUE | P::MAX_PRES_VALUE);
+            assert_eq!(
+                row.presence_condition,
+                ranged.then_some(PresentValueWritableInService),
+                "{p:?}"
+            );
             assert_eq!(
                 row.conformance,
-                if required.contains(&row.property_identifier) {
+                if REQUIRED.contains(&p) && !ranged {
                     RequiredRead
                 } else {
                     Optional
-                }
+                },
+                "{p:?}"
             );
-            object.read_property(row.property_identifier, None).unwrap();
+            object.read_property(p, None).unwrap();
         }
-        // Event_State is readable although it was absent from the legacy list.
-        assert_eq!(
-            object.read_property(P::EVENT_STATE, None).unwrap(),
-            PropertyValue::Enumerated(0)
-        );
-        let wire: Vec<_> = all
+        let wire: Vec<_> = ALL
             .iter()
             .filter(|&&p| !matches!(p, P::OBJECT_IDENTIFIER | P::OBJECT_NAME | P::OBJECT_TYPE))
             .map(|p| PropertyValue::Enumerated(p.to_raw()))
             .collect();
-        assert_eq!(wire.len(), 11);
-        assert!(object.is_array_property(P::PROPERTY_LIST));
+        assert_eq!(wire.len(), 15);
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::PROPERTY_LIST
+        ));
         assert_eq!(
             object.read_property(P::PROPERTY_LIST, None).unwrap(),
             PropertyValue::List(wire.clone())
         );
         assert_eq!(
             object.read_property(P::PROPERTY_LIST, Some(0)).unwrap(),
-            PropertyValue::Unsigned(11)
+            PropertyValue::Unsigned(15)
         );
         for (index, value) in wire.iter().enumerate() {
             assert_eq!(
@@ -142,7 +205,7 @@ mod tests {
                 *value
             );
         }
-        for index in [12, u32::MAX] {
+        for index in [16, u32::MAX] {
             assert_error(
                 object
                     .read_property(P::PROPERTY_LIST, Some(index))
@@ -152,6 +215,9 @@ mod tests {
         }
     }
 
+    /// Each row's write capability against the write dispatch: a row the
+    /// metadata calls writable takes a write of a value it accepts, and every
+    /// other row refuses one with WRITE_ACCESS_DENIED.
     #[test]
     fn property_metadata_timer_write_capabilities_match_dispatch() {
         for out_of_service in [false, true] {
@@ -168,92 +234,54 @@ mod tests {
             for row in &original {
                 let p = row.property_identifier;
                 let capability = match p {
-                    P::DESCRIPTION | P::PRESENT_VALUE | P::INITIAL_TIMEOUT | P::OUT_OF_SERVICE => {
-                        Always
-                    }
+                    P::DESCRIPTION
+                    | P::PRESENT_VALUE
+                    | P::OUT_OF_SERVICE
+                    | P::TIMER_STATE
+                    | P::TIMER_RUNNING
+                    | P::DEFAULT_TIMEOUT => Always,
+                    P::RELIABILITY => WhenOutOfService,
                     _ => ReadOnly,
                 };
                 assert_eq!(row.write_capability, capability, "{p:?}");
                 assert_eq!(
-                    object.is_writable_property(p),
+                    crate::property_metadata::is_writable_property(&object, p),
                     capability.is_writable(),
                     "{p:?}"
                 );
                 let value = object.read_property(p, None).unwrap();
                 let result = object.write_property(p, None, value, None);
-                if capability.is_writable() {
+                let allowed = match capability {
+                    PropertyWriteCapability::Always => true,
+                    PropertyWriteCapability::WhenOutOfService => out_of_service,
+                    _ => false,
+                };
+                if allowed {
                     result.unwrap();
                 } else {
                     assert_error(result.unwrap_err(), ErrorCode::WRITE_ACCESS_DENIED);
                 }
             }
-            // Timer_State/Timer_Running/Event_State have no network write route.
-            for p in [P::TIMER_STATE, P::TIMER_RUNNING, P::EVENT_STATE] {
-                let value = object.read_property(p, None).unwrap();
-                assert_error(
-                    object.write_property(p, None, value, None).unwrap_err(),
-                    ErrorCode::WRITE_ACCESS_DENIED,
-                );
-                assert!(!object.is_writable_property(p));
-            }
-            // Present_Value keeps its unconditional, enumerated write route.
-            for value in [
-                PropertyValue::Enumerated(0),
-                PropertyValue::Enumerated(1),
-                PropertyValue::Enumerated(2),
+            for (p, wrong) in [
+                (P::PRESENT_VALUE, PropertyValue::Enumerated(1)),
+                (P::TIMER_RUNNING, PropertyValue::Unsigned(1)),
+                (P::TIMER_STATE, PropertyValue::Unsigned(0)),
+                (P::DEFAULT_TIMEOUT, PropertyValue::Null),
+                (P::DESCRIPTION, PropertyValue::Unsigned(1)),
+                (P::OUT_OF_SERVICE, PropertyValue::Unsigned(1)),
             ] {
-                object
-                    .write_property(P::PRESENT_VALUE, None, value.clone(), None)
-                    .unwrap();
-                assert_eq!(object.read_property(P::PRESENT_VALUE, None).unwrap(), value);
-                assert_eq!(object.read_property(P::TIMER_STATE, None).unwrap(), value);
-            }
-            assert_error(
-                object
-                    .write_property(P::PRESENT_VALUE, None, PropertyValue::Enumerated(99), None)
-                    .unwrap_err(),
-                ErrorCode::VALUE_OUT_OF_RANGE,
-            );
-            assert_error(
-                object
-                    .write_property(P::PRESENT_VALUE, None, PropertyValue::Unsigned(1), None)
-                    .unwrap_err(),
-                ErrorCode::INVALID_DATA_TYPE,
-            );
-            object
-                .write_property(
-                    P::INITIAL_TIMEOUT,
-                    None,
-                    PropertyValue::Unsigned(10000),
-                    None,
-                )
-                .unwrap();
-            assert_eq!(
-                object.read_property(P::INITIAL_TIMEOUT, None).unwrap(),
-                PropertyValue::Unsigned(10000)
-            );
-            assert_error(
-                object
-                    .write_property(P::INITIAL_TIMEOUT, None, PropertyValue::Null, None)
-                    .unwrap_err(),
-                ErrorCode::INVALID_DATA_TYPE,
-            );
-            for p in [P::DESCRIPTION, P::OUT_OF_SERVICE] {
                 assert_error(
-                    object
-                        .write_property(p, None, PropertyValue::Unsigned(1), None)
-                        .unwrap_err(),
+                    object.write_property(p, None, wrong, None).unwrap_err(),
                     ErrorCode::INVALID_DATA_TYPE,
                 );
             }
             for p in [
-                P::DEFAULT_TIMEOUT,
                 P::RESOLUTION,
-                P::LAST_STATE_CHANGE,
+                P::STATE_CHANGE_VALUES,
                 P::PRIORITY_ARRAY,
                 P::ALL,
             ] {
-                assert!(!object.is_writable_property(p));
+                assert!(!crate::property_metadata::is_writable_property(&object, p));
                 assert_error(
                     object.read_property(p, None).unwrap_err(),
                     ErrorCode::UNKNOWN_PROPERTY,

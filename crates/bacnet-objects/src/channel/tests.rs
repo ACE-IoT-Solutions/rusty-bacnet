@@ -1,8 +1,10 @@
 use super::*;
+use crate::property_metadata::{is_array_property, is_list_property, is_writable_property};
+use PropertyIdentifier as P;
 use bacnet_encoding::constructed::encode_device_object_property_reference;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 use bytes::BytesMut;
-use PropertyIdentifier as P;
 
 pub(super) fn assert_error<T: std::fmt::Debug>(
     result: Result<T, Error>,
@@ -10,8 +12,8 @@ pub(super) fn assert_error<T: std::fmt::Debug>(
     code: ErrorCode,
 ) {
     assert!(
-        matches!(result, Err(Error::Protocol { class: c, code: e })
-            if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class: c, code: e }))
+            if c == class && e == code),
         "expected {class:?} / {code:?}, got {result:?}"
     );
 }
@@ -150,8 +152,8 @@ fn channel_arrays_read_one_element_per_index() {
     ];
     for (property, elements) in arrays {
         // Arrays on Channel, where a Schedule's reference list is a list.
-        assert!(channel.is_array_property(property), "{property:?}");
-        assert!(!channel.is_list_property(property), "{property:?}");
+        assert!(is_array_property(&channel, property), "{property:?}");
+        assert!(!is_list_property(&channel, property), "{property:?}");
         assert_eq!(
             channel.read_property(property, None).unwrap(),
             PropertyValue::List(elements.to_vec()),
@@ -181,7 +183,7 @@ fn channel_arrays_read_one_element_per_index() {
     }
     // The scalars take no index.
     for property in [P::PRESENT_VALUE, P::CHANNEL_NUMBER, P::WRITE_STATUS] {
-        assert!(!channel.is_array_property(property), "{property:?}");
+        assert!(!is_array_property(&channel, property), "{property:?}");
         assert_property_error(
             channel.write_property(property, Some(1), PropertyValue::Unsigned(1), None),
             ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
@@ -192,16 +194,19 @@ fn channel_arrays_read_one_element_per_index() {
 #[test]
 fn channel_present_value_write_queues_its_members_and_goes_in_progress() {
     let mut channel = configured();
-    assert!(channel.take_command_run_internal().is_none());
+    assert!(channel.take_command_run().is_none());
     write_pv(&mut channel, PropertyValue::Real(42.5), Some(9)).unwrap();
     assert_eq!(read(&channel, P::PRESENT_VALUE), PropertyValue::Real(42.5));
     assert_eq!(read(&channel, P::LAST_PRIORITY), PropertyValue::Unsigned(9));
     assert_eq!(write_status(&channel), WriteStatus::IN_PROGRESS);
 
-    let run = channel.take_command_run_internal().unwrap();
-    assert!(channel.take_command_run_internal().is_none(), "taken once");
+    let run = channel.take_command_run().unwrap();
+    assert!(channel.take_command_run().is_none(), "taken once");
     assert_eq!(run.source, channel.object_identifier());
-    assert_eq!(Some(run.generation), channel.command_generation_internal());
+    assert_eq!(
+        Some(run.generation),
+        channel.command_runner().map(|r| r.command_generation())
+    );
     let queued = distribution(&run);
     assert_eq!(queued.value, PropertyValue::Real(42.5));
     assert_eq!(queued.priority, Some(9));
@@ -224,9 +229,9 @@ fn channel_present_value_write_queues_its_members_and_goes_in_progress() {
     assert_eq!(read(&channel, P::PRESENT_VALUE), PropertyValue::Real(42.5));
     assert_eq!(read(&channel, P::LAST_PRIORITY), PropertyValue::Unsigned(9));
 
-    assert!(channel.complete_command_run_internal(run.generation, Ok(())));
+    assert!(channel.complete_command_run(run.generation, Ok(())));
     assert_eq!(write_status(&channel), WriteStatus::SUCCESSFUL);
-    assert!(!channel.complete_command_run_internal(run.generation, Err(WriteFailure::Process)));
+    assert!(!channel.complete_command_run(run.generation, Err(WriteFailure::Process)));
     assert_eq!(write_status(&channel), WriteStatus::SUCCESSFUL);
 
     // Without a priority, Last_Priority is 16 and the members get none.
@@ -235,11 +240,11 @@ fn channel_present_value_write_queues_its_members_and_goes_in_progress() {
         read(&channel, P::LAST_PRIORITY),
         PropertyValue::Unsigned(16)
     );
-    let again = channel.take_command_run_internal().unwrap();
+    let again = channel.take_command_run().unwrap();
     assert_ne!(again.generation, run.generation);
     assert_eq!(distribution(&again).priority, None);
     assert_eq!(distribution(&again).value, PropertyValue::Null);
-    assert!(channel.complete_command_run_internal(again.generation, Err(WriteFailure::Process)));
+    assert!(channel.complete_command_run(again.generation, Err(WriteFailure::Process)));
     assert_eq!(write_status(&channel), WriteStatus::FAILED);
 }
 
@@ -247,10 +252,10 @@ fn channel_present_value_write_queues_its_members_and_goes_in_progress() {
 fn channel_stale_completion_is_ignored() {
     let mut channel = configured();
     write_pv(&mut channel, PropertyValue::Unsigned(3), None).unwrap();
-    let run = channel.take_command_run_internal().unwrap();
-    assert!(!channel.complete_command_run_internal(run.generation.wrapping_add(1), Ok(())));
+    let run = channel.take_command_run().unwrap();
+    assert!(!channel.complete_command_run(run.generation.wrapping_add(1), Ok(())));
     assert_eq!(write_status(&channel), WriteStatus::IN_PROGRESS);
-    assert!(channel.complete_command_run_internal(run.generation, Ok(())));
+    assert!(channel.complete_command_run(run.generation, Ok(())));
 }
 
 #[test]
@@ -259,16 +264,19 @@ fn channel_replacement_never_shares_a_run_generation() {
     // from the first can't pass for the second's.
     let mut old = configured();
     write_pv(&mut old, PropertyValue::Real(1.0), None).unwrap();
-    let stale = old.take_command_run_internal().unwrap();
+    let stale = old.take_command_run().unwrap();
     let mut fresh = configured();
     write_pv(&mut fresh, PropertyValue::Real(1.0), None).unwrap();
-    let current = fresh.take_command_run_internal().unwrap();
+    let current = fresh.take_command_run().unwrap();
     assert_eq!(stale.source, current.source);
     assert_ne!(stale.generation, current.generation);
-    assert_ne!(Some(stale.generation), fresh.command_generation_internal());
-    assert!(!fresh.complete_command_run_internal(stale.generation, Err(WriteFailure::Process)));
+    assert_ne!(
+        Some(stale.generation),
+        fresh.command_runner().map(|r| r.command_generation())
+    );
+    assert!(!fresh.complete_command_run(stale.generation, Err(WriteFailure::Process)));
     assert_eq!(write_status(&fresh), WriteStatus::IN_PROGRESS);
-    assert!(fresh.complete_command_run_internal(current.generation, Ok(())));
+    assert!(fresh.complete_command_run(current.generation, Ok(())));
 }
 
 #[test]
@@ -276,7 +284,7 @@ fn channel_without_members_stays_idle_and_empty_references_are_skipped() {
     let mut channel = ChannelObject::new(1, "CH-1", 7).unwrap();
     write_pv(&mut channel, PropertyValue::Boolean(true), Some(4)).unwrap();
     assert_eq!(write_status(&channel), WriteStatus::IDLE);
-    assert!(channel.take_command_run_internal().is_none());
+    assert!(channel.take_command_run().is_none());
     assert_eq!(
         read(&channel, P::PRESENT_VALUE),
         PropertyValue::Boolean(true)
@@ -292,14 +300,14 @@ fn channel_without_members_stays_idle_and_empty_references_are_skipped() {
         .set_members(vec![arrays::empty_reference(), empty_device.clone()])
         .unwrap();
     write_pv(&mut channel, PropertyValue::Boolean(false), None).unwrap();
-    assert!(channel.take_command_run_internal().is_none());
+    assert!(channel.take_command_run().is_none());
     assert_eq!(write_status(&channel), WriteStatus::SUCCESSFUL);
 
     channel
         .set_members(vec![arrays::empty_reference(), member(5), empty_device])
         .unwrap();
     write_pv(&mut channel, PropertyValue::Boolean(true), None).unwrap();
-    let run = channel.take_command_run_internal().unwrap();
+    let run = channel.take_command_run().unwrap();
     assert_eq!(
         distribution(&run)
             .members
@@ -327,13 +335,13 @@ fn channel_out_of_service_keeps_the_value_from_the_members() {
     assert_eq!(read(&channel, P::PRESENT_VALUE), PropertyValue::Real(5.0));
     assert_eq!(read(&channel, P::LAST_PRIORITY), PropertyValue::Unsigned(3));
     assert_eq!(write_status(&channel), WriteStatus::IDLE);
-    assert!(channel.take_command_run_internal().is_none());
+    assert!(channel.take_command_run().is_none());
 
     channel
         .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Boolean(false), None)
         .unwrap();
     write_pv(&mut channel, PropertyValue::Real(6.0), Some(3)).unwrap();
-    assert!(channel.take_command_run_internal().is_some());
+    assert!(channel.take_command_run().is_some());
 }
 
 #[test]
@@ -450,7 +458,7 @@ fn channel_allow_group_delay_inhibit_starts_false_and_takes_boolean_writes() {
     // The flag leaves a Present_Value write's own delays alone.
     channel.set_allow_group_delay_inhibit(true);
     write_pv(&mut channel, PropertyValue::Real(1.0), Some(8)).unwrap();
-    let run = channel.take_command_run_internal().unwrap();
+    let run = channel.take_command_run().unwrap();
     let delays: Vec<u32> = distribution(&run)
         .members
         .iter()
@@ -463,11 +471,8 @@ fn channel_allow_group_delay_inhibit_starts_false_and_takes_boolean_writes() {
 fn channel_property_list_and_required_rows_follow_table_12_62() {
     let channel = configured();
     assert_eq!(
-        channel.property_list().as_ref(),
+        crate::test_rows::listed(&channel.property_metadata()),
         [
-            P::OBJECT_IDENTIFIER,
-            P::OBJECT_NAME,
-            P::OBJECT_TYPE,
             P::DESCRIPTION,
             P::PRESENT_VALUE,
             P::LAST_PRIORITY,
@@ -483,7 +488,7 @@ fn channel_property_list_and_required_rows_follow_table_12_62() {
         ]
     );
     assert_eq!(
-        channel.required_properties().as_ref(),
+        crate::test_rows::required(&channel.property_metadata()),
         [
             P::OBJECT_IDENTIFIER,
             P::OBJECT_NAME,
@@ -499,16 +504,16 @@ fn channel_property_list_and_required_rows_follow_table_12_62() {
             P::PROPERTY_LIST,
         ]
     );
-    for property in channel.property_list().iter() {
+    let rows = channel.property_metadata();
+    for property in rows.iter().map(|row| row.property_identifier) {
         channel
-            .read_property(*property, None)
+            .read_property(property, None)
             .unwrap_or_else(|error| panic!("{property:?}: {error:?}"));
     }
-    let writable: Vec<_> = channel
-        .property_list()
+    let writable: Vec<_> = rows
         .iter()
-        .copied()
-        .filter(|property| channel.is_writable_property(*property))
+        .map(|row| row.property_identifier)
+        .filter(|property| is_writable_property(&channel, *property))
         .collect();
     assert_eq!(
         writable,
@@ -525,8 +530,13 @@ fn channel_property_list_and_required_rows_follow_table_12_62() {
             P::CONTROL_GROUPS,
         ]
     );
-    assert!(!channel.supports_cov());
-    assert!(!channel.supports_subscribe_cov_property());
-    assert!(!channel.is_createable());
-    assert!(channel.is_deleteable());
+    assert!(
+        !channel
+            .cov()
+            .is_some_and(|cov| cov.supports_subscribe_cov())
+    );
+    assert!(!channel.cov().is_some());
+    assert!(crate::creation::builtin_deleteable(
+        channel.object_identifier().object_type()
+    ));
 }

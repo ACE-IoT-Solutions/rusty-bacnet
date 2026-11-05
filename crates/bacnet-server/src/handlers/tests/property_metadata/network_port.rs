@@ -1,7 +1,8 @@
 use super::*;
-use bacnet_objects::{network_port::NetworkPortObject, traits::BACnetObject};
-use bacnet_types::primitives::PropertyValue;
 use PropertyIdentifier as P;
+use bacnet_objects::{network_port::NetworkPortObject, traits::BACnetObject};
+use bacnet_types::error::RemoteError;
+use bacnet_types::primitives::PropertyValue;
 
 fn network_port_object(configured: bool) -> NetworkPortObject {
     let mut object = NetworkPortObject::new_bip(
@@ -72,6 +73,8 @@ fn rpm_network_port_metadata_selectors_preserve_bytes_and_budgets() {
         P::NETWORK_NUMBER_QUALITY,
         P::MAC_ADDRESS,
         P::APDU_LENGTH,
+        // Table 12-71 classes Link_Speed required (#2174).
+        P::LINK_SPEED,
         P::CHANGES_PENDING,
         P::BACNET_IP_MODE,
         P::IP_ADDRESS,
@@ -80,7 +83,7 @@ fn rpm_network_port_metadata_selectors_preserve_bytes_and_budgets() {
         P::BACNET_IP_UDP_PORT,
         P::IP_DNS_SERVER,
     ];
-    let optional = [P::DESCRIPTION, P::LINK_SPEED];
+    let optional = [P::DESCRIPTION];
     for configured in [false, true] {
         let object = network_port_object(configured);
         let oid = object.object_identifier();
@@ -112,12 +115,15 @@ fn rpm_network_port_metadata_does_not_enable_create_object() {
             object_specifier,
             list_of_initial_values: vec![],
         }
-        .encode(&mut request);
+        .encode(&mut request)
+        .unwrap();
         let mut response = BytesMut::new();
         let result = handle_create_object(&mut db, &request, &mut response);
-        assert!(matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::OBJECT.to_raw() as u32
-                && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE.to_raw() as u32));
+        assert!(
+            matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::OBJECT
+                && code == ErrorCode::DYNAMIC_CREATION_NOT_SUPPORTED)
+        );
         assert!(response.is_empty());
         assert!(db.is_empty());
     }
@@ -128,7 +134,7 @@ fn network_port_delete_object_is_denied() {
     use bacnet_services::object_mgmt::DeleteObjectRequest;
 
     // NetworkPort models a running node's port and is not deleteable at
-    // runtime, mirroring `NetworkPortObject::is_deleteable` so PICS and the
+    // runtime, by the type-level `creation::builtin_deleteable`, so PICS and the
     // runtime DeleteObject handler share one truth source (differs from
     // LoadControl delete-allowed).
     let mut db = ObjectDatabase::new();
@@ -144,9 +150,9 @@ fn network_port_delete_object_is_denied() {
     .encode(&mut request);
     let result = handle_delete_object(&mut db, &request).map(|_removed| ());
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::OBJECT.to_raw() as u32
-                && code == ErrorCode::OBJECT_DELETION_NOT_PERMITTED.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::OBJECT
+                && code == ErrorCode::OBJECT_DELETION_NOT_PERMITTED),
         "DeleteObject must reject NETWORK_PORT, got {result:?}"
     );
     assert!(

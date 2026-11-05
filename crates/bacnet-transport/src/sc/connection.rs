@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 
 use crate::port::DataAttribute;
 use crate::sc_frame::{
-    decode_sc_bvlc_result, is_broadcast_vmac, ScBvlcResult, ScFunction, ScMessage, Vmac,
+    ScBvlcResult, ScFunction, ScMessage, Vmac, decode_sc_bvlc_result, is_broadcast_vmac,
 };
 
 use super::diagnostic_throttle::DiagnosticThrottle;
@@ -43,7 +43,7 @@ pub struct ScConnection {
     /// Maximum encoded BACnet/SC BVLC message length the hub can accept.
     pub hub_max_bvlc_length: u16,
     /// Maximum NPDU length the hub can accept (learned from ConnectAccept).
-    pub hub_max_apdu_length: u16,
+    pub hub_max_npdu_length: u16,
     pub(super) next_message_id: u16,
     /// Pending Disconnect-ACK to send after receiving a Disconnect-Request.
     pub disconnect_ack_to_send: Option<ScMessage>,
@@ -73,7 +73,7 @@ impl ScConnection {
             max_bvlc_length: crate::sc_limits::DEFAULT_MAX_BVLC_LENGTH,
             max_apdu_length: crate::sc_limits::LOCAL_RECEIVE_NPDU_CAPACITY,
             hub_max_bvlc_length: 1476,
-            hub_max_apdu_length: 1476,
+            hub_max_npdu_length: 1476,
             next_message_id: 1,
             disconnect_ack_to_send: None,
             pending_connect_message_id: None,
@@ -143,24 +143,24 @@ impl ScConnection {
         if msg.function != ScFunction::ConnectAccept {
             return false;
         }
-        if let Some(expected_id) = self.pending_connect_message_id {
-            if msg.message_id != expected_id {
-                if self.malformed_diag.should_emit_now() {
-                    let suppressed = self.malformed_diag.take_suppressed();
-                    if suppressed > 0 {
-                        warn!(
-                            "ConnectAccept message_id {:#x} does not match request {:#x} (suppressed {suppressed} similar diagnostics)",
-                            msg.message_id, expected_id
-                        );
-                    } else {
-                        warn!(
-                            "ConnectAccept message_id {:#x} does not match request {:#x}",
-                            msg.message_id, expected_id
-                        );
-                    }
+        if let Some(expected_id) = self.pending_connect_message_id
+            && msg.message_id != expected_id
+        {
+            if self.malformed_diag.should_emit_now() {
+                let suppressed = self.malformed_diag.take_suppressed();
+                if suppressed > 0 {
+                    warn!(
+                        "ConnectAccept message_id {:#x} does not match request {:#x} (suppressed {suppressed} similar diagnostics)",
+                        msg.message_id, expected_id
+                    );
+                } else {
+                    warn!(
+                        "ConnectAccept message_id {:#x} does not match request {:#x}",
+                        msg.message_id, expected_id
+                    );
                 }
-                return false;
             }
+            return false;
         }
         if crate::sc_frame::connect_message_error(msg).is_some() {
             return false;
@@ -173,7 +173,7 @@ impl ScConnection {
         uuid.copy_from_slice(&msg.payload[6..22]);
         self.hub_device_uuid = Some(uuid);
         self.hub_max_bvlc_length = u16::from_be_bytes([msg.payload[22], msg.payload[23]]);
-        self.hub_max_apdu_length = u16::from_be_bytes([msg.payload[24], msg.payload[25]]);
+        self.hub_max_npdu_length = u16::from_be_bytes([msg.payload[24], msg.payload[25]]);
         self.state = ScConnectionState::Connected;
         true
     }
@@ -380,17 +380,20 @@ impl ScConnection {
                     if self.malformed_diag.should_emit_now() {
                         let suppressed = self.malformed_diag.take_suppressed();
                         if suppressed > 0 {
-                            debug!("Ignoring EncapsulatedNpdu in {:?} state (suppressed {suppressed} similar diagnostics)", self.state);
+                            debug!(
+                                "Ignoring EncapsulatedNpdu in {:?} state (suppressed {suppressed} similar diagnostics)",
+                                self.state
+                            );
                         } else {
                             debug!("Ignoring EncapsulatedNpdu in {:?} state", self.state);
                         }
                     }
                     return None;
                 }
-                if let Some(dest) = msg.destination_vmac {
-                    if !is_broadcast_vmac(&dest) {
-                        return None;
-                    }
+                if let Some(dest) = msg.destination_vmac
+                    && !is_broadcast_vmac(&dest)
+                {
+                    return None;
                 }
                 if msg.payload.len() > self.max_apdu_length as usize {
                     if self.malformed_diag.should_emit_now() {
@@ -486,7 +489,9 @@ impl ScConnection {
                         if self.malformed_diag.should_emit_now() {
                             let suppressed = self.malformed_diag.take_suppressed();
                             if suppressed > 0 {
-                                warn!("Malformed BACnet/SC BVLC-Result: {e} (suppressed {suppressed} similar diagnostics)");
+                                warn!(
+                                    "Malformed BACnet/SC BVLC-Result: {e} (suppressed {suppressed} similar diagnostics)"
+                                );
                             } else {
                                 warn!("Malformed BACnet/SC BVLC-Result: {e}");
                             }

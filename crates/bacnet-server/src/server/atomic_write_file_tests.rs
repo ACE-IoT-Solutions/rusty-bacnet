@@ -91,7 +91,7 @@ async fn default_refusal(record: bool) {
             let storage = guard
                 .get(&ObjectIdentifier::new(ObjectType::FILE, 1).unwrap())
                 .unwrap()
-                .file_storage_internal()
+                .file_storage()
                 .unwrap();
             let unchanged = if record {
                 storage.read_records(0, 10000).unwrap().records == vec![b"sentinel".to_vec()]
@@ -197,6 +197,7 @@ async fn atomic_write_file_all_builders_validate_before_start_or_dial() {
 #[tokio::test]
 async fn atomic_write_file_opaque_abort_keeps_legacy_service_mapping() {
     use bacnet_objects::file::{FileRecordRead, FileStorage, FileStreamRead, FileWriteStart};
+    use bacnet_objects::property_metadata::PropertyMetadata;
     use bacnet_objects::traits::BACnetObject;
     use std::borrow::Cow;
     struct ErrorFile(FileObject);
@@ -207,8 +208,8 @@ async fn atomic_write_file_opaque_abort_keeps_legacy_service_mapping() {
         fn object_name(&self) -> &str {
             self.0.object_name()
         }
-        fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-            Cow::Borrowed(&[])
+        fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+            crate::test_rows::read_only(&[])
         }
         fn read_property(
             &self,
@@ -226,10 +227,10 @@ async fn atomic_write_file_opaque_abort_keeps_legacy_service_mapping() {
         ) -> Result<(), Error> {
             unreachable!()
         }
-        fn file_storage_internal(&self) -> Option<&dyn FileStorage> {
+        fn file_storage(&self) -> Option<&dyn FileStorage> {
             Some(self)
         }
-        fn file_storage_internal_mut(&mut self) -> Option<&mut dyn FileStorage> {
+        fn file_storage_mut(&mut self) -> Option<&mut dyn FileStorage> {
             Some(self)
         }
     }
@@ -241,10 +242,10 @@ async fn atomic_write_file_opaque_abort_keeps_legacy_service_mapping() {
             unreachable!()
         }
         fn write_stream(&mut self, _: FileWriteStart, _: &[u8]) -> Result<u64, Error> {
-            Err(Error::Abort { reason: 9 })
+            Err(Error::abort(AbortReason::OUT_OF_RESOURCES))
         }
         fn write_records(&mut self, _: FileWriteStart, _: &[Vec<u8>]) -> Result<u64, Error> {
-            Err(Error::Abort { reason: 9 })
+            Err(Error::abort(AbortReason::OUT_OF_RESOURCES))
         }
     }
     for record in [false, true] {
@@ -276,7 +277,7 @@ async fn atomic_write_file_opaque_abort_keeps_legacy_service_mapping() {
         let mut out = BytesMut::new();
         let error = handlers::handle_atomic_write_file(&mut db, &wire, &mut out).unwrap_err();
         assert!(out.is_empty());
-        let expected = BACnetServer::<BipTransport>::error_apdu_from_error(
+        let expected = bacnet_device_core::reply::error_apdu(
             80,
             ConfirmedServiceChoice::ATOMIC_WRITE_FILE,
             &error,

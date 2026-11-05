@@ -1,8 +1,9 @@
 //! TrendLogMultiple (type 27, Clause 12.30).
 
-use std::borrow::Cow;
-use std::collections::VecDeque;
-use std::sync::Arc;
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetLogMultipleRecord};
@@ -16,14 +17,14 @@ use super::acquisition::{Acquisition, Rules};
 use super::multiple_metadata;
 use super::references::{self, MAX_LOG_DEVICE_OBJECT_PROPERTIES};
 use crate::clock::ClockReader;
-use crate::common::{self, read_property_list_property};
+use crate::common;
 use crate::device_reference;
-use crate::log_buffer::{
-    log_buffer_read_denied, LogBufferRecords, LogRecordBuffer, LogRecordIdentity,
-};
+use crate::log_buffer::{LogRecordBuffer, log_buffer_read_denied};
 use crate::log_lifecycle::LogLifecycle;
-use crate::log_reporting::{impl_buffer_ready_reporting, BufferReadyReporting};
+use crate::log_persistence::store::{DurableLog, LogStore};
+use crate::log_reporting::{BufferReadyReporting, impl_buffer_ready_reporting};
 use crate::log_window::LogWindow;
+use crate::property_metadata::read_property_list;
 use crate::traits::BACnetObject;
 
 /// BACnet TrendLogMultiple object (type 27).
@@ -49,6 +50,8 @@ pub struct TrendLogMultipleObject {
     reporting: BufferReadyReporting,
     reliability: Reliability,
     clock: Option<Arc<dyn ClockReader>>,
+    /// The storage the log commits to, when built with `with_persistence`.
+    store: Option<LogStore<BACnetLogMultipleRecord>>,
 }
 
 impl TrendLogMultipleObject {
@@ -70,6 +73,7 @@ impl TrendLogMultipleObject {
             reporting: BufferReadyReporting::default(),
             reliability: Reliability::NO_FAULT_DETECTED,
             clock: None,
+            store: None,
         })
     }
 
@@ -84,8 +88,10 @@ impl TrendLogMultipleObject {
     /// ignored (Enable FALSE, or outside the window): the acquisition was
     /// made.
     pub fn add_record(&mut self, record: BACnetLogMultipleRecord) -> Result<(), Error> {
+        self.settle_interruption(Some((record.date, record.time)));
         self.lifecycle().try_add_ordinary(record)?;
         self.acquisition.acquired();
+        self.commit_if_counted();
         Ok(())
     }
 
@@ -197,9 +203,16 @@ impl TrendLogMultipleObject {
 
     /// Append a LOG_INTERRUPTED status record, as
     /// [`TrendLogObject::record_interruption`](super::TrendLogObject::record_interruption)
-    /// does, after restoring the log on a restart (#1537).
+    /// does, after restoring the log on a restart (#1537). A log reopened
+    /// from storage appends this record itself; calling this first takes its
+    /// place.
     pub fn record_interruption(&mut self, date: Date, time: Time) -> Result<(), Error> {
-        self.lifecycle().record_interruption((date, time))
+        self.lifecycle().record_interruption((date, time))?;
+        if let Some(store) = &mut self.store {
+            store.interruption_recorded();
+        }
+        self.commit_if_counted();
+        Ok(())
     }
 
     /// Clear the buffer.
@@ -207,9 +220,12 @@ impl TrendLogMultipleObject {
         self.log_buffer.clear();
     }
 
-    /// Set the description string.
+    /// Set the description string. On a log with storage, a Description a
+    /// write saved wins until `clear_written_reporting` (#2364).
     pub fn set_description(&mut self, desc: impl Into<String>) {
-        self.description = desc.into();
+        if !self.kept_over_setter(PropertyIdentifier::DESCRIPTION) {
+            self.description = desc.into();
+        }
     }
 
     /// Set Logging_Type, as a client's write does: POLLED or TRIGGERED. COV
@@ -279,20 +295,29 @@ impl TrendLogMultipleObject {
     }
 
     /// Set Notification_Class: the number of the Notification Class whose
-    /// recipients get the log's reports (0 by default).
+    /// recipients get the log's reports (0 by default). On a log with
+    /// storage, a value a write set wins (see
+    /// [`clear_written_reporting`](Self::clear_written_reporting)), as it
+    /// does for the next two setters.
     pub fn set_notification_class(&mut self, class: u32) {
-        self.reporting.set_notification_class(class);
+        if !self.kept_over_setter(PropertyIdentifier::NOTIFICATION_CLASS) {
+            self.reporting.set_notification_class(class);
+        }
     }
 
     /// Set Event_Enable; a report goes out only while its TO_NORMAL flag is
     /// set, as it is by default.
     pub fn set_event_enable(&mut self, enable: EventTransitionBits) {
-        self.reporting.set_event_enable(enable);
+        if !self.kept_over_setter(PropertyIdentifier::EVENT_ENABLE) {
+            self.reporting.set_event_enable(enable);
+        }
     }
 
     /// Set Notify_Type, sent with each report (EVENT by default).
     pub fn set_notify_type(&mut self, notify_type: NotifyType) {
-        self.reporting.set_notify_type(notify_type);
+        if !self.kept_over_setter(PropertyIdentifier::NOTIFY_TYPE) {
+            self.reporting.set_notify_type(notify_type);
+        }
     }
 
     fn lifecycle(&mut self) -> LogLifecycle<'_, BACnetLogMultipleRecord> {
@@ -321,6 +346,7 @@ impl BACnetObject for TrendLogMultipleObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // Logging_Type, Log_Interval, Align_Intervals, Interval_Offset and
         // Trigger, then Start_Time and Stop_Time.
         if let Some(value) = self
@@ -373,7 +399,7 @@ impl BACnetObject for TrendLogMultipleObject {
             p if p == PropertyIdentifier::RELIABILITY => {
                 Ok(PropertyValue::Enumerated(self.reliability.to_raw()))
             }
-            // ReadRange pages it through `log_buffer_internal`.
+            // ReadRange pages it through `LogBuffer::buffer_records`.
             p if p == PropertyIdentifier::LOG_BUFFER => Err(log_buffer_read_denied()),
             // A BACnetARRAY: one Clause 21 encoding per element (#1234).
             p if p == PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY => common::read_array(
@@ -381,12 +407,12 @@ impl BACnetObject for TrendLogMultipleObject {
                 array_index,
             ),
             p if p == PropertyIdentifier::PROPERTY_LIST => {
-                read_property_list_property(&self.property_list(), array_index)
+                read_property_list(&self.property_metadata(), array_index)
             }
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -397,14 +423,21 @@ impl BACnetObject for TrendLogMultipleObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        // A reporting setting a durable log keeps saves first (#1952).
+        if let Some(result) =
+            crate::log_persistence::store::staging::write(self, property, array_index, &value)
+        {
+            return result;
+        }
         if property == PropertyIdentifier::LOG_ENABLE {
             if let PropertyValue::Boolean(v) = value {
                 return self.lifecycle().write_enable(v);
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         if let Some(result) = self.acquisition.write(property, &value) {
             return result;
@@ -419,19 +452,19 @@ impl BACnetObject for TrendLogMultipleObject {
             if let PropertyValue::Boolean(v) = value {
                 return self.lifecycle().write_stop_when_full(v);
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         if property == PropertyIdentifier::RECORD_COUNT {
             if let PropertyValue::Unsigned(0) = value {
                 return self.lifecycle().purge();
             }
-            return Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
-            });
+            return Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::INVALID_DATA_TYPE,
+            ));
         }
         if property == PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY {
             return self.write_log_device_object_property(array_index, value);
@@ -446,7 +479,6 @@ impl BACnetObject for TrendLogMultipleObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
@@ -454,29 +486,38 @@ impl BACnetObject for TrendLogMultipleObject {
         multiple_metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.store.is_some().then_some(self as _)
     }
 
-    fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
-        self.clock = clock;
-    }
+    crate::traits::lend_log_buffer!();
 
-    fn log_record_identities_internal(&self) -> Option<Vec<LogRecordIdentity>> {
-        Some(self.log_buffer.identities())
-    }
+    crate::traits::lend_event_reporting!();
 
-    fn log_buffer_internal(&self) -> Option<&dyn LogBufferRecords> {
-        Some(&self.log_buffer)
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
     }
-
-    fn add_trend_multiple_record(&mut self, record: BACnetLogMultipleRecord) -> Result<(), Error> {
-        self.add_record(record)
-    }
-
-    fn refresh_log_window_internal(&mut self) -> bool {
-        self.lifecycle().refresh_window()
-    }
-
-    impl_buffer_ready_reporting!(reporting, log_buffer);
 }
+
+impl_buffer_ready_reporting!(TrendLogMultipleObject, reporting, log_buffer);
+crate::traits::impl_log_buffer!(
+    TrendLogMultipleObject,
+    add_trend_multiple_record,
+    BACnetLogMultipleRecord
+);
+
+impl crate::traits::Timed for TrendLogMultipleObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.clock = clocks.clock.clone();
+        self.settle_interruption(None);
+    }
+
+    fn advance_monotonic_time(&mut self, now: core::time::Duration) -> bool {
+        self.commit_if_interval(now);
+        false
+    }
+}
+
+#[path = "multiple_durable.rs"]
+mod durable;

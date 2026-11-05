@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::server::segmented_receive::{
-    expire_segmented_requests, segmented_request_admission_error, RequestPayload,
+    RequestPayload, expire_segmented_requests, segmented_request_admission_error,
 };
 use bacnet_transport::port::TransportProvenance;
 
@@ -26,7 +26,7 @@ fn saved_state(invoke_id: u8, now: Instant) -> SegmentedRequestState {
     SegmentedRequestState {
         source_mac: MacAddr::new(),
         source_network: None,
-        direct_response: None,
+        route: bacnet_network::response_route::ResponseRoute::unverified(),
         payload,
         provenance: TransportProvenance::unverified(),
         last_activity: now,

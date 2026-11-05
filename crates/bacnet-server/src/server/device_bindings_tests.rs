@@ -1,6 +1,6 @@
 use super::device_bindings::{
-    BindingFreshness, DeviceBindingTable, DeviceResolution, ObservationOutcome,
-    MAX_DEVICE_BINDINGS, OBSERVED_BINDING_TTL,
+    BindingFreshness, DeviceBindingTable, DeviceResolution, MAX_DEVICE_BINDINGS,
+    OBSERVED_BINDING_TTL, ObservationOutcome,
 };
 use super::*;
 use crate::server::test_transport::TestTransport;
@@ -12,6 +12,9 @@ const UPDATED_PEER: &[u8] = &[0x20, 0x21];
 const ROUTER: &[u8] = &[0x30, 0x31];
 const FINAL_PEER: &[u8] = &[0x40, 0x41, 0x42];
 const BROADCAST: &[u8] = &[0xFF, 0xFF];
+
+#[path = "unconfirmed_warning_tests.rs"]
+mod unconfirmed_warnings;
 
 fn device(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap()
@@ -60,11 +63,13 @@ fn configured_registration_rejects_entry_beyond_capacity_without_mutation() {
         .unwrap();
     }
     assert_eq!(configured.len(), MAX_DEVICE_BINDINGS);
-    assert!(super::device_bindings::register_configured_binding(
-        &mut configured,
-        DeviceBinding::local(device(MAX_DEVICE_BINDINGS as u32), LOCAL_PEER).unwrap(),
-    )
-    .is_err());
+    assert!(
+        super::device_bindings::register_configured_binding(
+            &mut configured,
+            DeviceBinding::local(device(MAX_DEVICE_BINDINGS as u32), LOCAL_PEER).unwrap(),
+        )
+        .is_err()
+    );
     assert_eq!(configured.len(), MAX_DEVICE_BINDINGS);
 }
 
@@ -282,6 +287,7 @@ fn received(
     source_network: Option<NpduAddress>,
 ) -> bacnet_network::layer::ReceivedApdu {
     bacnet_network::layer::ReceivedApdu {
+        router_response: None,
         direct_response: None,
         apdu: Bytes::new(),
         source_mac: MacAddr::from_slice(source_mac),
@@ -556,7 +562,7 @@ fn source_binding_takes_a_binding_routed_through_this_network_as_local() {
     use bacnet_objects::command_source::CommandDeviceBinding::{Unique, Unknown};
     let routed = |network, mac| {
         configured(vec![
-            DeviceBinding::routed(device(1), network, mac, ROUTER).unwrap()
+            DeviceBinding::routed(device(1), network, mac, ROUTER).unwrap(),
         ])
     };
     let here = routed(THIS_NETWORK, FINAL_PEER);

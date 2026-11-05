@@ -1,6 +1,6 @@
 //! Complete target recipient mutation owner: preparation, commit and owned delivery.
 use super::audit_reporter::{
-    deliver, deliver_global_broadcast, encode_notification, DeliveryCompletion,
+    DeliveryCompletion, deliver, deliver_global_broadcast, encode_notification,
 };
 use super::*;
 use bacnet_objects::traits::BACnetObject;
@@ -30,10 +30,7 @@ pub(super) struct TargetAudit<T: TransportPort> {
 }
 
 pub(super) fn denied() -> Error {
-    Error::Protocol {
-        class: ErrorClass::SERVICES.to_raw() as u32,
-        code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
-    }
+    Error::protocol(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED)
 }
 
 /// Validate before transport startup and before installing any capability.
@@ -46,17 +43,17 @@ pub(super) fn validate(
         return Ok(());
     };
     db.validate_audit_installation_internal()?;
-    // The local Device is the audit identity. The installed runtime refuses
-    // new Devices and protects this one, so it stays the lowest while the
-    // runtime lives.
-    let device = db.local_device().identifier().ok_or_else(|| {
-        Error::Encoding("target Audit requires a concrete built-in local Device".into())
-    })?;
+    // The identity's Device is the audit identity, as it is every
+    // notification's initiator (#2217). The installed runtime refuses new
+    // Devices and protects this one while it lives.
+    let device = crate::local_device::initiating_device(&config.device);
     let authority = db
         .get_mut(&device)
         .and_then(|object| object.device_authority_internal())
         .filter(|authority| authority.object_identifier() == device)
-        .ok_or_else(|| Error::Encoding("target Audit requires a built-in Device".into()))?;
+        .ok_or_else(|| {
+            Error::Encoding("target Audit requires the identity's built-in Device".into())
+        })?;
     authority.validate_audit_recipient_installation()?;
     let value = authority
         .provisioned_audit_recipient()
@@ -66,12 +63,12 @@ pub(super) fn validate(
         })?;
     for selected in &profile.reporters {
         db.get(selected)
-            .and_then(|object| object.audit_reporter_internal())
+            .and_then(|object| object.audit_reporter())
             .filter(|object| object.object_identifier() == *selected)
             .ok_or_else(|| {
                 Error::Encoding("invalid audit reporter: missing read capability".into())
             })?;
-        db.get_mut(selected).and_then(|object| object.audit_reporter_authority_internal())
+        db.get_mut(selected).and_then(|object| object.audit_reporter_mut())
             .filter(|object| object.object_identifier() == *selected)
             .ok_or_else(|| Error::Encoding(format!("invalid audit reporter: selected object {selected:?} is absent or lacks the Audit Reporter capability")))?
             .validate_installation()?;
@@ -91,7 +88,7 @@ pub(super) fn validate(
         let status = db
             .get(selected)
             .unwrap()
-            .audit_reporter_internal()
+            .audit_reporter()
             .unwrap()
             .status_internal();
         super::audit_context_preparation::validate_summary(
@@ -99,7 +96,7 @@ pub(super) fn validate(
             &status.configuration(),
             device,
             route.as_ref(),
-            config.max_apdu_length,
+            u32::from(config.device.max_apdu_length()),
         )?;
         // Set here, at prepare and finish, only. A local network number learned
         // later can make a routed binding at the link broadcast MAC unusable
@@ -107,7 +104,7 @@ pub(super) fn validate(
         // this flag keeps its startup value.
         db.get(selected)
             .unwrap()
-            .audit_reporter_internal()
+            .audit_reporter()
             .unwrap()
             .status_internal()
             .set_configured(route.is_some());
@@ -126,10 +123,7 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
         let Some(profile) = &config.audit_reporters else {
             return Ok(None);
         };
-        let device = db
-            .local_device()
-            .identifier()
-            .expect("validated local Device");
+        let device = crate::local_device::initiating_device(&config.device);
         let association = TargetAuditAssociation::new(
             profile
                 .reporters
@@ -139,7 +133,7 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
                         *oid,
                         db.get(oid)
                             .unwrap()
-                            .audit_reporter_internal()
+                            .audit_reporter()
                             .unwrap()
                             .status_internal(),
                     )
@@ -164,7 +158,7 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
             sequence: db.event_sequence_internal(),
             network: Arc::clone(network),
             transactions: Arc::clone(transactions),
-            max_apdu: config.max_apdu_length,
+            max_apdu: u32::from(config.device.max_apdu_length()),
         });
         let sink: Arc<dyn AuditRecipientChangeSink> = runtime.clone();
         db.get_mut(&device)
@@ -176,7 +170,7 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
         for selected in &profile.reporters {
             db.get_mut(selected)
                 .unwrap()
-                .audit_reporter_authority_internal()
+                .audit_reporter_mut()
                 .ok_or_else(denied)?
                 .install(&reporter_sink, &runtime.owner)?;
         }
@@ -184,10 +178,12 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
         db.protect_audit_internal(&runtime.owner)?;
         assert!(transactions.audit_routes.set(routes).is_ok());
         transactions.set_audit_owner(&runtime.owner);
-        assert!(transactions
-            .audit_batch
-            .set(Arc::downgrade(&runtime.batches))
-            .is_ok());
+        assert!(
+            transactions
+                .audit_batch
+                .set(Arc::downgrade(&runtime.batches))
+                .is_ok()
+        );
         super::audit_batch_runtime::start(
             Arc::clone(&runtime.batches),
             Arc::clone(network),
@@ -225,7 +221,7 @@ impl<T: TransportPort + 'static> TargetAudit<T> {
         for (selected, _) in self.association.reporters() {
             if let Some(mut authority) = db
                 .get_mut(selected)
-                .and_then(|object| object.audit_reporter_authority_internal())
+                .and_then(|object| object.audit_reporter_mut())
             {
                 authority.uninstall(&reporter_sink);
             }

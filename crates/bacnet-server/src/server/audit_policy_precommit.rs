@@ -3,10 +3,7 @@ use super::*;
 use bacnet_types::primitives::BACnetTimeStamp;
 
 fn denied() -> Error {
-    Error::Protocol {
-        class: ErrorClass::SERVICES.to_raw() as u32,
-        code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
-    }
+    Error::protocol(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED)
 }
 
 impl<T: TransportPort + 'static> WriteAudit<'_, T> {
@@ -25,7 +22,8 @@ impl<T: TransportPort + 'static> WriteAudit<'_, T> {
         let sequence = db.event_sequence_internal();
         let candidate = db
             .get_mut(&write.oid)?
-            .audit_policy_authority_internal()?
+            .audit_policy_mut()
+            .and_then(|policy| policy.policy_authority())?
             .prepare(write.property, write.array_index, value, write.priority)
             .ok()??;
         // Invalid/equal/NULL attempts retain the ordinary writer and observer.
@@ -65,7 +63,7 @@ impl<T: TransportPort + 'static> WriteAudit<'_, T> {
                     let bytes = encode_notification(
                         &pending.notification,
                         pending.confirmed,
-                        self.config.max_apdu_length,
+                        u32::from(self.config.device.max_apdu_length()),
                         invoke,
                     )
                     .ok_or_else(denied)?;

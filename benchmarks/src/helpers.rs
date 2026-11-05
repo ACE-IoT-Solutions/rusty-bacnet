@@ -10,6 +10,7 @@ use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::bip6::Bip6Transport;
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::error::Error;
 
 /// Create a populated ObjectDatabase for benchmarking.
@@ -18,22 +19,24 @@ pub fn make_benchmark_db(device_instance: u32) -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
 
     let device = DeviceObject::new(DeviceConfig {
-        instance: device_instance,
-        name: "Benchmark Device".into(),
+        identity: bacnet_objects::DeviceIdentity::new(device_instance, 555)
+            .expect("valid Device identity")
+            .with_name("Benchmark Device"),
         vendor_name: "Rusty BACnet".into(),
-        vendor_id: 555,
         ..DeviceConfig::default()
     })
     .unwrap();
     db.add(Box::new(device)).unwrap();
 
     for i in 1..=10 {
-        let mut ai = AnalogInputObject::new(i, format!("AI-{}", i), 62).unwrap();
+        let mut ai =
+            AnalogInputObject::new(i, format!("AI-{}", i), EngineeringUnits::DEGREES_CELSIUS)
+                .unwrap();
         ai.set_present_value(20.0 + i as f32);
         db.add(Box::new(ai)).unwrap();
     }
 
-    let ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
+    let ao = AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     db.add(Box::new(ao)).unwrap();
 
     let bv = BinaryValueObject::new(1, "BV-1").unwrap();
@@ -47,6 +50,7 @@ pub async fn make_bip_server() -> Result<BACnetServer<BipTransport>, Error> {
     let db = make_benchmark_db(1234);
 
     BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1234, 555)?)
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .broadcast_address(Ipv4Addr::LOCALHOST)
@@ -66,12 +70,14 @@ pub async fn make_bip_client() -> Result<BACnetClient<BipTransport>, Error> {
         .await
 }
 
-/// Create a BIP6 server with a populated database on an ephemeral port.
+/// Create a BIP6 server with a populated database on an ephemeral port. Its
+/// VMAC is the one its device instance, 2345, gives (U.1.3).
 pub async fn make_bip6_server() -> Result<BACnetServer<Bip6Transport>, Error> {
     let db = make_benchmark_db(2345);
-    let transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, None);
+    let transport = Bip6Transport::new(Ipv6Addr::LOCALHOST, 0, Some(2345));
 
     BACnetServer::<Bip6Transport>::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(2345, 555)?)
         .transport(transport)
         .database(db)
         .build()
@@ -87,6 +93,22 @@ pub async fn make_bip6_client() -> Result<BACnetClient<Bip6Transport>, Error> {
         .apdu_timeout_ms(2000)
         .build()
         .await
+}
+
+/// The MAC a BIP6 client addresses `server` by: the server's VMAC, which the
+/// client finds from the server's B/IPv6 address with
+/// Virtual-Address-Resolution (U.5). The client then knows where that VMAC
+/// is, so no request waits on resolution.
+pub async fn resolve_bip6_server(
+    client: &BACnetClient<Bip6Transport>,
+    server: &BACnetServer<Bip6Transport>,
+) -> Result<Vec<u8>, Error> {
+    let address = server
+        .transport()
+        .and_then(Bip6Transport::local_address)
+        .ok_or_else(|| Error::Encoding("the BIP6 server is not running".into()))?;
+    let vmac = client.transport().resolve_virtual_address(address).await?;
+    Ok(vmac.octets().to_vec())
 }
 
 /// Get current process RSS in bytes.

@@ -1,6 +1,9 @@
 //! Door_Status, Lock_Status and Door_Alarm_State writes while Out_Of_Service
 //! is TRUE (Clause 12.26.9, Table 12-30 footnote 1, #1131).
 
+use crate::property_metadata::is_writable_property;
+use crate::traits::Timed;
+use bacnet_types::error::RemoteError;
 use std::time::Duration;
 
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
@@ -63,9 +66,9 @@ fn served(door: &AccessDoorObject) -> [PropertyValue; 3] {
 
 fn assert_property_error(result: Result<(), Error>, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code: actual })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && actual == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code: actual }))
+            if class == ErrorClass::PROPERTY
+                && actual == code),
         "expected PROPERTY / {code:?}, got {result:?}"
     );
 }
@@ -85,7 +88,7 @@ fn access_door_refuses_simulated_rows_in_service() {
         }
         // The PICS still lists the row writable: the route exists, gated on
         // Out_Of_Service.
-        assert!(door.is_writable_property(property), "{property:?}");
+        assert!(is_writable_property(&door, property), "{property:?}");
     }
     assert_eq!(served(&door), before);
 }
@@ -256,7 +259,7 @@ fn access_door_simulation_neither_drives_nor_follows_the_pulse_relock() {
         Some(8),
     )
     .unwrap();
-    let deadline = door.next_monotonic_deadline_internal();
+    let deadline = door.next_monotonic_deadline();
     assert_eq!(deadline, Some(Duration::from_secs(3)));
 
     // An open, unlocked, alarming door doesn't move or cancel the relock.
@@ -267,27 +270,27 @@ fn access_door_simulation_neither_drives_nor_follows_the_pulse_relock() {
     ];
     for (property, value) in SIMULATED.into_iter().zip(simulated.clone()) {
         write(&mut door, property, value).unwrap();
-        assert_eq!(door.next_monotonic_deadline_internal(), deadline);
+        assert_eq!(door.next_monotonic_deadline(), deadline);
     }
-    assert!(!door.advance_time_internal(Duration::from_millis(2_900)));
+    assert!(!door.advance_time(Duration::from_millis(2_900)));
     assert_eq!(
         read(&door, P::PRESENT_VALUE),
         enumerated(DoorValue::PULSE_UNLOCK.to_raw())
     );
 
     // The relock comes at the pulse time and leaves the simulated rows alone.
-    assert!(door.advance_time_internal(Duration::from_millis(100)));
+    assert!(door.advance_time(Duration::from_millis(100)));
     assert_eq!(
         read(&door, P::PRESENT_VALUE),
         enumerated(DoorValue::LOCK.to_raw())
     );
     assert_eq!(served(&door), simulated);
-    assert_eq!(door.next_monotonic_deadline_internal(), None);
+    assert_eq!(door.next_monotonic_deadline(), None);
 
     // Simulating a closed, locked door with no pulse armed arms nothing.
     for property in SIMULATED {
         write(&mut door, property, enumerated(0)).unwrap();
     }
-    assert_eq!(door.next_monotonic_deadline_internal(), None);
-    assert!(!door.advance_time_internal(Duration::from_secs(60)));
+    assert_eq!(door.next_monotonic_deadline(), None);
+    assert!(!door.advance_time(Duration::from_secs(60)));
 }

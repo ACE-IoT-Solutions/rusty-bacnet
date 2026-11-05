@@ -1,5 +1,5 @@
 use super::*;
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_write_whole_operation_capacity_bounds_prelease_waiters_and_stop() {
     let (mut peer, mut requests) = network().await;
     let (mut sink, _records) = network().await;
@@ -16,29 +16,27 @@ async fn source_write_whole_operation_capacity_bounds_prelease_waiters_and_stop(
             None,
         ));
     }
-    timeout(WAIT, async {
-        while session
+    eventually(WAIT, "every source operation is in use", async || {
+        session
             .source_audit
             .as_ref()
             .unwrap()
             .available_operations()
-            != 0
-        {
-            tokio::task::yield_now().await;
-        }
+            == 0
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(session.coordinator.active_count().unwrap(), 0);
-    assert!(start_write(
-        &session,
-        peer.local_mac(),
-        PropertyIdentifier::PRESENT_VALUE,
-        None
-    )
-    .await
-    .unwrap()
-    .is_err());
+    assert!(
+        start_write(
+            &session,
+            peer.local_mac(),
+            PropertyIdentifier::PRESENT_VALUE,
+            None
+        )
+        .await
+        .unwrap()
+        .is_err()
+    );
     // Seal while admitted caller futures wait on the DB: no task/lease/egress yet.
     let token = session.shared.token.clone();
     let stop = session.stop();
@@ -55,7 +53,7 @@ async fn source_write_whole_operation_capacity_bounds_prelease_waiters_and_stop(
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_write_audit_capacity_deadline_health_and_later_recovery() {
     let (mut peer, mut requests) = network().await;
     let (mut sink, mut records) = network().await;
@@ -97,9 +95,11 @@ async fn source_write_audit_capacity_deadline_health_and_later_recovery() {
         reliability(&session).await,
         Reliability::COMMUNICATION_FAILURE.to_raw()
     );
-    assert!(timeout(Duration::from_millis(20), records.recv())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(20), records.recv())
+            .await
+            .is_err()
+    );
     let envelope = first_notification.unwrap();
     let (_, invoke) = notification(&envelope, true);
     send(
@@ -111,13 +111,10 @@ async fn source_write_audit_capacity_deadline_health_and_later_recovery() {
         }),
     )
     .await;
-    timeout(WAIT, async {
-        while session.coordinator.active_count().unwrap() != 63 {
-            tokio::task::yield_now().await;
-        }
+    eventually(WAIT, "63 invoke IDs are active", async || {
+        session.coordinator.active_count().unwrap() == 63
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(
         reliability(&session).await,
         Reliability::COMMUNICATION_FAILURE.to_raw(),
@@ -153,19 +150,16 @@ async fn source_write_audit_capacity_deadline_health_and_later_recovery() {
         }),
     )
     .await;
-    timeout(WAIT, async {
-        while reliability(&session).await != Reliability::NO_FAULT_DETECTED.to_raw() {
-            tokio::task::yield_now().await;
-        }
+    eventually(WAIT, "Reliability is NO_FAULT_DETECTED", async || {
+        reliability(&session).await == Reliability::NO_FAULT_DETECTED.to_raw()
     })
-    .await
-    .unwrap();
+    .await;
     session.stop().await.unwrap();
     peer.stop().await.unwrap();
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_write_stop_and_drop_cancel_owned_work_with_held_client_clones() {
     let (mut peer, mut requests) = network().await;
     let (mut sink, mut records) = network().await;
@@ -190,34 +184,35 @@ async fn source_write_stop_and_drop_cancel_owned_work_with_held_client_clones() 
         drop(session);
         assert!(timeout(WAIT, pending).await.unwrap().unwrap().is_err());
         send(&peer, &request.source_mac, write_ack(invoke, &rp)).await;
-        assert!(client
-            .write_property(
-                peer.local_mac(),
-                WritePropertyRequest {
-                    object_identifier: target(),
-                    property_identifier: PropertyIdentifier::PRESENT_VALUE,
-                    property_array_index: None,
-                    property_value: vec![0],
-                    priority: None,
-                },
-                Commandability::Commandable,
-            )
-            .await
-            .is_err());
-        timeout(WAIT, async {
-            while coordinator.active_count().unwrap() != 0 || weak_db.upgrade().is_some() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        assert!(
+            client
+                .write_property(
+                    peer.local_mac(),
+                    WritePropertyRequest {
+                        object_identifier: target(),
+                        property_identifier: PropertyIdentifier::PRESENT_VALUE,
+                        property_array_index: None,
+                        property_value: vec![0],
+                        priority: None,
+                    },
+                    Commandability::Commandable,
+                )
+                .await
+                .is_err()
+        );
+        eventually(
+            WAIT,
+            "invoke IDs are free and the database is dropped",
+            async || coordinator.active_count().unwrap() == 0 && weak_db.upgrade().is_none(),
+        )
+        .await;
         assert!(records.try_recv().is_err());
     }
     peer.stop().await.unwrap();
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_write_captures_recipient_and_policy_before_peer_completion() {
     let (mut peer, mut requests) = network().await;
     let (mut old, mut old_records) = network().await;
@@ -251,7 +246,9 @@ async fn source_write_captures_recipient_and_policy_before_peer_completion() {
         .await
         .get_mut(&selected())
         .unwrap()
-        .configure_audit_reporter_internal(
+        .audit_reporter_mut()
+        .expect("an Audit Reporter")
+        .configure(
             AuditLevel::NONE,
             AuditOperationFlags::empty(),
             false,
@@ -276,9 +273,11 @@ async fn source_write_captures_recipient_and_policy_before_peer_completion() {
     let (invoke, wp) = write_request(&envelope);
     send(&peer, &envelope.source_mac, write_ack(invoke, &wp)).await;
     pending.await.unwrap().unwrap();
-    assert!(timeout(Duration::from_millis(30), new_records.recv())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(30), new_records.recv())
+            .await
+            .is_err()
+    );
     assert!(old_records.try_recv().is_err());
     session.stop().await.unwrap();
     peer.stop().await.unwrap();

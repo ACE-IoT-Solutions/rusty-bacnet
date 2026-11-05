@@ -5,16 +5,18 @@
 
 use super::super::*;
 use super::assert_value_out_of_range;
+use crate::property_metadata::{is_array_property, is_writable_property};
 use bacnet_types::enums::{ErrorClass, ErrorCode, Reliability};
+use bacnet_types::error::RemoteError;
 
 const MACHINE_ROOM_ID: PropertyIdentifier = PropertyIdentifier::MACHINE_ROOM_ID;
 const GROUP_ID: PropertyIdentifier = PropertyIdentifier::GROUP_ID;
 
 fn assert_property_error(result: Result<impl std::fmt::Debug, Error>, expected: ErrorCode) {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32, "expected {expected:?}");
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected, "expected {expected:?}");
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }
@@ -44,8 +46,11 @@ fn elevator_group_has_no_status_flags_out_of_service_or_reliability() {
             PropertyValue::Enumerated(Reliability::NO_FAULT_DETECTED.to_raw()),
         ),
     ] {
-        assert!(!group.property_list().contains(&property), "{property:?}");
-        assert!(!group.is_writable_property(property), "{property:?}");
+        assert!(
+            !crate::property_metadata::has_property(&group.property_metadata(), property),
+            "{property:?}"
+        );
+        assert!(!is_writable_property(&group, property), "{property:?}");
         assert_property_error(
             group.read_property(property, None),
             ErrorCode::UNKNOWN_PROPERTY,
@@ -66,15 +71,21 @@ fn elevator_group_machine_room_id_starts_as_the_no_number_reference() {
         group.read_property(MACHINE_ROOM_ID, None).unwrap(),
         PropertyValue::ObjectIdentifier(none)
     );
-    assert!(group.property_list().contains(&MACHINE_ROOM_ID));
-    assert!(group.required_properties().contains(&MACHINE_ROOM_ID));
+    assert!(crate::property_metadata::has_property(
+        &group.property_metadata(),
+        MACHINE_ROOM_ID
+    ));
+    assert!(
+        crate::property_metadata::required_properties(&group.property_metadata())
+            .any(|required| required == MACHINE_ROOM_ID)
+    );
 }
 
 #[test]
 fn elevator_group_machine_room_id_is_read_only_over_the_network() {
     let mut group = ElevatorGroupObject::new(1, "EG-1").unwrap();
     group.set_machine_room_id(piv(7)).unwrap();
-    assert!(!group.is_writable_property(MACHINE_ROOM_ID));
+    assert!(!is_writable_property(&group, MACHINE_ROOM_ID));
     for value in [
         PropertyValue::ObjectIdentifier(piv(8)),
         PropertyValue::Unsigned(8),
@@ -144,7 +155,7 @@ fn elevator_group_group_members_reads_by_array_index() {
     // member count and index n the n-th member.
     let mut group = ElevatorGroupObject::new(1, "EG-1").unwrap();
     let members = PropertyIdentifier::GROUP_MEMBERS;
-    assert!(group.is_array_property(members));
+    assert!(is_array_property(&group, members));
     assert_eq!(
         group.read_property(members, Some(0)).unwrap(),
         PropertyValue::Unsigned(0)

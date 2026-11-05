@@ -1,4 +1,5 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     elevator::{ElevatorGroupObject, EscalatorObject},
     traits::BACnetObject,
@@ -7,8 +8,8 @@ use bacnet_types::constructed::{
     BACnetLandingCallStatus, LandingCallCommand, PropertyReference, ReadAccessSpecification,
 };
 use bacnet_types::enums::LiftCarDirection;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 mod lift;
 
@@ -37,9 +38,9 @@ fn assert_cases(
     }
     .encode(&mut request)
     .unwrap();
-    let mut legacy = BytesMut::new();
-    handle_read_property_multiple(db, &request, &mut legacy).unwrap();
-    let ack = ReadPropertyMultipleACK::decode(&legacy).unwrap();
+    let mut unlimited = BytesMut::new();
+    handle_read_property_multiple(db, &request, &mut unlimited).unwrap();
+    let ack = ReadPropertyMultipleACK::decode(&unlimited).unwrap();
     assert_eq!(ack.list_of_read_access_results.len(), 1);
     let access = &ack.list_of_read_access_results[0];
     assert_eq!(access.object_identifier, oid);
@@ -79,27 +80,30 @@ fn assert_cases(
             Err(expected) => {
                 assert!(result.property_value.is_none());
                 assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
-                assert!(matches!(rp, Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32));
+                assert!(
+                    matches!(rp, Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == ErrorClass::PROPERTY && code == expected)
+                );
                 assert!(response.is_empty());
             }
         }
     }
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
-    let budget = crate::server::ReadPropertyMultipleBudget {
+    use crate::handlers::rpm_budget::handle_rpm_budgeted;
+    use bacnet_device_core::read::ReadFailure;
+    let budget = bacnet_device_core::read::ReadPropertyMultipleBudget {
         max_result_elements: cases.len(),
-        max_service_ack_bytes: legacy.len(),
+        max_service_ack_bytes: unlimited.len(),
     };
     let mut bounded = BytesMut::new();
     handle_rpm_budgeted(db, &request, &mut bounded, budget).unwrap();
-    assert_eq!(bounded, legacy);
+    assert_eq!(bounded, unlimited);
     let mut prefix = BytesMut::from(&b"prefix"[..]);
     assert!(matches!(
         handle_rpm_budgeted(
             db,
             &request,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
                 max_result_elements: cases.len() - 1,
                 ..budget
             }
@@ -112,8 +116,8 @@ fn assert_cases(
             db,
             &request,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
-                max_service_ack_bytes: legacy.len() - 1,
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
+                max_service_ack_bytes: unlimited.len() - 1,
                 ..budget
             }
         ),

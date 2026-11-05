@@ -96,9 +96,11 @@ fn out_of_service_forwarder_takes_nothing() {
     idle.write_property(P::OUT_OF_SERVICE, None, PropertyValue::Boolean(true), None)
         .unwrap();
     let db = database(vec![idle]);
-    assert!(forwarding_targets(&db, &input(5), &[])
-        .forwarders
-        .is_empty());
+    assert!(
+        forwarding_targets(&db, &input(5), &[])
+            .forwarders
+            .is_empty()
+    );
 }
 
 #[test]
@@ -172,7 +174,7 @@ fn a_lapsed_subscription_is_not_a_destination() {
     )
     .unwrap();
     let mut db = database(vec![nf]);
-    db.set_monotonic_clock_internal(Some(clock));
+    db.set_monotonic_clock(Some(clock));
     assert_eq!(recipients(&db, &input(5)).len(), 2);
     // The first entry's minute is up; it is no longer served even before the
     // operation task drops it.

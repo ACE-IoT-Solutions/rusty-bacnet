@@ -8,7 +8,7 @@ use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use super::*;
 use crate::tui::app::devices::{Movement, SortKey};
 use crate::tui::app::{Link, OpState, Overlay};
-use crate::tui::message::{OpOutcome, WhoIsScope, WhoIsSpec};
+use crate::tui::message::{DirectedTo, OpOutcome, WhoIsScope, WhoIsSpec};
 
 fn five_devices(app: &mut App) {
     for (i, vendor) in [260, 5, 260, 8, 260].into_iter().enumerate() {
@@ -93,6 +93,11 @@ fn sort_cycles_columns_and_reverses() {
     press(&mut app, KeyCode::Char('s'));
     assert_eq!(app.devices.sort().0, SortKey::LastSeen);
     assert_eq!(visible(&mut app), [2, 3, 1], "most recently seen first");
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(app.devices.sort().0, SortKey::Name);
+    assert_eq!(visible(&mut app), [1, 2, 3], "no names yet: by instance");
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(app.devices.sort().0, SortKey::Instance);
 }
 
 #[test]
@@ -138,11 +143,12 @@ fn who_is_flow_warns_sends_listens_and_counts_replies() {
     let Overlay::WhoIs(form) = &app.overlay else {
         panic!("form closed");
     };
-    assert!(form
-        .warning
-        .as_deref()
-        .unwrap()
-        .contains("(1 device known)"));
+    assert!(
+        form.warning
+            .as_deref()
+            .unwrap()
+            .contains("(1 device known)")
+    );
     let commands = press(&mut app, KeyCode::Enter);
     let [Command::WhoIs { op, spec }] = commands.as_slice() else {
         panic!("expected one WhoIs, got {commands:?}");
@@ -314,7 +320,7 @@ fn snapshot_replaces_rows_and_lost_removes_one() {
 }
 
 #[test]
-fn connect_failure_quits_with_the_error() {
+fn connect_failure_keeps_the_ui_available_for_recovery() {
     let mut app = new_app(None);
     worker(
         &mut app,
@@ -322,8 +328,9 @@ fn connect_failure_quits_with_the_error() {
             error: "Address in use".into(),
         },
     );
-    assert!(app.quit);
-    assert_eq!(app.exit_error.as_deref(), Some("Address in use"));
+    assert!(!app.quit);
+    assert_eq!(app.link, Link::Failed("Address in use".into()));
+    assert!(app.exit_error.is_none());
 }
 
 #[test]
@@ -399,7 +406,7 @@ fn ticks_mark_dirty_only_when_something_visible_changed() {
 fn describe_marks_remote_and_directed_scopes() {
     let spec = WhoIsSpec {
         scope: WhoIsScope::Directed {
-            mac: vec![1, 2, 3, 4, 0xBA, 0xC0],
+            to: DirectedTo::Mac(vec![1, 2, 3, 4, 0xBA, 0xC0]),
             label: "1.2.3.4".into(),
         },
         range: Some(bacnet_services::who_is::DeviceInstanceRange::single(5).unwrap()),

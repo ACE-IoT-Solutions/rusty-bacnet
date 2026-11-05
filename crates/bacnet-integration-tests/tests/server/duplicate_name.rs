@@ -6,7 +6,7 @@ use bacnet_services::object_mgmt::ObjectSpecifier;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_types::constructed::BACnetObjectPropertyReference;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
-use bacnet_types::error::{Error, ErrorDetail};
+use bacnet_types::error::{Error, ErrorDetail, RemoteError};
 
 /// Application CharacterString (UTF-8) `text`.
 fn name(text: &str) -> Vec<u8> {
@@ -30,7 +30,7 @@ fn refusal<T: std::fmt::Debug>(
     result: Result<T, Error>,
 ) -> (ErrorClass, ErrorCode, Option<ErrorDetail>) {
     let (class, code, detail) = match result {
-        Err(Error::Protocol { class, code }) => (class, code, None),
+        Err(Error::Remote(RemoteError::Error { class, code })) => (class, code, None),
         Err(Error::Structured {
             class,
             code,
@@ -38,11 +38,7 @@ fn refusal<T: std::fmt::Debug>(
         }) => (class, code, Some(*detail)),
         other => panic!("expected an error PDU, got {other:?}"),
     };
-    (
-        ErrorClass::from_raw(class as u16),
-        ErrorCode::from_raw(code as u16),
-        detail,
-    )
+    (class, code, detail)
 }
 
 /// WriteProperty, WritePropertyMultiple and a CreateObject initial value each

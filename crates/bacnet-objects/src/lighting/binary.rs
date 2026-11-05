@@ -1,12 +1,14 @@
-use std::borrow::Cow;
-use std::sync::Arc;
-use std::time::Duration;
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
+use core::time::Duration;
 
 use bacnet_types::enums::{ObjectType, PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 
 use super::color_link::{self, ColorLink};
+use crate::command_source::{CommandOrigin, ValueSourceTracking};
 use crate::common::{self, read_common_properties, read_priority_array};
 use crate::object_profile::{ObjectProfile, ProfileState, TagsPersistence};
 use crate::traits::{BACnetObject, MonotonicClock};
@@ -41,6 +43,11 @@ enum PresentValueCommand {
 /// The priority array stores only steady OFF/ON values. WARN, WARN_OFF,
 /// WARN_RELINQUISH, and STOP are command operations interpreted at write time.
 ///
+/// Value_Source, Value_Source_Array and Last_Command_Time follow each
+/// command's writer per priority (Clause 19.5, #1866), as on the other
+/// commandable objects. A Present_Value write must name its writer
+/// (`write_property_from`); one without is WRITE_ACCESS_DENIED.
+///
 /// Cloning copies served state into an in-memory object. Tags persistence and
 /// pending saves remain solely with the original; cloning or dropping the copy
 /// never saves, corrects, settles, or waits on the original writer.
@@ -62,6 +69,8 @@ pub struct BinaryLightingOutputObject {
     reliability: Reliability,
     priority_array: [Option<u32>; 16],
     relinquish_default: u32,
+    /// Value_Source, Value_Source_Array and Last_Command_Time (#1866).
+    value_source: ValueSourceTracking,
     /// Color_Reference, with Color_Override and Override_Color_Reference
     /// when overridable; absent until set.
     color_link: Option<ColorLink>,
@@ -88,6 +97,7 @@ impl BinaryLightingOutputObject {
             reliability: Reliability::NO_FAULT_DETECTED,
             priority_array: [None; 16],
             relinquish_default: OFF,
+            value_source: ValueSourceTracking::default(),
             color_link: None,
             profile: ProfileState::default(),
         })
@@ -242,7 +252,11 @@ impl BinaryLightingOutputObject {
         }
     }
 
-    fn write_present_value(&mut self, priority: u8, command: PresentValueCommand) {
+    /// Carry out a Present_Value command at `priority`; `true` when it acted
+    /// on that slot: wrote it, armed an egress there or stopped one. That
+    /// command's writer becomes the slot's Value_Source. WARN and a STOP
+    /// with nothing to stop leave the slot, and its source, as they were.
+    fn write_present_value(&mut self, priority: u8, command: PresentValueCommand) -> bool {
         if command != PresentValueCommand::Stop {
             self.complete_active_operation_for_write(priority);
         }
@@ -257,6 +271,7 @@ impl BinaryLightingOutputObject {
                 if self.blink_warn_enable && self.priority_is_highest_on(priority) {
                     self.request_blink();
                 }
+                return false;
             }
             PresentValueCommand::WarnOff => {
                 if self.blink_warn_enable && self.priority_is_highest_on(priority) {
@@ -280,14 +295,16 @@ impl BinaryLightingOutputObject {
                 }
             }
             PresentValueCommand::Stop => {
-                if self
+                if !self
                     .active_operation
                     .is_some_and(|active| active.priority == priority)
                 {
-                    self.active_operation = None;
+                    return false;
                 }
+                self.active_operation = None;
             }
         }
+        true
     }
 
     fn monotonic_now(&self) -> Duration {
@@ -296,6 +313,8 @@ impl BinaryLightingOutputObject {
             .map_or(self.logical_now, |clock| clock())
     }
 
+    /// Finish an egress that has run out by `now`. That ends its command,
+    /// so Last_Command_Time moves on if the value changed.
     fn expire_at(&mut self, now: Duration) -> bool {
         let Some(operation) = self.active_operation else {
             return false;
@@ -303,8 +322,15 @@ impl BinaryLightingOutputObject {
         if now < operation.deadline {
             return false;
         }
+        let before = self
+            .value_source
+            .effect(&self.priority_array, self.relinquish_default);
         self.active_operation = None;
         self.apply_terminal(operation);
+        let after = self
+            .value_source
+            .effect(&self.priority_array, self.relinquish_default);
+        self.value_source.settle(before, after);
         true
     }
 }
@@ -323,6 +349,13 @@ impl BACnetObject for BinaryLightingOutputObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
+        if let Some(result) = self
+            .value_source
+            .read(property, array_index, &self.priority_array)
+        {
+            return result;
+        }
         if let Some(result) = read_common_properties!(self, property, array_index) {
             return result;
         }
@@ -353,17 +386,50 @@ impl BACnetObject for BinaryLightingOutputObject {
         }
     }
 
-    fn write_property(
+    fn write_property_from(
         &mut self,
         property: PropertyIdentifier,
         array_index: Option<u32>,
         value: PropertyValue,
         priority: Option<u8>,
+        origin: &CommandOrigin,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        if property == PropertyIdentifier::VALUE_SOURCE {
+            return self.value_source.correct(value, priority, origin);
+        }
         if property == PropertyIdentifier::PRESENT_VALUE {
             let (priority, command) = Self::validate_present_value_command(value, priority)?;
-            self.write_present_value(priority, command);
+            let index = ValueSourceTracking::admit(Some(priority), origin)?;
+            let before = self
+                .value_source
+                .effect(&self.priority_array, self.relinquish_default);
+            if self.write_present_value(priority, command) {
+                self.value_source.record(index, origin);
+            }
+            let after = self
+                .value_source
+                .effect(&self.priority_array, self.relinquish_default);
+            self.value_source.settle(before, after);
             return Ok(());
+        }
+        self.write_property(property, array_index, value, priority)
+    }
+
+    fn write_property(
+        &mut self,
+        property: PropertyIdentifier,
+        array_index: Option<u32>,
+        value: PropertyValue,
+        _priority: Option<u8>,
+    ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        // A command needs its writer (`write_property_from`, #1866).
+        if matches!(
+            property,
+            PropertyIdentifier::PRESENT_VALUE | PropertyIdentifier::VALUE_SOURCE
+        ) {
+            return Err(common::write_access_denied_error());
         }
         if property == PropertyIdentifier::BLINK_WARN_ENABLE {
             if let PropertyValue::Boolean(value) = value {
@@ -402,49 +468,58 @@ impl BACnetObject for BinaryLightingOutputObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
         self.profile.capability()
-    }
-
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
     }
 
     fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
         super::metadata::for_binary_lighting_output_object(self)
     }
 
-    fn supports_cov(&self) -> bool {
-        true
+    crate::traits::lend_cov_reporting!();
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
+    }
+}
+
+impl crate::traits::CovReporting for BinaryLightingOutputObject {}
+
+impl crate::traits::Timed for BinaryLightingOutputObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.monotonic_clock = clocks.monotonic.clone();
     }
 
-    fn advance_time_internal(&mut self, elapsed: Duration) -> bool {
-        self.logical_now = self.logical_now.saturating_add(elapsed);
-        self.expire_at(self.logical_now)
-    }
-
-    fn bind_monotonic_clock_internal(&mut self, clock: Option<Arc<MonotonicClock>>) {
-        self.monotonic_clock = clock;
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: Duration) -> bool {
-        self.profile.expire(now);
+    fn advance_monotonic_time(&mut self, now: Duration) -> bool {
         self.expire_at(now)
     }
 
-    fn next_monotonic_deadline_internal(&self) -> Option<Duration> {
+    fn next_monotonic_deadline(&self) -> Option<Duration> {
         self.active_operation.map(|operation| operation.deadline)
     }
 
-    fn cov_snapshot_internal(&self) -> Option<Box<dyn BACnetObject>> {
+    fn cov_snapshot(&self) -> Option<Box<dyn BACnetObject>> {
         Some(Box::new(self.clone()))
     }
+}
 
-    fn lighting_blink_count_internal(&self) -> u64 {
+#[cfg(test)]
+impl BinaryLightingOutputObject {
+    pub(crate) fn advance_time(&mut self, elapsed: Duration) -> bool {
+        self.logical_now = self.logical_now.saturating_add(elapsed);
+        self.expire_at(self.logical_now)
+    }
+}
+
+impl BinaryLightingOutputObject {
+    /// How many blink-warn notifications the object has asked for: a
+    /// conformance-test channel, read through
+    /// `ObjectDatabase::lighting_blink_count_internal`.
+    pub(crate) fn lighting_blink_count(&self) -> u64 {
         self.blink_request_count
     }
 }

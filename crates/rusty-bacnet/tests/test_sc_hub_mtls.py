@@ -22,6 +22,8 @@ from rusty_bacnet import (
     PropertyIdentifier, ScHub,
 )
 
+from port_retry import rerun_on_lost_port
+
 # Deterministic test provisioning only, not defaults for deployed devices.
 SERVER_UUID = bytes.fromhex("8e62ac46d7084226913776a32b619315")
 CLIENT_UUID = bytes.fromhex("95dfe4ef97f6490d9a2cf2b4b0c0e682")
@@ -226,7 +228,7 @@ class HubMtlsTests(MtlsFixture):
                                             "graceful_overall_ms", "handshake_tls_ms",
                                             "handshake_websocket_upgrade_ms",
                                             "handshake_connect_request_ms",
-                  'probe_scan_interval_ms', 'probe_idle_age_ms', 'probe_ack_age_ms', 'probe_send_budget_ms', 'broadcast_sender_burst', 'broadcast_sender_per_second', 'broadcast_global_burst', 'broadcast_global_per_second', 'relay_send_budget_ms', 'max_npdu_length', 'max_bvlc_length', 'certificate_bindings'])
+                  'probe_scan_interval_ms', 'probe_idle_age_ms', 'probe_ack_age_ms', 'probe_send_budget_ms', 'probe_liveness_bound_ms', 'broadcast_sender_burst', 'broadcast_sender_per_second', 'broadcast_global_burst', 'broadcast_global_per_second', 'relay_send_budget_ms', 'certificate_bindings'])
         self.assertIsNone(parameters["ca_cert"].default)
         self.assertEqual(parameters["ca_cert"].kind, inspect.Parameter.POSITIONAL_OR_KEYWORD)
         self.assertIsNone(parameters["device_uuid"].default)
@@ -238,7 +240,7 @@ class HubMtlsTests(MtlsFixture):
                               ("handshake_tls_ms", 10000),
                               ("handshake_websocket_upgrade_ms", 10000),
                               ("handshake_connect_request_ms", 10000),
-                              ('probe_scan_interval_ms', 30000), ('probe_idle_age_ms', 60000), ('probe_ack_age_ms', 5000), ('probe_send_budget_ms', 5000), ('broadcast_sender_burst', 1024), ('broadcast_sender_per_second', 128), ('broadcast_global_burst', 4096), ('broadcast_global_per_second', 512), ('relay_send_budget_ms', 5000), ('max_npdu_length', 1497), ('max_bvlc_length', 5705), ('certificate_bindings', None)]:
+                              ('probe_scan_interval_ms', 30000), ('probe_idle_age_ms', 60000), ('probe_ack_age_ms', 5000), ('probe_send_budget_ms', 5000), ('probe_liveness_bound_ms', 360000), ('broadcast_sender_burst', 1024), ('broadcast_sender_per_second', 128), ('broadcast_global_burst', 4096), ('broadcast_global_per_second', 512), ('relay_send_budget_ms', 5000), ('certificate_bindings', None)]:
             with self.subTest(name=name):
                 self.assertEqual(parameters[name].default, default)
                 self.assertEqual(parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
@@ -283,8 +285,6 @@ class HubMtlsTests(MtlsFixture):
                         self.assertIsNone(await hub.address())
                     finally:
                         await asyncio.wait_for(hub.stop(), 3)
-                with socket.socket() as probe:
-                    probe.bind(("127.0.0.1", int(address.rsplit(":", 1)[1])))
 
     async def test_rejected_peers_leave_trusted_read_property_usable(self):
         hub = self.hub()
@@ -595,7 +595,7 @@ class NodeIdentityMtlsTests(MtlsFixture):
                     self.assertEqual(connect[:4], b"\x06\0\0\1")
                     self.assertEqual(connect[4:10], vmac)
                     self.assertEqual(connect[10:26], uuid)
-                    self.assertEqual(connect[26:], b"\x16\x49\x05\xd9")
+                    self.assertEqual(connect[26:], b"\x16\x49\x05\xc6")
                     observed.append(connect[10:26])
                     await self.send_frame(writer, b"\x07\0\0\1" + b"\x02\0\0\0\0\x09" +
                                           bytes.fromhex("4a015cf2ec394d58ac2d11e1761ce86d") + b"\x05\xc4\x05\xc4")
@@ -656,6 +656,11 @@ class NodeIdentityMtlsTests(MtlsFixture):
             raise
 
     async def test_hub_owned_identity_survives_stop_start_and_fresh_object(self):
+        # The fresh object rebinds the stopped hub's port, which another
+        # process can take in between (#1419).
+        await rerun_on_lost_port(self.identity_survives_stop_start_and_fresh_object)
+
+    async def identity_survives_stop_start_and_fresh_object(self):
         # Sparse/non-RFC-shaped input proves only whole-zero is rejected. These
         # are caller-provisioned test identities, not deployment defaults.
         uuid = bytes.fromhex("000102030405000700090a0b0c0d0e0f")
@@ -680,19 +685,9 @@ class NodeIdentityMtlsTests(MtlsFixture):
                     await self.close_raw(writer)
             finally:
                 await self.stop_hub(hub)
-            with socket.socket() as probe:
-                if os.name == "nt":
-                    # On Windows SO_REUSEADDR would bind over a live listener,
-                    # proving nothing; exclusive use fails while anything
-                    # still holds the port.
-                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-                else:
-                    # Match Tokio's listener reuse policy; established TCP
-                    # teardown may retain TIME_WAIT, which is not a live hub
-                    # listener.
-                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                probe.bind(("127.0.0.1", int(address.rsplit(":", 1)[1])))
-                probe.listen()
+            # No separate probe: the fresh object's start on the last
+            # lifecycle's address rebinds that port itself, and fails if the
+            # stopped hub kept it.
 
     async def test_distinct_nodes_and_same_uuid_replacement_leave_other_node_usable(self):
         hub = self.hub()

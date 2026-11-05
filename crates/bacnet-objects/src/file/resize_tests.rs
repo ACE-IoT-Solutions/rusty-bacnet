@@ -2,34 +2,28 @@
 
 use super::*;
 use crate::clock::{ClockFrame, ClockReader};
+use crate::property_metadata::is_writable_property;
+use crate::traits::Timed;
+use bacnet_types::error::RemoteError;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-fn protocol_pair(error: Error) -> (u32, u32) {
+fn protocol_pair(error: Error) -> (ErrorClass, ErrorCode) {
     match error {
-        Error::Protocol { class, code } => (class, code),
+        Error::Remote(RemoteError::Error { class, code }) => (class, code),
         other => panic!("expected protocol error, got {other:?}"),
     }
 }
 
-fn write_denied_pair() -> (u32, u32) {
-    (
-        ErrorClass::PROPERTY.to_raw() as u32,
-        ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-    )
+fn write_denied_pair() -> (ErrorClass, ErrorCode) {
+    (ErrorClass::PROPERTY, ErrorCode::WRITE_ACCESS_DENIED)
 }
 
-fn invalid_type_pair() -> (u32, u32) {
-    (
-        ErrorClass::PROPERTY.to_raw() as u32,
-        ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
-    )
+fn invalid_type_pair() -> (ErrorClass, ErrorCode) {
+    (ErrorClass::PROPERTY, ErrorCode::INVALID_DATA_TYPE)
 }
 
-fn file_full_pair() -> (u32, u32) {
-    (
-        ErrorClass::OBJECT.to_raw() as u32,
-        ErrorCode::FILE_FULL.to_raw() as u32,
-    )
+fn file_full_pair() -> (ErrorClass, ErrorCode) {
+    (ErrorClass::OBJECT, ErrorCode::FILE_FULL)
 }
 
 fn write_resize(
@@ -286,10 +280,7 @@ fn resize_eligibility_precedes_type_validation_and_every_denial_is_atomic() {
             protocol_pair(
                 write_resize(&mut stream, PropertyIdentifier::RECORD_COUNT, value).unwrap_err()
             ),
-            (
-                ErrorClass::PROPERTY.to_raw() as u32,
-                ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
-            )
+            (ErrorClass::PROPERTY, ErrorCode::UNKNOWN_PROPERTY)
         );
         assert_eq!(state(&stream), expected);
     }
@@ -306,10 +297,7 @@ fn resize_eligibility_precedes_type_validation_and_every_denial_is_atomic() {
                 write_resize(&mut unknown, property, PropertyValue::Boolean(false)).unwrap_err()
             ),
             if property == PropertyIdentifier::RECORD_COUNT {
-                (
-                    ErrorClass::PROPERTY.to_raw() as u32,
-                    ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-                )
+                (ErrorClass::PROPERTY, ErrorCode::UNKNOWN_PROPERTY)
             } else {
                 write_denied_pair()
             }
@@ -373,10 +361,13 @@ fn resize_noop_is_clock_and_metadata_neutral_but_actual_change_samples_once() {
     let mut file = stream_file(&[1, 2, 3]);
     file.set_modification_date(old.local_date, old.local_time);
     file.set_archive(true);
-    file.bind_clock_internal(Some(Arc::new(CountingClock {
-        frame: changed,
-        reads: reads.clone(),
-    })));
+    file.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(CountingClock {
+            frame: changed,
+            reads: reads.clone(),
+        })),
+        ..crate::traits::Clocks::default()
+    });
 
     let expected = state(&file);
     write_resize(
@@ -411,10 +402,13 @@ fn empty_record_growth_is_a_metadata_change_even_when_file_size_is_unchanged() {
     let mut file = record_file(vec![vec![], vec![]]);
     file.set_modification_date(old.local_date, old.local_time);
     file.set_archive(true);
-    file.bind_clock_internal(Some(Arc::new(CountingClock {
-        frame: changed,
-        reads: reads.clone(),
-    })));
+    file.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(CountingClock {
+            frame: changed,
+            reads: reads.clone(),
+        })),
+        ..crate::traits::Clocks::default()
+    });
 
     write_resize(
         &mut file,
@@ -442,9 +436,12 @@ fn resize_writability_and_failure_atomicity_follow_runtime_eligibility() {
         PropertyIdentifier::FILE_TYPE,
         PropertyIdentifier::FILE_SIZE,
     ] {
-        assert!(stream.is_writable_property(property), "{property:?}");
+        assert!(is_writable_property(&stream, property), "{property:?}");
     }
-    assert!(!stream.is_writable_property(PropertyIdentifier::RECORD_COUNT));
+    assert!(!is_writable_property(
+        &stream,
+        PropertyIdentifier::RECORD_COUNT
+    ));
     let before = state(&stream);
     assert_eq!(
         protocol_pair(
@@ -473,11 +470,23 @@ fn resize_writability_and_failure_atomicity_follow_runtime_eligibility() {
     .unwrap();
     assert_eq!(stream.data(), &[1, 2]);
     let mut record = record_file(vec![vec![1], vec![2]]);
-    assert!(!record.is_writable_property(PropertyIdentifier::FILE_SIZE));
-    assert!(record.is_writable_property(PropertyIdentifier::RECORD_COUNT));
+    assert!(!is_writable_property(
+        &record,
+        PropertyIdentifier::FILE_SIZE
+    ));
+    assert!(is_writable_property(
+        &record,
+        PropertyIdentifier::RECORD_COUNT
+    ));
     record.set_read_only(true);
-    assert!(!record.is_writable_property(PropertyIdentifier::FILE_SIZE));
-    assert!(!record.is_writable_property(PropertyIdentifier::RECORD_COUNT));
+    assert!(!is_writable_property(
+        &record,
+        PropertyIdentifier::FILE_SIZE
+    ));
+    assert!(!is_writable_property(
+        &record,
+        PropertyIdentifier::RECORD_COUNT
+    ));
     let before = state(&record);
     assert_eq!(
         protocol_pair(

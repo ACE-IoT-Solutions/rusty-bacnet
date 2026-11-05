@@ -1,5 +1,28 @@
 //! Complete source profile preflight, before mutation or ingress ownership.
 use super::*;
+use bacnet_objects::property_metadata::has_property;
+/// A builder's routed source Audit bindings: Device, network, MAC there.
+pub(crate) type RoutedBindings = Vec<(ObjectIdentifier, u16, bacnet_types::MacAddr)>;
+
+/// Check a builder's link bindings against the node's own `local` MAC, and
+/// its routed ones, before any I/O, as [`EndpointSession::start`] will
+/// (#2357, #2371).
+pub(crate) fn check_link_bindings(
+    bindings: &[(ObjectIdentifier, bacnet_types::MacAddr)],
+    routed: &[(ObjectIdentifier, u16, bacnet_types::MacAddr)],
+    local: &[u8],
+) -> Result<(), Error> {
+    crate::source_audit::recipient::SourceRoutes::for_link(
+        bindings,
+        crate::source_audit::recipient::SourceLink::Other {
+            local: bacnet_types::MacAddr::from_slice(local),
+            groups: bacnet_transport::port::GroupDestinations::unknown(),
+        },
+    )?
+    .bind_routed(routed)
+    .map(drop)
+}
+
 impl<T: TransportPort + 'static> EndpointSession<T> {
     /// Write the active source profile's Device Audit recipient as a trusted local operation.
     ///
@@ -35,6 +58,132 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         runtime.write_local(&mut db, recipient)
     }
 
+    /// Bind a Device to `mac` on this session's link, for source Audit
+    /// delivery to that Device (#2357), on any link but IPv4 B/IP, whose
+    /// bindings are [`BipEndpointBuilder::source_audit_device_binding`]'s.
+    /// `mac` is in the link's format: a 3-octet VMAC on B/IPv6, a 6-octet
+    /// VMAC on BACnet/SC, a 1-octet station on MS/TP. It is route data only:
+    /// provision the recipient on the Device itself.
+    ///
+    /// [`start`](Self::start) refuses, with SERVICES /
+    /// SERVICE_REQUEST_DENIED, a MAC that isn't a direct unicast destination
+    /// on the link: of another length than the node's own, the node's own,
+    /// a group destination (MS/TP's station 255, SC's broadcast VMAC), or a
+    /// six-octet all-zero MAC (SC's reserved VMAC), and refuses a non-Device
+    /// or wildcard identifier or a repeated Device with an error naming it.
+    /// A link that learns its MAC at start (B/IPv6) checks the node's own
+    /// only then: a binding to it starts, and the Reporter reads
+    /// CONFIGURATION_ERROR. These bindings on a B/IP session, or B/IP ones
+    /// on another link, fail start. Without a selected source Reporter they
+    /// are inert.
+    ///
+    /// [`BipEndpointBuilder::source_audit_device_binding`]: crate::bip::BipEndpointBuilder::source_audit_device_binding
+    ///
+    /// # Panics
+    /// Panics if startup has already consumed the session configuration.
+    pub fn with_source_audit_device_binding(
+        mut self,
+        device: ObjectIdentifier,
+        mac: bacnet_types::MacAddr,
+    ) -> Self {
+        self.assert_configurable();
+        self.source_audit_link_bindings.push((device, mac));
+        self
+    }
+
+    /// Bind a Device behind a router, on `network` at `mac` there, for
+    /// source Audit delivery to that Device (#2371), on any link, IPv4 B/IP
+    /// included. Its records go with DNET/DADR through the router that
+    /// reaches `network`, which the session learns from traffic back from
+    /// that network (an answer it admits, or a request from a station
+    /// there) or from an I-Am-Router-To-Network listing it; until then, and
+    /// after a delivery through the learned router is lost (no answer in
+    /// time, or a failed send), they go with the link's broadcast MAC
+    /// (Clause 6.5.3). A confirmed record's answer comes back through the
+    /// router, naming `network` and `mac` as its source. A failed delivery
+    /// counts and sets the Reporter's Reliability as a direct one does. Once the session's
+    /// own network number is `network`, the binding is a direct one to
+    /// `mac` on the link, by the link's unicast rule.
+    ///
+    /// `mac` is in the format of `network`'s link, which may differ from
+    /// this one's, so only its length is checked: 1 to 18 octets, what a
+    /// DADR carries. [`start`](Self::start) refuses, with SERVICES /
+    /// SERVICE_REQUEST_DENIED, network 0 (an address's name for the local
+    /// network), the global network 65535, and an empty or longer MAC, and
+    /// refuses a non-Device or wildcard identifier or a Device bound twice,
+    /// here or by [`with_source_audit_device_binding`]. Route data only:
+    /// provision the recipient on the Device itself.
+    ///
+    /// [`with_source_audit_device_binding`]: Self::with_source_audit_device_binding
+    ///
+    /// # Panics
+    /// Panics if startup has already consumed the session configuration.
+    pub fn with_source_audit_routed_device_binding(
+        mut self,
+        device: ObjectIdentifier,
+        network: u16,
+        mac: bacnet_types::MacAddr,
+    ) -> Self {
+        self.assert_configurable();
+        self.source_audit_routed_bindings
+            .push((device, network, mac));
+        self
+    }
+
+    /// Hand a builder's link and routed bindings to the session.
+    pub(crate) fn with_source_audit_device_bindings(
+        mut self,
+        bindings: Vec<(ObjectIdentifier, bacnet_types::MacAddr)>,
+        routed: RoutedBindings,
+    ) -> Self {
+        for (device, mac) in bindings {
+            self = self.with_source_audit_device_binding(device, mac);
+        }
+        for (device, network, mac) in routed {
+            self = self.with_source_audit_routed_device_binding(device, network, mac);
+        }
+        self
+    }
+
+    /// The routes the selected source Reporter delivers by, checked against
+    /// the link the session will start: IPv4 B/IP's broadcast endpoint, or
+    /// any other link's own MAC and group rule (#2357).
+    fn prepare_source_routes(&self) -> Result<crate::source_audit::recipient::SourceRoutes, Error> {
+        use crate::source_audit::recipient::{SourceLink, SourceRoutes};
+        let ingress = self
+            .ingress
+            .as_ref()
+            .ok_or_else(|| Error::Encoding("source Audit requires the session's link".into()))?;
+        match ingress.bip_broadcast_endpoint() {
+            Some(broadcast) => {
+                if !self.source_audit_link_bindings.is_empty() {
+                    return Err(Error::Encoding(
+                        "source Audit link bindings need a link other than IPv4 B/IP; \
+                         B/IP takes source_audit_device_binding"
+                            .into(),
+                    ));
+                }
+                SourceRoutes::new(&self.source_audit_bindings, broadcast)?
+                    .bind_routed(&self.source_audit_routed_bindings)
+            }
+            None => {
+                if !self.source_audit_bindings.is_empty() {
+                    return Err(Error::Encoding(
+                        "B/IP source Audit bindings need an IPv4 B/IP link".into(),
+                    ));
+                }
+                let (local, groups) = ingress.link_unicast_facts().ok_or_else(|| {
+                    Error::Encoding("source Audit requires the session's link".into())
+                })?;
+                SourceRoutes::for_link(
+                    &self.source_audit_link_bindings,
+                    SourceLink::Other { local, groups },
+                )?
+                .bind_routed(&self.source_audit_routed_bindings)
+            }
+        }
+    }
+
     pub(super) fn prepare_source_audit_reporter(
         &mut self,
     ) -> Result<Option<crate::source_audit::recipient::SourceRoutes>, Error> {
@@ -51,15 +200,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 "source Audit with Both roles requires an explicit Device write authorizer".into(),
             ));
         }
-        let broadcast = self
-            .ingress
-            .as_ref()
-            .and_then(|ingress| ingress.bip_broadcast_endpoint())
-            .ok_or_else(|| Error::Encoding("source Audit requires IPv4 B/IP".into()))?;
-        let routes = crate::source_audit::recipient::SourceRoutes::new(
-            &self.source_audit_bindings,
-            broadcast,
-        )?;
+        let routes = self.prepare_source_routes()?;
         let db = self.database.as_mut().ok_or_else(|| {
             Error::Encoding("source Audit Reporter requires an attached local database".into())
         })?;
@@ -102,21 +243,21 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             Error::Encoding("selected source Audit Reporter is absent from the database".into())
         })?;
         if !object
-            .audit_reporter_internal()
+            .audit_reporter()
             .is_some_and(|reporter| reporter.object_identifier() == selected)
         {
             return Err(Error::Encoding(
                 "selected object lacks the Audit Reporter capability".into(),
             ));
         }
-        if object.audit_reporter_internal().is_some_and(|reporter| {
-            reporter
-                .property_list()
-                .contains(&PropertyIdentifier::MONITORED_OBJECTS)
-                || reporter
-                    .configuration_internal()
-                    .maximum_send_delay
-                    .is_some()
+        if object.audit_reporter().is_some_and(|reporter| {
+            has_property(
+                &reporter.property_metadata(),
+                PropertyIdentifier::MONITORED_OBJECTS,
+            ) || reporter
+                .configuration_internal()
+                .maximum_send_delay
+                .is_some()
         }) {
             return Err(Error::Encoding(
                 "source Audit does not support Monitored_Objects or delayed notifications".into(),
@@ -129,12 +270,12 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                     Ok(PropertyValue::Boolean(true)) => {
                         return Err(Error::Encoding(
                             "database already contains a conflicting source Audit Reporter".into(),
-                        ))
+                        ));
                     }
                     _ => {
                         return Err(Error::Encoding(
                             "cannot determine another Audit Reporter's source ownership".into(),
-                        ))
+                        ));
                     }
                 }
             }

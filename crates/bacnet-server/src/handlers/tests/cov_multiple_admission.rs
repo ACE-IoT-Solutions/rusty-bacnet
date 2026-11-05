@@ -55,8 +55,8 @@ fn subscribe_cov_property_multiple_invalid_property_keeps_the_earlier_reference(
             code,
             detail,
         } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32);
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, ErrorCode::UNKNOWN_PROPERTY);
             assert_eq!(
                 *detail,
                 ErrorDetail::FirstFailedSubscription(BACnetObjectPropertyReference::new(
@@ -91,7 +91,7 @@ fn subscribe_cov_property_multiple_capacity_names_the_overflowing_reference() {
 
     let db = make_db_with_ai();
     let mut table = CovSubscriptionTable::with_policy(
-        crate::cov::CovPolicy {
+        bacnet_device_core::cov::CovPolicy {
             max_subscriptions_per_peer: 1024,
             max_indefinite_per_peer: 1024,
             reserved_capacity: 0,
@@ -167,11 +167,8 @@ fn subscribe_cov_property_multiple_capacity_names_the_overflowing_reference() {
             code,
             detail,
         } => {
-            assert_eq!(class, ErrorClass::RESOURCES.to_raw() as u32);
-            assert_eq!(
-                code,
-                ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT.to_raw() as u32
-            );
+            assert_eq!(class, ErrorClass::RESOURCES);
+            assert_eq!(code, ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT);
             assert_eq!(
                 *detail,
                 ErrorDetail::FirstFailedSubscription(BACnetObjectPropertyReference::new(

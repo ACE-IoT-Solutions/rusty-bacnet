@@ -1,5 +1,11 @@
 //! The CRCs of Clause 9.6: the header CRC-8, the data CRC-16, and the
 //! CRC-32K of extended frames.
+//!
+//! The codec computes and checks them itself when it encodes and decodes;
+//! they are public for a caller that builds or inspects frames by hand.
+//! Each function returns the complemented register, the value that goes on
+//! the wire. The register itself, which the worked examples of Annex G give
+//! octet by octet, is its bitwise complement.
 
 const CRC8_TABLE: [u8; 256] = {
     let mut table = [0u8; 256];
@@ -42,6 +48,7 @@ const CRC16_TABLE: [u16; 256] = {
 };
 
 /// Compute the reflected BACnet header CRC-8.
+#[must_use]
 pub fn crc8(data: &[u8]) -> u8 {
     let mut crc = 0xFF;
     for &byte in data {
@@ -50,26 +57,19 @@ pub fn crc8(data: &[u8]) -> u8 {
     !crc
 }
 
-/// Compute the running header CRC including its transmitted CRC octet.
-pub fn crc8_accumulate_all(data: &[u8]) -> u8 {
-    let mut crc = 0xFF;
-    for &byte in data {
-        crc = CRC8_TABLE[(crc ^ byte) as usize];
-    }
-    crc
-}
-
 /// Verify a header CRC whose final byte is the transmitted CRC.
 ///
 /// Any non-empty input is checked, so a single octet is compared with the
 /// CRC of nothing. Unlike [`crc16_valid`], this does not demand content: the
 /// codec only calls it on a whole header, which always has its five fields.
+#[must_use]
 pub fn crc8_valid(data_with_crc: &[u8]) -> bool {
     !data_with_crc.is_empty()
         && crc8(&data_with_crc[..data_with_crc.len() - 1]) == data_with_crc[data_with_crc.len() - 1]
 }
 
 /// Compute the reflected BACnet data CRC-16.
+#[must_use]
 pub fn crc16(data: &[u8]) -> u16 {
     let mut crc = 0xFFFF;
     for &byte in data {
@@ -78,20 +78,12 @@ pub fn crc16(data: &[u8]) -> u16 {
     !crc
 }
 
-/// Compute the running data CRC including its transmitted CRC octets.
-pub fn crc16_accumulate_all(data: &[u8]) -> u16 {
-    let mut crc = 0xFFFF;
-    for &byte in data {
-        crc = (crc >> 8) ^ CRC16_TABLE[((crc ^ byte as u16) & 0xFF) as usize];
-    }
-    crc
-}
-
 /// Verify a data CRC whose final two bytes are little-endian on the wire.
 ///
 /// Needs at least one data octet before the two CRC octets, and returns
 /// `false` for anything shorter: a frame sends a data CRC only after a
 /// non-empty data field, so two octets alone are never a valid data field.
+#[must_use]
 pub fn crc16_valid(data_with_crc: &[u8]) -> bool {
     if data_with_crc.len() < 3 {
         return false;
@@ -174,16 +166,9 @@ pub(crate) fn crc32k_update(crc: u32, data: &[u8]) -> u32 {
 /// By default the codec works it out with a 16-entry table, two lookups per
 /// octet. The `crc32k-table` feature uses a 256-entry table instead, one
 /// lookup per octet, for about 1 KiB more flash. The results are the same.
+#[must_use]
 pub fn crc32k(data: &[u8]) -> u32 {
     !crc32k_update(u32::MAX, data)
-}
-
-/// Compute the running CRC-32K register over `data` from its all-ones start,
-/// without the final complement. Run over the Encoded Data and then the four
-/// CRC octets decoded from a good frame's Encoded CRC-32K field, it ends at
-/// [`CRC32K_RESIDUAL`](crate::CRC32K_RESIDUAL).
-pub fn crc32k_accumulate_all(data: &[u8]) -> u32 {
-    crc32k_update(u32::MAX, data)
 }
 
 #[cfg(test)]

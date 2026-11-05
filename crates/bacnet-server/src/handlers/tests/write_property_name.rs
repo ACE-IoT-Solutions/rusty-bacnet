@@ -14,6 +14,7 @@
 use super::*;
 use bacnet_objects::binary::BinaryValueObject;
 use bacnet_objects::event_enrollment::EventEnrollmentObject;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
 
 /// Build a `WritePropertyRequest` body for `OBJECT_NAME` on `oid` set to `name`.
@@ -37,11 +38,8 @@ fn encode_name_write(oid: ObjectIdentifier, name: &str) -> Vec<u8> {
 /// 15.9.1.3.1 and 15.10.1.3.1).
 fn assert_duplicate_name<T: std::fmt::Debug>(result: Result<T, Error>) {
     match result {
-        Err(Error::Protocol { class, code }) => assert_eq!(
-            (
-                ErrorClass::from_raw(class as u16),
-                ErrorCode::from_raw(code as u16)
-            ),
+        Err(Error::Remote(RemoteError::Error { class, code })) => assert_eq!(
+            (class, code),
             (ErrorClass::PROPERTY, ErrorCode::DUPLICATE_NAME)
         ),
         other => panic!("expected PROPERTY / DUPLICATE_NAME, got {other:?}"),
@@ -384,7 +382,7 @@ fn create_object_with_object_name_initial_value_refreshes_index() {
         }],
     };
     let mut buf = BytesMut::new();
-    req.encode(&mut buf);
+    req.encode(&mut buf).unwrap();
 
     let mut ack_buf = BytesMut::new();
     handle_create_object(&mut db, &buf, &mut ack_buf).unwrap();
@@ -423,7 +421,7 @@ fn create_object_duplicate_object_name_initial_value_rejected_and_rolled_back() 
         }],
     };
     let mut buf = BytesMut::new();
-    req.encode(&mut buf);
+    req.encode(&mut buf).unwrap();
 
     // CreateObject's table (15.3.1.3.1) has no row for a name in use; the
     // initial value is refused as WriteProperty refuses it, PROPERTY /
@@ -475,7 +473,7 @@ fn create_object_rename_then_later_failure_removes_renamed_object() {
         ],
     };
     let mut buf = BytesMut::new();
-    req.encode(&mut buf);
+    req.encode(&mut buf).unwrap();
 
     assert!(
         handle_create_object(&mut db, &buf, &mut BytesMut::new()).is_err(),

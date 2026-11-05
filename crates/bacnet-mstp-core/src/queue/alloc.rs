@@ -1,119 +1,143 @@
 //! Allocation-backed queue storage.
 
 use alloc::vec::Vec;
+use core::fmt;
 
+use bacnet_time::Instant;
+
+use crate::config::DEFAULT_STARVATION_LIMIT;
 use crate::counters::QueueCounters;
 
+use super::slots::{Lane, LiveItems, Selected, Slot, expired};
 use super::{
-    better, expired, DequeuedNpdu, Item, NetworkPriority, QueueItemInfo, QueueKind,
-    QueueRejectReason, QueueStorage, MAX_STANDARD_MPDU_DATA,
+    DequeuedNpdu, MAX_STANDARD_MPDU_DATA, NetworkPriority, QueueItemInfo, QueueKind, QueueRefusal,
+    QueueStorage,
 };
 
 /// Allocation-backed queues. Capacity is reserved by the constructor, so
 /// enqueue and dequeue do not grow a vector after initialization.
 ///
 /// `N` is the longest NPDU a slot holds, as for
-/// [`HeaplessQueues`](super::HeaplessQueues): 501 octets by default, and
+/// [`FixedQueues`](crate::FixedQueues): 501 octets by default, and
 /// [`MAX_EXTENDED_MPDU_DATA`](bacnet_mstp_codec::MAX_EXTENDED_MPDU_DATA) for
-/// a core with extended frames on.
-#[derive(Debug)]
+/// a core with extended frames on. `N` can be at most 65,535, or the
+/// constructors fail to compile:
+///
+/// ```
+/// use bacnet_mstp_core::AllocQueues;
+///
+/// let longest = AllocQueues::<65_535>::new(1, 0);
+/// ```
+///
+/// ```compile_fail
+/// use bacnet_mstp_core::AllocQueues;
+///
+/// let too_long = AllocQueues::<65_536>::new(1, 0);
+/// ```
+///
+/// Each item is written into a free slot and stays there until it leaves,
+/// so no removal moves another item. A slot is first used only when every
+/// one before it is in use, so the reserved memory is touched as the queue
+/// fills.
+///
+/// The starvation limit comes from the core's configuration, as for
+/// [`FixedQueues`](crate::FixedQueues).
 pub struct AllocQueues<const N: usize = MAX_STANDARD_MPDU_DATA> {
-    unicast: Vec<Item<N>>,
-    broadcast: Vec<Item<N>>,
+    unicast: Lane<Vec<Slot<N>>>,
+    broadcast: Lane<Vec<Slot<N>>>,
     unicast_capacity: usize,
     broadcast_capacity: usize,
     sequence: u64,
     starvation_limit: u8,
-    unicast_counters: QueueCounters,
-    broadcast_counters: QueueCounters,
 }
 
 impl<const N: usize> AllocQueues<N> {
-    /// Construct independently bounded queues.
+    /// Empty queues holding up to `unicast_capacity` and
+    /// `broadcast_capacity` items, their room reserved now.
+    #[must_use]
     pub fn new(unicast_capacity: usize, broadcast_capacity: usize) -> Self {
-        Self::with_starvation_limit(unicast_capacity, broadcast_capacity, 16)
-    }
-
-    /// Construct queues with an explicit service-opportunity starvation limit.
-    pub fn with_starvation_limit(
-        unicast_capacity: usize,
-        broadcast_capacity: usize,
-        starvation_limit: u8,
-    ) -> Self {
+        const {
+            assert!(
+                N <= Slot::<N>::LONGEST,
+                "a queue slot holds at most 65,535 octets"
+            );
+        };
         Self {
-            unicast: Vec::with_capacity(unicast_capacity),
-            broadcast: Vec::with_capacity(broadcast_capacity),
+            unicast: Lane::new(
+                Vec::with_capacity(unicast_capacity),
+                QueueCounters::default(),
+            ),
+            broadcast: Lane::new(
+                Vec::with_capacity(broadcast_capacity),
+                QueueCounters::default(),
+            ),
             unicast_capacity,
             broadcast_capacity,
             sequence: 0,
-            starvation_limit,
-            unicast_counters: QueueCounters::default(),
-            broadcast_counters: QueueCounters::default(),
+            starvation_limit: DEFAULT_STARVATION_LIMIT,
         }
     }
 
-    fn select(&self, now: u64) -> Option<(QueueKind, usize, QueueItemInfo)> {
-        let mut selected: Option<(QueueKind, usize, QueueItemInfo)> = None;
-        for (index, item) in self.unicast.iter().copied().enumerate() {
-            let info = item.info(QueueKind::Unicast);
-            if !expired(info.expires_at, now)
-                && better(info, selected.map(|v| v.2), self.starvation_limit)
-            {
-                selected = Some((QueueKind::Unicast, index, info));
-            }
-        }
-        for (index, item) in self.broadcast.iter().copied().enumerate() {
-            let info = item.info(QueueKind::Broadcast);
-            if !expired(info.expires_at, now)
-                && better(info, selected.map(|v| v.2), self.starvation_limit)
-            {
-                selected = Some((QueueKind::Broadcast, index, info));
-            }
-        }
-        selected
+    fn select(&self, now: Instant) -> Option<Selected> {
+        let limit = self.starvation_limit;
+        let unicast = self.unicast.select(QueueKind::Unicast, now, limit, None);
+        self.broadcast
+            .select(QueueKind::Broadcast, now, limit, unicast)
     }
 
-    fn select_kind(&self, kind: QueueKind, now: u64) -> Option<(usize, QueueItemInfo)> {
-        let mut selected: Option<(usize, QueueItemInfo)> = None;
+    fn select_kind(&self, kind: QueueKind, now: Instant) -> Option<Selected> {
+        self.lane(kind)
+            .select(kind, now, self.starvation_limit, None)
+    }
+
+    fn lane(&self, kind: QueueKind) -> &Lane<Vec<Slot<N>>> {
         match kind {
-            QueueKind::Unicast => {
-                for (index, item) in self.unicast.iter().copied().enumerate() {
-                    let info = item.info(kind);
-                    if !expired(info.expires_at, now)
-                        && better(info, selected.map(|v| v.1), self.starvation_limit)
-                    {
-                        selected = Some((index, info));
-                    }
-                }
-            }
-            QueueKind::Broadcast => {
-                for (index, item) in self.broadcast.iter().copied().enumerate() {
-                    let info = item.info(kind);
-                    if !expired(info.expires_at, now)
-                        && better(info, selected.map(|v| v.1), self.starvation_limit)
-                    {
-                        selected = Some((index, info));
-                    }
-                }
-            }
-        }
-        selected
-    }
-
-    fn bump_waits(&mut self) {
-        for item in &mut self.unicast {
-            item.service_wait = item.service_wait.saturating_add(1);
-        }
-        for item in &mut self.broadcast {
-            item.service_wait = item.service_wait.saturating_add(1);
+            QueueKind::Unicast => &self.unicast,
+            QueueKind::Broadcast => &self.broadcast,
         }
     }
 
-    fn counters_mut(&mut self, kind: QueueKind) -> &mut QueueCounters {
+    /// Every item waiting, with its octets, for the tests' model.
+    #[cfg(test)]
+    pub(super) fn snapshot(&self) -> Vec<(QueueItemInfo, Vec<u8>)> {
+        self.unicast
+            .snapshot(QueueKind::Unicast)
+            .chain(self.broadcast.snapshot(QueueKind::Broadcast))
+            .map(|(info, npdu)| (info, npdu.to_vec()))
+            .collect()
+    }
+
+    /// Each lane's slots so far, and the room reserved for them.
+    #[cfg(test)]
+    pub(super) fn slot_room(&self) -> [(usize, usize); 2] {
+        [
+            (self.unicast.slots.len(), self.unicast.slots.capacity()),
+            (self.broadcast.slots.len(), self.broadcast.slots.capacity()),
+        ]
+    }
+
+    fn lane_mut(&mut self, kind: QueueKind) -> &mut Lane<Vec<Slot<N>>> {
         match kind {
-            QueueKind::Unicast => &mut self.unicast_counters,
-            QueueKind::Broadcast => &mut self.broadcast_counters,
+            QueueKind::Unicast => &mut self.unicast,
+            QueueKind::Broadcast => &mut self.broadcast,
         }
+    }
+}
+
+/// The items waiting, oldest slot first, with their sequence numbers, the
+/// capacities and the counters; free slots are left out.
+impl<const N: usize> fmt::Debug for AllocQueues<N> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AllocQueues")
+            .field("unicast", &LiveItems(&self.unicast.slots))
+            .field("broadcast", &LiveItems(&self.broadcast.slots))
+            .field("unicast_capacity", &self.unicast_capacity)
+            .field("broadcast_capacity", &self.broadcast_capacity)
+            .field("sequence", &self.sequence)
+            .field("starvation_limit", &self.starvation_limit)
+            .field("unicast_counters", &self.unicast.counters)
+            .field("broadcast_counters", &self.broadcast.counters)
+            .finish()
     }
 }
 
@@ -128,7 +152,7 @@ impl<const N: usize> QueueStorage for AllocQueues<N> {
         self.starvation_limit = limit;
     }
 
-    fn max_npdu_length(&self) -> usize {
+    fn max_npdu(&self) -> usize {
         N
     }
 
@@ -137,134 +161,90 @@ impl<const N: usize> QueueStorage for AllocQueues<N> {
         destination: u8,
         payload: &[u8],
         priority: NetworkPriority,
-        now: u64,
-        expires_at: Option<u64>,
-    ) -> Result<(), QueueRejectReason> {
+        now: Instant,
+        expires_at: Option<Instant>,
+    ) -> Result<(), QueueRefusal> {
         let kind = QueueKind::from_destination(destination);
-        if payload.len() > N {
-            self.counters_mut(kind).record_drop_oversize();
-            return Err(QueueRejectReason::Oversize);
-        }
-        if expired(expires_at, now) {
-            self.counters_mut(kind).record_drop_expired();
-            return Err(QueueRejectReason::Expired);
-        }
         let capacity = match kind {
             QueueKind::Unicast => self.unicast_capacity,
             QueueKind::Broadcast => self.broadcast_capacity,
         };
-        let length = match kind {
-            QueueKind::Unicast => self.unicast.len(),
-            QueueKind::Broadcast => self.broadcast.len(),
-        };
-        if length >= capacity {
-            self.counters_mut(kind).record_drop_full();
-            return Err(QueueRejectReason::Full);
+        let sequence = self.sequence;
+        let lane = self.lane_mut(kind);
+        if payload.len() > N {
+            lane.counters.record_drop_oversize();
+            return Err(QueueRefusal::Oversize);
         }
-        let mut owned = Item {
-            destination,
-            priority,
-            enqueued_at: now,
-            expires_at,
-            sequence: self.sequence,
-            service_wait: 0,
-            len: payload.len(),
-            payload: [0; N],
+        if expired(expires_at, now) {
+            lane.counters.record_drop_expired();
+            return Err(QueueRefusal::Expired);
+        }
+        if lane.depth >= capacity {
+            lane.counters.record_drop_full();
+            return Err(QueueRefusal::Full);
+        }
+        // Fewer items than the capacity: a slot is free, or every slot so
+        // far holds one and a new one fits the reservation.
+        let index = match lane.slots.iter().position(Slot::is_free) {
+            Some(index) => index,
+            None => {
+                lane.slots.push(Slot::EMPTY);
+                lane.slots.len() - 1
+            }
         };
-        owned.payload[..payload.len()].copy_from_slice(payload);
+        lane.slots[index].fill(destination, payload, priority, now, expires_at, sequence);
+        lane.record_enqueue();
         self.sequence = self.sequence.wrapping_add(1);
-        match kind {
-            QueueKind::Unicast => self.unicast.push(owned),
-            QueueKind::Broadcast => self.broadcast.push(owned),
-        }
-        let depth = match kind {
-            QueueKind::Unicast => self.unicast.len(),
-            QueueKind::Broadcast => self.broadcast.len(),
-        };
-        self.counters_mut(kind).record_enqueue(depth);
         Ok(())
     }
 
-    fn expire(&mut self, now: u64) -> usize {
-        let mut removed = 0;
-        let mut index = 0;
-        while index < self.unicast.len() {
-            if expired(self.unicast[index].expires_at, now) {
-                self.unicast.remove(index);
-                self.unicast_counters.record_drop_expired();
-                self.unicast_counters.record_dequeue(self.unicast.len());
-                removed += 1;
-            } else {
-                index += 1;
-            }
-        }
-        let mut index = 0;
-        while index < self.broadcast.len() {
-            if expired(self.broadcast[index].expires_at, now) {
-                self.broadcast.remove(index);
-                self.broadcast_counters.record_drop_expired();
-                self.broadcast_counters.record_dequeue(self.broadcast.len());
-                removed += 1;
-            } else {
-                index += 1;
-            }
-        }
-        removed
+    fn expire(&mut self, now: Instant) -> usize {
+        self.unicast.expire(now) + self.broadcast.expire(now)
     }
 
-    fn peek(&self, now: u64) -> Option<QueueItemInfo> {
+    fn peek(&self, now: Instant) -> Option<QueueItemInfo> {
         self.select(now).map(|selected| selected.2)
     }
 
-    fn peek_kind(&self, kind: QueueKind, now: u64) -> Option<QueueItemInfo> {
-        self.select_kind(kind, now).map(|selected| selected.1)
+    fn peek_kind(&self, kind: QueueKind, now: Instant) -> Option<QueueItemInfo> {
+        self.select_kind(kind, now).map(|selected| selected.2)
     }
 
-    fn dequeue_kind_into(
+    fn dequeue_kind(
         &mut self,
         kind: QueueKind,
-        now: u64,
-        scratch: &mut [u8],
-    ) -> Result<Option<DequeuedNpdu>, QueueRejectReason> {
+        now: Instant,
+        max_len: usize,
+    ) -> Result<Option<DequeuedNpdu<'_>>, QueueRefusal> {
         self.expire(now);
-        let Some((index, info)) = self.select_kind(kind, now) else {
+        let Some((_, index, info)) = self.select_kind(kind, now) else {
             return Ok(None);
         };
-        let item = match kind {
-            QueueKind::Unicast => self.unicast.remove(index),
-            QueueKind::Broadcast => self.broadcast.remove(index),
-        };
-        if scratch.len() < info.len {
-            let depth = self.depth(kind);
-            let counters = self.counters_mut(kind);
-            counters.record_dequeue(depth);
-            counters.record_drop_oversize();
-            return Err(QueueRejectReason::Oversize);
+        self.lane_mut(kind).remove(index);
+        if info.len > max_len {
+            self.lane_mut(kind).counters.record_drop_oversize();
+            return Err(QueueRefusal::Oversize);
         }
-        let depth = self.depth(kind);
-        self.counters_mut(kind).record_dequeue(depth);
-        self.bump_waits();
-        scratch[..item.len].copy_from_slice(&item.payload[..item.len]);
+        self.unicast.bump_waits();
+        self.broadcast.bump_waits();
         Ok(Some(DequeuedNpdu {
-            destination: item.destination,
+            destination: info.destination,
             kind,
-            priority: item.priority,
-            len: item.len,
-            sequence: item.sequence,
+            priority: info.priority,
+            sequence: info.sequence,
+            npdu: self.lane(kind).slots[index].payload(),
         }))
     }
 
     fn depth(&self, kind: QueueKind) -> usize {
-        match kind {
-            QueueKind::Unicast => self.unicast.len(),
-            QueueKind::Broadcast => self.broadcast.len(),
-        }
+        self.lane(kind).depth
     }
 
-    fn stats(&self, kind: QueueKind) -> QueueCounters {
-        match kind {
-            QueueKind::Unicast => self.unicast_counters,
-            QueueKind::Broadcast => self.broadcast_counters,
-        }
+    fn counters(&self, kind: QueueKind) -> QueueCounters {
+        self.lane(kind).counters
+    }
+
+    fn take_counters(&mut self, kind: QueueKind) -> QueueCounters {
+        self.lane_mut(kind).counters.take()
     }
 }

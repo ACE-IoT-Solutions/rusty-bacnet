@@ -15,6 +15,7 @@ use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetEventParameter, BACnetPropertyStates,
 };
 use bacnet_types::enums::EventType;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::BACnetTimeStamp;
 
 /// Database: BI-1 monitored by a COS enrollment (EE-7) referencing
@@ -143,7 +144,9 @@ fn ee_acknowledge_to_normal_bit() {
     let (mut db, ee_oid) = make_db_with_ack_required_ee();
     db.get_mut(&ee_oid)
         .unwrap()
-        .commit_event_transition_internal(bacnet_objects::event::EventTransitionCommit {
+        .event_reporting_mut()
+        .unwrap()
+        .commit_event_transition(bacnet_objects::event::EventTransitionCommit {
             change: bacnet_objects::event::EventStateChange {
                 from: EventState::NORMAL,
                 to: EventState::HIGH_LIMIT,
@@ -156,7 +159,9 @@ fn ee_acknowledge_to_normal_bit() {
         .unwrap();
     db.get_mut(&ee_oid)
         .unwrap()
-        .commit_event_transition_internal(bacnet_objects::event::EventTransitionCommit {
+        .event_reporting_mut()
+        .unwrap()
+        .commit_event_transition(bacnet_objects::event::EventTransitionCommit {
             change: bacnet_objects::event::EventStateChange {
                 from: EventState::HIGH_LIMIT,
                 to: EventState::NORMAL,
@@ -219,9 +224,9 @@ fn ee_acknowledge_alarm_detection_disabled_refused() {
     )
     .unwrap_err();
     match err {
-        Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::OBJECT.to_raw() as u32);
-            assert_eq!(code, ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32);
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::OBJECT);
+            assert_eq!(code, ErrorCode::NO_ALARM_CONFIGURED);
         }
         other => panic!("expected OBJECT/NO_ALARM_CONFIGURED, got {other:?}"),
     }

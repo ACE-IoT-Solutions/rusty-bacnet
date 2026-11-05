@@ -35,7 +35,8 @@ pub(super) async fn run<T: TransportPort + 'static>(
                 db.follow_event_algorithm_inhibit(&oid);
                 let Some(outcome) = db
                     .get_mut(&oid)
-                    .and_then(|object| object.tick_intrinsic_reporting())
+                    .and_then(|object| object.event_reporting_mut())
+                    .and_then(|reporting| reporting.tick_intrinsic_reporting())
                 else {
                     continue;
                 };
@@ -46,10 +47,11 @@ pub(super) async fn run<T: TransportPort + 'static>(
                 commit.changed(oid);
                 let resolved =
                     BACnetServer::<T>::commit_intrinsic_transition(&mut db, &oid, outcome);
-                if let Some(resolved) = resolved {
-                    if resolved.distribute && resolved.event_values.is_some() {
-                        out.push((oid, resolved));
-                    }
+                if let Some(resolved) = resolved
+                    && resolved.distribute
+                    && resolved.event_values.is_some()
+                {
+                    out.push((oid, resolved));
                 }
             }
             // Each committed transition changes Status_Flags. Timestamped

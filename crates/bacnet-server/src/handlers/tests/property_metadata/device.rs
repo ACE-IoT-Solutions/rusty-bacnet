@@ -1,12 +1,13 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::clock::{ClockFrame, ClockReader};
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::bitstring::ServicesSupported;
 use bacnet_types::enums::{Segmentation, ServiceSupported};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, PropertyValue, Time};
 use std::sync::{Arc, Mutex};
-use PropertyIdentifier as P;
 
 struct TestClock(Mutex<Option<ClockFrame>>);
 
@@ -63,13 +64,13 @@ fn rpm_device_property_metadata_pics_and_database_are_exact() {
         Segmentation::TRANSMIT,
         Segmentation::RECEIVE,
         Segmentation::BOTH,
-        Segmentation::from_raw(64),
     ] {
         let mut db = ObjectDatabase::new();
         let mut object = DeviceObject::new(DeviceConfig {
-            instance: 77,
-            name: "Device metadata".into(),
-            segmentation_supported,
+            identity: bacnet_objects::DeviceIdentity::new(77, 0)
+                .expect("valid Device identity")
+                .with_name("Device metadata")
+                .with_segmentation(segmentation_supported),
             ..DeviceConfig::default()
         })
         .unwrap();
@@ -107,8 +108,22 @@ fn rpm_device_property_metadata_pics_and_database_are_exact() {
             assert_eq!(db.find_by_type(ObjectType::DEVICE), vec![oid]);
             assert_eq!(db.list_objects(), vec![oid]);
             let object = db.get(&oid).unwrap();
-            assert_eq!(object.property_list().as_ref(), all);
-            assert_eq!(object.required_properties().as_ref(), required);
+            // Property_List leaves out the identity properties and itself
+            // (Clause 12.1.1.4.1).
+            let rows = object.property_metadata();
+            let listed: Vec<_> = all
+                .iter()
+                .copied()
+                .filter(|&p| bacnet_objects::property_metadata::in_property_list(p))
+                .collect();
+            assert_eq!(
+                bacnet_objects::property_metadata::property_list(&rows).collect::<Vec<_>>(),
+                listed
+            );
+            assert_eq!(
+                bacnet_objects::property_metadata::required_properties(&rows).collect::<Vec<_>>(),
+                required
+            );
             for property in [
                 P::LOCAL_DATE,
                 P::LOCAL_TIME,
@@ -119,9 +134,11 @@ fn rpm_device_property_metadata_pics_and_database_are_exact() {
                 if state == 1 {
                     read.unwrap();
                 } else {
-                    assert!(matches!(read, Err(Error::Protocol { class, code })
-                        if class == bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32
-                            && code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32));
+                    assert!(
+                        matches!(read, Err(Error::Remote(RemoteError::Error { class, code }))
+                        if class == bacnet_types::enums::ErrorClass::PROPERTY
+                            && code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY)
+                    );
                 }
             }
             let PropertyValue::BitString { unused_bits, data } = object
@@ -169,7 +186,8 @@ fn rpm_device_property_metadata_pics_and_database_are_exact() {
                 &db,
                 &crate::server::ServerConfig::default(),
                 &crate::pics::PicsConfig::default(),
-            );
+            )
+            .instance_types_only(&db);
             assert_eq!(pics.supported_object_types.len(), 1);
             let support = &pics.supported_object_types[0];
             assert_eq!(support.object_type, ObjectType::DEVICE);

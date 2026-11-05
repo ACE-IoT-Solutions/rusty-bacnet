@@ -19,7 +19,7 @@ fn requester_and_responder(policy: ReplyPolicy) -> Sim {
 fn requester_and_responder_with(config: SimConfig, policy: ReplyPolicy) -> Sim {
     let mut sim = Sim::new(config);
     sim.add_master(MasterSpec::new(0, 3, BAUD));
-    sim.add_master(MasterSpec::new(3, 3, BAUD).reply(policy));
+    sim.add_master(MasterSpec::new(3, 3, BAUD).application(policy));
     sim.enqueue(ms(1_000), 0, 3, &npdu(true, 7));
     sim
 }
@@ -28,7 +28,7 @@ fn the_request(frames: &[WireFrame]) -> (usize, &WireFrame) {
     frames
         .iter()
         .enumerate()
-        .find(|(_, frame)| frame.is(FrameType::BACnetDataExpectingReply, 0, 3))
+        .find(|(_, frame)| frame.is(FrameType::BACNET_DATA_EXPECTING_REPLY, 0, 3))
         .expect("station 0 sends the request")
 }
 
@@ -37,7 +37,7 @@ fn run_to_request(sim: &mut Sim) -> Instant {
     while !sim
         .frames()
         .iter()
-        .any(|frame| frame.is(FrameType::BACnetDataExpectingReply, 0, 3))
+        .any(|frame| frame.is(FrameType::BACNET_DATA_EXPECTING_REPLY, 0, 3))
     {
         assert!(sim.now() < ms(3_000), "no request by 3 s");
         sim.run_for(millis(1));
@@ -62,19 +62,20 @@ fn a_request_is_answered_inside_treply_delay() {
     let (index, request) = the_request(frames);
     let reply = &frames[index + 1];
     assert!(
-        reply.is(FrameType::BACnetDataNotExpectingReply, 3, 0),
+        reply.is(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 3, 0),
         "{reply}"
     );
     assert_eq!(reply.data, ANSWER);
     assert_eq!(reply.start, request.end + millis(5));
     let pass = &frames[index + 2];
-    assert!(pass.is(FrameType::Token, 0, 3), "{pass}");
+    assert!(pass.is(FrameType::TOKEN, 0, 3), "{pass}");
     assert_eq!(pass.start, reply.end + sim.timing().bits(40));
     assert!(sim.deliveries(3).iter().any(|delivery| delivery.request));
-    assert!(sim
-        .deliveries(0)
-        .iter()
-        .any(|delivery| delivery.data == ANSWER));
+    assert!(
+        sim.deliveries(0)
+            .iter()
+            .any(|delivery| delivery.data == ANSWER)
+    );
     assert_eq!(sim.core(3).unwrap().counters().late_replies, 0);
     assert!(!sim.perturbed());
 }
@@ -95,23 +96,27 @@ fn a_slow_application_gets_reply_postponed_and_answers_with_the_token() {
     let frames = sim.frames();
     let (index, request) = the_request(frames);
     let postponed = &frames[index + 1];
-    assert!(postponed.is(FrameType::ReplyPostponed, 3, 0), "{postponed}");
+    assert!(
+        postponed.is(FrameType::REPLY_POSTPONED, 3, 0),
+        "{postponed}"
+    );
     assert_eq!(postponed.start, request.end + millis(225));
     let pass = &frames[index + 2];
-    assert!(pass.is(FrameType::Token, 0, 3), "{pass}");
+    assert!(pass.is(FrameType::TOKEN, 0, 3), "{pass}");
     assert_eq!(pass.start, postponed.end + sim.timing().bits(40));
 
     let answer = first_after(frames, pass.end, |frame| {
-        frame.is(FrameType::BACnetDataNotExpectingReply, 3, 0)
+        frame.is(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 3, 0)
     })
     .expect("the answer follows with a later token");
     assert_eq!(answer.data, ANSWER);
     assert!(answer.start > request.end + millis(240));
     assert_eq!(sim.report().late_answers, 1);
-    assert!(sim
-        .deliveries(0)
-        .iter()
-        .any(|delivery| delivery.data == ANSWER));
+    assert!(
+        sim.deliveries(0)
+            .iter()
+            .any(|delivery| delivery.data == ANSWER)
+    );
     sim.assert_no_violations();
 }
 
@@ -125,12 +130,14 @@ fn an_application_may_postpone_at_once() {
     sim.run_until(ms(2_000));
     let frames = sim.frames();
     let (index, request) = the_request(frames);
-    assert!(frames[index + 1].is(FrameType::ReplyPostponed, 3, 0));
+    assert!(frames[index + 1].is(FrameType::REPLY_POSTPONED, 3, 0));
     assert_eq!(frames[index + 1].start, request.end + millis(10));
-    assert!(first_after(frames, frames[index + 1].end, |frame| {
-        frame.is(FrameType::BACnetDataNotExpectingReply, 3, 0) && frame.data == ANSWER
-    })
-    .is_some());
+    assert!(
+        first_after(frames, frames[index + 1].end, |frame| {
+            frame.is(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 3, 0) && frame.data == ANSWER
+        })
+        .is_some()
+    );
     assert_eq!(sim.report().late_answers, 0);
     assert!(!sim.perturbed());
 }
@@ -150,17 +157,17 @@ fn with_no_answer_the_requester_waits_treply_timeout() {
     let frames = sim.frames();
     let index = frames
         .iter()
-        .position(|frame| frame.is(FrameType::BACnetDataExpectingReply, 0, 7))
+        .position(|frame| frame.is(FrameType::BACNET_DATA_EXPECTING_REPLY, 0, 7))
         .expect("the request");
     let request = &frames[index];
     let pass = &frames[index + 1];
-    assert!(pass.is(FrameType::Token, 0, 3), "{pass}");
+    assert!(pass.is(FrameType::TOKEN, 0, 3), "{pass}");
     assert_eq!(pass.start, request.end + millis(255));
     let data = first_after(frames, pass.end, |frame| {
-        frame.is(FrameType::BACnetDataNotExpectingReply, 0, 3)
+        frame.is(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 0, 3)
     })
     .expect("the other frame goes with the next token");
-    let token_back = first_after(frames, pass.end, |frame| frame.is(FrameType::Token, 3, 0))
+    let token_back = first_after(frames, pass.end, |frame| frame.is(FrameType::TOKEN, 3, 0))
         .expect("the token comes back");
     assert!(data.start > token_back.end);
     assert!(!sim.perturbed());
@@ -223,22 +230,23 @@ fn a_reply_the_adapter_starts_late_goes_out_until_the_requester_may_give_up() {
     let reply = first_after(frames, request_end, |frame| frame.source() == Some(3))
         .expect("the late reply");
     assert!(
-        reply.is(FrameType::BACnetDataNotExpectingReply, 3, 0),
+        reply.is(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 3, 0),
         "{reply}"
     );
     assert_eq!(reply.start, request_end + millis(252));
     assert_eq!(sim.core(3).unwrap().counters().late_replies, 1);
-    assert!(sim
-        .deliveries(0)
-        .iter()
-        .any(|delivery| delivery.data == ANSWER));
+    assert!(
+        sim.deliveries(0)
+            .iter()
+            .any(|delivery| delivery.data == ANSWER)
+    );
     sim.assert_no_violations();
 
     // Would start at 260 ms: withheld, and the requester times out at 255 ms.
     let (sim, request_end) = outcome(40);
     let frames = sim.frames();
     let next = first_after(frames, request_end, |_| true).expect("a frame after the request");
-    assert!(next.is(FrameType::Token, 0, 3), "{next}");
+    assert!(next.is(FrameType::TOKEN, 0, 3), "{next}");
     assert_eq!(next.start, request_end + millis(255));
     // Taken back before the adapter got to it: no start was refused.
     assert_eq!(sim.report().refused_starts, 0);

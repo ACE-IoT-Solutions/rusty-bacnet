@@ -48,15 +48,17 @@ async fn list_validation_invalid_requests_do_not_admit_or_send() {
             .await
             .unwrap()
             .unwrap_err();
-            assert!(matches!(error, Error::Encoding(_)));
-            assert_eq!(client.tsm.lock().await.coordinated_active_count(), 0);
-            assert_eq!(client.tsm.lock().await.pending_count(), 0);
+            assert!(matches!(error, Error::Encode(_)));
+            assert_eq!(client.tsm.lock().coordinated_active_count(), 0);
+            assert_eq!(client.tsm.lock().pending_count(), 0);
             assert!(received.try_recv().is_err());
         }
     }
-    assert!(timeout(Duration::from_millis(25), received.recv())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(25), received.recv())
+            .await
+            .is_err()
+    );
     client.stop().await.unwrap();
     peer.stop().await.unwrap();
 }
@@ -136,7 +138,7 @@ async fn list_validation_both_services_preserve_structural_values_and_exact_wire
                 };
                 let (result, ()) = tokio::join!(send, reply);
                 result.unwrap();
-                assert_eq!(client.tsm.lock().await.coordinated_active_count(), 0);
+                assert_eq!(client.tsm.lock().coordinated_active_count(), 0);
             }
         }
     }

@@ -27,11 +27,11 @@ fn a_new_master_is_found_by_maintenance_polling() {
     let frames = sim.frames();
 
     let reply = first_after(frames, ms(1_500), |frame| {
-        frame.is(FrameType::ReplyToPollForMaster, 6, 3)
+        frame.is(FrameType::REPLY_TO_POLL_FOR_MASTER, 6, 3)
     })
     .expect("station 6 answers station 3's maintenance poll");
     // Station 3 walked 4 and 5 first, one per token use.
-    let polls: Vec<u8> = sent_by(frames, 3, FrameType::PollForMaster)
+    let polls: Vec<u8> = sent_by(frames, 3, FrameType::POLL_FOR_MASTER)
         .into_iter()
         .filter(|poll| poll.start > ms(1_500) && poll.end <= reply.start)
         .filter_map(|poll| poll.destination())
@@ -48,7 +48,7 @@ fn a_new_master_is_found_by_maintenance_polling() {
         .collect();
     assert_eq!(passes[0], (3, 6));
     // Station 6 starts with no successor, polls 7..=10, and hands on to 10.
-    let sweep: Vec<u8> = sent_by(frames, 6, FrameType::PollForMaster)
+    let sweep: Vec<u8> = sent_by(frames, 6, FrameType::POLL_FOR_MASTER)
         .into_iter()
         .take(4)
         .filter_map(|poll| poll.destination())
@@ -75,19 +75,19 @@ fn a_dead_successor_gets_one_retry_then_is_replaced() {
 
     let index = frames
         .iter()
-        .position(|frame| frame.start > ms(2_000) && frame.is(FrameType::Token, 3, 10))
+        .position(|frame| frame.start > ms(2_000) && frame.is(FrameType::TOKEN, 3, 10))
         .expect("station 3 passes to the dead station");
     let first = &frames[index];
     let retry = &frames[index + 1];
-    assert!(retry.is(FrameType::Token, 3, 10), "{retry}");
+    assert!(retry.is(FrameType::TOKEN, 3, 10), "{retry}");
     assert_eq!(retry.start, first.end + usage_timeout);
     let poll = &frames[index + 2];
-    assert!(poll.is(FrameType::PollForMaster, 3, 11), "{poll}");
+    assert!(poll.is(FrameType::POLL_FOR_MASTER, 3, 11), "{poll}");
     assert_eq!(poll.start, retry.end + usage_timeout);
     assert_eq!(sim.core(3).unwrap().counters().token_retries, 1);
 
     let answer = first_after(frames, poll.start, |frame| {
-        frame.frame_type() == Some(FrameType::ReplyToPollForMaster)
+        frame.frame_type() == Some(FrameType::REPLY_TO_POLL_FOR_MASTER)
     })
     .expect("a new successor answers");
     assert_eq!(answer.source(), Some(30));
@@ -111,7 +111,7 @@ fn a_dead_successor_just_below_the_passer_leaves_it_sole_master() {
     let mut sim = ring(BAUD, &[4, 5], 5);
     // Station 4 dies just after handing the token to 5.
     run_until_frame(&mut sim, ms(1_500), ms(2_000), |frame| {
-        frame.is(FrameType::Token, 4, 5)
+        frame.is(FrameType::TOKEN, 4, 5)
     });
     assert_eq!(sim.core(5).unwrap().snapshot().next_station, 4);
     let now = sim.now();
@@ -120,12 +120,12 @@ fn a_dead_successor_just_below_the_passer_leaves_it_sole_master() {
     let frames = sim.frames();
     let index = frames
         .iter()
-        .position(|frame| frame.start > now && frame.is(FrameType::Token, 5, 4))
+        .position(|frame| frame.start > now && frame.is(FrameType::TOKEN, 5, 4))
         .expect("station 5 passes to the dead station");
-    assert!(frames[index + 1].is(FrameType::Token, 5, 4));
+    assert!(frames[index + 1].is(FrameType::TOKEN, 5, 4));
     let sweep: Vec<u8> = frames[index + 2..index + 7]
         .iter()
-        .filter(|frame| frame.frame_type() == Some(FrameType::PollForMaster))
+        .filter(|frame| frame.frame_type() == Some(FrameType::POLL_FOR_MASTER))
         .filter_map(|frame| frame.destination())
         .collect();
     assert_eq!(sweep, [0, 1, 2, 3, 4]);
@@ -141,7 +141,7 @@ fn a_dead_successor_just_below_the_passer_leaves_it_sole_master() {
 fn four_octets_from_a_successor_are_not_enough_to_let_go() {
     let mut sim = ring(BAUD, &[4, 5], 5);
     run_until_frame(&mut sim, ms(1_500), ms(2_000), |frame| {
-        frame.is(FrameType::Token, 5, 4)
+        frame.is(FrameType::TOKEN, 5, 4)
     });
     let now = sim.now();
     sim.inject(
@@ -159,7 +159,7 @@ fn four_octets_from_a_successor_are_not_enough_to_let_go() {
         .expect("station 4 is cut off");
     assert_eq!(cut.end - cut.start, sim.timing().boundary(4));
     let again = first_after(frames, cut.end, |_| true).expect("station 5 goes on");
-    assert!(again.is(FrameType::Token, 5, 4), "{again}");
+    assert!(again.is(FrameType::TOKEN, 5, 4), "{again}");
     assert_eq!(again.start, cut.end + millis(20));
     sim.assert_no_violations();
 }
@@ -177,14 +177,14 @@ fn a_master_back_before_it_is_replaced_takes_the_next_token() {
     let frames = sim.frames();
     let index = frames
         .iter()
-        .position(|frame| frame.start > ms(2_400) && frame.is(FrameType::Token, 3, 10))
+        .position(|frame| frame.start > ms(2_400) && frame.is(FrameType::TOKEN, 3, 10))
         .expect("station 3 still passes to 10");
     let next = &frames[index + 1];
-    assert!(next.is(FrameType::PollForMaster, 10, 11), "{next}");
+    assert!(next.is(FrameType::POLL_FOR_MASTER, 10, 11), "{next}");
     assert_eq!(next.start, frames[index].end + sim.timing().bits(40));
-    assert!(!frames
-        .iter()
-        .any(|frame| frame.start > ms(2_000) && frame.is(FrameType::ReplyToPollForMaster, 10, 3)));
+    assert!(!frames.iter().any(
+        |frame| frame.start > ms(2_000) && frame.is(FrameType::REPLY_TO_POLL_FOR_MASTER, 10, 3)
+    ));
     assert_eq!(
         token_users(frames, next.end)
             .into_iter()
@@ -207,7 +207,7 @@ fn a_replaced_master_is_polled_back_in() {
     sim.run_until(ms(9_000));
     let frames = sim.frames();
     let rejoined = first_after(frames, ms(4_000), |frame| {
-        frame.is(FrameType::ReplyToPollForMaster, 10, 3)
+        frame.is(FrameType::REPLY_TO_POLL_FOR_MASTER, 10, 3)
     })
     .expect("station 3 polls 10 back in");
     assert_eq!(

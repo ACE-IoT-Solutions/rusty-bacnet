@@ -1,7 +1,7 @@
 //! Consumer-level proof: ClientOnly recipient writes need no private DB access.
-use bacnet_encoding::apdu::{decode_apdu, Apdu};
-use bacnet_endpoint::{bip::BipEndpointBuilder, session::SessionRole, DeviceIdentity};
-use bacnet_network::layer::{NetworkLayer, ReceivedApdu};
+use bacnet_encoding::apdu::{Apdu, decode_apdu};
+use bacnet_endpoint::{DeviceIdentity, bip::BipEndpointBuilder, session::SessionRole};
+use bacnet_network::layer::NetworkLayer;
 use bacnet_objects::audit::AuditReporterObject;
 use bacnet_services::audit::AuditNotificationRequest;
 use bacnet_transport::{bip::BipTransport, bvll::decode_bip_mac};
@@ -11,10 +11,7 @@ use bacnet_types::{
     primitives::ObjectIdentifier,
 };
 use std::net::{Ipv4Addr, SocketAddrV4};
-use tokio::{
-    sync::mpsc,
-    time::{timeout, Duration},
-};
+use tokio::time::{Duration, timeout};
 
 fn oid(kind: ObjectType, instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(kind, instance).unwrap()
@@ -24,7 +21,7 @@ fn device(instance: u32) -> BACnetRecipient {
 }
 async fn logger() -> (
     NetworkLayer<BipTransport>,
-    mpsc::Receiver<ReceivedApdu>,
+    bacnet_network::layer::ApduReceiver,
     SocketAddrV4,
 ) {
     let mut net = NetworkLayer::new(BipTransport::new(
@@ -36,7 +33,7 @@ async fn logger() -> (
     let (ip, port) = decode_bip_mac(net.local_mac()).unwrap();
     (net, rx, SocketAddrV4::new(ip.into(), port))
 }
-async fn record(rx: &mut mpsc::Receiver<ReceivedApdu>) -> BACnetAuditNotification {
+async fn record(rx: &mut bacnet_network::layer::ApduReceiver) -> BACnetAuditNotification {
     let packet = timeout(Duration::from_secs(2), rx.recv())
         .await
         .unwrap()
@@ -80,10 +77,12 @@ async fn client_only_public_recipient_write_delivers_old_and_new_and_preserves_n
         .build_session()
         .unwrap()
         .with_source_audit_reporter(oid(ObjectType::AUDIT_REPORTER, 1));
-    assert!(session
-        .write_audit_recipient(Some(device(1000)))
-        .await
-        .is_err());
+    assert!(
+        session
+            .write_audit_recipient(Some(device(1000)))
+            .await
+            .is_err()
+    );
     session.start().await.unwrap();
     assert!(old_rx.try_recv().is_err() && new_rx.try_recv().is_err());
     session
@@ -108,17 +107,21 @@ async fn client_only_public_recipient_write_delivers_old_and_new_and_preserves_n
         .write_audit_recipient(Some(device(1000)))
         .await
         .unwrap();
-    assert!(session
-        .write_audit_recipient(Some(device(1001)))
-        .await
-        .is_err());
-    assert!(session
-        .write_audit_recipient(Some(BACnetRecipient::Device(oid(
-            ObjectType::ANALOG_VALUE,
-            1
-        ))))
-        .await
-        .is_err());
+    assert!(
+        session
+            .write_audit_recipient(Some(device(1001)))
+            .await
+            .is_err()
+    );
+    assert!(
+        session
+            .write_audit_recipient(Some(BACnetRecipient::Device(oid(
+                ObjectType::ANALOG_VALUE,
+                1
+            ))))
+            .await
+            .is_err()
+    );
     session
         .write_audit_recipient(Some(device(999)))
         .await

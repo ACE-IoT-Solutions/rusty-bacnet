@@ -1,13 +1,13 @@
 use super::cov_clock::cov_multiple_datetime;
 use super::*;
-use crate::server::test_transport::{SendLog, SendMode, TestTransport, BIP_LOCAL_MAC};
+use crate::server::test_transport::{BIP_LOCAL_MAC, SendLog, SendMode, TestTransport};
 use bacnet_encoding::apdu::decode_apdu;
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_objects::analog::AnalogOutputObject;
 use bacnet_objects::clock::{ClockFrame, ClockReader};
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_services::cov_multiple::{COVNotificationItem, COVNotificationValue};
-use bacnet_types::enums::ObjectType;
+use bacnet_types::enums::{EngineeringUnits, ObjectType};
 use bacnet_types::primitives::{Date, Time};
 use bytes::Bytes;
 use std::sync::Arc as StdArc;
@@ -250,15 +250,18 @@ async fn cov_property_multiple_subscription_uses_multiple_notification_on_change
 
     let mut db = ObjectDatabase::new();
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "COV-Multiple-Test".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("COV-Multiple-Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
     device.set_object_list(vec![device_oid, ao_oid]);
     db.add(Box::new(device)).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
 
     let db = Arc::new(RwLock::new(db));
     let cov_table = Arc::new(RwLock::new(CovSubscriptionTable::new()));
@@ -273,7 +276,9 @@ async fn cov_property_multiple_subscription_uses_multiple_notification_on_change
                     subscriber_process_identifier: 7,
                     monitored_object_identifier: ao_oid,
                     issue_confirmed_notifications: false,
-                    expires_at: Some(runtime_clock::now() + Duration::from_secs(300)),
+                    expires_at: Some(
+                        crate::runtime_clock::core_now() + bacnet_time::Duration::from_secs(300),
+                    ),
                     last_notified_observation: None,
                     monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
                     monitored_property_array_index: None,
@@ -363,15 +368,18 @@ async fn capture_timestamped_cov_multiple(
         db.set_clock_reader(Some(StdArc::new(FixedClock(frame))));
     }
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "Timestamped-COV-Multiple-Test".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("Timestamped-COV-Multiple-Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
     device.set_object_list(vec![device_oid, ao_oid]);
     db.add(Box::new(device)).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
 
     let db = Arc::new(RwLock::new(db));
     let cov_table = Arc::new(RwLock::new(CovSubscriptionTable::new()));
@@ -385,7 +393,9 @@ async fn capture_timestamped_cov_multiple(
                     subscriber_process_identifier: 7,
                     monitored_object_identifier: ao_oid,
                     issue_confirmed_notifications: false,
-                    expires_at: Some(runtime_clock::now() + Duration::from_secs(300)),
+                    expires_at: Some(
+                        crate::runtime_clock::core_now() + bacnet_time::Duration::from_secs(300),
+                    ),
                     last_notified_observation: None,
                     monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
                     monitored_property_array_index: None,
@@ -405,7 +415,10 @@ async fn capture_timestamped_cov_multiple(
                         subscriber_process_identifier: 7,
                         monitored_object_identifier: ao_oid,
                         issue_confirmed_notifications: false,
-                        expires_at: Some(runtime_clock::now() + Duration::from_secs(300)),
+                        expires_at: Some(
+                            crate::runtime_clock::core_now()
+                                + bacnet_time::Duration::from_secs(300),
+                        ),
                         last_notified_observation: None,
                         monitored_property: Some(PropertyIdentifier::STATUS_FLAGS),
                         monitored_property_array_index: None,
@@ -492,15 +505,18 @@ async fn confirmed_cov_single_and_multiple_retries_retain_their_leases() {
 
     let mut db = clocked_test_database();
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1234,
-        name: "Confirmed-COV-Retry-Test".into(),
+        identity: bacnet_objects::DeviceIdentity::new(1234, 0)
+            .expect("valid Device identity")
+            .with_name("Confirmed-COV-Retry-Test"),
         ..DeviceConfig::default()
     })
     .unwrap();
     device.set_object_list(vec![device_oid, ao_oid]);
     db.add(Box::new(device)).unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
 
     let db = Arc::new(RwLock::new(db));
     let cov_table = Arc::new(RwLock::new(CovSubscriptionTable::new()));
@@ -519,8 +535,9 @@ async fn confirmed_cov_single_and_multiple_retries_retain_their_leases() {
                         monitored_object_identifier: ao_oid,
                         issue_confirmed_notifications: true,
                         // A Multiple context always has a finite lifetime.
-                        expires_at: (notification_kind == CovNotificationKind::Multiple)
-                            .then(|| runtime_clock::now() + Duration::from_secs(3600)),
+                        expires_at: (notification_kind == CovNotificationKind::Multiple).then(
+                            || runtime_clock::core_now() + bacnet_time::Duration::from_secs(3600),
+                        ),
                         last_notified_observation: None,
                         monitored_property: Some(PropertyIdentifier::PRESENT_VALUE),
                         monitored_property_array_index: None,
@@ -534,8 +551,10 @@ async fn confirmed_cov_single_and_multiple_retries_retain_their_leases() {
         }
     }
     let config = Arc::new(ServerConfig {
+        device: bacnet_objects::DeviceIdentity::default()
+            .with_max_apdu(1474)
+            .expect("valid Device APDU"),
         cov_retry_timeout_ms: 100,
-        max_apdu_length: 1474,
         ..ServerConfig::default()
     });
 

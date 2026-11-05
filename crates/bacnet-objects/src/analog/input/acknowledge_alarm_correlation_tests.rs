@@ -1,11 +1,14 @@
 use super::*;
+use crate::traits::EventReporting as _;
+use bacnet_types::error::RemoteError;
 
 use crate::event::{EventStateChange, EventTransition, EventTransitionCommit, PendingTransition};
 
 fn committed_input() -> AnalogInputObject {
-    let mut object = AnalogInputObject::new(1, "AI-correlated", 62).unwrap();
+    let mut object =
+        AnalogInputObject::new(1, "AI-correlated", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     object
-        .commit_event_transition_internal(EventTransitionCommit {
+        .commit_event_transition(EventTransitionCommit {
             change: EventStateChange {
                 from: EventState::NORMAL,
                 to: EventState::HIGH_LIMIT,
@@ -27,9 +30,9 @@ fn committed_input() -> AnalogInputObject {
 fn assert_invalid_event_state(error: Error) {
     assert!(matches!(
         error,
-        Error::Protocol { class, code }
-            if class == ErrorClass::SERVICES.to_raw() as u32
-                && code == ErrorCode::INVALID_EVENT_STATE.to_raw() as u32
+        Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::SERVICES
+                && code == ErrorCode::INVALID_EVENT_STATE
     ));
 }
 
@@ -45,10 +48,7 @@ fn rejected_correlation_preserves_detector_pending_and_all_event_history() {
     );
 
     let error = object
-        .acknowledge_alarm_correlated_internal(
-            EventState::LOW_LIMIT,
-            &BACnetTimeStamp::SequenceNumber(99),
-        )
+        .acknowledge_alarm(EventState::LOW_LIMIT, &BACnetTimeStamp::SequenceNumber(99))
         .unwrap_err();
 
     assert_invalid_event_state(error);
@@ -77,10 +77,7 @@ fn idempotent_valid_correlation_changes_no_detector_or_history_state() {
     );
 
     object
-        .acknowledge_alarm_correlated_internal(
-            EventState::HIGH_LIMIT,
-            &BACnetTimeStamp::SequenceNumber(42),
-        )
+        .acknowledge_alarm(EventState::HIGH_LIMIT, &BACnetTimeStamp::SequenceNumber(42))
         .unwrap();
 
     assert_eq!(

@@ -6,6 +6,7 @@ use super::*;
 use crate::traits::BACnetObject;
 use bacnet_types::constructed::BACnetColorCommand;
 use bacnet_types::enums::{ColorOperation as Op, ErrorClass, ErrorCode, PropertyIdentifier};
+use bacnet_types::error::RemoteError;
 
 /// D65 white, where a new Color object starts.
 const D65: BACnetXyColor = BACnetXyColor::new(0.3127, 0.3290);
@@ -14,9 +15,9 @@ const CC: PropertyIdentifier = PropertyIdentifier::COLOR_COMMAND;
 
 fn assert_error<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32, "expected {expected:?}");
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected, "expected {expected:?}");
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }
@@ -360,17 +361,22 @@ fn color_objects_no_longer_answer_to_508_to_511() {
     for object in objects {
         for raw in [508, 509, 510, 511] {
             let property = PropertyIdentifier::from_raw(raw);
-            assert!(!object.property_list().contains(&property));
+            assert!(!crate::property_metadata::has_property(
+                &object.property_metadata(),
+                property
+            ));
             assert_error(
                 object.read_property(property, None),
                 ErrorCode::UNKNOWN_PROPERTY,
             );
         }
-        let list = object.property_list();
+        let list = crate::test_rows::listed(&object.property_metadata());
         assert!(list.contains(&PropertyIdentifier::from_raw(4_194_334)));
-        assert!(object
-            .read_property(PropertyIdentifier::from_raw(4_194_334), None)
-            .is_ok());
+        assert!(
+            object
+                .read_property(PropertyIdentifier::from_raw(4_194_334), None)
+                .is_ok()
+        );
     }
     let color = ColorObject::new(1, "CLR-1").unwrap();
     assert_eq!(

@@ -24,9 +24,9 @@
 //!    bytes). The Requesting Source is fingerprint bytes inside the request,
 //!    NEVER an authenticated identity.
 //! 3. Post-TTL expiry executes fresh (it does not mask a new operation).
-//! 4. Replay path has zero side effects: no mutation, no authorizer
+//! 4. Replay path has zero side effects: no mutation, no policy
 //!    re-invocation, no COV/event/reset re-fire — byte resend only.
-//! 5. Fail-closed authorization is preserved: the authorizer still runs
+//! 5. Fail-closed authorization is preserved: the policy still runs
 //!    outside the database lock on first execution.
 //! 6. No physical-idempotency claim: reset executors own application
 //!    idempotency; replay only shrinks the retransmission window.
@@ -49,7 +49,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
-use super::request_peer::{canonical_requester, CanonicalRequester};
+use super::request_peer::{CanonicalRequester, canonical_requester};
 use crate::runtime_clock;
 use bacnet_encoding::apdu::ConfirmedRequest;
 use bacnet_encoding::npdu::NpduAddress;
@@ -259,11 +259,11 @@ impl Drop for PendingLsoReplay {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Barrier;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use bacnet_types::enums::ConfirmedServiceChoice;
     use bacnet_types::MacAddr;
+    use bacnet_types::enums::ConfirmedServiceChoice;
     use bytes::Bytes;
 
     use super::*;

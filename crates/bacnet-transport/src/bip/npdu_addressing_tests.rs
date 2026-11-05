@@ -1,8 +1,8 @@
 use super::*;
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress};
+use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu};
 use bacnet_types::MacAddr;
 use bytes::{Bytes, BytesMut};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 fn encode_broadcast_npdu(network: u16, hop_count: u8, payload: &'static [u8]) -> Bytes {
     let mut npdu_buf = BytesMut::new();
@@ -31,7 +31,7 @@ async fn send_and_receive_original_broadcast(npdu: &Bytes) -> BvllMessage {
         .await
         .unwrap();
     let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, sink_port, Ipv4Addr::LOCALHOST);
-    transport.socket = Some(Arc::new(super::BipSocket::new(source_socket, None)));
+    transport.wire_for_test(Arc::new(super::BipSocket::new(source_socket, None)));
 
     transport.send_broadcast(npdu).await.unwrap();
 

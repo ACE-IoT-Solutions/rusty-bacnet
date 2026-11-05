@@ -1,6 +1,10 @@
 use super::*;
+use bacnet_device_core::cov::CovNotificationKind;
+use bacnet_time::Duration;
+use bacnet_types::MacAddr;
 use bacnet_types::enums::ObjectType;
-use std::time::Duration;
+use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 fn proposal(index: Option<u32>, confirmed: bool) -> CovSubscription {
     CovSubscription {
@@ -9,11 +13,13 @@ fn proposal(index: Option<u32>, confirmed: bool) -> CovSubscription {
         subscriber_process_identifier: 9,
         monitored_object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_VALUE, 1).unwrap(),
         issue_confirmed_notifications: confirmed,
-        expires_at: Some(Instant::now() + Duration::from_secs(60)),
+        expires_at: Some(crate::runtime_clock::core_now() + Duration::from_secs(60)),
         last_notified_observation: Some(
-            crate::cov::CovObservation::new(
-                crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(1.0))
-                    .unwrap(),
+            bacnet_device_core::cov::CovObservation::new(
+                bacnet_device_core::cov::CovSample::new(
+                    &bacnet_types::primitives::PropertyValue::Real(1.0),
+                )
+                .unwrap(),
                 None,
             )
             .unwrap(),
@@ -31,9 +37,11 @@ fn context(sub: &CovSubscription) -> MultipleContextKey {
 }
 
 fn resource_error(error: Error) {
-    assert!(matches!(error, Error::Protocol { class, code }
-        if class == ErrorClass::RESOURCES.to_raw() as u32
-        && code == ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT.to_raw() as u32));
+    assert!(
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
+        if class == ErrorClass::RESOURCES
+        && code == ErrorCode::NO_SPACE_TO_ADD_LIST_ELEMENT)
+    );
 }
 
 #[test]
@@ -42,69 +50,91 @@ fn cov_identity_generations_never_reuse_across_renew_cancel_or_foreign_table() {
     let sub = proposal(None, false);
     let first = table.admit_for_test(sub.clone(), 0).unwrap();
     let second = table.admit_for_test(sub.clone(), 0).unwrap();
-    assert!(!table.complete_for_test(
-        &first,
-        crate::cov::CovObservation::new(
-            crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(7.0))
+    assert!(
+        !table.complete_for_test(
+            &first,
+            bacnet_device_core::cov::CovObservation::new(
+                bacnet_device_core::cov::CovSample::new(
+                    &bacnet_types::primitives::PropertyValue::Real(7.0)
+                )
                 .unwrap(),
-            None
+                None
+            )
+            .unwrap()
         )
-        .unwrap()
-    ));
-    assert!(table.complete_for_test(
-        &second,
-        crate::cov::CovObservation::new(
-            crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(8.0))
+    );
+    assert!(
+        table.complete_for_test(
+            &second,
+            bacnet_device_core::cov::CovObservation::new(
+                bacnet_device_core::cov::CovSample::new(
+                    &bacnet_types::primitives::PropertyValue::Real(8.0)
+                )
                 .unwrap(),
-            None
+                None
+            )
+            .unwrap()
         )
-        .unwrap()
-    ));
+    );
     assert!(table.unsubscribe(second.key()));
-    assert!(!table.complete_for_test(
-        &second,
-        crate::cov::CovObservation::new(
-            crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(9.0))
+    assert!(
+        !table.complete_for_test(
+            &second,
+            bacnet_device_core::cov::CovObservation::new(
+                bacnet_device_core::cov::CovSample::new(
+                    &bacnet_types::primitives::PropertyValue::Real(9.0)
+                )
                 .unwrap(),
-            None
+                None
+            )
+            .unwrap()
         )
-        .unwrap()
-    ));
+    );
     let third = table.admit_for_test(sub.clone(), 0).unwrap();
-    assert!(!table.complete_for_test(
-        &second,
-        crate::cov::CovObservation::new(
-            crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(9.0))
+    assert!(
+        !table.complete_for_test(
+            &second,
+            bacnet_device_core::cov::CovObservation::new(
+                bacnet_device_core::cov::CovSample::new(
+                    &bacnet_types::primitives::PropertyValue::Real(9.0)
+                )
                 .unwrap(),
-            None
+                None
+            )
+            .unwrap()
         )
-        .unwrap()
-    ));
+    );
     assert_eq!(
         table
             .get_subscription(third.key())
             .unwrap()
             .last_notified_observation,
         Some(
-            crate::cov::CovObservation::new(
-                crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(1.0))
-                    .unwrap(),
+            bacnet_device_core::cov::CovObservation::new(
+                bacnet_device_core::cov::CovSample::new(
+                    &bacnet_types::primitives::PropertyValue::Real(1.0)
+                )
+                .unwrap(),
                 None
             )
             .unwrap()
         )
     );
     let foreign = CovSubscriptionTable::new().admit_for_test(sub, 0).unwrap();
-    assert!(!table.complete_for_test(
-        &foreign,
-        crate::cov::CovObservation::new(
-            crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(99.0))
+    assert!(
+        !table.complete_for_test(
+            &foreign,
+            bacnet_device_core::cov::CovObservation::new(
+                bacnet_device_core::cov::CovSample::new(
+                    &bacnet_types::primitives::PropertyValue::Real(99.0)
+                )
                 .unwrap(),
-            None
+                None
+            )
+            .unwrap()
         )
-        .unwrap()
-    ));
-    assert!(first.generation < second.generation && second.generation < third.generation);
+    );
+    assert!(first.generation() < second.generation() && second.generation() < third.generation());
 }
 
 #[test]
@@ -114,13 +144,13 @@ fn cov_identity_batch_reserves_only_final_duplicates_and_exhaustion_is_atomic() 
     let before = table.admit_for_test(existing.clone(), 0).unwrap();
     let peer = existing.recipient();
     let context = context(&existing);
-    let expiry = Instant::now() + Duration::from_secs(600);
+    let expiry = crate::runtime_clock::core_now() + Duration::from_secs(600);
     let mut replacement = existing.clone();
     replacement.expires_at = Some(expiry);
     replacement.cov_increment = Some(2.0);
     let mut added = replacement.clone();
     added.monitored_property_array_index = Some(0);
-    table.generation = u64::MAX - 1;
+    table.core.set_generation_for_test(u64::MAX - 1);
     let counters = table.counters.snapshot();
     // Generation exhaustion refuses the request as a whole, keeping nothing.
     let exhausted = table
@@ -135,7 +165,7 @@ fn cov_identity_batch_reserves_only_final_duplicates_and_exhaustion_is_atomic() 
         .unwrap_err();
     assert!(exhausted.refused.is_none() && exhausted.committed.is_empty());
     resource_error(exhausted.error);
-    assert_eq!(table.generation, u64::MAX - 1);
+    assert_eq!(table.core.generation_for_test(), u64::MAX - 1);
     assert_eq!(table.len(), 1);
     assert_eq!(
         table.get_subscription(before.key()).unwrap().expires_at,
@@ -179,21 +209,25 @@ fn cov_identity_batch_reserves_only_final_duplicates_and_exhaustion_is_atomic() 
         )
         .unwrap();
     assert_eq!(accepted.len(), 1);
-    assert_eq!(accepted[0].generation, u64::MAX);
+    assert_eq!(accepted[0].generation(), u64::MAX);
     assert_eq!(accepted[0].cov_increment, Some(3.0));
-    assert!(!table.complete_for_test(
-        &before,
-        crate::cov::CovObservation::new(
-            crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(100.0))
+    assert!(
+        !table.complete_for_test(
+            &before,
+            bacnet_device_core::cov::CovObservation::new(
+                bacnet_device_core::cov::CovSample::new(
+                    &bacnet_types::primitives::PropertyValue::Real(100.0)
+                )
                 .unwrap(),
-            None
+                None
+            )
+            .unwrap()
         )
-        .unwrap()
-    ));
+    );
     resource_error(table.admit_for_test(existing, 9).unwrap_err());
     let entry = table.get_subscription(accepted[0].key()).unwrap();
     assert_eq!(
-        (entry.generation, entry.max_notification_delay()),
+        (entry.generation(), entry.max_notification_delay()),
         (u64::MAX, Some(4))
     );
     assert!(table.unsubscribe(accepted[0].key()));

@@ -4,12 +4,17 @@
 //! the Door_Alarm_State they admit, CHANGE_OF_STATE on Door_Alarm_State and
 //! the FAULT_STATE check behind Reliability.
 
+use crate::traits::EventReporting as _;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::enums::PropertyIdentifier as P;
 use bacnet_types::enums::{DoorAlarmState as S, ErrorClass, ErrorCode, EventType};
+use bacnet_types::error::RemoteError;
 
 use super::*;
-use crate::event::{commit_test_proposal, EventStateChange, TransitionOutcome};
+#[cfg(feature = "event-reporting")]
+use crate::event::EventStateChange;
+#[cfg(feature = "event-reporting")]
+use crate::event::{TransitionOutcome, commit_test_proposal};
 
 const LISTS: [P; 3] = [P::ALARM_VALUES, P::FAULT_VALUES, P::MASKED_ALARM_VALUES];
 
@@ -47,6 +52,7 @@ fn set_out_of_service(door: &mut AccessDoorObject, out_of_service: bool) {
     .unwrap();
 }
 
+#[cfg(feature = "event-reporting")]
 fn status_flags(bits: StatusFlags) -> PropertyValue {
     PropertyValue::BitString {
         unused_bits: 4,
@@ -54,6 +60,7 @@ fn status_flags(bits: StatusFlags) -> PropertyValue {
     }
 }
 
+#[cfg(feature = "event-reporting")]
 fn change(from: EventState, to: EventState) -> EventStateChange {
     EventStateChange { from, to }
 }
@@ -62,9 +69,9 @@ fn change(from: EventState, to: EventState) -> EventStateChange {
 /// element too.
 fn assert_out_of_range(result: Result<(), Error>) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code } | Error::Structured { class, code, .. })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }) | Error::Structured { class, code, .. })
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::VALUE_OUT_OF_RANGE),
         "expected PROPERTY / VALUE_OUT_OF_RANGE, got {result:?}"
     );
 }
@@ -136,10 +143,13 @@ fn access_door_serves_the_event_rows_and_alarm_lists() {
         ),
     ] {
         assert_eq!(read(&door, property), value, "{property:?}");
-        assert!(door.property_list().contains(&property), "{property:?}");
+        assert!(
+            crate::property_metadata::has_property(&door.property_metadata(), property),
+            "{property:?}"
+        );
     }
     assert_eq!(
-        door.enrollment_summary_capability_internal()
+        door.enrollment_summary_capability()
             .map(|capability| capability.event_type),
         Some(EventType::CHANGE_OF_STATE)
     );
@@ -190,9 +200,10 @@ fn access_door_alarm_lists_take_door_alarm_states_only() {
             );
             assert_eq!(read(&door, list), proprietary, "{list:?}");
         }
-        assert!(door
-            .write_property(list, Some(1), enumerated(3), None)
-            .is_err());
+        assert!(
+            door.write_property(list, Some(1), enumerated(3), None)
+                .is_err()
+        );
         assert_eq!(read(&door, list), proprietary, "{list:?}");
         write(&mut door, list, PropertyValue::List(vec![])).unwrap();
     }
@@ -317,6 +328,7 @@ fn access_door_masking_the_current_state_returns_it_to_normal() {
     assert_eq!(alarm_state(&door), enumerated(S::NORMAL.to_raw()));
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn access_door_goes_offnormal_after_time_delay_and_back_to_normal() {
     let mut door = alarming_door(2);
@@ -362,6 +374,7 @@ fn access_door_goes_offnormal_after_time_delay_and_back_to_normal() {
     );
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn access_door_fault_values_report_multi_state_fault() {
     let mut door = alarming_door(5);
@@ -406,6 +419,7 @@ fn access_door_fault_values_report_multi_state_fault() {
     );
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn access_door_simulated_reliability_holds_until_the_return_to_service() {
     let mut door = alarming_door(0);
@@ -413,8 +427,8 @@ fn access_door_simulated_reliability_holds_until_the_return_to_service() {
     // In service the fault check owns Reliability.
     assert!(matches!(
         write(&mut door, P::RELIABILITY, unreliable.clone()),
-        Err(Error::Protocol { code, .. })
-            if code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+        Err(Error::Remote(RemoteError::Error { code, .. }))
+            if code == ErrorCode::WRITE_ACCESS_DENIED
     ));
     set_out_of_service(&mut door, true);
     write(&mut door, P::RELIABILITY, unreliable.clone()).unwrap();
@@ -436,7 +450,7 @@ fn access_door_simulated_reliability_holds_until_the_return_to_service() {
     ] {
         assert!(matches!(
             write(&mut door, P::RELIABILITY, value),
-            Err(Error::Protocol { code: actual, .. }) if actual == code.to_raw() as u32
+            Err(Error::Remote(RemoteError::Error { code: actual, .. })) if actual == code
         ));
     }
 

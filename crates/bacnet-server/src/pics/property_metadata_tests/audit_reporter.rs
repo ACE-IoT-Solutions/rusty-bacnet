@@ -46,15 +46,15 @@ fn exercise_instances(configured_instances: &[Option<u32>]) {
                 for selected in [1, 2] {
                     let config = ServerConfig {
                         audit_reporters: Some(AuditReportersConfig {
-                            reporters: vec![ObjectIdentifier::new(
-                                ObjectType::AUDIT_REPORTER,
-                                selected,
-                            )
-                            .unwrap()],
+                            reporters: vec![
+                                ObjectIdentifier::new(ObjectType::AUDIT_REPORTER, selected)
+                                    .unwrap(),
+                            ],
                         }),
                         ..Default::default()
                     };
-                    let pics = generate_pics(&db, &config, &PicsConfig::default());
+                    let pics = generate_pics(&db, &config, &PicsConfig::default())
+                        .instance_types_only(&db);
                     assert_eq!(pics.supported_object_types.len(), 1);
                     let support = &pics.supported_object_types[0];
                     assert_eq!(support.object_type, ObjectType::AUDIT_REPORTER);

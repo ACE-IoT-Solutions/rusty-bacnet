@@ -1,5 +1,5 @@
 use super::LoadControlObject;
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
@@ -12,9 +12,8 @@ use crate::property_metadata::{
 // Canonical effective rows for Load Control (type 28, ASHRAE 135-2020 §12.28
 // Table 12-32; printed p. 344 / PDF p. 346, PDF = printed + 2; property
 // descriptions PDF pp. 347-349).
-// Order preserves the legacy 13-property projection; EVENT_STATE (readable
-// but unlisted) and PROPERTY_LIST are appended so the projection helper omits
-// PROPERTY_LIST while required_properties keeps it. Only implemented rows are
+// Order preserves the earlier 13-property order; EVENT_STATE (readable
+// but unlisted) and PROPERTY_LIST are appended. Only implemented rows are
 // described: table rows the object does not serve (Duty_Window, Enable,
 // Full_Duty_Baseline, Shed_Levels, Shed_Level_Descriptions, State_Description,
 // event/audit/tags/value-source/profile rows) stay absent until dispatch
@@ -34,7 +33,7 @@ use crate::property_metadata::{
 // Reliability carry the table O code, so Optional/ReadOnly. Table 12-32 has
 // no Out_Of_Service, so there is no such row (#1064). Event_State
 // carries the table R code and is readable but was absent from the legacy
-// list, so RequiredRead/ReadOnly and appended to the projection.
+// list, so RequiredRead/ReadOnly and appended.
 const BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::OBJECT_IDENTIFIER, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::OBJECT_NAME, RequiredRead, None, ReadOnly),
@@ -59,17 +58,17 @@ pub(super) fn for_object(_object: &LoadControlObject) -> Cow<'_, [PropertyMetada
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collections::HashSet;
     use crate::traits::BACnetObject;
     use bacnet_types::enums::{ErrorClass, ErrorCode};
-    use bacnet_types::error::Error;
+    use bacnet_types::error::{Error, RemoteError};
     use bacnet_types::primitives::{Date, PropertyValue, Time};
-    use std::collections::HashSet;
 
     fn assert_error(error: Error, expected: ErrorCode) {
         assert!(
-            matches!(error, Error::Protocol { class, code }
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == expected.to_raw() as u32),
+            matches!(error, Error::Remote(RemoteError::Error { class, code })
+                if class == ErrorClass::PROPERTY
+                    && code == expected),
             "expected {expected:?}, got {error:?}"
         );
     }
@@ -125,8 +124,14 @@ mod tests {
         let metadata = object.property_metadata();
         assert!(matches!(metadata, Cow::Borrowed(_)));
         assert_eq!(metadata.len(), 14);
-        assert_eq!(object.property_list().as_ref(), all);
-        assert_eq!(object.required_properties().as_ref(), required);
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(&all)
+        );
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            required
+        );
         assert_eq!(
             metadata
                 .iter()
@@ -135,10 +140,11 @@ mod tests {
                 .len(),
             metadata.len()
         );
-        assert!(!object.is_createable());
-        assert!(object.is_deleteable());
+        assert!(crate::creation::builtin_deleteable(
+            object.object_identifier().object_type()
+        ));
         // Table 13-1 has a Load Control row (#1061).
-        assert!(object.supports_cov());
+        assert!(object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
         for row in metadata.iter() {
             assert_eq!(row.presence_condition, None);
             let expected = if row.property_identifier == P::REQUESTED_SHED_LEVEL
@@ -187,7 +193,10 @@ mod tests {
             .map(|p| PropertyValue::Enumerated(p.to_raw()))
             .collect();
         assert_eq!(wire.len(), 10);
-        assert!(object.is_array_property(P::PROPERTY_LIST));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::PROPERTY_LIST
+        ));
         assert_eq!(
             object.read_property(P::PROPERTY_LIST, None).unwrap(),
             PropertyValue::List(wire.clone())
@@ -226,7 +235,7 @@ mod tests {
             };
             assert_eq!(row.write_capability, capability, "{p:?}");
             assert_eq!(
-                object.is_writable_property(p),
+                crate::property_metadata::is_writable_property(&object, p),
                 capability.is_writable(),
                 "{p:?}"
             );
@@ -240,7 +249,10 @@ mod tests {
         }
         // Object_Name has no network write route: a rename falls through
         // to WRITE_ACCESS_DENIED even with a well-formed value.
-        assert!(!object.is_writable_property(P::OBJECT_NAME));
+        assert!(!crate::property_metadata::is_writable_property(
+            &object,
+            P::OBJECT_NAME
+        ));
         assert_error(
             object
                 .write_property(
@@ -264,12 +276,15 @@ mod tests {
                 object.write_property(p, None, value, None).unwrap_err(),
                 ErrorCode::WRITE_ACCESS_DENIED,
             );
-            assert!(!object.is_writable_property(p));
+            assert!(!crate::property_metadata::is_writable_property(&object, p));
         }
         // Start_Time carries the table W code but dispatch has no write
         // arm (not even a schedule update), so even the read-back
         // Date/Time list is denied and the row stays ReadOnly.
-        assert!(!object.is_writable_property(P::START_TIME));
+        assert!(!crate::property_metadata::is_writable_property(
+            &object,
+            P::START_TIME
+        ));
         assert_error(
             object
                 .write_property(P::START_TIME, None, unspec_start_time(), None)
@@ -339,7 +354,7 @@ mod tests {
             P::SHED_LEVEL_DESCRIPTIONS,
             P::STATE_DESCRIPTION,
         ] {
-            assert!(!object.is_writable_property(p));
+            assert!(!crate::property_metadata::is_writable_property(&object, p));
             assert_error(
                 object.read_property(p, None).unwrap_err(),
                 ErrorCode::UNKNOWN_PROPERTY,

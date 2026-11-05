@@ -10,8 +10,10 @@ name: Release
 #   v* tag pushed     Validate, the CI gate (the tag's own CI run and Native OK
 #                     on its commit), a check that PyPI trusts this workflow,
 #                     build, check and smoke-test every artifact, then one step
-#                     at a time: stage the GitHub draft, publish to crates.io,
-#                     publish to PyPI, publish the GitHub draft.
+#                     at a time: sign the MCP bundles (when a certificate is
+#                     configured), stage the GitHub draft,
+#                     publish to crates.io, publish to PyPI, publish the GitHub
+#                     draft.
 #   manual dispatch   dry_run (default true) builds and tests everything,
 #                     plans the publish steps read only and publishes nothing.
 #                     dry_run=false is accepted only on a v* tag, and runs that
@@ -113,11 +115,11 @@ jobs:
           DRY_RUN_INPUT: ${{ inputs.dry_run }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          # Every publishable crate carries the workspace version, and the Python
-          # package takes it from crates/rusty-bacnet.
-          version=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '
-            [.packages[] | select(.publish != []) | .version] | unique
-            | if length == 1 then .[0] else error("publishable crates disagree: \(.)") end')
+          # The release version: every publishable crate carries it, except the
+          # ones release_version.py lists as versioning on their own
+          # (bacnet-time, #1768). The Python package takes it from
+          # crates/rusty-bacnet.
+          version=$(cargo metadata --no-deps --format-version 1 --locked | python3 scripts/release/release_version.py)
           tag=
           case "$GITHUB_REF" in refs/tags/v*) tag=${GITHUB_REF#refs/tags/} ;; esac
           commit=$(git rev-parse HEAD)
@@ -262,7 +264,8 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # The wheels for CPython PYTHONS and the CLI, on each platform's own runner.
+  # The wheels for CPython PYTHONS, the CLI and its MCP bundle, on each
+  # platform's own runner.
   # Packet capture (pcap) only on Linux, as in 0.11.0. The minimum macOS
   # versions are those of the 0.11.0 wheels and Rust's defaults; the artifact
   # check fails if a binary disagrees with its wheel tag.
@@ -270,7 +273,9 @@ jobs:
     name: Build (${{ matrix.name }})
     needs: validate
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # The dist profile (fat LTO, #973) doubles build time: macos-x86_64 took
+    # 47 min in the first dry run, so leave headroom over that.
+    timeout-minutes: 90
     permissions:
       contents: read
     strategy:
@@ -363,6 +368,21 @@ jobs:
             interpreters+=("${!var}")
           done
           bash scripts/release/build_native.sh "$TARGET" "$CLI" "${interpreters[@]}"
+      # The MCP bundle for Claude Desktop (#2304): the CLI binary just built,
+      # byte for byte, with a manifest that runs `bacnet mcp serve --stdio`.
+      # No second build; the artifact check compares the two.
+      - name: MCP bundle
+        env:
+          PLATFORM: ${{ matrix.name }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PY312: ${{ steps.py312.outputs.python-path }}
+        run: |
+          python=${PY312:-python3}
+          if [ "$RUNNER_OS" = Windows ]; then python=$(cygpath -m "$python"); fi
+          cli=(out/bacnet-*)
+          [ ${#cli[@]} = 1 ] && [ -f "${cli[0]}" ] || { echo "::error::expected one CLI binary in out/, found: ${cli[*]}"; exit 1; }
+          "$python" -I scripts/release/mcpb.py pack --binary "${cli[0]}" --platform "$PLATFORM" --version "$VERSION" \
+            --license LICENSE --notices crates/rusty-bacnet/THIRD-PARTY-NOTICES --out out
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-${{ matrix.name }}
@@ -398,7 +418,9 @@ jobs:
         run: |
           mkdir release
           cp artifacts/cli-*/* artifacts/wheels-*/* artifacts/sdist/* artifacts/notices/THIRD-PARTY-NOTICES release/
-          chmod +x release/bacnet-*
+          for file in release/bacnet-*; do
+            case $file in *.mcpb) ;; *) chmod +x "$file" ;; esac
+          done
           ls -l release
           (cd release && sha256sum -- *)
       - name: Versions, wheel tags, notices, architectures and linkage
@@ -414,6 +436,9 @@ jobs:
             --cli bacnet-linux-amd64=linux_x86_64 bacnet-linux-arm64=linux_aarch64 \
               bacnet-macos-amd64=macosx_10_12_x86_64 bacnet-macos-arm64=macosx_11_0_arm64 \
               bacnet-windows-amd64.exe=win_amd64 \
+            --mcpb bacnet-linux-amd64.mcpb=bacnet-linux-amd64 bacnet-linux-arm64.mcpb=bacnet-linux-arm64 \
+              bacnet-macos-amd64.mcpb=bacnet-macos-amd64 bacnet-macos-arm64.mcpb=bacnet-macos-arm64 \
+              bacnet-windows-amd64.mcpb=bacnet-windows-amd64.exe \
             --notices release/THIRD-PARTY-NOTICES
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -536,6 +561,17 @@ jobs:
           # Artifacts drop the executable bit.
           chmod +x "assets/$CLI"
           bash scripts/release/cli_smoke.sh "${capture[@]}" --expect-version "$VERSION" "assets/$CLI" "$python"
+      # The platform's MCP bundle as an MCP host runs it (#2304): unzipped,
+      # started with a profile, refusing a missing or unauthorized one at
+      # once, and answering initialize and tools/list with read tools only
+      # for an authorized read-only profile.
+      - name: MCP bundle
+        env:
+          CLI: ${{ matrix.cli }}
+        run: |
+          python=$RUNNER_TEMP/venv-cp312/bin/python
+          if [ "$RUNNER_OS" = Windows ]; then python=$(cygpath -m "$RUNNER_TEMP")/venv-cp312/Scripts/python; fi
+          "$python" -I scripts/release/mcpb.py smoke "assets/${CLI%.exe}.mcpb"
       # The Python suite against the installed cp312 wheel. Native tests run it
       # on macOS and Windows against each PR's own build.
       - name: Python suite
@@ -575,24 +611,83 @@ jobs:
         run: python3 scripts/release/release_api.py plan --tag "$TAG" --commit "$COMMIT" --assets release
       - name: crates.io (read only)
         run: bash scripts/release/publish_crates.sh --dry-run
+      # The GitHub draft's bundle check (#2324), run on the unsigned bundles
+      # laid out as the signing job uploads them, so a dry run exercises the
+      # command a release depends on.
+      - name: The GitHub draft's bundle check
+        timeout-minutes: 2
+        run: |
+          mkdir mcpb-bundles
+          cp release/*.mcpb mcpb-bundles/
+          python3 -I scripts/release/mcpb.py adopt release mcpb-bundles
+      # MCP bundle signatures, for information (#2324): a dry run has no
+      # signing key, so each bundle is reported unsigned. Only a malformed
+      # signature block fails; a tool that doesn't install is a warning.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        continue-on-error: true
+        timeout-minutes: 4
+        with:
+          node-version: '24'
+      - name: The MCP Bundle CLI (pinned by its lockfile)
+        continue-on-error: true
+        timeout-minutes: 4
+        run: npm ci --prefix scripts/release/mcpb/tool --ignore-scripts --no-audit --no-fund
+      - name: MCP bundle signatures (information)
+        timeout-minutes: 4
+        run: |
+          mcpb=scripts/release/mcpb/tool/node_modules/.bin/mcpb
+          if [ ! -x "$mcpb" ]; then
+            echo "::warning::the MCP Bundle CLI didn't install; a release would publish its bundles unsigned"
+          fi
+          for bundle in release/*.mcpb; do
+            read -r state _ < <(python3 -I scripts/release/mcpb.py signature "$bundle")
+            if [ "$state" = malformed ]; then
+              echo "::error::$bundle ends with a malformed signature block"
+              exit 1
+            fi
+            if [ ! -x "$mcpb" ]; then
+              verdict="wasn't run"
+            else
+              "$mcpb" info "$bundle" || true
+              if "$mcpb" verify "$bundle"; then verdict=passes; else verdict=fails; fi
+            fi
+            if python3 -I scripts/release/mcpb.py trailer "$bundle"; then zip=takes; else zip="refuses (mcpb#278)"; fi
+            echo "::notice::${bundle#release/} is $state; mcpb verify $verdict; a strict zip reader $zip it"
+          done
 
-  # Publishing: tag runs only, after Validate, the CI gate, every check and
-  # every smoke test passed, one job at a time, so a failure stops everything
-  # after it. The GitHub draft comes first because it is the only reversible
-  # step: it proves GitHub takes the release before crates.io and PyPI, which
-  # can't be undone, and the draft is published last.
-  github-draft:
-    name: GitHub draft
+  # Signs each MCP bundle when the release environment holds a certificate
+  # (#2324), which is optional. No signing failure stops a release: without
+  # the secrets, or when a bundle's signing fails or leaves a zip a strict
+  # reader refuses (modelcontextprotocol/mcpb#278), the unsigned bundle is
+  # published, with a notice or a warning. Each bundle is signed as a copy
+  # outside release/, which takes it only once every check passed, so a step
+  # that stops or times out part way leaves the bundles each unsigned or
+  # correctly signed. Signing may append a block and raise the comment
+  # length to count it, nothing more: the bundle under the block must keep
+  # the bytes the checks and smoke tests passed. mcpb verify's answer is a
+  # notice: with mcpb 2.1.2 it reports every bundle unsigned
+  # (modelcontextprotocol/mcpb#277), later it passes only for a chain the OS
+  # trusts for code signing, and on Linux never (mcpb 2.1.2 asks OpenSSL for
+  # the purpose "codesigning", which OpenSSL names "codesign" from 3.2), so
+  # the job runs on macOS. It uploads only the .mcpb files, as mcpb-bundles.
+  # This job runs the npm tree, so nothing here is trusted: the GitHub draft
+  # job, on a fresh runner, takes the release's files from release-assets and
+  # only the bundles from mcpb-bundles, after checking them (mcpb.py adopt).
+  # The job fails closed, so the GitHub draft and everything after it wait
+  # for a re-run, when its time limit runs out or a checkout, download or
+  # upload fails. See docs/ci.md, "Signing the MCP bundles".
+  mcpb-sign:
+    name: Sign the MCP bundles
     needs: [validate, ci-gate, verify, smoke]
     if: needs.validate.outputs.publish == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: macos-26
+    # The tool steps' own limits add up to 13 minutes; the rest is for the
+    # checkout, the download and the upload.
     timeout-minutes: 30
+    environment:
+      name: release
     permissions:
-      # Creates and fills the draft; GitHub shows drafts only to a token that can write.
-      contents: write # the draft release
-    outputs:
-      release_id: ${{ steps.stage.outputs.release_id }}
-      sums_sha256: ${{ steps.stage.outputs.sums_sha256 }}
+      contents: read
     steps:
       - &release-scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -604,6 +699,124 @@ jobs:
         with:
           name: release-assets
           path: release
+      # A failure or timeout here leaves the bundles unsigned, not the release stopped.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        continue-on-error: true
+        timeout-minutes: 4
+        with:
+          node-version: '24'
+      - name: The MCP Bundle CLI (pinned by its lockfile)
+        continue-on-error: true
+        timeout-minutes: 4
+        run: npm ci --prefix scripts/release/mcpb/tool --ignore-scripts --no-audit --no-fund
+      - name: Sign each bundle, when a certificate is configured
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          MCPB_SIGNING_KEY: ${{ secrets.MCPB_SIGNING_KEY }}
+          MCPB_SIGNING_CERT: ${{ secrets.MCPB_SIGNING_CERT }}
+          MCPB_SIGNING_CHAIN: ${{ secrets.MCPB_SIGNING_CHAIN }}
+        run: |
+          if [ -z "$MCPB_SIGNING_KEY" ] || [ -z "$MCPB_SIGNING_CERT" ]; then
+            echo "::notice::no MCPB_SIGNING_KEY and MCPB_SIGNING_CERT in the release environment: the MCP"\
+              "bundles are published unsigned (docs/ci.md, \"Signing the MCP bundles\")"
+            exit 0
+          fi
+          # The key exists only in this temporary directory, readable by this
+          # user alone, and is removed when the step ends; nothing prints it.
+          keys=$(mktemp -d "$RUNNER_TEMP/mcpb-keys.XXXXXX")
+          trap 'rm -rf "$keys"' EXIT
+          (
+            umask 077
+            printf '%s\n' "$MCPB_SIGNING_KEY" >"$keys/key.pem"
+            printf '%s\n' "$MCPB_SIGNING_CERT" >"$keys/cert.pem"
+            # Intermediates, one file each, as mcpb sign --intermediate takes them.
+            printf '%s\n' "$MCPB_SIGNING_CHAIN" | awk -v dir="$keys" \
+              '/-----BEGIN CERTIFICATE-----/ { n++ } n { print > (dir "/chain-" n ".pem") }'
+          )
+          unset MCPB_SIGNING_KEY
+          chain=()
+          for file in "$keys"/chain-*.pem; do
+            if [ -f "$file" ]; then chain+=("$file"); fi
+          done
+          if [ ${#chain[@]} -gt 0 ]; then chain=(--intermediate "${chain[@]}"); fi
+          mcpb=scripts/release/mcpb/tool/node_modules/.bin/mcpb
+          for bundle in release/*.mcpb; do
+            name=${bundle#release/}
+            # Signed as a copy: release/ keeps the unsigned bundle until the
+            # signed one has passed every check.
+            signing="$keys/$name"
+            read -r state before < <(python3 -I scripts/release/mcpb.py signature "$bundle")
+            if [ "$state" != unsigned ]; then
+              echo "::warning::$name is $state before signing; it is published as it is"
+              continue
+            fi
+            cp "$bundle" "$signing"
+            if ! "$mcpb" sign "$signing" --cert "$keys/cert.pem" --key "$keys/key.pem" "${chain[@]}"; then
+              echo "::warning::mcpb sign failed on $name; it is published unsigned"
+              continue
+            fi
+            # The bundle under the block, with the comment length put back, must be the unsigned one.
+            read -r state after < <(python3 -I scripts/release/mcpb.py signature "$signing")
+            if [ "$state" != signed ] || [ "$after" != "$before" ]; then
+              echo "::warning::signing $name changed more than its appended block; it is published unsigned"
+              continue
+            fi
+            # A strict zip reader, Claude Desktop's among them, refuses a block
+            # the end-of-central-directory record doesn't declare
+            # (modelcontextprotocol/mcpb#278); never publish one.
+            if ! python3 -I scripts/release/mcpb.py trailer "$signing"; then
+              echo "::warning::signed $name would be refused by strict zip readers such as Claude Desktop"\
+                "(modelcontextprotocol/mcpb#278); it is published unsigned"
+              continue
+            fi
+            "$mcpb" info "$signing" || true
+            if "$mcpb" verify "$signing"; then verdict=passes; else verdict="fails (with mcpb 2.1.2, always: mcpb#277)"; fi
+            mv "$signing" "$bundle"
+            echo "::notice::$name is signed; mcpb verify $verdict"
+          done
+      # Only the MCP bundles, signed or not; the GitHub draft checks them
+      # against release-assets before it takes them.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcpb-bundles
+          path: release/*.mcpb
+          if-no-files-found: error
+
+  # Publishing: tag runs only, after Validate, the CI gate, every check and
+  # every smoke test passed, one job at a time, so a failure stops everything
+  # after it. The GitHub draft comes first because it is the only reversible
+  # step: it proves GitHub takes the release before crates.io and PyPI, which
+  # can't be undone, and the draft is published last.
+  github-draft:
+    name: GitHub draft
+    needs: [validate, ci-gate, verify, smoke, mcpb-sign]
+    if: needs.validate.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      # Creates and fills the draft; GitHub shows drafts only to a token that can write.
+      contents: write # the draft release
+    outputs:
+      release_id: ${{ steps.stage.outputs.release_id }}
+      sums_sha256: ${{ steps.stage.outputs.sums_sha256 }}
+    steps:
+      - *release-scripts
+      # The release's files: release-assets, untouched, with only its MCP
+      # bundles replaced by the signing job's, and only when each is its
+      # original or that original correctly signed, none added or missing
+      # (mcpb.py adopt, from this checkout; fails closed). This runner never
+      # ran the signing job's npm tree.
+      - *release-assets
+      - &mcpb-bundles
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mcpb-bundles
+          path: mcpb-bundles
+      - &adopt-bundles
+        name: Take the signing job's MCP bundles
+        timeout-minutes: 2
+        run: python3 -I scripts/release/mcpb.py adopt release mcpb-bundles
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-notes
@@ -749,6 +962,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends cmake libudev-dev perl pkg-config
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: notices
+          path: crates/rusty-bacnet
       - *release-assets
       - name: Select the CPython 3.13 release wheels
         env:
@@ -771,7 +988,11 @@ jobs:
       - name: Build and validate the repaired source distribution
         env:
           VERSION: ${{ needs.validate.outputs.version }}
-        run: scripts/publish-python-release.sh "$VERSION" --build-only --allow-dirty --wheel-dir dist/release-wheels
+        run: |
+          scripts/publish-python-release.sh "$VERSION" --build-only --allow-dirty --wheel-dir dist/release-wheels
+          tar -xOf "dist/python/$VERSION/ace_rusty_bacnet-$VERSION.tar.gz" \
+            "ace_rusty_bacnet-$VERSION/THIRD-PARTY-NOTICES" \
+            | cmp - crates/rusty-bacnet/THIRD-PARTY-NOTICES
       - name: Connect to the ACE tailnet
         uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
         with:
@@ -822,6 +1043,8 @@ jobs:
     steps:
       - *release-scripts
       - *release-assets
+      - *mcpb-bundles
+      - *adopt-bundles
       - name: Publish the staged draft
         env:
           GITHUB_TOKEN: ${{ github.token }}

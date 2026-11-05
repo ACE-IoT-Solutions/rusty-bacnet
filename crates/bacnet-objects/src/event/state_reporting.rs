@@ -15,7 +15,8 @@
 //! - Event_Detection_Enable.
 //!
 //! It serves and takes the event rows itself, and
-//! [`impl_change_of_state_reporting!`] wires the `BACnetObject` hooks to it,
+//! [`impl_change_of_state_reporting!`] wires the object's
+//! [`EventReporting`](crate::traits::EventReporting) to it,
 //! asking the object for the watched value and its Reliability each time the
 //! server evaluates or ticks. An object adopts it in three steps:
 //!
@@ -24,12 +25,14 @@
 //! 2. offer each read and write to [`ChangeOfStateReporting::read`] and
 //!    [`ChangeOfStateReporting::write`], and take Event_State (and so the
 //!    IN_ALARM flag) from [`ChangeOfStateReporting::event_state`];
-//! 3. invoke the macro with the field and two `&self` methods returning the
-//!    watched value and the Reliability served.
+//! 3. invoke the macro with the object's type, the field and two `&self`
+//!    methods returning the watched value and the Reliability served, and
+//!    lend the capability with `crate::traits::lend_event_reporting!()`.
 //!
 //! The server's notification payload is told separately which property an
 //! object type watches and which BACnetPropertyStates choice carries it.
 
+use crate::prelude::*;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::enums::{ErrorClass, ErrorCode, EventState, PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
@@ -181,7 +184,8 @@ impl ChangeOfStateReporting {
     }
 
     /// Commit one transition through the shared kernel, then settle the
-    /// detector's countdown and fault edge.
+    /// detector's countdown and fault edge. With detection off the kernel
+    /// refuses every commit.
     pub(crate) fn commit(
         &mut self,
         commit: EventTransitionCommit,
@@ -189,6 +193,7 @@ impl ChangeOfStateReporting {
     ) -> Result<(), EventTransitionCommitError> {
         let change = commit.change.clone();
         EventTransitionState::new(
+            self.event_detection_enable,
             &mut self.event_detector.event_state,
             &mut self.event_detector.acked_transitions,
             &mut self.event_history,
@@ -207,12 +212,9 @@ impl ChangeOfStateReporting {
         timestamp: &BACnetTimeStamp,
     ) -> Result<Option<EventStateChange>, Error> {
         if !self.event_detection_enable {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
-            });
+            return Err(crate::traits::no_alarm_configured());
         }
-        self.event_history.acknowledge_correlated_detailed(
+        self.event_history.acknowledge_correlated(
             &mut self.event_detector.acked_transitions,
             event_state,
             timestamp,
@@ -238,7 +240,79 @@ impl ChangeOfStateReporting {
     ) -> Option<bacnet_types::constructed::BACnetObjectPropertyReference> {
         self.event_history.options.inhibit_reference().cloned()
     }
+
+    /// The rows an object keeping its reporting settings saves (#2331),
+    /// with the object's `description` (#2364).
+    #[cfg(feature = "event-reporting")]
+    pub(crate) fn reporting_rows(
+        &self,
+        description: &str,
+    ) -> crate::write_config::reporting::ReportingRows {
+        crate::write_config::reporting::ReportingRows {
+            notification_class: self.event_detector.notification_class,
+            event_enable: self.event_detector.event_enable,
+            notify_type: self.event_detector.notify_type,
+            event_detection_enable: self.event_detection_enable,
+            options: self.event_history.options.clone(),
+            description: description.into(),
+        }
+    }
+
+    /// Serve the saved rows of an object keeping its reporting settings,
+    /// as it is built (#2331), a saved Description into the object's
+    /// `description` (#2364).
+    #[cfg(feature = "event-reporting")]
+    pub(crate) fn restore_reporting_rows(
+        &mut self,
+        saved: &crate::write_config::ReportingWriteConfig,
+        description: &mut String,
+    ) {
+        crate::write_config::reporting::RowFields {
+            notification_class: &mut self.event_detector.notification_class,
+            event_enable: &mut self.event_detector.event_enable,
+            notify_type: &mut self.event_detector.notify_type,
+            event_detection_enable: &mut self.event_detection_enable,
+            options: &mut self.event_history.options,
+            description,
+        }
+        .restore(saved);
+    }
 }
+
+/// Implement `KeepsReporting` (`write_config::reporting`) and reporting
+/// persistence for `$object`, which holds a
+/// [`ChangeOfStateReporting`] in `reporting` and a `ReportingStore` in
+/// `reporting_store` (#2331). Its rows have no setters to guard.
+macro_rules! keep_change_of_state_reporting {
+    ($object:ty) => {
+        $crate::write_config::reporting::impl_reporting_persistence!($object, without_tags);
+
+        #[cfg(feature = "event-reporting")]
+        impl $crate::write_config::reporting::KeepsReporting for $object {
+            fn reporting_store(&mut self) -> &mut $crate::write_config::reporting::ReportingStore {
+                &mut self.reporting_store
+            }
+
+            fn reporting_store_ref(&self) -> &$crate::write_config::reporting::ReportingStore {
+                &self.reporting_store
+            }
+
+            fn reporting_rows(&self) -> $crate::write_config::reporting::ReportingRows {
+                self.reporting.reporting_rows(&self.description)
+            }
+
+            fn restore_reporting_rows(
+                &mut self,
+                saved: &$crate::write_config::ReportingWriteConfig,
+            ) {
+                self.reporting
+                    .restore_reporting_rows(saved, &mut self.description);
+            }
+        }
+    };
+}
+
+pub(crate) use keep_change_of_state_reporting;
 
 /// The states a list on a CHANGE_OF_STATE object may hold, such as its
 /// Alarm_Values: members of the watched enumeration, named or proprietary,
@@ -281,21 +355,18 @@ pub(crate) fn enumerated_list(
     states: ListedStates,
 ) -> Result<Vec<u32>, Error> {
     if array_index.is_some() {
-        return Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32,
-        });
+        return Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
+        ));
     }
     let items = match value {
         PropertyValue::List(items) => items.as_slice(),
-        single => std::slice::from_ref(single),
+        single => core::slice::from_ref(single),
     };
     let cap = crate::multistate::MAX_ALARM_VALUES;
     if items.len() > cap {
-        let full = Error::Protocol {
-            class: ErrorClass::RESOURCES.to_raw() as u32,
-            code: ErrorCode::NO_SPACE_TO_WRITE_PROPERTY.to_raw() as u32,
-        };
+        let full = Error::protocol(ErrorClass::RESOURCES, ErrorCode::NO_SPACE_TO_WRITE_PROPERTY);
         return Err(common::at_list_element(full, cap));
     }
     items
@@ -330,62 +401,55 @@ pub(crate) fn enumerated_list_value(values: &[u32]) -> PropertyValue {
     )
 }
 
-/// Implement the `BACnetObject` intrinsic-reporting hooks of an object that
-/// holds a [`ChangeOfStateReporting`] in `$reporting`, with `$watched` and
-/// `$reliability` paths to `&self` methods returning the raw watched value
-/// and the Reliability served.
+/// Implement the [`EventReporting`](crate::traits::EventReporting) of
+/// `$object`, an object that holds a [`ChangeOfStateReporting`] in
+/// `$reporting`, with `$watched` and `$reliability` paths to `&self` methods
+/// returning the raw watched value and the Reliability served. The object
+/// lends it with `crate::traits::lend_event_reporting!()`.
 macro_rules! impl_change_of_state_reporting {
-    ($reporting:ident, $watched:path, $reliability:path) => {
-        fn enrollment_summary_capability_internal(
-            &self,
-        ) -> Option<$crate::event::EnrollmentSummaryCapability> {
-            Some(self.$reporting.enrollment_summary())
-        }
+    ($object:ty, $reporting:ident, $watched:path, $reliability:path) => {
+        impl $crate::traits::EventReporting for $object {
+            fn enrollment_summary_capability(
+                &self,
+            ) -> Option<$crate::event::EnrollmentSummaryCapability> {
+                Some(self.$reporting.enrollment_summary())
+            }
 
-        fn evaluate_intrinsic_reporting(&mut self) -> Option<$crate::event::TransitionOutcome> {
-            let (watched, reliability) = ($watched(self), $reliability(self));
-            self.$reporting.propose(watched, reliability)
-        }
+            fn evaluate_intrinsic_reporting(&mut self) -> Option<$crate::event::TransitionOutcome> {
+                let (watched, reliability) = ($watched(self), $reliability(self));
+                self.$reporting.propose(watched, reliability)
+            }
 
-        fn tick_intrinsic_reporting(&mut self) -> Option<$crate::event::TransitionOutcome> {
-            let (watched, reliability) = ($watched(self), $reliability(self));
-            self.$reporting.tick(watched, reliability)
-        }
+            fn tick_intrinsic_reporting(&mut self) -> Option<$crate::event::TransitionOutcome> {
+                let (watched, reliability) = ($watched(self), $reliability(self));
+                self.$reporting.tick(watched, reliability)
+            }
 
-        fn commit_event_transition_internal(
-            &mut self,
-            commit: $crate::event::EventTransitionCommit,
-        ) -> Result<(), $crate::event::EventTransitionCommitError> {
-            let reliability = $reliability(self);
-            self.$reporting.commit(commit, reliability)
-        }
+            fn commit_event_transition(
+                &mut self,
+                commit: $crate::event::EventTransitionCommit,
+            ) -> Result<(), $crate::event::EventTransitionCommitError> {
+                let reliability = $reliability(self);
+                self.$reporting.commit(commit, reliability)
+            }
 
-        fn acknowledge_alarm_correlated_internal(
-            &mut self,
-            event_state: bacnet_types::enums::EventState,
-            timestamp: &bacnet_types::primitives::BACnetTimeStamp,
-        ) -> Result<(), bacnet_types::error::Error> {
-            self.$reporting
-                .acknowledge(event_state, timestamp)
-                .map(|_| ())
-        }
+            fn acknowledge_alarm(
+                &mut self,
+                event_state: bacnet_types::enums::EventState,
+                timestamp: &bacnet_types::primitives::BACnetTimeStamp,
+            ) -> Result<Option<$crate::event::EventStateChange>, bacnet_types::error::Error> {
+                self.$reporting.acknowledge(event_state, timestamp)
+            }
 
-        fn acknowledge_alarm_correlated_detailed_internal(
-            &mut self,
-            event_state: bacnet_types::enums::EventState,
-            timestamp: &bacnet_types::primitives::BACnetTimeStamp,
-        ) -> Result<Option<$crate::event::EventStateChange>, bacnet_types::error::Error> {
-            self.$reporting.acknowledge(event_state, timestamp)
-        }
+            fn event_algorithm_inhibit_reference(
+                &self,
+            ) -> Option<bacnet_types::constructed::BACnetObjectPropertyReference> {
+                self.$reporting.inhibit_reference()
+            }
 
-        fn event_algorithm_inhibit_reference_internal(
-            &self,
-        ) -> Option<bacnet_types::constructed::BACnetObjectPropertyReference> {
-            self.$reporting.inhibit_reference()
-        }
-
-        fn follow_event_algorithm_inhibit_internal(&mut self, inhibit: bool) -> bool {
-            self.$reporting.options().follow(inhibit)
+            fn follow_event_algorithm_inhibit(&mut self, inhibit: bool) -> bool {
+                self.$reporting.options().follow(inhibit)
+            }
         }
     };
 }

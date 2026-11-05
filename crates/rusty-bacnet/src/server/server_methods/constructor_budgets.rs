@@ -1,5 +1,5 @@
 //! Validation and budget assembly for the `BACnetServer` constructor: the
-//! registered Network Port range, the mutation and DCC policies, and the
+//! registered Network Port range, the DCC policy, and the
 //! request-admission and per-service budgets. Each check raises ValueError.
 
 use pyo3::exceptions::PyValueError;
@@ -8,30 +8,19 @@ use pyo3::prelude::*;
 use super::super::server;
 
 /// Reject a registered Network Port instance outside 1..255, or one given for
-/// a transport other than B/IP.
+/// a transport other than B/IP or B/IPv6.
 pub(super) fn registered_network_port(port: Option<u32>, transport: &str) -> PyResult<()> {
     if port.is_some_and(|instance| !(1..=255).contains(&instance)) {
         return Err(PyValueError::new_err(
             "registered_network_port must be 1..255",
         ));
     }
-    if port.is_some() && transport != "bip" {
+    if port.is_some() && !matches!(transport, "bip" | "ipv6") {
         return Err(PyValueError::new_err(
-            "registered_network_port requires B/IP",
+            "registered_network_port requires B/IP or B/IPv6",
         ));
     }
     Ok(())
-}
-
-/// Parse the `mutation_policy` keyword.
-pub(super) fn mutation_policy(name: &str) -> PyResult<bacnet_server::mutation::MutationPolicy> {
-    match name {
-        "permissive" => Ok(bacnet_server::mutation::MutationPolicy::Permissive),
-        "deny_all" => Ok(bacnet_server::mutation::MutationPolicy::DenyAll),
-        _ => Err(PyValueError::new_err(
-            "mutation_policy must be 'permissive' or 'deny_all'",
-        )),
-    }
 }
 
 /// The DCC policy with its source restriction and disable rate limit.
@@ -56,9 +45,10 @@ pub(super) fn dcc_configuration(
         _ => {
             return Err(PyValueError::new_err(
                 "dcc_policy must be 'deny_all', 'require_password', or 'legacy_permissive'",
-            ))
+            ));
         }
     };
+    crate::reinitialize::password_limit("dcc_password", password)?;
     policy
         .validate(password)
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
@@ -127,7 +117,7 @@ pub(super) struct BudgetKeywords {
 /// The validated policy and budgets the server starts with.
 pub(super) struct Budgets {
     pub request_admission_policy: server::RequestAdmissionPolicy,
-    pub read_property_multiple_budget: server::ReadPropertyMultipleBudget,
+    pub read_property_multiple_budget: bacnet_device_core::read::ReadPropertyMultipleBudget,
     pub get_alarm_summary_budget: server::GetAlarmSummaryBudget,
     pub get_enrollment_summary_budget: server::GetEnrollmentSummaryBudget,
     pub atomic_read_file_budget: server::AtomicReadFileBudget,
@@ -149,7 +139,7 @@ pub(super) fn budgets(keywords: BudgetKeywords) -> PyResult<Budgets> {
         max_recovery_in_flight_per_peer: keywords.max_recovery_in_flight_per_peer,
     };
     request_admission_policy.validate().map_err(invalid)?;
-    let read_property_multiple_budget = server::ReadPropertyMultipleBudget {
+    let read_property_multiple_budget = bacnet_device_core::read::ReadPropertyMultipleBudget {
         max_result_elements: keywords.rpm_max_result_elements,
         max_service_ack_bytes: keywords.rpm_max_service_ack_bytes,
     };

@@ -1,11 +1,12 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{
     accumulator::{AccumulatorObject, PulseConverterObject},
     traits::BACnetObject,
 };
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 // Shared RP-vs-RPM parity plus budget parity over one case table.
 type ExpectedRead = Result<&'static [u8], ErrorCode>;
@@ -30,9 +31,9 @@ fn assert_cases(
     }
     .encode(&mut request)
     .unwrap();
-    let mut legacy = BytesMut::new();
-    handle_read_property_multiple(db, &request, &mut legacy).unwrap();
-    let ack = ReadPropertyMultipleACK::decode(&legacy).unwrap();
+    let mut unlimited = BytesMut::new();
+    handle_read_property_multiple(db, &request, &mut unlimited).unwrap();
+    let ack = ReadPropertyMultipleACK::decode(&unlimited).unwrap();
     assert_eq!(ack.list_of_read_access_results.len(), 1);
     let access = &ack.list_of_read_access_results[0];
     assert_eq!(access.object_identifier, oid);
@@ -72,27 +73,30 @@ fn assert_cases(
             Err(expected) => {
                 assert!(result.property_value.is_none());
                 assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
-                assert!(matches!(rp, Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32));
+                assert!(
+                    matches!(rp, Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == ErrorClass::PROPERTY && code == expected)
+                );
                 assert!(response.is_empty());
             }
         }
     }
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
-    let budget = crate::server::ReadPropertyMultipleBudget {
+    use crate::handlers::rpm_budget::handle_rpm_budgeted;
+    use bacnet_device_core::read::ReadFailure;
+    let budget = bacnet_device_core::read::ReadPropertyMultipleBudget {
         max_result_elements: cases.len(),
-        max_service_ack_bytes: legacy.len(),
+        max_service_ack_bytes: unlimited.len(),
     };
     let mut bounded = BytesMut::new();
     handle_rpm_budgeted(db, &request, &mut bounded, budget).unwrap();
-    assert_eq!(bounded, legacy);
+    assert_eq!(bounded, unlimited);
     let mut prefix = BytesMut::from(&b"prefix"[..]);
     assert!(matches!(
         handle_rpm_budgeted(
             db,
             &request,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
                 max_result_elements: cases.len() - 1,
                 ..budget
             }
@@ -105,8 +109,8 @@ fn assert_cases(
             db,
             &request,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
-                max_service_ack_bytes: legacy.len() - 1,
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
+                max_service_ack_bytes: unlimited.len() - 1,
                 ..budget
             }
         ),
@@ -137,15 +141,22 @@ fn write_common(object: &mut dyn BACnetObject, configured: bool) {
 #[test]
 fn rpm_accumulator_indexed_reads_and_bytes_are_unchanged() {
     for configured in [false, true] {
-        let mut object = AccumulatorObject::new(7, "ACC-7", 95).unwrap();
+        let mut object = AccumulatorObject::new(7, "ACC-7", EngineeringUnits::NO_UNITS).unwrap();
         if configured {
-            // Application-level count plus the three routed Unsigned/Real arms.
+            // Application-level count plus the three routed Unsigned arms.
             object.set_present_value(42);
             object
                 .write_property(P::MAX_PRES_VALUE, None, PropertyValue::Unsigned(200), None)
                 .unwrap();
+            // Pulse_Rate takes a write only out of service (Clause 12.61.20).
             object
-                .write_property(P::PULSE_RATE, None, PropertyValue::Real(2.5), None)
+                .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Boolean(true), None)
+                .unwrap();
+            object
+                .write_property(P::PULSE_RATE, None, PropertyValue::Unsigned(25), None)
+                .unwrap();
+            object
+                .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Boolean(false), None)
                 .unwrap();
             object.set_scale(bacnet_types::constructed::BACnetScale::IntegerScale(-2));
             object
@@ -171,8 +182,8 @@ fn rpm_accumulator_indexed_reads_and_bytes_are_unchanged() {
         // under context tag 0 or an INTEGER under context tag 1, and Prescale
         // its multiplier under context tag 0 then its modulo divide under
         // context tag 1 (Clause 21, #1487); neither is an array, so an index
-        // is PROPERTY_IS_NOT_AN_ARRAY on both. 2.5f32 encodes as 0x40200000;
-        // 1.0f32 as 0x3F800000; -2 as the one octet 0xFE.
+        // is PROPERTY_IS_NOT_AN_ARRAY on both. 1.0f32 encodes as 0x3F800000;
+        // -2 as the one octet 0xFE.
         let prescale: ExpectedRead = Ok(&[0x09, 5, 0x19, 100]);
         let scale: ExpectedRead = Ok(if configured {
             &[0x19, 0xFE]
@@ -221,11 +232,8 @@ fn rpm_accumulator_indexed_reads_and_bytes_are_unchanged() {
             (
                 P::PULSE_RATE,
                 None,
-                Ok(if configured {
-                    &[0x44, 0x40, 0x20, 0x00, 0x00]
-                } else {
-                    &[0x44, 0, 0, 0, 0]
-                }),
+                // An application Unsigned (Table 12-79).
+                Ok(if configured { &[0x21, 25] } else { &[0x21, 0] }),
             ),
             (
                 P::PULSE_RATE,
@@ -343,7 +351,8 @@ fn rpm_accumulator_indexed_reads_and_bytes_are_unchanged() {
 #[test]
 fn rpm_pulse_converter_indexed_reads_and_bytes_are_unchanged() {
     for configured in [false, true] {
-        let mut object = PulseConverterObject::new(7, "PC-7", 62).unwrap();
+        let mut object =
+            PulseConverterObject::new(7, "PC-7", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         write_common(&mut object, configured);
         if configured {
             // The Present_Value gate needs Out_Of_Service TRUE first.

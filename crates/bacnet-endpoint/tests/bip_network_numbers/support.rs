@@ -7,6 +7,7 @@ use bacnet_objects::{
     network_port::{BipPortConfig, NetworkPortObject},
 };
 use bacnet_transport::bip::BipTransport;
+use bacnet_types::enums::EngineeringUnits;
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     time::Duration,
@@ -112,8 +113,9 @@ pub async fn fence(socket: &UdpSocket, target: SocketAddrV4) {
 }
 
 /// A broadcast observer bound before the node under test, which then starts on
-/// the returned port. Only an explicitly requested B/IP port sets SO_REUSEADDR
-/// (#892), and both sockets need it to share the port.
+/// the returned port, sharing it (`share_wildcard_port`, #2366): only a
+/// requested B/IP port shared on request sets SO_REUSEADDR (#892), and both
+/// sockets need it to share the port.
 #[cfg(target_os = "linux")]
 pub fn observer() -> (UdpSocket, u16) {
     let socket = socket2::Socket::new(
@@ -145,7 +147,8 @@ pub async fn start(builder: BipEndpointBuilder) -> (Endpoint, SocketAddrV4) {
         .unwrap(),
     ))
     .unwrap();
-    let mut analog = AnalogInputObject::new(1, "Number progress", 0).unwrap();
+    let mut analog =
+        AnalogInputObject::new(1, "Number progress", EngineeringUnits::SQUARE_METERS).unwrap();
     analog.set_present_value(42.0);
     db.add(Box::new(analog)).unwrap();
     let mut endpoint = builder.database(db).build_session().unwrap();

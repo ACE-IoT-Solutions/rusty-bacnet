@@ -2,7 +2,7 @@ use super::super::queued::Gated;
 use super::*;
 use bacnet_transport::loopback::LoopbackTransport;
 use tokio::sync::{Notify, Semaphore};
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_write_queued_egress_is_owned_before_caller_cancellation() {
     let source_mac = encode_bip_mac([127, 0, 0, 1], 30001);
     let peer_mac = encode_bip_mac([127, 0, 0, 1], 30002);
@@ -48,7 +48,7 @@ async fn source_write_queued_egress_is_owned_before_caller_cancellation() {
                 destination_mac: peer_mac.into_iter().collect(),
             },
             false,
-            NetworkPriority::NORMAL,
+            NetworkPriority::Normal,
             Vec::new(),
             None,
         )
@@ -70,13 +70,10 @@ async fn source_write_queued_egress_is_owned_before_caller_cancellation() {
             )
             .await
     });
-    timeout(WAIT, async {
-        while session.active_leases() != 1 {
-            tokio::task::yield_now().await;
-        }
+    eventually(WAIT, "the request holds its lease", async || {
+        session.active_leases() == 1
     })
-    .await
-    .unwrap();
+    .await;
     // Yield to the owned task's egress admission before cancelling its waiter.
     tokio::task::yield_now().await;
     caller.abort();
@@ -97,7 +94,7 @@ async fn source_write_queued_egress_is_owned_before_caller_cancellation() {
     let (invoke, rp) = write_request(&request);
     let mut encoded = BytesMut::new();
     encode_apdu(&mut encoded, &write_ack(invoke, &rp)).unwrap();
-    peer.send_apdu(&encoded, &source_mac, false, NetworkPriority::NORMAL)
+    peer.send_apdu(&encoded, &source_mac, false, NetworkPriority::Normal)
         .await
         .unwrap();
     let (record, _) = notification(&receive(&mut received).await, false);
@@ -107,7 +104,7 @@ async fn source_write_queued_egress_is_owned_before_caller_cancellation() {
     peer.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn endpoint_write_unreported_cancel_retracts_queued_and_in_progress_sends() {
     for queued in [true, false] {
         let source_mac = encode_bip_mac([127, 0, 0, 1], 30001);
@@ -141,7 +138,7 @@ async fn endpoint_write_unreported_cancel_retracts_queued_and_in_progress_sends(
                     vec![0x10, 8],
                     destination.clone(),
                     false,
-                    NetworkPriority::NORMAL,
+                    NetworkPriority::Normal,
                     Vec::new(),
                     None,
                 )
@@ -165,13 +162,10 @@ async fn endpoint_write_unreported_cancel_retracts_queued_and_in_progress_sends(
                 )
                 .await
         });
-        timeout(WAIT, async {
-            while session.active_leases() != 1 {
-                tokio::task::yield_now().await;
-            }
+        eventually(WAIT, "the request holds its lease", async || {
+            session.active_leases() == 1
         })
-        .await
-        .unwrap();
+        .await;
         if !queued {
             timeout(WAIT, entered.notified()).await.unwrap();
         } else {
@@ -189,7 +183,7 @@ async fn endpoint_write_unreported_cancel_retracts_queued_and_in_progress_sends(
                 vec![0x10, 8],
                 destination,
                 false,
-                NetworkPriority::NORMAL,
+                NetworkPriority::Normal,
                 Vec::new(),
                 None,
             )

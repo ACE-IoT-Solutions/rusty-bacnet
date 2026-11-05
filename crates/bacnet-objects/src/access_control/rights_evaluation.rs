@@ -54,7 +54,9 @@
 //!   evaluator's own policy. All of them are listed as unresolved, so the
 //!   application can still deny.
 
-use std::collections::HashMap;
+use crate::collections::HashMap;
+use crate::prelude::*;
+use crate::property_metadata::is_array_property;
 
 use bacnet_encoding::constructed::{decode_access_rule, decode_assigned_access_rights};
 use bacnet_types::constructed::{
@@ -423,7 +425,7 @@ fn exempt(credential: &dyn BACnetObject) -> bool {
 }
 
 /// The credential's Assigned_Access_Rights, decoded from the value it serves.
-fn assigned_access_rights(
+pub(super) fn assigned_access_rights(
     credential: &dyn BACnetObject,
 ) -> Result<Vec<BACnetAssignedAccessRights>, Error> {
     let value = credential.read_property(PropertyIdentifier::ASSIGNED_ACCESS_RIGHTS, None)?;
@@ -600,13 +602,13 @@ impl Scope<'_> {
     /// The decision over the gathered rules (Clause 12.34.9.2).
     fn decide(&mut self, gathered: &[Gathered]) -> AccessRightsDecision {
         for (position, rule) in enabled_rules(gathered, AccessRuleKind::Negative) {
-            if let Some(place) = self.location(rule) {
-                if self.time_range(rule) == TimeRange::True {
-                    return AccessRightsDecision::Denied {
-                        access_event: place.denial(),
-                        rule: Some(position),
-                    };
-                }
+            if let Some(place) = self.location(rule)
+                && self.time_range(rule) == TimeRange::True
+            {
+                return AccessRightsDecision::Denied {
+                    access_event: place.denial(),
+                    rule: Some(position),
+                };
             }
         }
         let mut out_of_time = None;
@@ -711,7 +713,7 @@ impl Scope<'_> {
         let index = reference.property_array_index;
         // ReadProperty's gate: only an array takes an index. Index 0 reads
         // the array's size, which is no time-range value.
-        if index == Some(0) || (index.is_some() && !object.is_array_property(property)) {
+        if index == Some(0) || (index.is_some() && !is_array_property(object, property)) {
             return TimeRange::Never;
         }
         match object.read_property(property, index) {

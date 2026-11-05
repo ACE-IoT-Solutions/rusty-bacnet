@@ -247,15 +247,15 @@ async fn active_cov_multiple_wire_renewal_cancellation_expiry_and_cleanup_are_ex
     }
 
     // A sub-second context lifetime is table-only; the wire minimum is one second.
-    let short = crate::cov::MultipleContextKey {
-        recipient: crate::cov::CovRecipient::from_endpoint(
+    let short = bacnet_device_core::cov::MultipleContextKey {
+        recipient: bacnet_device_core::cov::CovRecipient::from_endpoint(
             &routed().mac,
             routed().network.as_ref(),
         ),
         process_id: 83,
         confirmed: false,
     };
-    let expires_at = runtime_clock::now() + Duration::from_millis(300);
+    let expires_at = runtime_clock::core_now() + bacnet_time::Duration::from_millis(300);
     let proposal = CovSubscription {
         subscriber_mac: MacAddr::from_slice(&routed().mac),
         subscriber_network: routed().network,
@@ -585,8 +585,9 @@ async fn active_cov_multiple_wire_rpm_rp_and_local_reads_agree_within_scope() {
     // standalone default list, as do raw object reads.
     let other = ObjectIdentifier::new(ObjectType::DEVICE, 900).unwrap();
     let config = DeviceConfig {
-        instance: 900,
-        name: "Other Device".into(),
+        identity: bacnet_objects::DeviceIdentity::new(900, 0)
+            .expect("valid Device identity")
+            .with_name("Other Device"),
         ..DeviceConfig::default()
     };
     wire.server
@@ -595,12 +596,15 @@ async fn active_cov_multiple_wire_rpm_rp_and_local_reads_agree_within_scope() {
         .await
         .add(Box::new(DeviceObject::new(config).unwrap()))
         .unwrap();
-    let selected =
-        handlers::resolve_read_target(&*wire.server.database().read().await, &wildcard(), None);
+    let selected = bacnet_device_core::read::resolve_target(
+        &*wire.server.database().read().await,
+        &bacnet_device_core::read::ReadScope::UNLIMITED,
+        &wildcard(),
+    );
     assert_eq!(
         selected,
         device(),
-        "lowest Device instance owns the live lists"
+        "the identity's Device (here the lowest) owns the live lists"
     );
     let (live_device, standalone) = (device(), other);
     let empty = Vec::<u8>::new();

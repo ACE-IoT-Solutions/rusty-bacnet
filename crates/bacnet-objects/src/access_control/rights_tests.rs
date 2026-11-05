@@ -3,8 +3,10 @@
 //! them; and Enable (#1332). `rights_writes_tests.rs` covers network writes
 //! of the arrays.
 
+use crate::property_metadata::{is_array_property, is_writable_property};
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference};
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::RemoteError;
 
 use super::*;
 
@@ -14,9 +16,9 @@ fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
 
 fn assert_property_error<T: std::fmt::Debug>(result: Result<T, Error>, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code: actual })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && actual == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code: actual }))
+            if class == ErrorClass::PROPERTY
+                && actual == code),
         "expected PROPERTY / {code:?}, got {result:?}"
     );
 }
@@ -70,7 +72,7 @@ fn access_rights_rule_arrays_read_whole_and_by_index() {
         (P::POSITIVE_ACCESS_RULES, vec![business_hours, anywhere]),
         (P::NEGATIVE_ACCESS_RULES, vec![lockdown]),
     ] {
-        assert!(rights.is_array_property(property), "{property:?}");
+        assert!(is_array_property(&rights, property), "{property:?}");
         let elements: Vec<PropertyValue> = rules.iter().map(element).collect();
         assert_eq!(
             rights.read_property(property, None).unwrap(),
@@ -247,9 +249,9 @@ fn access_rights_setters_refuse_more_rules_than_the_cap() {
         rights.set_negative_access_rules(too_many),
     ] {
         assert!(
-            matches!(result, Err(Error::Protocol { class, code })
-                if class == ErrorClass::RESOURCES.to_raw() as u32
-                    && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY.to_raw() as u32),
+            matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+                if class == ErrorClass::RESOURCES
+                    && code == ErrorCode::NO_SPACE_TO_WRITE_PROPERTY),
             "{result:?}"
         );
     }
@@ -274,8 +276,11 @@ fn access_rights_enable_defaults_true_and_follows_the_setter_and_writes() {
         rights.read_property(P::LOG_ENABLE, None).unwrap(),
         PropertyValue::Boolean(true)
     );
-    assert!(rights.property_list().contains(&P::LOG_ENABLE));
-    assert!(rights.is_writable_property(P::LOG_ENABLE));
+    assert!(crate::property_metadata::has_property(
+        &rights.property_metadata(),
+        P::LOG_ENABLE
+    ));
+    assert!(is_writable_property(&rights, P::LOG_ENABLE));
 
     // Disabling the object leaves each rule's own flag as it was.
     let kept = rule(Some(schedule(1)), Some(local(ObjectType::ACCESS_POINT, 2)));

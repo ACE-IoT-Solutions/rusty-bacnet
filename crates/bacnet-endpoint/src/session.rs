@@ -51,11 +51,11 @@
 //! lifecycle mutation is owner-exclusive (`&mut`) or via atomics/async
 //! mutexes; role handles synchronize through the shared session token.
 
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
-use bacnet_client::client::ClientConfig;
 use bacnet_client::EndpointRequester;
+use bacnet_client::client::ClientConfig;
 use bacnet_encoding::apdu::Apdu;
 use bacnet_endpoint_core::coordinator::{
     AdmissionOutcome, CoordinatorError, OutboundTransactionCoordinator,
@@ -71,11 +71,12 @@ use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 #[path = "source_profile.rs"]
 mod source_profile;
+pub(crate) use source_profile::{RoutedBindings, check_link_bindings};
 #[path = "source_reporter.rs"]
 pub(crate) mod source_reporter;
 #[path = "session_start.rs"]
@@ -83,12 +84,13 @@ mod startup;
 
 #[path = "device_writes.rs"]
 mod device_writes;
+pub use device_writes::{RESPONDER_OPT_IN_SERVICES, RESPONDER_SERVICES, ResponderOptIn};
 #[path = "registered_port.rs"]
 mod registered_port;
 
 use crate::roles::{
-    admit_once, decode_terminal, inbound_canonical_peer, is_requester_lease, ClientRoleHandle,
-    ServerRoleHandle, SessionToken,
+    ClientRoleHandle, ServerRoleHandle, SessionToken, admit_once, decode_terminal,
+    inbound_canonical_peer, is_requester_lease,
 };
 use bacnet_server::server::{
     __endpoint_EndpointResponder as EndpointResponder,
@@ -160,15 +162,15 @@ pub struct SessionConfig {
     ///
     /// Standalone default is 480. Composing a
     /// [`DeviceIdentity`](crate::identity::DeviceIdentity) via
-    /// [`with_identity`](EndpointSession::with_identity) overrides this with
-    /// the identity value; the MS/TP builder additionally rejects identities
-    /// above its 480 transport bound at build time.
+    /// [`device`](EndpointSession::device) overrides this at start with the
+    /// identity's ceiling resolved against the transport's stable local
+    /// receive capacity (480 for standard MS/TP, 1476 for extended MS/TP).
     pub max_apdu_length: u16,
     /// Result rows one ReadProperty served by the server role may expand
     /// (default 256).
     ///
     /// The endpoint's counterpart of the server's
-    /// [`ReadPropertyMultipleBudget::max_result_elements`](bacnet_server::server::ReadPropertyMultipleBudget::max_result_elements),
+    /// [`ReadPropertyMultipleBudget::max_result_elements`](bacnet_device_core::read::ReadPropertyMultipleBudget::max_result_elements),
     /// with the same default. A read counts its own row, and a Group's
     /// Present_Value adds one row per member property after ALL, REQUIRED
     /// and OPTIONAL expand. A read past the limit is answered with an Abort
@@ -191,6 +193,31 @@ pub struct SessionConfig {
     pub min_request_interval_ms: u64,
 }
 
+impl SessionConfig {
+    /// The checks [`EndpointSession::new`] makes, without a transport, so a
+    /// builder that dials can make them before it does (#1946).
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        if self.queue_capacity == 0 {
+            return Err(Error::Encoding(
+                "endpoint session queue capacity must be greater than zero".into(),
+            ));
+        }
+        if self.read_work_limit == 0 {
+            return Err(Error::Encoding(
+                "endpoint session read work limit must be greater than zero".into(),
+            ));
+        }
+        let interval = self.min_request_interval_ms;
+        if interval > bacnet_client::client::MAX_MIN_REQUEST_INTERVAL_MS {
+            return Err(Error::Encoding(format!(
+                "endpoint session min-request-interval {interval} ms is more than {} ms",
+                bacnet_client::client::MAX_MIN_REQUEST_INTERVAL_MS
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
@@ -198,7 +225,7 @@ impl Default for SessionConfig {
             apdu_timeout_ms: 1_000,
             apdu_retries: 0,
             max_apdu_length: 480,
-            read_work_limit: bacnet_server::server::ReadPropertyMultipleBudget::default()
+            read_work_limit: bacnet_device_core::read::ReadPropertyMultipleBudget::default()
                 .max_result_elements,
             min_request_interval_ms: 0,
         }
@@ -244,7 +271,7 @@ struct SessionShared {
 ///
 /// An optional [`DeviceIdentity`](crate::identity::DeviceIdentity) is the
 /// single source for I-Am + Device readback + role limits when composed via
-/// [`with_identity`](Self::with_identity). Standalone sessions without an
+/// [`device`](Self::device). Standalone sessions without an
 /// identity keep the `SessionConfig` 480 default untouched.
 ///
 /// ```no_run
@@ -262,7 +289,12 @@ struct SessionShared {
 /// # Ok(())
 /// # }
 /// ```
-pub struct EndpointSession<T: TransportPort + 'static> {
+///
+/// `T` defaults to [`AnyTransport`](bacnet_transport::any::AnyTransport), so
+/// `EndpointSession` alone names a session over any built-in transport;
+/// `EndpointSession<BipTransport>` and the like name one over a concrete
+/// transport, as the builders return.
+pub struct EndpointSession<T: TransportPort + 'static = bacnet_transport::any::AnyTransport> {
     shared: Arc<SessionShared>,
     coordinator: Arc<OutboundTransactionCoordinator>,
     ingress: Option<EndpointIngress<T>>,
@@ -283,18 +315,27 @@ pub struct EndpointSession<T: TransportPort + 'static> {
     source_audit_reporter: Option<ObjectIdentifier>,
     source_audit: Option<Arc<crate::source_audit::SourceAudit>>,
     pub(crate) source_audit_bindings: Vec<(ObjectIdentifier, std::net::SocketAddrV4)>,
+    pub(crate) source_audit_link_bindings: Vec<(ObjectIdentifier, bacnet_types::MacAddr)>,
+    pub(crate) source_audit_routed_bindings: Vec<(ObjectIdentifier, u16, bacnet_types::MacAddr)>,
     source_recipient: Option<Arc<crate::source_audit::recipient::SourceRecipient>>,
     stop_exit: Option<Result<SessionExit, Error>>,
     durable_settlement: Option<JoinHandle<()>>,
     ingress_stopped: bool,
     identity: Option<crate::identity::DeviceIdentity>,
+    local_receive_capacity: u16,
     bip_local_address: Option<std::net::SocketAddrV4>,
     registered_network_port: Option<ObjectIdentifier>,
     registered_port_lease: std::sync::Weak<()>,
-    device_write_authorizer: Option<bacnet_server::mutation::MutationAuthorizer>,
+    device_write_authorizer: Option<bacnet_server::mutation::DeviceWriteAuthorizer>,
     pub(crate) reinitialize: Option<bacnet_server::server::ReinitializeHandler>,
     pub(crate) reinit_password: Option<String>,
     egress: Option<bacnet_endpoint_core::endpoint_ingress::EndpointEgress>,
+    /// The B/IP transport's own exchanges, when the B/IP builder built it.
+    pub(crate) bip_status: Option<bacnet_transport::bip::BvlcClientStatus>,
+    /// The MS/TP transport's counters, when the MS/TP builder built it.
+    pub(crate) mstp_diagnostics: Option<bacnet_transport::mstp::MstpDiagnostics>,
+    /// The SC transport's events and link status, when the SC builder built it.
+    pub(crate) sc_link: Option<bacnet_transport::sc::ScLinkMonitor>,
 }
 
 /// Terminal state of the session dispatch task.
@@ -334,33 +375,19 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// assert!(EndpointSession::new(transport, SessionRole::Both, bad).is_err());
     /// ```
     pub fn new(transport: T, role: SessionRole, config: SessionConfig) -> Result<Self, Error> {
-        if config.queue_capacity == 0 {
-            return Err(Error::Encoding(
-                "endpoint session queue capacity must be greater than zero".into(),
-            ));
-        }
-        if config.read_work_limit == 0 {
-            return Err(Error::Encoding(
-                "endpoint session read work limit must be greater than zero".into(),
-            ));
-        }
-        let interval = config.min_request_interval_ms;
-        if interval > bacnet_client::client::MAX_MIN_REQUEST_INTERVAL_MS {
-            return Err(Error::Encoding(format!(
-                "endpoint session min-request-interval {interval} ms is more than {} ms",
-                bacnet_client::client::MAX_MIN_REQUEST_INTERVAL_MS
-            )));
-        }
+        config.validate()?;
         let coordinator = Arc::new(OutboundTransactionCoordinator::new());
         let token = SessionToken::new(Arc::clone(&coordinator));
         let client_config = ClientConfig {
             apdu_timeout_ms: config.apdu_timeout_ms,
             apdu_retries: config.apdu_retries,
             max_apdu_length: config.max_apdu_length,
-            min_request_interval_ms: interval,
+            min_request_interval_ms: config.min_request_interval_ms,
             ..ClientConfig::default()
         };
+        let local_receive_capacity = transport.local_receive_apdu_capacity();
         Ok(Self {
+            local_receive_capacity,
             shared: Arc::new(SessionShared {
                 token,
                 counters: Mutex::new(PolicyCounters {
@@ -389,6 +416,8 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             source_audit_reporter: None,
             source_audit: None,
             source_audit_bindings: Vec::new(),
+            source_audit_link_bindings: Vec::new(),
+            source_audit_routed_bindings: Vec::new(),
             source_recipient: None,
             stop_exit: None,
             durable_settlement: None,
@@ -401,17 +430,20 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             reinitialize: None,
             reinit_password: None,
             egress: None,
+            bip_status: None,
+            mstp_diagnostics: None,
+            sc_link: None,
         })
     }
 
     /// Attaches the local object database (before start).
     ///
     /// Must be called before [`start`](Self::start); when the server role is
-    /// composed without a database, an empty one is used. When a
-    /// [`DeviceIdentity`](crate::identity::DeviceIdentity) is also composed,
-    /// build the database from that same identity (see
-    /// [`DeviceIdentity::build_database`](crate::identity::DeviceIdentity::build_database))
-    /// so Device readback agrees with I-Am. The selected Device must declare
+    /// composed without an identity or database, an empty one is used. With a
+    /// [`DeviceIdentity`](crate::identity::DeviceIdentity), omitting the database
+    /// requests stock generation after receive-capacity resolution. Explicitly
+    /// supplied databases, including empty ones, are preserved. Their selected
+    /// Device must match the resolved identity and declare
     /// segmentation NONE, matching the narrow endpoint roles.
     /// The session retains ownership even in `ClientOnly` mode and shares this
     /// same database with the responder in `Both` mode.
@@ -436,7 +468,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     ///
     /// [`start`](Self::start) requires a concrete built-in local Device
     /// ([`ObjectDatabase::local_device`]: the lowest instance when the database
-    /// holds several) matching the optional identity, and one selected Reporter capability with
+    /// holds several, which preflight requires to be the identity's) matching the optional identity, and one selected Reporter capability with
     /// no conflicting source Reporter. Preflight validation changes no source flags
     /// and leaves configuration retryable; post-ingress failure joins terminal cleanup.
     /// Successful startup installs the Device
@@ -464,7 +496,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// let reporter_oid = reporter.object_identifier();
     /// db.add(Box::new(reporter))?;
     /// let mut session = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
-    ///     .role(SessionRole::ClientOnly).database(db).identity(identity)
+    ///     .role(SessionRole::ClientOnly).database(db).device(identity)
     ///     .source_audit_device_binding(logger, SocketAddrV4::new(Ipv4Addr::LOCALHOST, 47808))
     ///     .build_session()?.with_source_audit_reporter(reporter_oid);
     /// session.start().await?; // Startup emits no audit traffic.
@@ -485,16 +517,16 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     ///
     /// Truth direction: identity overrides the standalone `SessionConfig`
     /// 480 default for the client role max-APDU; timers/retries stay from
-    /// `SessionConfig`. The database should already be built from the same
-    /// identity (see `DeviceIdentity::build_database`) so I-Am vs
-    /// ReadProperty vs role limits agree. No existing-test churn: sessions
-    /// without an identity keep the 480 default.
+    /// `SessionConfig`. Startup resolves the ceiling against the owned link.
+    /// An absent database requests stock generation; an explicitly supplied
+    /// database is preserved and its selected Device must match the resolved
+    /// identity. Sessions without an identity keep the 480 default.
     ///
     /// # Panics
     /// Panics if startup has already consumed the session configuration.
-    pub fn with_identity(mut self, identity: crate::identity::DeviceIdentity) -> Self {
+    pub fn device(mut self, identity: crate::identity::DeviceIdentity) -> Self {
         self.assert_configurable();
-        identity.apply_to_client_config(&mut self.client_config);
+        self.client_config.max_apdu_length = identity.max_apdu_length();
         self.config.max_apdu_length = identity.max_apdu_length();
         self.identity = Some(identity);
         self
@@ -524,11 +556,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 "endpoint session cannot be started more than once".into(),
             ));
         }
-        self.validate_segmentation().await?;
-        let device_target = self.validate_device_execution()?;
-        let source_routes = self.prepare_source_audit_reporter()?;
-        self.prepare_registered_port().await?;
-        self.commit_device_profile(device_target);
+        let (device_target, source_routes) = self.prepare_start().await?;
         if self.lifecycle.compare_exchange(
             Lifecycle::Ready as u8,
             Lifecycle::Running as u8,
@@ -553,7 +581,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         };
         if let Err(error) = self
             .publish_registered_port(
-                receivers.bip_port.clone(),
+                (receivers.bip_port.clone(), receivers.bip6_port.clone()),
                 receivers.egress.local_network_number(),
             )
             .await
@@ -629,12 +657,11 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             }
         }
         if !self.ingress_stopped {
-            if let Some(ingress) = self.ingress.as_mut() {
-                if let Err(error) = ingress.stop().await {
-                    if self.stop_exit.as_ref().is_some_and(Result::is_ok) {
-                        self.stop_exit = Some(Err(error));
-                    }
-                }
+            if let Some(ingress) = self.ingress.as_mut()
+                && let Err(error) = ingress.stop().await
+                && self.stop_exit.as_ref().is_some_and(Result::is_ok)
+            {
+                self.stop_exit = Some(Err(error));
             }
             self.ingress_stopped = true;
         }
@@ -658,10 +685,10 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         self.responder.take();
         self.client_handle = None;
         self.server_handle = None;
-        if self.durable_settlement.is_none() {
-            if let Some(db) = &self.database {
-                self.durable_settlement = Some(tokio::spawn(settle_durable_writes(Arc::clone(db))));
-            }
+        if self.durable_settlement.is_none()
+            && let Some(db) = &self.database
+        {
+            self.durable_settlement = Some(tokio::spawn(settle_durable_writes(Arc::clone(db))));
         }
         if let Some(task) = self.durable_settlement.as_mut() {
             // Keep the one settlement owner across canceled stop waiters.
@@ -756,6 +783,44 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             .flatten()
     }
 
+    /// How the transport's foreign-device registration is going (#938):
+    /// whether it holds a live lease, the time left on it, and the last
+    /// attempt's result and outcome, a BBMD's refusal included. It is there
+    /// for a session [`BipEndpointBuilder`](crate::bip::BipEndpointBuilder)
+    /// built, in any mode and after stop, and `None` for any other: take a
+    /// [`BipTransport::bvlc_client_status`](bacnet_transport::bip::BipTransport::bvlc_client_status)
+    /// before handing a transport to [`Self::new`].
+    pub fn foreign_registration(
+        &self,
+    ) -> Option<bacnet_transport::bip::ForeignRegistrationSnapshot> {
+        let status = self.bip_status.as_ref()?;
+        Some(status.snapshot().foreign_registration)
+    }
+
+    /// The MS/TP transport's counters (#958): a handle to the same
+    /// [`MstpDiagnostics`](bacnet_transport::mstp::MstpDiagnostics) the
+    /// transport updates, readable in any state, after stop included. It is
+    /// there for a session [`MstpEndpointBuilder`](crate::mstp::MstpEndpointBuilder)
+    /// built, and `None` for any other: take
+    /// [`MstpTransport::diagnostics`](bacnet_transport::mstp::MstpTransport::diagnostics)
+    /// before handing a transport to [`Self::new`].
+    pub fn mstp_diagnostics(&self) -> Option<bacnet_transport::mstp::MstpDiagnostics> {
+        self.mstp_diagnostics.clone()
+    }
+
+    /// The BACnet/SC hub link's events and status (#1946): a handle on the
+    /// transport's own event stream and status snapshot, readable in any
+    /// state, after stop included. Subscribe to its events before
+    /// [`start`](Self::start) to see the first connection, and through every
+    /// reconnect and failover the transport makes after. It is there for a
+    /// session [`ScEndpointBuilder`](crate::sc::ScEndpointBuilder) built, and
+    /// `None` for any other: take
+    /// [`ScTransport::link_monitor`](bacnet_transport::sc::ScTransport::link_monitor)
+    /// before handing a transport to [`Self::new`].
+    pub fn sc_link(&self) -> Option<bacnet_transport::sc::ScLinkMonitor> {
+        self.sc_link.clone()
+    }
+
     /// Returns the composed session role (narrow admin).
     pub fn session_role(&self) -> SessionRole {
         self.role
@@ -769,10 +834,10 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// Broadcasts an I-Am consistent with the composed identity.
     ///
     /// Missing-identity path: errors without sending (no invented device).
-    /// Present-identity path: encodes [`DeviceIdentity::encode_iam_apdu`](crate::identity::DeviceIdentity::encode_iam_apdu)
+    /// Present-identity path: encodes [`encode_iam_apdu`](crate::identity::encode_iam_apdu)
     /// and sends one local-broadcast Unconfirmed-Request via the session
     /// egress. Field-for-field identical to the server discovery I-Am built
-    /// from [`DeviceIdentity::server_config`](crate::identity::DeviceIdentity::server_config).
+    /// from [`server_config`](crate::identity::server_config).
     /// Transport-dependent: B/IP reaches the local subnet broadcast; SC
     /// relays via the hub as a broadcast NPDU. Fails when the session is not
     /// running.
@@ -788,13 +853,26 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         if !self.is_running() {
             return Err(Error::Encoding("endpoint session is not running".into()));
         }
-        let apdu = identity.encode_iam_apdu()?;
+        let database = self
+            .database
+            .as_ref()
+            .ok_or_else(|| Error::Encoding("endpoint I-Am has no Device database".into()))?;
+        // The guard covers only this check, never the send below (#2199).
+        let present = database
+            .read()
+            .await
+            .get(&identity.device_oid())
+            .is_some_and(|object| object.object_identifier() == identity.device_oid());
+        if !present {
+            return Err(Error::Encoding("endpoint I-Am Device is absent".into()));
+        }
+        let apdu = crate::identity::encode_iam_apdu(identity)?;
         egress
             .send_apdu(
                 apdu,
                 bacnet_endpoint_core::endpoint_ingress::EndpointApduDestination::LocalBroadcast,
                 false,
-                bacnet_types::enums::NetworkPriority::NORMAL,
+                bacnet_npdu::NetworkPriority::Normal,
                 Vec::new(),
             )
             .await
@@ -860,11 +938,13 @@ struct DispatchParts {
     /// The layer's network number, which the session's Number owner
     /// publishes; answers relayed with it as SNET match like direct ones.
     local_network: LocalNetworkNumber,
+    /// Routed source Audit bindings' routers, learned from traffic (#2371).
+    source_routers: Option<Arc<crate::source_audit::routers::SourceRouters>>,
 }
 
 #[path = "session_dispatch.rs"]
 mod dispatch;
-use dispatch::{next_event, DispatchEvent};
+use dispatch::{DispatchEvent, next_event};
 
 async fn dispatch_loop(mut parts: DispatchParts, mut cancel: oneshot::Receiver<()>) -> SessionExit {
     // One consumer retains all receivers and joins; cancellation stays first.
@@ -893,8 +973,11 @@ async fn handle_inbound(parts: &mut DispatchParts, received: ReceivedApdu) {
     let _link_group = received.link_layer_group;
     let _is_group = received.is_group;
     let _attributes = received.data_attributes.clone();
-    let _provenance = received.provenance;
+    let _provenance = &received.provenance;
     let _ingress = received.ingress_network;
+    if let Some(routers) = &parts.source_routers {
+        routers.observe(&received);
+    }
     let Some(responder) = parts.responder.as_ref() else {
         let mut counters = parts.shared.counters.lock().await;
         counters.no_server_role += 1;
@@ -966,7 +1049,12 @@ async fn handle_terminal(parts: &mut DispatchParts, received: ReceivedApdu) {
         &apdu,
     );
     let admission = match outcome {
-        Ok(AdmissionOutcome::Admitted(admission)) => admission,
+        Ok(AdmissionOutcome::Admitted(admission)) => {
+            if let Some(routers) = &parts.source_routers {
+                routers.observe(&received);
+            }
+            admission
+        }
         Ok(_) => {
             let mut counters = parts.shared.counters.lock().await;
             counters.unclaimed_terminal += 1;
@@ -1041,6 +1129,9 @@ async fn handle_ingress_policy(shared: &Arc<SessionShared>, outcome: PolicyOutco
 mod source_read_tests;
 
 #[cfg(test)]
+#[path = "registered_port_bip6_tests.rs"]
+mod registered_port_bip6_tests;
+#[cfg(test)]
 #[path = "registered_port_lifetime_tests.rs"]
 mod registered_port_lifetime_tests;
 #[cfg(test)]
@@ -1050,6 +1141,22 @@ mod registered_port_wire_tests;
 #[cfg(test)]
 #[path = "network_number_tests.rs"]
 mod network_number_tests;
+
+/// The in-memory link the tests run on under paused time (#2293, #2298).
+#[cfg(test)]
+#[path = "../tests/support/bus_port.rs"]
+mod bus_port;
+
+/// Waits on paused time that fail at their limit instead of hanging (#2293).
+#[cfg(test)]
+#[path = "../tests/support/eventually.rs"]
+mod eventually;
+
+/// Reruns a test whose closing rebind loses the freed port to another
+/// process (#1419).
+#[cfg(test)]
+#[path = "../tests/support/port_retry.rs"]
+mod port_retry;
 
 #[cfg(test)]
 #[path = "local_network_tests.rs"]
@@ -1062,3 +1169,6 @@ mod read_work_limit_tests;
 #[cfg(test)]
 #[path = "client_pacing_tests.rs"]
 mod client_pacing_tests;
+
+#[path = "device_identity.rs"]
+mod device_identity;

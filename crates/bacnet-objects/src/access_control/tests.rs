@@ -1,5 +1,7 @@
 use super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 // --- AccessDoorObject ---
 
@@ -27,7 +29,7 @@ fn access_door_object_type() {
 #[test]
 fn access_door_property_list() {
     let door = AccessDoorObject::new(1, "DOOR-1").unwrap();
-    let list = door.property_list();
+    let list = crate::test_rows::listed(&door.property_metadata());
     assert!(list.contains(&PropertyIdentifier::PRESENT_VALUE));
     assert!(list.contains(&PropertyIdentifier::DOOR_STATUS));
     assert!(list.contains(&PropertyIdentifier::LOCK_STATUS));
@@ -147,7 +149,7 @@ fn access_credential_object_type() {
 #[test]
 fn access_credential_property_list() {
     let cred = AccessCredentialObject::new(1, "CRED-1").unwrap();
-    let list = cred.property_list();
+    let list = crate::test_rows::listed(&cred.property_metadata());
     assert!(!list.contains(&PropertyIdentifier::PRESENT_VALUE));
     assert!(list.contains(&PropertyIdentifier::CREDENTIAL_STATUS));
     assert!(list.contains(&PropertyIdentifier::ASSIGNED_ACCESS_RIGHTS));
@@ -202,7 +204,7 @@ fn access_point_object_type() {
 #[test]
 fn access_point_property_list() {
     let point = AccessPointObject::new(1, "AP-1").unwrap();
-    let list = point.property_list();
+    let list = crate::test_rows::listed(&point.property_metadata());
     // Table 12-36 has no Present_Value row (#1064).
     assert!(!list.contains(&PropertyIdentifier::PRESENT_VALUE));
     assert!(list.contains(&PropertyIdentifier::ACCESS_EVENT));
@@ -265,7 +267,7 @@ fn access_rights_object_type() {
 #[test]
 fn access_rights_property_list() {
     let rights = AccessRightsObject::new(1, "AR-1").unwrap();
-    let list = rights.property_list();
+    let list = crate::test_rows::listed(&rights.property_metadata());
     assert!(list.contains(&PropertyIdentifier::GLOBAL_IDENTIFIER));
     assert!(list.contains(&PropertyIdentifier::POSITIVE_ACCESS_RULES));
     assert!(list.contains(&PropertyIdentifier::NEGATIVE_ACCESS_RULES));
@@ -336,7 +338,7 @@ fn access_user_object_type() {
 #[test]
 fn access_user_property_list() {
     let user = AccessUserObject::new(1, "USER-1").unwrap();
-    let list = user.property_list();
+    let list = crate::test_rows::listed(&user.property_metadata());
     assert!(list.contains(&PropertyIdentifier::USER_TYPE));
     assert!(list.contains(&PropertyIdentifier::CREDENTIALS));
     // Table 12-38 has neither of these rows (#1064).
@@ -397,7 +399,7 @@ fn access_zone_object_type() {
 #[test]
 fn access_zone_property_list() {
     let zone = AccessZoneObject::new(1, "ZONE-1").unwrap();
-    let list = zone.property_list();
+    let list = crate::test_rows::listed(&zone.property_metadata());
     assert!(list.contains(&PropertyIdentifier::GLOBAL_IDENTIFIER));
     assert!(list.contains(&PropertyIdentifier::OCCUPANCY_COUNT));
     assert!(list.contains(&PropertyIdentifier::ENTRY_POINTS));
@@ -476,7 +478,7 @@ fn credential_data_input_object_type() {
 #[test]
 fn credential_data_input_property_list() {
     let cdi = CredentialDataInputObject::new(1, "CDI-1").unwrap();
-    let list = cdi.property_list();
+    let list = crate::test_rows::listed(&cdi.property_metadata());
     assert!(list.contains(&PropertyIdentifier::PRESENT_VALUE));
     assert!(list.contains(&PropertyIdentifier::UPDATE_TIME));
     assert!(list.contains(&PropertyIdentifier::SUPPORTED_FORMATS));
@@ -529,7 +531,10 @@ fn credential_data_input_write_denied() {
 #[test]
 fn access_door_relinquish_default_write_recaptures_present_value() {
     let mut door = AccessDoorObject::new(1, "DOOR-1").unwrap();
-    assert!(door.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &door,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
 
     door.write_property(
         PropertyIdentifier::RELINQUISH_DEFAULT,
@@ -590,9 +595,9 @@ fn access_door_relinquish_default_write_recaptures_present_value() {
             .write_property(PropertyIdentifier::RELINQUISH_DEFAULT, None, value, None)
             .expect_err("out-of-production Relinquish_Default must refuse")
         {
-            Error::Protocol { class, code: c } => {
-                assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-                assert_eq!(c, code.to_raw() as u32);
+            Error::Remote(RemoteError::Error { class, code: c }) => {
+                assert_eq!(class, ErrorClass::PROPERTY);
+                assert_eq!(c, code);
             }
             other => panic!("expected protocol error, got {other:?}"),
         }
@@ -611,9 +616,10 @@ fn access_door_relinquish_default_write_recaptures_present_value() {
 
     // The local setter shares the validation domain.
     assert!(door.set_relinquish_default(DoorValue::from_raw(4)).is_err());
-    assert!(door
-        .set_relinquish_default(DoorValue::EXTENDED_PULSE_UNLOCK)
-        .is_err());
+    assert!(
+        door.set_relinquish_default(DoorValue::EXTENDED_PULSE_UNLOCK)
+            .is_err()
+    );
     door.set_relinquish_default(DoorValue::LOCK).unwrap();
     assert_eq!(
         door.read_property(PropertyIdentifier::PRESENT_VALUE, None)

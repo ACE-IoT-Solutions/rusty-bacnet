@@ -2,8 +2,10 @@
 //! TRUE (Clauses 12.32.9, 12.32.10 and 12.32.11, Table 12-37 footnote 1,
 //! #1247).
 
+use crate::property_metadata::is_writable_property;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::enums::{PropertyIdentifier as P, Reliability};
+use bacnet_types::error::RemoteError;
 
 use super::*;
 
@@ -65,9 +67,9 @@ fn own(out_of_service: bool) -> [PropertyValue; 3] {
 
 fn assert_property_error(result: Result<(), Error>, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code: actual })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && actual == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code: actual }))
+            if class == ErrorClass::PROPERTY
+                && actual == code),
         "expected PROPERTY / {code:?}, got {result:?}"
     );
 }
@@ -92,8 +94,8 @@ fn access_zone_refuses_simulated_rows_in_service() {
         assert_eq!(served(&zone), own(false), "{property:?}");
     }
     // Both rows have a write route, open only out of service.
-    assert!(zone.is_writable_property(P::OCCUPANCY_COUNT));
-    assert!(zone.is_writable_property(P::RELIABILITY));
+    assert!(is_writable_property(&zone, P::OCCUPANCY_COUNT));
+    assert!(is_writable_property(&zone, P::RELIABILITY));
 }
 
 #[test]
@@ -197,7 +199,9 @@ fn access_zone_return_to_service_serves_the_zone_again() {
     // is refused as on the other Reliability carriers.
     zone.set_occupancy_count(13);
     assert_property_error(
-        zone.set_reliability_internal(Reliability::COMMUNICATION_FAILURE),
+        zone.reliability_eval()
+            .unwrap()
+            .set_reliability(Reliability::COMMUNICATION_FAILURE),
         ErrorCode::WRITE_ACCESS_DENIED,
     );
     assert_eq!(served(&zone), simulated);
@@ -211,14 +215,18 @@ fn access_zone_return_to_service_serves_the_zone_again() {
     );
 
     // In service the application's values are served at once.
-    zone.set_reliability_internal(Reliability::COMMUNICATION_FAILURE)
+    zone.reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::COMMUNICATION_FAILURE)
         .unwrap();
     zone.set_occupancy_count(12);
     assert_eq!(
         served(&zone),
         values(12, Reliability::COMMUNICATION_FAILURE, false)
     );
-    zone.set_reliability_internal(Reliability::NO_FAULT_DETECTED)
+    zone.reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::NO_FAULT_DETECTED)
         .unwrap();
 
     // A second period out of service starts from the zone's values.

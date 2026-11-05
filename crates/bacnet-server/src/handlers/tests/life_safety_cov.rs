@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_types::error::RemoteError;
 
 use bacnet_objects::life_safety::{LifeSafetyPointObject, LifeSafetyZoneObject};
 use bacnet_services::cov::SubscribeCOVPropertyRequest;
@@ -42,10 +43,10 @@ fn property_request(oid: ObjectIdentifier, property: PropertyIdentifier) -> Byte
 fn assert_protocol(error: Error, class: ErrorClass, code: ErrorCode) {
     assert!(matches!(
         error,
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class: actual_class,
             code: actual_code,
-        } if actual_class == class.to_raw() as u32 && actual_code == code.to_raw() as u32
+        }) if actual_class == class && actual_code == code
     ));
 }
 
@@ -161,8 +162,8 @@ fn life_safety_multiple_property_cov_rejection_keeps_the_earlier_reference() {
             matches!(
                 error,
                 Error::Structured { class, code: actual_code, detail }
-                    if *class == ErrorClass::PROPERTY.to_raw() as u32
-                        && *actual_code == code.to_raw() as u32
+                    if *class == ErrorClass::PROPERTY
+                        && *actual_code == code
                         && **detail == ErrorDetail::FirstFailedSubscription(
                             BACnetObjectPropertyReference::new(oid, property.to_raw())
                         )
@@ -201,5 +202,30 @@ fn life_safety_property_cancellation_bypasses_current_capability_checks() {
         handle_subscribe_cov_property_with_initial(&mut table, &db, &[1], &encoded).unwrap();
 
     assert!(initial.is_empty());
+    assert!(table.is_empty());
+}
+
+#[test]
+fn single_property_cov_refuses_an_object_that_lends_no_cov_reporting() {
+    let mut db = ObjectDatabase::new();
+    let class = bacnet_objects::notification_class::NotificationClass::new(4, "class").unwrap();
+    assert!(class.cov().is_none());
+    db.add(Box::new(class)).unwrap();
+    let oid = ObjectIdentifier::new(ObjectType::NOTIFICATION_CLASS, 4).unwrap();
+    let mut table = CovSubscriptionTable::new();
+    // Present_Value isn't served, so a property check would answer
+    // UNKNOWN_PROPERTY; the object refusal comes first.
+    let error = handle_subscribe_cov_property(
+        &mut table,
+        &db,
+        &[1, 2, 3],
+        &property_request(oid, PropertyIdentifier::OBJECT_NAME),
+    )
+    .unwrap_err();
+    assert_protocol(
+        error,
+        ErrorClass::OBJECT,
+        ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+    );
     assert!(table.is_empty());
 }

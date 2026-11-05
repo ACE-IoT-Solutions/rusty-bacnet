@@ -6,9 +6,12 @@
 
 use std::time::Duration;
 
-use crate::resolve::{parse_target, Target};
-use crate::tui::message::{AddressStyle, WhoIsScope, WhoIsSpec, MAX_INSTANCE};
+use bacnet_ops::target::AddressStyle;
+use bacnet_ops::target::{MSTP_TEXT_PREFIX, Target, parse_target};
+
+use crate::tui::message::{DirectedTo, MAX_INSTANCE, WhoIsScope, WhoIsSpec};
 use bacnet_services::who_is::DeviceInstanceRange;
+use bacnet_transport::bip6::VMAC_TEXT_PREFIX;
 
 /// Which scope the form's first field selects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,10 +198,11 @@ impl WhoIsForm {
                 self.scope = self.scope.step(true);
             }
             FormKey::Char(ch) => {
-                if let Some(text) = self.text_mut() {
-                    if text.chars().count() < 48 && !ch.is_control() {
-                        text.push(ch);
-                    }
+                if let Some(text) = self.text_mut()
+                    && text.chars().count() < 48
+                    && !ch.is_control()
+                {
+                    text.push(ch);
                 }
             }
             FormKey::Backspace => {
@@ -239,7 +243,7 @@ impl WhoIsForm {
             ScopeChoice::Local => WhoIsScope::Local,
             ScopeChoice::Global => WhoIsScope::Global,
             ScopeChoice::Directed => WhoIsScope::Directed {
-                mac: parse_directed(target, style)?,
+                to: parse_directed(target, style)?,
                 label: target.to_string(),
             },
             ScopeChoice::Network => WhoIsScope::Network(parse_network(target)?),
@@ -252,20 +256,47 @@ impl WhoIsForm {
     }
 }
 
-fn parse_directed(target: &str, style: AddressStyle) -> Result<Vec<u8>, String> {
+fn parse_directed(target: &str, style: AddressStyle) -> Result<DirectedTo, String> {
     if target.is_empty() {
         return Err("enter the address to send the Who-Is to".into());
     }
-    if style == AddressStyle::Hex {
-        if let Ok(vmac) = crate::transport::parse_sc_vmac_arg(target) {
-            return Ok(vmac.to_vec());
-        }
+    if style == AddressStyle::Hex
+        && let Ok(vmac) = crate::transport::parse_sc_vmac_arg(target)
+    {
+        return Ok(DirectedTo::Mac(vmac.to_vec()));
+    }
+    if target.starts_with(VMAC_TEXT_PREFIX) && style != AddressStyle::Bip6 {
+        return Err(format!(
+            "'{target}' is a B/IPv6 VMAC; bip6: addresses need the --ipv6 transport"
+        ));
+    }
+    if target.starts_with(MSTP_TEXT_PREFIX) != (style == AddressStyle::Mstp) {
+        return Err(format!(
+            "'{target}' is not an address on this transport; a directed Who-Is needs {}",
+            directed_forms(style)
+        ));
     }
     match parse_target(target)? {
-        Target::Mac(mac) => Ok(mac),
-        Target::Instance(_) | Target::Routed(..) => Err(format!(
-            "'{target}' is not an address; a directed Who-Is needs IP[:port] or [IPv6]:port"
+        Target::Mac(mac) => Ok(DirectedTo::Mac(mac)),
+        // The worker finds the VMAC of the node at this address.
+        Target::Bip6(peer) if style == AddressStyle::Bip6 => Ok(DirectedTo::Bip6(peer)),
+        Target::Bip6(_) => Err(format!(
+            "'{target}' is a B/IPv6 address; start the TUI with --ipv6"
         )),
+        Target::Instance(_) | Target::Routed { .. } | Target::RoutedMac { .. } => Err(format!(
+            "'{target}' is not an address; a directed Who-Is needs {}",
+            directed_forms(style)
+        )),
+    }
+}
+
+/// The addresses a directed Who-Is takes on a transport with `style`.
+pub(crate) fn directed_forms(style: AddressStyle) -> &'static str {
+    match style {
+        AddressStyle::Bip => "IP or IP:port",
+        AddressStyle::Bip6 => "bip6:N, bip6:0xVMAC or [IPv6]:port",
+        AddressStyle::Hex => "VMAC as 12 hex digits",
+        AddressStyle::Mstp => "mstp:N, a station 0 to 254",
     }
 }
 
@@ -376,11 +407,13 @@ mod tests {
             global.key(FormKey::Submit, AddressStyle::Bip, 0),
             FormOutcome::Editing
         );
-        assert!(global
-            .warning
-            .as_deref()
-            .unwrap()
-            .starts_with("Global Who-Is"));
+        assert!(
+            global
+                .warning
+                .as_deref()
+                .unwrap()
+                .starts_with("Global Who-Is")
+        );
         // An edit withdraws the pending confirmation.
         global.key(FormKey::Backspace, AddressStyle::Bip, 0);
         assert_eq!(global.warning, None);
@@ -414,7 +447,7 @@ mod tests {
         assert_eq!(
             spec.scope,
             WhoIsScope::Directed {
-                mac: vec![10, 0, 0, 7, 0xBA, 0xC0],
+                to: DirectedTo::Mac(vec![10, 0, 0, 7, 0xBA, 0xC0]),
                 label: "10.0.0.7".into()
             }
         );
@@ -423,6 +456,21 @@ mod tests {
         form.target = "1234".into();
         form.key(FormKey::Submit, AddressStyle::Bip, 0);
         assert!(form.error.as_deref().unwrap().contains("not an address"));
+        // An IPv6 address needs the B/IPv6 transport, which resolves it.
+        form.target = "[::1]:47808".into();
+        form.key(FormKey::Submit, AddressStyle::Bip, 0);
+        assert!(form.error.as_deref().unwrap().contains("--ipv6"));
+        // So does a B/IPv6 VMAC, which B/IP and SC can't send to.
+        for style in [AddressStyle::Bip, AddressStyle::Hex] {
+            form.target = "bip6:1234".into();
+            form.key(FormKey::Submit, style, 0);
+            assert!(
+                form.error
+                    .as_deref()
+                    .unwrap()
+                    .contains("bip6: addresses need the --ipv6 transport")
+            );
+        }
 
         let mut sc = form.clone();
         sc.target = "020000000009".into();
@@ -433,6 +481,33 @@ mod tests {
                 ..
             })
         ));
+
+        // B/IPv6: a VMAC as the table prints it, or an address the worker
+        // resolves to one.
+        let mut bip6 = form.clone();
+        for (target, to) in [
+            ("bip6:0x0004D2", DirectedTo::Mac(vec![0, 4, 0xD2])),
+            ("bip6:1234", DirectedTo::Mac(vec![0, 4, 0xD2])),
+            (
+                "[::1]:47809",
+                DirectedTo::Bip6("[::1]:47809".parse().unwrap()),
+            ),
+        ] {
+            bip6.target = target.into();
+            let FormOutcome::Send(spec) = bip6.key(FormKey::Submit, AddressStyle::Bip6, 0) else {
+                panic!("expected Send for {target}");
+            };
+            assert_eq!(
+                spec.scope,
+                WhoIsScope::Directed {
+                    to,
+                    label: target.into()
+                }
+            );
+        }
+        bip6.target = "1234".into();
+        bip6.key(FormKey::Submit, AddressStyle::Bip6, 0);
+        assert!(bip6.error.as_deref().unwrap().contains("bip6:N"));
 
         form.scope = ScopeChoice::Network;
         for (target, expected) in [("0", "not a network"), ("65535", "global broadcast")] {
@@ -451,23 +526,31 @@ mod tests {
             parse_range("0-4194303"),
             Ok(Some(DeviceInstanceRange::new(0, MAX_INSTANCE).unwrap()))
         );
-        assert!(parse_range("0-4194304")
-            .unwrap_err()
-            .contains("above the highest instance"));
+        assert!(
+            parse_range("0-4194304")
+                .unwrap_err()
+                .contains("above the highest instance")
+        );
         assert_eq!(
             parse_range("4194303"),
             Ok(Some(DeviceInstanceRange::single(MAX_INSTANCE).unwrap()))
         );
-        assert!(parse_range("4194304")
-            .unwrap_err()
-            .contains("instances run from 0 to 4194303"));
-        assert!(parse_range("9-1")
-            .unwrap_err()
-            .contains("low (9) > high (1)"));
+        assert!(
+            parse_range("4194304")
+                .unwrap_err()
+                .contains("instances run from 0 to 4194303")
+        );
+        assert!(
+            parse_range("9-1")
+                .unwrap_err()
+                .contains("low (9) > high (1)")
+        );
         // One limit alone is refused, not sent as an unbounded Who-Is (#1483).
-        assert!(parse_range("9-")
-            .unwrap_err()
-            .contains("a low limit but no high limit"));
+        assert!(
+            parse_range("9-")
+                .unwrap_err()
+                .contains("a low limit but no high limit")
+        );
         assert!(parse_listen("0").is_err() && parse_listen("61").is_err());
         let spec = WhoIsForm {
             range: "0-4194303".into(),

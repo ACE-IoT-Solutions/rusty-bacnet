@@ -9,12 +9,13 @@
 
 use super::durable_stop_tests::{send, stop_then_release};
 use super::durable_write_wire_tests::{
-    while_saving, HeldStorage, ERROR_PDU, SIMPLE_ACK_WPM, SIMPLE_ACK_WRITE, WAIT,
+    ERROR_PDU, HeldStorage, SIMPLE_ACK_WPM, SIMPLE_ACK_WRITE, WAIT, while_saving,
 };
 use super::mutation_list_wire_tests::wire;
-use super::mutation_tests::{value, wpm, Fixture};
+use super::mutation_tests::{Fixture, value, wpm};
 use super::*;
 use crate::server::test_transport::TestTransport;
+use PropertyIdentifier as P;
 use bacnet_encoding::constructed::encode_access_rule;
 use bacnet_objects::access_control::{
     AccessRightsObject, AccessRightsPersistence, AccessRightsSnapshot,
@@ -28,9 +29,8 @@ use bacnet_types::constructed::{BACnetAccessRule, BACnetDeviceObjectPropertyRefe
 use bacnet_types::enums::{AccessRuleLocationSpecifier, AccessRuleTimeRangeSpecifier};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use PropertyIdentifier as P;
 
-type RightsStorage = HeldStorage<AccessRightsSnapshot>;
+pub(super) type RightsStorage = HeldStorage<AccessRightsSnapshot>;
 
 impl AccessRightsPersistence for RightsStorage {
     fn load(&self, _rights: ObjectIdentifier) -> Result<Option<AccessRightsSnapshot>, Error> {
@@ -284,6 +284,7 @@ async fn a_write_property_multiple_with_several_rights_writes_saves_once_and_sur
         negative_access_rules: Some(vec![grown_rule()]),
         enable: Some(false),
         accompaniment: None,
+        description: None,
     };
     assert_eq!(storage.load_saved(), Some(expected.clone()));
     drop(fixture);
@@ -303,8 +304,9 @@ async fn server(
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 100,
-            name: "Access Rights device".into(),
+            identity: bacnet_objects::DeviceIdentity::new(100, 0)
+                .expect("valid Device identity")
+                .with_name("Access Rights device"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -312,6 +314,7 @@ async fn server(
     .unwrap();
     db.add(Box::new(rights_object(storage))).unwrap();
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .transport(transport)
         .database(db)
         .enable_event_enrollment(false)
@@ -454,7 +457,7 @@ async fn saves_done(fixture: &Fixture, rights: ObjectIdentifier) {
     let mut db = fixture.db.write().await;
     let writes = db
         .get_mut(&rights)
-        .and_then(|object| object.durable_writes_internal())
+        .and_then(|object| object.durable_writes())
         .expect("the object saves");
     assert!(!writes.has_staged_write(), "a write is still staged");
     let wait = writes.settle_forgotten_writes().expect("the object saves");

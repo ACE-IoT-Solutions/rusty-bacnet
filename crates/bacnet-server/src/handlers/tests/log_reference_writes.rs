@@ -14,6 +14,8 @@ use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::{
     LogData, LogDatum, LogValue, PropertyReference, ReadAccessSpecification,
 };
+use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::error::RemoteError;
 use std::sync::Arc;
 
 const LDOP: PropertyIdentifier = PropertyIdentifier::LOG_DEVICE_OBJECT_PROPERTY;
@@ -50,15 +52,21 @@ fn database() -> ObjectDatabase {
     let mut db = crate::server::clocked_test_database();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 856,
-            name: "D-856".into(),
+            identity: bacnet_objects::DeviceIdentity::new(856, 0)
+                .expect("valid Device identity")
+                .with_name("D-856"),
             ..Default::default()
         })
         .unwrap(),
     ))
     .unwrap();
     for (instance, value) in [(1, 21.5), (2, 7.0)] {
-        let mut av = AnalogValueObject::new(instance, format!("AV-{instance}"), 95).unwrap();
+        let mut av = AnalogValueObject::new(
+            instance,
+            format!("AV-{instance}"),
+            EngineeringUnits::NO_UNITS,
+        )
+        .unwrap();
         av.write_property_from(
             PropertyIdentifier::PRESENT_VALUE,
             None,
@@ -82,7 +90,7 @@ fn database() -> ObjectDatabase {
     }
     db.add(Box::new(tl)).unwrap();
     db.add(Box::new(tlm)).unwrap();
-    db.set_monotonic_clock_internal(Some(Arc::new(|| std::time::Duration::ZERO)));
+    db.set_monotonic_clock(Some(Arc::new(|| std::time::Duration::ZERO)));
     db
 }
 
@@ -163,8 +171,8 @@ type IndexedRefusal = (Option<u32>, Vec<u8>, ErrorClass, ErrorCode, &'static str
 
 fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode, what: &str) {
     assert!(
-        matches!(result, Err(Error::Protocol { class: c, code: e })
-            if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class: c, code: e }))
+            if c == class && e == code),
         "{what}: expected {class:?} / {code:?}, got {result:?}"
     );
 }
@@ -172,7 +180,8 @@ fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode,
 fn record_count(db: &ObjectDatabase, oid: ObjectIdentifier) -> usize {
     db.get(&oid)
         .unwrap()
-        .log_buffer_internal()
+        .log_buffer()
+        .and_then(|log| log.buffer_records())
         .unwrap()
         .record_count()
 }
@@ -181,7 +190,8 @@ fn record(db: &ObjectDatabase, oid: ObjectIdentifier, index: usize) -> Vec<u8> {
     let mut bytes = BytesMut::new();
     db.get(&oid)
         .unwrap()
-        .log_buffer_internal()
+        .log_buffer()
+        .and_then(|log| log.buffer_records())
         .unwrap()
         .encode_record(index, &mut bytes);
     bytes.to_vec()
@@ -417,8 +427,8 @@ fn trend_log_multiple_index_0_write_resizes_the_array() {
     assert_eq!(
         multiple_data(&db, 1),
         LogData::Values(vec![LogValue::Failure {
-            error_class: u32::from(ErrorClass::PROPERTY.to_raw()),
-            error_code: u32::from(ErrorCode::NO_PROPERTY_SPECIFIED.to_raw()),
+            error_class: ErrorClass::PROPERTY,
+            error_code: ErrorCode::NO_PROPERTY_SPECIFIED,
         }])
     );
 }

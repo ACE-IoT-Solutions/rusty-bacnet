@@ -1,3 +1,4 @@
+use crate::property_metadata::PropertyMetadata;
 use std::borrow::Cow;
 
 use super::super::*;
@@ -107,8 +108,8 @@ impl BACnetObject for ProjectionFixtureClass {
         Err(crate::common::write_access_denied_error())
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 }
 

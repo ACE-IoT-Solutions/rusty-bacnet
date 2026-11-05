@@ -3,9 +3,13 @@
 use bacnet_mstp_codec::FrameType;
 
 use super::{NodeKind, Sim};
+use crate::SimRng;
 use crate::line::Driver;
 use crate::spec::{Corruption, Fault};
 use crate::trace::{TraceKind, Who};
+
+/// Separates each node's timer-phase draw from the run's other streams.
+const TIMER_PHASE_STREAM: u64 = 0x3C6E_F372_FE94_F82B;
 
 /// A fault waiting for the transmission it applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,8 +70,18 @@ impl Sim {
             }
             Fault::Disarm => self.armed.clear(),
             Fault::SetAdapter { station, adapter } => {
+                self.timing.validate_post_drive(adapter.post_drive);
+                self.timing
+                    .validate_inter_octet_gap(adapter.inter_octet_gap);
+                if let Some(host) = adapter.host {
+                    host.validate();
+                }
                 let node = self.index_of(station);
                 if let NodeKind::Master(master) = &mut self.nodes[node].kind {
+                    assert!(
+                        master.core.is_none() || adapter.host.is_some() == master.host.is_some(),
+                        "change host/octet mode while the node is powered off"
+                    );
                     master.spec.adapter = adapter;
                     self.arm_deadline(node);
                 }
@@ -88,7 +102,16 @@ impl Sim {
                 if master.core.is_some() {
                     return;
                 }
-                master.boot(now);
+                // From the seed, the station and the boot count alone, so
+                // no other draw shifts it and each boot lands elsewhere.
+                let phase = SimRng::new(
+                    self.config.seed
+                        ^ TIMER_PHASE_STREAM
+                        ^ (u64::from(station) << 48)
+                        ^ (master.incarnation + 1),
+                )
+                .next_u64();
+                master.boot(now, phase);
             }
             NodeKind::Scripted(scripted) => scripted.decoder.reset(),
         }
@@ -106,10 +129,13 @@ impl Sim {
         let now = self.now;
         let station = self.nodes[node].station;
         self.perturb("a node powered off");
+        self.cancel_local_echo(node);
+        self.receiver_power_off(node);
         if let Some(tx) = self.nodes[node].driving.take() {
             if let Some(transmission) = self.line.truncate(tx, now) {
                 self.record_frame(tx, transmission);
             }
+            self.release_driver(tx, crate::DriverReleaseCause::PowerLoss);
         }
         self.nodes[node].listening_since = None;
         if let NodeKind::Master(master) = &mut self.nodes[node].kind {

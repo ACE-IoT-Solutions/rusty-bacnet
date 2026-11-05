@@ -1,6 +1,7 @@
 //! Observable target recipient changes through the same wire and local owners.
 use super::*;
 use bacnet_objects::audit::AuditReporterObject;
+use bacnet_objects::property_metadata::is_writable_property;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::{WriteAccessSpecification, WritePropertyMultipleRequest};
 
@@ -192,7 +193,7 @@ async fn recipient_second_reservation_failure_and_noops_are_atomic() {
         .await
         .get(&oid(ObjectType::AUDIT_REPORTER, 1))
         .unwrap()
-        .audit_reporter_internal()
+        .audit_reporter()
         .unwrap()
         .status_internal();
     let before = status.begin_delivery();
@@ -332,7 +333,7 @@ async fn recipient_invalid_and_unauthorized_requests_preserve_value_epoch_and_se
         .await
         .get(&oid(ObjectType::AUDIT_REPORTER, 1))
         .unwrap()
-        .audit_reporter_internal()
+        .audit_reporter()
         .unwrap()
         .status_internal();
     let before = status.begin_delivery();
@@ -374,10 +375,11 @@ async fn recipient_invalid_and_unauthorized_requests_preserve_value_epoch_and_se
         ));
     }
     for panic in [false, true] {
-        fixture.server.config_mut().mutation_authorizer = Some(Arc::new(move |_| {
-            assert!(!panic, "authorization panic");
-            false
-        }));
+        fixture.server.config_mut().policy =
+            Some(Arc::new(crate::FnPolicy::new().mutation(move |_| {
+                assert!(!panic, "authorization panic");
+                false
+            })));
         assert!(matches!(
             change(&fixture, &device(21)).await,
             Apdu::Error(_)
@@ -460,9 +462,16 @@ async fn recipient_active_metadata_rpm_and_property_list_follow_runtime_presence
         }
         let db = fixture.server.db.read().await;
         let object = db.get(&target).unwrap();
-        assert_eq!(object.property_list().contains(&property), active);
-        assert_eq!(object.required_properties().contains(&property), active);
-        assert_eq!(object.is_writable_property(property), active);
+        assert_eq!(
+            bacnet_objects::property_metadata::has_property(&object.property_metadata(), property),
+            active
+        );
+        assert_eq!(
+            bacnet_objects::property_metadata::required_properties(&object.property_metadata())
+                .any(|required| required == property),
+            active
+        );
+        assert_eq!(is_writable_property(object, property), active);
         if active {
             let metadata = object.property_metadata();
             let row = metadata
@@ -515,15 +524,16 @@ async fn recipient_active_metadata_rpm_and_property_list_follow_runtime_presence
 mod lifecycle;
 
 #[tokio::test]
-async fn recipient_wpm_authorizer_denies_after_committed_prefix_without_suffix_attempt() {
+async fn recipient_wpm_policy_denies_after_committed_prefix_without_suffix_attempt() {
     let mut fixture = fixture(reporter()).await;
     let decisions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let captured = Arc::clone(&decisions);
-    fixture.server.config_mut().mutation_authorizer = Some(Arc::new(move |context| {
-        assert_eq!(context.invoke_id, Some(77));
-        assert_eq!(context.source_mac.as_slice(), SOURCE);
-        captured.fetch_add(1, Ordering::AcqRel) == 0
-    }));
+    fixture.server.config_mut().policy =
+        Some(Arc::new(crate::FnPolicy::new().mutation(move |context| {
+            assert_eq!(context.invoke_id, Some(77));
+            assert_eq!(context.source_mac.as_slice(), SOURCE);
+            captured.fetch_add(1, Ordering::AcqRel) == 0
+        })));
     let mut bytes = BytesMut::new();
     WritePropertyMultipleRequest {
         list_of_write_access_specs: vec![WriteAccessSpecification {

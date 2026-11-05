@@ -2,7 +2,7 @@ use super::*;
 use crate::event::CommandFailureDetector;
 use crate::object_profile::{ObjectProfile, ProfileState, TagsPersistence};
 use crate::property_metadata::PropertyMetadata;
-use std::sync::Arc;
+use alloc::sync::Arc;
 
 mod metadata;
 
@@ -36,6 +36,10 @@ pub struct MultiStateOutputObject {
     /// COMMAND_FAILURE event detector.
     event_detector: CommandFailureDetector,
     pub(crate) event_history: EventHistory,
+    /// The reporting settings a write set, kept in storage once the
+    /// object opts in (#2331).
+    #[cfg(feature = "event-reporting")]
+    reporting_store: crate::write_config::reporting::ReportingStore,
     /// Implemented paired command-source tracking (Clause 19.5).
     value_source: crate::command_source::ValueSourceTracking,
 }
@@ -71,6 +75,8 @@ impl MultiStateOutputObject {
                 .collect(),
             event_detector: CommandFailureDetector::default(),
             event_history: EventHistory::default(),
+            #[cfg(feature = "event-reporting")]
+            reporting_store: Default::default(),
             value_source: crate::command_source::ValueSourceTracking::default(),
         })
     }
@@ -101,11 +107,6 @@ impl MultiStateOutputObject {
     /// This is not a success receipt. Unstaged synchronous writes block their caller.
     pub fn wait_for_tag_saves(&self) {
         self.profile.wait_for_saves();
-    }
-
-    /// Set the description string.
-    pub fn set_description(&mut self, desc: impl Into<String>) {
-        self.description = desc.into();
     }
 
     fn recalculate_present_value(&mut self) {
@@ -190,6 +191,8 @@ impl MultiStateOutputObject {
     }
 }
 
+crate::write_config::reporting::impl_reporting_persistence!(MultiStateOutputObject);
+
 impl BACnetObject for MultiStateOutputObject {
     fn object_identifier(&self) -> ObjectIdentifier {
         self.oid
@@ -199,42 +202,16 @@ impl BACnetObject for MultiStateOutputObject {
         &self.name
     }
 
-    fn supports_cov(&self) -> bool {
-        true
-    }
+    crate::traits::lend_cov_reporting!();
 
-    crate::event::impl_builtin_intrinsic_reporting!(
-        event_detector,
-        event_history,
-        [present_value, feedback_value],
-        reliability,
-        event_detection_enable,
-        CommandFailureDetector::ALGORITHM
-    );
-
-    fn acknowledge_alarm_correlated_internal(
-        &mut self,
-        event_state: EventState,
-        timestamp: &BACnetTimeStamp,
-    ) -> Result<(), Error> {
-        if !self.event_detection_enable {
-            return Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw() as u32,
-                code: ErrorCode::NO_ALARM_CONFIGURED.to_raw() as u32,
-            });
-        }
-        self.event_history.acknowledge_correlated(
-            &mut self.event_detector.acked_transitions,
-            event_state,
-            timestamp,
-        )
-    }
+    crate::traits::lend_event_reporting!();
 
     fn read_property(
         &self,
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = self
             .value_source
             .read(property, array_index, &self.priority_array)
@@ -317,13 +294,7 @@ impl BACnetObject for MultiStateOutputObject {
         priority: Option<u8>,
         origin: &crate::command_source::CommandOrigin,
     ) -> Result<(), Error> {
-        if matches!(
-            property,
-            PropertyIdentifier::PRESENT_VALUE | PropertyIdentifier::VALUE_SOURCE
-        ) && array_index.is_some()
-        {
-            return Err(common::property_is_not_an_array_error());
-        }
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if property == PropertyIdentifier::VALUE_SOURCE {
             return self.value_source.correct(value, priority, origin);
         }
@@ -357,6 +328,8 @@ impl BACnetObject for MultiStateOutputObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        crate::write_config::reporting::admit(self, property, array_index, &value)?;
         if matches!(
             property,
             PropertyIdentifier::PRESENT_VALUE | PropertyIdentifier::VALUE_SOURCE
@@ -478,33 +451,24 @@ impl BACnetObject for MultiStateOutputObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
-        self.profile.capability()
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: std::time::Duration) -> bool {
-        self.profile.expire(now);
-        false
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.durable_capability()
     }
 
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
+    crate::traits::lend_reliability_eval!();
+}
 
-    fn is_createable(&self) -> bool {
-        true
-    }
-    fn creation_only_properties(&self) -> &'static [PropertyIdentifier] {
-        CREATION_ONLY
-    }
+impl crate::creation::Creatable for MultiStateOutputObject {
+    const CREATION_ONLY_PROPERTIES: &'static [PropertyIdentifier] = CREATION_ONLY;
+
     fn initialize_property(
         &mut self,
         property: PropertyIdentifier,
@@ -521,7 +485,12 @@ impl BACnetObject for MultiStateOutputObject {
         let _ = self.recompute_reliability();
         Ok(())
     }
-    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
+}
+
+impl crate::traits::CovReporting for MultiStateOutputObject {}
+
+impl crate::traits::ReliabilityEval for MultiStateOutputObject {
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
         if self.out_of_service || self.reliability_inhibit.enabled() {
             return Err(common::write_access_denied_error());
         }
@@ -533,14 +502,24 @@ impl BACnetObject for MultiStateOutputObject {
         Ok(())
     }
 
-    fn evaluate_reliability_internal(&mut self) -> Result<ReliabilityEvaluation, Error> {
+    fn evaluate_reliability(&mut self) -> Result<ReliabilityEvaluation, Error> {
         Ok(self.recompute_reliability())
     }
 
-    fn reliability_evaluation_inhibited_internal(&self) -> bool {
+    fn reliability_evaluation_inhibited(&self) -> bool {
         self.reliability_inhibit.enabled()
     }
 }
+
+crate::event::impl_builtin_intrinsic_reporting!(
+    MultiStateOutputObject,
+    event_detector,
+    event_history,
+    [present_value, feedback_value],
+    reliability,
+    event_detection_enable,
+    CommandFailureDetector::ALGORITHM
+);
 
 #[cfg(test)]
 #[path = "output/tests.rs"]

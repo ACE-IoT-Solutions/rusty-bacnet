@@ -1,11 +1,11 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::audit::ObjectAuditPolicy;
 use bacnet_objects::color::{ColorObject, ColorTemperatureObject};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::bitstring::AuditOperationFlags;
 use bacnet_types::enums::AuditLevel;
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn expected_rows(kind: ObjectType) -> Vec<PropertyRow> {
     // Independent (identifier, optional, writable) rows in declaration order; PICS sorts by property ID.
@@ -115,10 +115,13 @@ fn check_pics(
     expected: &[PropertyRow],
     configured: bool,
 ) {
-    let required = object.required_properties();
+    let required: Vec<_> =
+        bacnet_objects::property_metadata::required_properties(&object.property_metadata())
+            .collect();
     let mut db = ObjectDatabase::new();
     db.add(object).unwrap();
-    let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+    let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+        .instance_types_only(&db);
     assert_eq!(pics.supported_object_types.len(), 1);
     let support = &pics.supported_object_types[0];
     assert_eq!(support.object_type, kind);

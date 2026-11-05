@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
@@ -11,9 +11,8 @@ use crate::property_metadata::{
 use super::AuditLogObject;
 
 // Canonical effective rows for Audit Log (type 61, Clause 12.64 Table 12-83).
-// Order preserves the legacy property_list projection, with Log_Buffer in its
-// table position after Buffer_Size; PROPERTY_LIST is appended so the
-// projection helper omits it while required_properties keeps it. Only
+// Order preserves the earlier row order, with Log_Buffer in its
+// table position after Buffer_Size; PROPERTY_LIST is appended last. Only
 // implemented rows are described: table rows the object does not serve
 // (intrinsic-reporting, Audit_Level, Tags, Profile_*) stay absent until
 // dispatch exists. Log_Buffer is present but served only by ReadRange and
@@ -56,11 +55,11 @@ pub(super) fn for_object(object: &AuditLogObject) -> Cow<'_, [PropertyMetadata]>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use crate::collections::HashSet;
     use std::sync::{Arc, Mutex};
 
     use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType};
-    use bacnet_types::error::Error;
+    use bacnet_types::error::{Error, RemoteError};
     use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, Time};
 
     use crate::clock::{ClockFrame, ClockReader};
@@ -135,7 +134,10 @@ mod tests {
             P::RELIABILITY,
         ];
         for p in properties {
-            assert!(!object.property_list().contains(&p));
+            assert!(!crate::property_metadata::has_property(
+                &object.property_metadata(),
+                p
+            ));
             assert_error(
                 object.read_property(p, None).unwrap_err(),
                 ErrorCode::UNKNOWN_PROPERTY,
@@ -143,8 +145,11 @@ mod tests {
         }
         object.set_member_of(Some(parent.clone()));
         for p in properties {
-            assert!(object.property_list().contains(&p));
-            assert!(!object.is_writable_property(p));
+            assert!(crate::property_metadata::has_property(
+                &object.property_metadata(),
+                p
+            ));
+            assert!(!crate::property_metadata::is_writable_property(&object, p));
             assert_error(
                 object
                     .write_property(p, None, PropertyValue::Null, None)
@@ -167,7 +172,7 @@ mod tests {
                 .unwrap(),
             PropertyValue::Boolean(true)
         );
-        let old = object.audit_log_forwarding_internal().unwrap();
+        let old = object.audit_log().and_then(|log| log.forwarding()).unwrap();
         assert_eq!(
             object.read_property(P::RELIABILITY, None).unwrap(),
             PropertyValue::Enumerated(Reliability::CONFIGURATION_ERROR.to_raw())
@@ -183,7 +188,7 @@ mod tests {
             }
         );
         object.set_member_of(Some(parent));
-        let new = object.audit_log_forwarding_internal().unwrap();
+        let new = object.audit_log().and_then(|log| log.forwarding()).unwrap();
         new.status().set_configured(true);
         old.status().complete_delivery(epoch, false);
         assert_eq!(
@@ -191,14 +196,17 @@ mod tests {
             PropertyValue::Enumerated(Reliability::NO_FAULT_DETECTED.to_raw())
         );
         object.set_member_of(None);
-        assert!(!object.property_list().contains(&P::MEMBER_OF));
+        assert!(!crate::property_metadata::has_property(
+            &object.property_metadata(),
+            P::MEMBER_OF
+        ));
     }
 
     fn assert_error(error: Error, expected: ErrorCode) {
         assert!(
-            matches!(error, Error::Protocol { class, code }
-                if class == ErrorClass::PROPERTY.to_raw() as u32
-                    && code == expected.to_raw() as u32),
+            matches!(error, Error::Remote(RemoteError::Error { class, code })
+                if class == ErrorClass::PROPERTY
+                    && code == expected),
             "expected {expected:?}, got {error:?}"
         );
     }
@@ -212,27 +220,31 @@ mod tests {
         };
         let mut object: Box<dyn BACnetObject> = Box::new(log());
         object
-            .set_audit_log_parent_internal(parent.clone())
+            .audit_log_mut()
+            .unwrap()
+            .set_parent(parent.clone())
             .unwrap();
         assert_eq!(
-            object.audit_log_forwarding_internal().unwrap().parent(),
+            object
+                .audit_log()
+                .and_then(|log| log.forwarding())
+                .unwrap()
+                .parent(),
             &parent
         );
         assert_eq!(
             object.read_property(P::MEMBER_OF, None).unwrap(),
             PropertyValue::ApplicationData(vec![0x0c, 0x02, 0, 0, 9, 0x1c, 0x0f, 0x40, 0, 2])
         );
-        assert!(!object.is_writable_property(P::MEMBER_OF));
+        assert!(!crate::property_metadata::is_writable_property(
+            &*object,
+            P::MEMBER_OF
+        ));
 
         let mut other: Box<dyn BACnetObject> =
             Box::new(crate::binary::BinaryValueObject::new(1, "Other").unwrap());
-        assert!(matches!(
-            other.set_audit_log_parent_internal(parent),
-            Err(Error::Protocol { class, code })
-                if class == ErrorClass::OBJECT.to_raw() as u32
-                    && code == ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32
-        ));
-        assert!(other.audit_log_forwarding_internal().is_none());
+        assert!(other.audit_log_mut().is_none());
+        assert!(other.audit_log().is_none());
     }
 
     #[test]
@@ -267,8 +279,14 @@ mod tests {
         let metadata = object.property_metadata();
         assert!(matches!(metadata, Cow::Borrowed(_)));
         assert_eq!(metadata.len(), all.len() + 1);
-        assert_eq!(object.property_list().as_ref(), all);
-        assert_eq!(object.required_properties().as_ref(), required);
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(&all)
+        );
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            required
+        );
         assert_eq!(
             metadata
                 .iter()
@@ -277,9 +295,10 @@ mod tests {
                 .len(),
             metadata.len()
         );
-        assert!(!object.is_createable());
-        assert!(object.is_deleteable());
-        assert!(!object.supports_cov());
+        assert!(crate::creation::builtin_deleteable(
+            object.object_identifier().object_type()
+        ));
+        assert!(!object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
         for row in metadata.iter() {
             let expected = if row.property_identifier == P::LOG_ENABLE {
                 RequiredWrite
@@ -309,7 +328,10 @@ mod tests {
             .map(|p| PropertyValue::Enumerated(p.to_raw()))
             .collect();
         assert_eq!(wire.len(), 8);
-        assert!(object.is_array_property(P::PROPERTY_LIST));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::PROPERTY_LIST
+        ));
         assert_eq!(
             object.read_property(P::PROPERTY_LIST, None).unwrap(),
             PropertyValue::List(wire.clone())
@@ -348,7 +370,11 @@ mod tests {
                 if writable { Always } else { ReadOnly },
                 "{p:?}"
             );
-            assert_eq!(object.is_writable_property(p), writable, "{p:?}");
+            assert_eq!(
+                crate::property_metadata::is_writable_property(&object, p),
+                writable,
+                "{p:?}"
+            );
             if p == P::LOG_BUFFER {
                 // Present but readable only by ReadRange; writes are denied.
                 assert_error(
@@ -392,15 +418,21 @@ mod tests {
         }
         // The metadata fixes two legacy-default drifts: Object_Name is not
         // writable and Enable is, matching the write_property arms.
-        assert!(!object.is_writable_property(P::OBJECT_NAME));
-        assert!(object.is_writable_property(P::LOG_ENABLE));
+        assert!(!crate::property_metadata::is_writable_property(
+            &object,
+            P::OBJECT_NAME
+        ));
+        assert!(crate::property_metadata::is_writable_property(
+            &object,
+            P::LOG_ENABLE
+        ));
         for p in [
             P::OBJECT_NAME,
             P::RECORD_COUNT,
             P::LOG_BUFFER,
             P::RELIABILITY,
         ] {
-            assert!(!object.is_writable_property(p));
+            assert!(!crate::property_metadata::is_writable_property(&object, p));
             assert_error(
                 object
                     .write_property(p, None, PropertyValue::Null, None)
@@ -432,14 +464,20 @@ mod tests {
             .write_property(P::LOG_ENABLE, None, PropertyValue::Boolean(false), None)
             .unwrap_err();
         assert!(
-            matches!(error, Error::Protocol { class, code }
-                if class == ErrorClass::DEVICE.to_raw() as u32
-                    && code == ErrorCode::OPERATIONAL_PROBLEM.to_raw() as u32),
+            matches!(error, Error::Remote(RemoteError::Error { class, code })
+                if class == ErrorClass::DEVICE
+                    && code == ErrorCode::OPERATIONAL_PROBLEM),
             "expected DEVICE/OPERATIONAL_PROBLEM, got {error:?}"
         );
         assert!(object.log_enable());
 
-        object.bind_clock_internal(Some(Arc::new(FixedClock(Some(frame())))));
+        crate::traits::Timed::bind_clocks(
+            &mut object,
+            &crate::traits::Clocks {
+                clock: Some(Arc::new(FixedClock(Some(frame())))),
+                ..crate::traits::Clocks::default()
+            },
+        );
         object
             .write_property(P::LOG_ENABLE, None, PropertyValue::Boolean(false), None)
             .unwrap();

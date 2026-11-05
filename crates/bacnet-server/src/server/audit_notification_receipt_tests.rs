@@ -1,14 +1,14 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bacnet_encoding::npdu::NpduAddress;
-use bacnet_types::enums::AuditOperation;
 use bacnet_types::MacAddr;
+use bacnet_types::enums::AuditOperation;
 
 use super::super::*;
 use super::{
-    confirmed_request, count, database, dispatch, dispatch_confirmed, notification, oid,
-    request_bytes, MemoryPersistence,
+    MemoryPersistence, confirmed_request, count, database, dispatch, dispatch_confirmed,
+    notification, oid, request_bytes,
 };
 
 #[tokio::test]
@@ -20,10 +20,12 @@ async fn durable_duplicate_is_silent_after_reopen_with_fresh_tracker() {
     let observed = Arc::clone(&authorizations);
     let config = ServerConfig {
         audit_notification_sink: Some(sink),
-        audit_notification_authorizer: Some(Arc::new(move |_| {
-            observed.fetch_add(1, Ordering::AcqRel);
-            true
-        })),
+        policy: Some(Arc::new(crate::FnPolicy::new().audit_notification(
+            move |_| {
+                observed.fetch_add(1, Ordering::AcqRel);
+                true
+            },
+        ))),
         ..ServerConfig::default()
     };
     let bytes = request_bytes(vec![notification(AuditOperation::WRITE)]);
@@ -45,17 +47,19 @@ async fn durable_duplicate_is_silent_after_reopen_with_fresh_tracker() {
     drop(db);
 
     let reopened = database(Arc::clone(&persistence), 7);
-    assert!(dispatch(
-        &reopened,
-        &config,
-        &Arc::new(ConfirmedRequestTracker::default()),
-        9,
-        &[0x10],
-        None,
-        bytes,
-    )
-    .await
-    .is_err());
+    assert!(
+        dispatch(
+            &reopened,
+            &config,
+            &Arc::new(ConfirmedRequestTracker::default()),
+            9,
+            &[0x10],
+            None,
+            bytes,
+        )
+        .await
+        .is_err()
+    );
 
     assert_eq!(authorizations.load(Ordering::Acquire), 1);
     assert_eq!(count(&reopened, sink).await, (1, 1));
@@ -74,10 +78,12 @@ async fn changed_exact_identity_fields_are_admitted_after_reopen() {
     let observed = Arc::clone(&authorizations);
     let config = ServerConfig {
         audit_notification_sink: Some(sink),
-        audit_notification_authorizer: Some(Arc::new(move |_| {
-            observed.fetch_add(1, Ordering::AcqRel);
-            true
-        })),
+        policy: Some(Arc::new(crate::FnPolicy::new().audit_notification(
+            move |_| {
+                observed.fetch_add(1, Ordering::AcqRel);
+                true
+            },
+        ))),
         ..ServerConfig::default()
     };
     let payload = request_bytes(vec![notification(AuditOperation::WRITE)]);
@@ -178,14 +184,16 @@ async fn concurrent_exact_admission_authorizes_and_commits_once_without_locking_
     let callback_db = Arc::clone(&db);
     let config = ServerConfig {
         audit_notification_sink: Some(sink),
-        audit_notification_authorizer: Some(Arc::new(move |_| {
-            let guard = callback_db
-                .try_write()
-                .expect("database lock must not be held across authorization");
-            drop(guard);
-            observed.fetch_add(1, Ordering::AcqRel);
-            true
-        })),
+        policy: Some(Arc::new(crate::FnPolicy::new().audit_notification(
+            move |_| {
+                let guard = callback_db
+                    .try_write()
+                    .expect("database lock must not be held across authorization");
+                drop(guard);
+                observed.fetch_add(1, Ordering::AcqRel);
+                true
+            },
+        ))),
         ..ServerConfig::default()
     };
     let tracker = Arc::new(ConfirmedRequestTracker::default());
@@ -218,7 +226,9 @@ async fn failed_confirmed_commit_writes_no_receipt_and_fresh_retry_succeeds() {
     let db = database(Arc::clone(&persistence), 7);
     let config = ServerConfig {
         audit_notification_sink: Some(sink),
-        audit_notification_authorizer: Some(Arc::new(|_| true)),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().audit_notification(|_| true),
+        )),
         ..ServerConfig::default()
     };
     let bytes = request_bytes(vec![notification(AuditOperation::WRITE)]);

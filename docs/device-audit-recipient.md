@@ -7,8 +7,7 @@ uses `configure_audit_recipient(AuditRecipientInput)` before `start()` and selec
 settings separately with `configure_audit_reporters`. The former Rust configuration
 field and Python `recipient_device_instance` keyword are removed before 1.0.
 
-Startup requires a concrete built-in local Device (the lowest when the database
-holds several; see
+Startup requires the built-in Device the server's identity names (see
 [Databases with several Devices](rust-api.md#databases-with-several-devices)), a
 typed provision on it, and the selected Audit Reporters. See [target Reporter ownership](target-audit-reporters.md) for
 association, overlap health, and the single pair-owner election. Provisioning alone does not expose a network property.
@@ -92,7 +91,7 @@ routes and precommit admission/encoding failure leave the old state intact.
 Valid priorities 1–16 are ignored for this noncommandable property.
 
 The standalone target uses the existing server mutation policy. Its default remains
-Permissive without an authorizer; enabling Audit does not authenticate callers.
+Permissive without a `ServerPolicy`; enabling Audit does not authenticate callers.
 Applications needing admission control must configure that policy. WPM preserves
 its committed prefix and stops at the failing element. The endpoint source in
 `Both` instead requires an explicit `with_device_writes` authorizer; no callback

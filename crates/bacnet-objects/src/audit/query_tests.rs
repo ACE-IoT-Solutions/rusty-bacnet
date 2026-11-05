@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use bacnet_types::MacAddr;
 use bacnet_types::bitstring::{AuditOperationFlags, LogStatus};
 use bacnet_types::constructed::{
     AuditPropertyReference, BACnetAddress, BACnetAuditLogDatum, BACnetAuditLogQueryParameters,
@@ -10,7 +11,6 @@ use bacnet_types::enums::{
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
-use bacnet_types::MacAddr;
 
 use crate::traits::BACnetObject;
 
@@ -123,8 +123,9 @@ fn query(
     start: Option<u64>,
     count: u16,
 ) -> super::AuditLogQueryPage {
-    BACnetObject::audit_log_storage_internal(log)
+    BACnetObject::audit_log(log)
         .unwrap()
+        .storage()
         .query(parameters, start, count)
 }
 
@@ -338,14 +339,16 @@ fn source_filter_and_success_filter_follow_the_wire_contract() {
         );
     }
     // The reserved raw domain matches nothing rather than widening the query.
-    assert!(query(
-        &log,
-        &query_parameters(BACnetSuccessFilter::from_raw(3)),
-        None,
-        10
-    )
-    .records
-    .is_empty());
+    assert!(
+        query(
+            &log,
+            &query_parameters(BACnetSuccessFilter::from_raw(3)),
+            None,
+            10
+        )
+        .records
+        .is_empty()
+    );
 
     let wrong_source = BACnetAuditLogQueryParameters::BySource {
         source_device_identifier: device(98),
@@ -363,9 +366,11 @@ fn source_filter_and_success_filter_follow_the_wire_contract() {
         operations: Some(operations),
         successful_actions_only: BACnetSuccessFilter::ALL,
     };
-    assert!(query(&log, &wrong_source_object, None, 10)
-        .records
-        .is_empty());
+    assert!(
+        query(&log, &wrong_source_object, None, 10)
+            .records
+            .is_empty()
+    );
 }
 
 #[test]
@@ -631,5 +636,5 @@ fn records_appended_during_paging_cause_no_omission_or_duplication() {
 #[test]
 fn non_audit_objects_keep_the_default_capability_absent() {
     let reporter = super::AuditReporterObject::new(1, "Reporter").unwrap();
-    assert!(reporter.audit_log_storage_internal().is_none());
+    assert!(reporter.audit_log().map(|log| log.storage()).is_none());
 }

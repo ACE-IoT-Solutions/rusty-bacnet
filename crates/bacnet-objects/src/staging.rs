@@ -3,13 +3,25 @@
 //! The object owns threshold/hysteresis evaluation only. It queues guarded
 //! local target-write plans for the server, which executes them after releasing
 //! the source-object database mutation lock.
+//!
+//! **Releasing slots** (#2265, #2289): the object gives up the Present_Value
+//! slots its stage writes filled (`held`) when it is removed, and those a
+//! change of Target_References or Priority_For_Writing leaves behind: a
+//! dropped target's, or every slot at the old priority. Clause 12.62 covers
+//! neither; it follows the Schedule (#1088, #2256, #2264), with the same
+//! check that the slot is still its own. Those NULLs go out ahead of the
+//! object's next target write, and not while it is out of service. A plan
+//! still being written when the object goes stops at its next target (each
+//! write checks the generation under its own guard).
 
-use std::borrow::Cow;
+use crate::prelude::*;
+use alloc::borrow::Cow;
 
 use bacnet_encoding::constructed::{decode_stage_limit_value, encode_stage_limit_value};
 use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetStageLimitValue};
 use bacnet_types::enums::{
-    ErrorClass, ErrorCode, EventState, ObjectType, PropertyIdentifier, Reliability,
+    EngineeringUnits, ErrorClass, ErrorCode, EventState, ObjectType, PropertyIdentifier,
+    Reliability,
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
@@ -17,12 +29,14 @@ use bytes::BytesMut;
 
 use crate::common::{self, read_common_properties};
 use crate::device_reference;
-use crate::property_metadata::{
-    property_list_from_metadata, PropertyConformance, PropertyMetadata, PropertyWriteCapability,
-};
+use crate::property_metadata::{PropertyConformance, PropertyMetadata, PropertyWriteCapability};
 use crate::traits::BACnetObject;
+#[cfg(test)]
+use crate::traits::StagingSource;
 
+mod held;
 mod metadata;
+mod source;
 use metadata::STAGING_PROPERTY_METADATA;
 
 /// Complete atomic configuration for a [`StagingObject`].
@@ -38,7 +52,7 @@ pub struct StagingConfig {
     /// `Min_Pres_Value`, strictly below the first stage's lower deadband edge.
     pub min_present_value: f32,
     /// Engineering-units enumeration stored by `Units`.
-    pub units: u32,
+    pub units: EngineeringUnits,
     /// Command priority used for local target writes (1..=16).
     pub priority_for_writing: u8,
     /// At least two ordered stage-limit values.
@@ -85,13 +99,17 @@ pub struct StagingObject {
     target_references: Vec<BACnetDeviceObjectReference>,
     priority_for_writing: u8,
     min_present_value: f32,
-    units: u32,
+    units: EngineeringUnits,
     cov_increment: f32,
     status_flags: StatusFlags,
     out_of_service: bool,
     reliability: Reliability,
+    /// The in-service Reliability, set aside while a client simulates one
+    /// out of service and put back when Out_Of_Service returns to FALSE.
+    reliability_before_out_of_service: Option<Reliability>,
     generation: u64,
     pending_plan: Option<StagingWritePlan>,
+    held: held::HeldSlots,
 }
 
 impl StagingObject {
@@ -128,8 +146,10 @@ impl StagingObject {
             status_flags: StatusFlags::empty(),
             out_of_service: false,
             reliability: Reliability::NO_FAULT_DETECTED,
+            reliability_before_out_of_service: None,
             generation: 0,
             pending_plan: None,
+            held: held::HeldSlots::default(),
         })
     }
 
@@ -180,7 +200,7 @@ impl StagingObject {
     }
 
     fn queue_current_stage_plan(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
+        self.generation = crate::command::next_generation();
         if self.out_of_service || self.present_stage == 0 {
             self.pending_plan = None;
             return;
@@ -198,12 +218,14 @@ impl StagingObject {
                 active: *active,
             })
             .collect();
-        self.pending_plan = Some(StagingWritePlan {
+        let plan = StagingWritePlan {
             source: self.oid,
             generation: self.generation,
             priority: self.priority_for_writing,
             writes,
-        });
+        };
+        self.held.record(&plan);
+        self.pending_plan = Some(plan);
     }
 
     fn reset_and_reevaluate(&mut self) {
@@ -279,7 +301,7 @@ impl StagingObject {
         validate_target_references(&candidate)?;
         if candidate != self.target_references {
             self.target_references = candidate;
-            self.reset_and_reevaluate();
+            self.targets_changed();
         }
         Ok(())
     }
@@ -363,6 +385,7 @@ impl BACnetObject for StagingObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = read_common_properties!(self, property, array_index) {
             return result;
         }
@@ -407,7 +430,7 @@ impl BACnetObject for StagingObject {
             PropertyIdentifier::EVENT_STATE => {
                 Ok(PropertyValue::Enumerated(EventState::NORMAL.to_raw()))
             }
-            PropertyIdentifier::UNITS => Ok(PropertyValue::Enumerated(self.units)),
+            PropertyIdentifier::UNITS => Ok(PropertyValue::Enumerated(self.units.to_raw())),
             PropertyIdentifier::PRIORITY_FOR_WRITING => {
                 Ok(PropertyValue::Unsigned(self.priority_for_writing.into()))
             }
@@ -425,13 +448,7 @@ impl BACnetObject for StagingObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        if property != PropertyIdentifier::STAGES
-            && property != PropertyIdentifier::STAGE_NAMES
-            && property != PropertyIdentifier::TARGET_REFERENCES
-            && array_index.is_some()
-        {
-            return Err(common::property_is_not_an_array_error());
-        }
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) = common::write_object_name(&mut self.name, property, &value) {
             return result;
         }
@@ -442,6 +459,29 @@ impl BACnetObject for StagingObject {
         {
             return result;
         }
+        // A Reliability simulated out of service (Clause 12.62.11) ends with
+        // it: back in service, the object reports the one it held before, as
+        // the other objects that simulate Reliability do, until the reference
+        // writes queued on the way back in judge it afresh (Clause 12.62.4.1,
+        // #2258).
+        let was_out_of_service = self.out_of_service;
+        if let Some(result) = common::write_out_of_service_with_reliability_restore(
+            &mut self.out_of_service,
+            &mut self.reliability,
+            &mut self.reliability_before_out_of_service,
+            property,
+            &value,
+        ) {
+            match (was_out_of_service, self.out_of_service) {
+                (false, true) => {
+                    self.generation = crate::command::next_generation();
+                    self.pending_plan = None;
+                }
+                (true, false) => self.evaluate(true),
+                _ => {}
+            }
+            return result;
+        }
         match property {
             PropertyIdentifier::PRESENT_VALUE => {
                 let PropertyValue::Real(value) = value else {
@@ -450,22 +490,6 @@ impl BACnetObject for StagingObject {
                 common::reject_non_finite(value)?;
                 self.present_value = value.clamp(self.min_present_value, self.max_present_value());
                 self.evaluate(false);
-                Ok(())
-            }
-            PropertyIdentifier::OUT_OF_SERVICE => {
-                let PropertyValue::Boolean(value) = value else {
-                    return Err(common::invalid_data_type_error());
-                };
-                if value == self.out_of_service {
-                    return Ok(());
-                }
-                self.out_of_service = value;
-                if value {
-                    self.generation = self.generation.wrapping_add(1);
-                    self.pending_plan = None;
-                } else {
-                    self.evaluate(true);
-                }
                 Ok(())
             }
             PropertyIdentifier::RELIABILITY => {
@@ -497,7 +521,7 @@ impl BACnetObject for StagingObject {
                     .ok_or_else(common::value_out_of_range_error)?;
                 if priority != self.priority_for_writing {
                     self.priority_for_writing = priority;
-                    self.reset_and_reevaluate();
+                    self.targets_changed();
                 }
                 Ok(())
             }
@@ -516,54 +540,31 @@ impl BACnetObject for StagingObject {
             _ => Err(crate::common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                array_index,
             )),
         }
     }
 
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
-        Cow::Owned(self.metadata())
-    }
-
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        property_list_from_metadata(&self.metadata())
+        // Borrowed unless Stage_Names adds its row, so the array and list
+        // checks that read the rows allocate nothing for most objects.
+        match self.stage_names {
+            None => Cow::Borrowed(STAGING_PROPERTY_METADATA),
+            Some(_) => Cow::Owned(self.metadata()),
+        }
     }
 
     // Table 13-1 Staging row: Present_Value by COV_Increment, Status_Flags and
-    // Present_Stage trigger, and Present_Stage is reported (the trait default).
-    fn supports_cov(&self) -> bool {
-        true
-    }
+    // Present_Stage trigger, and Present_Stage is reported (the type's row, the default).
+    crate::traits::lend_cov_reporting!();
 
+    fn staging_source(&mut self) -> Option<&mut dyn crate::traits::StagingSource> {
+        Some(self)
+    }
+}
+
+impl crate::traits::CovReporting for StagingObject {
     fn cov_increment(&self) -> Option<f64> {
         Some(f64::from(self.cov_increment))
-    }
-
-    fn take_staging_write_plan_internal(&mut self) -> Option<StagingWritePlan> {
-        if self.present_stage == 0 {
-            self.evaluate(false);
-        }
-        self.pending_plan.take()
-    }
-
-    fn staging_generation_internal(&self) -> Option<u64> {
-        Some(self.generation)
-    }
-
-    fn complete_staging_write_plan_internal(&mut self, generation: u64, success: bool) -> bool {
-        if generation != self.generation || self.out_of_service {
-            return false;
-        }
-        let reliability = if success {
-            Reliability::NO_FAULT_DETECTED
-        } else {
-            Reliability::UNRELIABLE_OTHER
-        };
-        if reliability == self.reliability {
-            return false;
-        }
-        self.reliability = reliability;
-        true
     }
 }
 
@@ -584,10 +585,10 @@ fn validate_config(config: &StagingConfig) -> Result<(), Error> {
     if !(1..=16).contains(&config.priority_for_writing) {
         return Err(common::value_out_of_range_error());
     }
-    if let Some(names) = &config.stage_names {
-        if names.len() != config.stages.len() {
-            return Err(common::value_out_of_range_error());
-        }
+    if let Some(names) = &config.stage_names
+        && names.len() != config.stages.len()
+    {
+        return Err(common::value_out_of_range_error());
     }
     validate_target_references(&config.target_references)?;
     validate_ladder(
@@ -654,11 +655,11 @@ fn validate_min_present_value(
 }
 
 fn protocol_error(class: ErrorClass, code: ErrorCode) -> Error {
-    Error::Protocol {
-        class: class.to_raw() as u32,
-        code: code.to_raw() as u32,
-    }
+    Error::protocol(class, code)
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod write_validation_tests;

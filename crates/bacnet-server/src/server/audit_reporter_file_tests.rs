@@ -1,5 +1,5 @@
 use super::*;
-use crate::server::test_transport::TestTransport;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::{
     file::{FileObject, FileRecordRead, FileStorage, FileStreamRead, FileWriteStart},
     traits::BACnetObject,
@@ -64,7 +64,7 @@ async fn contents(fixture: &Fixture, record: bool) -> Vec<Vec<u8>> {
     let storage = db
         .get(&oid(ObjectType::FILE, 1))
         .unwrap()
-        .file_storage_internal()
+        .file_storage()
         .unwrap();
     if record {
         storage.read_records(0, 100).unwrap().records
@@ -244,7 +244,7 @@ async fn audit_reporter_atomic_write_file_preserves_decoder_acceptance_boundary(
             };
             assert_eq!(
                 wire(&response),
-                wire(&BACnetServer::<TestTransport>::error_apdu_from_error(
+                wire(&bacnet_device_core::reply::error_apdu(
                     invoke_id, SERVICE, &error
                 ))
             );
@@ -287,13 +287,13 @@ impl BACnetObject for ProbeFile {
     ) -> Result<(), Error> {
         self.file.write_property(p, i, v, priority)
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        self.file.property_list()
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        self.file.property_metadata()
     }
-    fn file_storage_internal(&self) -> Option<&dyn FileStorage> {
+    fn file_storage(&self) -> Option<&dyn FileStorage> {
         self.storage.then_some(self)
     }
-    fn file_storage_internal_mut(&mut self) -> Option<&mut dyn FileStorage> {
+    fn file_storage_mut(&mut self) -> Option<&mut dyn FileStorage> {
         if self.mutable_storage {
             Some(self)
         } else {
@@ -455,28 +455,15 @@ async fn audit_reporter_atomic_write_file_backend_mapping_and_unknown_outcome_si
     for record in [false, true] {
         for (error, report) in [
             (
-                Error::Protocol {
-                    class: 128,
-                    code: 512,
-                },
+                Error::protocol(ErrorClass::from_raw(128), ErrorCode::from_raw(512)),
                 true,
             ),
             (Error::Encoding("backend".into()), true),
             (Error::decoding(0, "backend, not service decoding"), true),
             (Error::OutOfRange("backend".into()), true),
             (Error::Timeout(Duration::from_secs(1)), false),
-            (
-                Error::Reject {
-                    reason: RejectReason::OTHER.to_raw(),
-                },
-                false,
-            ),
-            (
-                Error::Abort {
-                    reason: AbortReason::OUT_OF_RESOURCES.to_raw(),
-                },
-                false,
-            ),
+            (Error::reject(RejectReason::OTHER), false),
+            (Error::abort(AbortReason::OUT_OF_RESOURCES), false),
         ] {
             let mut fixture = server(reporter()).await;
             fixture
@@ -486,8 +473,7 @@ async fn audit_reporter_atomic_write_file_backend_mapping_and_unknown_outcome_si
                 .await
                 .add(Box::new(probe(&fixture, record)))
                 .unwrap();
-            let expected_response =
-                BACnetServer::<TestTransport>::error_apdu_from_error(77, SERVICE, &error);
+            let expected_response = bacnet_device_core::reply::error_apdu(77, SERVICE, &error);
             *fixture.execution_error.lock().unwrap() = Some(error);
             let before = metadata(&fixture).await;
             let target = oid(ObjectType::FILE, 1);
@@ -539,10 +525,14 @@ async fn audit_reporter_atomic_write_file_budget_and_authorization_are_silent() 
                     fixture.server.config_mut().mutation_policy =
                         crate::mutation::MutationPolicy::DenyAll
                 }
-                1 => fixture.server.config_mut().mutation_authorizer = Some(Arc::new(|_| false)),
+                1 => {
+                    fixture.server.config_mut().policy =
+                        Some(Arc::new(crate::FnPolicy::new().mutation(|_| false)))
+                }
                 2 => {
-                    fixture.server.config_mut().mutation_authorizer =
-                        Some(Arc::new(|_| panic!("fail closed")))
+                    fixture.server.config_mut().policy = Some(Arc::new(
+                        crate::FnPolicy::new().mutation(|_| panic!("fail closed")),
+                    ))
                 }
                 3 => {
                     fixture

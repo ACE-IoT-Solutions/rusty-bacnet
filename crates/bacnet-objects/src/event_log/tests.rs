@@ -1,11 +1,14 @@
 use super::*;
 use crate::clock::{ClockFrame, ClockReader};
+use crate::property_metadata::is_writable_property;
+use crate::traits::Timed;
 use bacnet_encoding::constructed::encode_event_log_record;
 use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::{
     BACnetPropertyValue, EventLogDatum, EventNotificationRequest, NotificationParameters,
 };
 use bacnet_types::enums::{ErrorClass, ErrorCode, EventState, EventType, NotifyType};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{BACnetTimeStamp, Date, StatusFlags, Time};
 use bytes::BytesMut;
 use std::sync::Arc;
@@ -24,7 +27,10 @@ impl ClockReader for FixedClock {
 }
 
 fn bind_clock(object: &mut EventLogObject) {
-    object.bind_clock_internal(Some(Arc::new(FixedClock)));
+    object.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(FixedClock)),
+        ..crate::traits::Clocks::default()
+    });
 }
 
 fn make_date() -> Date {
@@ -85,7 +91,10 @@ fn framed(record: &BACnetEventLogRecord) -> Vec<u8> {
 
 /// Each resident record as ReadRange serves it.
 fn served(el: &EventLogObject) -> Vec<Vec<u8>> {
-    let records = el.log_buffer_internal().unwrap();
+    let records = el
+        .log_buffer()
+        .and_then(|log| log.buffer_records())
+        .unwrap();
     (0..records.record_count())
         .map(|index| {
             let mut buf = BytesMut::new();
@@ -97,9 +106,9 @@ fn served(el: &EventLogObject) -> Vec<Vec<u8>> {
 
 fn assert_read_access_denied(result: Result<PropertyValue, Error>) {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, ErrorCode::READ_ACCESS_DENIED.to_raw() as u32);
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, ErrorCode::READ_ACCESS_DENIED);
         }
         other => panic!("expected PROPERTY / READ_ACCESS_DENIED, got {other:?}"),
     }
@@ -150,7 +159,13 @@ fn read_property_refuses_log_buffer() {
     el.add_record(make_record(10, 72.5)).unwrap();
     el.add_record(make_record(11, 73.0)).unwrap();
     assert_read_access_denied(el.read_property(PropertyIdentifier::LOG_BUFFER, None));
-    assert_eq!(el.log_buffer_internal().unwrap().record_count(), 2);
+    assert_eq!(
+        el.log_buffer()
+            .and_then(|log| log.buffer_records())
+            .unwrap()
+            .record_count(),
+        2
+    );
 }
 
 /// Each record is served framed as Clause 21's BACnetEventLogRecord (#1233).
@@ -342,7 +357,7 @@ fn read_event_state_default() {
 #[test]
 fn property_list_complete() {
     let el = EventLogObject::new(1, "EL-1", 100).unwrap();
-    let props = el.property_list();
+    let props = crate::test_rows::listed(&el.property_metadata());
     assert!(props.contains(&PropertyIdentifier::LOG_ENABLE));
     assert!(props.contains(&PropertyIdentifier::STOP_WHEN_FULL));
     assert!(props.contains(&PropertyIdentifier::BUFFER_SIZE));
@@ -373,14 +388,14 @@ fn event_log_has_no_out_of_service_or_log_interval() {
             PropertyValue::Unsigned(60),
         ),
     ] {
-        assert!(!el.is_writable_property(property));
+        assert!(!is_writable_property(&el, property));
         let read = el.read_property(property, None).map(|_| ());
         let write = el.write_property(property, None, value, None);
         for result in [read, write] {
             match result {
-                Err(Error::Protocol { class, code }) => {
-                    assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-                    assert_eq!(code, ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32);
+                Err(Error::Remote(RemoteError::Error { class, code })) => {
+                    assert_eq!(class, ErrorClass::PROPERTY);
+                    assert_eq!(code, ErrorCode::UNKNOWN_PROPERTY);
                 }
                 other => panic!("{property:?}: expected UNKNOWN_PROPERTY, got {other:?}"),
             }
@@ -406,7 +421,7 @@ fn write_absent_property_is_unknown() {
         None,
     );
     assert!(
-        matches!(result, Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY.to_raw() as u32 && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32)
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::PROPERTY && code == ErrorCode::UNKNOWN_PROPERTY)
     );
 }
 
@@ -437,7 +452,7 @@ fn event_log_identities_align_after_eviction_and_differ_from_position() {
         el.add_record(make_record(hour, hour as f32)).unwrap();
     }
 
-    let identities = el.log_record_identities_internal().unwrap();
+    let identities = el.log_buffer().map(|log| log.record_identities()).unwrap();
     let wire = served(&el);
     assert_eq!(identities.len(), el.records().len());
     assert_eq!(identities.len(), wire.len());
@@ -464,7 +479,8 @@ fn event_log_clear_preserves_total_and_next_identity() {
     el.add_record(make_record(1, 1.0)).unwrap();
     el.add_record(make_record(1, 2.0)).unwrap();
     assert_eq!(
-        el.log_record_identities_internal()
+        el.log_buffer()
+            .map(|log| log.record_identities())
             .unwrap()
             .iter()
             .map(|identity| identity.sequence_number())
@@ -473,7 +489,12 @@ fn event_log_clear_preserves_total_and_next_identity() {
     );
 
     el.clear();
-    assert!(el.log_record_identities_internal().unwrap().is_empty());
+    assert!(
+        el.log_buffer()
+            .map(|log| log.record_identities())
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         el.read_property(PropertyIdentifier::TOTAL_RECORD_COUNT, None)
             .unwrap(),
@@ -481,7 +502,7 @@ fn event_log_clear_preserves_total_and_next_identity() {
     );
     el.add_record(make_record(1, 3.0)).unwrap();
     assert_eq!(
-        el.log_record_identities_internal().unwrap()[0].sequence_number(),
+        el.log_buffer().map(|log| log.record_identities()).unwrap()[0].sequence_number(),
         3
     );
 }
@@ -497,10 +518,13 @@ fn event_log_disabled_ordinary_rejection_does_not_consume_identity() {
         None,
     )
     .unwrap();
-    let before = el.log_record_identities_internal().unwrap();
+    let before = el.log_buffer().map(|log| log.record_identities()).unwrap();
     el.add_record(make_record(1, 1.0)).unwrap();
 
-    assert_eq!(el.log_record_identities_internal().unwrap(), before);
+    assert_eq!(
+        el.log_buffer().map(|log| log.record_identities()).unwrap(),
+        before
+    );
     assert_eq!(
         el.read_property(PropertyIdentifier::TOTAL_RECORD_COUNT, None)
             .unwrap(),
@@ -524,7 +548,7 @@ fn event_log_total_record_count_is_u32_and_wraps_max_to_one() {
         PropertyValue::Unsigned(1)
     );
     assert_eq!(
-        el.log_record_identities_internal().unwrap()[0].sequence_number(),
+        el.log_buffer().map(|log| log.record_identities()).unwrap()[0].sequence_number(),
         1
     );
 }

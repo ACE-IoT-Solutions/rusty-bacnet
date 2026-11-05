@@ -5,7 +5,11 @@
 
 use std::time::Duration;
 
-use bacnet_encoding::apdu::{decode_apdu, encode_apdu, Apdu, ConfirmedRequest};
+#[path = "support/eventually.rs"]
+mod eventually;
+use eventually::eventually;
+
+use bacnet_encoding::apdu::{Apdu, ConfirmedRequest, decode_apdu, encode_apdu};
 use bacnet_encoding::primitives::encode_property_value;
 use bacnet_endpoint::session::{EndpointSession, SessionConfig, SessionRole};
 use bacnet_endpoint_core::coordinator::{CanonicalPeer, LeaseMetadata, TerminalPolicy};
@@ -15,7 +19,9 @@ use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_services::read_property::ReadPropertyRequest;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{
+    ConfirmedServiceChoice, EngineeringUnits, ObjectType, PropertyIdentifier,
+};
 use bytes::BytesMut;
 
 const WAIT: Duration = Duration::from_secs(2);
@@ -32,7 +38,8 @@ fn session_config() -> SessionConfig {
 
 fn database_with_analog(instance: u32, value: f32) -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
-    let mut analog = AnalogInputObject::new(instance, "lease-input", 0).unwrap();
+    let mut analog =
+        AnalogInputObject::new(instance, "lease-input", EngineeringUnits::SQUARE_METERS).unwrap();
     analog.set_present_value(value);
     db.add(Box::new(analog)).unwrap();
     db
@@ -42,7 +49,7 @@ fn object_id(instance: u32) -> bacnet_types::primitives::ObjectIdentifier {
     bacnet_types::primitives::ObjectIdentifier::new(ObjectType::ANALOG_INPUT, instance).unwrap()
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn lease_exhaustion_release_reuse() {
     let (transport, _peer) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
     let mut session =
@@ -62,13 +69,15 @@ async fn lease_exhaustion_release_reuse() {
             .expect("reserve must succeed below 256");
         tokens.push(token);
     }
-    assert!(coordinator
-        .reserve(LeaseMetadata::requester(
-            CanonicalPeer::direct(&[0x02]),
-            ConfirmedServiceChoice::READ_PROPERTY,
-            TerminalPolicy::ComplexAck,
-        ))
-        .is_err());
+    assert!(
+        coordinator
+            .reserve(LeaseMetadata::requester(
+                CanonicalPeer::direct(&[0x02]),
+                ConfirmedServiceChoice::READ_PROPERTY,
+                TerminalPolicy::ComplexAck,
+            ))
+            .is_err()
+    );
     assert_eq!(coordinator.active_count().unwrap(), 256);
 
     // Release one lease → reuse succeeds with the same numeric ID eventually.
@@ -102,7 +111,7 @@ async fn lease_exhaustion_release_reuse() {
     session.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn lost_consumer_routes_to_policy_without_hanging() {
     // Client-only session has no server role: an inbound ConfirmedRequest
     // from the peer is policy-owned (`no_server_role`), not served.
@@ -139,31 +148,22 @@ async fn lost_consumer_routes_to_policy_without_hanging() {
         &encoded,
         &[0x01],
         true,
-        bacnet_types::enums::NetworkPriority::NORMAL,
+        bacnet_npdu::NetworkPriority::Normal,
     )
     .await
     .unwrap();
 
-    // Poll policy counters deterministically (no sleep): the dispatch task
-    // routes without a server role within the timeout.
-    let deadline = tokio::time::Instant::now() + WAIT;
-    loop {
-        let counters = client.policy_counters().await;
-        if counters.no_server_role >= 1 {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "lost inbound was not policy-owned: {counters:?}"
-        );
-        tokio::task::yield_now().await;
-    }
+    // The dispatch task routes the request to policy without a server role.
+    eventually(WAIT, "lost inbound was not policy-owned", async || {
+        client.policy_counters().await.no_server_role >= 1
+    })
+    .await;
 
     client.stop().await.unwrap();
     peer.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn full_ingress_queue_overflows_to_policy() {
     // Ingress with capacity 1: fill the inbound queue, then prove the next
     // request overflows to the policy queue (RouteFull) instead of blocking.
@@ -200,7 +200,7 @@ async fn full_ingress_queue_overflows_to_policy() {
             &encoded,
             &[0x01],
             true,
-            bacnet_types::enums::NetworkPriority::NORMAL,
+            bacnet_npdu::NetworkPriority::Normal,
         )
         .await
         .unwrap();
@@ -239,7 +239,7 @@ async fn full_ingress_queue_overflows_to_policy() {
                     &encoded,
                     &[0x01],
                     true,
-                    bacnet_types::enums::NetworkPriority::NORMAL,
+                    bacnet_npdu::NetworkPriority::Normal,
                 )
                 .await
                 .unwrap();
@@ -261,7 +261,8 @@ async fn full_ingress_queue_overflows_to_policy() {
                             policy += 1;
                         }
                     }
-                    _ = tokio::task::yield_now() => {}
+                    // Paused time moves only on a sleep, so the deadline can pass.
+                    _ = tokio::time::sleep(Duration::from_millis(1)) => {}
                 }
                 if inbound >= 1 && policy >= 1 {
                     break;
@@ -279,7 +280,7 @@ async fn full_ingress_queue_overflows_to_policy() {
     panic!("unreachable: first request must have been consumed above");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn malformed_apdu_is_policy_owned() {
     let (client_transport, peer_transport) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
     let mut client = EndpointSession::new(client_transport, SessionRole::Both, session_config())
@@ -290,27 +291,14 @@ async fn malformed_apdu_is_policy_owned() {
     let _peer_rx = peer.start().await.unwrap();
 
     // Und decodable APDU (empty payload decodes as malformed at classifier).
-    peer.send_apdu(
-        &[],
-        &[0x01],
-        false,
-        bacnet_types::enums::NetworkPriority::NORMAL,
-    )
-    .await
-    .unwrap();
+    peer.send_apdu(&[], &[0x01], false, bacnet_npdu::NetworkPriority::Normal)
+        .await
+        .unwrap();
 
-    let deadline = tokio::time::Instant::now() + WAIT;
-    loop {
-        let counters = client.policy_counters().await;
-        if counters.ingress_policy >= 1 {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "malformed APDU was not policy-owned: {counters:?}"
-        );
-        tokio::task::yield_now().await;
-    }
+    eventually(WAIT, "malformed APDU was not policy-owned", async || {
+        client.policy_counters().await.ingress_policy >= 1
+    })
+    .await;
 
     // Encoded property value helper is linked (structural preservation of the
     // service payload path); keep the import live without affecting policy.

@@ -48,9 +48,7 @@ impl SubscribeCOVRequest {
     /// Lifetime requires an explicit notification mode; mode alone is indefinite.
     pub fn validate(&self) -> Result<(), Error> {
         if self.lifetime.is_some() && self.issue_confirmed_notifications.is_none() {
-            return Err(Error::Encoding(
-                "SubscribeCOV lifetime requires confirmed-notification mode".into(),
-            ));
+            return Err(Error::encode("SubscribeCOV lifetime requires confirmed-notification mode"));
         }
         Ok(())
     }
@@ -153,12 +151,8 @@ impl SubscribeCOVPropertyRequest {
         match (self.issue_confirmed_notifications, self.lifetime) {
             (None, None) => Ok(()),
             (Some(_), Some(lifetime)) if lifetime != 0 => Ok(()),
-            (Some(_), Some(0)) => Err(Error::Encoding(
-                "SubscribeCOVProperty requires a positive lifetime".into(),
-            )),
-            _ => Err(Error::Encoding(
-                "SubscribeCOVProperty confirmed mode and lifetime must appear together".into(),
-            )),
+            (Some(_), Some(0)) => Err(Error::encode("SubscribeCOVProperty requires a positive lifetime")),
+            _ => Err(Error::encode("SubscribeCOVProperty confirmed mode and lifetime must appear together")),
         }
     }
 
@@ -295,8 +289,10 @@ pub struct COVNotificationRequest {
 }
 
 impl COVNotificationRequest {
-    /// Append the ASN.1 encoding of the notification to `buf`.
-    pub fn encode(&self, buf: &mut BytesMut) {
+    /// Append the ASN.1 encoding of the notification to `buf`; fails, leaving
+    /// `buf` unchanged, when a value's encoder refuses it.
+    pub fn encode(&self, buf: &mut BytesMut) -> Result<(), Error> {
+        let start = buf.len();
         // [0] subscriber-process-identifier
         primitives::encode_ctx_unsigned(buf, 0, self.subscriber_process_identifier as u64);
         // [1] initiating-device-identifier
@@ -308,9 +304,13 @@ impl COVNotificationRequest {
         // [4] list-of-values (opening/closing)
         tags::encode_opening_tag(buf, 4);
         for pv in &self.list_of_values {
-            encode_bacnet_property_value(pv, buf);
+            if let Err(refused) = encode_bacnet_property_value(pv, buf) {
+                buf.truncate(start);
+                return Err(refused);
+            }
         }
         tags::encode_closing_tag(buf, 4);
+        Ok(())
     }
 
     /// Decode the notification from `data`; errors on missing, malformed or truncated fields.
@@ -385,7 +385,7 @@ mod tests {
             ],
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let decoded = COVNotificationRequest::decode(&buf).unwrap();
         assert_eq!(req, decoded);
     }
@@ -510,7 +510,7 @@ mod tests {
             list_of_values: Vec::new(),
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
 
         assert_eq!(
             COVNotificationRequest::decode_detailed(&buf)
@@ -536,7 +536,7 @@ mod tests {
             }],
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let list_start = buf.iter().position(|byte| *byte == 0x4E).unwrap();
         // An application Unsigned where the value's [0] property identifier
         // is due.
@@ -567,7 +567,7 @@ mod tests {
             list_of_values: vec![value.clone(); MAX_DECODED_ITEMS],
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         assert_eq!(
             COVNotificationRequest::decode_detailed(&buf)
                 .unwrap()
@@ -578,7 +578,7 @@ mod tests {
 
         req.list_of_values.push(value);
         buf.clear();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         assert_eq!(
             COVNotificationRequest::decode_detailed(&buf)
                 .unwrap_err()
@@ -603,7 +603,7 @@ mod tests {
             }],
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         buf.extend_from_slice(&[0x59, 0x01]);
         assert_eq!(
             COVNotificationRequest::decode_detailed(&buf)
@@ -638,7 +638,7 @@ mod tests {
             }],
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         assert!(COVNotificationRequest::decode(&buf[..1]).is_err());
     }
 
@@ -658,7 +658,7 @@ mod tests {
             }],
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         assert!(COVNotificationRequest::decode(&buf[..3]).is_err());
     }
 
@@ -678,7 +678,7 @@ mod tests {
             }],
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let half = buf.len() / 2;
         assert!(COVNotificationRequest::decode(&buf[..half]).is_err());
     }

@@ -1,8 +1,9 @@
 use super::cov_notify_context::CovNotifyContext;
 use super::*;
 use crate::command_lists::TakenRuns;
-use crate::handlers::{WriteCommitObserver, WriteTarget};
-use bacnet_objects::staging::StagingWritePlan;
+use bacnet_device_core::write::{WriteCommitObserver, WriteTarget};
+use bacnet_objects::command::CommandRun;
+use bacnet_objects::traits::{BACnetObject, LocalInputValue, not_supported};
 use bacnet_types::constructed::BACnetRecipient;
 
 #[path = "local_write_finish.rs"]
@@ -10,8 +11,11 @@ mod finish;
 
 #[path = "local_access_inputs.rs"]
 mod access_inputs;
-use finish::local_runtime;
+
+#[path = "local_staging_plans.rs"]
+mod staging_plans;
 pub(super) use finish::Committed;
+pub(super) use finish::local_runtime;
 
 #[cfg(test)]
 #[path = "input_present_value_tests.rs"]
@@ -52,9 +56,14 @@ pub(super) enum LocalWrite<'s> {
     ApplicationAveragingMiss,
     /// The application supplying a Life Safety object's `Tracking_Value`.
     ApplicationTrackingValue,
+    /// The application reporting a Program object's `Program_State`.
+    ApplicationProgramState,
     /// The application reporting an access-control object's input: an
     /// access event, a credential read or a door's hardware state (#1132).
     ApplicationAccessInput(&'s bacnet_objects::access_control::AccessControlInput),
+    /// The application feeding an Accumulator the input pulses it counted
+    /// (#2259).
+    ApplicationPulses(u64),
     /// One value of an inbound WriteGroup for a Channel's `Present_Value`, at
     /// the priority the request gave it (Clause 15.11). Under the write guard
     /// the Channel takes it only while its Control_Groups still holds `group`
@@ -101,14 +110,17 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         let mut db = Arc::clone(&self.db).write_owned().await;
         let mut commit = crate::committed_cov::BackgroundCommit::new();
         commit.before_change(&db, *oid);
-        let object = db.get_mut(oid).ok_or_else(|| Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::UNKNOWN_OBJECT.to_raw() as u32,
-        })?;
-        object.set_life_safety_operation_expected_internal(operation)?;
+        let object = db.get_mut(oid).ok_or(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::UNKNOWN_OBJECT,
+        ))?;
+        object
+            .life_safety()
+            .ok_or_else(not_supported)?
+            .set_life_safety_operation_expected(operation)?;
         // Only a Life Safety Point or Zone reports the change. Another object
         // whose setter takes the operation owes no COV, as before (#1520).
-        if crate::life_safety_cov::is_life_safety_object(*oid) {
+        if bacnet_device_core::cov::life_safety::is_life_safety_object(*oid) {
             commit.changed(*oid);
         }
         let fanout =
@@ -136,8 +148,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// then releases the lock and runs the COV/event trigger path so a
     /// subscription observes a local mutation just as it would a network one.
     /// `source` explicitly selects the Device or an existing initiating object.
-    /// Tracked commands require a concrete selected Device; the selected Device
-    /// retains correction ownership regardless of the local initiator. Unrelated
+    /// Tracked commands require the identity's Device object to be present;
+    /// that Device, not a lower-instance one added later (#2227), retains
+    /// correction ownership regardless of the local initiator. Unrelated
     /// properties preserve their behavior without a usable command origin.
     /// Low-level object setters deliberately bypass this notification owner.
     ///
@@ -230,8 +243,6 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// Tokio runtime, failing before anything is written outside one, and a
     /// caller dropped once the write has committed skips none of the work
     /// the write owes (#1367).
-    ///
-    /// [`BACnetObject::set_present_value_internal`]: bacnet_objects::traits::BACnetObject::set_present_value_internal
     pub async fn set_present_value_local(
         &self,
         oid: &ObjectIdentifier,
@@ -374,6 +385,71 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             .await
     }
 
+    /// Feed an Accumulator the input pulses its meter produced since the
+    /// last call, counted by the application (#2259).
+    ///
+    /// In service the pulses step Present_Value, through Prescale's ratio
+    /// when the object has one, rolling over modulo Max_Pres_Value + 1. They
+    /// also count toward Pulse_Rate: once Limit_Monitoring_Interval is set,
+    /// the server's monotonic task closes a window at the end of each
+    /// interval and Pulse_Rate becomes that window's count. While
+    /// `Out_Of_Service` is TRUE, Present_Value holds and Pulse_Rate keeps
+    /// the value a client wrote: the pulses still fill the rate window, but
+    /// Present_Value drops them rather than catching up later. An unknown
+    /// object fails with OBJECT / UNKNOWN_OBJECT and any object other than
+    /// an Accumulator with OBJECT / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+    /// as with [`BACnetServer::set_present_value_local`].
+    ///
+    /// A change to Present_Value goes through the same post-write COV and
+    /// event processing as `set_present_value_local` once the database
+    /// lock is released, and a window that changes Pulse_Rate reports it to
+    /// its property subscribers from the monotonic task. The Python binding
+    /// exposes this as `BACnetServer.add_pulses_local`.
+    ///
+    /// Like [`write_local`](Self::write_local), it must be awaited inside a
+    /// Tokio runtime, failing before anything is written outside one, and a
+    /// caller dropped once the write has committed skips none of the work
+    /// the write owes (#1367).
+    pub async fn add_pulses_local(&self, oid: &ObjectIdentifier, pulses: u64) -> Result<(), Error> {
+        self.write_local_as(
+            oid,
+            LocalWrite::ApplicationPulses(pulses),
+            PropertyValue::Null,
+            None,
+        )
+        .await
+    }
+
+    /// Report a Program object's `Program_State`, the state of the process
+    /// the application runs, while the server holds the object.
+    ///
+    /// Program_State is read-only on the network (Clause 12.22.4), so
+    /// [`write_local`](Self::write_local) refuses it too, with PROPERTY /
+    /// WRITE_ACCESS_DENIED; this is the application's route. A client asks
+    /// for a change through Program_Change, which the application reads and
+    /// carries out. The value is an Enumerated BACnetProgramState from IDLE
+    /// (0) to UNLOADING (5): a larger number fails with PROPERTY /
+    /// VALUE_OUT_OF_RANGE and another datatype with PROPERTY /
+    /// INVALID_DATA_TYPE. An unknown object fails with OBJECT /
+    /// UNKNOWN_OBJECT and any object other than a Program with OBJECT /
+    /// OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED, as with
+    /// [`BACnetServer::set_present_value_local`]. It is taken in or out of
+    /// service (#2258). The Python binding exposes this as
+    /// `BACnetServer.set_program_state_local`.
+    ///
+    /// Like [`write_local`](Self::write_local), it must be awaited inside a
+    /// Tokio runtime, failing before anything is written outside one, and a
+    /// caller dropped once the write has committed skips none of the work
+    /// the write owes (#1367).
+    pub async fn set_program_state_local(
+        &self,
+        oid: &ObjectIdentifier,
+        value: PropertyValue,
+    ) -> Result<(), Error> {
+        self.write_local_as(oid, LocalWrite::ApplicationProgramState, value, None)
+            .await
+    }
+
     /// Commit the write, then hand what it owes to a task of its own in the
     /// request task set and wait for that task (#1367). The commit holds the
     /// database guard to the hand-off with no wait in between, so a caller
@@ -430,136 +506,13 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     }
 
     /// Borrow the COV notification handles for a local mutation.
-    fn local_cov_context(&self) -> CovNotifyContext<'_, T> {
+    pub(in crate::server) fn local_cov_context(&self) -> CovNotifyContext<'_, T> {
         self.local_writer().cov_context()
     }
 
     /// Borrow the EventNotification handles for a local mutation.
-    fn local_event_delivery(&self) -> EventDelivery<'_, T> {
+    pub(in crate::server) fn local_event_delivery(&self) -> EventDelivery<'_, T> {
         self.local_writer().event_delivery()
-    }
-
-    pub(super) async fn execute_initial_staging_plans(&self) {
-        let staging_oids = {
-            let database = self.db.read().await;
-            database.find_by_type(ObjectType::STAGING)
-        };
-        let staging_plans = {
-            let mut database = self.db.write().await;
-            Self::take_staging_plans(&mut database, &staging_oids)
-        };
-        Self::execute_staging_plans(
-            &self.local_event_delivery(),
-            &self.local_cov_context(),
-            staging_plans,
-        )
-        .await;
-    }
-
-    pub(super) fn take_staging_plans(
-        db: &mut ObjectDatabase,
-        oids: &[ObjectIdentifier],
-    ) -> Vec<StagingWritePlan> {
-        oids.iter()
-            .filter_map(|oid| {
-                db.get_mut(oid)
-                    .and_then(|object| object.take_staging_write_plan_internal())
-            })
-            .collect()
-    }
-
-    /// Execute local Staging targets one mutation guard at a time.
-    ///
-    /// Every target mutation is generation-checked in the same database guard
-    /// that applies it. Event/COV work runs only after that guard is released.
-    pub(super) async fn execute_staging_plans(
-        delivery: &EventDelivery<'_, T>,
-        cov: &CovNotifyContext<'_, T>,
-        plans: Vec<StagingWritePlan>,
-    ) {
-        let db = delivery.db;
-        for plan in plans {
-            let mut all_succeeded = true;
-            for target in &plan.writes {
-                enum TargetResult {
-                    Applied,
-                    Failed,
-                    Stale,
-                }
-
-                let result = {
-                    let mut database = db.write().await;
-                    let current = database
-                        .get(&plan.source)
-                        .and_then(|source| source.staging_generation_internal())
-                        == Some(plan.generation);
-                    if !current {
-                        TargetResult::Stale
-                    } else {
-                        let origin = crate::command_source::resolve_local(
-                            &database,
-                            crate::LocalCommandSource::Object(plan.source),
-                        )
-                        .ok();
-                        match database.get_mut(&target.object_identifier) {
-                            Some(object) => match crate::command_source::write_target(
-                                object,
-                                PropertyIdentifier::PRESENT_VALUE,
-                                None,
-                                PropertyValue::Enumerated(u32::from(target.active)),
-                                Some(plan.priority),
-                                origin.as_ref(),
-                            ) {
-                                Ok(()) => {
-                                    // Timestamped references capture the
-                                    // target change under this guard (#856).
-                                    let capture = cov
-                                        .cov_table
-                                        .read()
-                                        .await
-                                        .timed_capture(target.object_identifier);
-                                    capture.run(&database);
-                                    TargetResult::Applied
-                                }
-                                Err(_) => TargetResult::Failed,
-                            },
-                            None => TargetResult::Failed,
-                        }
-                    }
-                };
-
-                match result {
-                    TargetResult::Stale => break,
-                    TargetResult::Failed => all_succeeded = false,
-                    TargetResult::Applied => {
-                        Self::fire_event_notifications_with_bindings(
-                            delivery,
-                            cov.cov_table,
-                            &target.object_identifier,
-                        )
-                        .await;
-                        Self::fire_cov_notifications(cov, &target.object_identifier).await;
-                    }
-                }
-            }
-
-            let reliability_changed = {
-                let mut database = db.write().await;
-                let changed = database.get_mut(&plan.source).is_some_and(|source| {
-                    source.complete_staging_write_plan_internal(plan.generation, all_succeeded)
-                });
-                if changed {
-                    let capture = cov.cov_table.read().await.timed_capture(plan.source);
-                    capture.run(&database);
-                }
-                changed
-            };
-            if reliability_changed {
-                Self::fire_event_notifications_with_bindings(delivery, cov.cov_table, &plan.source)
-                    .await;
-                Self::fire_cov_notifications(cov, &plan.source).await;
-            }
-        }
     }
 }
 
@@ -607,7 +560,8 @@ impl<'a, T: TransportPort + 'static> LocalWriter<'a, T> {
             device_bindings: self.device_bindings,
             suppressions: self.event_suppressions,
             retry_timeout_ms: self.config.cov_retry_timeout_ms,
-            local_apdu_capacity: self.config.max_apdu_length,
+            local_apdu_capacity: u32::from(self.config.device.max_apdu_length()),
+            device: crate::local_device::initiating_device(&self.config.device),
         }
     }
 
@@ -631,6 +585,29 @@ impl<'a, T: TransportPort + 'static> LocalWriter<'a, T> {
         }
     }
 
+    /// [`Self::write`] on behalf of a Command, Channel or Timer run: made
+    /// only while `run` is still its object's current run, checked under
+    /// the guard that commits the write (#2265). A run whose object was
+    /// deleted, replaced or written again since gets
+    /// [`stale_run`](crate::command_lists::stale_run) and
+    /// writes nothing.
+    pub(super) async fn write_for_run(
+        &self,
+        oid: &ObjectIdentifier,
+        write: LocalWrite<'_>,
+        value: PropertyValue,
+        run: &CommandRun,
+    ) -> Result<TakenRuns, Error> {
+        let source = Some(crate::LocalCommandSource::Object(run.source));
+        match self
+            .commit_checked(oid, write, value, source, Some(run))
+            .await?
+        {
+            Some(committed) => Ok(self.finish(committed).await),
+            None => Ok(TakenRuns::default()),
+        }
+    }
+
     /// The first half of [`Self::write`]: the checks and the commit, under a
     /// database guard it keeps. `None` for a write that changed nothing and
     /// owes nothing more; otherwise the guard and what the write owes, for
@@ -643,6 +620,20 @@ impl<'a, T: TransportPort + 'static> LocalWriter<'a, T> {
         value: PropertyValue,
         source: Option<crate::LocalCommandSource>,
     ) -> Result<Option<Committed>, Error> {
+        self.commit_checked(oid, write, value, source, None).await
+    }
+
+    /// [`Self::commit`], refused with
+    /// [`stale_run`](crate::command_lists::stale_run) under its guard when
+    /// `run` is given and no longer current.
+    async fn commit_checked(
+        &self,
+        oid: &ObjectIdentifier,
+        write: LocalWrite<'_>,
+        value: PropertyValue,
+        source: Option<crate::LocalCommandSource>,
+        run: Option<&CommandRun>,
+    ) -> Result<Option<Committed>, Error> {
         // Only a property write can carry OBJECT_NAME, so only it needs the name
         // index kept in step.
         let renaming = matches!(
@@ -654,7 +645,7 @@ impl<'a, T: TransportPort + 'static> LocalWriter<'a, T> {
             write,
             LocalWrite::Property { property, .. } if property == PropertyIdentifier::INPUT_REFERENCE
         );
-        let life_safety = crate::life_safety_cov::is_life_safety_object(*oid);
+        let life_safety = bacnet_device_core::cov::life_safety::is_life_safety_object(*oid);
         // A write the object saves first saves here, without the guard.
         let durable = match write {
             LocalWrite::Property {
@@ -669,7 +660,14 @@ impl<'a, T: TransportPort + 'static> LocalWriter<'a, T> {
             // Owned, so the rest of the write can take it to a task of its
             // own with no wait between the commit and the hand-off (#1367).
             let mut db = Arc::clone(self.db).write_owned().await;
-            let snapshots = crate::life_safety_cov::LifeSafetyCovSnapshots::capture_oid(&db, *oid);
+            if run.is_some_and(|run| !crate::command_lists::is_current(&db, run)) {
+                staged.release(&mut db);
+                return Err(crate::command_lists::stale_run());
+            }
+            let snapshots =
+                bacnet_device_core::cov::life_safety::LifeSafetyCovSnapshots::capture_oid(
+                    &db, *oid,
+                );
             if let Err(error) = precheck(&db, oid, write, &value) {
                 // Nothing reached the object: what was staged goes back.
                 staged.release(&mut db);
@@ -718,22 +716,19 @@ impl<'a, T: TransportPort + 'static> LocalWriter<'a, T> {
                             self.config,
                             self.network,
                             self.notification_transactions,
-                            &db,
                         );
                         let encoded = audit_reporter::small_value(&value).unwrap_or_default();
-                        if let Some(audit) = &mut audit {
-                            audit.before(
-                                &db,
-                                WriteTarget {
-                                    oid: *oid,
-                                    property,
-                                    array_index,
-                                    priority,
-                                    value: &encoded,
-                                },
-                            );
-                        }
-                        audit
+                        audit.before(
+                            &db,
+                            WriteTarget {
+                                oid: *oid,
+                                property,
+                                array_index,
+                                priority,
+                                value: &encoded,
+                            },
+                        );
+                        Some(audit)
                     }
                 }
                 // Audited as the WriteProperty of the Channel's Present_Value
@@ -768,15 +763,17 @@ impl<'a, T: TransportPort + 'static> LocalWriter<'a, T> {
                 | LocalWrite::ApplicationAveragingSample
                 | LocalWrite::ApplicationAveragingMiss
                 | LocalWrite::ApplicationTrackingValue
-                | LocalWrite::ApplicationAccessInput(_) => None,
+                | LocalWrite::ApplicationProgramState
+                | LocalWrite::ApplicationAccessInput(_)
+                | LocalWrite::ApplicationPulses(_) => None,
             };
             let value = match write {
                 LocalWrite::Property { property, .. } => {
-                    crate::local_references::localize(&db, *oid, property, value)
+                    bacnet_device_core::write::localize(&db, *oid, property, value)
                 }
                 _ => value,
             };
-            let null = crate::handlers::relinquish::is_null_value(&value);
+            let null = bacnet_device_core::write::relinquish::is_null_value(&value);
             let prepared = match write {
                 LocalWrite::Property {
                     property,
@@ -803,7 +800,9 @@ impl<'a, T: TransportPort + 'static> LocalWriter<'a, T> {
                 | LocalWrite::ApplicationAveragingSample
                 | LocalWrite::ApplicationAveragingMiss
                 | LocalWrite::ApplicationTrackingValue
+                | LocalWrite::ApplicationProgramState
                 | LocalWrite::ApplicationAccessInput(_)
+                | LocalWrite::ApplicationPulses(_)
                 | LocalWrite::WriteGroup { .. } => None,
             };
             // The application's own Present_Value comes from this Device, which
@@ -820,7 +819,7 @@ impl<'a, T: TransportPort + 'static> LocalWriter<'a, T> {
                         array_index,
                         priority,
                     } => {
-                        crate::device_view::check_executor_owned_write(*oid, property)?;
+                        bacnet_device_core::write::check_executor_owned_write(*oid, property)?;
                         crate::command_source::write_target(
                             object,
                             property,
@@ -830,24 +829,33 @@ impl<'a, T: TransportPort + 'static> LocalWriter<'a, T> {
                             command_origin.as_ref(),
                         )
                     }
-                    LocalWrite::ApplicationPresentValue => match &command_origin {
-                        Some(origin) => object.set_present_value_from_internal(value, origin),
-                        None => object.set_present_value_internal(value),
-                    },
+                    LocalWrite::ApplicationPresentValue => {
+                        let input = match command_origin {
+                            Some(origin) => LocalInputValue::present_value_from(value, origin),
+                            None => LocalInputValue::present_value(value),
+                        };
+                        apply_local_input(object, input)
+                    }
                     LocalWrite::ApplicationControlledVariableValue => {
-                        object.set_controlled_variable_value_internal(value)
+                        apply_local_input(object, LocalInputValue::ControlledVariableValue(value))
                     }
                     LocalWrite::ApplicationAveragingSample => {
-                        object.add_averaging_sample_internal(Some(value))
+                        apply_local_input(object, LocalInputValue::AveragingSample(Some(value)))
                     }
                     LocalWrite::ApplicationAveragingMiss => {
-                        object.add_averaging_sample_internal(None)
+                        apply_local_input(object, LocalInputValue::AveragingSample(None))
                     }
                     LocalWrite::ApplicationTrackingValue => {
-                        object.set_tracking_value_internal(value)
+                        apply_local_input(object, LocalInputValue::TrackingValue(value))
+                    }
+                    LocalWrite::ApplicationProgramState => {
+                        apply_local_input(object, LocalInputValue::ProgramState(value))
                     }
                     LocalWrite::ApplicationAccessInput(input) => {
-                        object.report_access_input_internal(input.clone())
+                        apply_local_input(object, LocalInputValue::AccessControl(input.clone()))
+                    }
+                    LocalWrite::ApplicationPulses(pulses) => {
+                        apply_local_input(object, LocalInputValue::Pulses(pulses))
                     }
                     LocalWrite::WriteGroup { priority, .. } => object.write_property(
                         PropertyIdentifier::PRESENT_VALUE,
@@ -859,7 +867,7 @@ impl<'a, T: TransportPort + 'static> LocalWriter<'a, T> {
             });
             staged.release(&mut db);
             // A NULL the property left as it was succeeds unchanged
-            // (`handlers::relinquish`): audited as the write it is, with no
+            // (`bacnet_device_core::write::relinquish`): audited as the write it is, with no
             // post-write work, since nothing changed.
             if let (
                 Err(error),
@@ -872,7 +880,7 @@ impl<'a, T: TransportPort + 'static> LocalWriter<'a, T> {
             {
                 let object = db.get(oid).expect("existence checked above");
                 if null
-                    && crate::handlers::relinquish::leaves_unchanged(
+                    && bacnet_device_core::write::relinquish::leaves_unchanged(
                         object,
                         property,
                         array_index,
@@ -919,10 +927,20 @@ impl<'a, T: TransportPort + 'static> LocalWriter<'a, T> {
     }
 }
 
+/// Hand `input` to the object's [`LocalInput`](bacnet_objects::traits::LocalInput),
+/// refusing it as the object would an input it doesn't take when the object
+/// lends none.
+fn apply_local_input(object: &mut dyn BACnetObject, input: LocalInputValue) -> Result<(), Error> {
+    match object.local_input() {
+        Some(local) => local.apply_local_input(input),
+        None => Err(not_supported()),
+    }
+}
+
 /// The checks made under the write's guard before the audit hooks or the
 /// object see the value, in WriteProperty's order: the object exists, and
 /// for a property write, the array index fits the property (WriteProperty's
-/// own [`check_write_array_index`](crate::handlers::check_write_array_index))
+/// own [`check_write_array_index`](bacnet_objects::property_metadata::check_write_array_index))
 /// and a new Object_Name is free. The name check calls
 /// [`ObjectDatabase::check_name_available`] directly, which is what
 /// WriteProperty's `check_and_prepare_name_write` runs for a CharacterString.
@@ -934,10 +952,10 @@ fn precheck(
     write: LocalWrite<'_>,
     value: &PropertyValue,
 ) -> Result<(), Error> {
-    let object = db.get(oid).ok_or(Error::Protocol {
-        class: ErrorClass::OBJECT.to_raw() as u32,
-        code: ErrorCode::UNKNOWN_OBJECT.to_raw() as u32,
-    })?;
+    let object = db.get(oid).ok_or(Error::protocol(
+        ErrorClass::OBJECT,
+        ErrorCode::UNKNOWN_OBJECT,
+    ))?;
     let LocalWrite::Property {
         property,
         array_index,
@@ -946,7 +964,7 @@ fn precheck(
     else {
         return Ok(());
     };
-    crate::handlers::check_write_array_index(object, property, array_index)?;
+    bacnet_objects::property_metadata::check_write_array_index(object, property, array_index)?;
     match value {
         PropertyValue::CharacterString(new_name) if property == PropertyIdentifier::OBJECT_NAME => {
             db.check_name_available(oid, new_name)

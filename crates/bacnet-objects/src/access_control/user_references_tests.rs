@@ -2,8 +2,10 @@
 //! BACnetDeviceObjectReference naming Access Credentials and Access Users
 //! (Clauses 12.33.12 to 12.33.14, #1394).
 
+use crate::property_metadata::{is_array_property, is_list_property, is_writable_property};
 use bacnet_types::constructed::BACnetDeviceObjectReference;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::RemoteError;
 
 use super::*;
 
@@ -25,9 +27,9 @@ fn read(user: &AccessUserObject, property: P) -> PropertyValue {
 
 fn assert_value_out_of_range(result: Result<(), Error>, context: &str) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::VALUE_OUT_OF_RANGE),
         "{context}: expected PROPERTY / VALUE_OUT_OF_RANGE, got {result:?}"
     );
 }
@@ -70,16 +72,16 @@ fn access_user_lists_serve_device_object_references() {
         )])
     );
     for property in LISTS {
-        assert!(user.is_list_property(property));
-        assert!(!user.is_array_property(property));
-        assert!(!user.is_writable_property(property));
+        assert!(is_list_property(&user, property));
+        assert!(!is_array_property(&user, property));
+        assert!(!is_writable_property(&user, property));
         // Table 12-38 codes Credentials R and the other two O, with no
         // network write: a client's write of the served value is refused.
         let served = read(&user, property);
         let result = user.write_property(property, None, served.clone(), None);
         assert!(
-            matches!(result, Err(Error::Protocol { code, .. })
-                if code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32),
+            matches!(result, Err(Error::Remote(RemoteError::Error { code, .. }))
+                if code == ErrorCode::WRITE_ACCESS_DENIED),
             "{property:?}: {result:?}"
         );
         assert_eq!(read(&user, property), served);

@@ -7,9 +7,12 @@
 //! writable, so the transition bits were stuck at (F, F, F).
 
 use super::*;
+use crate::property_metadata::is_writable_property;
+use crate::traits::EventReporting as _;
 use bacnet_encoding::primitives::{decode_timestamp_choice, encode_timestamp_choice};
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::enums::{ErrorClass, ErrorCode, EventState};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, Time};
 use bytes::BytesMut;
 
@@ -40,12 +43,12 @@ fn assert_timestamp_array(actual: PropertyValue, expected: &[BACnetTimeStamp; 3]
 
 fn assert_protocol_error(result: Result<(), Error>, code: ErrorCode) {
     match result.unwrap_err() {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class,
             code: actual,
-        } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(actual, code.to_raw() as u32);
+        }) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(actual, code);
         }
         other => panic!("expected protocol error, got {other:?}"),
     }
@@ -53,12 +56,12 @@ fn assert_protocol_error(result: Result<(), Error>, code: ErrorCode) {
 
 fn assert_property_read_error(result: Result<PropertyValue, Error>, code: ErrorCode) {
     match result.unwrap_err() {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class,
             code: actual,
-        } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(actual, code.to_raw() as u32);
+        }) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(actual, code);
         }
         other => panic!("expected protocol error, got {other:?}"),
     }
@@ -74,15 +77,15 @@ fn assert_write_access_denied(
     label: &str,
 ) {
     match result.expect_err(&format!("{label}: {property:?} write must be refused")) {
-        Error::Protocol { class, code } => {
+        Error::Remote(RemoteError::Error { class, code }) => {
             assert_eq!(
                 class,
-                ErrorClass::PROPERTY.to_raw() as u32,
+                ErrorClass::PROPERTY,
                 "{label}: {property:?} error class"
             );
             assert_eq!(
                 code,
-                ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
+                ErrorCode::WRITE_ACCESS_DENIED,
                 "{label}: {property:?} error code"
             );
         }
@@ -91,8 +94,8 @@ fn assert_write_access_denied(
 }
 
 /// Every property that commissions intrinsic reporting must survive a network
-/// write and read back, and be advertised in both `property_list` and
-/// `is_writable_property` so the PICS matches dispatch.
+/// write and read back, and be advertised in both the served Property_List
+/// and `is_writable_property` so the PICS matches dispatch.
 fn assert_event_properties_round_trip(object: &mut dyn BACnetObject, label: &str) {
     for (property, value) in [
         (
@@ -125,11 +128,11 @@ fn assert_event_properties_round_trip(object: &mut dyn BACnetObject, label: &str
             "{label}: {property:?} must read back what was written"
         );
         assert!(
-            object.property_list().contains(&property),
+            crate::property_metadata::has_property(&object.property_metadata(), property),
             "{label}: {property:?} must be advertised in Property_List"
         );
         assert!(
-            object.is_writable_property(property),
+            is_writable_property(&*object, property),
             "{label}: {property:?} must be advertised writable"
         );
     }
@@ -205,10 +208,14 @@ fn assert_event_properties_round_trip(object: &mut dyn BACnetObject, label: &str
         PropertyIdentifier::ACKED_TRANSITIONS,
         label,
     );
-    assert!(!object.is_writable_property(PropertyIdentifier::ACKED_TRANSITIONS));
-    assert!(object
-        .property_list()
-        .contains(&PropertyIdentifier::ACKED_TRANSITIONS));
+    assert!(!is_writable_property(
+        &*object,
+        PropertyIdentifier::ACKED_TRANSITIONS
+    ));
+    assert!(crate::property_metadata::has_property(
+        &object.property_metadata(),
+        PropertyIdentifier::ACKED_TRANSITIONS
+    ));
 
     // Event_State is maintained by the detector, never assignable from the
     // network — a write arm would let a client fake an alarm state.
@@ -222,7 +229,10 @@ fn assert_event_properties_round_trip(object: &mut dyn BACnetObject, label: &str
         PropertyIdentifier::EVENT_STATE,
         label,
     );
-    assert!(!object.is_writable_property(PropertyIdentifier::EVENT_STATE));
+    assert!(!is_writable_property(
+        &*object,
+        PropertyIdentifier::EVENT_STATE
+    ));
 }
 
 #[test]
@@ -309,13 +319,18 @@ fn binary_alarm_value_round_trips_and_matches_pics() {
                 .unwrap(),
             PropertyValue::Enumerated(0)
         );
-        assert!(object
-            .property_list()
-            .contains(&PropertyIdentifier::ALARM_VALUE));
-        assert!(object.is_writable_property(PropertyIdentifier::ALARM_VALUE));
-        assert!(!object
-            .property_list()
-            .contains(&PropertyIdentifier::ALARM_VALUES));
+        assert!(crate::property_metadata::has_property(
+            &object.property_metadata(),
+            PropertyIdentifier::ALARM_VALUE
+        ));
+        assert!(is_writable_property(
+            &*object,
+            PropertyIdentifier::ALARM_VALUE
+        ));
+        assert!(!crate::property_metadata::has_property(
+            &object.property_metadata(),
+            PropertyIdentifier::ALARM_VALUES
+        ));
         assert_protocol_error(
             object.write_property(
                 PropertyIdentifier::ALARM_VALUE,
@@ -392,7 +407,10 @@ fn binary_event_history_is_listed_readable_and_read_only() {
             (PropertyIdentifier::EVENT_TIME_STAMPS, &timestamps),
             (PropertyIdentifier::EVENT_MESSAGE_TEXTS, &messages),
         ] {
-            assert!(object.property_list().contains(&property), "{label}");
+            assert!(
+                crate::property_metadata::has_property(&object.property_metadata(), property),
+                "{label}"
+            );
             assert_eq!(object.read_property(property, None).unwrap(), *expected);
             assert_eq!(
                 object.read_property(property, Some(0)).unwrap(),
@@ -414,13 +432,13 @@ fn binary_event_history_is_listed_readable_and_read_only() {
                 property,
                 label,
             );
-            assert!(!object.is_writable_property(property));
+            assert!(!is_writable_property(&*object, property));
         }
     }
 }
 
 macro_rules! assert_seeded_binary_event_history {
-    ($object:expr, $label:literal) => {{
+    ($object:expr_2021, $label:literal) => {{
         let mut object = $object;
         let expected_timestamps = [
             BACnetTimeStamp::Time(Time {
@@ -524,7 +542,7 @@ fn binary_seeded_event_history_preserves_array_order_and_timestamp_choices() {
 }
 
 macro_rules! assert_binary_history_reset {
-    ($object:expr, $label:literal) => {{
+    ($object:expr_2021, $label:literal) => {{
         let mut object = $object;
         object.event_history.time_stamps[0] = BACnetTimeStamp::SequenceNumber(91);
         object.event_history.message_texts[1] = "seeded".into();

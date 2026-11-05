@@ -2,7 +2,9 @@
 //! application sets it, then served as a list of enumerations and read-only
 //! over the network; the setter's refusals.
 
+use crate::property_metadata::{is_array_property, is_list_property, is_writable_property};
 use bacnet_types::enums::{AuthorizationExemption as Exemption, ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 use super::*;
 use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
@@ -11,9 +13,9 @@ const AE: PropertyIdentifier = PropertyIdentifier::AUTHORIZATION_EXEMPTIONS;
 
 fn assert_property_error<T: std::fmt::Debug>(result: Result<T, Error>, code: ErrorCode) {
     match result {
-        Err(Error::Protocol { class, code: got }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(got, code.to_raw() as u32, "expected {code:?}");
+        Err(Error::Remote(RemoteError::Error { class, code: got })) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(got, code, "expected {code:?}");
         }
         other => panic!("expected PROPERTY / {code:?}, got {other:?}"),
     }
@@ -22,14 +24,20 @@ fn assert_property_error<T: std::fmt::Debug>(result: Result<T, Error>, code: Err
 /// Whether Authorization_Exemptions is in Property_List and the metadata,
 /// and how the metadata describes it.
 fn assert_listed(credential: &AccessCredentialObject, listed: bool) {
-    assert_eq!(credential.property_list().contains(&AE), listed);
+    assert_eq!(
+        crate::property_metadata::has_property(&credential.property_metadata(), AE),
+        listed
+    );
     let metadata = credential.property_metadata();
     let row = metadata.iter().find(|row| row.property_identifier == AE);
     assert_eq!(row.is_some(), listed);
-    assert!(!credential.is_writable_property(AE));
-    assert!(!credential.required_properties().contains(&AE));
-    assert!(credential.is_list_property(AE));
-    assert!(!credential.is_array_property(AE));
+    assert!(!is_writable_property(credential, AE));
+    assert!(
+        !crate::property_metadata::required_properties(&credential.property_metadata())
+            .any(|required| required == AE)
+    );
+    assert!(is_list_property(credential, AE));
+    assert!(!is_array_property(credential, AE));
     if let Some(row) = row {
         assert_eq!(row.conformance, PropertyConformance::Optional);
         assert_eq!(row.write_capability, PropertyWriteCapability::ReadOnly);

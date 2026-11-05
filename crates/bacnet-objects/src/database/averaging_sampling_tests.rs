@@ -7,7 +7,7 @@ use crate::averaging::AveragingObject;
 use crate::command_source::CommandOrigin;
 use crate::value_types::LargeAnalogValueObject;
 use bacnet_types::constructed::BACnetObjectPropertyReference;
-use bacnet_types::enums::ObjectType;
+use bacnet_types::enums::{EngineeringUnits, ObjectType};
 use bacnet_types::primitives::PropertyValue;
 use std::sync::{Arc, Mutex};
 
@@ -35,9 +35,11 @@ fn fixture(
     let time = Arc::new(Mutex::new(Duration::ZERO));
     let source = Arc::clone(&time);
     let mut db = ObjectDatabase::new();
-    db.set_monotonic_clock_internal(Some(Arc::new(move || *source.lock().unwrap())));
-    db.add(Box::new(AnalogValueObject::new(1, "AV-1", 62).unwrap()))
-        .unwrap();
+    db.set_monotonic_clock(Some(Arc::new(move || *source.lock().unwrap())));
+    db.add(Box::new(
+        AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     db.add(Box::new(LargeAnalogValueObject::new(1, "LAV-1").unwrap()))
         .unwrap();
     set_av1(&mut db, value);
@@ -171,7 +173,7 @@ fn averaging_without_a_reference_or_a_clock_is_never_sampled() {
 
     // No monotonic clock: the database isn't in a running server.
     let (mut db, _) = fixture(10.0, to(av1(), P::PRESENT_VALUE));
-    db.set_monotonic_clock_internal(None);
+    db.set_monotonic_clock(None);
     assert!(db.sample_due_averaging_objects(Duration::MAX).is_empty());
     assert_eq!(read(&db, P::ATTEMPTED_SAMPLES), PropertyValue::Unsigned(0));
 }

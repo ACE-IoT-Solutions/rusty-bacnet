@@ -1,9 +1,11 @@
 use super::*;
 use crate::server::GetEventInformationBudget;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_types::bitstring::EventTransitionBits;
+use bacnet_types::error::RemoteError;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 struct Counted {
@@ -20,10 +22,10 @@ impl BACnetObject for Counted {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.inner.object_name()
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.projections.fetch_add(1, Ordering::SeqCst);
-        self.inner.property_list()
+        self.inner.property_metadata()
     }
     fn read_property(
         &self,
@@ -239,8 +241,8 @@ fn get_event_information_configured_late_errors_win_and_normals_do_not_imply_mor
                 ..Default::default()
             };
             assert!(
-                matches!(configured(&db, None, budget), Err(EventInformationFailure::Service(Error::Protocol { class, code }))
-                if class == ErrorClass::DEVICE.to_raw() as u32 && code == ErrorCode::OPERATIONAL_PROBLEM.to_raw() as u32)
+                matches!(configured(&db, None, budget), Err(EventInformationFailure::Service(Error::Remote(RemoteError::Error { class, code })))
+                if class == ErrorClass::DEVICE && code == ErrorCode::OPERATIONAL_PROBLEM)
             );
             assert!(handle_get_event_information(&db, &[], &mut BytesMut::new()).is_err());
         }

@@ -51,20 +51,23 @@
 //! storage back as it goes: `StagedSaves` keeps, beside the staged write,
 //! the state the object served at its latest storage call, and its `Drop`
 //! saves that state, unless the staged save failed, before the writer's own
-//! drop joins the thread. An object that stages through `StagedSaves` gets
+//! drop waits for its thread. An object that stages through `StagedSaves` gets
 //! this without a `Drop` of its own; [`stage`](StagedSaves::stage) takes
 //! the served state, and [`correct`](StagedSaves::correct) keeps it current.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use crate::prelude::*;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use core::time::Duration;
+#[cfg(all(test, feature = "std"))]
+use std::time::Instant;
 
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::PropertyValue;
 
 use super::{
-    Event, PendingWrite, SaveTicket, SaveWait, SaveWriter, StageStep, STAGED_WRITE_LIFETIME,
+    Event, PendingWrite, STAGED_WRITE_LIFETIME, SaveTicket, SaveWait, SaveWriter, StageStep,
 };
 
 /// One write of a staged save, and the state `N` it leaves.
@@ -110,12 +113,12 @@ pub(crate) fn steps<N>(
 /// the wrong datatype: a value that encodes as one application NULL,
 /// refused with PROPERTY / INVALID_DATA_TYPE.
 fn relinquishes_nothing(value: &PropertyValue, error: &Error) -> bool {
-    let (Error::Protocol { class, code } | Error::Structured { class, code, .. }) = error else {
+    let (Error::Remote(RemoteError::Error { class, code }) | Error::Structured { class, code, .. }) =
+        error
+    else {
         return false;
     };
-    is_null(value)
-        && *class == ErrorClass::PROPERTY.to_raw() as u32
-        && *code == ErrorCode::INVALID_DATA_TYPE.to_raw() as u32
+    is_null(value) && *class == ErrorClass::PROPERTY && *code == ErrorCode::INVALID_DATA_TYPE
 }
 
 /// Whether `value` encodes as one application NULL: `Null` itself, the raw
@@ -145,8 +148,10 @@ struct StagedWrite<S, N> {
     /// The state the object served at its latest storage call, a step it
     /// took included: what storage goes back to if the staged write is
     /// dropped before [`correct`](StagedSaves::correct) can ask for a fresh
-    /// one, as when the object itself is dropped.
-    served: S,
+    /// one, as when the object itself is dropped. `None` for a write staged
+    /// with [`stage_snapshot`](StagedSaves::stage_snapshot), whose object
+    /// puts storage back itself.
+    served: Option<S>,
     /// Set when the staged write is taken or dropped, for a request that
     /// found the object busy.
     released: Arc<Event>,
@@ -167,9 +172,9 @@ pub(crate) struct StagedSaves<S: Send + 'static, N> {
     staged: Option<StagedWrite<S, N>>,
     /// A staged write was dropped whose save did not fail, so storage may
     /// hold a state the object never served: the served state that write
-    /// kept. [`correct`](Self::correct) saves a fresh snapshot instead; a
-    /// drop saves this one.
-    correction: Option<S>,
+    /// kept, if it kept one. [`correct`](Self::correct) saves a fresh
+    /// snapshot instead; a drop saves this one.
+    correction: Option<Option<S>>,
 }
 
 impl<S: Send + 'static, N> StagedSaves<S, N> {
@@ -186,14 +191,24 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
     /// save is running, or finished within
     /// [`STAGED_WRITE_LIFETIME`]. An older one
     /// is dropped.
+    /// Without std there is no clock to tell, so only the operation task's
+    /// call ([`expire`](Self::expire)) drops one.
     pub(crate) fn busy(&mut self) -> Option<SaveWait> {
-        self.busy_at(Instant::now())
+        self.busy_unless(SaveTicket::outlived)
     }
 
     /// [`busy`](Self::busy), judged at `now`.
+    // std: judged on the wall clock.
+    #[cfg(all(test, feature = "std"))]
     pub(crate) fn busy_at(&mut self, now: Instant) -> Option<SaveWait> {
+        self.busy_unless(|ticket| ticket.outlived_at(now))
+    }
+
+    /// The wait for a staged write that holds the object, unless `outlived`
+    /// says it has gone on too long; then it is dropped.
+    fn busy_unless(&mut self, outlived: impl FnOnce(&SaveTicket) -> bool) -> Option<SaveWait> {
         let staged = self.staged.as_ref()?;
-        if !staged.ticket.outlived_at(now) {
+        if !outlived(&staged.ticket) {
             return Some(SaveWait::new(Arc::clone(&staged.released)));
         }
         self.drop_staged();
@@ -222,11 +237,40 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
         for step in &steps {
             apply(&mut snapshot, &step.next);
         }
+        self.stage_saving(steps, base, snapshot, Some(served))
+    }
+
+    /// Stage `steps` as [`stage`](Self::stage) does, saving `snapshot`,
+    /// which the caller built with every step's state in it, and keeping no
+    /// served state beside them. The caller puts storage back itself once a
+    /// dropped staged write leaves a correction due
+    /// ([`take_correction`](Self::take_correction)): a durable log commits
+    /// the state it serves then, records included, rather than have a copy
+    /// of them kept for the whole stage (#1952).
+    pub(crate) fn stage_snapshot(
+        &mut self,
+        steps: Vec<Step<N>>,
+        base: u64,
+        snapshot: S,
+    ) -> StageStep {
+        if steps.is_empty() {
+            return StageStep::Skip;
+        }
+        self.stage_saving(steps, base, snapshot, None)
+    }
+
+    fn stage_saving(
+        &mut self,
+        steps: Vec<Step<N>>,
+        base: u64,
+        snapshot: S,
+        served: Option<S>,
+    ) -> StageStep {
         // A correction still due lands first, should this save fail. Today's
         // callers can't reach this with one due: each stage follows a `busy`
-        // check through `correct`, which queues it. The check stays for a
-        // caller that stages without one.
-        if let Some(correction) = self.correction.take() {
+        // check through `correct`, or the log's own correction, which queues
+        // it. The check stays for a caller that stages without one.
+        if let Some(Some(correction)) = self.correction.take() {
             self.writer.submit_coalescing(correction);
         }
         let ticket = self.writer.submit(snapshot);
@@ -358,7 +402,7 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
         if self.take_correction() {
             self.writer.submit_coalescing(served());
         } else if let Some(staged) = self.staged.as_mut() {
-            staged.served = served();
+            staged.served = Some(served());
         }
     }
 
@@ -372,20 +416,41 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
         self.writer.idle()
     }
 
+    /// A wait that ends once every save queued so far has run.
+    pub(crate) fn idle(&self) -> SaveWait {
+        self.writer.idle()
+    }
+
     /// Block until every queued save has run.
     pub(crate) fn wait_idle(&self) {
         self.writer.wait_idle();
+    }
+
+    /// The owner is going away; see `SaveWriter::closing`.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn closing(&mut self) {
+        self.writer.closing();
+    }
+
+    /// The writer, for tests that look at its thread.
+    // std: for tests that look at the writer thread.
+    #[cfg(all(test, feature = "std"))]
+    pub(crate) fn writer(&self) -> &SaveWriter<S> {
+        &self.writer
     }
 }
 
 impl<S: Send + 'static, N> Drop for StagedSaves<S, N> {
     /// The object is going away with nothing left to take a staged write.
     /// Drop it as a release would, and put storage back to the served state
-    /// it kept before the writer, dropped next, joins its thread (#1363).
+    /// it kept before the writer, dropped next, waits for its thread (#1363).
     fn drop(&mut self) {
         self.drop_staged();
-        if let Some(served) = self.correction.take() {
+        if let Some(Some(served)) = self.correction.take() {
             self.writer.put_back(served);
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

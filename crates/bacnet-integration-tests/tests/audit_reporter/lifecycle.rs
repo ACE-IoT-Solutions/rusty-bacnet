@@ -1,5 +1,6 @@
 //! Audit lifecycle operations over actual UDP.
 use super::*;
+use bacnet_types::error::RemoteError;
 
 #[tokio::test]
 async fn audit_reporter_create_delete_reach_real_log_over_udp() {
@@ -36,6 +37,7 @@ async fn audit_reporter_create_delete_reach_real_log_over_udp() {
         .unwrap();
     target_db.add(Box::new(reporter)).unwrap();
     let mut target = BACnetServer::bip_builder()
+        .device(bacnet_objects::DeviceIdentity::new(10, 0).unwrap())
         .interface(Ipv4Addr::LOCALHOST)
         .port(0)
         .database(target_db)
@@ -59,7 +61,7 @@ async fn audit_reporter_create_delete_reach_real_log_over_udp() {
     for step in 0..4 {
         match step {
             0 => {
-                let ack = client
+                let acknowledged = client
                     .create_object(
                         target.local_mac(),
                         ObjectSpecifier::Type(ObjectType::BINARY_VALUE),
@@ -72,12 +74,7 @@ async fn audit_reporter_create_delete_reach_real_log_over_udp() {
                     )
                     .await
                     .unwrap();
-                assert_eq!(
-                    bacnet_encoding::primitives::decode_application_value(&ack, 0)
-                        .unwrap()
-                        .0,
-                    PropertyValue::ObjectIdentifier(created)
-                );
+                assert_eq!(acknowledged, created);
                 assert_eq!(
                     target
                         .database()
@@ -101,8 +98,8 @@ async fn audit_reporter_create_delete_reach_real_log_over_udp() {
                     .unwrap_err();
                 // A CreateObject-Error naming no initial value (#1047).
                 assert!(matches!(error, Error::Structured { class, code, detail }
-                    if class == ErrorClass::OBJECT.to_raw() as u32
-                        && code == ErrorCode::OBJECT_IDENTIFIER_ALREADY_EXISTS.to_raw() as u32
+                    if class == ErrorClass::OBJECT
+                        && code == ErrorCode::OBJECT_IDENTIFIER_ALREADY_EXISTS
                         && *detail == bacnet_types::error::ErrorDetail::FirstFailedElementNumber(0)));
             }
             2 => {
@@ -117,8 +114,10 @@ async fn audit_reporter_create_delete_reach_real_log_over_udp() {
                     .delete_object(target.local_mac(), created)
                     .await
                     .unwrap_err();
-                assert!(matches!(error, Error::Protocol { class, code }
-                    if class == ErrorClass::OBJECT.to_raw() as u32 && code == ErrorCode::UNKNOWN_OBJECT.to_raw() as u32));
+                assert!(
+                    matches!(error, Error::Remote(RemoteError::Error { class, code })
+                    if class == ErrorClass::OBJECT && code == ErrorCode::UNKNOWN_OBJECT)
+                );
             }
         }
         wait_for_records(&logger, &persistence, step + 1).await;

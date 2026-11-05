@@ -1,12 +1,11 @@
 use super::*;
-use bacnet_encoding::apdu::{encode_apdu, UnconfirmedRequest};
-use bacnet_encoding::npdu::{encode_npdu, Npdu};
+use bacnet_encoding::apdu::{UnconfirmedRequest, encode_apdu};
+use bacnet_encoding::npdu::{Npdu, encode_npdu};
 use bacnet_services::who_is::IAmRequest;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{ObjectType, Segmentation};
 use bacnet_types::primitives::ObjectIdentifier;
-use std::time::Instant;
 
 fn i_am_npdu(instance: u32, vendor_id: u16) -> BytesMut {
     i_am_npdu_with_capabilities(instance, vendor_id, 1476, Segmentation::NONE)
@@ -128,7 +127,7 @@ async fn collision_event_retains_authoritative_route_without_device_update() {
         source_network: None,
         source_address: None,
     };
-    client.device_table.lock().await.upsert(retained);
+    client.device_table.lock().upsert(retained);
 
     let before_send = Instant::now();
     sender_transport
@@ -198,7 +197,7 @@ async fn device_events_emit_lost_when_purge_removes_stale_device() {
     tokio::task::yield_now().await;
     tokio::task::yield_now().await;
 
-    client.device_table.lock().await.upsert(DiscoveredDevice {
+    client.device_table.lock().upsert(DiscoveredDevice {
         object_identifier: ObjectIdentifier::new(ObjectType::DEVICE, 2001).unwrap(),
         mac_address: MacAddr::from_slice(&[192, 168, 1, 42, 0xBA, 0xC0]),
         max_apdu_length: 1476,

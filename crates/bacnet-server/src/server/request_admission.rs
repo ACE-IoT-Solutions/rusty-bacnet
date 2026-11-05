@@ -6,17 +6,67 @@ use std::sync::{Arc, Mutex};
 use super::request_peer::CanonicalRequester;
 
 use bacnet_types::error::Error;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use bacnet_types::map_hash::BuildMapHasher;
+use tokio::sync::Semaphore;
 
 #[path = "recovery_classifier.rs"]
 mod recovery_classifier;
+#[cfg(test)]
+#[path = "request_admission_slot_tests.rs"]
+mod slot_tests;
 pub(super) use recovery_classifier::confirmed_class;
 
 /// Global and logical-peer top-level handler limits with a strict recovery reserve.
 /// Defaults are provisional owner policy, not benchmark-derived values.
+///
+/// # Confirmed requests under load
+///
+/// By default the server runs at most 64 confirmed handlers at once and keeps
+/// 4 of them for DeviceCommunicationControl requests that re-enable
+/// communication, so 60 ordinary confirmed requests run at a time, at most 16
+/// of them from one peer. Nothing waits for a slot: a confirmed request that
+/// finds no room is refused at once with an Abort (OUT_OF_RESOURCES), sent by
+/// one of 8 Abort workers. When all 8 are busy the request is dropped
+/// silently and counted in
+/// [`confirmed_fallback_dropped_total`](RequestAdmissionCounters::confirmed_fallback_dropped_total);
+/// that client waits out one request timeout and its retry is then served.
+///
+/// A handler keeps its slot until its reply has been handed to the transport.
+/// A client can get its reply and send its next request before the handler
+/// that answered it lets go, so refusals can start a little below the limit.
+/// Above the limit, how many requests are refused depends on scheduling, not
+/// on how costly each request is, and varies widely between runs. Silent
+/// drops are a start-up effect: they come while many clients still send in
+/// step and more than 8 refusals arrive together.
+///
+/// To avoid refusals, set [`max_confirmed_in_flight`](Self::max_confirmed_in_flight)
+/// above the most confirmed requests you expect at once, plus the
+/// [`confirmed_recovery_reserve`](Self::confirmed_recovery_reserve), with
+/// headroom. The measured curve of clients against Aborts is in
+/// [`benchmarks/results/perf-s2`](https://github.com/jscott3201/rusty-bacnet/tree/dev/benchmarks/results/perf-s2).
+///
+/// ```
+/// use bacnet_server::server::RequestAdmissionPolicy;
+///
+/// let policy = RequestAdmissionPolicy::default();
+/// assert_eq!(policy.max_confirmed_in_flight, 64);
+/// assert_eq!(policy.confirmed_recovery_reserve, 4);
+/// assert_eq!(policy.max_confirmed_in_flight_per_peer, 16);
+/// assert_eq!(policy.max_unconfirmed_in_flight, 32);
+/// assert_eq!(policy.max_unconfirmed_in_flight_per_peer, 8);
+/// assert_eq!(policy.max_recovery_in_flight_per_peer, 1);
+///
+/// // 100 concurrent confirmed requests, the reserve of 4, and headroom.
+/// let roomy = RequestAdmissionPolicy {
+///     max_confirmed_in_flight: 100 + 4 + 16,
+///     ..RequestAdmissionPolicy::default()
+/// };
+/// assert!(roomy.validate().is_ok());
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RequestAdmissionPolicy {
-    /// Maximum concurrent confirmed handlers (default 64).
+    /// Maximum concurrent confirmed handlers, the recovery reserve included
+    /// (default 64). Requests past it are refused with an Abort.
     pub max_confirmed_in_flight: usize,
     /// Maximum concurrent unconfirmed handlers (default 32).
     pub max_unconfirmed_in_flight: usize,
@@ -48,7 +98,8 @@ impl Default for RequestAdmissionPolicy {
 }
 
 impl RequestAdmissionPolicy {
-    /// Reject zero and limits that the underlying semaphore cannot represent.
+    /// Reject zero and limits above tokio's `Semaphore::MAX_PERMITS`, the
+    /// bound these limits have always had.
     pub fn validate(&self) -> Result<(), Error> {
         for (name, value) in [
             ("max_confirmed_in_flight", self.max_confirmed_in_flight),
@@ -147,11 +198,23 @@ pub(super) struct Admission {
     recovery_enabled: bool,
 }
 
+/// One class's capacity. `held` counts the handlers that hold a slot here;
+/// [`Admission::try_enter`] takes one with a compare-and-swap, so a full
+/// pool rejects at once and nothing ever waits for a slot. A semaphore did
+/// this before (#1713): its release took a lock on every request.
 struct Pool {
-    permits: Arc<Semaphore>,
+    limit: usize,
+    held: AtomicUsize,
     peer_limit: usize,
-    peers: Mutex<HashMap<CanonicalRequester, usize>>,
+    // Holds only requests running here, so the pool's limit bounds it and
+    // the cheap hasher is safe (#1713; see bacnet_types::map_hash).
+    peers: Mutex<HashMap<CanonicalRequester, usize, BuildMapHasher>>,
     active: AtomicUsize,
+    // The most handlers `active` has counted at once: a measurement for the
+    // admission experiments (#1979), not part of the policy. Every pool keeps
+    // one; only the confirmed pool's is read, and like `confirmed_active` it
+    // includes the protected recovery handlers counted into it.
+    peak_active: AtomicUsize,
     admitted: AtomicU64,
     overloaded: AtomicU64,
     global_overloaded: AtomicU64,
@@ -162,16 +225,46 @@ struct Pool {
 impl Pool {
     fn new(limit: usize, peer_limit: usize) -> Arc<Self> {
         Arc::new(Self {
-            permits: Arc::new(Semaphore::new(limit)),
+            limit,
+            held: AtomicUsize::new(0),
             peer_limit,
-            peers: Mutex::new(HashMap::new()),
+            peers: Mutex::new(HashMap::default()),
             active: AtomicUsize::new(0),
+            peak_active: AtomicUsize::new(0),
             admitted: AtomicU64::new(0),
             overloaded: AtomicU64::new(0),
             global_overloaded: AtomicU64::new(0),
             peer_overloaded: AtomicU64::new(0),
             closed: AtomicU64::new(0),
         })
+    }
+
+    /// Take a slot unless all `limit` are held.
+    fn take_slot(&self) -> bool {
+        let mut held = self.held.load(Ordering::Relaxed);
+        while held < self.limit {
+            match self.held.compare_exchange_weak(
+                held,
+                held + 1,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(now) => held = now,
+            }
+        }
+        false
+    }
+
+    /// Count one more live handler, and keep the peak.
+    fn enter_active(&self) {
+        let live = self.active.fetch_add(1, Ordering::Relaxed) + 1;
+        self.peak_active.fetch_max(live, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    fn free_slots(&self) -> usize {
+        self.limit - self.held.load(Ordering::Relaxed)
     }
 }
 
@@ -180,13 +273,13 @@ pub(super) struct Guard {
     // Counters only: recovery never registers in the ordinary peer map.
     aggregate: Option<Arc<Pool>>,
     peer: Option<CanonicalRequester>,
-    _permit: OwnedSemaphorePermit,
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        // Remove registration before Rust drops _permit and releases global
-        // capacity. This lock never acquires the task owner's lock.
+        // Remove the peer registration and the active counts first; the
+        // `held.fetch_sub` at the end then releases the pool slot. This lock
+        // never acquires the task owner's lock.
         if let Some(peer) = &self.peer {
             let mut peers = self.pool.peers.lock().unwrap_or_else(|e| e.into_inner());
             let count = peers.get_mut(peer).expect("live peer registration");
@@ -198,6 +291,7 @@ impl Drop for Guard {
         for pool in std::iter::once(&self.pool).chain(self.aggregate.iter()) {
             pool.active.fetch_sub(1, Ordering::Relaxed);
         }
+        self.pool.held.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -261,15 +355,15 @@ impl Admission {
             }
             return Err(Rejection::Closed);
         }
-        let permit = Arc::clone(&pool.permits).try_acquire_owned().map_err(|_| {
+        if !pool.take_slot() {
             pool.overloaded.fetch_add(1, Ordering::Relaxed);
             pool.global_overloaded.fetch_add(1, Ordering::Relaxed);
             if let Some(total) = aggregate {
                 total.overloaded.fetch_add(1, Ordering::Relaxed);
                 total.global_overloaded.fetch_add(1, Ordering::Relaxed);
             }
-            Rejection::Overloaded
-        })?;
+            return Err(Rejection::Overloaded);
+        }
         // Spawn serialization belongs to RequestTasks. Peer registrations are
         // partition-local, while confirmed counters remain inclusive. Only one
         // map is locked, so no cross-partition registration or rollback is needed.
@@ -278,30 +372,42 @@ impl Admission {
             None
         } else {
             let mut peers = pool.peers.lock().unwrap_or_else(|e| e.into_inner());
-            if peers.get(&peer).copied().unwrap_or(0) >= pool.peer_limit {
+            // One lookup for the check and the registration.
+            let count = peers.entry(peer.clone()).or_insert(0);
+            if *count >= pool.peer_limit {
+                // Only a zero limit refuses a new entry; leave none behind.
+                if *count == 0 {
+                    peers.remove(&peer);
+                }
                 pool.overloaded.fetch_add(1, Ordering::Relaxed);
                 pool.peer_overloaded.fetch_add(1, Ordering::Relaxed);
                 if let Some(total) = aggregate {
                     total.overloaded.fetch_add(1, Ordering::Relaxed);
                     total.peer_overloaded.fetch_add(1, Ordering::Relaxed);
                 }
+                pool.held.fetch_sub(1, Ordering::Release);
                 return Err(Rejection::Overloaded);
             }
-            *peers.entry(peer.clone()).or_default() += 1;
+            *count += 1;
             Some(peer)
         };
-        pool.active.fetch_add(1, Ordering::Relaxed);
+        pool.enter_active();
         pool.admitted.fetch_add(1, Ordering::Relaxed);
         if let Some(total) = aggregate {
-            total.active.fetch_add(1, Ordering::Relaxed);
+            total.enter_active();
             total.admitted.fetch_add(1, Ordering::Relaxed);
         }
         Ok(Guard {
             pool: Arc::clone(pool),
             aggregate: aggregate.map(Arc::clone),
             peer,
-            _permit: permit,
         })
+    }
+
+    /// The highest `confirmed_active` since startup: the most confirmed
+    /// handlers live at once, protected recovery handlers included.
+    pub(super) fn confirmed_peak_active(&self) -> usize {
+        self.pools[0].peak_active.load(Ordering::Relaxed)
     }
 
     pub(super) fn snapshot(&self) -> RequestAdmissionCounters {
@@ -332,6 +438,8 @@ impl Admission {
 
 impl<T: super::TransportPort + 'static> super::ServerBuilder<T> {
     /// Set positive global and peer handler limits, validated before startup.
+    /// See [`RequestAdmissionPolicy`] for what happens past them and how to
+    /// size `max_confirmed_in_flight`.
     pub fn request_admission_policy(mut self, policy: RequestAdmissionPolicy) -> Self {
         self.config.request_admission_policy = policy;
         self
@@ -340,6 +448,8 @@ impl<T: super::TransportPort + 'static> super::ServerBuilder<T> {
 
 impl super::BipServerBuilder {
     /// Set positive global and peer handler limits, validated before startup.
+    /// See [`RequestAdmissionPolicy`] for what happens past them and how to
+    /// size `max_confirmed_in_flight`.
     pub fn request_admission_policy(mut self, policy: RequestAdmissionPolicy) -> Self {
         self.config.request_admission_policy = policy;
         self
@@ -349,6 +459,8 @@ impl super::BipServerBuilder {
 #[cfg(feature = "sc-tls")]
 impl super::ScServerBuilder {
     /// Set positive global and peer handler limits, validated before TLS dialing.
+    /// See [`RequestAdmissionPolicy`] for what happens past them and how to
+    /// size `max_confirmed_in_flight`.
     pub fn request_admission_policy(mut self, policy: RequestAdmissionPolicy) -> Self {
         self.config.request_admission_policy = policy;
         self
@@ -359,5 +471,14 @@ impl<T: super::TransportPort + 'static> super::BACnetServer<T> {
     /// Sample admission counters. Available after stop; active counts then are zero.
     pub fn request_admission_counters(&self) -> RequestAdmissionCounters {
         self.request_tasks.counters()
+    }
+
+    /// The highest [`RequestAdmissionCounters::confirmed_active`] since
+    /// startup: the most confirmed handlers live at once, protected recovery
+    /// handlers included. A measurement hook for the admission experiments
+    /// (#1979): the stress benchmark reads it, and it is not a supported API.
+    #[doc(hidden)]
+    pub fn request_admission_confirmed_peak(&self) -> usize {
+        self.request_tasks.confirmed_peak_active()
     }
 }

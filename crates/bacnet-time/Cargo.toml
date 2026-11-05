@@ -1,0 +1,36 @@
+[package]
+name = "bacnet-time"
+description = "The no-std monotonic Instant and Duration, in nanoseconds, that the portable BACnet cores share"
+# Versioned on its own, not with the workspace: it takes a new version only
+# when its own API changes (#1768). The workspace dependency names this
+# version, not the workspace one.
+version = "0.13.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["bacnet", "time", "embedded", "no-std"]
+categories = ["embedded", "no-std", "no-std::no-alloc", "date-and-time"]
+
+# No dependencies: two Copy types over a u64, which build on bare-metal
+# targets without an allocator.
+[dependencies]
+
+[features]
+default = []
+# HostClock: a host's std::time::Instant on the timeline.
+std = []
+
+[dev-dependencies]
+proptest.workspace = true
+
+[package.metadata.docs.rs]
+# std on, for HostClock; --cfg docsrs marks it as std only. Only the host
+# target: a bare-metal one has no std to build the feature with.
+features = ["std"]
+targets = ["x86_64-unknown-linux-gnu"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true

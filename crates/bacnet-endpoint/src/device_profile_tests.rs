@@ -1,10 +1,12 @@
 //! Device Tags metadata does not expand the endpoint's narrow write admission.
 use super::*;
+use crate::session::bus_port::BusPort;
 use bacnet_objects::object_profile::{ObjectProfile, TagsPersistence, TagsSnapshot};
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_types::constructed::BACnetNameValue;
 use bacnet_types::enums::{ErrorClass, ErrorCode, RejectReason};
+use bacnet_types::error::RemoteError;
 use std::net::Ipv4Addr;
 
 const TAGS: PropertyIdentifier = PropertyIdentifier::TAGS;
@@ -35,13 +37,13 @@ fn primitive(bytes: &[u8]) -> PropertyValue {
 }
 fn assert_reject<T: std::fmt::Debug>(result: Result<T, Error>) {
     assert!(
-        matches!(result, Err(Error::Reject { reason }) if reason == RejectReason::UNRECOGNIZED_SERVICE.to_raw()),
+        matches!(result, Err(Error::Remote(RemoteError::Reject { reason })) if reason == RejectReason::UNRECOGNIZED_SERVICE),
         "{result:?}"
     );
 }
 fn assert_error<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::PROPERTY && code == expected),
         "{result:?}"
     );
 }
@@ -67,11 +69,15 @@ fn profiled_database(
     let before = identity_rows.map(|p| original.read_property(p, None).unwrap());
     let mut object = DeviceObject::with_tags_persistence(
         DeviceConfig {
-            instance: identity.instance(),
-            name,
-            vendor_id: identity.vendor_id(),
-            max_apdu_length: identity.max_apdu_length().into(),
-            segmentation_supported: identity.segmentation(),
+            identity: bacnet_objects::DeviceIdentity::new(
+                identity.instance(),
+                identity.vendor_id(),
+            )
+            .expect("valid Device identity")
+            .with_name(name)
+            .with_max_apdu(identity.max_apdu_length())
+            .expect("valid Device APDU")
+            .with_segmentation(identity.segmentation()),
             ..Default::default()
         },
         store,
@@ -96,7 +102,7 @@ fn profiled_database(
     assert_eq!(db.selected_device(), Some(selected));
     db
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn device_profiles_read_but_tags_never_enter_endpoint_mutation_authority() {
     for writes in [false, true] {
         for provisioned in [false, true] {
@@ -108,8 +114,8 @@ async fn device_profiles_read_but_tags_never_enter_endpoint_mutation_authority()
                 crate::bip::BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
                     .role(SessionRole::ServerOnly)
                     .database(db)
-                    .identity(identity)
-                    .build_session()
+                    .device(identity)
+                    .build_session_over(BusPort::new())
                     .unwrap();
             if writes {
                 let calls = calls.clone();
@@ -119,12 +125,7 @@ async fn device_profiles_read_but_tags_never_enter_endpoint_mutation_authority()
                 }));
             }
             endpoint.start().await.unwrap();
-            let mut client = bacnet_client::client::BACnetClient::bip_builder()
-                .interface(Ipv4Addr::LOCALHOST)
-                .port(0)
-                .build()
-                .await
-                .unwrap();
+            let mut client = bus_client().await;
             let mac = bacnet_transport::bvll::encode_bip_mac(
                 [127, 0, 0, 1],
                 endpoint.bip_local_address().unwrap().port(),
@@ -232,17 +233,19 @@ async fn device_profiles_read_but_tags_never_enter_endpoint_mutation_authority()
                         ErrorCode::UNKNOWN_PROPERTY,
                     );
                 }
-                assert!(client
-                    .read_property(
-                        &mac,
-                        target,
-                        PropertyIdentifier::DEVICE_ADDRESS_BINDING,
-                        None
-                    )
-                    .await
-                    .unwrap()
-                    .property_value
-                    .is_empty());
+                assert!(
+                    client
+                        .read_property(
+                            &mac,
+                            target,
+                            PropertyIdentifier::DEVICE_ADDRESS_BINDING,
+                            None
+                        )
+                        .await
+                        .unwrap()
+                        .property_value
+                        .is_empty()
+                );
             }
             let result = client
                 .write_property(&mac, oid(123), TAGS, None, FLOOR.to_vec(), None)
@@ -256,6 +259,24 @@ async fn device_profiles_read_but_tags_never_enter_endpoint_mutation_authority()
                         ErrorCode::UNKNOWN_PROPERTY
                     },
                 );
+            } else {
+                assert_reject(result);
+            }
+            // Property_List is present, though the Device's property list
+            // leaves it out as every object's does (#2174), so a write is
+            // denied, not unknown.
+            let result = client
+                .write_property(
+                    &mac,
+                    oid(123),
+                    PropertyIdentifier::PROPERTY_LIST,
+                    None,
+                    FLOOR.to_vec(),
+                    None,
+                )
+                .await;
+            if writes {
+                assert_error(result, ErrorCode::WRITE_ACCESS_DENIED);
             } else {
                 assert_reject(result);
             }

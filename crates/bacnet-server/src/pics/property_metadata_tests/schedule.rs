@@ -1,10 +1,10 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{schedule::ScheduleObject, traits::BACnetObject};
 use bacnet_types::constructed::{
     BACnetCalendarEntry, BACnetSpecialEvent, BACnetTimeValue, SpecialEventPeriod,
 };
 use bacnet_types::primitives::{Date, PropertyValue, Time};
-use PropertyIdentifier as P;
 
 #[test]
 fn pics_schedule_property_metadata_is_exact() {
@@ -68,14 +68,17 @@ fn pics_schedule_property_metadata_is_exact() {
                     None,
                 )
                 .unwrap();
-            let required = object.required_properties();
+            let required: Vec<_> =
+                bacnet_objects::property_metadata::required_properties(&object.property_metadata())
+                    .collect();
             let mut db = ObjectDatabase::new();
             db.add(Box::new(object)).unwrap();
-            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+                .instance_types_only(&db);
             assert_eq!(pics.supported_object_types.len(), 1);
             let support = &pics.supported_object_types[0];
             assert_eq!(support.object_type, ObjectType::SCHEDULE);
-            assert!(!support.createable);
+            assert!(support.createable);
             assert!(support.deleteable);
             let rows: Vec<_> = support
                 .supported_properties

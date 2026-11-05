@@ -1,30 +1,40 @@
-//! Public endpoint correlation against the bundled server over real B/IP.
-use bacnet_endpoint::{bip::BipEndpointBuilder, DeviceIdentity, SessionRole};
+//! Public endpoint correlation against the bundled server.
+//!
+//! Every test runs on paused time over in-memory links, so a stalled test
+//! thread can't time a read out after its peer answered (#2298).
+use bacnet_endpoint::{DeviceIdentity, SessionRole};
 use bacnet_server::server::{BACnetServer, ServerConfig};
-use bacnet_transport::bip::BipTransport;
 use bacnet_types::{
     enums::{ObjectType, PropertyIdentifier},
     primitives::ObjectIdentifier,
 };
-use std::net::Ipv4Addr;
+use bus_port::BusPort;
 
-#[tokio::test]
+#[path = "support/bus_port.rs"]
+mod bus_port;
+
+#[tokio::test(start_paused = true)]
 async fn endpoint_device_wildcard_accepts_bundled_server_concrete_ack() {
     let database = DeviceIdentity::new(10, 42)
         .unwrap()
         .build_database()
         .unwrap();
     let mut server = BACnetServer::start_clockless(
-        ServerConfig::default(),
+        ServerConfig {
+            device: bacnet_objects::DeviceIdentity::new(10, 42).unwrap(),
+            ..Default::default()
+        },
         database,
-        BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST),
+        BusPort::new(),
     )
     .await
     .unwrap();
-    let mut endpoint = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
-        .role(SessionRole::ClientOnly)
-        .build_session()
-        .unwrap();
+    let mut endpoint = EndpointSession::new(
+        BusPort::new(),
+        SessionRole::ClientOnly,
+        SessionConfig::default(),
+    )
+    .unwrap();
     endpoint.start().await.unwrap();
     let ack = endpoint
         .client()
@@ -48,22 +58,22 @@ async fn endpoint_device_wildcard_accepts_bundled_server_concrete_ack() {
 
 use bacnet_client::client::BACnetClient;
 use bacnet_encoding::{
-    apdu::{decode_apdu, encode_apdu, Apdu, ComplexAck},
-    npdu::{decode_npdu, encode_npdu, Npdu, NpduAddress},
+    apdu::{Apdu, ComplexAck, decode_apdu, encode_apdu},
+    npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu},
 };
 use bacnet_endpoint::{EndpointApduDestination, EndpointSession, SessionConfig};
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::{loopback::LoopbackTransport, port::TransportPort};
-use bacnet_types::{enums::ConfirmedServiceChoice, error::Error, MacAddr};
+use bacnet_types::{MacAddr, enums::ConfirmedServiceChoice, error::Error};
 use bytes::BytesMut;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 fn oid(kind: ObjectType, instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(kind, instance).unwrap()
 }
 
 enum Reader {
-    Standalone(Box<BACnetClient<LoopbackTransport>>),
+    Standalone(BACnetClient<LoopbackTransport>),
     Endpoint(Box<EndpointSession<LoopbackTransport>>),
 }
 impl Reader {
@@ -131,13 +141,13 @@ async fn correlation_matrix(endpoint: bool, routed: bool) {
         session.start().await.unwrap();
         Reader::Endpoint(Box::new(session))
     } else {
-        Reader::Standalone(Box::new(
+        Reader::Standalone(
             BACnetClient::generic_builder()
                 .transport(transport)
                 .build()
                 .await
                 .unwrap(),
-        ))
+        )
     };
     let concrete = oid(ObjectType::ANALOG_INPUT, 7);
     let device_alias = oid(ObjectType::DEVICE, ObjectIdentifier::MAX_INSTANCE);
@@ -210,7 +220,7 @@ async fn correlation_matrix(endpoint: bool, routed: bool) {
             };
             let mut body = BytesMut::new();
             if i != last - 1 {
-                ack.encode(&mut body);
+                ack.encode(&mut body).unwrap();
             }
             let mut apdu = BytesMut::new();
             encode_apdu(
@@ -248,7 +258,7 @@ async fn correlation_matrix(endpoint: bool, routed: bool) {
             assert_eq!(ack.property_value, [0x21, 42]);
         } else {
             assert!(
-                matches!(result, Err(Error::Decoding { .. })),
+                matches!(result, Err(Error::Decoding(_))),
                 "case{i}: {result:?}"
             );
         }
@@ -260,19 +270,19 @@ async fn correlation_matrix(endpoint: bool, routed: bool) {
     peer.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn standalone_direct_read_property_correlates_ack_identity() {
     correlation_matrix(false, false).await;
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn standalone_routed_read_property_correlates_ack_identity() {
     correlation_matrix(false, true).await;
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn endpoint_direct_read_property_correlates_ack_identity() {
     correlation_matrix(true, false).await;
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn endpoint_routed_read_property_correlates_ack_identity() {
     correlation_matrix(true, true).await;
 }

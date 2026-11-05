@@ -1,5 +1,6 @@
-# Size budget for the firmware link test's images (#1626, #1635), in octets:
-# one table per target and image, `[<target>.<image>]`.
+# Size budget for the firmware link test's images (#1626, #1635, #1664,
+# #1667, #1679, #1771), in octets: one table per target and image,
+# `[<target>.<image>]`.
 # scripts/ci/check-firmware-link.sh builds the images with the `firmware`
 # profile and fails when a size outgrows its budget, or when more core::fmt
 # functions are linked in than `fmt_functions` allows, or more 64-bit
@@ -14,17 +15,25 @@
 #   (`firmware_link::apdu::ARENA`). The stack the code uses at run time
 #   isn't counted here: the manual emulation check measures it and holds it
 #   to firmware/link/stack-budget.toml (docs/ci.md, "Emulation (manual)").
-# - fmt_functions, div64_functions: counts of functions, not octets, 0 for
-#   mstp and bip. A 64-bit division by a runtime value links
-#   compiler-builtins' routine, about 0.9 KB, which the 12% headroom would
-#   otherwise absorb; the MS/TP core divides in 32 bits (#1618). The apdu
-#   image's counts are what it links today, with no headroom, so a new
-#   function fails the check, and a count under its limit gets a notice to
-#   lower the limit. Its libraries build error messages with
-#   format!, which brings in core::fmt (15 functions, about 2.7 KB of text
-#   on ARMv7-M). On ARMv6-M, which has no multiply with a 64-bit product,
-#   formatting a u64 divides by a constant through the 64-bit division
-#   routine (3 functions).
+# - fmt_functions, div64_functions, memmove_functions: counts of functions,
+#   not octets. The first two are 0 for every image. A 64-bit
+#   division by a runtime value links compiler-builtins' routine, about
+#   0.9 KB, which the 12% headroom would otherwise absorb; the MS/TP core
+#   divides in 32 bits (#1618). The apdu image's counts are what it links
+#   today, with no headroom, so a new function fails the check, and a count
+#   under its limit gets a notice to lower the limit. Its decoders' errors
+#   carry static labels, formatted only when displayed (#1646), which the
+#   image never does, and since #1777 so do its encoders' validation errors,
+#   so it links no core::fmt either. Before #1646 it was 15, and on ARMv6-M,
+#   which has no multiply with a 64-bit product, formatting a decoded u64 also
+#   linked the 64-bit division routine (3 functions); now none.
+# - memmove_functions counts compiler-builtins' memmove and the entry points
+#   in front of it (memmove, __aeabi_memmove, __aeabi_memmove4 and 8),
+#   0.8-1.4 KB in all, which a whole-value copy the compiler can't prove
+#   doesn't overlap, or a slice rotation, links. bip, node, bbmd, mstp,
+#   mstp-extended and router link none, so a copy that brings it back fails
+#   the check.
+#   apdu links it (2); its limit is that count, with no headroom.
 #
 # The totals go by section flags, not memory regions, and leave out the
 # alignment gaps between sections (at most 4 octets of flash per image today).
@@ -50,6 +59,19 @@
 #   thumbv6m apdu     39796 / 5188 / 0 /  1056   45176 /  1056
 #   riscv32imc apdu   45236 / 5832 / 0 /  1056   51090 /  1056
 #
+# 2026-10-20 (#941): a B/IP-M member's directed broadcast stays a group
+# address in bacnet-bip-core, and a link refuses a group outside NORMAL
+# mode. Flash grew by up to 0.41 KB (node -20 to +208, bbmd +204 to +404,
+# router +72 to +256 octets across the four targets) and the router's RAM
+# by 8 octets; every image stays within its budget, so no budget changed.
+#
+# 2026-10-20 (#941, part 2): a BBMD may serve its multicast group, with the
+# BDT's all-ones own-row rule (Bdt::set_serves_group) that BbmdPort::new
+# sets from its link. Flash, measured against the parent commit with the
+# same toolchain: bbmd +16 to +160 octets (riscv32imc +16, thumbv7m +140,
+# thumbv6m and thumbv7em +160), router +76 to +132; the other images and
+# all RAM unchanged. Every image stays within its budget; no budget changed.
+#
 # The bip rows were measured again on 2026-10-11, same toolchain, when the
 # image gained the B/IPv6 codec's scenario (#1621): about 4.6-6.0 KB more
 # flash, the RAM unchanged. The mstp rows were too, when the master core
@@ -66,6 +88,41 @@
 # when the service decoders stopped building their context labels on
 # success (#1645): 100-124 octets less text, the counts unchanged.
 #
+# The apdu rows were measured again on 2026-10-18, same toolchain, when the
+# decoders' errors became static labels (#1646), as text / rodata /
+# flash, against dev at a7145abc built the same way, then after, merged
+# with dev at d930e28e:
+#
+#   thumbv7m apdu     39216 / 5192 / 45432   38520 / 5100 / 44644
+#   thumbv6m apdu     41652 / 5192 / 47036   41112 / 5100 / 46404
+#   riscv32imc apdu   47600 / 5736 / 53358   46216 / 5648 / 51886
+#   thumbv7em apdu    39136 / 5192 / 45352   38396 / 5100 / 44520
+#
+# fmt_functions dropped from 15 to 12 on every target and div64_functions
+# from 3 to 0 on thumbv6m; those limits and the rodata budgets are the new
+# counts and sizes plus 12%. The text and flash budgets stay as they were:
+# the sizes plus 12% would be looser.
+#
+# apdu's fmt_functions dropped from 12 to 11 on every target when
+# bacnet-encoding's owned NPDU began decoding through bacnet-npdu's view
+# (#1770): its address field no longer formats itself.
+#
+# apdu's fmt_functions dropped from 11 to 0 on every target, measured
+# 2026-10-18 with the same toolchain, when the owned APDU and NPDU encoders'
+# validation refusals became static range errors and ObjectIdentifier's
+# encoder lost its formatted assertions (#1777): 2.9-4.0 KB less flash.
+# Checking each character set's structure in the borrowed CharacterString
+# view (#1778) then added 0.2-0.5 KB of flash to the apdu and device images.
+# The apdu text, rodata and flash budgets are the sizes after both, measured
+# 2026-10-18, plus 12%; the device budgets absorb its growth.
+#
+# The bbmd image grew when the BBMD core learned NAT traversal (#940), which
+# adds the NAT checks to the BDT and the origin choice to the forwarding
+# decisions the image links. Measured 2026-10-20, same toolchain, bbmd .text
+# against dev at 93125c06: thumbv7m 10052 -> 10212 (+160), thumbv6m
+# 11812 -> 12188 (+376), riscv32imc 12684 -> 13044 (+360), thumbv7em
+# 9988 -> 10200 (+212); RAM unchanged. The budgets are unchanged.
+#
 # The thumbv7em-none-eabihf (Cortex-M4F) rows are from when that target
 # joined the check, on 2026-10-12, same toolchain (#1660). Its images are
 # a little smaller than thumbv7m's:
@@ -73,16 +130,496 @@
 #   thumbv7em mstp    17724 / 1060 / 0 /  5544   19808 /  5544
 #   thumbv7em bip      8872 /  976 / 0 /   132   10872 /   132
 #   thumbv7em apdu    37316 / 5188 / 0 /  1056   43528 /  1056
+#
+# The mstp-extended, node and bbmd rows are from when those images joined,
+# on 2026-10-12, same toolchain (#1664, #1667):
+#
+#   thumbv7m mstp-extended     17636 /  984 / 0 /  7712   19644 /  7712
+#   thumbv6m mstp-extended     18676 /  984 / 0 /  7712   19852 /  7712
+#   riscv32imc mstp-extended   19440 / 1224 / 0 /  7712   20686 /  7712
+#   thumbv7em mstp-extended    17596 /  984 / 0 /  7712   19604 /  7712
+#   thumbv7m node              12184 /  288 / 0 /    64   13496 /    64
+#   thumbv6m node              13768 /  296 / 0 /    64   14256 /    64
+#   riscv32imc node            13828 /  720 / 0 /    64   14570 /    64
+#   thumbv7em node             12076 /  288 / 0 /    64   13388 /    64
+#   thumbv7m bbmd               8480 /  324 / 0 /   240    9828 /   240
+#   thumbv6m bbmd              10176 /  324 / 0 /   240   10692 /   240
+#   riscv32imc bbmd            10560 /  692 / 0 /   240   11274 /   240
+#   thumbv7em bbmd              8436 /  324 / 0 /   240    9784 /   240
+#
+# The mstp-extended image's .bss is the core's storage alone, 7,712 octets:
+# 1,516 of receive storage, FixedQueues<1, 1, 1497> and
+# ExtendedActionBuffers<1>. Each more queue slot would add about 1.5 KB.
+# The bbmd rows on thumbv6m are after bacnet-bip-core stopped copying a
+# 6-octet B/IP address whole into a BDT or FDT row, which linked
+# compiler-builtins' 1.3 KB memmove there (#1667): 1,288 octets less text
+# than the 11,464 it measured before. Adding the three images left the
+# other images' code as it was: each of their functions is the size it
+# was, and their .text moved by at most 4 octets of alignment between
+# functions. The node rows are after the node engine stopped rotating its
+# queued events with rotate_left, which linked memmove on every target
+# (#1667), and after the scenario stopped moving its node and summary into
+# the struct that drives them: 1.2-1.4 KB less text on Cortex-M and 0.9 KB
+# on RISC-V than the 13400 / 15140 / 14720 / 13304 first measured.
+#
+# The mstp and mstp-extended rows were measured again on 2026-10-12, same
+# toolchain, when the codec's stream decoder stopped shifting its buffer,
+# the queues stopped shifting their slots and the core stopped copying a
+# queued NPDU onto its stack (#1691). Neither image links memmove any more.
+# Against dev before that change (8042aef0), built the same way, which
+# linked three memmove routines on Cortex-M (memmove itself,
+# __aeabi_memmove and __aeabi_memmove8) and two on RISC-V (memmove and its
+# C entry point), .text is smaller by, on thumbv7m / thumbv6m / riscv32imc
+# / thumbv7em:
+#
+#   mstp            1656 / 1440 /  956 / 1572
+#   mstp-extended   2108 / 1992 / 1388 / 2068
+#
+# .rodata and RAM are unchanged. compiler-builtins' memmove accounts for
+# most of it; in the mstp image, the queues' slot code and the decoder's
+# start offset add 0.15-0.4 KB to the core and the codec together. The
+# budgets are these sizes plus 12%, as text / flash:
+#
+#   thumbv7m mstp              16448 / 18532
+#   thumbv6m mstp              17596 / 18848
+#   riscv32imc mstp            19048 / 20394
+#   thumbv7em mstp             16416 / 18500
+#   thumbv7m mstp-extended     15528 / 17536
+#   thumbv6m mstp-extended     16684 / 17860
+#   riscv32imc mstp-extended   18052 / 19298
+#   thumbv7em mstp-extended    15528 / 17536
+#
+# The mstp and mstp-extended rows were measured again on 2026-10-13, same
+# toolchain, after the codecs' API pass (#1684), which among other things
+# made the MS/TP FrameType a one-octet newtype in place of an enum with a
+# catch-all variant. .text changed by, on thumbv7m / thumbv6m / riscv32imc
+# / thumbv7em:
+#
+#   mstp            -196 /  +52 / -352 / -228
+#   mstp-extended   -424 / -244 / -336 / -424
+#
+# .rodata and RAM are unchanged, and so are the B/IP images. The text and
+# flash budgets are these sizes plus 12%, as text / flash:
+#
+#   thumbv7m mstp              16252 / 18336
+#   thumbv6m mstp              17648 / 18900
+#   riscv32imc mstp            18696 / 20042
+#   thumbv7em mstp             16188 / 18272
+#   thumbv7m mstp-extended     15104 / 17112
+#   thumbv6m mstp-extended     16440 / 17616
+#   riscv32imc mstp-extended   17716 / 18962
+#   thumbv7em mstp-extended    15104 / 17112
+#
+# The mstp and mstp-extended rows were measured again on 2026-10-13, same
+# toolchain, after the MS/TP core's API pass (#1684): the images take their
+# counters with take_counters, which also starts them again; the core counts
+# receive errors and transmit aborts by kind; each call holds a clock that
+# steps back at the latest time; and the queues' counters lost
+# drops_starved. .text changed by, on thumbv7m / thumbv6m / riscv32imc /
+# thumbv7em:
+#
+#   mstp             +92 /  -72 /  +60 /  +72
+#   mstp-extended     +4 /  -44 / -112 /  +16
+#
+# .rodata and .bss are 16 octets smaller on every target. The budgets are
+# these sizes plus 12%, as text / rodata / bss / flash:
+#
+#   thumbv7m mstp              16344 / 1044 / 5528 / 18412
+#   thumbv6m mstp              17576 / 1044 / 5528 / 18812
+#   riscv32imc mstp            18756 / 1308 / 5528 / 20086
+#   thumbv7em mstp             16260 / 1044 / 5528 / 18328
+#   thumbv7m mstp-extended     15108 /  968 / 7696 / 17100
+#   thumbv6m mstp-extended     16396 /  968 / 7696 / 17556
+#   riscv32imc mstp-extended   17604 / 1208 / 7696 / 18834
+#   thumbv7em mstp-extended    15120 /  968 / 7696 / 17112
+#
+# The router rows are from when that image joined, on 2026-10-13, same
+# toolchain (#1679), as text / rodata / data / bss, then flash / ram:
+#
+#   thumbv7m router     42804 / 1320 / 0 / 15504   45148 / 15504
+#   thumbv6m router     46136 / 1328 / 0 / 15504   47656 / 15504
+#   riscv32imc router   49392 / 1952 / 0 / 15504   51366 / 15504
+#   thumbv7em router    42544 / 1320 / 0 / 15504   44888 / 15504
+#
+# Its .bss is one static of 15,504 octets: the router's Storage<2, 8, 8, 4>
+# (3,216: a 1,497-octet scratch, a table of 8 routes and 8 hold-down
+# records, 4 searches, the output queue and the counters); the MS/TP
+# core's receive storage (1,516), FixedQueues<1, 2, 1497> (4,688) and
+# ExtendedActionBuffers<1> (3,028); the B/IP socket's two datagram buffers
+# (2 x 1,507); and where the BBMD writes a decision's destinations (40).
+# The BBMD port holds no broadcasts: only a foreign device's port does. The
+# rows are after bacnet-router-core stopped shifting and compacting its
+# arrays with copies, which linked memmove on every target (#1679): 1,444 /
+# 1,140 / 780 / 1,424 octets less text on thumbv7m / thumbv6m / riscv32imc
+# / thumbv7em than it measured before.
+#
+# The node and bbmd rows were measured again on 2026-10-18, same
+# toolchain, when both images moved onto bacnet-bip-core's port driver
+# (#1766), as text / rodata / data / bss, then flash / ram:
+#
+#   thumbv7m node      13472 /  304 / 0 /  240   14800 /  240
+#   thumbv6m node      14708 /  320 / 0 /  240   15220 /  240
+#   riscv32imc node    15256 /  760 / 0 /  240   16038 /  240
+#   thumbv7em node     13404 /  304 / 0 /  240   14732 /  240
+#   thumbv7m bbmd      10036 /  388 / 0 /  240   11448 /  240
+#   thumbv6m bbmd      11796 /  388 / 0 /  240   12376 /  240
+#   riscv32imc bbmd    12672 /  756 / 0 /  240   13450 /  240
+#   thumbv7em bbmd      9968 /  388 / 0 /  240   11380 /  240
+#
+# The node image now runs a NodePort, which holds the two broadcasts the
+# node holds for its first registration in HeldBroadcast slots; before,
+# the scenario kept only a count and sent a constant it knew, so its RAM
+# never showed what holding costs. A slot is as long as the link's
+# broadcasts may be, so the image sizes its link to what it sends: a
+# 64-octet budget, the least a link takes, for 54-octet broadcasts and
+# slots of 56 octets with their length, where the hosted transport's
+# budget of 1,507 octets would need slots of 1,500. The port also sends
+# while the received datagram is still borrowed, so the image has a second
+# 64-octet datagram buffer: .bss is 240 octets, from 64. .text grew by
+# 0.9-1.4 KB, the port's drain, hold and release code. The bbmd image now runs a BbmdPort
+# over its Link, which answers the management requests from the tables
+# (Tables::serve), Delete-Foreign-Device-Table-Entry among them, where the
+# scenario answered three of them by hand and refused the fourth; it also
+# checks the link and each requester's address. .text grew by 1.6-2.2 KB,
+# with two more steps in the scenario, and .rodata by 64 octets; .bss is
+# unchanged.
+#
+# The router rows were measured again the same day, same toolchain, after
+# its BBMD port moved onto bacnet-bip-core's port driver (#1766) and the
+# router's counters became drained u32s (#1767), as text / rodata / data
+# / bss, then flash / ram:
+#
+#   thumbv7m router     39652 / 1300 / 0 / 15536   41976 / 15536
+#   thumbv6m router     42288 / 1308 / 0 / 15536   43788 / 15536
+#   riscv32imc router   45436 / 1828 / 0 / 15536   47286 / 15536
+#   thumbv7em router    39500 / 1300 / 0 / 15536   41824 / 15536
+#
+# Against dev before them (a7145abc), built the same way, .text is 4,340
+# / 4,624 / 5,132 / 4,300 octets smaller on thumbv7m / thumbv6m /
+# riscv32imc / thumbv7em: the BBMD port runs on its Link and no longer
+# links the node engine's exchanges, registration and event queue, though
+# it now answers the BBMD's management requests itself (3.9-4.7 KB); and
+# the counters' copy no longer needs the out-of-line helper that kept it
+# from linking memmove (0.4-0.6 KB). .bss is 40 octets smaller: the
+# counters halve (64 less), and the port borrows 20 octets of rows for a
+# Read-FDT-Ack (24 more, aligned). The .bss and ram budgets stay at
+# 17,376 octets, as they were: these sizes plus 12% round up to 17,408,
+# and a budget doesn't rise for an image whose RAM shrank.
+#
+# The router rows were measured again on 2026-10-18, same toolchain, after
+# the router's own Router-Busy (#1697), its next-hop and duplicate
+# options (#1698) and its application's requests (#1699), as text /
+# rodata / data / bss, then flash / ram:
+#
+#   thumbv7m router     40028 / 1348 / 0 / 15616   42400 / 15616
+#   thumbv6m router     43148 / 1356 / 0 / 15616   44696 / 15616
+#   riscv32imc router   45888 / 1876 / 0 / 15616   47786 / 15616
+#   thumbv7em router    39832 / 1348 / 0 / 15616   42204 / 15616
+#
+# Against dev before them (ab81fafb), .text is 1,156 / 1,328 / 1,132 /
+# 1,152 octets larger on thumbv7m / thumbv6m / riscv32imc / thumbv7em:
+# the congestion state machine and its announcements, linked although the
+# image leaves the policy off, and the duplicate check; origination isn't
+# called, so it isn't linked. .bss is 80 octets larger, 15,616 in all: the
+# router's Storage<2, 8, 8, 4, 1497, Groups, 0> is now 3,336 octets (from
+# 3,216: each port's congestion state, the sweep deadline and the latest
+# time, moved there from the Router to keep the on-stack Router under 128
+# octets). The image names a duplicate record of 0 entries, since it
+# leaves duplicate suppression off; Router::new refuses the option over
+# such storage. The budgets are unchanged.
+#
+# The device rows are from when that image joined, on 2026-10-18, same
+# toolchain (#1771), as text / rodata / data / bss, then flash / ram:
+#
+#   thumbv7m device     24420 / 3492 / 0 / 3496   28936 / 3496
+#   thumbv6m device     26192 / 3492 / 0 / 3496   29876 / 3496
+#   riscv32imc device   28456 / 3976 / 0 / 3496   32454 / 3496
+#   thumbv7em device    24264 / 3488 / 0 / 3496   28776 / 3496
+#
+# These are after the review round that has it leave confirmed requests
+# by broadcast unanswered, and its scenario send two: 0.2-0.6 KB more
+# .text than first measured.
+#
+# It is a whole MS/TP device with no allocator: the MS/TP codec and master
+# core, bacnet-npdu's view, and the allocation-free profile of
+# bacnet-types, bacnet-encoding and bacnet-services, answering Who-Is and
+# ReadProperty for a Device object and an Analog Input. Its .bss is one
+# static of 3,496 octets: the core's StandardStorage<1, 2, 1> (about 3.3 KB: 501
+# octets of receive storage, the queues' three standard slots and the
+# action buffers), the application's scratch (88: 64 for an answer's APDU
+# and 24 for a property value), the 88-octet buffer its answer's NPDU is
+# written into, room for a DADR as long as any data link's, and 64 octets
+# where the scenario encodes the client's frames. It links no core::fmt,
+# 64-bit division or memmove.
+#
+# The node image's scenario ends with a move to a second BBMD since
+# 2026-10-25 (#1852), so the image links NodePort::retarget and
+# Node::retarget. Measured with Rust 1.99.0 against dev at d7df2c95, node
+# .text grew by 728 / 820 / 996 / 748 octets and flash by 736 / 860 /
+# 1,036 / 756 on thumbv7m / thumbv6m / riscv32imc / thumbv7em; RAM is
+# unchanged. Every image stays within its budget; no budget changed.
+#
+# 2026-11-02 (#2307): the move in the node scenario now releases the BBMD
+# it leaves (Foreign::release_previous): bacnet-bip-core admits one
+# Delete-Foreign-Device-Table-Entry exchange, the port sends it, and the
+# node counts its answer. Measured with Rust 1.99.0 against dev at
+# a1d54afb8, node .text grew from 13968 / 15604 / 16280 / 13936 to
+# 14720 / 16476 / 17132 / 14660 octets (+752 / +872 / +852 / +724) on
+# thumbv7m / thumbv6m / riscv32imc / thumbv7em, flash by the same less 32
+# octets of .rodata on riscv32imc, and RAM is unchanged. 220 to 420
+# octets of that is bacnet-bip-core's own code (the action, the counters
+# and the move's admission), the rest the port's send and the scenario's
+# extra steps, inlined into the image. thumbv6m and riscv32imc reached or passed their
+# .text budgets, so the node rows' text and flash budgets are the new
+# sizes plus 12%; the other budgets are unchanged, and the bbmd image grew
+# by at most 4 octets.
+#
+# The objects rows are from when that image joined, on 2026-10-30, same
+# toolchain (#2178), as flash / ram:
+#
+#   thumbv7m objects      130144 / 16480
+#   thumbv7em objects     129488 / 16480
+#   riscv32imac objects   156694 / 16480
+#
+# It is bacnet-device-core's Responder over a bacnet-objects database (a
+# Device, two Analog Inputs and two Binary Values) with a 16 KiB heap arena
+# in .bss, answering Who-Is, Who-Has and ReadProperty.
+# It needs an allocator with compare-and-swap atomics, so it builds only on
+# thumbv7m, thumbv7em and riscv32imac, not on thumbv6m or riscv32imc.
+# Against the design's floor for a Device answering Who-Is (docs/design/
+# device-core.md, section 8.1: 100,776 octets of thumbv7m text), most of
+# the difference is bacnet-objects (about 46 KB) and the encoders (about
+# 13 KB); the core itself is about 12 KB. Its counts are what it links,
+# with no headroom: it linked 7 core::fmt functions, for the default Device
+# and Network Port names, until #2187 (below); the 64-bit division and memmove limits are the routines it
+# links today, so a new one fails the check. Once #2181 dropped the objects'
+# pre-migration property-list fallbacks, the image measured 4.9-5.7 KB less
+# flash, links no 64-bit division and two memmove routines: flash 125256 /
+# 124608 / 151030 on thumbv7m / thumbv7em / riscv32imac, RAM unchanged. The
+# counts are those; the octet budgets stay as first set.
+#
+# The scenario writes BV-1's Present_Value and reads it back since PR 2 of
+# #2178, so the image links WriteProperty: the value decoding every write
+# path shares and the local form of device references. The objects' own
+# write methods were linked before: each object's vtable keeps them
+# whether or not anything calls them, and bacnet-objects' .text didn't
+# grow. Measured with Rust 1.99.0 against dev at 69555845b, flash grew
+# from 125256 / 124608 / 151030 to 158456 / 157840 / 191882 on thumbv7m /
+# thumbv7em / riscv32imac, RAM unchanged at 16480. On thumbv7m, .text is
+# 140624 (from 110564) and .rodata 16808 (from 13668); most of the growth
+# is bacnet-encoding's structured decoders (13178 to 33696 octets of
+# .text), which the generic value decoding reaches for any property, and
+# the core's write path (11272 to 13904). The octet budgets are the new
+# sizes plus 12%; the counts are unchanged.
+#
+# Since #2209 each request names its sender, BV-1 is commandable again, the
+# write commands priority 8, and a fourteenth request reads Priority_Array
+# back. Measured with Rust 1.99.0 against dev at d1078b7e0, flash went from
+# 166568 / 166024 / 200702 to 166992 / 166288 / 200590 on thumbv7m /
+# thumbv7em / riscv32imac, RAM unchanged at 16480: the objects' vtables
+# linked most of the commandable write path already. Budgets unchanged.
+#
+# #2187 writes the default Device and Network Port names (device-<n>,
+# port-<n>) without core::fmt; the port's links though the image declares
+# no port, from build_database_with_extra's loop. The image now links no
+# core::fmt: flash 165536 / 164760 / 198838 on thumbv7m / thumbv7em /
+# riscv32imac (from 166992 / 166288 / 200590), RAM unchanged at 16480. The
+# fmt_functions rows are 0, and the octet budgets are --suggest's (size
+# plus 12%).
+#
+# #2177 gives each property a datatype and shape: the array and list checks,
+# the NULL rule and the local form of references read them from the
+# metadata rows, which take the standard value type table in bacnet-types
+# when a row states none, and the write policy (typed list elements,
+# references kept inside the device) is a small table in bacnet-device-core.
+# The value type table replaces the smaller array and list
+# matches, and each row grew by one optional value type (16 to 20 octets).
+# Measured with Rust 1.99.0 against dev at c89b112d3, as text / rodata /
+# flash:
+#
+#   thumbv7m objects      145416 / 17448 / 163888   149440 / 18304 / 168768
+#   thumbv7em objects     144640 / 17448 / 163112   148512 / 18304 / 167840
+#   riscv32imac objects   178064 / 18896 / 196982   180044 / 22264 / 202330
+#
+# RAM unchanged at 16480. riscv32imac's .rodata outgrew its budget (its
+# switch tables land there), so that budget is the new size plus 12%; the
+# other budgets are unchanged.
+#
+# #2179 (ten PRs, from #2220 to this one) cut BACnetObject to its core and
+# capability accessors; its last PR moves creation-only properties, their
+# initializers and deleteability to the CreateObject table, three vtable
+# slots fewer per type. Measured with Rust 1.99.0, as text / rodata /
+# flash: on dev before the series (f0e8b7a29^), on dev before the last PR
+# (93676f20f), and after it:
+#
+#   thumbv7m objects     146616 / 17896 / 165536
+#                        149656 / 17992 / 168672
+#                        149476 / 17944 / 168444
+#   thumbv7em objects    145840 / 17896 / 164760
+#                        148740 / 17992 / 167756
+#                        148564 / 17944 / 167532
+#   riscv32imac objects  179472 / 19344 / 198838
+#                        180216 / 21904 / 202142
+#                        180040 / 21848 / 201910
+#
+# RAM unchanged at 16480. The window also holds #2177, whose rows above
+# grew the image by 4880 / 4728 / 5348 octets of flash; the rest of the
+# window, the series and the PRs between, comes to about 2 KB less flash,
+# near the floor of the design pass's estimate, since each accessor is a
+# vtable entry too. The last PR saved 228 / 224 / 232
+# octets. Sizes plus 12% are looser than every objects budget but
+# riscv32imac's .rodata, which tightens to 24480; the others stay.
+# Re-measured after merging dev at c3bbc9932, whose own changes add to the
+# image: 150088 / 17944 / 169056, 149188 / 17944 / 168156 and
+# 180756 / 21856 / 202634; riscv32imac's .rodata plus 12% is still 24480.
+#
+# #2215 gives bacnet-objects two capability features, `event-reporting`
+# and `durable-writes`, which `std` turns on. The image takes bacnet-objects
+# with `alloc` alone, so it builds with both off: its responder drives
+# neither, and the objects lend nothing through those accessors. Measured
+# with Rust 1.99.0 against dev at c921e47e6, as text / rodata / flash: both
+# on (as before), event-reporting off, durable-writes off, both off (the
+# image now):
+#
+#   thumbv7m objects     149728 / 17896 / 168648
+#                        146796 / 17808 / 165628
+#                        147728 / 17852 / 166604
+#                        144908 / 17764 / 163696
+#   thumbv7em objects    149048 / 17896 / 167968
+#                        146672 / 17808 / 165504
+#                        147168 / 17852 / 166044
+#                        144736 / 17764 / 163524
+#   riscv32imac objects  180408 / 21976 / 202406
+#                        176812 / 21888 / 198722
+#                        178148 / 21932 / 200102
+#                        174556 / 21844 / 196422
+#
+# RAM unchanged at 16480. Both off save 4952 / 4444 / 5984 octets of
+# flash. A spike that also compiled out audit, COV and the clock binding
+# saved under 400 octets each, so those have no feature. The text, rodata
+# (but riscv32imac's) and flash budgets tighten to the new sizes plus 12%.
+#
+# #2210 gives bacnet-device-core a `structured-writes` feature, which `std`
+# turns on: WriteProperty's own decoding of a BACnetEventParameter and of
+# the elements of a BACnetPortPermission or BACnetStageLimitValue array.
+# The image takes bacnet-device-core with `alloc` alone, so it builds
+# without it, and a write of one of those datatypes is refused with
+# WRITE_ACCESS_DENIED. The decoding picks its arm from a datatype read at
+# run time, so every decoder an arm calls linked, whatever the image's
+# objects serve. A single BACnetRecipient stays decoded: the Device's own
+# Audit_Notification_Recipient write links that decoder anyway, and gating
+# it measured 80 octets larger. Measured with Rust 1.99.0 against dev at
+# 0ce5890a7, as text / rodata / flash, with the feature and without (the
+# image now):
+#
+#   thumbv7m objects     145164 / 17764 / 163952
+#                        127452 / 15108 / 143584
+#   thumbv7em objects    144988 / 17764 / 163776
+#                        127232 / 15108 / 143364
+#   riscv32imac objects  174836 / 21844 / 196702
+#                        153860 / 18636 / 172518
+#
+# RAM unchanged at 16480. bacnet-encoding's .text went from 34988 / 35050 /
+# 41756 to 20534 / 20542 / 24632 octets; decode_event_parameter alone was
+# 11424 on thumbv7m. The text, rodata and flash budgets tighten to the new
+# sizes plus 12%.
+#
+# The reporting rows are from when that image joined, on 2026-11-02, Rust
+# 1.99.0 against dev at b0269c402 (#2303). It runs the objects image's
+# scenario, then subscribes, renews and cancels through
+# bacnet-device-core's COV table (CovTable::subscribe_cov and
+# subscribe_cov_property, capped at 8 subscriptions), in the same 16 KiB
+# arena. As text / rodata / flash, the objects image, then this one:
+#
+#   thumbv7m             127328 / 15108 / 143460
+#                        148368 / 16420 / 165812
+#   thumbv7em            127104 / 15108 / 143236
+#                        148156 / 16424 / 165604
+#   riscv32imac          153324 / 18636 / 171982
+#                        178092 / 20096 / 198210
+#
+# RAM unchanged at 16480. So the COV table and its two services cost about
+# 21-25 KB of .text and 22-26 KB of flash. On Arm they link two memmove
+# routines more (four), which the counts allow with no headroom.
+# bacnet-device-core has no `cov` feature: built without its COV module,
+# the objects image measured 127536 octets of thumbv7m .text, the same as
+# with it within the layout's few hundred octets, since the linker drops
+# what nothing reaches. The budgets are --suggest's (size plus 12%).
+#
+# On 2026-11-03 (#2303, PR 2b, Rust 1.99.0) the reporting image runs
+# through bacnet-device-core's Reporter: it subscribes, renews and cancels,
+# pops and sends the notifications (one confirmed one resent three times,
+# then failed; one acknowledged), reports a change to six subscribers and
+# reads Active_COV_Subscriptions through the overlay. Its arena grows by
+# 8 KiB to 24 KiB (the host test's peak is 20840 octets), for the
+# subscriptions' baselines, the outbox (6 entries, 256 octets) and the
+# confirmed table. As text / rodata / flash, then RAM:
+#
+#   thumbv7m             192856 / 17316 / 211196    24672
+#   thumbv7em            192920 / 17320 / 211264    24672
+#   riscv32imac          235144 / 20984 / 256150    24672
+#
+# about 44-57 KB of .text more than PR 1's image; the objects rows moved
+# by codegen alone (+32 / +160 / -44 octets of .text). riscv32imac's
+# image fills 256150 of the layout's 262144 octets of flash: PR 3 needs
+# the larger region first (design 8.2). The budgets are --suggest's.
+#
+# On 2026-11-03 (#2363) the reporting image is trimmed: the objects
+# requests go through the same Reporter, its overlay leaves the Multiple
+# list to the Device, the table's keys order as the Device's list does
+# (no sorts), and its flights and per-peer counts are sorted vectors, not
+# B-trees. riscv32imac gets its own layout, memory-riscv32imac.x, with
+# 512 KiB of flash (an ESP32-C6-class part), so PR 3 has room. As text /
+# rodata / flash, then RAM:
+#
+#   thumbv7m             170760 / 17276 / 189060    24680
+#   thumbv7em            171200 / 17280 / 189504    24680
+#   riscv32imac          205664 / 20944 / 226630    24680
+#
+# 22096 / 21720 / 29480 octets of .text less; the objects rows are
+# unchanged. The reporting budgets are --suggest's again.
+#
+# On 2026-11-04 (#2363, Rust 1.99.0, dev at 32c21b87d merged) the Reporter
+# takes three of PR 2b's review nits: a deadline looks at only as many
+# owed references as there are free outbox entries, oldest first, and
+# counts each owed subscription once. As text / rodata / flash, then RAM:
+#
+#   thumbv7m             171156 / 17276 / 189456    24680
+#   thumbv7em            171584 / 17280 / 189888    24680
+#   riscv32imac          205972 / 20944 / 226938    24680
+#
+# 396 / 384 / 308 octets of .text more; .rodata and RAM are unchanged, as
+# the owed list already keeps the order references became owed in. The
+# merge moved no row. The reporting budgets are --suggest's again.
+#
+# Later on 2026-11-04 (#2363's review round, dev at f423d3804 merged), a
+# look drops an owed reference whose object or subscription is gone, hands
+# a still-free entry to the next owed one, and keeps one the budget
+# dropped. As text / rodata / flash, then RAM:
+#
+#   thumbv7m             171756 / 17280 / 190060    24680
+#   thumbv7em            172040 / 17284 / 190348    24680
+#   riscv32imac          206580 / 20948 / 227550    24680
+#
+# 600 / 456 / 608 octets of .text more; the objects rows didn't move. The
+# reporting budgets are --suggest's again.
+#
+# Its second review round (dev at f0dd882c6 merged) refuses at admission a
+# report too large for one input's budget of octets, as one too large for
+# the outbox is: 171440 / 171936 / 206732 octets of .text and 189744 /
+# 190244 / 227702 of flash; .rodata and RAM unchanged. The reporting
+# budgets are --suggest's again.
 
 [thumbv7m-none-eabi.mstp]
-text = 20000
-rodata = 1200
+text = 18320
+rodata = 1184
 data = 64
-bss = 6224
-flash = 22336
-ram = 6224
+bss = 6192
+flash = 20624
+ram = 6192
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [thumbv7m-none-eabi.bip]
 text = 10016
@@ -93,26 +630,106 @@ flash = 12256
 ram = 160
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [thumbv7m-none-eabi.apdu]
-text = 41904
-rodata = 5824
+text = 41456
+rodata = 5248
 data = 64
 bss = 1184
-flash = 48864
+flash = 47840
 ram = 1184
-fmt_functions = 15
-div64_functions = 0
-
-[thumbv6m-none-eabi.mstp]
-text = 20928
-rodata = 1200
-data = 64
-bss = 6224
-flash = 22336
-ram = 6224
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 2
+
+[thumbv7m-none-eabi.mstp-extended]
+text = 16928
+rodata = 1088
+data = 64
+bss = 8624
+flash = 19152
+ram = 8624
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7m-none-eabi.node]
+text = 16496
+rodata = 352
+data = 64
+bss = 272
+flash = 18000
+ram = 272
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7m-none-eabi.bbmd]
+text = 11248
+rodata = 448
+data = 64
+bss = 272
+flash = 12832
+ram = 272
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7m-none-eabi.router]
+text = 44416
+rodata = 1456
+data = 64
+bss = 17376
+flash = 47024
+ram = 17376
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7m-none-eabi.device]
+text = 27360
+rodata = 3920
+data = 64
+bss = 3920
+flash = 32416
+ram = 3920
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7m-none-eabi.objects]
+text = 142752
+rodata = 16928
+data = 64
+bss = 18464
+flash = 160816
+ram = 18464
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 2
+
+[thumbv7m-none-eabi.reporting]
+text = 192016
+rodata = 19360
+data = 64
+bss = 27648
+flash = 212528
+ram = 27648
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 4
+
+[thumbv6m-none-eabi.mstp]
+text = 19696
+rodata = 1184
+data = 64
+bss = 6192
+flash = 21072
+ram = 6192
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
 
 [thumbv6m-none-eabi.bip]
 text = 11728
@@ -123,26 +740,84 @@ flash = 13040
 ram = 160
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [thumbv6m-none-eabi.apdu]
-text = 44576
-rodata = 5824
+text = 43408
+rodata = 5248
 data = 64
 bss = 1184
-flash = 50608
+flash = 48864
 ram = 1184
-fmt_functions = 15
-div64_functions = 3
-
-[riscv32imc-unknown-none-elf.mstp]
-text = 21952
-rodata = 1520
-data = 64
-bss = 6224
-flash = 23488
-ram = 6224
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 2
+
+[thumbv6m-none-eabi.mstp-extended]
+text = 18368
+rodata = 1088
+data = 64
+bss = 8624
+flash = 19664
+ram = 8624
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv6m-none-eabi.node]
+text = 18464
+rodata = 368
+data = 64
+bss = 272
+flash = 19088
+ram = 272
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv6m-none-eabi.bbmd]
+text = 13216
+rodata = 448
+data = 64
+bss = 272
+flash = 13872
+ram = 272
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv6m-none-eabi.router]
+text = 47376
+rodata = 1472
+data = 64
+bss = 17376
+flash = 49056
+ram = 17376
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv6m-none-eabi.device]
+text = 29344
+rodata = 3920
+data = 64
+bss = 3920
+flash = 33472
+ram = 3920
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[riscv32imc-unknown-none-elf.mstp]
+text = 21008
+rodata = 1472
+data = 64
+bss = 6192
+flash = 22496
+ram = 6192
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.bip]
 text = 13248
@@ -153,26 +828,84 @@ flash = 14976
 ram = 160
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [riscv32imc-unknown-none-elf.apdu]
-text = 50672
-rodata = 6544
+text = 50096
+rodata = 5888
 data = 64
 bss = 1184
-flash = 57232
+flash = 56000
 ram = 1184
-fmt_functions = 15
-div64_functions = 0
-
-[thumbv7em-none-eabihf.mstp]
-text = 19856
-rodata = 1200
-data = 64
-bss = 6224
-flash = 22192
-ram = 6224
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 2
+
+[riscv32imc-unknown-none-elf.mstp-extended]
+text = 19728
+rodata = 1360
+data = 64
+bss = 8624
+flash = 21104
+ram = 8624
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[riscv32imc-unknown-none-elf.node]
+text = 19200
+rodata = 864
+data = 64
+bss = 272
+flash = 20096
+ram = 272
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[riscv32imc-unknown-none-elf.bbmd]
+text = 14192
+rodata = 848
+data = 64
+bss = 272
+flash = 15072
+ram = 272
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[riscv32imc-unknown-none-elf.router]
+text = 50896
+rodata = 2048
+data = 64
+bss = 17376
+flash = 52960
+ram = 17376
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[riscv32imc-unknown-none-elf.device]
+text = 31872
+rodata = 4464
+data = 64
+bss = 3920
+flash = 36352
+ram = 3920
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7em-none-eabihf.mstp]
+text = 18224
+rodata = 1184
+data = 64
+bss = 6192
+flash = 20528
+ram = 6192
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
 
 [thumbv7em-none-eabihf.bip]
 text = 9936
@@ -183,13 +916,114 @@ flash = 12176
 ram = 160
 fmt_functions = 0
 div64_functions = 0
+memmove_functions = 0
 
 [thumbv7em-none-eabihf.apdu]
-text = 41808
-rodata = 5824
+text = 41200
+rodata = 5248
 data = 64
 bss = 1184
-flash = 48752
+flash = 47600
 ram = 1184
-fmt_functions = 15
+fmt_functions = 0
 div64_functions = 0
+memmove_functions = 2
+
+[thumbv7em-none-eabihf.mstp-extended]
+text = 16944
+rodata = 1088
+data = 64
+bss = 8624
+flash = 19168
+ram = 8624
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7em-none-eabihf.node]
+text = 16432
+rodata = 352
+data = 64
+bss = 272
+flash = 17936
+ram = 272
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7em-none-eabihf.bbmd]
+text = 11168
+rodata = 448
+data = 64
+bss = 272
+flash = 12752
+ram = 272
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7em-none-eabihf.router]
+text = 44240
+rodata = 1456
+data = 64
+bss = 17376
+flash = 46848
+ram = 17376
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7em-none-eabihf.device]
+text = 27184
+rodata = 3920
+data = 64
+bss = 3920
+flash = 32240
+ram = 3920
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 0
+
+[thumbv7em-none-eabihf.objects]
+text = 142512
+rodata = 16928
+data = 64
+bss = 18464
+flash = 160576
+ram = 18464
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 2
+
+[thumbv7em-none-eabihf.reporting]
+text = 192576
+rodata = 19360
+data = 64
+bss = 27648
+flash = 213088
+ram = 27648
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 4
+
+[riscv32imac-unknown-none-elf.objects]
+text = 172336
+rodata = 20880
+data = 64
+bss = 18464
+flash = 193232
+ram = 18464
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 2
+
+[riscv32imac-unknown-none-elf.reporting]
+text = 231552
+rodata = 23472
+data = 64
+bss = 27648
+flash = 255040
+ram = 27648
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 2

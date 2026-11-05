@@ -6,12 +6,18 @@
 //!
 //! The trait's methods are read from its source. A method added there fails
 //! `assert_rows_cover_the_trait` until it has a probe answer in `probe.rs`
-//! and a row in `rows.rs`. The probe answers every row unlike the trait
+//! and a row in `rows.rs`. A capability the trait lends through an accessor
+//! (`timed`, for one) has a row for the accessor, and a row for each of the
+//! capability trait's methods in `capabilities.rs`, run through the
+//! accessor; its traits are read from their source too, so a capability or
+//! a capability method added there fails until it has rows. The probe
+//! answers every row unlike the trait
 //! default and logs each call with its arguments, so an adapter that keeps a
 //! default, drops an argument or swaps the answer reads differently from the
 //! probe. Values the probe and the rows share, such as identifiers, dates
 //! and clocks, are in `fixtures.rs`.
 
+pub mod capabilities;
 pub mod defaults;
 pub mod fixtures;
 pub mod probe;
@@ -19,8 +25,8 @@ pub mod rows;
 
 use bacnet_types::enums::ObjectType;
 use defaults::Defaults;
-use probe::{take, CallLog, Probe};
-use rows::{rows, COMMANDS, QUERIES};
+use probe::{CallLog, Probe, take};
+use rows::{COMMANDS, QUERIES, rows};
 use std::collections::BTreeSet;
 
 const TRAIT_SOURCE: &str = include_str!("../../../src/traits.rs");
@@ -73,8 +79,8 @@ pub fn trait_methods() -> Vec<TraitMethod> {
     // method, one shared provided query, one multi-line mutating signature.
     assert!(method("object_identifier").shared && method("object_identifier").required);
     assert!(!method("write_property").shared && method("write_property").required);
-    assert!(method("is_list_property").shared && !method("is_list_property").required);
-    assert!(!method("audit_policy_authority_internal").shared);
+    assert!(method("command_runner").shared && !method("command_runner").required);
+    assert!(!method("write_property_from").shared && !method("write_property_from").required);
     methods
 }
 
@@ -142,6 +148,7 @@ pub fn assert_rows_cover_the_trait() {
              if it takes &self, in DeviceReadView"
         );
     }
+    capabilities::assert_rows_cover_the_capabilities();
 }
 
 /// Every row reaches the probe's own method, and every provided method

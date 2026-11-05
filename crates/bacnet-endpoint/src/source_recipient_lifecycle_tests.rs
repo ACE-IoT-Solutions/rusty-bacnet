@@ -1,6 +1,7 @@
 use super::*;
 
 fn released_projection(db: &mut ObjectDatabase) {
+    assert!(db.check_removable(&selected()).is_ok());
     let object = db.get_mut(&selected()).unwrap();
     assert_eq!(
         object
@@ -8,9 +9,10 @@ fn released_projection(db: &mut ObjectDatabase) {
             .unwrap(),
         PropertyValue::Boolean(false)
     );
-    assert!(object.is_deleteable());
     object
-        .configure_audit_reporter_internal(
+        .audit_reporter_mut()
+        .expect("an Audit Reporter")
+        .configure(
             AuditLevel::NONE,
             AuditOperationFlags::empty(),
             false,
@@ -23,26 +25,28 @@ fn released_projection(db: &mut ObjectDatabase) {
 fn protected(db: &mut ObjectDatabase) {
     assert!(db.remove(&oid(ObjectType::DEVICE, 123)).is_err());
     assert!(db.remove(&selected()).is_err());
-    assert!(db
-        .add(Box::new(
+    assert!(
+        db.add(Box::new(
             AuditReporterObject::new(1, "replacement").unwrap()
         ))
-        .is_err());
+        .is_err()
+    );
     let mut extra = crate::DeviceIdentity::new(456, 42)
         .unwrap()
         .build_database()
         .unwrap();
-    assert!(db
-        .add(
+    assert!(
+        db.add(
             extra
                 .remove(&oid(ObjectType::DEVICE, 456))
                 .unwrap()
                 .unwrap()
         )
-        .is_err());
+        .is_err()
+    );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_recipient_canceled_stop_keeps_sealed_membership_until_retry_barrier() {
     let (mut sink, _records) = network().await;
     let mut session = session(database(false), SessionRole::Both, &sink);
@@ -53,51 +57,61 @@ async fn source_recipient_canceled_stop_keeps_sealed_membership_until_retry_barr
     let token = session.shared.token.clone();
     let mut guard = db.write().await;
     protected(&mut guard);
-    assert!(timeout(Duration::from_millis(20), session.stop())
-        .await
-        .is_err());
+    assert!(
+        timeout(Duration::from_millis(20), session.stop())
+            .await
+            .is_err()
+    );
     assert!(!token.is_open());
     assert!(!server.is_session_alive());
     protected(&mut guard);
-    assert!(guard
-        .get_mut(&oid(ObjectType::DEVICE, 123))
-        .unwrap()
-        .write_property(
-            PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT,
-            None,
-            PropertyValue::ApplicationData(value(&direct(&sink))),
-            None
-        )
-        .is_err());
+    assert!(
+        guard
+            .get_mut(&oid(ObjectType::DEVICE, 123))
+            .unwrap()
+            .write_property(
+                PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT,
+                None,
+                PropertyValue::ApplicationData(value(&direct(&sink))),
+                None
+            )
+            .is_err()
+    );
     drop(guard);
     timeout(WAIT, session.stop()).await.unwrap().unwrap();
     let mut guard = db.write().await;
-    assert!(!guard
-        .get(&oid(ObjectType::DEVICE, 123))
-        .unwrap()
-        .property_list()
-        .contains(&PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT));
+    assert!(!bacnet_objects::property_metadata::has_property(
+        &guard
+            .get(&oid(ObjectType::DEVICE, 123))
+            .unwrap()
+            .property_metadata(),
+        PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT
+    ));
     released_projection(&mut guard);
     assert!(guard.remove(&selected()).unwrap().is_some());
-    assert!(guard
-        .remove(&oid(ObjectType::DEVICE, 123))
-        .unwrap()
-        .is_some());
-    assert!(client
-        .read_property(
-            sink.local_mac(),
-            target(),
-            PropertyIdentifier::PRESENT_VALUE,
-            None
-        )
-        .await
-        .is_err());
+    assert!(
+        guard
+            .remove(&oid(ObjectType::DEVICE, 123))
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        client
+            .read_property(
+                sink.local_mac(),
+                target(),
+                PropertyIdentifier::PRESENT_VALUE,
+                None
+            )
+            .await
+            .is_err()
+    );
     drop(guard);
     assert!(session.stop().await.is_err());
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_recipient_drop_does_not_pin_membership_for_dormant_external_read() {
     let (mut sink, _records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
@@ -113,26 +127,25 @@ async fn source_recipient_drop_does_not_pin_membership_for_dormant_external_read
     let owner = Arc::downgrade(&session.source_recipient.as_ref().unwrap().owner);
     drop(session);
     // An aborted dispatch frame retains membership until the executor drops it.
-    timeout(WAIT, async {
-        while owner.upgrade().is_some() {
-            tokio::task::yield_now().await;
-        }
+    eventually(WAIT, "the recipient owner is dropped", async || {
+        owner.upgrade().is_none()
     })
-    .await
-    .unwrap();
+    .await;
     // Keep the external future unpolled: it must retain neither a sink nor a lease.
     released_projection(&mut guard);
     assert!(guard.remove(&selected()).unwrap().is_some());
-    assert!(guard
-        .remove(&oid(ObjectType::DEVICE, 123))
-        .unwrap()
-        .is_some());
+    assert!(
+        guard
+            .remove(&oid(ObjectType::DEVICE, 123))
+            .unwrap()
+            .is_some()
+    );
     drop(guard);
     assert!(timeout(WAIT, &mut read).await.unwrap().is_err());
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_recipient_protected_topology_preserves_pending_failure_then_releases() {
     let (mut peer, mut requests) = network().await;
     let (mut sink, mut records) = network().await;
@@ -168,7 +181,7 @@ async fn source_recipient_protected_topology_preserves_pending_failure_then_rele
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn public_recipient_write_rechecks_sealed_owner_after_database_wait() {
     let (mut sink, mut records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);

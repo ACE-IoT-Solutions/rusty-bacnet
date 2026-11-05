@@ -1,7 +1,9 @@
+use bacnet_objects::property_metadata::{is_array_property, is_list_property};
 use std::ops::Range;
 
-use super::group_present_value::GroupMembers;
 use super::*;
+use bacnet_device_core::read::group::{self, GroupMembers};
+use bacnet_device_core::read::{PropertyPlan, ReadScope};
 use bacnet_objects::log_buffer::{LogRecordIdentity, TimestampKey};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_services::read_range::{RangeSpec, ReadRangeAck, ReadRangeRequest};
@@ -69,17 +71,11 @@ pub(super) fn select_signed_range(
 }
 
 fn list_item_not_numbered() -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY.to_raw() as u32,
-        code: ErrorCode::LIST_ITEM_NOT_NUMBERED.to_raw() as u32,
-    }
+    Error::protocol(ErrorClass::PROPERTY, ErrorCode::LIST_ITEM_NOT_NUMBERED)
 }
 
 fn list_item_not_timestamped() -> Error {
-    Error::Protocol {
-        class: ErrorClass::PROPERTY.to_raw() as u32,
-        code: ErrorCode::LIST_ITEM_NOT_TIMESTAMPED.to_raw() as u32,
-    }
+    Error::protocol(ErrorClass::PROPERTY, ErrorCode::LIST_ITEM_NOT_TIMESTAMPED)
 }
 
 /// Select a signed ReadRange window around the resident timestamp anchor.
@@ -144,8 +140,8 @@ where
 /// use aligned resident identities supplied for `LOG_BUFFER` by the object. A
 /// built-in log's `LOG_BUFFER`, which ReadProperty refuses, comes from its
 /// record store: each item is one encoded record.
-/// Like [`handle_read_property`], this low-level helper has no executor
-/// context: a built-in Device's COV subscription lists read as the object
+/// Like the device core's reads with no overlay, this low-level helper has no
+/// executor context: a built-in Device's COV subscription lists read as the object
 /// holds them, empty. Running server reads page the live subscription table.
 pub fn handle_read_range(
     db: &ObjectDatabase,
@@ -159,7 +155,7 @@ pub fn handle_read_range(
         }
     };
     let request = ReadRangeRequest::decode(service_data).map_err(Error::into_request_reject)?;
-    let plan = plan_read_range(db, None, &request).map_err(unlimited)?;
+    let plan = plan_read_range(db, &ReadScope::UNLIMITED, None, &request).map_err(unlimited)?;
     let selected = prepare_read_range(db, None, request, plan.into_members()).map_err(unlimited)?;
     append_read_range_ack_with(
         &selected.request,
@@ -180,20 +176,22 @@ pub(crate) fn handle_read_range_budgeted(
 ) -> Result<(), ReadRangeFailure> {
     let request = ReadRangeRequest::decode(service_data)
         .map_err(|error| ReadRangeFailure::Service(error.into_request_reject()))?;
-    let plan = plan_read_range(db, None, &request)?;
+    let plan = plan_read_range(db, &ReadScope::UNLIMITED, None, &request)?;
     read_range_request_observed(db, None, request, plan, response, budget, |_, _, _, _| {})
 }
 
 /// Plan a ReadRange of the object the request names: its row and, for a
-/// Group's whole Present_Value, the member rows, charged to the view's work
+/// Group's whole Present_Value, the member rows, charged to the scope's work
 /// limit before any value is read (#1172, #1213).
 pub(crate) fn plan_read_range(
     db: &ObjectDatabase,
+    scope: &ReadScope,
     view: Option<&DeviceReadContext<'_>>,
     request: &ReadRangeRequest,
 ) -> Result<PropertyPlan, ReadRangeFailure> {
     Ok(PropertyPlan::new(
         db,
+        scope,
         view,
         request.object_identifier,
         db.get(&request.object_identifier),
@@ -256,29 +254,25 @@ fn read_range_items(
 ) -> Result<Vec<PropertyValue>, ReadRangeFailure> {
     let property = request.property_identifier;
     let index = request.property_array_index;
-    if index.is_some() && !object.is_array_property(property) {
+    if index.is_some() && !is_array_property(object, property) {
         // Read the whole property first so an unknown one keeps its error.
         object.read_property(property, None)?;
-        return Err(ReadRangeFailure::Service(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32,
-        }));
+        return Err(ReadRangeFailure::Service(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
+        )));
     }
-    let value =
-        group_present_value::read_served_property(db, view, object, property, index, members)?;
+    let value = group::read_served_property(db, view, object, property, index, members)?;
     // An indexed array element is never a list: 135-2020 defines no
     // BACnetARRAY of BACnetLIST property.
-    if index.is_some() || !object.is_list_property(property) {
-        return Err(ReadRangeFailure::Service(Error::Protocol {
-            class: ErrorClass::SERVICES.to_raw() as u32,
-            code: ErrorCode::PROPERTY_IS_NOT_A_LIST.to_raw() as u32,
-        }));
+    if index.is_some() || !is_list_property(object, property) {
+        return Err(ReadRangeFailure::Service(Error::protocol(
+            ErrorClass::SERVICES,
+            ErrorCode::PROPERTY_IS_NOT_A_LIST,
+        )));
     }
-    Ok(items::list_items(
-        request.object_identifier.object_type(),
-        property,
-        value,
-    )?)
+    let value_type = bacnet_objects::property_metadata::object_value_type(object, property);
+    Ok(items::list_items(value_type, value)?)
 }
 
 /// Select the request's page from one read of the target list. A running
@@ -292,10 +286,10 @@ fn prepare_read_range<'a>(
     request: ReadRangeRequest,
     members: Option<GroupMembers>,
 ) -> Result<PreparedReadRange<'a>, ReadRangeFailure> {
-    let stored = db.get(&request.object_identifier).ok_or(Error::Protocol {
-        class: ErrorClass::OBJECT.to_raw() as u32,
-        code: ErrorCode::UNKNOWN_OBJECT.to_raw() as u32,
-    })?;
+    let stored = db.get(&request.object_identifier).ok_or(Error::protocol(
+        ErrorClass::OBJECT,
+        ErrorCode::UNKNOWN_OBJECT,
+    ))?;
     let served = view.map(|view| view.object(stored));
     let object: &dyn BACnetObject = served.as_ref().map_or(stored, |served| served);
     let (items, mut buffer_identities) = match logs::log_buffer(stored, &request)? {
@@ -308,7 +302,8 @@ fn prepare_read_range<'a>(
     let mut log_identities = || {
         buffer_identities.take().or_else(|| {
             object
-                .log_record_identities_internal()
+                .log_buffer()
+                .map(|log| log.record_identities())
                 .map(LogIdentities::Listed)
         })
     };

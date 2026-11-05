@@ -1,6 +1,7 @@
 //! Recipient_List writes, the cap on how many destinations the list holds
 //! (#1098), and the same cap on the lists routing accepts (#1124).
 
+use crate::prelude::*;
 use bacnet_encoding::constructed::decode_destination;
 use bacnet_types::constructed::{BACnetAddress, BACnetDestination, BACnetRecipient};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
@@ -78,13 +79,14 @@ pub(super) fn decode_capped(bytes: &[u8]) -> Result<Vec<BACnetDestination>, Capp
     Ok(list)
 }
 
-/// Decode a whole-list Recipient_List write. Only the framed wire form
-/// (`ApplicationData`) is a Recipient_List value (#1125); anything else, a
-/// malformed destination included, fails with PROPERTY / INVALID_DATA_TYPE.
+/// Decode a whole-list Recipient_List write. Only encoded destinations are
+/// a Recipient_List value (#1125): the framed wire form (`ApplicationData`),
+/// or a non-empty list of such elements, joined, as a caller holding the
+/// destinations one by one hands them over (#2272; `common::framed_octets`).
+/// Anything else, a malformed destination included, fails with PROPERTY /
+/// INVALID_DATA_TYPE.
 pub(crate) fn decode_write(value: PropertyValue) -> Result<Vec<BACnetDestination>, Error> {
-    let PropertyValue::ApplicationData(bytes) = value else {
-        return Err(common::invalid_data_type_error());
-    };
+    let bytes = common::framed_octets(&value)?;
     decode_capped(&bytes).map_err(|error| match error {
         CappedListError::Malformed => common::invalid_data_type_error(),
         CappedListError::PastTheCap(index) => past_the_cap(index),

@@ -3,14 +3,16 @@ use crate::server::AtomicWriteFileBudget;
 use bacnet_objects::file::{
     FileObject, FileRecordRead, FileStorage, FileStreamRead, FileWriteStart,
 };
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_services::file::{
     AtomicWriteFileAck, AtomicWriteFileRequest, FileWriteAccessMethod, FileWriteAckMethod,
 };
+use bacnet_types::enums::AbortReason;
 use std::{
     borrow::Cow,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
@@ -27,15 +29,17 @@ impl BACnetObject for Probe {
     fn object_name(&self) -> &str {
         self.file.object_name()
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
     fn read_property(&self, p: PropertyIdentifier, i: Option<u32>) -> Result<PropertyValue, Error> {
-        assert!([
-            PropertyIdentifier::READ_ONLY,
-            PropertyIdentifier::FILE_ACCESS_METHOD
-        ]
-        .contains(&p));
+        assert!(
+            [
+                PropertyIdentifier::READ_ONLY,
+                PropertyIdentifier::FILE_ACCESS_METHOD
+            ]
+            .contains(&p)
+        );
         if p == PropertyIdentifier::READ_ONLY {
             match self.gate {
                 2 => return Ok(PropertyValue::Boolean(true)),
@@ -57,15 +61,11 @@ impl BACnetObject for Probe {
     ) -> Result<(), Error> {
         panic!("no property writes")
     }
-    fn file_storage_internal(&self) -> Option<&dyn FileStorage> {
+    fn file_storage(&self) -> Option<&dyn FileStorage> {
         (self.gate != 1).then_some(self)
     }
-    fn file_storage_internal_mut(&mut self) -> Option<&mut dyn FileStorage> {
-        if self.gate == 6 {
-            None
-        } else {
-            Some(self)
-        }
+    fn file_storage_mut(&mut self) -> Option<&mut dyn FileStorage> {
+        if self.gate == 6 { None } else { Some(self) }
     }
 }
 impl FileStorage for Probe {
@@ -92,17 +92,16 @@ impl FileStorage for Probe {
 }
 fn backend_error(kind: u8) -> Error {
     if kind == 2 {
-        Error::Abort { reason: 9 }
+        Error::abort(AbortReason::OUT_OF_RESOURCES)
     } else {
-        Error::Protocol {
-            class: if kind == 0 {
+        Error::protocol(
+            if kind == 0 {
                 ErrorClass::OBJECT
             } else {
                 ErrorClass::SERVICES
-            }
-            .to_raw() as u32,
-            code: ErrorCode::FILE_FULL.to_raw() as u32,
-        }
+            },
+            ErrorCode::FILE_FULL,
+        )
     }
 }
 fn probe(record: bool) -> Probe {
@@ -150,7 +149,7 @@ fn state(db: &ObjectDatabase, record: bool) -> Vec<Vec<u8>> {
     let s = db
         .get(&ObjectIdentifier::new(ObjectType::FILE, 1).unwrap())
         .unwrap()
-        .file_storage_internal()
+        .file_storage()
         .unwrap();
     if record {
         s.read_records(0, 10000).unwrap().records

@@ -20,9 +20,10 @@ use crate::file::FileObject;
 use crate::group::{GroupObject, StructuredViewObject};
 use crate::load_control::LoadControlObject;
 use crate::notification_class::NotificationClass;
+use crate::property_metadata::is_writable_property;
 use crate::traits::BACnetObject;
 use bacnet_types::enums::{ErrorClass, ErrorCode, EventType, PropertyIdentifier as P};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{PropertyValue, StatusFlags};
 
 const STATUS_ROWS: &[P] = &[P::STATUS_FLAGS, P::RELIABILITY, P::OUT_OF_SERVICE];
@@ -100,13 +101,9 @@ fn undefined_rows() -> Vec<(Box<dyn BACnetObject>, &'static [P])> {
 
 fn assert_unknown_property(result: Result<(), Error>, context: &str) {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32, "{context}");
-            assert_eq!(
-                code,
-                ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-                "{context}"
-            );
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY, "{context}");
+            assert_eq!(code, ErrorCode::UNKNOWN_PROPERTY, "{context}");
         }
         other => panic!("{context}: expected PROPERTY / UNKNOWN_PROPERTY, got {other:?}"),
     }
@@ -117,7 +114,7 @@ fn rows_outside_the_property_tables_are_unknown() {
     for (mut object, rows) in undefined_rows() {
         let kind = object.object_identifier().object_type();
         let metadata = object.property_metadata().into_owned();
-        let list = object.property_list().into_owned();
+        let list = crate::test_rows::listed(&object.property_metadata());
         for &property in rows {
             let context = format!("{kind:?} {property:?}");
             assert!(!list.contains(&property), "{context} in Property_List");
@@ -127,7 +124,10 @@ fn rows_outside_the_property_tables_are_unknown() {
                     .any(|row| row.property_identifier == property),
                 "{context} in metadata"
             );
-            assert!(!object.is_writable_property(property), "{context} writable");
+            assert!(
+                !is_writable_property(&*object, property),
+                "{context} writable"
+            );
             assert_unknown_property(object.read_property(property, None).map(|_| ()), &context);
             for value in [
                 PropertyValue::Boolean(true),

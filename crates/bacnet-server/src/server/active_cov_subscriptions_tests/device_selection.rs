@@ -2,13 +2,14 @@
 //! and discovery-limiter rebinding are deliberately outside this contract.
 use super::*;
 use bacnet_encoding::apdu::decode_apdu;
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_encoding::primitives::encode_app_object_id;
 use bacnet_services::cov::COVNotificationRequest;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
 use bacnet_services::who_has::{IHaveRequest, WhoHasObject, WhoHasRequest};
 use bacnet_services::who_is::{IAmRequest, WhoIsRequest};
 use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
+use bacnet_types::error::RemoteError;
 
 #[tokio::test(start_paused = true)]
 async fn lowest_device_owns_wildcard_reads_and_both_live_cov_lists_in_both_orders() {
@@ -193,37 +194,21 @@ async fn lowest_device_owns_wildcard_reads_and_both_live_cov_lists_in_both_order
 }
 
 #[tokio::test]
-async fn device_selection_preserves_no_device_and_wildcard_only_reads() {
-    for instances in [vec![], vec![ObjectIdentifier::MAX_INSTANCE]] {
-        let mut wire = Wire::start_with_devices(ServerConfig::default(), &instances).await;
-        let property = PropertyIdentifier::OBJECT_IDENTIFIER;
-        if instances.is_empty() {
-            assert_eq!(
-                wire.read(wildcard(), property, None).await,
-                Err((ErrorClass::OBJECT, ErrorCode::UNKNOWN_OBJECT))
-            );
-            assert!(
-                matches!(wire.server.read_local(&wildcard(), property, None).await,
-                Err(Error::Protocol { code, .. }) if code == ErrorCode::UNKNOWN_OBJECT.to_raw() as u32)
-            );
-            assert!(wire.server.broadcast_i_am().await.is_err());
-        } else {
-            let mut expected = BytesMut::new();
-            encode_app_object_id(&mut expected, &wildcard());
-            assert_eq!(
-                wire.read(wildcard(), property, None).await.unwrap(),
-                expected
-            );
-            assert_eq!(
-                wire.server
-                    .read_local(&wildcard(), property, None)
-                    .await
-                    .unwrap(),
-                PropertyValue::ObjectIdentifier(wildcard())
-            );
-        }
-        wire.server.stop().await.unwrap();
-    }
+async fn device_selection_preserves_no_device_reads() {
+    // A database can't hold a Device at the wildcard instance (#2171), so
+    // without a Device a wildcard read finds nothing.
+    let mut wire = Wire::start_with_devices(ServerConfig::default(), &[]).await;
+    let property = PropertyIdentifier::OBJECT_IDENTIFIER;
+    assert_eq!(
+        wire.read(wildcard(), property, None).await,
+        Err((ErrorClass::OBJECT, ErrorCode::UNKNOWN_OBJECT))
+    );
+    assert!(
+        matches!(wire.server.read_local(&wildcard(), property, None).await,
+        Err(Error::Remote(RemoteError::Error { code, .. })) if code == ErrorCode::UNKNOWN_OBJECT)
+    );
+    assert!(wire.server.broadcast_i_am().await.is_err());
+    wire.server.stop().await.unwrap();
 }
 
 fn assert_same_list(property: PropertyIdentifier, actual: &[u8], expected: &[u8]) {

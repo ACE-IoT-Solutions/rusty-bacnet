@@ -3,15 +3,17 @@
 //! its Recipient_List (#1315), and puts storage back when a staged write is
 //! never made (#1363).
 
+#[cfg(feature = "std")]
+use super::test_storage::WAIT;
 use super::test_storage::{
-    assert_refused, block_on, octets, persistent, positive_only, write, write_positive, zone_rule,
-    MemoryPersistence, WAIT,
+    MemoryPersistence, assert_refused, block_on, octets, persistent, positive_only, write,
+    write_positive, zone_rule,
 };
 use super::*;
-use crate::durable::{DurableWrites, SaveWait, StageStep, STAGED_WRITE_LIFETIME};
+use crate::durable::{DurableWrites, STAGED_WRITE_LIFETIME, SaveWait, StageStep};
 use bacnet_types::enums::PropertyIdentifier as P;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 fn staged(step: StageStep) -> SaveWait {
@@ -39,6 +41,8 @@ fn stage_positive(rights: &mut AccessRightsObject, rules: &[BACnetAccessRule]) -
     stage_saved(rights, P::POSITIVE_ACCESS_RULES, None, &octets(rules))
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_staged_write_saves_while_the_object_serves_the_old_rules() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -94,6 +98,7 @@ fn indexed_index_zero_and_enable_writes_stage_too() {
         negative_access_rules: Some(vec![super::super::rights_writes::grown_rule()]),
         enable: Some(false),
         accompaniment: None,
+        description: None,
     };
     assert_eq!(storage.snapshot(), Some(expected));
     drop(rights);
@@ -191,13 +196,12 @@ fn an_operation_task_call_drops_a_forgotten_staged_write_once_its_lifetime_is_ov
     // Its request never comes back. The first call that finds the save
     // finished starts the count on the operation task's clock.
     let start = Duration::from_secs(60);
-    assert!(!rights.advance_monotonic_time_internal(start));
-    rights
-        .advance_monotonic_time_internal(start + STAGED_WRITE_LIFETIME - Duration::from_millis(1));
+    rights.expire_staged(start);
+    rights.expire_staged(start + STAGED_WRITE_LIFETIME - Duration::from_millis(1));
     rights.wait_for_saves();
     assert_eq!(storage.snapshot(), Some(positive_only(&[zone_rule(9)])));
     // The call a lifetime later drops it and puts storage back.
-    rights.advance_monotonic_time_internal(start + STAGED_WRITE_LIFETIME);
+    rights.expire_staged(start + STAGED_WRITE_LIFETIME);
     rights.wait_for_saves();
     assert_eq!(storage.snapshot(), Some(positive_only(&served)));
     // A release that comes after all changes nothing more.
@@ -212,10 +216,11 @@ fn staging_skips_writes_the_object_does_not_save_or_will_refuse() {
     let mut rights = persistent(&storage);
     let skipped = |step| matches!(step, StageStep::Skip);
     let rules = octets(&[zone_rule(1)]);
+    // A NULL Description changes nothing (#2364).
     assert!(skipped(rights.stage_write(
         P::DESCRIPTION,
         None,
-        &PropertyValue::CharacterString("doors".into())
+        &PropertyValue::Null
     )));
     assert!(skipped(rights.stage_write(
         P::GLOBAL_IDENTIFIER,
@@ -296,6 +301,8 @@ fn an_object_dropped_with_a_staged_write_whose_save_failed_leaves_storage_alone(
     assert_eq!(storage.saves(), 1);
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn an_object_dropped_while_its_staged_save_runs_puts_storage_back_after_it() {
     let storage = Arc::new(MemoryPersistence::default());

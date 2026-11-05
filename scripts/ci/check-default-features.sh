@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Clippy and rustdoc for each publishable crate on its own, with default
 # features and only its lib/bin targets, denying warnings. Also covers the
-# feature-off builds of bacnet-types, bacnet-encoding and bacnet-services
-# (no_std with alloc) and of bacnet-cli (no TUI). Every rustdoc run documents
+# feature-off builds of bacnet-types, bacnet-encoding, bacnet-services,
+# bacnet-objects and bacnet-device-core (no_std with alloc) and of bacnet-cli (no TUI), and the rustdoc of the
+# MS/TP and B/IP crates with each storage feature alone. Every rustdoc run documents
 # private items, so a broken intra-doc link on an item that exists only in one
 # feature configuration fails here (#1192).
 #
@@ -49,12 +50,64 @@ for crate in $crates; do
   cargo_for doc -p "$crate" --no-deps --locked --document-private-items
 done
 
-# The no_std builds (std off, alloc on) of the crates that have one. Without
-# either feature they refuse to build (#1604).
+# The no_std builds of the crates that have one: std off with alloc on
+# (#1604), and both off, the allocation-free profile (#1614), whose docs
+# can't link to an item only alloc has.
 for crate in bacnet-types bacnet-encoding bacnet-services; do
   echo "==> $crate (no_std with alloc$label)"
   cargo_for clippy -p "$crate" --no-default-features --features alloc --locked -- -D warnings
   cargo_for doc -p "$crate" --no-default-features --features alloc --no-deps --locked --document-private-items
+  echo "==> $crate (no_std without alloc$label)"
+  cargo_for clippy -p "$crate" --no-default-features --locked -- -D warnings
+  cargo_for doc -p "$crate" --no-default-features --no-deps --locked --document-private-items
+done
+
+# bacnet-objects with alloc and without std (#1615). It has no build without
+# alloc: the database boxes every object. `alloc` alone has every capability
+# feature off (#2215); then each one off alone, the others on. All targets,
+# so the tests that need a capability are seen to compile out cleanly; the
+# only dev-dependency, proptest, has no C build. CI's no_std test job lints
+# and tests them all on, and tests them all off.
+echo "==> bacnet-objects (no_std with alloc, capability features off$label)"
+cargo_for clippy -p bacnet-objects --all-targets --no-default-features --features alloc --locked -- -D warnings
+cargo_for doc -p bacnet-objects --no-default-features --features alloc --no-deps --locked --document-private-items
+for features in alloc,durable-writes alloc,event-reporting; do
+  echo "==> bacnet-objects (no_std, features: $features$label)"
+  cargo_for clippy -p bacnet-objects --all-targets --no-default-features --features "$features" --locked -- -D warnings
+done
+
+# bacnet-objects with its hidden test-support feature (#2233): the file
+# backends' in-memory mode, which only the restore fuzz crate turns on, so
+# no workspace run lints or documents it. All targets, so its tests build
+# against it too; the only dev-dependency, proptest, has no C build.
+echo "==> bacnet-objects (test-support$label)"
+cargo_for clippy -p bacnet-objects --all-targets --features test-support --locked -- -D warnings
+cargo_for doc -p bacnet-objects --features test-support --no-deps --locked --document-private-items
+
+# bacnet-device-core the same way (#2178): it serves a bacnet-objects
+# database, so it has no build without alloc either. `alloc` alone has
+# structured-writes off (#2210); all targets, so the tests that need it are
+# seen to compile out cleanly. CI's no_std test job lints it on.
+echo "==> bacnet-device-core (no_std with alloc, structured-writes off$label)"
+cargo_for clippy -p bacnet-device-core --all-targets --no-default-features --features alloc --locked -- -D warnings
+cargo_for doc -p bacnet-device-core --no-default-features --features alloc --no-deps --locked --document-private-items
+# Its hidden test-support hooks (#2303) alone with alloc, which only
+# bacnet-server's tests turn on, through a dev-dependency.
+echo "==> bacnet-device-core (no_std with alloc and test-support$label)"
+cargo_for clippy -p bacnet-device-core --all-targets --no-default-features --features alloc,test-support --locked -- -D warnings
+cargo_for doc -p bacnet-device-core --no-default-features --features alloc,test-support --no-deps --locked --document-private-items
+
+# The rustdoc of the MS/TP and B/IP crates with each storage feature alone,
+# and of the router core with each glue feature alone. Their defaults have
+# none, and the workspace runs turn on all of them, so an intra-doc link to
+# an item behind the other feature breaks only here (#1681, #1679).
+for spec in "bacnet-mstp-core alloc" \
+  "bacnet-mstp-codec alloc" "bacnet-mstp-codec heapless" \
+  "bacnet-bip-codec alloc" "bacnet-bip-codec heapless" \
+  "bacnet-router-core bip" "bacnet-router-core mstp"; do
+  read -r crate features <<<"$spec"
+  echo "==> $crate (rustdoc, features: $features$label)"
+  cargo_for doc -p "$crate" --no-default-features --features "$features" --no-deps --locked --document-private-items
 done
 
 echo "==> bacnet-cli (rustdoc, no default features, without the TUI$label)"

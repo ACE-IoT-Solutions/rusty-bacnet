@@ -12,7 +12,7 @@ use bacnet_objects::clock::ClockReader;
 use bacnet_services::alarm_event::ForwardedEventNotification;
 use bacnet_services::device_mgmt::TimeSynchronizationRequest;
 use bacnet_services::who_has::{WhoHasObject, WhoHasRequest};
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 #[cfg(test)]
 /// Every unconfirmed service choice with an inbound execution arm in
@@ -46,6 +46,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             discovery_limiter,
             time_sync_limiter,
             notification_transactions,
+            warnings,
             ..
         } = services;
         let clock = clock.as_ref();
@@ -56,7 +57,12 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 Err(e) => {
                     // A peer whose I-Am carries extra octets never binds, so
                     // say so where it can be seen (#1411).
-                    warn!(error = %e, source = ?received.source_mac, "Failed to decode IAm");
+                    warn_throttled!(
+                        warnings.decode,
+                        error = %e,
+                        source = ?received.source_mac,
+                        "Failed to decode IAm"
+                    );
                     return;
                 }
             };
@@ -73,108 +79,91 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     debug!("Ignoring unusable I-Am observation");
                 }
                 device_bindings::ObservationOutcome::RejectedCapacity => {
-                    warn!("Device binding capacity reached; I-Am observation ignored");
+                    warn_throttled!(
+                        warnings.binding_capacity,
+                        "Device binding capacity reached; I-Am observation ignored"
+                    );
                 }
                 device_bindings::ObservationOutcome::Inserted
                 | device_bindings::ObservationOutcome::Refreshed
                 | device_bindings::ObservationOutcome::ConfiguredPreserved => {}
             }
         } else if req.service_choice == UnconfirmedServiceChoice::WHO_IS {
-            let who_is = match WhoIsRequest::decode(&req.service_request) {
-                Ok(r) => r,
+            // Build the I-Am under the guard and drop it before the send, so
+            // a slow link never holds the database lock (#2199).
+            let i_am = {
+                let db = db.read().await;
+                bacnet_device_core::discovery::who_is(&config.device, &db, &req.service_request)
+            };
+            let i_am = match i_am {
+                Ok(i_am) => i_am,
                 Err(e) => {
-                    warn!(error = %e, "Failed to decode WhoIs");
+                    warn_throttled!(warnings.decode, error = %e, "Failed to decode WhoIs");
                     return;
                 }
             };
 
-            let db = db.read().await;
-            let Ok(device_oid) =
-                crate::local_device::validate_apdu_declaration(&db, config.max_apdu_length)
-            else {
-                warn!("I-Am refused: selected Device declaration differs from local acceptance");
-                return;
-            };
+            if let Some(i_am) = i_am {
+                let mut service_buf = BytesMut::new();
+                i_am.encode(&mut service_buf);
 
-            if let Some(device_oid) = device_oid {
-                let instance = device_oid.instance_number();
+                let pdu = Apdu::UnconfirmedRequest(UnconfirmedRequestPdu {
+                    service_choice: UnconfirmedServiceChoice::I_AM,
+                    service_request: service_buf.freeze(),
+                });
 
-                let in_range = who_is.range.is_none_or(|range| range.contains(instance));
+                let mut buf = BytesMut::new();
+                encode_apdu(&mut buf, &pdu).expect("valid APDU encoding");
 
-                if in_range {
-                    let i_am = IAmRequest {
-                        object_identifier: device_oid,
-                        max_apdu_length: config.max_apdu_length,
-                        segmentation_supported: config.segmentation_supported,
-                        vendor_id: config.vendor_id,
-                    };
+                let now = runtime_clock::now();
+                let is_unicast = !received.is_group && !received.link_layer_group;
+                let (res, directed) = if let Some(ref source_net) = received.source_network {
+                    (
+                        network
+                            .send_apdu_routed(
+                                &buf,
+                                source_net.network,
+                                &source_net.mac_address,
+                                &received.source_mac,
+                                false,
+                                NetworkPriority::Normal,
+                            )
+                            .await,
+                        true,
+                    )
+                } else if config.discovery_policy.prefer_directed_responses || is_unicast {
+                    (
+                        network
+                            .send_apdu(&buf, &received.source_mac, false, NetworkPriority::Normal)
+                            .await,
+                        true,
+                    )
+                } else {
+                    (
+                        network
+                            .broadcast_apdu(&buf, false, NetworkPriority::Normal)
+                            .await,
+                        false,
+                    )
+                };
 
-                    let mut service_buf = BytesMut::new();
-                    i_am.encode(&mut service_buf);
-
-                    let pdu = Apdu::UnconfirmedRequest(UnconfirmedRequestPdu {
-                        service_choice: UnconfirmedServiceChoice::I_AM,
-                        service_request: service_buf.freeze(),
-                    });
-
-                    let mut buf = BytesMut::new();
-                    encode_apdu(&mut buf, &pdu).expect("valid APDU encoding");
-
-                    let now = runtime_clock::now();
-                    let is_unicast = !received.is_group && !received.link_layer_group;
-                    let (res, directed) = if let Some(ref source_net) = received.source_network {
-                        (
-                            network
-                                .send_apdu_routed(
-                                    &buf,
-                                    source_net.network,
-                                    &source_net.mac_address,
-                                    &received.source_mac,
-                                    false,
-                                    NetworkPriority::NORMAL,
-                                )
-                                .await,
-                            true,
-                        )
-                    } else if config.discovery_policy.prefer_directed_responses || is_unicast {
-                        (
-                            network
-                                .send_apdu(
-                                    &buf,
-                                    &received.source_mac,
-                                    false,
-                                    NetworkPriority::NORMAL,
-                                )
-                                .await,
-                            true,
-                        )
-                    } else {
-                        (
-                            network
-                                .broadcast_apdu(&buf, false, NetworkPriority::NORMAL)
-                                .await,
-                            false,
-                        )
-                    };
-
-                    if let Err(e) = res {
-                        warn!(error = %e, directed, "Failed to send IAm");
-                    } else {
-                        discovery_limiter.record_i_am_sent(
-                            buf.len(),
-                            directed,
-                            &received.source_mac,
-                            received.source_network.as_ref(),
-                            now,
-                        );
-                    }
+                if let Err(e) = res {
+                    warn!(error = %e, directed, "Failed to send IAm");
+                } else {
+                    discovery_limiter.record_i_am_sent(
+                        buf.len(),
+                        directed,
+                        &received.source_mac,
+                        received.source_network.as_ref(),
+                        now,
+                    );
                 }
             }
         } else if req.service_choice == UnconfirmedServiceChoice::WHO_HAS {
             let who_has = match WhoHasRequest::decode(&req.service_request) {
                 Ok(r) => r,
                 Err(e) => {
-                    warn!(error = %e, "Failed to decode WhoHas");
+                    warn_throttled!(warnings.decode, error = %e, "Failed to decode WhoHas");
                     return;
                 }
             };
@@ -189,11 +178,25 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 return;
             }
 
-            let db = db.read().await;
-            let device_oid = db.selected_device();
+            // As for Who-Is, the guard covers only the lookup (#2199). The
+            // I-Have names the Device the I-Am does (#2186). `who_has` alone
+            // would answer Ok(None) with that Device gone, which the arm
+            // below records in the negative Who-Has cache; this outer
+            // `announcement_device` check gives `None` instead, so a missing
+            // Device never records a target as absent.
+            let found = {
+                let db = db.read().await;
+                bacnet_device_core::discovery::announcement_device(&db, &config.device).map(|_| {
+                    bacnet_device_core::discovery::who_has(
+                        &config.device,
+                        &db,
+                        &req.service_request,
+                    )
+                })
+            };
 
-            if let Some(device_oid) = device_oid {
-                match handlers::handle_who_has(&db, &req.service_request, device_oid) {
+            if let Some(found) = found {
+                match found {
                     Ok(Some(i_have)) => {
                         let mut service_buf = BytesMut::new();
                         if let Err(e) = i_have.encode(&mut service_buf) {
@@ -230,7 +233,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                                 &source_net.mac_address,
                                                 &received.source_mac,
                                                 false,
-                                                NetworkPriority::NORMAL,
+                                                NetworkPriority::Normal,
                                             )
                                             .await,
                                         true,
@@ -244,7 +247,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                                 &buf,
                                                 &received.source_mac,
                                                 false,
-                                                NetworkPriority::NORMAL,
+                                                NetworkPriority::Normal,
                                             )
                                             .await,
                                         true,
@@ -252,7 +255,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                 } else {
                                     (
                                         network
-                                            .broadcast_apdu(&buf, false, NetworkPriority::NORMAL)
+                                            .broadcast_apdu(&buf, false, NetworkPriority::Normal)
                                             .await,
                                         false,
                                     )
@@ -276,7 +279,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                         discovery_limiter.record_negative_who_has(target, now);
                     }
                     Err(e) => {
-                        warn!(error = %e, "Failed to decode WhoHas");
+                        warn_throttled!(warnings.decode, error = %e, "Failed to decode WhoHas");
                     }
                 }
             }
@@ -341,7 +344,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 config,
                 &received.source_mac,
                 received.source_network.as_ref(),
-                received.provenance,
+                received.provenance.clone(),
                 &req.service_request,
             )
             .await
@@ -350,7 +353,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     network,
                     notification_transactions,
                     device_bindings,
-                    config.max_apdu_length,
+                    u32::from(config.device.max_apdu_length()),
                 ),
                 Ok(None) => {}
                 Err(error) => debug!(%error, "Ignoring UnconfirmedAuditNotification request"),
@@ -417,7 +420,7 @@ pub(super) fn apply_time_sync_request(
             is_utc,
             source_mac: received.source_mac.clone(),
             source_network: received.source_network.clone(),
-            provenance: received.provenance,
+            provenance: received.provenance.clone(),
         };
         if catch_unwind(AssertUnwindSafe(|| callback(data))).is_err() {
             debug!(

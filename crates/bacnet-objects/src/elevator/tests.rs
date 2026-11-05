@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_types::enums::{ErrorClass, ErrorCode, EscalatorMode, EscalatorOperationDirection};
+use bacnet_types::error::RemoteError;
 
 mod energy_meter_ref;
 mod escalator_status_writability;
@@ -30,15 +31,11 @@ fn oos_escalator() -> EscalatorObject {
 
 fn assert_value_out_of_range(result: Result<(), Error>, context: &str) {
     match result.expect_err(&format!("{context}: write must be refused")) {
-        Error::Protocol { class, code } => {
-            assert_eq!(
-                class,
-                ErrorClass::PROPERTY.to_raw() as u32,
-                "{context}: wrong error class"
-            );
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::PROPERTY, "{context}: wrong error class");
             assert_eq!(
                 code,
-                ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32,
+                ErrorCode::VALUE_OUT_OF_RANGE,
                 "{context}: wrong error code"
             );
         }
@@ -48,15 +45,11 @@ fn assert_value_out_of_range(result: Result<(), Error>, context: &str) {
 
 fn assert_invalid_data_type(result: Result<(), Error>, context: &str) {
     match result.expect_err(&format!("{context}: write must be refused")) {
-        Error::Protocol { class, code } => {
-            assert_eq!(
-                class,
-                ErrorClass::PROPERTY.to_raw() as u32,
-                "{context}: wrong error class"
-            );
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::PROPERTY, "{context}: wrong error class");
             assert_eq!(
                 code,
-                ErrorCode::INVALID_DATA_TYPE.to_raw() as u32,
+                ErrorCode::INVALID_DATA_TYPE,
                 "{context}: wrong error code"
             );
         }
@@ -66,9 +59,9 @@ fn assert_invalid_data_type(result: Result<(), Error>, context: &str) {
 
 fn assert_property_error(result: Result<(), Error>, expected: ErrorCode, context: &str) {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32, "{context}");
-            assert_eq!(code, expected.to_raw() as u32, "{context}: {expected:?}");
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY, "{context}");
+            assert_eq!(code, expected, "{context}: {expected:?}");
         }
         other => panic!("{context}: expected PROPERTY/{expected:?}, got {other:?}"),
     }
@@ -174,7 +167,7 @@ fn elevator_group_read_landing_calls() {
 #[test]
 fn elevator_group_property_list() {
     let eg = ElevatorGroupObject::new(1, "EG-1").unwrap();
-    let list = eg.property_list();
+    let list = crate::test_rows::listed(&eg.property_metadata());
     assert!(list.contains(&PropertyIdentifier::GROUP_ID));
     assert!(list.contains(&PropertyIdentifier::GROUP_MEMBERS));
     assert!(list.contains(&PropertyIdentifier::GROUP_MODE));
@@ -248,7 +241,7 @@ fn escalator_read_fault_signals() {
 #[test]
 fn escalator_property_list() {
     let esc = EscalatorObject::new(1, "ESC-1").unwrap();
-    let list = esc.property_list();
+    let list = crate::test_rows::listed(&esc.property_metadata());
     assert!(list.contains(&PropertyIdentifier::ESCALATOR_MODE));
     assert!(list.contains(&PropertyIdentifier::FAULT_SIGNALS));
     assert!(list.contains(&PropertyIdentifier::ENERGY_METER));
@@ -594,7 +587,7 @@ fn lift_read_energy_meter() {
 #[test]
 fn lift_property_list() {
     let lift = LiftObject::new(1, "LIFT-1", 5).unwrap();
-    let list = lift.property_list();
+    let list = crate::test_rows::listed(&lift.property_metadata());
     for property in [
         PropertyIdentifier::ELEVATOR_GROUP,
         PropertyIdentifier::GROUP_ID,

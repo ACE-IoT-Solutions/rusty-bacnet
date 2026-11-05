@@ -6,14 +6,16 @@ use alloc::vec::Vec;
 use bacnet_encoding::primitives;
 use bacnet_encoding::tags;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{EncodeError, Error};
 use bacnet_types::primitives::ObjectIdentifier;
 use bytes::BytesMut;
 
 use bacnet_encoding::constructed::tagged::{
     decode_ctx_object_id, decode_ctx_unsigned, decode_optional_ctx, expect_end, expect_opening,
 };
-use bacnet_encoding::constructed::{extract_property_value, PropertyValueBoundary};
+use bacnet_encoding::constructed::{
+    check_property_value, extract_property_value, PropertyValueBoundary,
+};
 
 // ---------------------------------------------------------------------------
 // WritePropertyRequest
@@ -46,20 +48,22 @@ pub struct WritePropertyRequest {
 /// Omission is allowed; every supplied priority must be in 1..=16, including
 /// NULL writes. Returns a local encoding error for invalid typed input.
 pub fn validate_priority(priority: Option<u8>) -> Result<(), Error> {
-    if let Some(priority) = priority {
-        if !(1..=16).contains(&priority) {
-            return Err(Error::Encoding(format!(
-                "WriteProperty priority must be 1-16, got {priority}"
-            )));
+    if let Some(priority) = priority
+        && !(1..=16).contains(&priority) {
+            return Err(EncodeError::new("WriteProperty priority must be 1-16, got {}")
+                .with_value(priority.into())
+                .into());
         }
-    }
     Ok(())
 }
 
 impl WritePropertyRequest {
-    /// Encode transactionally: invalid priority leaves `buf` unchanged.
+    /// Encode transactionally: an invalid priority, or a value
+    /// [`check_property_value`] refuses, leaves `buf` unchanged.
     pub fn encode(&self, buf: &mut BytesMut) -> Result<(), Error> {
         validate_priority(self.priority)?;
+        check_property_value(self.property_identifier, &self.property_value, 3)
+            .map_err(|refused| refused.within("WriteProperty"))?;
         primitives::encode_ctx_object_id(buf, 0, &self.object_identifier);
         primitives::encode_ctx_unsigned(buf, 1, self.property_identifier.to_raw() as u64);
         if let Some(idx) = self.property_array_index {
@@ -121,10 +125,7 @@ impl WritePropertyRequest {
         let mut priority = None;
         if let Some(prio) = prio {
             if !(1..=16).contains(&prio) {
-                return Err(Error::Protocol {
-                    class: ErrorClass::SERVICES.to_raw() as u32,
-                    code: ErrorCode::PARAMETER_OUT_OF_RANGE.to_raw() as u32,
-                });
+                return Err(Error::protocol(ErrorClass::SERVICES, ErrorCode::PARAMETER_OUT_OF_RANGE));
             }
             priority = Some(prio as u8);
         }
@@ -141,6 +142,7 @@ impl WritePropertyRequest {
 
 #[cfg(test)]
 mod tests {
+    use bacnet_types::error::RemoteError;
     use super::*;
     use bacnet_encoding::tags::TagClass;
     use bacnet_types::enums::ObjectType;
@@ -194,7 +196,7 @@ mod tests {
             let mut output = BytesMut::from(&b"prefix"[..]);
             assert!(matches!(
                 request.encode(&mut output),
-                Err(Error::Encoding(_))
+                Err(Error::Encode(_))
             ));
             assert_eq!(
                 &output[..],
@@ -394,9 +396,9 @@ mod tests {
             let buf = encode_fields(0, 1, 85, None, Some((4, value)), false);
             let error = WritePropertyRequest::decode(&buf).unwrap_err();
             assert!(
-                matches!(error, Error::Protocol { class, code }
-                    if class == ErrorClass::SERVICES.to_raw() as u32
-                        && code == ErrorCode::PARAMETER_OUT_OF_RANGE.to_raw() as u32),
+                matches!(error, Error::Remote(RemoteError::Error { class, code })
+                    if class == ErrorClass::SERVICES
+                        && code == ErrorCode::PARAMETER_OUT_OF_RANGE),
                 "priority {value} must fail semantic range validation, got {error:?}"
             );
         }
@@ -406,7 +408,7 @@ mod tests {
             buf.extend_from_slice(&vec![0; length as usize]);
             assert!(matches!(
                 WritePropertyRequest::decode(&buf),
-                Err(Error::Decoding { .. })
+                Err(Error::Decoding(_))
             ));
         }
     }

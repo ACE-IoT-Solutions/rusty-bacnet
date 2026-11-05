@@ -4,8 +4,9 @@
 use super::*;
 use crate::durable::SaveWait;
 use bacnet_types::enums::PropertyIdentifier as P;
+use bacnet_types::error::RemoteError;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 /// Storage in memory. A save can be made to fail, or to wait until the test
@@ -25,6 +26,8 @@ struct Hold {
 
 /// The test's side of a held storage: each save reports on `started` and
 /// then waits for one message on `go`. Dropping `go` lets every save through.
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 pub(super) struct Held {
     pub(super) started: mpsc::Receiver<AccessRightsSnapshot>,
     pub(super) go: mpsc::Sender<()>,
@@ -35,6 +38,8 @@ pub(super) const WAIT: Duration = Duration::from_secs(10);
 
 impl MemoryPersistence {
     /// Make every later save wait for the test.
+    // std: holds a save open on the writer thread.
+    #[cfg(feature = "std")]
     pub(super) fn hold(&self) -> Held {
         let (started, started_rx) = mpsc::channel();
         let (go_tx, go) = mpsc::channel();
@@ -162,12 +167,12 @@ pub(super) fn positive_only(rules: &[BACnetAccessRule]) -> AccessRightsSnapshot 
 
 pub(super) fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode) {
     match result {
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             class: got_class,
             code: got_code,
-        }) => assert_eq!(
+        })) => assert_eq!(
             (got_class, got_code),
-            (class.to_raw() as u32, code.to_raw() as u32),
+            (class, code),
             "expected {class:?} / {code:?}"
         ),
         other => panic!("expected {class:?} / {code:?}, got {other:?}"),

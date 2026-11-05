@@ -1,5 +1,5 @@
 use super::{AccessDoorObject, AccessPointObject, AccessZoneObject};
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
@@ -15,11 +15,12 @@ use crate::property_metadata::{
 // - Access Door (type 30, §12.26 Table 12-30; printed p. 325 / PDF p. 327)
 // - Access Point (type 33, §12.31 Table 12-36; printed p. 365 / PDF p. 367)
 // - Access Zone (type 36, §12.32 Table 12-37; printed p. 382 / PDF p. 384)
-// Order preserves each legacy projection; Door Event_State, Priority_Array,
+// Order preserves each type's earlier row order; Door Event_State,
+// Priority_Array,
 // and Relinquish_Default (readable but unlisted) are appended after the
-// legacy rows (Lift FLOOR_NUMBER precedent) so the served projection gains
-// exactly three rows, and Property_List is appended so the projection helper
-// omits it while required_properties keeps it. Only implemented rows are
+// legacy rows (Lift FLOOR_NUMBER precedent) so the served list gains
+// exactly three rows, and Property_List is appended last. Only implemented
+// rows are
 // described: table rows the objects do not serve (Door_Unlock_Delay_Time,
 // Maintenance_Required, the point's event rows, audit/tag/profile rows)
 // stay absent until dispatch exists. The door and the zone serve
@@ -105,16 +106,15 @@ use crate::property_metadata::{
 // Reliability, every write arm is routed unconditionally and the suites pin in-service writes, so those rows
 // are Always and the metadata mirrors dispatch. Presence is None on every
 // other row: the family models no commandable or paired-text gating.
-// The trio is not createable at runtime (the network factory builds only the
-// eight analog/binary/multi-state input/output/value types, so the
-// is_createable=false default holds) and remains deleteable (delete denies
-// only Device and NetworkPort, so the is_deleteable=true default holds);
+// The trio is not createable at runtime (the `creation` table has no
+// constructor for it) and remains deleteable (delete denies
+// only Device and NetworkPort, so the builtin_deleteable=true default holds);
 // neither needs an override. Array gating keeps the default: Priority_Array
 // and Door_Members (BACnetARRAYs per Table 12-30), Access_Doors (Table 12-36)
-// and Property_List admit an index while every other served row rejects one. COV keeps its override: supports_cov=true on
-// Access Door and Access Point (Table 13-1 lists both; #1061 added the
-// point) and false on Access Zone, and the COV gating path (read_property
-// plus supports_cov_property to supports_cov) never consults metadata.
+// and Property_List admit an index while every other served row rejects one. COV keeps its lend: Access Door and Access
+// Point lend `cov()` (Table 13-1 lists both; #1061 added the point) and
+// Access Zone lends none, and the COV gating path (read_property plus
+// `CovReporting::supports_cov_property`) never consults metadata.
 const ACCESS_DOOR_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::OBJECT_IDENTIFIER, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::OBJECT_NAME, RequiredRead, None, ReadOnly),

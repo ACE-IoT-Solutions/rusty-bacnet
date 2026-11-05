@@ -7,9 +7,10 @@ use crate::binary::BinaryInputObject;
 use crate::multistate::MultiStateInputObject;
 use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
 use crate::traits::BACnetObject;
-use bacnet_types::enums::ObjectType;
+use bacnet_types::enums::{EngineeringUnits, ObjectType};
 use std::borrow::Cow;
 use std::sync::Arc;
+#[cfg(feature = "durable-writes")]
 use std::time::Duration;
 
 const KINDS: [ObjectType; 3] = [
@@ -21,6 +22,7 @@ const ROWS: [P; 3] = [P::TAGS, P::PROFILE_LOCATION, P::PROFILE_NAME];
 
 trait ProfileInput: BACnetObject {
     fn provision(&mut self, profile: ObjectProfile) -> Result<(), Error>;
+    #[cfg(feature = "durable-writes")]
     fn wait(&self);
 }
 macro_rules! profile_input {
@@ -29,6 +31,7 @@ macro_rules! profile_input {
             fn provision(&mut self, profile: ObjectProfile) -> Result<(), Error> {
                 self.set_profile(profile)
             }
+            #[cfg(feature = "durable-writes")]
             fn wait(&self) {
                 self.wait_for_tag_saves();
             }
@@ -41,7 +44,7 @@ profile_input!(MultiStateInputObject);
 
 fn object(kind: ObjectType, store: Option<Arc<Memory>>) -> Result<Box<dyn ProfileInput>, Error> {
     macro_rules! build {
-        ($ty:ty $(, $extra:expr)?) => {
+        ($ty:ty $(, $extra:expr_2021)?) => {
             Ok(Box::new(match store {
                 None => <$ty>::new(1, "input" $(, $extra)?)?,
                 Some(store) => <$ty>::with_tags_persistence(1, "input", $($extra,)? store)?,
@@ -49,7 +52,7 @@ fn object(kind: ObjectType, store: Option<Arc<Memory>>) -> Result<Box<dyn Profil
         };
     }
     match kind {
-        ObjectType::ANALOG_INPUT => build!(AnalogInputObject, 95),
+        ObjectType::ANALOG_INPUT => build!(AnalogInputObject, EngineeringUnits::NO_UNITS),
         ObjectType::BINARY_INPUT => build!(BinaryInputObject),
         ObjectType::MULTI_STATE_INPUT => build!(MultiStateInputObject, 3),
         _ => unreachable!(),
@@ -99,8 +102,7 @@ fn all_inputs_eight_masks_and_oos_states_preserve_existing_metadata() {
                     expected
                 );
                 assert_eq!(
-                    object
-                        .property_list()
+                    crate::test_rows::listed(&object.property_metadata())
                         .iter()
                         .filter(|p| ROWS.contains(p))
                         .copied()
@@ -154,8 +156,7 @@ fn all_inputs_eight_masks_and_oos_states_preserve_existing_metadata() {
                     .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Boolean(!oos), None)
                     .unwrap();
                 assert_eq!(object.property_metadata().as_ref(), metadata);
-                assert!(!object.advance_monotonic_time_internal(Duration::from_secs(20)));
-                assert!(object.cov_snapshot_internal().is_none());
+                assert!(object.timed().is_none());
                 assert_code(
                     object.read_property(P::VALUE_SOURCE, None),
                     ErrorCode::UNKNOWN_PROPERTY,
@@ -165,6 +166,7 @@ fn all_inputs_eight_masks_and_oos_states_preserve_existing_metadata() {
     }
 }
 
+#[cfg(feature = "durable-writes")]
 fn pv_values(kind: ObjectType) -> [PropertyValue; 2] {
     match kind {
         ObjectType::ANALOG_INPUT => [PropertyValue::Real(2.5), PropertyValue::Real(3.5)],
@@ -174,6 +176,7 @@ fn pv_values(kind: ObjectType) -> [PropertyValue; 2] {
     }
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn tags_in_both_oos_states_preserve_network_and_internal_pv_ownership() {
     for kind in KINDS {
@@ -183,7 +186,11 @@ fn tags_in_both_oos_states_preserve_network_and_internal_pv_ownership() {
             object.provision(optional(7)).unwrap();
             let [local, network] = pv_values(kind);
             let origin = crate::command_source::test_origin();
-            object.set_present_value_internal(local.clone()).unwrap();
+            object
+                .local_input()
+                .unwrap()
+                .apply_local_input(crate::traits::LocalInputValue::present_value(local.clone()))
+                .unwrap();
             assert_code(
                 object.write_property_from(P::PRESENT_VALUE, None, network.clone(), None, &origin),
                 ErrorCode::WRITE_ACCESS_DENIED,
@@ -197,7 +204,9 @@ fn tags_in_both_oos_states_preserve_network_and_internal_pv_ownership() {
                         .write_property_from(P::PRESENT_VALUE, None, network.clone(), None, &origin)
                         .unwrap();
                     assert_code(
-                        object.set_present_value_internal(local.clone()),
+                        object.local_input().unwrap().apply_local_input(
+                            crate::traits::LocalInputValue::present_value(local.clone()),
+                        ),
                         ErrorCode::WRITE_ACCESS_DENIED,
                     );
                     assert_code(
@@ -212,9 +221,11 @@ fn tags_in_both_oos_states_preserve_network_and_internal_pv_ownership() {
                     );
                 } else {
                     assert_code(
-                        object.set_present_value_internal(PropertyValue::CharacterString(
-                            "wrong".into(),
-                        )),
+                        object.local_input().unwrap().apply_local_input(
+                            crate::traits::LocalInputValue::present_value(
+                                PropertyValue::CharacterString("wrong".into()),
+                            ),
+                        ),
                         ErrorCode::INVALID_DATA_TYPE,
                     );
                 }
@@ -250,10 +261,14 @@ fn tags_in_both_oos_states_preserve_network_and_internal_pv_ownership() {
             object
                 .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Boolean(false), None)
                 .unwrap();
-            object.set_present_value_internal(local.clone()).unwrap();
+            object
+                .local_input()
+                .unwrap()
+                .apply_local_input(crate::traits::LocalInputValue::present_value(local.clone()))
+                .unwrap();
             assert_eq!(object.read_property(P::PRESENT_VALUE, None).unwrap(), local);
             assert_eq!(store.attempts(), if persistent { 2 } else { 0 });
-            assert_eq!(object.durable_writes_internal().is_some(), persistent);
+            assert_eq!(object.durable_writes().is_some(), persistent);
         }
     }
 }
@@ -282,7 +297,7 @@ fn preserves(mut object: Box<dyn ProfileInput>, properties: &[P]) {
 
 #[test]
 fn profiles_preserve_input_engineering_polarity_and_state_configuration() {
-    let mut analog = AnalogInputObject::new(1, "AI", 95).unwrap();
+    let mut analog = AnalogInputObject::new(1, "AI", EngineeringUnits::NO_UNITS).unwrap();
     analog.set_min_pres_value(1.0);
     analog.set_max_pres_value(99.0);
     analog.configure_fault_out_of_range(10.0, 90.0).unwrap();
@@ -348,7 +363,10 @@ fn input_saved_overrides_need_provisioning_and_invalid_replacement_preserves_sta
                 object.read_property(P::TAGS, None),
                 ErrorCode::UNKNOWN_PROPERTY,
             );
-            assert!(!object.property_list().contains(&P::TAGS));
+            assert!(!crate::property_metadata::has_property(
+                &object.property_metadata(),
+                P::TAGS
+            ));
             object.provision(optional(7)).unwrap();
             let count = saved
                 .as_ref()
@@ -438,6 +456,7 @@ fn input_invalid_and_oversized_tags_make_no_save_attempts() {
     }
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn input_monotonic_hooks_correct_expired_stages_without_output_changes() {
     for kind in KINDS {
@@ -447,14 +466,20 @@ fn input_monotonic_hooks_correct_expired_stages_without_output_changes() {
         object.provision(optional(7)).unwrap();
         let wait = staged(
             object
-                .durable_writes_internal()
+                .durable_writes()
                 .unwrap()
                 .stage_writes(&[whole("never-served")]),
         );
         wait.block();
         assert_eq!(store.saved(), Some(snapshot("never-served")));
-        assert!(!object.advance_monotonic_time_internal(Duration::ZERO));
-        assert!(!object.advance_monotonic_time_internal(Duration::from_secs(11)));
+        object
+            .durable_writes()
+            .unwrap()
+            .expire_staged(Duration::ZERO);
+        object
+            .durable_writes()
+            .unwrap()
+            .expire_staged(Duration::from_secs(11));
         object.wait();
         assert_eq!(store.saved(), Some(snapshot("saved")));
         assert_eq!(store.attempts(), 2);

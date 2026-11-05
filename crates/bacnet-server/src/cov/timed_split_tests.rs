@@ -2,8 +2,8 @@
 //! maximum APDU (#986), owed untimestamped references (#1038), and changes
 //! sent one value per notification (#1090).
 use super::tests::{
-    change, context, dropped, frame, histories, item_len, key, seconds, store, subscriber_for,
-    timed_reference, LIFETIME,
+    LIFETIME, change, context, dropped, frame, histories, item_len, key, seconds, store,
+    subscriber_for, timed_reference,
 };
 use super::*;
 
@@ -248,8 +248,8 @@ fn deferred_parts_return_without_eviction_and_discarded_ones_are_counted() {
 #[test]
 fn an_admission_without_a_known_maximum_apdu_keeps_the_one_advertised_before() {
     let mut table = crate::cov::CovSubscriptionTable::new();
-    let route = crate::cov::SubscriberEndpoint::new(&[10, 0, 0, 1, 0xBA, 0xC0], None);
-    let expires = crate::runtime_clock::now() + std::time::Duration::from_secs(300);
+    let route = bacnet_device_core::cov::SubscriberEndpoint::new(&[10, 0, 0, 1, 0xBA, 0xC0], None);
+    let expires = crate::runtime_clock::core_now() + bacnet_time::Duration::from_secs(300);
     let sub = timed_reference(1, expires);
     let advertised = |table: &crate::cov::CovSubscriptionTable| {
         table

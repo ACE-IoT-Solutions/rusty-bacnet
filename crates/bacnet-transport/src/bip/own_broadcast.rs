@@ -6,8 +6,8 @@
 //! broadcast echo, so `send_broadcast` hands each NPDU it broadcasts to this
 //! forwarder instead.
 
-use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
+use std::time::Instant;
 
 use tracing::debug;
 
@@ -40,24 +40,17 @@ impl OwnBroadcastForwarder {
     /// sends are counted in the fanout counters and logged; a closed fanout
     /// worker or a Forwarded-NPDU that cannot be encoded is only logged.
     pub(super) fn forward(&self, npdu: &[u8]) {
-        let ((origin_ip, origin_port), targets, dedup_count) = {
-            let mut state = bbmd::lock(&self.bbmd);
-            let origin = state.local_address();
-            let before = state.fdt_counters().destinations_deduplicated;
-            // The self BDT row is always skipped; excluding the origin as well
-            // only drops a foreign device registered from this exact address.
-            let targets = state.forwarding_targets(origin.0, origin.1);
-            let after = state.fdt_counters().destinations_deduplicated;
-            (origin, targets, after.saturating_sub(before))
-        };
-        let addrs = targets
-            .into_iter()
-            .map(|(ip, port)| SocketAddrV4::new(Ipv4Addr::from(ip), port))
-            .collect();
-        if !self
-            .fanout
-            .dispatch_forwarded_npdu(origin_ip, origin_port, npdu, addrs, dedup_count)
-        {
+        // The self BDT row is always skipped; excluding the origin as well
+        // only drops a foreign device registered from this exact address.
+        let forward = bbmd::lock(&self.bbmd).forward_own_broadcast(npdu, Instant::now());
+        let origin = forward.origin;
+        if !self.fanout.dispatch_forwarded_npdu(
+            origin.ip().octets(),
+            origin.port(),
+            npdu,
+            forward.remote,
+            forward.deduplicated,
+        ) {
             debug!("BIP BBMD: own broadcast was not forwarded to any BDT peer or foreign device");
         }
     }

@@ -1,5 +1,5 @@
 use super::*;
-use std::future::{poll_fn, Future};
+use std::future::{Future, poll_fn};
 use std::task::Poll;
 
 #[derive(Clone, Copy)]
@@ -28,7 +28,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         segment_data: &Bytes,
         first_final_issue: bool,
         response_rx: &mut oneshot::Receiver<TsmResponse>,
-        progress_rx: &mut tokio::sync::watch::Receiver<TransactionProgress>,
+        progress_rx: &mut ProgressReceiver,
     ) -> Result<OutgoingSegmentSend, Error> {
         let is_last = seq == context.total_segments - 1;
         let pdu = Apdu::ConfirmedRequest(ConfirmedRequestPdu {
@@ -61,7 +61,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         tokio::pin!(send);
 
         if first_final_issue {
-            let Some(mut token) = self.tsm.lock().await.begin_final_segment_send(
+            let Some(mut token) = self.tsm.lock().begin_final_segment_send(
                 context.tsm_mac,
                 context.invoke_id,
                 context.owner,
@@ -83,7 +83,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 }
                 Poll::Pending => false,
             };
-            if !self.tsm.lock().await.mark_final_segment_issued(
+            if !self.tsm.lock().mark_final_segment_issued(
                 context.tsm_mac,
                 context.invoke_id,
                 context.owner,
@@ -107,15 +107,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         .map(OutgoingSegmentSend::Terminal)
                         .map_err(|_| Error::Encoding("TSM response channel closed".into()));
                 }
-                changed = progress_rx.changed() => {
-                    if changed.is_err() {
-                        return response_rx
-                            .await
-                            .map(OutgoingSegmentSend::Terminal)
-                            .map_err(|_| Error::Encoding("TSM response channel closed".into()));
-                    }
+                // A transaction that left the TSM resolves the response arm
+                // above; progress stays silent.
+                () = progress_rx.changed() => {
                     if matches!(
-                        *progress_rx.borrow_and_update(),
+                        progress_rx.borrow_and_update(),
                         TransactionProgress::SegmentedResponse { .. }
                     ) {
                         return Ok(OutgoingSegmentSend::SegmentedResponse);

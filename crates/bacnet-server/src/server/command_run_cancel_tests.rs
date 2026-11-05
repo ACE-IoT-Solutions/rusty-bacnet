@@ -20,7 +20,8 @@ use super::command_action_wire_tests::{ao, cmd, idle, read_db, slot8};
 use super::command_run_stop_tests::{channel_status, db_flags, db_state, objects, with_channel};
 use super::cov_wire_test_support::*;
 use super::*;
-use bacnet_types::enums::WriteStatus;
+use bacnet_objects::property_metadata::PropertyMetadata;
+use bacnet_types::enums::{EngineeringUnits, WriteStatus};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
@@ -47,10 +48,12 @@ fn write_local<'a>(
 /// Commit `write`, polled once, and drop it at its first wait, the work it
 /// owes parked on the COV table `h`'s caller holds.
 fn commit_and_drop(h: &Harness, mut write: Write<'_>) {
-    assert!(write
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-        .is_pending());
+    assert!(
+        write
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
     // Committed: the database is held for the work after the commit.
     assert!(h.server.database().try_read().is_err());
     drop(write);
@@ -211,10 +214,22 @@ impl bacnet_objects::traits::BACnetObject for PanicsAfterCommit {
         Ok(())
     }
 
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        std::borrow::Cow::Borrowed(&[])
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::rows(
+            &[PropertyIdentifier::PRESENT_VALUE],
+            &[PropertyIdentifier::PRESENT_VALUE],
+        )
     }
 
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::EventReporting for PanicsAfterCommit {
     fn evaluate_intrinsic_reporting(&mut self) -> Option<bacnet_objects::event::TransitionOutcome> {
         panic!("AFTER-99 panics in the work after its write");
     }
@@ -242,10 +257,12 @@ async fn a_write_whose_work_is_aborted_returns_ok_and_stays_made() {
     let table = Arc::clone(&h.server.cov_table).write_owned().await;
     let target = av1();
     let mut write = write_local(&h, &target, PropertyValue::Real(70.0), None);
-    assert!(write
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-        .is_pending());
+    assert!(
+        write
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
     // What `stop()` does first, while the caller still waits: the request
     // task set closes, aborting the work the committed write owes. (`stop()`
     // itself takes the server mutably, so it can't run beside the caller's
@@ -380,15 +397,23 @@ impl bacnet_objects::traits::BACnetObject for Rearmable {
         self.0.write_property(p, i, value, priority)
     }
 
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        self.0.property_list()
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        self.0.property_metadata()
     }
 
-    fn supports_cov(&self) -> bool {
-        true
+    fn cov(&self) -> Option<&dyn bacnet_objects::traits::CovReporting> {
+        Some(self)
     }
 
-    fn set_life_safety_operation_expected_internal(
+    fn life_safety(&mut self) -> Option<&mut dyn bacnet_objects::traits::LifeSafety> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::CovReporting for Rearmable {}
+
+impl bacnet_objects::traits::LifeSafety for Rearmable {
+    fn set_life_safety_operation_expected(
         &mut self,
         operation: LifeSafetyOperation,
     ) -> Result<(), Error> {
@@ -401,7 +426,12 @@ impl bacnet_objects::traits::BACnetObject for Rearmable {
 #[tokio::test(start_paused = true)]
 async fn a_rearm_of_an_object_that_isnt_life_safety_owes_no_cov() {
     let mut h = Harness::start_with(ServerConfig::default(), |db| {
-        let inner = bacnet_objects::analog::AnalogValueObject::new(2, "AV-2", 62).unwrap();
+        let inner = bacnet_objects::analog::AnalogValueObject::new(
+            2,
+            "AV-2",
+            EngineeringUnits::DEGREES_CELSIUS,
+        )
+        .unwrap();
         db.add(Box::new(Rearmable(inner))).unwrap();
     })
     .await;
@@ -457,10 +487,12 @@ async fn the_work_a_local_change_owes_shares_the_server_config() {
     ];
     for mut change in changes {
         let table = Arc::clone(&h.server.cov_table).write_owned().await;
-        assert!(change
-            .as_mut()
-            .poll(&mut Context::from_waker(Waker::noop()))
-            .is_pending());
+        assert!(
+            change
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
         assert_eq!(Arc::strong_count(&h.server.config), shared + 1);
         drop(table);
         change.await.unwrap();

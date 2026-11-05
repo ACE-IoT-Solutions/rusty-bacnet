@@ -24,7 +24,7 @@ fn slow_station_3(config: SimConfig, delay: Duration) -> (Sim, Instant) {
     sim.add_master(MasterSpec::new(0, 3, BAUD))
         .add_master(MasterSpec::new(3, 3, BAUD));
     let token_end = run_until_frame(&mut sim, ms(1_500), ms(3_000), |frame| {
-        frame.is(FrameType::Token, 0, 3)
+        frame.is(FrameType::TOKEN, 0, 3)
     });
     let now = sim.now();
     sim.inject(
@@ -55,7 +55,7 @@ fn a_slow_adapter_never_starts_within_turnaround_of_activity() {
     let noise_end = noise_at + sim.timing().octet();
     let next = first_after(sim.frames(), token_end, |frame| frame.source() == Some(3))
         .expect("station 3's frame");
-    assert!(next.is(FrameType::Token, 3, 0), "{next}");
+    assert!(next.is(FrameType::TOKEN, 3, 0), "{next}");
     assert_eq!(
         next.start,
         noise_end + sim.timing().bits(40) + Duration::from_millis(4)
@@ -80,16 +80,16 @@ fn a_frame_that_arrives_before_a_slow_start_is_still_heard() {
     sim.assert_no_violations();
     let frames = sim.frames();
     let retry = first_after(frames, token_end, |_| true).expect("the retry");
-    assert!(retry.is(FrameType::Token, 0, 3), "{retry}");
+    assert!(retry.is(FrameType::TOKEN, 0, 3), "{retry}");
     assert_eq!(retry.start, token_end + millis(20));
     let pass = first_after(frames, retry.end, |_| true).expect("station 3's pass");
-    assert!(pass.is(FrameType::Token, 3, 0), "{pass}");
+    assert!(pass.is(FrameType::TOKEN, 3, 0), "{pass}");
     assert_eq!(
         pass.start,
         token_end + sim.timing().bits(40) + Duration::from_millis(25)
     );
     // One dropped retry for each of station 3's passes.
-    let passes = sent_by(frames, 3, FrameType::Token)
+    let passes = sent_by(frames, 3, FrameType::TOKEN)
         .into_iter()
         .filter(|frame| frame.start > token_end)
         .count();
@@ -117,14 +117,14 @@ fn a_dropped_deferred_poll_does_not_mark_the_next_one_as_generating() {
     sim.add_master(MasterSpec::new(0, 3, BAUD).adapter(slow));
     // Station 0 generates at 500 ms; its adapter would start at 503 ms.
     sim.inject(us(502_500), Fault::Noise { octets: vec![0x00] });
-    let token = ScriptSend::frame(Duration::ZERO, FrameType::Token, 0, 2, &[]).octets;
+    let token = ScriptSend::frame(Duration::ZERO, FrameType::TOKEN, 0, 2, &[]).octets;
     sim.inject(us(503_100), Fault::Noise { octets: token });
     sim.run_until(ms(600));
     let counters = sim.core(0).unwrap().counters();
     assert_eq!(counters.deferred_starts, 1);
     assert_eq!(counters.cancelled_sends, 1);
     let poll = first_after(sim.frames(), us(503_100), |frame| {
-        frame.is(FrameType::PollForMaster, 0, 1)
+        frame.is(FrameType::POLL_FOR_MASTER, 0, 1)
     })
     .expect("station 0's poll as token holder");
     assert!(!poll.generation, "{poll}");

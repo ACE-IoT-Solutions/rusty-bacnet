@@ -8,13 +8,15 @@
 //! types and Double on Large Analog Value.
 
 use super::super::*;
+use crate::property_metadata::{is_array_property, is_writable_property};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 fn assert_error<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, expected.to_raw() as u32, "expected {expected:?}");
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, expected, "expected {expected:?}");
         }
         other => panic!("expected PROPERTY/{expected:?}, got {other:?}"),
     }
@@ -111,10 +113,17 @@ fn every_value_type_serves_current_command_priority_from_its_priority_array() {
     for (mut object, value) in every_value_type() {
         let kind = object.object_identifier().object_type();
         // Listed as the commandable O2 row it is, scalar and read-only.
-        assert!(object.property_list().contains(&ccp), "{kind:?}");
-        assert!(!object.required_properties().contains(&ccp), "{kind:?}");
-        assert!(!object.is_array_property(ccp), "{kind:?}");
-        assert!(!object.is_writable_property(ccp), "{kind:?}");
+        assert!(
+            crate::property_metadata::has_property(&object.property_metadata(), ccp),
+            "{kind:?}"
+        );
+        assert!(
+            !crate::property_metadata::required_properties(&object.property_metadata())
+                .any(|required| required == ccp),
+            "{kind:?}"
+        );
+        assert!(!is_array_property(&*object, ccp), "{kind:?}");
+        assert!(!is_writable_property(&*object, ccp), "{kind:?}");
 
         // Nothing commands a new object, so Relinquish_Default is in effect.
         assert_eq!(read(&*object, ccp), PropertyValue::Null, "{kind:?}");
@@ -142,13 +151,30 @@ fn every_value_type_serves_current_command_priority_from_its_priority_array() {
 fn assert_cov_increment_row(object: &mut dyn BACnetObject, zero: PropertyValue) {
     let cov = PropertyIdentifier::COV_INCREMENT;
     let kind = object.object_identifier().object_type();
-    assert!(object.property_list().contains(&cov), "{kind:?}");
-    assert!(!object.required_properties().contains(&cov), "{kind:?}");
-    assert!(object.is_writable_property(cov), "{kind:?}");
-    assert!(!object.is_array_property(cov), "{kind:?}");
+    assert!(
+        crate::property_metadata::has_property(&object.property_metadata(), cov),
+        "{kind:?}"
+    );
+    // Tables 12-46, 12-50 and 12-51 footnote 3: required of an object that
+    // reports COV, as these do (#2193).
+    assert!(
+        object.cov().is_some_and(|cov| cov.supports_subscribe_cov()),
+        "{kind:?}"
+    );
+    assert!(
+        crate::property_metadata::required_properties(&object.property_metadata())
+            .any(|required| required == cov),
+        "{kind:?}"
+    );
+    assert!(is_writable_property(&*object, cov), "{kind:?}");
+    assert!(!is_array_property(&*object, cov), "{kind:?}");
     // A new object notifies on any change.
     assert_eq!(read(object, cov), zero, "{kind:?}");
-    assert_eq!(object.cov_increment(), Some(0.0), "{kind:?}");
+    assert_eq!(
+        object.cov().and_then(|cov| cov.cov_increment()),
+        Some(0.0),
+        "{kind:?}"
+    );
 }
 
 #[test]
@@ -166,7 +192,11 @@ fn integer_value_types_serve_an_unsigned_cov_increment() {
                 .write_property(cov, None, PropertyValue::Unsigned(value), None)
                 .unwrap();
             assert_eq!(read(&*object, cov), PropertyValue::Unsigned(value));
-            assert_eq!(object.cov_increment(), Some(value as f64), "{kind:?}");
+            assert_eq!(
+                object.cov().and_then(|cov| cov.cov_increment()),
+                Some(value as f64),
+                "{kind:?}"
+            );
         }
         // Only Unsigned is the table's datatype; a negative can't be one.
         for value in [
@@ -202,7 +232,7 @@ fn large_analog_value_serves_a_double_cov_increment_and_refuses_bad_ones() {
         lav.write_property(cov, None, PropertyValue::Double(value), None)
             .unwrap();
         assert_eq!(read(&lav, cov), PropertyValue::Double(value));
-        assert_eq!(lav.cov_increment(), Some(value));
+        assert_eq!(lav.cov().and_then(|cov| cov.cov_increment()), Some(value));
     }
     lav.write_property(cov, None, PropertyValue::Double(0.1), None)
         .unwrap();
@@ -234,15 +264,20 @@ fn non_numeric_value_types_have_no_cov_increment() {
     for (object, _) in every_value_type().into_iter().skip(3) {
         let kind = object.object_identifier().object_type();
         assert!(
-            !object
-                .property_list()
-                .contains(&PropertyIdentifier::COV_INCREMENT),
+            !crate::property_metadata::has_property(
+                &object.property_metadata(),
+                PropertyIdentifier::COV_INCREMENT
+            ),
             "{kind:?}"
         );
         assert_error(
             object.read_property(PropertyIdentifier::COV_INCREMENT, None),
             ErrorCode::UNKNOWN_PROPERTY,
         );
-        assert_eq!(object.cov_increment(), None, "{kind:?}");
+        assert_eq!(
+            object.cov().and_then(|cov| cov.cov_increment()),
+            None,
+            "{kind:?}"
+        );
     }
 }

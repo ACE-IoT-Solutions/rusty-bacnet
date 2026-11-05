@@ -15,17 +15,19 @@
 //! successful attempt as it commits, through [`TimedWriteCapture`].
 use bacnet_objects::clock::ClockFrame;
 use bacnet_objects::database::ObjectDatabase;
+use bacnet_objects::traits::BACnetObject;
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::multiple_reads::MultipleReads;
 use super::timed::{TimedChange, TimedStore};
-use super::{
-    CovNotificationKind, CovSubscriptionKey, CovSubscriptionSnapshot, CovSubscriptionTable,
+use super::{CovSubscriptionSnapshot, CovSubscriptionTable};
+use bacnet_device_core::cov::life_safety::{
+    LifeSafetyCovChange, LifeSafetyCovSnapshots, is_life_safety_object,
 };
-use crate::handlers::{WriteCommitObserver, WriteTarget};
-use crate::life_safety_cov::{is_life_safety_object, LifeSafetyCovChange, LifeSafetyCovSnapshots};
+use bacnet_device_core::cov::{CovNotificationKind, CovSubscriptionKey};
+use bacnet_device_core::write::{WriteCommitObserver, WriteTarget};
 
 /// Live timestamped references whose changes a producer must capture.
 pub(crate) struct TimedCapture {
@@ -51,10 +53,9 @@ fn exact_selects(sub: &CovSubscriptionSnapshot, change: &LifeSafetyCovChange) ->
 impl CovSubscriptionTable {
     fn timed_refs(&self, select: impl Fn(&CovSubscriptionSnapshot) -> bool) -> TimedCapture {
         TimedCapture {
-            store: self.timed.clone(),
+            store: self.timed().clone(),
             refs: self
-                .subs
-                .values()
+                .entries()
                 .filter(|sub| {
                     sub.timestamped
                         && sub.notification_kind == CovNotificationKind::Multiple
@@ -97,7 +98,7 @@ impl CovSubscriptionTable {
         frame: ClockFrame,
     ) -> TimedCapture {
         TimedCapture {
-            store: self.timed.clone(),
+            store: self.timed().clone(),
             refs: snapshots
                 .iter()
                 .filter(|sub| sub.timestamped && self.is_current(sub))
@@ -152,9 +153,32 @@ impl TimedCapture {
         }) else {
             return Vec::new();
         };
+        self.run_from_source(frame, |oid| db.get(&oid))
+    }
+
+    /// Capture an intermediate event state and the exact Device-clock observation
+    /// retained with it. No clockless snapshot falls back to a later live read.
+    pub(crate) fn run_from_snapshot(
+        self,
+        snapshot: &dyn BACnetObject,
+        frame: Option<ClockFrame>,
+    ) -> Vec<CovSubscriptionKey> {
+        let Some(frame) = frame.filter(|frame| frame.is_valid_actual_datetime()) else {
+            return Vec::new();
+        };
+        self.run_from_source(frame, |oid| {
+            (snapshot.object_identifier() == oid).then_some(snapshot)
+        })
+    }
+
+    fn run_from_source<'a>(
+        self,
+        frame: ClockFrame,
+        source: impl Fn(ObjectIdentifier) -> Option<&'a dyn BACnetObject>,
+    ) -> Vec<CovSubscriptionKey> {
         let mut reads = MultipleReads::default();
         for sub in &self.refs {
-            if let Some(object) = db.get(&sub.monitored_object_identifier) {
+            if let Some(object) = source(sub.monitored_object_identifier) {
                 reads.capture_source(object, sub);
             }
         }
@@ -162,7 +186,7 @@ impl TimedCapture {
             .refs
             .iter()
             .filter_map(|sub| {
-                let object = db.get(&sub.monitored_object_identifier)?;
+                let object = source(sub.monitored_object_identifier)?;
                 Some((sub, reads.read(object, sub)?))
             })
             .collect();
@@ -200,10 +224,15 @@ impl TimedCapture {
 /// observer. Each successful attempt is captured as it commits, under the
 /// request's database guard, so a WritePropertyMultiple that goes A-B-A, or
 /// fails after a committed prefix, conveys every change it made. A Life
-/// Safety object captures the exact changes of that one attempt.
+/// Safety object captures the exact changes of that one attempt, and keeps
+/// its state from before the request's first attempt on it, for the
+/// request's exact fanout.
 pub(crate) struct TimedWriteCapture<'a> {
     inner: Option<&'a mut dyn WriteCommitObserver>,
     capture: TimedCapture,
+    /// Each Life Safety object's state from before the request's first
+    /// attempt on it.
+    request_life_safety: LifeSafetyCovSnapshots,
     /// State of the Life Safety object the current attempt writes, from
     /// before the attempt.
     life_safety: Option<LifeSafetyCovSnapshots>,
@@ -219,6 +248,7 @@ impl<'a> TimedWriteCapture<'a> {
         Self {
             inner,
             capture,
+            request_life_safety: LifeSafetyCovSnapshots::default(),
             life_safety: None,
             life_safety_queued: Vec::new(),
         }
@@ -232,10 +262,22 @@ impl<'a> TimedWriteCapture<'a> {
     pub(crate) fn life_safety_queued(&self) -> &[CovSubscriptionKey] {
         &self.life_safety_queued
     }
+
+    /// What the request changed on each Life Safety object among
+    /// `committed`, against its state before the request's first attempt
+    /// on it.
+    pub(crate) fn life_safety_changes(
+        &self,
+        db: &ObjectDatabase,
+        committed: &[ObjectIdentifier],
+    ) -> Vec<LifeSafetyCovChange> {
+        self.request_life_safety.changes(db, committed)
+    }
 }
 
 impl WriteCommitObserver for TimedWriteCapture<'_> {
     fn before(&mut self, db: &ObjectDatabase, write: WriteTarget<'_>) {
+        self.request_life_safety.capture_before_write(db, write.oid);
         self.life_safety = (is_life_safety_object(write.oid) && self.capture.watches(write.oid))
             .then(|| LifeSafetyCovSnapshots::capture_oid(db, write.oid));
         if let Some(inner) = self.inner.as_deref_mut() {

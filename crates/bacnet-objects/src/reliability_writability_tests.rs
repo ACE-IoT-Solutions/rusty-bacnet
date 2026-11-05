@@ -1,18 +1,22 @@
 use crate::access_control::{AccessZoneObject, CredentialDataInputObject};
+use crate::accumulator::AccumulatorObject;
 use crate::analog::{AnalogInputObject, AnalogOutputObject, AnalogValueObject};
 use crate::binary::{BinaryInputObject, BinaryOutputObject, BinaryValueObject};
 use crate::life_safety::{LifeSafetyPointObject, LifeSafetyZoneObject};
 use crate::loop_obj::LoopObject;
 use crate::multistate::{MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject};
+use crate::property_metadata::is_writable_property;
 use crate::schedule::ScheduleObject;
 use crate::traits::BACnetObject;
-use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier, Reliability};
-use bacnet_types::error::Error;
+use bacnet_types::enums::{
+    EngineeringUnits, ErrorClass, ErrorCode, PropertyIdentifier, Reliability,
+};
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::PropertyValue;
 
 fn assert_reliability_gate(object: &mut dyn BACnetObject) {
     assert!(
-        object.is_writable_property(PropertyIdentifier::RELIABILITY),
+        is_writable_property(&*object, PropertyIdentifier::RELIABILITY),
         "static capability must advertise Reliability as writable"
     );
 
@@ -25,9 +29,9 @@ fn assert_reliability_gate(object: &mut dyn BACnetObject) {
         )
         .expect_err("in-service Reliability write must be refused");
     match denied {
-        Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32);
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, ErrorCode::WRITE_ACCESS_DENIED);
         }
         other => panic!("expected PROPERTY / WRITE_ACCESS_DENIED, got {other:?}"),
     }
@@ -51,9 +55,9 @@ fn assert_reliability_gate(object: &mut dyn BACnetObject) {
             )
             .expect_err("reserved or out-of-range Reliability must be refused");
         match invalid_value {
-            Error::Protocol { class, code } => {
-                assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-                assert_eq!(code, ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32);
+            Error::Remote(RemoteError::Error { class, code }) => {
+                assert_eq!(class, ErrorClass::PROPERTY);
+                assert_eq!(code, ErrorCode::VALUE_OUT_OF_RANGE);
             }
             other => panic!("expected PROPERTY / VALUE_OUT_OF_RANGE, got {other:?}"),
         }
@@ -85,12 +89,14 @@ fn assert_reliability_gate(object: &mut dyn BACnetObject) {
     );
 
     let internal_denied = object
-        .set_reliability_internal(Reliability::NO_FAULT_DETECTED)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::NO_FAULT_DETECTED)
         .expect_err("internal Reliability write must not overwrite client simulation");
     match internal_denied {
-        Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32);
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, ErrorCode::WRITE_ACCESS_DENIED);
         }
         other => panic!("expected PROPERTY / WRITE_ACCESS_DENIED, got {other:?}"),
     }
@@ -112,17 +118,21 @@ fn assert_reliability_gate(object: &mut dyn BACnetObject) {
     );
 
     let invalid_internal = object
-        .set_reliability_internal(Reliability::from_raw(65_536))
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::from_raw(65_536))
         .expect_err("internal route must enforce the Reliability datatype");
     match invalid_internal {
-        Error::Protocol { class, code } => {
-            assert_eq!(class, ErrorClass::PROPERTY.to_raw() as u32);
-            assert_eq!(code, ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32);
+        Error::Remote(RemoteError::Error { class, code }) => {
+            assert_eq!(class, ErrorClass::PROPERTY);
+            assert_eq!(code, ErrorCode::VALUE_OUT_OF_RANGE);
         }
         other => panic!("expected PROPERTY / VALUE_OUT_OF_RANGE, got {other:?}"),
     }
     object
-        .set_reliability_internal(Reliability::NO_SENSOR)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::NO_SENSOR)
         .expect("internal Reliability write must succeed in service");
     assert_eq!(
         object
@@ -147,7 +157,9 @@ fn assert_reliability_gate(object: &mut dyn BACnetObject) {
     );
 
     object
-        .set_reliability_internal(Reliability::OVER_RANGE)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::OVER_RANGE)
         .expect("internal evaluator must establish a non-default saved value");
     object
         .write_property(
@@ -304,7 +316,7 @@ fn leaving_out_of_service_without_saved_value_falls_back_to_no_fault() {
 }
 
 macro_rules! reliability_gate_test {
-    ($name:ident, $object:expr) => {
+    ($name:ident, $object:expr_2021) => {
         #[test]
         fn $name() {
             let mut object = $object;
@@ -325,15 +337,15 @@ reliability_gate_test!(
 );
 reliability_gate_test!(
     analog_input_reliability_requires_out_of_service,
-    AnalogInputObject::new(1, "AI-1", 62).unwrap()
+    AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()
 );
 reliability_gate_test!(
     analog_output_reliability_requires_out_of_service,
-    AnalogOutputObject::new(1, "AO-1", 62).unwrap()
+    AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()
 );
 reliability_gate_test!(
     analog_value_reliability_requires_out_of_service,
-    AnalogValueObject::new(1, "AV-1", 62).unwrap()
+    AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()
 );
 reliability_gate_test!(
     binary_input_reliability_requires_out_of_service,
@@ -363,7 +375,7 @@ reliability_gate_test!(
 // writability when Out_Of_Service is TRUE.
 reliability_gate_test!(
     loop_reliability_requires_out_of_service,
-    LoopObject::new(1, "LOOP-1", 62).unwrap()
+    LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()
 );
 // Clause 12.24: the Reliability_Evaluation_Inhibit text anticipates an
 // out-of-service client write by allowing a replacement Reliability value
@@ -382,15 +394,21 @@ reliability_gate_test!(
     life_safety_zone_reliability_requires_out_of_service,
     LifeSafetyZoneObject::new(1, "LSZ-1").unwrap()
 );
+// Clause 12.61.10: out of service, Reliability takes a write to simulate
+// a fault (#2280).
+reliability_gate_test!(
+    accumulator_reliability_requires_out_of_service,
+    AccumulatorObject::new(1, "ACC-1", EngineeringUnits::NO_UNITS).unwrap()
+);
 
 fn assert_protocol_error(error: Error, class: ErrorClass, code: ErrorCode) {
     match error {
-        Error::Protocol {
+        Error::Remote(RemoteError::Error {
             class: actual_class,
             code: actual_code,
-        } => {
-            assert_eq!(actual_class, class.to_raw() as u32);
-            assert_eq!(actual_code, code.to_raw() as u32);
+        }) => {
+            assert_eq!(actual_class, class);
+            assert_eq!(actual_code, code);
         }
         other => panic!("expected {class:?} / {code:?}, got {other:?}"),
     }
@@ -423,7 +441,11 @@ fn assert_present_value_ownership(
     assert_eq!(read(object, PropertyIdentifier::PRESENT_VALUE), initial);
 
     object
-        .set_present_value_internal(application_value.clone())
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(
+            application_value.clone(),
+        ))
         .expect("the application must supply Present_Value while in service");
 
     assert_eq!(
@@ -455,7 +477,11 @@ fn assert_present_value_ownership(
     let simulated_reliability = read(object, PropertyIdentifier::RELIABILITY);
 
     let denied = object
-        .set_present_value_internal(rejected_application_value)
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(
+            rejected_application_value,
+        ))
         .expect_err("the application must not override an out-of-service value");
     assert_protocol_error(denied, ErrorClass::PROPERTY, ErrorCode::WRITE_ACCESS_DENIED);
     assert_eq!(
@@ -471,7 +497,7 @@ fn assert_present_value_ownership(
 
 #[test]
 fn analog_input_present_value_is_application_supplied() {
-    let mut object = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut object = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     assert_present_value_ownership(
         &mut object,
         PropertyValue::Real(21.5),
@@ -504,10 +530,14 @@ fn multistate_input_present_value_is_application_supplied() {
 
 #[test]
 fn commandable_present_value_fails_closed_by_default() {
-    let mut object = AnalogValueObject::new(1, "AV-1", 62).unwrap();
+    let mut object = AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
 
     let error = object
-        .set_present_value_internal(PropertyValue::Real(21.5))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(
+            PropertyValue::Real(21.5),
+        ))
         .expect_err("commandable objects must not inherit privileged authority");
     assert_protocol_error(
         error,
@@ -528,7 +558,9 @@ fn assert_internal_rejection_is_atomic(
     let present_value = read(object, PropertyIdentifier::PRESENT_VALUE);
     let reliability = read(object, PropertyIdentifier::RELIABILITY);
     let error = object
-        .set_present_value_internal(value)
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(value))
         .expect_err("invalid application Present_Value must be refused");
     assert_protocol_error(error, ErrorClass::PROPERTY, code);
     assert_eq!(
@@ -540,9 +572,13 @@ fn assert_internal_rejection_is_atomic(
 
 #[test]
 fn application_present_value_writes_are_still_validated() {
-    let mut analog = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut analog = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     analog
-        .set_present_value_internal(PropertyValue::Real(21.5))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(
+            PropertyValue::Real(21.5),
+        ))
         .unwrap();
     assert_internal_rejection_is_atomic(
         &mut analog,
@@ -559,7 +595,11 @@ fn application_present_value_writes_are_still_validated() {
 
     let mut binary = BinaryInputObject::new(1, "BI-1").unwrap();
     binary
-        .set_present_value_internal(PropertyValue::Enumerated(1))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(
+            PropertyValue::Enumerated(1),
+        ))
         .unwrap();
     assert_internal_rejection_is_atomic(
         &mut binary,
@@ -574,7 +614,11 @@ fn application_present_value_writes_are_still_validated() {
 
     let mut multistate = MultiStateInputObject::new(1, "MSI-1", 3).unwrap();
     multistate
-        .set_present_value_internal(PropertyValue::Unsigned(2))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(
+            PropertyValue::Unsigned(2),
+        ))
         .unwrap();
     assert_internal_rejection_is_atomic(
         &mut multistate,
@@ -594,7 +638,11 @@ fn application_present_value_writes_are_still_validated() {
 fn multistate_application_updates_preserve_reliability_policy() {
     let mut object = MultiStateInputObject::new(1, "MSI-1", 3).unwrap();
     object
-        .set_present_value_internal(PropertyValue::Unsigned(3))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(
+            PropertyValue::Unsigned(3),
+        ))
         .unwrap();
     object.set_number_of_states(2).unwrap();
     assert_eq!(
@@ -602,7 +650,11 @@ fn multistate_application_updates_preserve_reliability_policy() {
         PropertyValue::Enumerated(Reliability::MULTI_STATE_OUT_OF_RANGE.to_raw())
     );
     object
-        .set_present_value_internal(PropertyValue::Unsigned(2))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(
+            PropertyValue::Unsigned(2),
+        ))
         .unwrap();
     assert_eq!(
         read(&object, PropertyIdentifier::RELIABILITY),
@@ -653,7 +705,11 @@ fn multistate_application_updates_preserve_reliability_policy() {
         "OOS must suppress local reliability evaluation"
     );
     let error = object
-        .set_present_value_internal(PropertyValue::Unsigned(1))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(
+            PropertyValue::Unsigned(1),
+        ))
         .expect_err("application update must not replace the OOS simulation");
     assert_protocol_error(error, ErrorClass::PROPERTY, ErrorCode::WRITE_ACCESS_DENIED);
     assert_eq!(

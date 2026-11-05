@@ -1,5 +1,6 @@
 use super::status_flags::values;
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use std::borrow::Cow;
 
@@ -27,21 +28,18 @@ impl BACnetObject for Probe {
     fn object_name(&self) -> &str {
         "flags probe"
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        let mut p = vec![
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        let mut served = vec![
             PropertyIdentifier::PRESENT_VALUE,
             PropertyIdentifier::RELINQUISH_DEFAULT,
         ];
         if self.0.lock().unwrap().present {
-            p.push(PropertyIdentifier::STATUS_FLAGS);
+            served.push(PropertyIdentifier::STATUS_FLAGS);
         }
-        Cow::Owned(p)
+        crate::test_rows::read_only(&served)
     }
-    fn supports_cov(&self) -> bool {
-        true
-    }
-    fn cov_increment(&self) -> Option<f64> {
-        self.0.lock().unwrap().increment
+    fn cov(&self) -> Option<&dyn bacnet_objects::traits::CovReporting> {
+        Some(self)
     }
     fn read_property(&self, p: PropertyIdentifier, _: Option<u32>) -> Result<PropertyValue, Error> {
         let mut s = self.0.lock().unwrap();
@@ -69,6 +67,12 @@ impl BACnetObject for Probe {
         _: Option<u8>,
     ) -> Result<(), Error> {
         Err(Error::Encoding("read only".into()))
+    }
+}
+
+impl bacnet_objects::traits::CovReporting for Probe {
+    fn cov_increment(&self) -> Option<f64> {
+        self.0.lock().unwrap().increment
     }
 }
 async fn fixture(
@@ -101,7 +105,7 @@ async fn fixture(
 async fn baseline(
     f: &Fixture,
     sub: &CovSubscriptionSnapshot,
-) -> Option<crate::cov::CovObservation> {
+) -> Option<bacnet_device_core::cov::CovObservation> {
     f.table
         .read()
         .await
@@ -249,8 +253,8 @@ async fn cov_status_multiple_one_read_per_context_and_independent_baselines() {
     s.lock().unwrap().changing = false;
     s.lock().unwrap().selected = PropertyValue::Real(1.0);
     s.lock().unwrap().flags = flags(3);
-    let sample = crate::cov::CovSample::new(&PropertyValue::Real(1.0)).unwrap();
-    let o = crate::cov::CovObservation::new(sample, Some(&flags(3))).unwrap();
+    let sample = bacnet_device_core::cov::CovSample::new(&PropertyValue::Real(1.0)).unwrap();
+    let o = bacnet_device_core::cov::CovObservation::new(sample, Some(&flags(3))).unwrap();
     f.table.write().await.complete_for_test(&first, o.clone());
     f.table.write().await.unsubscribe(second.key());
     f.table.write().await.unsubscribe(third.key());
@@ -259,8 +263,9 @@ async fn cov_status_multiple_one_read_per_context_and_independent_baselines() {
         false,
         PropertyIdentifier::PRESENT_VALUE,
     );
-    sibling.last_notified_observation =
-        Some(crate::cov::CovObservation::new(o.sample().clone(), Some(&flags(2))).unwrap());
+    sibling.last_notified_observation = Some(
+        bacnet_device_core::cov::CovObservation::new(o.sample().clone(), Some(&flags(2))).unwrap(),
+    );
     let sibling = f.table.write().await.admit_for_test(sibling, 0).unwrap();
     f.fire(false, &[]).await;
     let payload = values(
@@ -268,9 +273,11 @@ async fn cov_status_multiple_one_read_per_context_and_independent_baselines() {
         CovNotificationKind::Multiple,
     );
     assert_eq!(payload.len(), 2);
-    assert!(!payload
-        .iter()
-        .any(|v| v.0 == PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(
+        !payload
+            .iter()
+            .any(|v| v.0 == PropertyIdentifier::RELINQUISH_DEFAULT)
+    );
     assert_eq!(baseline(&f, &first).await, Some(o.clone()));
     assert_eq!(baseline(&f, &sibling).await, Some(o));
     f.finish(false).await;

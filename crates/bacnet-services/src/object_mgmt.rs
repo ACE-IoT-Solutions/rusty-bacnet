@@ -49,8 +49,10 @@ pub struct CreateObjectRequest {
 }
 
 impl CreateObjectRequest {
-    /// Encode the request parameters into `buf`.
-    pub fn encode(&self, buf: &mut BytesMut) {
+    /// Encode the request parameters into `buf`; fails, leaving `buf`
+    /// unchanged, when an initial value's encoder refuses it.
+    pub fn encode(&self, buf: &mut BytesMut) -> Result<(), Error> {
+        let start = buf.len();
         // [0] object-specifier (constructed)
         tags::encode_opening_tag(buf, 0);
         match &self.object_specifier {
@@ -67,10 +69,14 @@ impl CreateObjectRequest {
         if !self.list_of_initial_values.is_empty() {
             tags::encode_opening_tag(buf, 1);
             for pv in &self.list_of_initial_values {
-                encode_bacnet_property_value(pv, buf);
+                if let Err(refused) = encode_bacnet_property_value(pv, buf) {
+                    buf.truncate(start);
+                    return Err(refused);
+                }
             }
             tags::encode_closing_tag(buf, 1);
         }
+        Ok(())
     }
 
     /// Decode the request from service-request octets; fails on malformed or truncated input.
@@ -133,6 +139,35 @@ impl CreateObjectRequest {
 }
 
 // ---------------------------------------------------------------------------
+// CreateObjectAck
+// ---------------------------------------------------------------------------
+
+/// CreateObject-ACK service parameters, the Result(+) of Clause 15.3.1.2 as
+/// Clause 21 encodes it: the identifier of the object the server created,
+/// application-tagged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreateObjectAck {
+    /// Identifier of the newly created object.
+    pub object_identifier: ObjectIdentifier,
+}
+
+impl CreateObjectAck {
+    /// Encode the acknowledgment parameter into `buf`.
+    pub fn encode(&self, buf: &mut BytesMut) {
+        primitives::encode_app_object_id(buf, &self.object_identifier);
+    }
+
+    /// Decode the acknowledgment from service-ack octets; fails on malformed or truncated
+    /// input, on an identifier under any tag but its application tag, and on octets after it.
+    pub fn decode(data: &[u8]) -> Result<Self, Error> {
+        let (object_identifier, end) =
+            decode_app_object_id(data, 0, "CreateObject-ACK object-identifier")?;
+        expect_end(data, end, end, "CreateObject-ACK")?;
+        Ok(Self { object_identifier })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // DeleteObjectRequest
 // ---------------------------------------------------------------------------
 
@@ -181,7 +216,7 @@ mod tests {
             list_of_initial_values: vec![],
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let decoded = CreateObjectRequest::decode(&buf).unwrap();
         assert_eq!(req, decoded);
     }
@@ -200,7 +235,7 @@ mod tests {
             }],
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         let decoded = CreateObjectRequest::decode(&buf).unwrap();
         assert_eq!(req, decoded);
     }
@@ -254,7 +289,7 @@ mod tests {
             list_of_initial_values: vec![value.clone(); MAX_DECODED_ITEMS],
         };
         let mut encoded = BytesMut::new();
-        request.encode(&mut encoded);
+        request.encode(&mut encoded).unwrap();
         assert_eq!(
             CreateObjectRequest::decode(&encoded)
                 .unwrap()
@@ -268,8 +303,43 @@ mod tests {
             list_of_initial_values: vec![value; MAX_DECODED_ITEMS + 1],
         };
         encoded.clear();
-        request.encode(&mut encoded);
+        request.encode(&mut encoded).unwrap();
         assert!(CreateObjectRequest::decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn create_object_ack_round_trip_is_one_application_object_id() {
+        let ack = CreateObjectAck {
+            object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_VALUE, 7).unwrap(),
+        };
+        let mut buf = BytesMut::new();
+        ack.encode(&mut buf);
+        // Application tag 12 (object identifier), length 4, then the packed id.
+        assert_eq!(&buf[..], &[0xC4, 0x00, 0x80, 0x00, 0x07]);
+        assert_eq!(CreateObjectAck::decode(&buf).unwrap(), ack);
+    }
+
+    #[test]
+    fn create_object_ack_rejects_malformed_input() {
+        let ack = CreateObjectAck {
+            object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_VALUE, 7).unwrap(),
+        };
+        let mut buf = BytesMut::new();
+        ack.encode(&mut buf);
+        assert!(CreateObjectAck::decode(&[]).is_err());
+        for cut in 1..buf.len() {
+            assert!(CreateObjectAck::decode(&buf[..cut]).is_err(), "cut {cut}");
+        }
+        // Trailing octet after the identifier.
+        let mut trailing = buf.to_vec();
+        trailing.push(0x00);
+        assert!(CreateObjectAck::decode(&trailing).is_err());
+        // Context tag 0 instead of the application tag.
+        let mut context = BytesMut::new();
+        primitives::encode_ctx_object_id(&mut context, 0, &ack.object_identifier);
+        assert!(CreateObjectAck::decode(&context).is_err());
+        // An application-tagged unsigned is not an object identifier.
+        assert!(CreateObjectAck::decode(&[0x21, 0x07]).is_err());
     }
 
     #[test]
@@ -299,7 +369,7 @@ mod tests {
             list_of_initial_values: vec![],
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         assert!(CreateObjectRequest::decode(&buf[..1]).is_err());
     }
 
@@ -310,7 +380,7 @@ mod tests {
             list_of_initial_values: vec![],
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         assert!(CreateObjectRequest::decode(&buf[..2]).is_err());
     }
 
@@ -321,7 +391,7 @@ mod tests {
             list_of_initial_values: vec![],
         };
         let mut buf = BytesMut::new();
-        req.encode(&mut buf);
+        req.encode(&mut buf).unwrap();
         if buf.len() > 3 {
             assert!(CreateObjectRequest::decode(&buf[..3]).is_err());
         }

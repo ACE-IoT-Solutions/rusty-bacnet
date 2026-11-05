@@ -1,3 +1,4 @@
+use crate::traits::Timed;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -5,7 +6,7 @@ use bacnet_types::constructed::{
     AuditPropertyReference, BACnetAuditLogDatum, BACnetAuditNotification, BACnetRecipient,
 };
 use bacnet_types::enums::{AuditOperation, ObjectType, PropertyIdentifier};
-use bacnet_types::error::Error;
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, Time};
 
 use crate::clock::{ClockFrame, ClockReader};
@@ -30,9 +31,7 @@ impl AuditLogPersistence for MemoryPersistence {
 
     fn commit(&self, snapshot: &AuditLogSnapshot) -> Result<(), Error> {
         if self.fail.load(Ordering::Acquire) {
-            return Err(Error::Transport(std::io::Error::other(
-                "injected commit failure",
-            )));
+            return Err(Error::Encoding("injected commit failure".into()));
         }
         *self.snapshot.lock().unwrap() = Some(snapshot.clone());
         self.commits.fetch_add(1, Ordering::AcqRel);
@@ -124,7 +123,10 @@ fn notification(
 fn log(capacity: u32) -> (AuditLogObject, Arc<MemoryPersistence>) {
     let persistence = Arc::new(MemoryPersistence::default());
     let mut log = AuditLogObject::new(1, "audit", capacity, persistence.clone()).unwrap();
-    log.bind_clock_internal(Some(clock()));
+    log.bind_clocks(&crate::traits::Clocks {
+        clock: Some(clock()),
+        ..crate::traits::Clocks::default()
+    });
     (log, persistence)
 }
 
@@ -139,12 +141,14 @@ fn forwarding_change_outcome_requires_record_change_and_durable_commit() {
         Some(BACnetTimeStamp::Time(time(0))),
         Some(BACnetTimeStamp::Time(time(0))),
     );
-    assert!(log
-        .store_notifications_with_change(std::slice::from_ref(&notification), 2_000)
-        .unwrap());
-    assert!(!log
-        .store_notifications_with_change(std::slice::from_ref(&notification), 2_000)
-        .unwrap());
+    assert!(
+        log.store_notifications_with_change(std::slice::from_ref(&notification), 2_000)
+            .unwrap()
+    );
+    assert!(
+        !log.store_notifications_with_change(std::slice::from_ref(&notification), 2_000)
+            .unwrap()
+    );
     assert_eq!(
         log.store_confirmed_notifications_with_change(
             std::slice::from_ref(&notification),
@@ -167,9 +171,10 @@ fn forwarding_change_outcome_requires_record_change_and_durable_commit() {
     let mut different = notification.clone();
     different.invoke_id = Some(8);
     persistence.fail.store(true, Ordering::Release);
-    assert!(log
-        .store_confirmed_notifications_with_change(&[different], 2_000, receipt(b"second", 3),)
-        .is_err());
+    assert!(
+        log.store_confirmed_notifications_with_change(&[different], 2_000, receipt(b"second", 3),)
+            .is_err()
+    );
     assert_eq!(log.current_snapshot(), before);
 }
 
@@ -263,9 +268,14 @@ fn confirmed_commit_failure_is_atomic_and_exact_retry_can_succeed() {
     let before = persistence.snapshot.lock().unwrap().clone().unwrap();
     persistence.fail.store(true, Ordering::Release);
 
-    assert!(log
-        .store_confirmed_notifications(std::slice::from_ref(&incoming), 2_000, completed.clone(),)
-        .is_err());
+    assert!(
+        log.store_confirmed_notifications(
+            std::slice::from_ref(&incoming),
+            2_000,
+            completed.clone(),
+        )
+        .is_err()
+    );
     assert_eq!(log.generation(), before.generation);
     assert!(log.records().is_empty());
     assert_eq!(persistence.snapshot.lock().unwrap().as_ref(), Some(&before));
@@ -390,14 +400,16 @@ fn forwarding_window_is_inclusive_at_wire_tick_and_timeout_edges() {
                 }
             };
             let (mut log, persistence) = log(2);
-            assert!(log
-                .store_notifications_with_change(&[notification(Some(stamp(0)), None)], timeout)
-                .unwrap());
+            assert!(
+                log.store_notifications_with_change(&[notification(Some(stamp(0)), None)], timeout)
+                    .unwrap()
+            );
             let before = log.records().front().unwrap().clone();
             let target = notification(None, Some(stamp(distance)));
-            assert!(log
-                .store_notifications_with_change(std::slice::from_ref(&target), timeout)
-                .unwrap());
+            assert!(
+                log.store_notifications_with_change(std::slice::from_ref(&target), timeout)
+                    .unwrap()
+            );
             assert_eq!(log.records().len(), if complements { 1 } else { 2 });
             assert_eq!(log.total_record_count(), if complements { 1 } else { 2 });
             assert_eq!(log.records()[0].sequence_number, before.sequence_number);
@@ -410,9 +422,10 @@ fn forwarding_window_is_inclusive_at_wire_tick_and_timeout_edges() {
             assert_eq!(stored.target_timestamp.is_some(), complements);
             if complements {
                 let before = log.current_snapshot();
-                assert!(!log
-                    .store_notifications_with_change(&[target], timeout)
-                    .unwrap());
+                assert!(
+                    !log.store_notifications_with_change(&[target], timeout)
+                        .unwrap()
+                );
                 assert_eq!(log.current_snapshot(), before);
                 assert_eq!(persistence.commits.load(Ordering::Acquire), 3);
             }
@@ -436,19 +449,21 @@ fn forwarding_mixed_timestamp_variants_never_complement_in_either_direction() {
                 continue;
             }
             let (mut log, persistence) = log(2);
-            assert!(log
-                .store_notifications_with_change(
+            assert!(
+                log.store_notifications_with_change(
                     &[notification(Some(source.clone()), None)],
                     60_000
                 )
-                .unwrap());
+                .unwrap()
+            );
             let first = log.records()[0].clone();
-            assert!(log
-                .store_notifications_with_change(
+            assert!(
+                log.store_notifications_with_change(
                     &[notification(None, Some(target.clone()))],
                     60_000
                 )
-                .unwrap());
+                .unwrap()
+            );
             assert_eq!(log.total_record_count(), 2);
             assert_eq!(log.records().len(), 2);
             assert_eq!(log.records()[0], first);
@@ -463,18 +478,22 @@ fn commit_and_clock_failures_leave_memory_and_durable_snapshot_unchanged() {
     let (mut log, persistence) = log(10);
     let before = persistence.snapshot.lock().unwrap().clone().unwrap();
     persistence.fail.store(true, Ordering::Release);
-    assert!(log
-        .store_notifications(
+    assert!(
+        log.store_notifications(
             &[notification(Some(BACnetTimeStamp::Time(time(0))), None)],
             2_000
         )
-        .is_err());
+        .is_err()
+    );
     assert_eq!(log.total_record_count(), 0);
     assert_eq!(*persistence.snapshot.lock().unwrap(), Some(before));
 
     persistence.fail.store(false, Ordering::Release);
     for frame in [None, Some(invalid_clock_frame())] {
-        log.bind_clock_internal(Some(Arc::new(FixedClock(frame))));
+        log.bind_clocks(&crate::traits::Clocks {
+            clock: Some(Arc::new(FixedClock(frame))),
+            ..crate::traits::Clocks::default()
+        });
         let durable = persistence.snapshot.lock().unwrap().clone();
         let error = log
             .store_notifications(
@@ -482,9 +501,11 @@ fn commit_and_clock_failures_leave_memory_and_durable_snapshot_unchanged() {
                 2_000,
             )
             .unwrap_err();
-        assert!(matches!(error, Error::Protocol { class, code }
-            if class == bacnet_types::enums::ErrorClass::DEVICE.to_raw() as u32
-                && code == bacnet_types::enums::ErrorCode::OPERATIONAL_PROBLEM.to_raw() as u32));
+        assert!(
+            matches!(error, Error::Remote(RemoteError::Error { class, code })
+            if class == bacnet_types::enums::ErrorClass::DEVICE
+                && code == bacnet_types::enums::ErrorCode::OPERATIONAL_PROBLEM)
+        );
         assert_eq!(log.total_record_count(), 0);
         assert_eq!(*persistence.snapshot.lock().unwrap(), durable);
     }
@@ -504,9 +525,11 @@ fn disabled_sink_denies_before_clock_or_persistence_change() {
     let error = log
         .store_notifications(&[notification(None, None)], 2_000)
         .unwrap_err();
-    assert!(matches!(error, Error::Protocol { class, code }
-        if class == bacnet_types::enums::ErrorClass::SERVICES.to_raw() as u32
-            && code == bacnet_types::enums::ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32));
+    assert!(
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
+        if class == bacnet_types::enums::ErrorClass::SERVICES
+            && code == bacnet_types::enums::ErrorCode::SERVICE_REQUEST_DENIED)
+    );
     assert_eq!(log.generation(), generation);
     assert_eq!(
         persistence
@@ -517,5 +540,131 @@ fn disabled_sink_denies_before_clock_or_persistence_change() {
             .unwrap()
             .generation,
         generation
+    );
+}
+
+#[test]
+fn an_empty_batch_or_a_disabled_log_is_refused_confirmed_or_not() {
+    let (mut log, persistence) = log(10);
+    let generation = log.generation();
+    assert!(matches!(
+        log.store_notifications(&[], 2_000),
+        Err(Error::OutOfRange(_))
+    ));
+    assert!(matches!(
+        log.store_confirmed_notifications(&[], 2_000, receipt(b"empty", 1)),
+        Err(Error::OutOfRange(_))
+    ));
+    log.write_property(
+        bacnet_types::enums::PropertyIdentifier::LOG_ENABLE,
+        None,
+        bacnet_types::primitives::PropertyValue::Boolean(false),
+        None,
+    )
+    .unwrap();
+    let generation_off = log.generation();
+    assert!(generation_off > generation);
+    let error = log
+        .store_confirmed_notifications(&[notification(None, None)], 2_000, receipt(b"off", 1))
+        .unwrap_err();
+    assert!(
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
+        if class == bacnet_types::enums::ErrorClass::SERVICES
+            && code == bacnet_types::enums::ErrorCode::SERVICE_REQUEST_DENIED)
+    );
+    assert_eq!(log.generation(), generation_off);
+    assert!(!log.has_completed_confirmed_receipt(b"off", 1).unwrap());
+    assert_eq!(persistence.commits.load(Ordering::Acquire), 2);
+}
+
+/// A sink that implements only the two required methods, so every other
+/// call goes through the trait's defaults.
+#[derive(Default)]
+struct PlainSink {
+    stored: Vec<(usize, u32)>,
+    fail: bool,
+}
+
+impl AuditLogNotificationSink for PlainSink {
+    fn notification_logging_enabled(&self) -> bool {
+        !self.fail
+    }
+
+    fn store_notifications(
+        &mut self,
+        notifications: &[BACnetAuditNotification],
+        apdu_timeout_ms: u32,
+    ) -> Result<(), Error> {
+        if self.fail {
+            return Err(Error::Encoding("refused".into()));
+        }
+        self.stored.push((notifications.len(), apdu_timeout_ms));
+        Ok(())
+    }
+}
+
+#[test]
+fn a_sink_with_only_the_required_methods_stores_through_the_defaults() {
+    use super::AuditBatchStage;
+    use ConfirmedAuditNotificationOutcome::Stored;
+
+    let batch = [notification(Some(BACnetTimeStamp::Time(time(0))), None)];
+    let mut sink = PlainSink::default();
+    // Every default stores at once and reports no record change, since a
+    // custom sink has to opt in to change reporting.
+    assert!(!sink.store_notifications_with_change(&batch, 1_000).unwrap());
+    assert_eq!(
+        sink.store_confirmed_notifications_with_change(&batch, 2_000, receipt(b"a", 1))
+            .unwrap(),
+        (Stored, false)
+    );
+    assert_eq!(
+        sink.store_confirmed_notifications(&batch, 3_000, receipt(b"b", 1))
+            .unwrap(),
+        Stored
+    );
+    // The defaults keep no receipts.
+    assert!(!sink.has_completed_confirmed_receipt(b"a", 1).unwrap());
+    assert!(matches!(
+        sink.stage_notification_batch(&batch, 4_000, None).unwrap(),
+        AuditBatchStage::Done(Stored, false)
+    ));
+    assert!(matches!(
+        sink.stage_notification_batch(&batch, 5_000, Some(receipt(b"c", 1)))
+            .unwrap(),
+        AuditBatchStage::Done(Stored, false)
+    ));
+    assert_eq!(
+        sink.stored,
+        [(1, 1_000), (1, 2_000), (1, 3_000), (1, 4_000), (1, 5_000)]
+    );
+
+    // A refusal from the required method comes back through each default.
+    sink.fail = true;
+    assert!(sink.store_notifications_with_change(&batch, 1_000).is_err());
+    assert!(
+        sink.store_confirmed_notifications(&batch, 1_000, receipt(b"d", 1))
+            .is_err()
+    );
+    assert!(sink.stage_notification_batch(&batch, 1_000, None).is_err());
+    assert!(
+        sink.stage_notification_batch(&batch, 1_000, Some(receipt(b"e", 1)))
+            .is_err()
+    );
+    assert_eq!(sink.stored.len(), 5);
+
+    // The default stage never stages, so its finish refuses any batch, here
+    // one an Audit Log staged.
+    let (mut log, _) = log(10);
+    let AuditBatchStage::Staged(staged) =
+        log.stage_notification_batch(&batch, 2_000, None).unwrap()
+    else {
+        panic!("the Audit Log stages a new record");
+    };
+    let error = sink.finish_notification_batch(staged).unwrap_err();
+    assert!(
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
+        if class == bacnet_types::enums::ErrorClass::DEVICE
+            && code == bacnet_types::enums::ErrorCode::OPERATIONAL_PROBLEM)
     );
 }

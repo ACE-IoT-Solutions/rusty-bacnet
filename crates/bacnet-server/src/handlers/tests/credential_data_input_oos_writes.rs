@@ -3,6 +3,7 @@
 //! TRUE, refused in service (Clauses 12.36.4, 12.36.7 and 12.36.8, Table 12-43
 //! footnote 1, #1168).
 
+use bacnet_types::error::RemoteError;
 use std::sync::Arc;
 
 use super::*;
@@ -207,9 +208,9 @@ fn out_of_service(value: bool) -> (PropertyIdentifier, Vec<u8>) {
 
 fn assert_property_error(result: Result<(), Error>, expected: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == expected.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == expected),
         "expected PROPERTY / {expected:?}, got {result:?}"
     );
 }

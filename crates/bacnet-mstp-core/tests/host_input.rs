@@ -3,12 +3,10 @@
 //! the transitions the core's own decoder drives. Each test runs both paths
 //! where they can differ.
 
-#![cfg(feature = "heapless")]
-
 mod support;
 
-use bacnet_mstp_codec::{FrameType, BROADCAST_MAC};
-use bacnet_mstp_core::{Action, CoreError, Direction, Duration, Instant, MasterState};
+use bacnet_mstp_codec::{BROADCAST_MAC, FrameType};
+use bacnet_mstp_core::{Action, Direction, Duration, Instant, MasterState, TransmitError};
 
 use support::*;
 
@@ -27,7 +25,7 @@ fn an_invalid_reply_ends_the_wait_on_either_path() {
         assert_eq!(core.state(), MasterState::PollForMaster, "host {host}");
         assert_eq!(core.next_deadline(), Some(found + turnaround(&core)));
         let (_, header) = send_next(&mut core);
-        assert!(is(header, FrameType::PollForMaster, PEER), "host {host}");
+        assert!(is(header, FrameType::POLL_FOR_MASTER, PEER), "host {host}");
     }
 }
 
@@ -44,7 +42,7 @@ fn an_invalid_frame_answers_a_poll_as_silence_does() {
         let mut core = new_core(&mut rx, &mut actions);
         poll_waiting(&mut core);
         let (mut sent, header) = send_next(&mut core);
-        assert!(is(header, FrameType::PollForMaster, PEER));
+        assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
         // Each poll is answered by an invalid frame 2 ms after it ended.
         let answer = |sent: Instant| sent + Duration::from_millis(3);
         // Stations 3 and 0 are polled in turn, then station 1 is alone.
@@ -53,19 +51,19 @@ fn an_invalid_frame_answers_a_poll_as_silence_does() {
             assert_eq!(core.next_deadline(), Some(found + turnaround(&core)));
             let header;
             (sent, header) = send_next(&mut core);
-            assert!(is(header, FrameType::PollForMaster, next), "host {host}");
+            assert!(is(header, FrameType::POLL_FOR_MASTER, next), "host {host}");
         }
         invalid_frame(&mut core, host, answer(sent));
         assert!(core.snapshot().sole_master, "host {host}");
         // Its next maintenance poll goes out; an NPDU waits meanwhile.
         let (sent, header) = send_next(&mut core);
-        assert!(is(header, FrameType::PollForMaster, PEER));
+        assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
         enqueue(&mut core, false, answer(sent));
         invalid_frame(&mut core, host, answer(sent));
         assert_eq!(core.state(), MasterState::UseToken, "host {host}");
         let (_, header) = send_next(&mut core);
         assert!(
-            is(header, FrameType::BACnetDataNotExpectingReply, PEER),
+            is(header, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, PEER),
             "host {host}"
         );
         assert_eq!(core.counters().parser_errors, 4);
@@ -87,7 +85,7 @@ fn an_invalid_answer_to_a_maintenance_poll_passes_the_token() {
         assert_eq!(core.state(), MasterState::PassToken, "host {host}");
         assert_eq!(core.next_deadline(), Some(found + turnaround(&core)));
         let (_, header) = send_next(&mut core);
-        assert!(is(header, FrameType::Token, 3), "host {host}");
+        assert!(is(header, FrameType::TOKEN, 3), "host {host}");
     }
 }
 
@@ -102,18 +100,18 @@ fn an_invalid_frame_only_delays_a_waiting_frame() {
     let mut core = new_core(&mut rx, &mut actions);
     poll_waiting(&mut core);
     let found = ms(10) + us(2_000);
-    core.on_invalid_frame(found).unwrap();
+    core.on_invalid_frame(found);
     assert_eq!(core.state(), MasterState::PollForMaster);
     assert_eq!(core.next_deadline(), Some(found + turnaround(&core)));
     let handed = core.next_deadline().unwrap();
-    core.on_deadline(handed).unwrap();
+    core.on_deadline(handed);
     let (id, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::PollForMaster, PEER));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
     let again = handed + us(300);
-    core.on_invalid_frame(again).unwrap();
+    core.on_invalid_frame(again);
     assert_eq!(
         core.on_transmit_started(id, again + us(300)),
-        Err(CoreError::TransmitDeferred)
+        Err(TransmitError::Deferred)
     );
     assert_eq!(core.next_deadline(), Some(again + turnaround(&core)));
     let counters = core.counters();
@@ -133,8 +131,8 @@ fn host_events_count_toward_saw_token_user() {
         let mut core = new_core(&mut rx, &mut actions);
         let (handed, id) = retry_handed_over(&mut core);
         let heard = handed + us(500);
-        core.on_host_activity(octets, heard).unwrap();
-        core.on_invalid_frame(heard).unwrap();
+        core.on_host_activity(octets, heard);
+        core.on_invalid_frame(heard);
         let counters = core.counters();
         assert_eq!(counters.cancelled_sends, u32::from(dropped), "{octets}");
         if dropped {
@@ -144,7 +142,7 @@ fn host_events_count_toward_saw_token_user() {
             assert_eq!(core.state(), MasterState::PassToken);
             assert_eq!(
                 core.on_transmit_started(id, heard + us(100)),
-                Err(CoreError::TransmitDeferred)
+                Err(TransmitError::Deferred)
             );
             assert_eq!(core.next_deadline(), Some(heard + turnaround(&core)));
         }
@@ -161,23 +159,23 @@ fn host_input_after_the_confirmed_start_is_echo() {
     let mut core = new_core(&mut rx, &mut actions);
     pass_waiting(&mut core);
     let due = core.next_deadline().unwrap();
-    core.on_deadline(due).unwrap();
+    core.on_deadline(due);
     let (id, header) = handed_over(&mut core);
-    assert!(is(header, FrameType::Token, PEER));
+    assert!(is(header, FrameType::TOKEN, PEER));
     core.on_transmit_started(id, due).unwrap();
     let before = core.counters();
     let deadline = core.next_deadline();
     let echo = due + Duration::from_millis(1);
-    validated(&mut core, FrameType::Token, PEER, STATION, &[], echo);
-    validated(&mut core, FrameType::Token, STATION, PEER, &[], echo);
-    core.on_invalid_frame(echo).unwrap();
-    core.on_host_activity(8, echo).unwrap();
+    validated(&mut core, FrameType::TOKEN, PEER, STATION, &[], echo);
+    validated(&mut core, FrameType::TOKEN, STATION, PEER, &[], echo);
+    core.on_invalid_frame(echo);
+    core.on_host_activity(8, echo);
     assert_eq!(core.counters(), before);
     assert_eq!(core.next_deadline(), deadline);
     assert_eq!(core.state(), MasterState::PassToken);
     assert_eq!(core.poll_action(), Action::Idle);
     let done = echo + us(100);
-    core.on_transmit_complete(id, done).unwrap();
+    core.on_transmit_complete(id, done);
     assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
     assert_eq!(
         core.counters().frames_transmitted,
@@ -195,13 +193,13 @@ fn a_frame_from_this_stations_address_is_counted_and_handled() {
         let mut rx = [0; 64];
         let mut actions = Actions::new();
         let mut core = new_core(&mut rx, &mut actions);
-        let broadcast = FrameType::BACnetDataNotExpectingReply;
+        let broadcast = FrameType::BACNET_DATA_NOT_EXPECTING_REPLY;
         // A broadcast from station 3 first, which is not counted; then a
         // broadcast and a Token from this station's address.
         let frames = [
             (broadcast, BROADCAST_MAC, 3, &[1, 0, 6][..], 0),
             (broadcast, BROADCAST_MAC, STATION, &[1, 0, 7][..], 1),
-            (FrameType::Token, STATION, STATION, &[][..], 2),
+            (FrameType::TOKEN, STATION, STATION, &[][..], 2),
         ];
         let mut at = ms(10);
         for (kind, destination, source, data, counted) in frames {

@@ -3,13 +3,14 @@
 
 #![allow(dead_code)]
 
-use bacnet_mstp_codec::{decode_frame, Frame, FrameHeader, FrameType};
+use bacnet_mstp_codec::{Frame, FrameHeader, FrameType};
+use bacnet_mstp_core::npdu::NetworkPriority;
 use bacnet_mstp_core::{
-    Action, Direction, Duration, HeaplessQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
-    NetworkPriority, TransmitId,
+    Action, Direction, Duration, FixedQueues, Instant, MasterCore, MasterState, MstpCoreConfig,
+    TransmitId,
 };
 
-pub type Queues = HeaplessQueues<4, 4>;
+pub type Queues = FixedQueues<4, 4>;
 pub type Actions = bacnet_mstp_core::ActionBuffers;
 pub type Core<'rx> = MasterCore<'rx, Queues>;
 
@@ -21,11 +22,10 @@ pub const PEER: u8 = 2;
 /// Station 1 of masters 0 to 3 at 9600 baud: T_turnaround 4167 µs, one
 /// octet 1042 µs.
 pub fn config() -> MstpCoreConfig {
-    MstpCoreConfig {
-        station: STATION,
-        max_master: 3,
-        ..MstpCoreConfig::default()
-    }
+    let mut config = MstpCoreConfig::STANDARD;
+    config.station = STATION;
+    config.max_master = 3;
+    config
 }
 
 /// Station 1's core over `rx` and `actions`, from time zero.
@@ -33,7 +33,7 @@ pub fn new_core<'a, const DELIVERIES: usize>(
     rx: &'a mut [u8],
     actions: &'a mut bacnet_mstp_core::ActionBuffers<DELIVERIES>,
 ) -> Core<'a> {
-    Core::new(config(), Queues::new(), rx, actions, Instant::ZERO).unwrap()
+    Core::from_parts(config(), Queues::new(), rx, actions, Instant::ZERO).unwrap()
 }
 
 pub fn ms(value: u64) -> Instant {
@@ -57,8 +57,7 @@ pub fn validated(
     data: &[u8],
     now: Instant,
 ) {
-    core.on_validated_frame(Frame::new(kind, destination, source, data), now)
-        .unwrap();
+    core.on_validated_frame(Frame::new(kind, destination, source, data), now);
 }
 
 /// Feed `octets` one octet time apart from `first`; returns when the last
@@ -70,7 +69,7 @@ pub fn feed(core: &mut Core<'_>, octets: &[u8], first: Instant) -> Instant {
         if index > 0 {
             at += octet;
         }
-        core.on_octet(byte, at).unwrap();
+        core.on_octet(byte, at);
     }
     at
 }
@@ -91,7 +90,7 @@ pub fn handed_over(core: &mut Core<'_>) -> (TransmitId, FrameHeader) {
         Action::SetDirection(Direction::Transmit)
     );
     match core.poll_action() {
-        Action::Transmit { id, frame } => (id, decode_frame(frame).unwrap().0.header),
+        Action::Transmit { id, header, .. } => (id, header),
         other => panic!("expected a transmit, got {other:?}"),
     }
 }
@@ -107,8 +106,7 @@ pub fn expect_receive_only(core: &mut Core<'_>) {
 pub fn send(core: &mut Core<'_>, now: Instant) -> FrameHeader {
     let (id, header) = handed_over(core);
     core.on_transmit_started(id, now).unwrap();
-    core.on_transmit_complete(id, now + Duration::from_millis(1))
-        .unwrap();
+    core.on_transmit_complete(id, now + Duration::from_millis(1));
     assert_eq!(core.poll_action(), Action::SetDirection(Direction::Receive));
     header
 }
@@ -116,7 +114,7 @@ pub fn send(core: &mut Core<'_>, now: Instant) -> FrameHeader {
 /// Service the next deadline and send the frame it hands over.
 pub fn send_next(core: &mut Core<'_>) -> (Instant, FrameHeader) {
     let due = core.next_deadline().unwrap();
-    core.on_deadline(due).unwrap();
+    core.on_deadline(due);
     (due, send(core, due))
 }
 
@@ -128,7 +126,7 @@ pub fn is(header: FrameHeader, kind: FrameType, destination: u8) -> bool {
 /// successor, so it polls station 2; returns with that poll waiting out its
 /// turnaround.
 pub fn poll_waiting(core: &mut Core<'_>) {
-    validated(core, FrameType::Token, STATION, PEER, &[], ms(10));
+    validated(core, FrameType::TOKEN, STATION, PEER, &[], ms(10));
     assert_eq!(core.state(), MasterState::PollForMaster);
     assert_eq!(core.next_deadline(), Some(ms(10) + turnaround(core)));
 }
@@ -139,11 +137,11 @@ pub fn poll_waiting(core: &mut Core<'_>) {
 pub fn pass_waiting(core: &mut Core<'_>) -> Instant {
     poll_waiting(core);
     let (_, header) = send_next(core);
-    assert!(is(header, FrameType::PollForMaster, PEER));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
     let answered = core.next_deadline().unwrap() - Duration::from_millis(15);
     validated(
         core,
-        FrameType::ReplyToPollForMaster,
+        FrameType::REPLY_TO_POLL_FOR_MASTER,
         STATION,
         PEER,
         &[],
@@ -159,11 +157,11 @@ pub fn pass_waiting(core: &mut Core<'_>) -> Instant {
 pub fn retry_handed_over(core: &mut Core<'_>) -> (Instant, TransmitId) {
     pass_waiting(core);
     let (_, header) = send_next(core);
-    assert!(is(header, FrameType::Token, PEER));
+    assert!(is(header, FrameType::TOKEN, PEER));
     let timeout = core.next_deadline().unwrap();
-    core.on_deadline(timeout).unwrap();
+    core.on_deadline(timeout);
     let (id, header) = handed_over(core);
-    assert!(is(header, FrameType::Token, PEER));
+    assert!(is(header, FrameType::TOKEN, PEER));
     assert_eq!(core.counters().token_retries, 1);
     (timeout, id)
 }
@@ -171,11 +169,11 @@ pub fn retry_handed_over(core: &mut Core<'_>) -> (Instant, TransmitId) {
 /// A fresh station 1 loses the token and generates one in its slot, 510 ms
 /// in; returns with the generating poll handed over, and its id.
 pub fn generation_handed_over(core: &mut Core<'_>) -> TransmitId {
-    core.on_deadline(ms(500)).unwrap();
+    core.on_deadline(ms(500));
     assert_eq!(core.state(), MasterState::NoToken);
-    core.on_deadline(ms(510)).unwrap();
+    core.on_deadline(ms(510));
     let (id, header) = handed_over(core);
-    assert!(is(header, FrameType::PollForMaster, PEER));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
     assert_eq!(core.counters().token_regenerations, 1);
     id
 }
@@ -194,13 +192,13 @@ pub fn maintenance_poll_sent(core: &mut Core<'_>) {
     poll_waiting(core);
     send_next(core);
     let timeout = core.next_deadline().unwrap();
-    core.on_deadline(timeout).unwrap();
+    core.on_deadline(timeout);
     let header = send(core, timeout);
-    assert!(is(header, FrameType::PollForMaster, 3));
+    assert!(is(header, FrameType::POLL_FOR_MASTER, 3));
     let answered = timeout + Duration::from_millis(5);
     validated(
         core,
-        FrameType::ReplyToPollForMaster,
+        FrameType::REPLY_TO_POLL_FOR_MASTER,
         STATION,
         3,
         &[],
@@ -208,22 +206,22 @@ pub fn maintenance_poll_sent(core: &mut Core<'_>) {
     );
     for _ in 0..=50 {
         let (passed, header) = send_next(core);
-        assert!(is(header, FrameType::Token, 3));
+        assert!(is(header, FrameType::TOKEN, 3));
         // Station 3 uses the token, then passes it back.
         let used = passed + Duration::from_millis(3);
         validated(
             core,
-            FrameType::BACnetDataNotExpectingReply,
+            FrameType::BACNET_DATA_NOT_EXPECTING_REPLY,
             0,
             3,
             &[1, 0, 7],
             used,
         );
         let back = used + Duration::from_millis(2);
-        validated(core, FrameType::Token, STATION, 3, &[], back);
+        validated(core, FrameType::TOKEN, STATION, 3, &[], back);
         if core.state() == MasterState::PollForMaster {
             let (_, header) = send_next(core);
-            assert!(is(header, FrameType::PollForMaster, PEER));
+            assert!(is(header, FrameType::POLL_FOR_MASTER, PEER));
             return;
         }
     }
@@ -235,9 +233,9 @@ pub fn maintenance_poll_sent(core: &mut Core<'_>) {
 /// waiting for the reply.
 pub fn waiting_for_reply(core: &mut Core<'_>) -> Instant {
     enqueue(core, true, ms(0));
-    validated(core, FrameType::Token, STATION, PEER, &[], ms(10));
+    validated(core, FrameType::TOKEN, STATION, PEER, &[], ms(10));
     let (due, header) = send_next(core);
-    assert!(is(header, FrameType::BACnetDataExpectingReply, PEER));
+    assert!(is(header, FrameType::BACNET_DATA_EXPECTING_REPLY, PEER));
     assert_eq!(core.state(), MasterState::WaitForReply);
     due + Duration::from_millis(1)
 }
@@ -245,7 +243,7 @@ pub fn waiting_for_reply(core: &mut Core<'_>) -> Instant {
 /// The eight octets of a header whose CRC is wrong. A station's own
 /// decoder counts it invalid at the last one, wherever it was going.
 pub fn bad_header() -> Vec<u8> {
-    let mut wire = encode(FrameType::BACnetDataNotExpectingReply, 3, PEER, &[1, 2]);
+    let mut wire = encode(FrameType::BACNET_DATA_NOT_EXPECTING_REPLY, 3, PEER, &[1, 2]);
     wire.truncate(8);
     wire[7] ^= 0x01;
     wire
@@ -258,8 +256,8 @@ pub fn invalid_frame(core: &mut Core<'_>, host: bool, first: Instant) -> Instant
     if host {
         let octet = core.config().octet_time();
         let last = first + us(7 * octet.as_micros());
-        core.on_host_activity(8, last).unwrap();
-        core.on_invalid_frame(last).unwrap();
+        core.on_host_activity(8, last);
+        core.on_invalid_frame(last);
         last
     } else {
         feed(core, &bad_header(), first)

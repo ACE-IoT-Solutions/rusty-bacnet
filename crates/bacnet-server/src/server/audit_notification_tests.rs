@@ -221,10 +221,12 @@ async fn authorized_routed_request_preserves_provenance_and_duplicate_is_silent(
         audit_notification_sink: Some(sink),
         ..ServerConfig::default()
     };
-    config.audit_notification_authorizer = Some(Arc::new(move |context| {
-        observed.lock().unwrap().push(context.clone());
-        true
-    }));
+    config.policy = Some(Arc::new(crate::FnPolicy::new().audit_notification(
+        move |context| {
+            observed.lock().unwrap().push(context.clone());
+            true
+        },
+    )));
     let confirmed_request_tracker = Arc::new(ConfirmedRequestTracker::default());
     let routed = NpduAddress {
         network: 55,
@@ -264,17 +266,19 @@ async fn authorized_routed_request_preserves_provenance_and_duplicate_is_silent(
         BACnetRecipient::Device(oid(ObjectType::DEVICE, 999))
     );
 
-    assert!(dispatch(
-        &db,
-        &config,
-        &confirmed_request_tracker,
-        9,
-        &[0x10],
-        context.source_network,
-        bytes
-    )
-    .await
-    .is_err());
+    assert!(
+        dispatch(
+            &db,
+            &config,
+            &confirmed_request_tracker,
+            9,
+            &[0x10],
+            context.source_network,
+            bytes
+        )
+        .await
+        .is_err()
+    );
     assert_eq!(count(&db, sink).await, (1, 1));
     assert_eq!(contexts.lock().unwrap().len(), 1);
 
@@ -304,19 +308,15 @@ async fn policy_decode_bounds_sink_and_persistence_fail_before_success_ack() {
     let sink = oid(ObjectType::AUDIT_LOG, 7);
     for authorizer in [
         None,
-        Some(Arc::new(|_: &AuditNotificationAuthorizationContext| false)
-            as AuditNotificationAuthorizer),
-        Some(
-            Arc::new(|_: &AuditNotificationAuthorizationContext| -> bool { panic!("denied panic") })
-                as AuditNotificationAuthorizer,
-        ),
+        Some(crate::FnPolicy::new().audit_notification(|_| false)),
+        Some(crate::FnPolicy::new().audit_notification(|_| -> bool { panic!("denied panic") })),
     ] {
         let persistence = Arc::new(MemoryPersistence::default());
         let db = database(Arc::clone(&persistence), 7);
         let before = persistence.snapshot.lock().unwrap().clone();
         let config = ServerConfig {
             audit_notification_sink: Some(sink),
-            audit_notification_authorizer: authorizer,
+            policy: authorizer.map(|policy| Arc::new(policy) as Arc<dyn crate::ServerPolicy>),
             ..ServerConfig::default()
         };
         let response = dispatch(
@@ -345,7 +345,9 @@ async fn policy_decode_bounds_sink_and_persistence_fail_before_success_ack() {
     persistence.fail.store(true, Ordering::Release);
     let config = ServerConfig {
         audit_notification_sink: Some(sink),
-        audit_notification_authorizer: Some(Arc::new(|_| true)),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().audit_notification(|_| true),
+        )),
         ..ServerConfig::default()
     };
     let response = dispatch(
@@ -416,7 +418,9 @@ async fn policy_decode_bounds_sink_and_persistence_fail_before_success_ack() {
     ] {
         let config = ServerConfig {
             audit_notification_sink: configured_sink,
-            audit_notification_authorizer: Some(Arc::new(|_| true)),
+            policy: Some(Arc::new(
+                crate::FnPolicy::new().audit_notification(|_| true),
+            )),
             ..ServerConfig::default()
         };
         let response = dispatch(
@@ -461,7 +465,9 @@ async fn disabled_sink_returns_service_request_denied_without_receiver_mutation(
     let count_before = count(&db, sink).await;
     let config = ServerConfig {
         audit_notification_sink: Some(sink),
-        audit_notification_authorizer: Some(Arc::new(|_| true)),
+        policy: Some(Arc::new(
+            crate::FnPolicy::new().audit_notification(|_| true),
+        )),
         ..ServerConfig::default()
     };
     let response = dispatch(
@@ -490,7 +496,7 @@ async fn missing_or_invalid_device_apdu_timeout_is_operational_problem_without_m
     for device_config in [
         None,
         Some(DeviceConfig {
-            apdu_segment_timeout: 5000,
+            identity: bacnet_objects::DeviceIdentity::default().with_apdu_segment_timeout_ms(5000),
             apdu_timeout: 0,
             ..DeviceConfig::default()
         }),
@@ -500,7 +506,9 @@ async fn missing_or_invalid_device_apdu_timeout_is_operational_problem_without_m
         let before = persistence.snapshot.lock().unwrap().clone();
         let config = ServerConfig {
             audit_notification_sink: Some(sink),
-            audit_notification_authorizer: Some(Arc::new(|_| true)),
+            policy: Some(Arc::new(
+                crate::FnPolicy::new().audit_notification(|_| true),
+            )),
             ..ServerConfig::default()
         };
         let response = dispatch(
@@ -530,10 +538,14 @@ fn executed_service_truth_includes_confirmed_and_unconfirmed_receipt() {
     assert!(
         EXECUTED_UNCONFIRMED.contains(&UnconfirmedServiceChoice::UNCONFIRMED_AUDIT_NOTIFICATION)
     );
-    assert!(bacnet_objects::device::EXECUTED_SERVICES
-        .contains(&ServiceSupported::CONFIRMED_AUDIT_NOTIFICATION));
-    assert!(bacnet_objects::device::EXECUTED_SERVICES
-        .contains(&ServiceSupported::UNCONFIRMED_AUDIT_NOTIFICATION));
+    assert!(
+        bacnet_objects::device::EXECUTED_SERVICES
+            .contains(&ServiceSupported::CONFIRMED_AUDIT_NOTIFICATION)
+    );
+    assert!(
+        bacnet_objects::device::EXECUTED_SERVICES
+            .contains(&ServiceSupported::UNCONFIRMED_AUDIT_NOTIFICATION)
+    );
 }
 
 #[test]
@@ -541,25 +553,25 @@ fn generic_and_bip_builders_store_the_same_explicit_receiver_policy() {
     let sink = oid(ObjectType::AUDIT_LOG, 7);
     let generic = BACnetServer::<BipTransport>::generic_builder()
         .audit_notification_sink(sink)
-        .audit_notification_authorizer(|_| true)
-        .unconfirmed_audit_notification_authorizer(|_| true);
+        .policy(
+            crate::FnPolicy::new()
+                .audit_notification(|_| true)
+                .unconfirmed_audit_notification(|_| true),
+        );
     assert_eq!(generic.config.audit_notification_sink, Some(sink));
-    assert!(generic.config.audit_notification_authorizer.is_some());
-    assert!(generic
-        .config
-        .unconfirmed_audit_notification_authorizer
-        .is_some());
+    assert!(generic.config.policy.is_some());
+    assert!(generic.config.policy.is_some());
 
     let bip = BACnetServer::<BipTransport>::bip_builder()
         .audit_notification_sink(sink)
-        .audit_notification_authorizer(|_| true)
-        .unconfirmed_audit_notification_authorizer(|_| true);
+        .policy(
+            crate::FnPolicy::new()
+                .audit_notification(|_| true)
+                .unconfirmed_audit_notification(|_| true),
+        );
     assert_eq!(bip.config.audit_notification_sink, Some(sink));
-    assert!(bip.config.audit_notification_authorizer.is_some());
-    assert!(bip
-        .config
-        .unconfirmed_audit_notification_authorizer
-        .is_some());
+    assert!(bip.config.policy.is_some());
+    assert!(bip.config.policy.is_some());
 }
 
 #[cfg(feature = "sc-tls")]
@@ -570,14 +582,14 @@ fn sc_builder_exposes_the_same_explicit_receiver_policy() {
         bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>,
     >::sc_builder()
     .audit_notification_sink(sink)
-    .audit_notification_authorizer(|_| true)
-    .unconfirmed_audit_notification_authorizer(|_| true);
+    .policy(
+        crate::FnPolicy::new()
+            .audit_notification(|_| true)
+            .unconfirmed_audit_notification(|_| true),
+    );
     assert_eq!(sc.config.audit_notification_sink, Some(sink));
-    assert!(sc.config.audit_notification_authorizer.is_some());
-    assert!(sc
-        .config
-        .unconfirmed_audit_notification_authorizer
-        .is_some());
+    assert!(sc.config.policy.is_some());
+    assert!(sc.config.policy.is_some());
 }
 
 #[path = "audit_notification_receipt_tests.rs"]

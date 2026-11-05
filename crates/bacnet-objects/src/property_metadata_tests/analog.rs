@@ -1,11 +1,14 @@
 use super::*;
+use crate::property_metadata::is_writable_property;
+use bacnet_types::error::RemoteError;
 
 use crate::analog::{AnalogInputObject, AnalogOutputObject, AnalogValueObject};
+use bacnet_types::enums::EngineeringUnits;
 
 fn analog_objects(configuration: u8) -> [Box<dyn BACnetObject>; 3] {
-    let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
-    let mut av = AnalogValueObject::new(1, "AV-1", 62).unwrap();
-    let mut ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
+    let mut av = AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
+    let mut ao = AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     if configuration & 1 != 0 {
         ai.configure_fault_out_of_range(-10.0, 100.0).unwrap();
         av.configure_fault_out_of_range(-10.0, 100.0).unwrap();
@@ -110,6 +113,10 @@ fn property_metadata_analog_exact_required_and_instance_projections() {
             if kind == ObjectType::ANALOG_OUTPUT {
                 requires.extend(commandable);
             }
+            // Tables 12-2 and 12-4 footnote 2, Table 12-3 footnote 1: an
+            // analog object that reports COV, as these do, has COV_Increment
+            // (#2193).
+            requires.push(P::COV_INCREMENT);
             if kind != ObjectType::ANALOG_INPUT {
                 expected.extend([P::VALUE_SOURCE, P::VALUE_SOURCE_ARRAY, P::LAST_COMMAND_TIME]);
                 requires.extend([P::VALUE_SOURCE, P::VALUE_SOURCE_ARRAY, P::LAST_COMMAND_TIME]);
@@ -131,8 +138,14 @@ fn property_metadata_analog_exact_required_and_instance_projections() {
                 .collect();
             required.push(P::PROPERTY_LIST);
             assert_unique_and_canonical(object.as_ref());
-            assert_eq!(object.required_properties().as_ref(), required);
-            assert_eq!(object.property_list().as_ref(), expected);
+            assert_eq!(
+                crate::test_rows::required(&object.property_metadata()),
+                required
+            );
+            assert_eq!(
+                crate::test_rows::listed(&object.property_metadata()),
+                crate::test_rows::listed_from(&expected)
+            );
             let metadata = object.property_metadata();
             assert_eq!(metadata.len(), expected.len() + 1);
             for row in metadata.iter() {
@@ -147,6 +160,12 @@ fn property_metadata_analog_exact_required_and_instance_projections() {
                     assert_eq!(
                         row.presence_condition,
                         Some(PropertyPresenceCondition::IntrinsicReportingOptional),
+                        "{kind:?} {p:?}"
+                    );
+                } else if p == P::COV_INCREMENT {
+                    assert_eq!(
+                        row.presence_condition,
+                        Some(PropertyPresenceCondition::CovReporting),
                         "{kind:?} {p:?}"
                     );
                 }
@@ -250,7 +269,7 @@ fn property_metadata_analog_write_capabilities_match_dispatch() {
                     _ => PropertyWriteCapability::ReadOnly,
                 };
                 assert_eq!(row.write_capability, capability, "{p:?}");
-                assert_eq!(object.is_writable_property(p), capability.is_writable());
+                assert_eq!(is_writable_property(&*object, p), capability.is_writable());
                 let index = (p == P::PRIORITY_ARRAY).then_some(8);
                 let value = object.read_property(p, index).unwrap();
                 let result = object.write_property_from(
@@ -269,9 +288,11 @@ fn property_metadata_analog_write_capabilities_match_dispatch() {
                     "{p:?}, OOS={out_of_service}: {result:?}"
                 );
                 if !expected {
-                    assert!(matches!(result, Err(Error::Protocol { class, code })
-                    if class == bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32
-                        && code == bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32));
+                    assert!(
+                        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == bacnet_types::enums::ErrorClass::PROPERTY
+                        && code == bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED)
+                    );
                 }
             }
             if commandable {
@@ -289,9 +310,9 @@ fn property_metadata_analog_write_capabilities_match_dispatch() {
                 }
                 assert!(
                     matches!(object.write_property(P::PRIORITY_ARRAY, None, PropertyValue::Null, None),
-                Err(Error::Protocol { class, code })
-                    if class == bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32
-                        && code == bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32)
+                Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == bacnet_types::enums::ErrorClass::PROPERTY
+                        && code == bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED)
                 );
             }
         }

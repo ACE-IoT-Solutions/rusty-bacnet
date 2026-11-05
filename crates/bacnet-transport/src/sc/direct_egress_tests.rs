@@ -69,12 +69,18 @@ async fn ordinary_and_original_response_share_sequence_queue_and_peer_limits() {
     second.await.unwrap();
     assert!(matches!(
         member.egress.send_npdu(&[1, 0, 3], &[]).await,
-        Err(DirectSendError::Failed(Error::Encoding(_)))
+        Err(DirectSendError::Failed(Error::SendTooLong {
+            length: 3,
+            limit: 2
+        }))
     ));
     let (_owner, small) = self::member((5, 2));
     assert!(matches!(
         small.egress.send_npdu(&[1, 0], &[]).await,
-        Err(DirectSendError::Failed(Error::Encoding(_)))
+        Err(DirectSendError::Failed(Error::SendTooLong {
+            length: 6,
+            limit: 5
+        }))
     ));
 }
 #[tokio::test(start_paused = true)]
@@ -95,9 +101,11 @@ async fn ordinary_direct_expired_queue_and_sealed_registry_never_reopen() {
     let late = pending.commit_with_limits((100, 96), Duration::from_secs(5));
     assert!(!late.is_current());
     assert!(owner.route(&[3; 6]).is_none());
-    assert!(owner
-        .reserve([4; 16], [4; 6], [1; 16], [1; 6], DirectRole::Outbound, 2)
-        .is_err());
+    assert!(
+        owner
+            .reserve([4; 16], [4; 6], [1; 16], [1; 6], DirectRole::Outbound, 2)
+            .is_err()
+    );
     assert!(matches!(
         member.egress.send_npdu(&[1, 0], &[]).await,
         Err(DirectSendError::Unavailable)

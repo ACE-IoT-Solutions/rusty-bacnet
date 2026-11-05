@@ -21,6 +21,7 @@ use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{BACnetDestination, BACnetRecipient};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::Time;
 use std::borrow::Cow;
 use std::sync::Mutex as StdMutex;
@@ -77,15 +78,11 @@ impl BACnetObject for IndexBlind {
             .write_property(property, array_index, value, priority)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        self.0.property_list()
-    }
-
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
         self.0.property_metadata()
     }
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn DurableWrites> {
+    fn durable_writes(&mut self) -> Option<&mut dyn DurableWrites> {
         Some(self)
     }
 }
@@ -98,19 +95,19 @@ impl DurableWrites for IndexBlind {
         value: &PropertyValue,
     ) -> StageStep {
         self.0
-            .durable_writes_internal()
+            .durable_writes()
             .expect("a forwarder saves its lists")
             .stage_write(property, None, value)
     }
 
     fn release_staged_write(&mut self, staged: &SaveWait) {
-        if let Some(writes) = self.0.durable_writes_internal() {
+        if let Some(writes) = self.0.durable_writes() {
             writes.release_staged_write(staged);
         }
     }
 
     fn settle_forgotten_writes(&mut self) -> Option<SaveWait> {
-        self.0.durable_writes_internal()?.settle_forgotten_writes()
+        self.0.durable_writes()?.settle_forgotten_writes()
     }
 }
 
@@ -194,8 +191,9 @@ async fn a_local_write_refused_before_the_object_releases_what_it_staged() {
     let mut db = clocked_test_database();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 1426,
-            name: "Staged release".into(),
+            identity: bacnet_objects::DeviceIdentity::new(1426, 0)
+                .expect("valid Device identity")
+                .with_name("Staged release"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -203,6 +201,7 @@ async fn a_local_write_refused_before_the_object_releases_what_it_staged() {
     .unwrap();
     db.add(Box::new(IndexBlind(forwarder))).unwrap();
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(1426, 0).unwrap())
         .transport(TestTransport::new())
         .database(db)
         .enable_event_enrollment(false)
@@ -215,9 +214,9 @@ async fn a_local_write_refused_before_the_object_releases_what_it_staged() {
         .await
         .unwrap_err();
     assert!(
-        matches!(error, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32),
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY),
         "{error:?}"
     );
     // Released, it goes back to the list NF-1 serves: none written yet.

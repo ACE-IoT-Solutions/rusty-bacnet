@@ -155,7 +155,7 @@ fn project_buffer_ready(
     object: &dyn BACnetObject,
     device: Option<ObjectIdentifier>,
 ) -> Option<NotificationParameters> {
-    let report = object.buffer_ready_report_internal()?;
+    let report = object.event_reporting()?.buffer_ready_report()?;
     Some(NotificationParameters::BufferReady {
         buffer_property: BACnetDeviceObjectPropertyReference {
             object_identifier: object.object_identifier(),
@@ -500,8 +500,18 @@ fn project_event_enrollment_reliability(
         let referenced_value = match captured_value {
             CapturedReferencedValue::Value(value) => Some(value.clone()),
             CapturedReferencedValue::Unavailable => None,
+            // An index on a scalar reads the whole value, as before objects
+            // refused that index themselves (#2274).
             CapturedReferencedValue::NotEvaluated => monitored
-                .read_property(reference.property_identifier, reference.array_index)
+                .read_property(
+                    reference.property_identifier,
+                    reference.array_index.filter(|_| {
+                        bacnet_objects::property_metadata::is_array_property(
+                            monitored,
+                            reference.property_identifier,
+                        )
+                    }),
+                )
                 .ok(),
         };
         if let Some(value) = referenced_value {
@@ -735,7 +745,7 @@ fn append_property_value(
         priority: None,
     };
     let mut entry = BytesMut::new();
-    encode_bacnet_property_value(&property_value, &mut entry);
+    encode_bacnet_property_value(&property_value, &mut entry).ok()?;
     validate_tlv_sequence(&entry, "committed reliability property value").ok()?;
     encoded.extend_from_slice(&entry);
     Some(())

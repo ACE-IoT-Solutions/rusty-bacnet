@@ -8,12 +8,12 @@
 //! registered, and each one is counted, while a unicast sender still gets
 //! through.
 
-use super::groups::{BipGroups, GroupSources};
+use super::groups::GroupDrops;
 use super::receive_counters::ReceiveDrops;
 use super::*;
 use crate::udp_metadata::ReceivedDatagram;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 /// An NPDU carrying I-Am for Device 7.
 const I_AM: &[u8] = &[
@@ -74,25 +74,31 @@ async fn context(
     broadcast_port: u16,
     drops: &Drops,
 ) -> (RecvContext, mpsc::Receiver<ReceivedNpdu>) {
+    let broadcast = SocketAddrV4::new(SUBNET_BROADCAST, broadcast_port);
+    context_with(bbmd, broadcast, drops).await
+}
+
+/// [`context`] for a link whose local broadcasts go to `broadcast`.
+async fn context_with(
+    bbmd: Option<BbmdState>,
+    broadcast: SocketAddrV4,
+    drops: &Drops,
+) -> (RecvContext, mpsc::Receiver<ReceivedNpdu>) {
     let (socket, _) = loopback_socket().await;
     let (npdu_tx, npdu_rx) = mpsc::channel(8);
     let ctx = RecvContext {
-        local_mac: encode_bip_mac(LOCAL.octets(), 0xBAC0),
-        socket,
-        npdu_tx,
-        bbmd: bbmd.map(|state| Arc::new(std::sync::Mutex::new(state))),
-        broadcast_addr: SUBNET_BROADCAST,
-        broadcast_port,
-        client_management: Arc::default(),
-        management_limiter: Arc::new(std::sync::Mutex::new(ManagementRateLimiter::new())),
-        fanout: None,
-        group_sources: GroupSources::new(
-            BipGroups::new(SUBNET_BROADCAST, 0xBAC0, LOCAL),
-            Arc::clone(&drops.sender),
-            Arc::clone(&drops.origin),
-        ),
+        group_drops: GroupDrops {
+            sources: Arc::clone(&drops.sender),
+            origins: Arc::clone(&drops.origin),
+        },
         drops: Arc::clone(&drops.receive),
-        force_dbtn_forward_failure: false,
+        ..RecvContext::for_test(
+            socket,
+            npdu_tx,
+            SocketAddrV4::new(LOCAL, 0xBAC0),
+            broadcast,
+            bbmd.map(|state| Arc::new(std::sync::Mutex::new(state))),
+        )
     };
     (ctx, npdu_rx)
 }
@@ -156,18 +162,22 @@ async fn a_bbmd_forwards_a_group_origin_nowhere() {
         BvlcResultCode::SUCCESSFUL_COMPLETION
     );
     let drops = Drops::default();
-    let (mut ctx, mut rx) = context(Some(state), local_broadcast_port, &drops).await;
-    // Rebroadcasts go to the sink, so the link's broadcast IP is loopback.
-    ctx.broadcast_addr = Ipv4Addr::LOCALHOST;
+    // Rebroadcasts go to the sink, so the link's broadcast IP is loopback,
+    // which is a group only at the link's own port.
+    let broadcast = SocketAddrV4::new(Ipv4Addr::LOCALHOST, local_broadcast_port);
+    let (ctx, mut rx) = context_with(Some(state), broadcast, &drops).await;
+    let origins = [
+        ([255, 255, 255, 255], 0xBAC0),
+        (Ipv4Addr::LOCALHOST.octets(), local_broadcast_port),
+        ([224, 0, 0, 1], 0xBAC0),
+        ([239, 255, 255, 250], 0xBAC0),
+    ];
 
-    for origin in GROUP_ORIGINS {
+    for origin in origins {
         handle_bvll_message(&forwarded(origin), SENDER, Delivery::Unicast, &ctx).await;
     }
     assert!(rx.try_recv().is_err(), "nothing is handed up");
-    assert_eq!(
-        drops.origin.load(Ordering::Relaxed),
-        GROUP_ORIGINS.len() as u64
-    );
+    assert_eq!(drops.origin.load(Ordering::Relaxed), origins.len() as u64);
     assert!(drops.none_elsewhere());
 
     // A station's frame goes to the subnet and the foreign device, and is
@@ -247,9 +257,9 @@ async fn receive_from(
         destination: destination.into(),
         arrival_index: None,
         os_group_delivery: None,
+        arrival_stamp: None,
     };
     let local = IngressAddresses {
-        local_ip: LOCAL,
         unicast_ips: vec![LOCAL],
         wildcard_bind: false,
         listener_interface: None,
@@ -359,19 +369,14 @@ async fn a_bbmd_registers_and_forwards_nothing_from_a_group_source() {
 #[test]
 fn a_broadcast_address_that_is_this_nodes_own_is_no_group_source() {
     let sources = |broadcast, interface| {
-        let groups = BipGroups::new(broadcast, 0xBAC0, interface);
-        GroupSources::new(groups, Arc::default(), Arc::default())
+        bacnet_bip_core::node::Groups::new(SocketAddrV4::new(broadcast, 0xBAC0), interface)
     };
     let own = sources(LOCAL, LOCAL);
     let loopback = sources(Ipv4Addr::LOCALHOST, LOCAL);
     let elsewhere = sources(LOCAL, Ipv4Addr::new(192, 0, 2, 11));
     for port in [0xBAC0, 0xBAC1] {
-        assert!(own.admits_sender(SocketAddrV4::new(LOCAL, port)), "{port}");
-        let from_loopback = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
-        assert!(loopback.admits_sender(from_loopback), "{port}");
-        assert!(
-            !elsewhere.admits_sender(SocketAddrV4::new(LOCAL, port)),
-            "{port}"
-        );
+        assert!(!own.contains_ip(LOCAL), "{port}");
+        assert!(!loopback.contains_ip(Ipv4Addr::LOCALHOST), "{port}");
+        assert!(elsewhere.contains_ip(LOCAL), "{port}");
     }
 }

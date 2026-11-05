@@ -4,6 +4,7 @@
 //! an analog present_value against HIGH_LIMIT and LOW_LIMIT with a DEADBAND
 //! to prevent oscillation at the boundary.
 
+use crate::prelude::*;
 use core::ops::ControlFlow;
 
 use bacnet_types::bitstring::{EventTransitionBits, LimitEnable};
@@ -180,6 +181,9 @@ pub enum EventTransitionCommitError {
         /// The object's current state when the commit was attempted.
         actual: EventState,
     },
+    /// Event_Detection_Enable is FALSE, and Clause 13.2.2.1 allows no
+    /// transition away from NORMAL then.
+    DetectionDisabled,
 }
 
 /// Pending (delayed) intrinsic-reporting transition state, shared by every
@@ -1093,11 +1097,13 @@ impl CommandFailureDetector {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "event-reporting"))]
 pub(crate) use history::commit_test_proposal;
 pub(crate) use history::impl_builtin_intrinsic_reporting;
 pub(crate) use state_reporting::impl_change_of_state_reporting;
 
+#[cfg(all(test, feature = "event-reporting"))]
+mod fault_reporting_tests;
 #[cfg(test)]
 mod fault_tests;
 #[cfg(test)]

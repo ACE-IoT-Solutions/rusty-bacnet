@@ -1,5 +1,5 @@
 use super::{ColorObject, ColorTemperatureObject};
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
@@ -14,7 +14,7 @@ use crate::property_metadata::{
 
 // The rows follow the addendum's property tables (Table 12-X for Color,
 // Table 12-Y for Color Temperature), in their order, with Property_List
-// last so the projection helper leaves it out (#1474).
+// last (#1474).
 //
 // - Conformance is the table's code: W for Present_Value and Color_Command,
 //   R or O for the rest.
@@ -36,8 +36,8 @@ use crate::property_metadata::{
 //   Temperature's Min_Pres_Value and Max_Pres_Value are implemented as a
 //   pair, as the table's footnote asks.
 // - Presence is None on every base row, and neither object is createable at
-//   runtime (the network factory doesn't build them). Property_List is the
-//   only array; COV support is the objects' own `supports_cov`.
+//   runtime (the `creation` table doesn't build them). Property_List is the
+//   only array; COV support is the objects' own `cov()`.
 const COLOR_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::OBJECT_IDENTIFIER, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::OBJECT_NAME, RequiredRead, None, ReadOnly),
@@ -76,7 +76,7 @@ pub(super) fn for_color_object(object: &ColorObject) -> Cow<'_, [PropertyMetadat
     with_optional(
         COLOR_BASE,
         object.value_source(),
-        object.audit_policy(),
+        object.audit_overrides(),
         object.profile(),
     )
 }
@@ -87,7 +87,7 @@ pub(super) fn for_color_temperature_object(
     with_optional(
         COLOR_TEMPERATURE_BASE,
         object.value_source(),
-        object.audit_policy(),
+        object.audit_overrides(),
         object.profile(),
     )
 }

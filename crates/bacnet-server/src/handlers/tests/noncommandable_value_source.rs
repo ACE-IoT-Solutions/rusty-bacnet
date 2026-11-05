@@ -17,8 +17,9 @@ use bacnet_objects::command_source::{CommandDeviceBinding, CommandOrigin};
 use bacnet_objects::present_value_access::PresentValueAccess;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
-use bacnet_types::constructed::BACnetAddress;
 use bacnet_types::MacAddr;
+use bacnet_types::constructed::BACnetAddress;
+use bacnet_types::enums::EngineeringUnits;
 
 const VS: PropertyIdentifier = PropertyIdentifier::VALUE_SOURCE;
 const PV: PropertyIdentifier = PropertyIdentifier::PRESENT_VALUE;
@@ -71,7 +72,7 @@ fn write_from(
     }
     .encode(&mut request)
     .unwrap();
-    handle_write_property_observed(db, &request, None, None, Some(origin)).map(|_| ())
+    write::write_property(db, &request, None, None, Some(origin)).map(|_| ())
 }
 
 fn tracked_color() -> (ObjectDatabase, ObjectIdentifier) {
@@ -141,8 +142,13 @@ fn a_colour_write_publishes_its_writer_who_alone_corrects_it() {
 
 #[test]
 fn an_unbound_writer_publishes_its_address_and_corrects_in_the_same_wpm() {
-    let mut value =
-        AnalogValueObject::with_access(1, "AV-1", 62, PresentValueAccess::Writable).unwrap();
+    let mut value = AnalogValueObject::with_access(
+        1,
+        "AV-1",
+        EngineeringUnits::DEGREES_CELSIUS,
+        PresentValueAccess::Writable,
+    )
+    .unwrap();
     value.set_value_source_tracking(true);
     let (mut db, oid) = db_with(Box::new(value));
     // REAL 42.0 is 42 28 00 00.
@@ -168,20 +174,18 @@ fn an_unbound_writer_publishes_its_address_and_corrects_in_the_same_wpm() {
     }
     .encode(&mut request)
     .unwrap();
-    let mut snapshots = crate::life_safety_cov::LifeSafetyCovSnapshots::default();
-    let outcome = handle_write_property_multiple_observed(
+    let outcome = write::write_property_multiple(
         &mut db,
         &request,
-        &mut snapshots,
         None,
         None,
         None,
         Some(&writer(Some(30))),
     );
     match outcome {
-        WritePropertyMultipleOutcome::Success { .. } => {}
-        WritePropertyMultipleOutcome::Error { error, .. } => panic!("{error:?}"),
-        WritePropertyMultipleOutcome::Reject { reason } => panic!("{reason:?}"),
+        WpmOutcome::Success { .. } => {}
+        WpmOutcome::Error { error, .. } => panic!("{error:?}"),
+        WpmOutcome::Reject { reason } => panic!("{reason:?}"),
     }
     assert_eq!(read_wire(&db, oid, VS), DEVICE_77);
 }

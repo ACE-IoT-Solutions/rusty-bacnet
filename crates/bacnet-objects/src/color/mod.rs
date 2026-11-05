@@ -10,13 +10,21 @@
 //! ramp where it stands (see `engine`). A Present_Value write moves the
 //! output as the object's Transition says.
 //!
+//! At the device's start the server drives each output that nothing has
+//! driven yet to its default, Default_Color or Default_Color_Temperature,
+//! at once; a zero default keeps the value the object came back with from
+//! its storage (see `persistence`), and with nothing stored the output stays
+//! undriven. Until it is driven, In_Progress reads NOT_CONTROLLED (#1526).
+//! Storage keeps a default a peer writes too, so the rule applies to a zero
+//! default written over the network (#1956).
+//!
 //! Neither object has a priority array, and their property tables have no
 //! Status_Flags, Event_State, Reliability or Out_Of_Service, so the objects
 //! serve none of them. Value_Source, once tracked, names the last writer of
 //! Present_Value (#1552).
 
-use std::ops::RangeInclusive;
-use std::time::Duration;
+use core::ops::RangeInclusive;
+use core::time::Duration;
 
 use bacnet_types::constructed::BACnetXyColor;
 use bacnet_types::enums::ColorTransition;
@@ -29,20 +37,32 @@ use crate::common;
 mod command;
 mod engine;
 mod metadata;
+mod persistence;
+mod saving;
 mod temperature;
 mod xy;
 
+#[cfg(feature = "std")]
+pub use persistence::FileColorOutputPersistence;
+pub use persistence::{ColorOutputPersistence, ColorOutputSnapshot, ColorOutputValue};
+pub use saving::ColorOutputSaveCounters;
 pub use temperature::ColorTemperatureObject;
 pub use xy::ColorObject;
 
 #[cfg(test)]
 mod command_tests;
 #[cfg(test)]
+mod default_tests;
+#[cfg(test)]
 mod engine_tests;
 #[cfg(test)]
 mod metadata_tests;
 #[cfg(test)]
+mod persistence_tests;
+#[cfg(test)]
 mod rows_tests;
+#[cfg(test)]
+mod start_tests;
 #[cfg(test)]
 mod value_source_tests;
 

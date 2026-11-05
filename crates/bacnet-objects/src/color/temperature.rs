@@ -1,9 +1,10 @@
 //! The Color Temperature object (type 64, Addendum 135-2020ca Clause 12.Y):
 //! a correlated colour temperature in kelvin.
 
-use std::borrow::Cow;
-use std::sync::Arc;
-use std::time::Duration;
+use crate::prelude::*;
+use alloc::borrow::Cow;
+use alloc::sync::Arc;
+use core::time::Duration;
 
 use bacnet_types::constructed::BACnetColorCommand;
 use bacnet_types::enums::{ColorOperation, ColorTransition, ObjectType, PropertyIdentifier};
@@ -11,16 +12,30 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::engine::Engine;
+use super::persistence::ColorOutputValue;
+use super::saving::{OutputStorage, impl_color_durable};
 use super::{
     command, metadata, milliseconds, noncommandable_audit_policy, written_transition,
     written_unsigned,
 };
-use crate::audit::{AuditPolicyAuthority, ObjectAuditPolicy};
+use crate::audit::ObjectAuditPolicy;
 use crate::command_source::{CommandOrigin, SingleValueSource};
 use crate::common::{self, read_identity_properties};
 use crate::object_profile::{ObjectProfile, ProfileState, TagsPersistence};
-use crate::traits::{BACnetObject, DeadlineWaker, MonotonicClock};
+use crate::traits::BACnetObject;
 use crate::transition::Transition;
+
+mod output;
+
+/// A written temperature: 1000 to 30000 K, clamped to `min..=max`; any other
+/// is VALUE_OUT_OF_RANGE.
+fn written_kelvin(kelvin: u64, min: u32, max: u32) -> Result<u32, Error> {
+    u32::try_from(kelvin)
+        .ok()
+        .filter(|kelvin| command::KELVIN.contains(kelvin))
+        .map(|kelvin| kelvin.clamp(min, max))
+        .ok_or_else(common::value_out_of_range_error)
+}
 
 /// How far a fading or ramping colour temperature moves between COV samples
 /// of Tracking_Value, in kelvin. Ten kelvin is fine enough that a
@@ -85,6 +100,12 @@ pub struct ColorTemperatureObject {
     value_source: SingleValueSource,
     /// Tags, Profile_Location and Profile_Name, once provisioned (#1553).
     profile: ProfileState,
+    /// Present_Value storage, once taken (#1526).
+    output: OutputStorage,
+    /// Whether Present_Value came back from that storage.
+    restored: bool,
+    /// The temperature storage brought back, until a start takes it.
+    to_restore: Option<u32>,
     engine: Engine<u32>,
 }
 
@@ -114,8 +135,45 @@ impl ColorTemperatureObject {
             audit_policy: ObjectAuditPolicy::default(),
             value_source: SingleValueSource::default(),
             profile: ProfileState::default(),
+            output: OutputStorage::default(),
+            restored: false,
+            to_restore: None,
             engine: Engine::new(KELVIN_SAMPLE_STEP),
         })
+    }
+
+    /// Drive the output as the device's start does (#1526), as a Color
+    /// object's [`start_output`](super::ColorObject::start_output) does.
+    ///
+    /// A non-zero Default_Color_Temperature becomes Present_Value at once,
+    /// whatever was set before the start. With a default of 0 the output
+    /// keeps, in order: the temperature restored from storage; else one set
+    /// before the start; else nothing, and In_Progress reads NOT_CONTROLLED
+    /// until a Present_Value or Color_Command write drives it (Clause
+    /// 12.Y.4). Either value is clamped to Min_Pres_Value and
+    /// Max_Pres_Value as they stand at the start.
+    pub fn start_output(&mut self) {
+        let restored = self.to_restore.take();
+        let target = match self.default_color_temperature {
+            0 => restored,
+            default => Some(default),
+        };
+        // Without a target, a temperature set before the start stays, and
+        // with none the output stays undriven.
+        if let Some(kelvin) = target.map(|kelvin| self.clamped(kelvin)) {
+            if kelvin != self.present_value {
+                self.value_source.forget();
+            }
+            self.present_value = kelvin;
+            self.engine.start(None);
+            self.output_changed();
+        }
+    }
+
+    /// Present_Value may have changed: save it, if the object keeps it.
+    fn output_changed(&mut self) {
+        self.output
+            .note(ColorOutputValue::Kelvin(self.present_value));
     }
 
     /// Track Value_Source (Clause 19.5, #1552), as a Color object's
@@ -169,7 +227,7 @@ impl ColorTemperatureObject {
         self.audit_policy = noncommandable_audit_policy(policy);
     }
 
-    pub(super) fn audit_policy(&self) -> &ObjectAuditPolicy {
+    pub(super) fn audit_overrides(&self) -> &ObjectAuditPolicy {
         &self.audit_policy
     }
 
@@ -205,6 +263,7 @@ impl ColorTemperatureObject {
             self.engine.halt(self.engine.now());
             self.present_value = clamped;
             self.value_source.forget();
+            self.output_changed();
         }
         if self.default_color_temperature != 0 {
             self.default_color_temperature = self.default_color_temperature.clamp(min, max);
@@ -241,11 +300,7 @@ impl ColorTemperatureObject {
     /// A written temperature: refused outside 1000 to 30000 K, otherwise
     /// clamped to Min_Pres_Value and Max_Pres_Value (Clause 12.Y.4).
     fn written_kelvin(&self, kelvin: u64) -> Result<u32, Error> {
-        u32::try_from(kelvin)
-            .ok()
-            .filter(|kelvin| command::KELVIN.contains(kelvin))
-            .map(|kelvin| self.clamped(kelvin))
-            .ok_or_else(common::value_out_of_range_error)
+        written_kelvin(kelvin, self.min_pres_value, self.max_pres_value)
     }
 
     fn clamped(&self, kelvin: u32) -> u32 {
@@ -257,6 +312,15 @@ impl ColorTemperatureObject {
     /// ends it (Clause 12.Y.6.1). Whether it set Present_Value: a STOP with
     /// nothing moving doesn't.
     fn take_color_command(&mut self, command: BACnetColorCommand) -> bool {
+        let set = self.carry_out(command);
+        if set {
+            self.output_changed();
+        }
+        set
+    }
+
+    /// [`take_color_command`](Self::take_color_command) without the save.
+    fn carry_out(&mut self, command: BACnetColorCommand) -> bool {
         self.color_command = command;
         let now = self.engine.now();
         let tracking = self.engine.tracking(self.present_value, now);
@@ -342,10 +406,13 @@ impl ColorTemperatureObject {
             _ => None,
         };
         self.engine.start(transition);
+        self.output_changed();
     }
 }
 
 impl BACnetObject for ColorTemperatureObject {
+    crate::traits::lend_audit_policy!();
+
     fn object_identifier(&self) -> ObjectIdentifier {
         self.oid
     }
@@ -359,6 +426,7 @@ impl BACnetObject for ColorTemperatureObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = read_identity_properties!(self, property, array_index) {
             return result;
         }
@@ -408,6 +476,7 @@ impl BACnetObject for ColorTemperatureObject {
         value: PropertyValue,
         priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
@@ -432,11 +501,7 @@ impl BACnetObject for ColorTemperatureObject {
             // which the restart rule of Clause 12.Y.4 gives a meaning of its
             // own: bring back the temperature from before the restart.
             p if p == PropertyIdentifier::DEFAULT_COLOR_TEMPERATURE => {
-                self.default_color_temperature = match value {
-                    PropertyValue::Unsigned(0) => 0,
-                    PropertyValue::Unsigned(kelvin) => self.written_kelvin(kelvin)?,
-                    _ => return Err(common::invalid_data_type_error()),
-                };
+                self.write_default_color_temperature(value)?;
             }
             p if p == PropertyIdentifier::DEFAULT_FADE_TIME => {
                 self.default_fade_time = written_unsigned(value, command::FADE_TIME_MS)?;
@@ -454,8 +519,7 @@ impl BACnetObject for ColorTemperatureObject {
                 return Err(common::unhandled_write_error(
                     self.property_metadata().as_ref(),
                     property,
-                    array_index,
-                ))
+                ));
             }
         }
         Ok(())
@@ -469,6 +533,7 @@ impl BACnetObject for ColorTemperatureObject {
         priority: Option<u8>,
         origin: &CommandOrigin,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         match property {
             PropertyIdentifier::VALUE_SOURCE => {
                 self.value_source.correct(array_index, value, origin)
@@ -488,56 +553,54 @@ impl BACnetObject for ColorTemperatureObject {
         metadata::for_color_temperature_object(self)
     }
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        if self.output.is_some() {
+            return Some(self);
+        }
         self.profile.capability()
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
+    crate::traits::lend_cov_reporting!();
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
+    }
+}
+
+impl crate::traits::CovReporting for ColorTemperatureObject {}
+
+crate::traits::impl_audit_policy!(ColorTemperatureObject);
+
+impl crate::traits::Timed for ColorTemperatureObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.engine.bind_clock(clocks.monotonic.clone());
+        self.engine.bind_waker(clocks.deadline_waker.clone());
     }
 
-    fn supports_cov(&self) -> bool {
-        true
+    fn start_output(&mut self) {
+        self.start_output();
     }
 
-    fn audit_object_policy_internal(&self) -> ObjectAuditPolicy {
-        self.audit_policy
-    }
-
-    fn audit_policy_authority_internal(&mut self) -> Option<AuditPolicyAuthority<'_>> {
-        Some(AuditPolicyAuthority::new(&mut self.audit_policy))
-    }
-
-    fn advance_time_internal(&mut self, elapsed: Duration) -> bool {
-        self.engine.advance_by(elapsed)
-    }
-
-    fn bind_monotonic_clock_internal(&mut self, clock: Option<Arc<MonotonicClock>>) {
-        self.engine.bind_clock(clock);
-    }
-
-    fn bind_deadline_waker_internal(&mut self, waker: Option<Arc<DeadlineWaker>>) {
-        self.engine.bind_waker(waker);
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: Duration) -> bool {
-        self.profile.expire(now);
-        self.engine.advance_to(now)
-    }
-
-    fn next_monotonic_deadline_internal(&self) -> Option<Duration> {
-        self.engine.deadline()
-    }
-
-    fn set_tracking_cov_increment_internal(&mut self, finest: Option<f64>) {
+    fn set_tracking_cov_increment(&mut self, finest: Option<f64>) {
         self.engine.set_finest_increment(finest);
     }
 
+    fn advance_monotonic_time(&mut self, now: Duration) -> bool {
+        self.engine.advance_to(now)
+    }
+
+    fn next_monotonic_deadline(&self) -> Option<Duration> {
+        self.engine.deadline()
+    }
+
     /// A copy that reads as the object does now; see the Color object's.
-    fn cov_snapshot_internal(&self) -> Option<Box<dyn BACnetObject>> {
+    fn cov_snapshot(&self) -> Option<Box<dyn BACnetObject>> {
         Some(Box::new(Self {
             engine: self.engine.frozen(),
             ..self.clone()
         }))
     }
 }
+
+impl_color_durable!(ColorTemperatureObject);

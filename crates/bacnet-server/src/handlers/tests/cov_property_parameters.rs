@@ -1,7 +1,8 @@
 use super::*;
 use bacnet_encoding::{primitives, tags};
 use bacnet_services::cov::{SubscribeCOVPropertyRequest, SubscribeCOVRequest};
-use std::time::{Duration, Instant};
+use bacnet_types::error::RemoteError;
+use std::time::Duration;
 
 fn object(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::ANALOG_INPUT, instance).unwrap()
@@ -41,7 +42,8 @@ fn subscribe_cov_property_parameter_errors_precede_lookup_and_expired_entry_purg
     )
     .unwrap();
     let mut expired = (*seeded[0]).clone();
-    expired.expires_at = Some(Instant::now() - Duration::from_secs(1));
+    expired.expires_at =
+        Some(crate::runtime_clock::core_now() - bacnet_time::Duration::from_secs(1));
     table.subscribe(expired.clone()).unwrap();
     for target in [object(1), object(999)] {
         for (confirmed, lifetime, reject) in [
@@ -58,12 +60,16 @@ fn subscribe_cov_property_parameter_errors_precede_lookup_and_expired_entry_purg
             )
             .unwrap_err();
             if reject {
-                assert!(matches!(error, Error::Reject { reason }
-                    if reason == RejectReason::INCONSISTENT_PARAMETERS.to_raw()));
+                assert!(
+                    matches!(error, Error::Remote(RemoteError::Reject { reason })
+                    if reason == RejectReason::INCONSISTENT_PARAMETERS)
+                );
             } else {
-                assert!(matches!(error, Error::Protocol { class, code }
-                    if class == ErrorClass::SERVICES.to_raw() as u32
-                    && code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32));
+                assert!(
+                    matches!(error, Error::Remote(RemoteError::Error { class, code })
+                    if class == ErrorClass::SERVICES
+                    && code == ErrorCode::VALUE_OUT_OF_RANGE)
+                );
             }
             assert_eq!(
                 table.len(),
@@ -71,8 +77,8 @@ fn subscribe_cov_property_parameter_errors_precede_lookup_and_expired_entry_purg
                 "invalid request must not purge even expired entries"
             );
             let current = table
-                .get_subscription(&crate::cov::CovSubscriptionKey::Property {
-                    recipient: crate::cov::CovRecipient::from_endpoint(
+                .get_subscription(&bacnet_device_core::cov::CovSubscriptionKey::Property {
+                    recipient: bacnet_device_core::cov::CovRecipient::from_endpoint(
                         &MacAddr::from_slice(&mac),
                         None,
                     ),
@@ -115,18 +121,23 @@ async fn subscribe_cov_property_positive_renewal_expiry_and_nonexistent_cancel()
     )
     .unwrap()
     .remove(0);
-    assert!(renewed.expires_at.unwrap() > first.expires_at.unwrap() + Duration::from_secs(28000));
+    assert!(
+        renewed.expires_at.unwrap()
+            > first.expires_at.unwrap() + bacnet_time::Duration::from_secs(28000)
+    );
     assert!(renewed.issue_confirmed_notifications);
     assert_eq!(table.len(), 1);
     assert_eq!(table.peer_indefinite_count(&renewed.recipient()), 0);
-    assert!(handle_subscribe_cov_property_with_initial(
-        &mut table,
-        &db,
-        &[1],
-        &raw(object(999), None, None)
-    )
-    .unwrap()
-    .is_empty());
+    assert!(
+        handle_subscribe_cov_property_with_initial(
+            &mut table,
+            &db,
+            &[1],
+            &raw(object(999), None, None)
+        )
+        .unwrap()
+        .is_empty()
+    );
     assert_eq!(table.len(), 1);
     // A real one-second renewal must expire through the handler-created deadline.
     handle_subscribe_cov_property_with_initial(
@@ -139,14 +150,16 @@ async fn subscribe_cov_property_positive_renewal_expiry_and_nonexistent_cancel()
     tokio::time::sleep(Duration::from_millis(1100)).await;
     assert_eq!(table.purge_expired(), 1);
     assert!(table.is_empty());
-    assert!(handle_subscribe_cov_property_with_initial(
-        &mut table,
-        &db,
-        &[1],
-        &raw(object(1), None, None)
-    )
-    .unwrap()
-    .is_empty());
+    assert!(
+        handle_subscribe_cov_property_with_initial(
+            &mut table,
+            &db,
+            &[1],
+            &raw(object(1), None, None)
+        )
+        .unwrap()
+        .is_empty()
+    );
 }
 
 #[test]
@@ -170,4 +183,50 @@ fn subscribe_cov_ordinary_none_and_zero_lifetimes_remain_indefinite() {
     assert_eq!(table.len(), 1);
     // Single-property decode remains structural even for the service-invalid form.
     assert!(SubscribeCOVPropertyRequest::decode(&raw(object(1), Some(false), Some(0))).is_ok());
+}
+
+fn indexed(oid: ObjectIdentifier, property: PropertyIdentifier, index: u32) -> BytesMut {
+    let mut bytes = BytesMut::new();
+    primitives::encode_ctx_unsigned(&mut bytes, 0, 7);
+    primitives::encode_ctx_object_id(&mut bytes, 1, &oid);
+    primitives::encode_ctx_boolean(&mut bytes, 2, true);
+    primitives::encode_ctx_unsigned(&mut bytes, 3, 300);
+    tags::encode_opening_tag(&mut bytes, 4);
+    primitives::encode_ctx_unsigned(&mut bytes, 0, property.to_raw() as u64);
+    primitives::encode_ctx_unsigned(&mut bytes, 1, u64::from(index));
+    tags::encode_closing_tag(&mut bytes, 4);
+    bytes
+}
+
+/// An index on a scalar is PROPERTY_IS_NOT_AN_ARRAY, and on a property the
+/// object lacks UNKNOWN_PROPERTY, though objects now refuse an index on a
+/// scalar in their own reads (#2274).
+#[test]
+fn subscribe_cov_property_index_on_a_scalar_is_not_an_array() {
+    let db = make_db_with_ai();
+    let mut table = CovSubscriptionTable::new();
+    for (property, code) in [
+        (
+            PropertyIdentifier::PRESENT_VALUE,
+            ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
+        ),
+        (
+            PropertyIdentifier::from_raw(200),
+            ErrorCode::UNKNOWN_PROPERTY,
+        ),
+    ] {
+        let error = handle_subscribe_cov_property_with_initial(
+            &mut table,
+            &db,
+            &[1],
+            &indexed(object(1), property, 1),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::Remote(RemoteError::Error { class, code: got })
+                if class == ErrorClass::PROPERTY && got == code),
+            "{property}: {error:?}"
+        );
+    }
+    assert_eq!(table.len(), 0);
 }

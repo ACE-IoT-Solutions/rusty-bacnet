@@ -3,13 +3,16 @@
 
 use super::*;
 use crate::database::ObjectDatabase;
-use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
+use crate::property_metadata::{
+    PropertyConformance, PropertyPresenceCondition, PropertyWriteCapability,
+};
 use bacnet_encoding::constructed::{decode_bdt_entry_list, decode_fdt_entry_list};
 use bacnet_types::bip_port::{BbmdTables, BipPortMode};
 use bacnet_types::constructed::{
     BACnetBDTEntry, BACnetFDTEntry, BACnetHostAddress, BACnetHostNPort,
 };
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::RemoteError;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
@@ -89,8 +92,8 @@ fn read(db: &ObjectDatabase, property: P) -> Result<PropertyValue, Error> {
 
 fn assert_code(result: Result<impl std::fmt::Debug, Error>, class: ErrorClass, code: ErrorCode) {
     assert!(
-        matches!(&result, Err(Error::Protocol { class: c, code: e })
-            if *c == class.to_raw() as u32 && *e == code.to_raw() as u32),
+        matches!(&result, Err(Error::Remote(RemoteError::Error { class: c, code: e }))
+            if *c == class && *e == code),
         "{result:?}"
     );
 }
@@ -112,21 +115,21 @@ fn list_bytes(value: PropertyValue) -> Vec<u8> {
 #[test]
 fn each_mode_lists_its_own_rows_read_only_and_required() {
     let tables: Arc<dyn BbmdTables> = Arc::new(Tables::default());
-    for (mode, ip_mode, present, absent) in [
+    // Table 12-71 footnotes 11 to 13 (#2191).
+    for (mode, ip_mode, present, absent, condition) in [
         (
             BipPortMode::Normal,
             0,
             &[][..],
             &[&BBMD_ROWS[..], &FOREIGN_ROWS[..]],
+            None,
         ),
         (
-            BipPortMode::Foreign {
-                bbmd: host([10, 0, 0, 1], 0xBAC0),
-                subscription_lifetime: 300,
-            },
+            BipPortMode::fixed_foreign(host([10, 0, 0, 1], 0xBAC0), 300),
             1,
             &FOREIGN_ROWS[..],
             &[&BBMD_ROWS[..], &[][..]],
+            Some(PropertyPresenceCondition::ForeignDeviceMode),
         ),
         (
             BipPortMode::Bbmd {
@@ -135,6 +138,7 @@ fn each_mode_lists_its_own_rows_read_only_and_required() {
             2,
             &BBMD_ROWS[..],
             &[&FOREIGN_ROWS[..], &[][..]],
+            Some(PropertyPresenceCondition::BbmdCapable),
         ),
     ] {
         let (mut db, _lease) = published(mode);
@@ -143,8 +147,8 @@ fn each_mode_lists_its_own_rows_read_only_and_required() {
             PropertyValue::Enumerated(ip_mode)
         );
         let object = db.get(&oid()).unwrap();
-        let list = object.property_list();
-        let required = object.required_properties();
+        let list = crate::test_rows::listed(&object.property_metadata());
+        let required = crate::test_rows::required(&object.property_metadata());
         let metadata = object.property_metadata();
         for &property in present {
             assert!(list.contains(&property), "{property} listed");
@@ -153,7 +157,8 @@ fn each_mode_lists_its_own_rows_read_only_and_required() {
                 .iter()
                 .find(|row| row.property_identifier == property)
                 .unwrap();
-            assert_eq!(row.conformance, PropertyConformance::RequiredRead);
+            assert_eq!(row.conformance, PropertyConformance::Optional);
+            assert_eq!(row.presence_condition, condition, "{property}");
             assert_eq!(row.write_capability, PropertyWriteCapability::ReadOnly);
             assert!(read(&db, property).is_ok(), "{property} reads");
         }
@@ -187,10 +192,7 @@ fn each_mode_lists_its_own_rows_read_only_and_required() {
 
 #[test]
 fn foreign_mode_serves_its_bbmd_and_lifetime() {
-    let (db, _lease) = published(BipPortMode::Foreign {
-        bbmd: host([10, 0, 0, 1], 0xBAC0),
-        subscription_lifetime: 300,
-    });
+    let (db, _lease) = published(BipPortMode::fixed_foreign(host([10, 0, 0, 1], 0xBAC0), 300));
     // [0] { ip-address [1] 10.0.0.1 } port [1] 47808
     assert_eq!(
         read(&db, P::FD_BBMD_ADDRESS).unwrap(),
@@ -256,10 +258,7 @@ fn bbmd_mode_reads_the_lent_tables_on_every_read() {
 
 #[test]
 fn a_bbmd_without_tables_is_refused_and_a_new_owner_starts_normal() {
-    let (mut db, lease) = published(BipPortMode::Foreign {
-        bbmd: host([10, 0, 0, 1], 0xBAC0),
-        subscription_lifetime: 300,
-    });
+    let (mut db, lease) = published(BipPortMode::fixed_foreign(host([10, 0, 0, 1], 0xBAC0), 300));
     drop(lease);
     // The next owner reserves the bound port the first one published: the
     // port reads NORMAL until it publishes.
@@ -271,16 +270,17 @@ fn a_bbmd_without_tables_is_refused_and_a_new_owner_starts_normal() {
         PropertyValue::Enumerated(0)
     );
     // A BBMD that has not started has no tables to lend.
-    assert!(db
-        .publish_bip_port_internal(
+    assert!(
+        db.publish_bip_port_internal(
             oid(),
             [127, 0, 0, 1],
             47808,
             1476,
             BipPortMode::Bbmd { tables: None },
         )
-        .is_err());
-    assert_eq!(db.registered_bip_port_internal(), None);
+        .is_err()
+    );
+    assert_eq!(db.registered_port_internal(), None);
     assert_eq!(
         read(&db, P::BACNET_IP_MODE).unwrap(),
         PropertyValue::Enumerated(0)

@@ -1,6 +1,8 @@
 use super::super::*;
+use crate::property_metadata::is_writable_property;
 use crate::traits::{BACnetObject, ReliabilityEvaluation};
 use bacnet_types::enums::{ErrorClass, ErrorCode, Reliability};
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::StatusFlags;
 
 fn reliability(object: &dyn BACnetObject) -> u32 {
@@ -34,18 +36,18 @@ fn assert_unchanged(result: Result<ReliabilityEvaluation, Error>) {
 fn assert_unknown_property<T>(result: Result<T, Error>) {
     assert!(matches!(
         result,
-        Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32
+        Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::UNKNOWN_PROPERTY
     ));
 }
 
 fn assert_write_denied(result: Result<(), Error>) {
     assert!(matches!(
         result,
-        Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32
+        Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == ErrorCode::WRITE_ACCESS_DENIED
     ));
 }
 
@@ -65,7 +67,10 @@ fn assert_fault_properties(object: &dyn BACnetObject, expected: bool) {
         PropertyIdentifier::FAULT_LOW_LIMIT,
         PropertyIdentifier::FAULT_HIGH_LIMIT,
     ] {
-        assert_eq!(object.property_list().contains(&property), expected);
+        assert_eq!(
+            crate::property_metadata::has_property(&object.property_metadata(), property),
+            expected
+        );
     }
     let PropertyValue::List(wire_list) = object
         .read_property(PropertyIdentifier::PROPERTY_LIST, None)
@@ -85,7 +90,7 @@ fn assert_fault_properties(object: &dyn BACnetObject, expected: bool) {
 }
 
 macro_rules! assert_property_surface {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         assert_unknown_property(object.read_property(PropertyIdentifier::FAULT_LOW_LIMIT, None));
         assert_unknown_property(object.read_property(PropertyIdentifier::FAULT_HIGH_LIMIT, None));
@@ -109,7 +114,7 @@ macro_rules! assert_property_surface {
             PropertyIdentifier::FAULT_LOW_LIMIT,
             PropertyIdentifier::FAULT_HIGH_LIMIT,
         ] {
-            assert!(!object.is_writable_property(property));
+            assert!(!is_writable_property(&object, property));
             assert_write_denied(object.write_property_from(
                 property,
                 None,
@@ -137,12 +142,16 @@ macro_rules! assert_property_surface {
 
 #[test]
 fn ai_and_av_fault_limit_properties_are_atomic_optional_and_read_only() {
-    assert_property_surface!(AnalogInputObject::new(1, "AI-1", 62).unwrap());
-    assert_property_surface!(AnalogValueObject::new(1, "AV-1", 62).unwrap());
+    assert_property_surface!(
+        AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()
+    );
+    assert_property_surface!(
+        AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()
+    );
 }
 
 macro_rules! assert_invalid_configuration_is_atomic {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         let invalid_limits = [
             (f32::NAN, 1.0),
@@ -172,7 +181,7 @@ macro_rules! assert_invalid_configuration_is_atomic {
         object.configure_fault_out_of_range(10.0, 20.0).unwrap();
         object.set_test_value(21.0);
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::NO_FAULT_DETECTED,
             Reliability::OVER_RANGE,
         );
@@ -196,7 +205,7 @@ macro_rules! assert_invalid_configuration_is_atomic {
 
         object.set_test_value(20.0);
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::OVER_RANGE,
             Reliability::NO_FAULT_DETECTED,
         );
@@ -205,97 +214,101 @@ macro_rules! assert_invalid_configuration_is_atomic {
 
 #[test]
 fn invalid_ai_and_av_configuration_changes_no_public_or_private_state() {
-    assert_invalid_configuration_is_atomic!(AnalogInputObject::new(1, "AI-1", 62).unwrap());
-    assert_invalid_configuration_is_atomic!(AnalogValueObject::new(1, "AV-1", 62).unwrap());
+    assert_invalid_configuration_is_atomic!(
+        AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()
+    );
+    assert_invalid_configuration_is_atomic!(
+        AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()
+    );
 }
 
 #[test]
 fn configured_ai_evaluator_enters_under_range_from_no_fault() {
-    let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.configure_fault_out_of_range(10.0, 20.0).unwrap();
     ai.set_present_value(9.0);
 
     assert_changed(
-        ai.evaluate_reliability_internal(),
+        ai.reliability_eval().unwrap().evaluate_reliability(),
         Reliability::NO_FAULT_DETECTED,
         Reliability::UNDER_RANGE,
     );
 }
 
 macro_rules! assert_strict_range_transitions {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         object.configure_fault_out_of_range(10.0, 20.0).unwrap();
 
         object.set_test_value(10.0);
-        assert_unchanged(object.evaluate_reliability_internal());
+        assert_unchanged(object.reliability_eval().unwrap().evaluate_reliability());
         object.set_test_value(f32::from_bits(10.0f32.to_bits() - 1));
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::NO_FAULT_DETECTED,
             Reliability::UNDER_RANGE,
         );
         assert_fault_flag(&object, true);
         object.set_test_value(10.0);
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::UNDER_RANGE,
             Reliability::NO_FAULT_DETECTED,
         );
         assert_fault_flag(&object, false);
 
         object.set_test_value(20.0);
-        assert_unchanged(object.evaluate_reliability_internal());
+        assert_unchanged(object.reliability_eval().unwrap().evaluate_reliability());
         object.set_test_value(f32::from_bits(20.0f32.to_bits() + 1));
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::NO_FAULT_DETECTED,
             Reliability::OVER_RANGE,
         );
         object.set_test_value(20.0);
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::OVER_RANGE,
             Reliability::NO_FAULT_DETECTED,
         );
 
         object.set_test_value(9.0);
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::NO_FAULT_DETECTED,
             Reliability::UNDER_RANGE,
         );
         object.set_test_value(21.0);
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::UNDER_RANGE,
             Reliability::OVER_RANGE,
         );
         object.set_test_value(15.0);
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::OVER_RANGE,
             Reliability::NO_FAULT_DETECTED,
         );
 
         object.configure_fault_out_of_range(10.0, 10.0).unwrap();
         object.set_test_value(10.0);
-        assert_unchanged(object.evaluate_reliability_internal());
+        assert_unchanged(object.reliability_eval().unwrap().evaluate_reliability());
         object.set_test_value(9.0);
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::NO_FAULT_DETECTED,
             Reliability::UNDER_RANGE,
         );
         object.set_test_value(11.0);
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::UNDER_RANGE,
             Reliability::OVER_RANGE,
         );
         object.set_test_value(10.0);
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::OVER_RANGE,
             Reliability::NO_FAULT_DETECTED,
         );
@@ -304,79 +317,99 @@ macro_rules! assert_strict_range_transitions {
 
 #[test]
 fn ai_and_av_use_strict_entry_inclusive_recovery_and_no_deadband() {
-    assert_strict_range_transitions!(AnalogInputObject::new(1, "AI-1", 62).unwrap());
-    assert_strict_range_transitions!(AnalogValueObject::new(1, "AV-1", 62).unwrap());
+    assert_strict_range_transitions!(
+        AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()
+    );
+    assert_strict_range_transitions!(
+        AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()
+    );
 }
 
 macro_rules! assert_first_stage_precedence {
-    ($object:expr) => {{
+    ($object:expr_2021) => {{
         let mut object = $object;
         object.configure_fault_out_of_range(10.0, 20.0).unwrap();
 
         object.set_test_value(21.0);
         object
-            .set_reliability_internal(Reliability::NO_SENSOR)
+            .reliability_eval()
+            .unwrap()
+            .set_reliability(Reliability::NO_SENSOR)
             .unwrap();
-        assert_unchanged(object.evaluate_reliability_internal());
+        assert_unchanged(object.reliability_eval().unwrap().evaluate_reliability());
         assert_eq!(reliability(&object), Reliability::NO_SENSOR.to_raw());
 
         object
-            .set_reliability_internal(Reliability::UNDER_RANGE)
+            .reliability_eval()
+            .unwrap()
+            .set_reliability(Reliability::UNDER_RANGE)
             .unwrap();
-        assert_unchanged(object.evaluate_reliability_internal());
+        assert_unchanged(object.reliability_eval().unwrap().evaluate_reliability());
         assert_eq!(reliability(&object), Reliability::UNDER_RANGE.to_raw());
 
         object.set_test_value(9.0);
         object
-            .set_reliability_internal(Reliability::OVER_RANGE)
+            .reliability_eval()
+            .unwrap()
+            .set_reliability(Reliability::OVER_RANGE)
             .unwrap();
-        assert_unchanged(object.evaluate_reliability_internal());
+        assert_unchanged(object.reliability_eval().unwrap().evaluate_reliability());
         assert_eq!(reliability(&object), Reliability::OVER_RANGE.to_raw());
 
         object
-            .set_reliability_internal(Reliability::NO_FAULT_DETECTED)
+            .reliability_eval()
+            .unwrap()
+            .set_reliability(Reliability::NO_FAULT_DETECTED)
             .unwrap();
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::NO_FAULT_DETECTED,
             Reliability::UNDER_RANGE,
         );
 
-        assert!(object
-            .set_reliability_internal(Reliability::from_raw(11))
-            .is_err());
+        assert!(
+            object
+                .reliability_eval()
+                .unwrap()
+                .set_reliability(Reliability::from_raw(11))
+                .is_err()
+        );
         object.set_test_value(10.0);
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::UNDER_RANGE,
             Reliability::NO_FAULT_DETECTED,
         );
 
         object.set_test_value(21.0);
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::NO_FAULT_DETECTED,
             Reliability::OVER_RANGE,
         );
         object
-            .set_reliability_internal(Reliability::OVER_RANGE)
+            .reliability_eval()
+            .unwrap()
+            .set_reliability(Reliability::OVER_RANGE)
             .unwrap();
         object.set_test_value(20.0);
-        assert_unchanged(object.evaluate_reliability_internal());
+        assert_unchanged(object.reliability_eval().unwrap().evaluate_reliability());
         assert_eq!(reliability(&object), Reliability::OVER_RANGE.to_raw());
 
         object
-            .set_reliability_internal(Reliability::NO_FAULT_DETECTED)
+            .reliability_eval()
+            .unwrap()
+            .set_reliability(Reliability::NO_FAULT_DETECTED)
             .unwrap();
         object.set_test_value(9.0);
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::NO_FAULT_DETECTED,
             Reliability::UNDER_RANGE,
         );
         object.configure_fault_out_of_range(0.0, 5.0).unwrap();
         assert_changed(
-            object.evaluate_reliability_internal(),
+            object.reliability_eval().unwrap().evaluate_reliability(),
             Reliability::UNDER_RANGE,
             Reliability::OVER_RANGE,
         );
@@ -385,17 +418,21 @@ macro_rules! assert_first_stage_precedence {
 
 #[test]
 fn ai_and_av_preserve_first_stage_values_and_clear_only_owned_faults() {
-    assert_first_stage_precedence!(AnalogInputObject::new(1, "AI-1", 62).unwrap());
-    assert_first_stage_precedence!(AnalogValueObject::new(1, "AV-1", 62).unwrap());
+    assert_first_stage_precedence!(
+        AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()
+    );
+    assert_first_stage_precedence!(
+        AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()
+    );
 }
 
 #[test]
 fn ai_out_of_service_simulation_preserves_range_fault_ownership() {
-    let mut ai = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     ai.configure_fault_out_of_range(10.0, 20.0).unwrap();
     ai.set_present_value(21.0);
     assert_changed(
-        ai.evaluate_reliability_internal(),
+        ai.reliability_eval().unwrap().evaluate_reliability(),
         Reliability::NO_FAULT_DETECTED,
         Reliability::OVER_RANGE,
     );
@@ -423,7 +460,7 @@ fn ai_out_of_service_simulation_preserves_range_fault_ownership() {
     )
     .unwrap();
 
-    assert_unchanged(ai.evaluate_reliability_internal());
+    assert_unchanged(ai.reliability_eval().unwrap().evaluate_reliability());
     assert_eq!(reliability(&ai), Reliability::NO_SENSOR.to_raw());
     assert_eq!(
         ai.read_property(PropertyIdentifier::PRESENT_VALUE, None)
@@ -440,7 +477,7 @@ fn ai_out_of_service_simulation_preserves_range_fault_ownership() {
     .unwrap();
     assert_eq!(reliability(&ai), Reliability::OVER_RANGE.to_raw());
     assert_changed(
-        ai.evaluate_reliability_internal(),
+        ai.reliability_eval().unwrap().evaluate_reliability(),
         Reliability::OVER_RANGE,
         Reliability::NO_FAULT_DETECTED,
     );
@@ -448,7 +485,7 @@ fn ai_out_of_service_simulation_preserves_range_fault_ownership() {
 
 #[test]
 fn av_evaluates_resolved_priority_value_without_mutating_priority_array() {
-    let mut av = AnalogValueObject::new(1, "AV-1", 62).unwrap();
+    let mut av = AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     av.configure_fault_out_of_range(10.0, 20.0).unwrap();
     av.write_property_from(
         PropertyIdentifier::PRESENT_VALUE,
@@ -462,7 +499,7 @@ fn av_evaluates_resolved_priority_value_without_mutating_priority_array() {
         .read_property(PropertyIdentifier::PRIORITY_ARRAY, None)
         .unwrap();
     assert_changed(
-        av.evaluate_reliability_internal(),
+        av.reliability_eval().unwrap().evaluate_reliability(),
         Reliability::NO_FAULT_DETECTED,
         Reliability::UNDER_RANGE,
     );
@@ -484,7 +521,7 @@ fn av_evaluates_resolved_priority_value_without_mutating_priority_array() {
         .read_property(PropertyIdentifier::PRIORITY_ARRAY, None)
         .unwrap();
     assert_changed(
-        av.evaluate_reliability_internal(),
+        av.reliability_eval().unwrap().evaluate_reliability(),
         Reliability::UNDER_RANGE,
         Reliability::OVER_RANGE,
     );
@@ -513,7 +550,7 @@ fn av_evaluates_resolved_priority_value_without_mutating_priority_array() {
     )
     .unwrap();
     assert_changed(
-        av.evaluate_reliability_internal(),
+        av.reliability_eval().unwrap().evaluate_reliability(),
         Reliability::OVER_RANGE,
         Reliability::UNDER_RANGE,
     );
@@ -521,14 +558,17 @@ fn av_evaluates_resolved_priority_value_without_mutating_priority_array() {
 
 #[test]
 fn analog_output_has_no_fault_out_of_range_surface_or_evaluator() {
-    let mut ao = AnalogOutputObject::new(1, "AO-1", 62).unwrap();
+    let mut ao = AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     for property in [
         PropertyIdentifier::FAULT_LOW_LIMIT,
         PropertyIdentifier::FAULT_HIGH_LIMIT,
     ] {
         assert_unknown_property(ao.read_property(property, None));
-        assert!(!ao.property_list().contains(&property));
-        assert!(!ao.is_writable_property(property));
+        assert!(!crate::property_metadata::has_property(
+            &ao.property_metadata(),
+            property
+        ));
+        assert!(!is_writable_property(&ao, property));
         assert_unknown_property(ao.write_property_from(
             property,
             None,
@@ -545,7 +585,7 @@ fn analog_output_has_no_fault_out_of_range_surface_or_evaluator() {
         &crate::command_source::test_origin(),
     )
     .unwrap();
-    assert_unchanged(ao.evaluate_reliability_internal());
+    assert_unchanged(ao.reliability_eval().unwrap().evaluate_reliability());
     assert_eq!(reliability(&ao), Reliability::NO_FAULT_DETECTED.to_raw());
 }
 

@@ -2,15 +2,18 @@
 //!
 //! Per ASHRAE 135-2020 Clauses 12.2 (AI), 12.3 (AO), and 12.4 (AV).
 
-use bacnet_types::enums::{
-    ErrorClass, ErrorCode, EventState, ObjectType, PropertyIdentifier, Reliability,
-};
+use alloc::borrow::Cow;
+use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
-use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier, PropertyValue, StatusFlags};
-use std::borrow::Cow;
+use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
+#[cfg(test)]
+use bacnet_types::{
+    enums::{ErrorClass, ErrorCode, EventState},
+    primitives::BACnetTimeStamp,
+};
 
 use crate::common::{self, read_common_properties};
-use crate::event::{history::EventHistory, OutOfRangeDetector};
+use crate::event::{OutOfRangeDetector, history::EventHistory};
 use crate::traits::{BACnetObject, ReliabilityEvaluation};
 
 #[derive(Clone, Copy)]
@@ -113,14 +116,16 @@ impl FaultOutOfRangeState {
 }
 
 /// What a createable analog object takes only from a CreateObject initial
-/// value (#1429): Units, which stays read-only to WriteProperty.
-const CREATION_ONLY: &[PropertyIdentifier] = &[PropertyIdentifier::UNITS];
+/// value (#1429): Units, which stays read-only to WriteProperty. Integer,
+/// Positive Integer and Large Analog Value take it the same way.
+pub(crate) const CREATION_ONLY: &[PropertyIdentifier] = &[PropertyIdentifier::UNITS];
 
 /// Set `units` from a Units initial value. An Enumerated above 65535 is
 /// outside BACnetEngineeringUnits (Clause 21) and is VALUE_OUT_OF_RANGE;
-/// any other property is WRITE_ACCESS_DENIED, as the trait default answers.
-fn initialize_units(
-    units: &mut u32,
+/// any other property is WRITE_ACCESS_DENIED, as `Creatable`'s default
+/// answers.
+pub(crate) fn initialize_units(
+    units: &mut EngineeringUnits,
     property: PropertyIdentifier,
     value: PropertyValue,
 ) -> Result<(), Error> {
@@ -133,7 +138,7 @@ fn initialize_units(
     if raw > 65_535 {
         return Err(common::value_out_of_range_error());
     }
-    *units = raw;
+    *units = EngineeringUnits::from_raw(raw);
     Ok(())
 }
 

@@ -1,23 +1,57 @@
 //! Accumulator (type 23) and Pulse Converter (type 24) objects.
 //!
 //! Per ASHRAE 135-2020 §12.61 Table 12-79 (Accumulator) and §12.23 Table 12-27 (PulseConverter).
+//!
+//! # Present_Value stays within Max_Pres_Value
+//!
+//! Clause 12.61.4 keeps an Accumulator's Present_Value between zero and
+//! Max_Pres_Value, and counts modulo Max_Pres_Value + 1. Table 12-79 lists
+//! Max_Pres_Value as R, which leaves its writability to the device; this one
+//! takes a write (#2280). A write that would put Max_Pres_Value below the
+//! current Present_Value is refused with VALUE_OUT_OF_RANGE and changes
+//! nothing. The alternatives were weighed and rejected:
+//! - clamping Present_Value to the new maximum would invent a reading no
+//!   pulse produced;
+//! - reducing it modulo the new range would silently drop the high part of
+//!   a metered total, and a Pulse Converter reading it would count the drop
+//!   as a wrap.
+//!
+//! A client that does mean to shrink the range sets Out_Of_Service, writes a
+//! Present_Value that fits, then lowers Max_Pres_Value. The application's
+//! [`AccumulatorObject::set_present_value`] keeps the same range: it stores
+//! its value modulo Max_Pres_Value + 1, as the pulse feed does.
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
 use bacnet_encoding::constructed::{encode_prescale, encode_scale};
 use bacnet_types::constructed::{BACnetPrescale, BACnetScale};
-use bacnet_types::enums::{EventState, ObjectType, PropertyIdentifier, Reliability};
+use bacnet_types::enums::{
+    EngineeringUnits, EventState, ObjectType, PropertyIdentifier, Reliability,
+};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 use bytes::BytesMut;
-use std::borrow::Cow;
 
 use crate::common::{self, read_common_properties};
 use crate::traits::BACnetObject;
+use crate::traits::{DeadlineWaker, MonotonicClock};
+use alloc::sync::Arc;
+use pulse_feed::RateWindow;
 
 mod metadata;
+#[cfg(test)]
+mod present_value_tests;
 mod pulse_converter;
+mod pulse_feed;
+#[cfg(test)]
+mod pulse_feed_tests;
+#[cfg(test)]
+mod pulse_rate_tests;
+#[cfg(test)]
+mod reliability_max_tests;
 
 #[doc(hidden)]
-pub use pulse_converter::InputReading;
+pub(crate) use pulse_converter::InputReading;
 pub use pulse_converter::PulseConverterObject;
 
 // ---------------------------------------------------------------------------
@@ -25,6 +59,25 @@ pub use pulse_converter::PulseConverterObject;
 // ---------------------------------------------------------------------------
 
 /// BACnet Accumulator object — tracks a pulse count with scaling.
+///
+/// The application feeds it the input pulses it counts through
+/// [`LocalInput`](crate::traits::LocalInput), as
+/// [`LocalInputValue::Pulses`](crate::traits::LocalInputValue::Pulses),
+/// before or after the object is registered (a server's `add_pulses_local`).
+/// Pulses advance Present_Value through Prescale, wrapping past
+/// Max_Pres_Value, and Pulse_Rate counts them per Limit_Monitoring_Interval
+/// in a window its [`Timed`](crate::traits::Timed) capability closes, which
+/// a server drives from its monotonic task.
+///
+/// While Out_Of_Service is TRUE a client may write Present_Value (#2267)
+/// and Reliability (#2280), to simulate a reading or a fault
+/// (Clause 12.61.10). The Reliability in force when the object left service
+/// comes back when it returns. In service, Reliability is the application's,
+/// set through [`ReliabilityEval::set_reliability`](crate::traits::ReliabilityEval::set_reliability).
+/// Dependents take the written value as input (Clause 12.61.10): a Pulse
+/// Converter whose Input_Reference names it counts an increase as its delta
+/// and a decrease as a wrap through Max_Pres_Value.
+#[derive(Clone)]
 pub struct AccumulatorObject {
     oid: ObjectIdentifier,
     name: String,
@@ -33,20 +86,38 @@ pub struct AccumulatorObject {
     max_pres_value: u64,
     scale: BACnetScale,
     prescale: Option<BACnetPrescale>,
-    pulse_rate: f32,
-    units: u32,
+    /// Prescale's running remainder, below its modulo-divide: the pulses'
+    /// share of the next Present_Value step (Clause 12.61.13).
+    prescale_carry: u32,
+    /// Pulse_Rate: the pulses counted over the last whole
+    /// Limit_Monitoring_Interval window (Clause 12.61.20).
+    pulse_rate: u64,
+    units: EngineeringUnits,
     limit_monitoring_interval: u32,
+    /// The window fed pulses are counted in until it closes.
+    rate_window: RateWindow,
+    /// The monotonic clock a restarted window opens on, once bound.
+    monotonic: Option<Arc<MonotonicClock>>,
+    /// Wakes the host's pass when a new window's deadline is armed.
+    deadline_waker: Option<Arc<DeadlineWaker>>,
     status_flags: StatusFlags,
     event_state: EventState,
     out_of_service: bool,
     reliability: Reliability,
+    /// The in-service Reliability, set aside while a client simulates one
+    /// out of service, and restored on the return.
+    reliability_before_out_of_service: Option<Reliability>,
     value_before_change: u64,
     value_set: u64,
 }
 
 impl AccumulatorObject {
     /// Create a new Accumulator object with default values.
-    pub fn new(instance: u32, name: impl Into<String>, units: u32) -> Result<Self, Error> {
+    pub fn new(
+        instance: u32,
+        name: impl Into<String>,
+        units: EngineeringUnits,
+    ) -> Result<Self, Error> {
         let oid = ObjectIdentifier::new(ObjectType::ACCUMULATOR, instance)?;
         Ok(Self {
             oid,
@@ -56,21 +127,33 @@ impl AccumulatorObject {
             max_pres_value: u64::MAX,
             scale: BACnetScale::FloatScale(1.0),
             prescale: None,
-            pulse_rate: 0.0,
+            prescale_carry: 0,
+            pulse_rate: 0,
             units,
             limit_monitoring_interval: 0,
+            rate_window: RateWindow::default(),
+            monotonic: None,
+            deadline_waker: None,
             status_flags: StatusFlags::empty(),
             event_state: EventState::NORMAL,
             out_of_service: false,
             reliability: Reliability::NO_FAULT_DETECTED,
+            reliability_before_out_of_service: None,
             value_before_change: 0,
             value_set: 0,
         })
     }
 
-    /// Set the present value (application use).
+    /// Set the present value (application use). Present_Value stays
+    /// between zero and Max_Pres_Value (Clause 12.61.4), so a value above
+    /// Max_Pres_Value is stored modulo Max_Pres_Value + 1, as fed pulses
+    /// roll over. Prescale's remainder is left as it is; only a client's
+    /// write, out of service, clears it.
     pub fn set_present_value(&mut self, value: u64) {
-        self.present_value = value;
+        self.present_value = match self.max_pres_value.checked_add(1) {
+            Some(modulus) => value % modulus,
+            None => value,
+        };
     }
 
     /// Set the description string.
@@ -86,9 +169,47 @@ impl AccumulatorObject {
     /// Set the prescale. Prescale is optional (Table 12-79), and the object
     /// serves it only once this has set one: until then it is absent from
     /// Property_List and a read is UNKNOWN_PROPERTY, since BACnetPrescale
-    /// has no value standing for none.
+    /// has no value standing for none. Fed pulses then advance Present_Value
+    /// by its ratio, starting from an empty remainder; with a modulo-divide
+    /// of zero they leave Present_Value alone.
     pub fn set_prescale(&mut self, prescale: BACnetPrescale) {
         self.prescale = Some(prescale);
+        self.prescale_carry = 0;
+    }
+
+    /// Set Limit_Monitoring_Interval, the length in seconds of the window
+    /// Pulse_Rate counts over, and start a new, empty window. Setting the
+    /// interval it already has changes nothing, so a client that rewrites
+    /// the same value doesn't keep restarting the window. Zero, the
+    /// default, leaves Pulse_Rate to the application and network writes.
+    pub fn set_limit_monitoring_interval(&mut self, seconds: u32) {
+        if seconds == self.limit_monitoring_interval {
+            return;
+        }
+        self.limit_monitoring_interval = seconds;
+        self.restart_rate_window();
+    }
+
+    /// Set Pulse_Rate to `pulses`, the input pulses counted over the latest
+    /// Limit_Monitoring_Interval, for an application that measures the rate
+    /// itself. While Out_Of_Service is TRUE the property is decoupled from
+    /// the input (Clause 12.61.10), so the value is dropped and a client's
+    /// keeps being served. Being a setter on the concrete object, it works
+    /// only before the object is registered; a registered one counts the
+    /// rate from fed pulses.
+    pub fn set_pulse_rate(&mut self, pulses: u64) {
+        if !self.out_of_service {
+            self.pulse_rate = pulses;
+        }
+    }
+
+    /// Take a client's Present_Value, written out of service. The written
+    /// count starts afresh: Prescale's remainder is cleared, since it held
+    /// a share of a step toward the count being replaced, and once back in
+    /// service fed pulses count on from the written value.
+    fn write_present_value(&mut self, value: u64) {
+        self.present_value = value;
+        self.prescale_carry = 0;
     }
 
     /// Whether Prescale is present, for the metadata.
@@ -111,6 +232,7 @@ impl BACnetObject for AccumulatorObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = read_common_properties!(self, property, array_index) {
             return result;
         }
@@ -140,8 +262,12 @@ impl BACnetObject for AccumulatorObject {
                 }
                 None => Err(common::unknown_property_error()),
             },
-            p if p == PropertyIdentifier::PULSE_RATE => Ok(PropertyValue::Real(self.pulse_rate)),
-            p if p == PropertyIdentifier::UNITS => Ok(PropertyValue::Enumerated(self.units)),
+            p if p == PropertyIdentifier::PULSE_RATE => {
+                Ok(PropertyValue::Unsigned(self.pulse_rate))
+            }
+            p if p == PropertyIdentifier::UNITS => {
+                Ok(PropertyValue::Enumerated(self.units.to_raw()))
+            }
             p if p == PropertyIdentifier::LIMIT_MONITORING_INTERVAL => Ok(PropertyValue::Unsigned(
                 self.limit_monitoring_interval as u64,
             )),
@@ -159,34 +285,77 @@ impl BACnetObject for AccumulatorObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        // Present value is read-only from the network
-        if property == PropertyIdentifier::PRESENT_VALUE {
-            return Err(common::write_access_denied_error());
-        }
-        if let Some(result) =
-            common::write_out_of_service(&mut self.out_of_service, property, &value)
-        {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        // A Reliability simulated out of service (Clause 12.61.10) ends
+        // with it: back in service, the one set aside comes back.
+        if let Some(result) = common::write_out_of_service_with_reliability_restore(
+            &mut self.out_of_service,
+            &mut self.reliability,
+            &mut self.reliability_before_out_of_service,
+            property,
+            &value,
+        ) {
             return result;
         }
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
         match property {
-            p if p == PropertyIdentifier::MAX_PRES_VALUE => {
-                if let PropertyValue::Unsigned(v) = value {
-                    self.max_pres_value = v;
-                    Ok(())
-                } else {
-                    Err(common::invalid_data_type_error())
+            // Writable only while Out_Of_Service is TRUE (Table 12-79
+            // footnote 1, Clause 12.61.4), so a client can set the count a
+            // meter shows or simulate one; in service the input owns it.
+            p if p == PropertyIdentifier::PRESENT_VALUE => {
+                if !self.out_of_service {
+                    return Err(common::write_access_denied_error());
                 }
+                let PropertyValue::Unsigned(v) = value else {
+                    return Err(common::invalid_data_type_error());
+                };
+                // The value stays within zero through Max_Pres_Value.
+                if v > self.max_pres_value {
+                    return Err(common::value_out_of_range_error());
+                }
+                self.write_present_value(v);
+                Ok(())
             }
+            // Never below the count it bounds: see the module doc (#2280).
+            p if p == PropertyIdentifier::MAX_PRES_VALUE => {
+                let PropertyValue::Unsigned(v) = value else {
+                    return Err(common::invalid_data_type_error());
+                };
+                if v < self.present_value {
+                    return Err(common::value_out_of_range_error());
+                }
+                self.max_pres_value = v;
+                Ok(())
+            }
+            // Writable only while Out_Of_Service is TRUE (Clause 12.61.10),
+            // to simulate a fault; in service the application owns it.
+            p if p == PropertyIdentifier::RELIABILITY => {
+                if !self.out_of_service {
+                    return Err(common::write_access_denied_error());
+                }
+                let PropertyValue::Enumerated(raw) = value else {
+                    return Err(common::invalid_data_type_error());
+                };
+                let reliability = Reliability::from_raw(raw);
+                if !common::is_reliability_value_valid(reliability) {
+                    return Err(common::value_out_of_range_error());
+                }
+                self.reliability = reliability;
+                Ok(())
+            }
+            // Writable only while Out_Of_Service is TRUE (Clause 12.61.20),
+            // for simulation; in service the input owns it.
             p if p == PropertyIdentifier::PULSE_RATE => {
-                if let PropertyValue::Real(v) = value {
-                    common::reject_non_finite(v)?;
+                if !self.out_of_service {
+                    return Err(common::write_access_denied_error());
+                }
+                if let PropertyValue::Unsigned(v) = value {
                     self.pulse_rate = v;
                     Ok(())
                 } else {
@@ -195,7 +364,7 @@ impl BACnetObject for AccumulatorObject {
             }
             p if p == PropertyIdentifier::LIMIT_MONITORING_INTERVAL => {
                 if let PropertyValue::Unsigned(v) = value {
-                    self.limit_monitoring_interval = common::u64_to_u32(v)?;
+                    self.set_limit_monitoring_interval(common::u64_to_u32(v)?);
                     Ok(())
                 } else {
                     Err(common::invalid_data_type_error())
@@ -204,21 +373,43 @@ impl BACnetObject for AccumulatorObject {
             _ => Err(crate::common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                _array_index,
             )),
         }
     }
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
+    }
+
+    fn local_input(&mut self) -> Option<&mut dyn crate::traits::LocalInput> {
+        Some(self)
+    }
+
+    crate::traits::lend_reliability_eval!();
 
     fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
         metadata::for_accumulator_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
+    crate::traits::lend_cov_reporting!();
+}
 
-    fn supports_cov(&self) -> bool {
-        true
+impl crate::traits::CovReporting for AccumulatorObject {}
+
+/// The application's route to Reliability: the Accumulator runs no fault
+/// algorithm of its own, so it only takes the value the application works
+/// out, in service.
+impl crate::traits::ReliabilityEval for AccumulatorObject {
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
+        // Out of service a client's simulated value is in force.
+        if self.out_of_service {
+            return Err(common::write_access_denied_error());
+        }
+        if !common::is_reliability_value_valid(reliability) {
+            return Err(common::value_out_of_range_error());
+        }
+        self.reliability = reliability;
+        Ok(())
     }
 }
 
@@ -230,12 +421,13 @@ impl BACnetObject for AccumulatorObject {
 mod tests {
     use super::*;
     use bacnet_types::constructed::BACnetPrescale;
+    use bacnet_types::error::RemoteError;
 
     // --- AccumulatorObject ---
 
     #[test]
     fn accumulator_create_and_read_defaults() {
-        let acc = AccumulatorObject::new(1, "ACC-1", 95).unwrap();
+        let acc = AccumulatorObject::new(1, "ACC-1", EngineeringUnits::NO_UNITS).unwrap();
         assert_eq!(acc.object_name(), "ACC-1");
         assert_eq!(
             acc.read_property(PropertyIdentifier::PRESENT_VALUE, None)
@@ -250,7 +442,7 @@ mod tests {
 
     #[test]
     fn accumulator_read_present_value() {
-        let mut acc = AccumulatorObject::new(1, "ACC-1", 95).unwrap();
+        let mut acc = AccumulatorObject::new(1, "ACC-1", EngineeringUnits::NO_UNITS).unwrap();
         acc.set_present_value(42);
         assert_eq!(
             acc.read_property(PropertyIdentifier::PRESENT_VALUE, None)
@@ -260,21 +452,9 @@ mod tests {
     }
 
     #[test]
-    fn accumulator_present_value_read_only_from_network() {
-        let mut acc = AccumulatorObject::new(1, "ACC-1", 95).unwrap();
-        let result = acc.write_property(
-            PropertyIdentifier::PRESENT_VALUE,
-            None,
-            PropertyValue::Unsigned(10),
-            None,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn accumulator_read_scale_float() {
         // float-scale [0], a four-octet REAL (#1487).
-        let acc = AccumulatorObject::new(1, "ACC-1", 95).unwrap();
+        let acc = AccumulatorObject::new(1, "ACC-1", EngineeringUnits::NO_UNITS).unwrap();
         let val = acc.read_property(PropertyIdentifier::SCALE, None).unwrap();
         assert_eq!(
             val,
@@ -285,7 +465,7 @@ mod tests {
     #[test]
     fn accumulator_read_scale_integer() {
         // integer-scale [1], a signed INTEGER (#1487).
-        let mut acc = AccumulatorObject::new(1, "ACC-1", 95).unwrap();
+        let mut acc = AccumulatorObject::new(1, "ACC-1", EngineeringUnits::NO_UNITS).unwrap();
         acc.set_scale(BACnetScale::IntegerScale(10));
         let val = acc.read_property(PropertyIdentifier::SCALE, None).unwrap();
         assert_eq!(val, PropertyValue::ApplicationData(vec![0x19, 0x0A]));
@@ -297,22 +477,25 @@ mod tests {
     #[test]
     fn accumulator_without_prescale_does_not_serve_it() {
         // Optional, and BACnetPrescale has no NULL: absent until set.
-        let acc = AccumulatorObject::new(1, "ACC-1", 95).unwrap();
+        let acc = AccumulatorObject::new(1, "ACC-1", EngineeringUnits::NO_UNITS).unwrap();
         let err = acc
             .read_property(PropertyIdentifier::PRESCALE, None)
             .unwrap_err();
         assert!(
-            matches!(err, Error::Protocol { class, code }
-                if class == bacnet_types::enums::ErrorClass::PROPERTY.to_raw() as u32
-                    && code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32),
+            matches!(err, Error::Remote(RemoteError::Error { class, code })
+                if class == bacnet_types::enums::ErrorClass::PROPERTY
+                    && code == bacnet_types::enums::ErrorCode::UNKNOWN_PROPERTY),
             "{err:?}"
         );
-        assert!(!acc.property_list().contains(&PropertyIdentifier::PRESCALE));
+        assert!(!crate::property_metadata::has_property(
+            &acc.property_metadata(),
+            PropertyIdentifier::PRESCALE
+        ));
     }
 
     #[test]
     fn accumulator_read_prescale_set() {
-        let mut acc = AccumulatorObject::new(1, "ACC-1", 95).unwrap();
+        let mut acc = AccumulatorObject::new(1, "ACC-1", EngineeringUnits::NO_UNITS).unwrap();
         acc.set_prescale(BACnetPrescale {
             multiplier: 5,
             modulo_divide: 100,
@@ -329,7 +512,7 @@ mod tests {
 
     #[test]
     fn accumulator_object_type() {
-        let acc = AccumulatorObject::new(1, "ACC-1", 95).unwrap();
+        let acc = AccumulatorObject::new(1, "ACC-1", EngineeringUnits::NO_UNITS).unwrap();
         let val = acc
             .read_property(PropertyIdentifier::OBJECT_TYPE, None)
             .unwrap();
@@ -341,12 +524,12 @@ mod tests {
 
     #[test]
     fn accumulator_property_list() {
-        let mut acc = AccumulatorObject::new(1, "ACC-1", 95).unwrap();
+        let mut acc = AccumulatorObject::new(1, "ACC-1", EngineeringUnits::NO_UNITS).unwrap();
         acc.set_prescale(BACnetPrescale {
             multiplier: 1,
             modulo_divide: 1,
         });
-        let list = acc.property_list();
+        let list = crate::test_rows::listed(&acc.property_metadata());
         assert!(list.contains(&PropertyIdentifier::PRESENT_VALUE));
         assert!(list.contains(&PropertyIdentifier::SCALE));
         assert!(list.contains(&PropertyIdentifier::PRESCALE));

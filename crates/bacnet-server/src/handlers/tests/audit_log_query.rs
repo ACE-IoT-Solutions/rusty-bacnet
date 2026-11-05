@@ -1,3 +1,5 @@
+use bacnet_objects::property_metadata::PropertyMetadata;
+use bacnet_types::error::RemoteError;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -104,8 +106,8 @@ fn encode_request(request: &AuditLogQueryRequest) -> Vec<u8> {
 fn assert_protocol(error: Error, class: ErrorClass, code: ErrorCode) {
     assert!(matches!(
         error,
-        Error::Protocol { class: actual_class, code: actual_code }
-            if actual_class == class.to_raw() as u32 && actual_code == code.to_raw() as u32
+        Error::Remote(RemoteError::Error { class: actual_class, code: actual_code })
+            if actual_class == class && actual_code == code
     ));
 }
 
@@ -202,10 +204,10 @@ impl BACnetObject for AuditWithoutCapability {
         _property: PropertyIdentifier,
         _array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::UNKNOWN_PROPERTY,
+        ))
     }
 
     fn write_property(
@@ -215,14 +217,14 @@ impl BACnetObject for AuditWithoutCapability {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 }
 
@@ -301,12 +303,22 @@ impl BACnetObject for SpyAuditObject {
         unreachable!("AuditLogQuery is read-only")
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 
-    fn audit_log_storage_internal(&self) -> Option<&dyn AuditLogStorage> {
-        Some(self.storage.as_ref())
+    fn audit_log(&self) -> Option<&dyn bacnet_objects::traits::AuditLog> {
+        Some(self)
+    }
+
+    fn audit_log_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::AuditLog> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::AuditLog for SpyAuditObject {
+    fn storage(&self) -> &dyn AuditLogStorage {
+        self.storage.as_ref()
     }
 }
 

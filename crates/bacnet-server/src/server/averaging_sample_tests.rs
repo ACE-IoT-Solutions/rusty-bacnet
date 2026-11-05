@@ -13,6 +13,7 @@ use bacnet_services::cov::{
 };
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
 use bacnet_types::enums::ObjectType;
+use bacnet_types::error::RemoteError;
 use std::collections::BTreeMap;
 
 #[path = "averaging_window_tests.rs"]
@@ -114,8 +115,8 @@ async fn avg_value(h: &Harness, property: PropertyIdentifier) -> PropertyValue {
 
 fn assert_error(error: Error, class: ErrorClass, code: ErrorCode) {
     assert!(
-        matches!(error, Error::Protocol { class: c, code: e }
-            if c == class.to_raw() as u32 && e == code.to_raw() as u32),
+        matches!(error, Error::Remote(RemoteError::Error { class: c, code: e })
+            if c == class && e == code),
         "expected {class:?}/{code:?}, got {error:?}"
     );
 }

@@ -7,11 +7,11 @@
 //! DEVICE 0; OPERATIONAL_PROBLEM 25.
 
 use super::durable_write_wire_tests::{
-    destination, while_saving, HeldStorage, ERROR_PDU, SIMPLE_ACK_ADD, SIMPLE_ACK_DELETE,
-    SIMPLE_ACK_WPM, SIMPLE_ACK_WRITE, WAIT,
+    ERROR_PDU, HeldStorage, SIMPLE_ACK_ADD, SIMPLE_ACK_DELETE, SIMPLE_ACK_WPM, SIMPLE_ACK_WRITE,
+    WAIT, destination, while_saving,
 };
-use super::mutation_list_wire_tests::{change_list_error, list_request, wire, ADD, REMOVE};
-use super::mutation_tests::{wpm, Fixture};
+use super::mutation_list_wire_tests::{ADD, REMOVE, change_list_error, list_request, wire};
+use super::mutation_tests::{Fixture, wpm};
 use super::*;
 use crate::server::test_transport::TestTransport;
 use bacnet_encoding::constructed::encode_destination_list;
@@ -25,10 +25,11 @@ use bacnet_services::object_mgmt::DeleteObjectRequest;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_services::write_property::WritePropertyRequest;
 use bacnet_types::constructed::BACnetDestination;
+use bacnet_types::error::RemoteError;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-type ClassStorage = HeldStorage<NotificationClassSnapshot>;
+pub(super) type ClassStorage = HeldStorage<NotificationClassSnapshot>;
 
 impl NotificationClassPersistence for ClassStorage {
     fn load(&self, _class: ObjectIdentifier) -> Result<Option<NotificationClassSnapshot>, Error> {
@@ -215,8 +216,9 @@ async fn local_server(
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
-            instance: 100,
-            name: "Notification Class device".into(),
+            identity: bacnet_objects::DeviceIdentity::new(100, 0)
+                .expect("valid Device identity")
+                .with_name("Notification Class device"),
             ..DeviceConfig::default()
         })
         .unwrap(),
@@ -226,6 +228,7 @@ async fn local_server(
     let nc = class.object_identifier();
     db.add(Box::new(class)).unwrap();
     let server = BACnetServer::generic_builder()
+        .device(bacnet_objects::DeviceIdentity::new(100, 0).unwrap())
         .transport(TestTransport::new())
         .database(db)
         .enable_event_enrollment(false)
@@ -340,7 +343,10 @@ async fn a_list_that_cannot_be_saved_is_refused_on_every_path_and_the_old_list_s
 
     let (server, nc) = local_server(&storage).await;
     match write_local(&server, nc, &refused).await {
-        Err(Error::Protocol { class, code }) => assert_eq!((class, code), (0, 25)),
+        Err(Error::Remote(RemoteError::Error { class, code })) => assert_eq!(
+            (class, code),
+            (ErrorClass::DEVICE, ErrorCode::OPERATIONAL_PROBLEM)
+        ),
         other => panic!("expected DEVICE / OPERATIONAL_PROBLEM, got {other:?}"),
     }
     stop(server).await;
@@ -355,14 +361,14 @@ async fn configured_destinations_are_never_saved_and_a_written_list_wins_on_rest
     let (fixture, nc) = served_by(&storage, &configured).await;
     // A write to another property saves nothing, so a restart applies the
     // configuration again.
-    let mut description = BytesMut::new();
-    bacnet_encoding::primitives::encode_app_character_string(&mut description, "alarms").unwrap();
+    let mut number = BytesMut::new();
+    bacnet_encoding::primitives::encode_app_unsigned(&mut number, 9);
     let mut request = BytesMut::new();
     WritePropertyRequest {
         object_identifier: nc,
-        property_identifier: PropertyIdentifier::DESCRIPTION,
+        property_identifier: PropertyIdentifier::NOTIFICATION_CLASS,
         property_array_index: None,
-        property_value: description.to_vec(),
+        property_value: number.to_vec(),
         priority: None,
     }
     .encode(&mut request)
@@ -406,18 +412,19 @@ async fn configured_destinations_are_never_saved_and_a_written_list_wins_on_rest
 async fn a_write_property_multiple_stopped_before_its_list_write_saves_no_list() {
     let storage = Arc::new(ClassStorage::default());
     let (fixture, nc) = served_by(&storage, &[destination(1)]).await;
-    // The first attempt fails, since Description takes a character string,
+    // The first attempt fails, since Notification_Class takes an unsigned,
     // so the list write after it, staged and already saved, never reaches
-    // the class.
-    let mut unsigned = BytesMut::new();
-    bacnet_encoding::primitives::encode_app_unsigned(&mut unsigned, 1);
+    // the class. (The class keeps Description, so a refused one would end
+    // the staging, #2364.)
+    let mut text = BytesMut::new();
+    bacnet_encoding::primitives::encode_app_character_string(&mut text, "x").unwrap();
     let request = write_property_multiple(
         nc,
         vec![
             BACnetPropertyValue {
-                property_identifier: PropertyIdentifier::DESCRIPTION,
+                property_identifier: PropertyIdentifier::NOTIFICATION_CLASS,
                 property_array_index: None,
-                value: unsigned.to_vec(),
+                value: text.to_vec(),
                 priority: None,
             },
             list_attempt(&[destination(9)]),
@@ -543,6 +550,7 @@ const TICK: Duration = Duration::from_secs(1);
 fn snapshot(list: &[BACnetDestination]) -> NotificationClassSnapshot {
     NotificationClassSnapshot {
         recipient_list: Some(list.to_vec()),
+        description: None,
     }
 }
 

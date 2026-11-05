@@ -2,15 +2,16 @@
 //! read (#1134), through ReadProperty, both ReadPropertyMultiple builders
 //! and ReadRange.
 
-use super::group::{assert_cases, ExpectedRead};
+use super::group::{ExpectedRead, assert_cases};
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::analog::{AnalogInputObject, AnalogValueObject};
 use bacnet_objects::group::GroupObject;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_services::read_range::{RangeSpec, ReadRangeAck, ReadRangeRequest};
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::primitives::PropertyValue;
-use PropertyIdentifier as P;
 
 fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(object_type, instance).unwrap()
@@ -37,7 +38,7 @@ fn member(
 /// AI-1 reading 21.5, AV-2 with an empty priority array, and Group 7 over
 /// them with the members below. AI-9 is not in the database.
 fn database(members: Vec<ReadAccessSpecification>) -> (ObjectDatabase, ObjectIdentifier) {
-    let mut input = AnalogInputObject::new(1, "AI-1", 62).unwrap();
+    let mut input = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     input.set_present_value(21.5);
     let mut group = GroupObject::new(7, "GRP-7").unwrap();
     for member in members {
@@ -46,8 +47,10 @@ fn database(members: Vec<ReadAccessSpecification>) -> (ObjectDatabase, ObjectIde
     let group_oid = group.object_identifier();
     let mut db = ObjectDatabase::new();
     db.add(Box::new(input)).unwrap();
-    db.add(Box::new(AnalogValueObject::new(2, "AV-2", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogValueObject::new(2, "AV-2", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     db.add(Box::new(group)).unwrap();
     (db, group_oid)
 }
@@ -154,7 +157,7 @@ fn group_present_value(db: &ObjectDatabase, group: ObjectIdentifier) -> Vec<Vec<
         .iter()
         .map(|result| {
             let mut encoded = BytesMut::new();
-            result.encode(&mut encoded);
+            result.encode(&mut encoded).unwrap();
             encoded.to_vec()
         })
         .collect()
@@ -165,8 +168,9 @@ fn each_member_reads_as_read_property_multiple_reads_its_specification() {
     // Selectors expand against the member, and the Device wildcard resolves
     // to this device, as they do in a ReadPropertyMultiple request.
     let device = bacnet_objects::device::DeviceObject::new(bacnet_objects::device::DeviceConfig {
-        instance: 100,
-        name: "DEV-100".into(),
+        identity: bacnet_objects::DeviceIdentity::new(100, 0)
+            .expect("valid Device identity")
+            .with_name("DEV-100"),
         ..Default::default()
     })
     .unwrap();
@@ -244,7 +248,8 @@ fn expanded_rows(db: &ObjectDatabase, specs: Vec<ReadAccessSpecification>) -> us
 
 #[test]
 fn member_rows_are_charged_to_the_rpm_work_budget_and_shared_between_groups() {
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted_observed, ReadFailure};
+    use crate::handlers::rpm_budget::handle_rpm_budgeted_observed;
+    use bacnet_device_core::read::ReadFailure;
     let input = oid(ObjectType::ANALOG_INPUT, 1);
     let value = oid(ObjectType::ANALOG_VALUE, 2);
     // Group 7 expands ALL on AV-2; Group 8 is two explicit rows.
@@ -266,7 +271,7 @@ fn member_rows_are_charged_to_the_rpm_work_budget_and_shared_between_groups() {
     let read_seven = member(seven, &[(P::PRESENT_VALUE, None)]);
     let read_eight = member(eight, &[(P::PRESENT_VALUE, None)]);
     let pair = 1 + seven_members + 1 + 2;
-    let budget = |max_result_elements| crate::server::ReadPropertyMultipleBudget {
+    let budget = |max_result_elements| bacnet_device_core::read::ReadPropertyMultipleBudget {
         max_result_elements,
         max_service_ack_bytes: 16384,
     };
@@ -296,9 +301,9 @@ fn member_rows_are_charged_to_the_rpm_work_budget_and_shared_between_groups() {
         let mut ack = BytesMut::new();
         handle_rpm_budgeted_observed(&db, &request, &mut ack, budget(work), |_, _, _, _| {})
             .unwrap();
-        let mut legacy = BytesMut::new();
-        handle_read_property_multiple(&db, &request, &mut legacy).unwrap();
-        assert_eq!(ack, legacy, "{specs:?}");
+        let mut unlimited = BytesMut::new();
+        handle_read_property_multiple(&db, &request, &mut unlimited).unwrap();
+        assert_eq!(ack, unlimited, "{specs:?}");
         // One row short fails as any request over its work budget does:
         // nothing read, nothing written, nothing observed.
         let mut prefix = BytesMut::from(&b"prefix"[..]);

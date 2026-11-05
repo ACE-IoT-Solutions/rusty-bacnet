@@ -1,5 +1,7 @@
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_services::write_property::WritePropertyRequest;
+use bacnet_types::error::RemoteError;
 use std::sync::Mutex;
 
 struct WritableObject {
@@ -18,14 +20,17 @@ impl BACnetObject for WritableObject {
             "writable-other"
         }
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Owned(vec![
-            SERVICES,
-            ACTIVE,
-            MULTIPLE,
-            LIST,
-            PropertyIdentifier::DESCRIPTION,
-        ])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::rows(
+            &[
+                PropertyIdentifier::DESCRIPTION,
+                SERVICES,
+                ACTIVE,
+                MULTIPLE,
+                LIST,
+            ],
+            &[PropertyIdentifier::DESCRIPTION],
+        )
     }
     fn read_property(
         &self,
@@ -151,7 +156,7 @@ async fn device_execution_owned_wp_rejects_custom_writer() {
         )
         .await;
     assert!(
-        matches!(local, Err(Error::Protocol { class, code }) if class == ErrorClass::PROPERTY.to_raw() as u32 && code == ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32)
+        matches!(local, Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::PROPERTY && code == ErrorCode::WRITE_ACCESS_DENIED)
     );
     assert!(calls.lock().unwrap().is_empty());
     simple_ack(

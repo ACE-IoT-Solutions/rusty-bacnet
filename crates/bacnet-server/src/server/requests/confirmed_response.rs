@@ -1,8 +1,8 @@
 use super::*;
-use crate::cov::active::{LiveCovSelection, LiveDeviceCov};
 use crate::device_view::{DeviceExecution, DeviceReadContext};
+use bacnet_device_core::cov::active::LiveDeviceCov;
+use bacnet_device_core::read::{self, LiveLists, ReadFailure, ReadScope};
 use bacnet_services::read_property::ReadPropertyRequest;
-use bacnet_types::error::ErrorDetail;
 
 /// ReadProperty under the narrow responder's actual RP[/WP/ReinitializeDevice] execution
 /// profile, within the responder's configured read work limit.
@@ -13,16 +13,20 @@ pub(super) async fn read_property_response(
     reinitialize: bool,
     registered_port: Option<ObjectIdentifier>,
     work_limit: usize,
+    identity: Option<&bacnet_objects::DeviceIdentity>,
 ) -> Apdu {
     read_property_response_observed(
         db,
         None,
-        DeviceExecution::Endpoint {
-            writes,
-            reinitialize,
+        ReadProfile {
+            execution: DeviceExecution::Endpoint {
+                writes,
+                reinitialize,
+            },
+            registered_port,
+            work_limit,
+            identity,
         },
-        registered_port,
-        work_limit,
         request,
         |_, _, _, _| {},
     )
@@ -50,12 +54,12 @@ pub(in crate::server) struct LiveTables<'a> {
 pub(in crate::server) async fn active_cov_snapshot(
     db: &ObjectDatabase,
     tables: LiveTables<'_>,
-    selection: LiveCovSelection,
+    selection: LiveLists,
 ) -> LiveDeviceCov {
     let live = if selection.reads_cov() {
         let entries = {
             let table = tables.cov.read().await;
-            table.live_cov_entries(selection, runtime_clock::now())
+            table.live_cov_entries(selection, runtime_clock::core_now())
         };
         LiveDeviceCov::project(db, selection, entries)
     } else {
@@ -69,7 +73,7 @@ pub(in crate::server) async fn active_cov_snapshot(
 /// the bindings `table` holds now, copied under its read guard (#1369).
 pub(in crate::server) async fn address_bindings(
     table: &RwLock<DeviceBindingTable>,
-    selection: LiveCovSelection,
+    selection: LiveLists,
 ) -> Option<PropertyValue> {
     if !selection.address_bindings {
         return None;
@@ -88,8 +92,7 @@ pub(super) async fn read_property_multiple_observed(
     tables: LiveTables<'_>,
     service_request: &[u8],
     service_ack: &mut BytesMut,
-    budget: crate::server::ReadPropertyMultipleBudget,
-    registered_port: Option<ObjectIdentifier>,
+    config: &ServerConfig,
     mut completed: impl FnMut(
         &ObjectDatabase,
         ObjectIdentifier,
@@ -97,25 +100,45 @@ pub(super) async fn read_property_multiple_observed(
         Option<u32>,
         Option<(ErrorClass, ErrorCode)>,
     ),
-) -> Result<(), handlers::ReadFailure> {
+) -> Result<(), ReadFailure> {
     let db = db.read().await;
     let request = bacnet_services::rpm::ReadPropertyMultipleRequest::decode(service_request)
-        .map_err(|error| handlers::ReadFailure::Service(error.into_request_reject()))?;
+        .map_err(|error| ReadFailure::Service(error.into_request_reject()))?;
+    let budget = config.read_property_multiple_budget;
     let view = DeviceReadContext::new(&db, DeviceExecution::FullServer)
-        .with_registered_port(registered_port);
-    let plan = handlers::RpmPlan::new(&db, &request, budget.max_result_elements, Some(&view))?;
-    let live = match plan.live_cov(&db) {
+        .with_identity(Some(&config.device));
+    let scope = ReadScope {
+        work_limit: budget.max_result_elements,
+        registered_port: config.registered_network_port,
+        device: view.device_oid(),
+    };
+    let plan = read::RpmPlan::new(
+        &db,
+        &scope,
+        Some(&view),
+        &request,
+        budget.max_result_elements,
+    )?;
+    let live = match plan.live_lists(&db) {
         Some(selection) => Some(active_cov_snapshot(&db, tables, selection).await),
         None => None,
     };
     let view = view.with_live(live.as_ref());
-    plan.read_observed(
+    plan.read(
         &db,
         Some(&view),
         service_ack,
         budget.max_service_ack_bytes,
         |oid, property, index, result| completed(&db, oid, property, index, result),
     )
+}
+
+/// Runtime declarations and work limits for one Device property read.
+pub(super) struct ReadProfile<'a> {
+    pub(super) execution: DeviceExecution,
+    pub(super) registered_port: Option<ObjectIdentifier>,
+    pub(super) work_limit: usize,
+    pub(super) identity: Option<&'a bacnet_objects::DeviceIdentity>,
 }
 
 /// ReadProperty under one database read guard, planned before any table is
@@ -125,9 +148,7 @@ pub(super) async fn read_property_multiple_observed(
 pub(super) async fn read_property_response_observed(
     db: &RwLock<ObjectDatabase>,
     tables: Option<LiveTables<'_>>,
-    execution: DeviceExecution,
-    registered_port: Option<ObjectIdentifier>,
-    work_limit: usize,
+    profile: ReadProfile<'_>,
     request: &ConfirmedRequestPdu,
     mut completed: impl FnMut(
         &ObjectDatabase,
@@ -142,27 +163,34 @@ pub(super) async fn read_property_response_observed(
         .map_err(Error::into_request_reject)
     {
         Ok(decoded) => {
-            let lookup_oid =
-                handlers::resolve_read_target(&db, &decoded.object_identifier, registered_port);
-            let view = DeviceReadContext::new(&db, execution)
-                .with_registered_port(registered_port)
-                .with_work_limit(work_limit);
-            match handlers::plan_read_property(
+            let view =
+                DeviceReadContext::new(&db, profile.execution).with_identity(profile.identity);
+            let scope = ReadScope {
+                work_limit: profile.work_limit,
+                registered_port: profile.registered_port,
+                device: view.device_oid(),
+            };
+            let lookup_oid = read::resolve_target(&db, &scope, &decoded.object_identifier);
+            match read::plan_property(
                 &db,
+                &scope,
                 Some(&view),
                 lookup_oid,
                 decoded.property_identifier,
                 decoded.property_array_index,
             ) {
                 Ok(plan) => {
-                    let live = match (tables, plan.live_cov(&db)) {
+                    let live = match (tables, plan.live_lists(&db)) {
+                        // Boxed: only a read of the Device's COV subscription
+                        // list samples them, and the inline future would
+                        // more than double every ReadProperty's (#1713).
                         (Some(tables), Some(selection)) => {
-                            Some(active_cov_snapshot(&db, tables, selection).await)
+                            Some(Box::pin(active_cov_snapshot(&db, tables, selection)).await)
                         }
                         _ => None,
                     };
                     let view = view.with_live(live.as_ref());
-                    handlers::read_property_request_observed(
+                    read::read_property_ack(
                         &db,
                         Some(&view),
                         &decoded,
@@ -170,12 +198,12 @@ pub(super) async fn read_property_response_observed(
                         &mut service_ack,
                         |oid, request, result| completed(&db, oid, request, result),
                     )
-                    .map_err(handlers::ReadFailure::Service)
+                    .map_err(ReadFailure::Service)
                 }
                 Err(failure) => Err(failure),
             }
         }
-        Err(error) => Err(handlers::ReadFailure::Service(error)),
+        Err(error) => Err(ReadFailure::Service(error)),
     };
     match result {
         Ok(()) => Apdu::ComplexAck(ComplexAck {
@@ -187,12 +215,12 @@ pub(super) async fn read_property_response_observed(
             service_choice: request.service_choice,
             service_ack: service_ack.freeze(),
         }),
-        Err(handlers::ReadFailure::Service(error)) => {
-            error_apdu_from_error(request.invoke_id, request.service_choice, &error)
+        Err(ReadFailure::Service(error)) => {
+            bacnet_device_core::reply::error_apdu(request.invoke_id, request.service_choice, &error)
         }
         // A Group's Present_Value past the work limit draws the abort an RPM
         // over its work budget does; ReadProperty has no byte budget.
-        Err(handlers::ReadFailure::Work | handlers::ReadFailure::Bytes) => Apdu::Abort(AbortPdu {
+        Err(_) => Apdu::Abort(AbortPdu {
             sent_by_server: true,
             invoke_id: request.invoke_id,
             abort_reason: AbortReason::OUT_OF_RESOURCES,
@@ -200,123 +228,32 @@ pub(super) async fn read_property_response_observed(
     }
 }
 
-/// The reply to a confirmed request `error` refused.
+/// Send an encoded unsegmented response APDU, handing it off on an MS/TP
+/// reply channel when one waits for it. Returns whether the response was
+/// handed off: taken by the reply channel, or accepted by the transport.
 ///
-/// An [`Error::Reject`] draws a Reject PDU with its reason, for every
-/// service, the formal-error ones included: a Reject has no
-/// service-specific body. Each handler turns the error from decoding the
-/// request into one with [`Error::into_request_reject`], so a syntax fault
-/// in the request draws the Reject naming it (Clauses 18.9 and 20.1.8,
-/// #1446). Any other refusal is an Error PDU, in the formal Clause 21
-/// production for the services that have one; that includes a decoding
-/// error met once the service is running, which is no syntax fault of the
-/// request.
-pub(in crate::server) fn error_apdu_from_error(
-    invoke_id: u8,
-    service_choice: ConfirmedServiceChoice,
-    error: &Error,
-) -> Apdu {
-    if let Error::Reject { reason } = error {
-        return Apdu::Reject(RejectPdu {
-            invoke_id,
-            reject_reason: RejectReason::from_raw(*reason),
-        });
-    }
-    let (error_class, error_code) = error_fields(error);
-    let detail = match error {
-        Error::Structured { detail, .. } => Some(detail.as_ref()),
-        _ => None,
-    };
-    // Only an element refusal names an element; a refusal of the request or
-    // its target (authorization, object, property, index, list-ness, an
-    // object the server cannot create) carries zero (Clauses 15.1.1.3.1,
-    // 15.2.1.3.1 and 15.3.1.3).
-    let first_failed_element_number = match detail {
-        Some(ErrorDetail::FirstFailedElementNumber(number)) => *number,
-        _ => 0,
-    };
-    // These services answer every error with their Clause 21 production.
-    if service_choice == ConfirmedServiceChoice::ADD_LIST_ELEMENT
-        || service_choice == ConfirmedServiceChoice::REMOVE_LIST_ELEMENT
-    {
-        return Apdu::Error(
-            bacnet_services::list_manipulation::ChangeListError {
-                error_class,
-                error_code,
-                first_failed_element_number,
-            }
-            .to_error_pdu(invoke_id, service_choice),
-        );
-    }
-    if service_choice == ConfirmedServiceChoice::CREATE_OBJECT {
-        return Apdu::Error(
-            bacnet_services::object_mgmt::CreateObjectError {
-                error_class,
-                error_code,
-                first_failed_element_number,
-            }
-            .to_error_pdu(invoke_id),
-        );
-    }
-    if service_choice == ConfirmedServiceChoice::SUBSCRIBE_COV_PROPERTY_MULTIPLE {
-        // A refusal of one COV reference names it; any failure before the
-        // references are processed is the general choice (Clause 13.16.2).
-        let first_failed_subscription = match detail {
-            Some(ErrorDetail::FirstFailedSubscription(reference)) => Some(reference.clone()),
-            _ => None,
-        };
-        return Apdu::Error(
-            bacnet_services::cov_multiple::SubscribeCOVPropertyMultipleError {
-                error_class,
-                error_code,
-                first_failed_subscription,
-            }
-            .to_error_pdu(invoke_id),
-        );
-    }
-    Apdu::Error(ErrorPdu {
-        invoke_id,
-        service_choice,
-        error_class,
-        error_code,
-        error_data: Bytes::new(),
-    })
-}
-
-pub(in crate::server) fn error_fields(error: &Error) -> (ErrorClass, ErrorCode) {
-    match error {
-        Error::Protocol { class, code } | Error::Structured { class, code, .. } => (
-            ErrorClass::from_raw(*class as u16),
-            ErrorCode::from_raw(*code as u16),
-        ),
-        _ => (ErrorClass::SERVICES, ErrorCode::OTHER),
-    }
-}
-
-/// Send one non-segmented confirmed-service response through its existing
-/// transport or reply-channel path.
-pub(in crate::server) async fn send_unsegmented_response<T: TransportPort + 'static>(
-    network: &NetworkLayer<T>,
-    response: &Apdu,
-    source_mac: &[u8],
-    source_network: Option<&NpduAddress>,
-    route: &bacnet_network::response_route::ResponseRoute,
+/// Not an `async fn`, so its future is `send_response`'s, without a second
+/// copy of the arguments around it (#1713).
+pub(in crate::server) fn send_unsegmented_response<'a, T: TransportPort + 'static>(
+    network: &'a NetworkLayer<T>,
+    apdu: &'a [u8],
+    target: ResponseTarget<'a>,
     reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
     pending: Option<PendingConfirmedRequest>,
-) {
-    send_response(
-        network,
-        response,
-        ResponseTarget {
-            source_mac,
-            source_network,
-            route,
-        },
-        reply_tx,
-        true,
-        pending,
-    )
-    .await;
+) -> impl std::future::Future<Output = bool> + Send + 'a {
+    send_response(network, apdu, target, reply_tx, true, pending)
+}
+
+/// `response` encoded, in a buffer sized for it.
+pub(in crate::server) fn encoded_apdu(response: &Apdu) -> BytesMut {
+    // Five octets cover every APDU header; a ComplexAck adds its service ACK.
+    let body = match response {
+        Apdu::ComplexAck(ack) => ack.service_ack.len(),
+        _ => 0,
+    };
+    let mut buf = BytesMut::with_capacity(8 + body);
+    encode_apdu(&mut buf, response).expect("valid APDU encoding");
+    buf
 }
 
 /// Overload work shares the identical wire path without per-rejection error
@@ -329,9 +266,10 @@ pub(in crate::server) async fn send_overload_response<T: TransportPort + 'static
     route: &bacnet_network::response_route::ResponseRoute,
     reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
 ) {
+    let apdu = encoded_apdu(response);
     send_response(
         network,
-        response,
+        &apdu,
         ResponseTarget {
             source_mac,
             source_network,
@@ -377,25 +315,23 @@ async fn send_raw_response<T: TransportPort + 'static>(
     route: &bacnet_network::response_route::ResponseRoute,
     reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
 ) {
-    let reply_tx = if route.provenance().is_direct_peer() {
+    let reply_tx = if route.requires_direct_response() {
         None
     } else {
         reply_tx
     };
     if let Some(tx) = reply_tx {
-        use bacnet_encoding::npdu::{encode_npdu, Npdu};
-        let npdu = Npdu {
-            is_network_message: false,
-            expecting_reply: false,
-            priority: NetworkPriority::NORMAL,
-            destination: source_network.cloned(),
-            source: None,
-            payload: apdu_bytes.clone(),
-            ..Npdu::default()
-        };
-        let mut npdu_buf = BytesMut::with_capacity(2 + apdu_bytes.len());
-        match encode_npdu(&mut npdu_buf, &npdu) {
-            Ok(()) => {
+        match network.encode_response_for_handoff(
+            bacnet_network::layer::IssuedApdu {
+                apdu: apdu_bytes,
+                next_hop: source_mac,
+                destination: source_network,
+                expecting_reply: false,
+                priority: NetworkPriority::Normal,
+            },
+            route,
+        ) {
+            Ok(npdu_buf) => {
                 let _ = tx.send(npdu_buf.freeze());
             }
             Err(error) => {
@@ -435,98 +371,145 @@ pub(in crate::server) struct ResponseTarget<'a> {
     pub(in crate::server) route: &'a bacnet_network::response_route::ResponseRoute,
 }
 
-async fn send_response<T: TransportPort + 'static>(
+/// Send `apdu`: on the MS/TP reply channel when one waits for it and the
+/// route allows, otherwise as a terminal response. Returns whether it was
+/// handed off.
+///
+/// The reply-channel handoff is synchronous, in [`hand_off_reply`]; this
+/// future holds only what the transport send needs (#1713). It is not an
+/// `async fn`, which would hold each argument twice.
+#[allow(
+    clippy::manual_async_fn,
+    reason = "an async fn would hold its moved arguments twice (#1713)"
+)]
+fn send_response<'a, T: TransportPort + 'static>(
+    network: &'a NetworkLayer<T>,
+    apdu: &'a [u8],
+    target: ResponseTarget<'a>,
+    reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
+    log_errors: bool,
+    pending: Option<PendingConfirmedRequest>,
+) -> impl std::future::Future<Output = bool> + Send + 'a {
+    async move {
+        let sent = match hand_off_reply(network, apdu, target, reply_tx, log_errors, pending) {
+            Ok(handed_off) => return handed_off,
+            Err(pending) => BACnetServer::<T>::issue_terminal_response(
+                network,
+                apdu,
+                target.source_mac,
+                target.source_network,
+                target.route,
+                pending,
+            ),
+        }
+        .await;
+        if let Err(error) = &sent
+            && log_errors
+        {
+            warn!(%error, "Failed to send response");
+        }
+        sent.is_ok()
+    }
+}
+
+/// Hand `apdu` to the MS/TP reply channel `reply_tx`, unless the route needs
+/// its direct response. `Ok` says whether the channel took it; `Err` gives
+/// `pending` back for a terminal send, when there is no channel or the NPDU
+/// failed to encode.
+fn hand_off_reply<T: TransportPort + 'static>(
     network: &NetworkLayer<T>,
-    response: &Apdu,
+    apdu: &[u8],
     target: ResponseTarget<'_>,
     reply_tx: Option<tokio::sync::oneshot::Sender<Bytes>>,
     log_errors: bool,
     pending: Option<PendingConfirmedRequest>,
-) {
+) -> Result<bool, Option<PendingConfirmedRequest>> {
     let ResponseTarget {
         source_mac,
         source_network,
         route,
     } = target;
-    let mut buf = BytesMut::new();
-    encode_apdu(&mut buf, response).expect("valid APDU encoding");
-
-    let reply_tx = if route.provenance().is_direct_peer() {
-        None
-    } else {
-        reply_tx
+    let Some(tx) = reply_tx.filter(|_| !route.requires_direct_response()) else {
+        return Err(pending);
     };
-    if let Some(tx) = reply_tx {
-        use bacnet_encoding::npdu::{encode_npdu, Npdu};
-        let apdu_bytes = buf.freeze();
-        let npdu = Npdu {
-            is_network_message: false,
+    match network.encode_response_for_handoff(
+        bacnet_network::layer::IssuedApdu {
+            apdu,
+            next_hop: source_mac,
+            destination: source_network,
             expecting_reply: false,
-            priority: NetworkPriority::NORMAL,
-            destination: source_network.cloned(),
-            source: None,
-            payload: apdu_bytes.clone(),
-            ..Npdu::default()
-        };
-        let mut npdu_buf = BytesMut::with_capacity(2 + apdu_bytes.len());
-        match encode_npdu(&mut npdu_buf, &npdu) {
-            Ok(()) => {
-                let handed_off = tx.send(npdu_buf.freeze()).is_ok();
-                // Synchronous reply-channel handoff, not the serial worker's
-                // later turnaround. A failed handoff releases too, but is not
-                // reported as a successful reply.
-                drop(pending);
-                if !handed_off && log_errors {
-                    warn!("MS/TP reply receiver closed before response handoff");
-                }
-            }
-            Err(error) => {
-                if log_errors {
-                    warn!(%error, "Failed to encode NPDU for MS/TP reply");
-                }
-                if let Err(error) = BACnetServer::<T>::issue_terminal_response(
-                    network,
-                    &apdu_bytes,
-                    source_mac,
-                    source_network,
-                    route,
-                    pending,
-                )
-                .await
-                {
-                    if log_errors {
-                        warn!(%error, "Failed to send response");
-                    }
-                }
-            }
-        }
-    } else if let Err(error) = BACnetServer::<T>::issue_terminal_response(
-        network,
-        &buf,
-        source_mac,
-        source_network,
+            priority: NetworkPriority::Normal,
+        },
         route,
-        pending,
-    )
-    .await
-    {
-        if log_errors {
-            warn!(%error, "Failed to send response");
+    ) {
+        Ok(npdu_buf) => {
+            let handed_off = tx.send(npdu_buf.freeze()).is_ok();
+            // Synchronous reply-channel handoff, not the serial worker's
+            // later turnaround. A failed handoff releases too, but is not
+            // reported as a successful reply.
+            drop(pending);
+            if !handed_off && log_errors {
+                warn!("MS/TP reply receiver closed before response handoff");
+            }
+            Ok(handed_off)
         }
-    }
-}
-
-impl<T: TransportPort + 'static> BACnetServer<T> {
-    /// Convert an error into its protocol response APDU.
-    pub(in crate::server) fn error_apdu_from_error(
-        invoke_id: u8,
-        service_choice: ConfirmedServiceChoice,
-        error: &Error,
-    ) -> Apdu {
-        error_apdu_from_error(invoke_id, service_choice, error)
+        Err(error) => {
+            if log_errors {
+                warn!(%error, "Failed to encode NPDU for MS/TP reply");
+            }
+            Err(pending)
+        }
     }
 }
 
 #[cfg(test)]
 #[path = "../alarm_summary_tests.rs"]
 mod alarm_summary_tests;
+
+#[cfg(test)]
+#[path = "typed_error_reply_tests.rs"]
+mod typed_error_reply_tests;
+
+#[cfg(test)]
+mod encoded_apdu_tests {
+    use super::*;
+
+    /// The one encoding a response now gets (#1713) is the encoder's own.
+    #[test]
+    fn encoded_apdu_is_the_encoder_output_for_every_reply_kind() {
+        let replies = [
+            Apdu::SimpleAck(SimpleAck {
+                invoke_id: 7,
+                service_choice: ConfirmedServiceChoice::WRITE_PROPERTY,
+            }),
+            Apdu::ComplexAck(ComplexAck {
+                segmented: false,
+                more_follows: false,
+                invoke_id: 7,
+                sequence_number: None,
+                proposed_window_size: None,
+                service_choice: ConfirmedServiceChoice::READ_PROPERTY,
+                service_ack: Bytes::from(vec![0x5a; 1400]),
+            }),
+            bacnet_device_core::reply::error_apdu(
+                7,
+                ConfirmedServiceChoice::READ_PROPERTY,
+                &Error::protocol(ErrorClass::OBJECT, ErrorCode::UNKNOWN_OBJECT),
+            ),
+            Apdu::Reject(RejectPdu {
+                invoke_id: 7,
+                reject_reason: RejectReason::UNRECOGNIZED_SERVICE,
+            }),
+            Apdu::Abort(AbortPdu {
+                sent_by_server: true,
+                invoke_id: 7,
+                abort_reason: AbortReason::OUT_OF_RESOURCES,
+            }),
+        ];
+        for reply in &replies {
+            let mut expected = BytesMut::new();
+            encode_apdu(&mut expected, reply).unwrap();
+            assert_eq!(encoded_apdu(reply), expected, "{reply:?}");
+        }
+    }
+}

@@ -8,12 +8,13 @@ use crate::lighting::{BinaryLightingOutputObject, ColorLink, LightingOutputObjec
 use crate::property_metadata::PropertyConformance;
 use crate::traits::BACnetObject;
 use bacnet_types::enums::ObjectType;
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::ObjectIdentifier;
 
 fn assert_code<T: std::fmt::Debug>(result: Result<T, Error>, expected: ErrorCode) {
     match result {
-        Err(Error::Protocol { code, .. }) => {
-            assert_eq!(code, expected.to_raw() as u32, "expected {expected:?}")
+        Err(Error::Remote(RemoteError::Error { code, .. })) => {
+            assert_eq!(code, expected, "expected {expected:?}")
         }
         other => panic!("expected {expected:?}, got {other:?}"),
     }
@@ -69,9 +70,11 @@ fn an_unprovisioned_profile_serves_and_lists_nothing() {
         );
     }
     assert!(profile.read(P::DESCRIPTION, None).is_none());
-    assert!(profile
-        .write(P::DESCRIPTION, None, &PropertyValue::Null)
-        .is_none());
+    assert!(
+        profile
+            .write(P::DESCRIPTION, None, &PropertyValue::Null)
+            .is_none()
+    );
 }
 
 #[test]
@@ -298,7 +301,8 @@ fn objects() -> Vec<Case> {
         (
             Box::new(BinaryLightingOutputObject::new(1, "BLO-1").unwrap()),
             Box::new(binary),
-            P::CURRENT_COMMAND_PRIORITY,
+            // Table 12-69 lists the value-source rows (#1866) before Tags.
+            P::LAST_COMMAND_TIME,
         ),
     ]
 }
@@ -307,7 +311,7 @@ fn objects() -> Vec<Case> {
 fn objects_list_provisioned_rows_in_table_order_and_serve_them() {
     for (fresh, mut provisioned, after) in objects() {
         let kind = fresh.object_identifier().object_type();
-        let before = fresh.property_list().into_owned();
+        let before = crate::test_rows::listed(&fresh.property_metadata());
         for property in [P::TAGS, P::PROFILE_LOCATION, P::PROFILE_NAME] {
             assert!(!before.contains(&property), "{kind:?}");
             assert_code(
@@ -318,7 +322,11 @@ fn objects_list_provisioned_rows_in_table_order_and_serve_them() {
         let mut expected = before.clone();
         let at = expected.iter().position(|p| *p == after).unwrap() + 1;
         expected.splice(at..at, [P::TAGS, P::PROFILE_LOCATION, P::PROFILE_NAME]);
-        assert_eq!(provisioned.property_list().as_ref(), expected, "{kind:?}");
+        assert_eq!(
+            crate::test_rows::listed(&provisioned.property_metadata()),
+            crate::test_rows::listed_from(&expected),
+            "{kind:?}"
+        );
         let metadata = provisioned.property_metadata();
         for row in metadata.iter().filter(|row| {
             matches!(
@@ -333,7 +341,10 @@ fn objects_list_provisioned_rows_in_table_order_and_serve_them() {
                 row.property_identifier == P::TAGS
             );
         }
-        assert!(!provisioned.required_properties().contains(&P::TAGS));
+        assert!(
+            !crate::property_metadata::required_properties(&provisioned.property_metadata())
+                .any(|required| required == P::TAGS)
+        );
         assert_eq!(
             provisioned.read_property(P::TAGS, Some(1)).unwrap(),
             data(&EXHAUST)
@@ -361,6 +372,9 @@ fn objects_list_provisioned_rows_in_table_order_and_serve_them() {
             ..full_profile()
         };
         assert_code(color.set_profile(bad), ErrorCode::VALUE_OUT_OF_RANGE);
-        assert!(!color.property_list().contains(&P::TAGS));
+        assert!(!crate::property_metadata::has_property(
+            &color.property_metadata(),
+            P::TAGS
+        ));
     }
 }

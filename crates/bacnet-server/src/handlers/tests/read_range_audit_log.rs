@@ -4,6 +4,7 @@
 //! one bare BACnetAuditLogRecord identified by its Unsigned64 sequence number.
 use super::read_range::*;
 use super::*;
+use bacnet_types::error::RemoteError;
 use std::sync::{Arc, Mutex};
 
 use bacnet_encoding::constructed::encode_audit_log_record;
@@ -157,9 +158,9 @@ fn at(hour: u8, count: i32) -> Option<RangeSpec> {
 
 fn assert_property_error(error: Error, expected: ErrorCode) {
     assert!(
-        matches!(error, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == expected.to_raw() as u32),
+        matches!(error, Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::PROPERTY
+                && code == expected),
         "expected {expected:?}, got {error:?}"
     );
 }
@@ -339,9 +340,12 @@ fn audit_log_buffer_shows_records_appended_after_a_read_and_matches_audit_log_qu
     assert_page(&read(&db, None), &[1, 2], (true, true, false), None);
 
     let object = db.get_mut(&audit_oid()).unwrap();
-    object.bind_clock_internal(Some(Arc::new(FixedClock(7))));
+    object.timed().unwrap().bind_clocks(
+        &bacnet_objects::traits::Clocks::default().with_clock(Some(Arc::new(FixedClock(7)))),
+    );
     object
-        .audit_log_notification_sink_internal()
+        .audit_log_mut()
+        .and_then(|log| log.notification_sink())
         .unwrap()
         .store_notifications(&[notification(AuditOperation::CREATE)], 3_000)
         .unwrap();
@@ -494,8 +498,11 @@ async fn running_server_serves_audit_log_buffer_and_later_records() {
     {
         let mut db = server.database().write().await;
         let log = db.get_mut(&audit_oid()).unwrap();
-        log.bind_clock_internal(Some(Arc::new(FixedClock(9))));
-        log.audit_log_notification_sink_internal()
+        log.timed().unwrap().bind_clocks(
+            &bacnet_objects::traits::Clocks::default().with_clock(Some(Arc::new(FixedClock(9)))),
+        );
+        log.audit_log_mut()
+            .and_then(|log| log.notification_sink())
             .unwrap()
             .store_notifications(&[notification(AuditOperation::DELETE)], 3_000)
             .unwrap();

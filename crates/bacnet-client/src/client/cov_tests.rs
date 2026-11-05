@@ -1,6 +1,6 @@
 use super::*;
 use bacnet_encoding::apdu::{decode_apdu, encode_apdu};
-use bacnet_encoding::npdu::{decode_npdu, encode_npdu, Npdu};
+use bacnet_encoding::npdu::{Npdu, decode_npdu, encode_npdu};
 use bacnet_services::cov::{SubscribeCOVPropertyRequest, SubscribeCOVRequest};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportPort;
@@ -185,7 +185,7 @@ async fn subscribe_cov_to_device_uses_routed_addressing() {
         .await
         .unwrap();
 
-    client.device_table.lock().await.upsert(routed_device(
+    client.device_table.lock().upsert(routed_device(
         2001,
         &router_mac,
         remote_network,
@@ -239,7 +239,7 @@ async fn unsubscribe_cov_to_device_uses_routed_addressing() {
         .await
         .unwrap();
 
-    client.device_table.lock().await.upsert(routed_device(
+    client.device_table.lock().upsert(routed_device(
         2002,
         &router_mac,
         remote_network,
@@ -352,7 +352,7 @@ async fn subscribe_cov_property_to_device_uses_routed_addressing() {
         .await
         .unwrap();
 
-    client.device_table.lock().await.upsert(routed_device(
+    client.device_table.lock().upsert(routed_device(
         2003,
         &router_mac,
         remote_network,
@@ -481,7 +481,7 @@ async fn unsubscribe_cov_property_to_device_uses_routed_addressing() {
         .await
         .unwrap();
 
-    client.device_table.lock().await.upsert(routed_device(
+    client.device_table.lock().upsert(routed_device(
         2004,
         &router_mac,
         remote_network,

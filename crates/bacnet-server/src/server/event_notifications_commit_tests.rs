@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_objects::event::EventStateChange;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::enums::{EventState, EventType};
 use bacnet_types::primitives::BACnetTimeStamp;
@@ -25,10 +26,10 @@ impl BACnetObject for UnsupportedFaultReindication {
         if property == PropertyIdentifier::NOTIFICATION_CLASS {
             Ok(PropertyValue::Unsigned(0))
         } else {
-            Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            })
+            Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            ))
         }
     }
 
@@ -39,16 +40,25 @@ impl BACnetObject for UnsupportedFaultReindication {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        std::borrow::Cow::Borrowed(&[PropertyIdentifier::NOTIFICATION_CLASS])
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[PropertyIdentifier::NOTIFICATION_CLASS])
     }
 
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::EventReporting for UnsupportedFaultReindication {
     fn evaluate_intrinsic_reporting(&mut self) -> Option<bacnet_objects::event::TransitionOutcome> {
         Some(bacnet_objects::event::TransitionOutcome {
             change: EventStateChange {
@@ -97,6 +107,8 @@ fn unsupported_fault_reindication_is_retryable_without_sequence_consumption() {
     let proposal = db
         .get_mut(&oid)
         .unwrap()
+        .event_reporting_mut()
+        .expect("lends event reporting")
         .evaluate_intrinsic_reporting()
         .unwrap();
     assert!(BACnetServer::<TestTransport>::commit_intrinsic_transition(
@@ -107,7 +119,11 @@ fn unsupported_fault_reindication_is_retryable_without_sequence_consumption() {
     .is_none());
     assert_eq!(db.reserve_event_sequence_number().number(), 0);
     assert_eq!(
-        db.get_mut(&oid).unwrap().evaluate_intrinsic_reporting(),
+        db.get_mut(&oid)
+            .unwrap()
+            .event_reporting_mut()
+            .expect("lends event reporting")
+            .evaluate_intrinsic_reporting(),
         Some(proposal)
     );
 }
@@ -206,6 +222,8 @@ async fn committed_ack_required_snapshot_survives_notification_class_replacement
         let outcome = guard
             .get_mut(&oid)
             .unwrap()
+            .event_reporting_mut()
+            .expect("lends event reporting")
             .evaluate_intrinsic_reporting()
             .unwrap();
         BACnetServer::<TestTransport>::commit_intrinsic_transition(&mut guard, &oid, outcome)
@@ -246,6 +264,7 @@ async fn committed_ack_required_snapshot_survives_notification_class_replacement
             suppressions: &Default::default(),
             retry_timeout_ms: 1000,
             local_apdu_capacity: 1476,
+            device: crate::server::event_delivery::fixture_device(&db).await,
         },
         &oid,
         committed,

@@ -10,14 +10,15 @@
 //! tests live here rather than in `file_persistence`.
 
 use super::file_access_method::{
-    assert_file_access_denied, file_oid, read_wire_for, record_file_db, write_wire_for, SENTINEL,
+    SENTINEL, assert_file_access_denied, file_oid, read_wire_for, record_file_db, write_wire_for,
 };
 use super::file_persistence::{
     assert_protocol_error, file_size, read_records, read_stream, record_count, write_records,
     write_stream,
 };
 use super::*;
-use bacnet_objects::file::{FileObject, DEFAULT_MAX_RECORD_COUNT};
+use bacnet_objects::file::{DEFAULT_MAX_RECORD_COUNT, FileObject};
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_services::common::MAX_DECODED_ITEMS;
 use bacnet_services::file::{
     AtomicReadFileAck, FileAccessMethod, FileReadAckMethod, FileWriteAccessMethod,
@@ -47,10 +48,10 @@ impl BACnetObject for HookLessFile {
             p if p == PropertyIdentifier::FILE_ACCESS_METHOD => Ok(PropertyValue::Enumerated(
                 ObjectFileAccessMethod::STREAM_ACCESS.to_raw(),
             )),
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -61,14 +62,14 @@ impl BACnetObject for HookLessFile {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 }
 
@@ -226,15 +227,15 @@ impl BACnetObject for LaxFile {
         HookLessFile.write_property(property, array_index, value, priority)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 
-    fn file_storage_internal(&self) -> Option<&dyn FileStorage> {
+    fn file_storage(&self) -> Option<&dyn FileStorage> {
         Some(self)
     }
 
-    fn file_storage_internal_mut(&mut self) -> Option<&mut dyn FileStorage> {
+    fn file_storage_mut(&mut self) -> Option<&mut dyn FileStorage> {
         Some(self)
     }
 }
@@ -345,10 +346,10 @@ impl BACnetObject for OpaqueReadOnlyFile {
             p if p == PropertyIdentifier::FILE_ACCESS_METHOD => Ok(PropertyValue::Enumerated(
                 ObjectFileAccessMethod::STREAM_ACCESS.to_raw(),
             )),
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -362,15 +363,15 @@ impl BACnetObject for OpaqueReadOnlyFile {
         HookLessFile.write_property(property, array_index, value, priority)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 
-    fn file_storage_internal(&self) -> Option<&dyn FileStorage> {
+    fn file_storage(&self) -> Option<&dyn FileStorage> {
         Some(self)
     }
 
-    fn file_storage_internal_mut(&mut self) -> Option<&mut dyn FileStorage> {
+    fn file_storage_mut(&mut self) -> Option<&mut dyn FileStorage> {
         Some(self)
     }
 }

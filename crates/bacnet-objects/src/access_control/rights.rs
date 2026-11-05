@@ -5,13 +5,14 @@ use bacnet_types::enums::{
 };
 
 use super::*;
-use crate::durable::DurableWrites;
 
 #[path = "rights_persistence.rs"]
 mod persistence;
 #[path = "rights_saving.rs"]
 mod saving;
-pub use persistence::{AccessRightsPersistence, AccessRightsSnapshot, FileAccessRightsPersistence};
+#[cfg(feature = "std")]
+pub use persistence::FileAccessRightsPersistence;
+pub use persistence::{AccessRightsPersistence, AccessRightsSnapshot};
 
 // AccessRightsObject (type 34)
 // ---------------------------------------------------------------------------
@@ -60,8 +61,8 @@ pub struct AccessRightsObject {
     accompaniment: Option<BACnetDeviceObjectReference>,
     status_flags: StatusFlags,
     reliability: Reliability,
-    /// Where written rules, Enable and Accompaniment are saved, with
-    /// persistence.
+    /// Where written rules, Enable, Accompaniment and Description are saved,
+    /// with persistence.
     storage: Option<saving::Storage>,
     /// Saved writes taken, so a staged write can tell whether another came
     /// between.
@@ -323,6 +324,7 @@ impl BACnetObject for AccessRightsObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // Table 12-39 has no Out_Of_Service (#1064), and Clause 12.34 holds the
         // OUT_OF_SERVICE flag FALSE.
         if let Some(result) =
@@ -361,6 +363,14 @@ impl BACnetObject for AccessRightsObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        // Saved first with storage (#2364).
+        if property == PropertyIdentifier::DESCRIPTION
+            && self.storage.is_some()
+            && saving::saved_write(property, &value)
+        {
+            return self.write_saved(property, array_index, value);
+        }
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
@@ -394,7 +404,6 @@ impl BACnetObject for AccessRightsObject {
             _ => Err(crate::common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                array_index,
             )),
         }
     }
@@ -403,16 +412,8 @@ impl BACnetObject for AccessRightsObject {
         super::metadata_identity::for_access_rights_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: std::time::Duration) -> bool {
-        self.expire_staged_write(now);
-        false
-    }
-
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn DurableWrites> {
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
         Some(self)
     }
 }

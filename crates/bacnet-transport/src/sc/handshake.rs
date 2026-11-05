@@ -5,16 +5,16 @@ use std::time::Duration;
 
 use bacnet_types::error::Error;
 use bytes::BytesMut;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 use tracing::{debug, warn};
 
 use crate::sc_frame::{
-    decode_sc_bvlc_result, decode_sc_message, encode_sc_message, ScBvlcResult, ScFunction,
+    ScBvlcResult, ScFunction, decode_sc_bvlc_result, decode_sc_message, encode_sc_message,
 };
 
 use super::{
-    diagnostic_throttle::DiagnosticThrottle, heartbeat, ScConnectError, ScConnection,
-    ScConnectionState, WebSocketPort,
+    ScConnectError, ScConnection, ScConnectionState, WebSocketPort,
+    diagnostic_throttle::DiagnosticThrottle, heartbeat,
 };
 
 fn notify_state(state_tx: Option<&watch::Sender<ScConnectionState>>, state: ScConnectionState) {
@@ -25,9 +25,11 @@ fn notify_state(state_tx: Option<&watch::Sender<ScConnectionState>>, state: ScCo
 
 fn malformed_bvlc_result_error(error: Error) -> Error {
     match error {
-        Error::Decoding {
-            offset, message, ..
-        } => ScConnectError::MalformedBvlcResult { offset, message }.into_bacnet_error(),
+        Error::Decoding(refused) => ScConnectError::MalformedBvlcResult {
+            offset: refused.offset,
+            message: refused.message().to_string(),
+        }
+        .into_bacnet_error(),
         other => other,
     }
 }

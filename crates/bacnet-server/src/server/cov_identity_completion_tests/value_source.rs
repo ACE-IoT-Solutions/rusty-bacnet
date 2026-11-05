@@ -78,11 +78,12 @@ use bacnet_objects::{
     multistate::{MultiStateOutputObject, MultiStateValueObject},
     traits::BACnetObject,
 };
+use bacnet_types::enums::EngineeringUnits;
 
 fn families() -> Vec<Box<dyn BACnetObject>> {
     vec![
-        Box::new(AnalogOutputObject::new(3, "ao", 95).unwrap()),
-        Box::new(AnalogValueObject::new(3, "av", 95).unwrap()),
+        Box::new(AnalogOutputObject::new(3, "ao", EngineeringUnits::NO_UNITS).unwrap()),
+        Box::new(AnalogValueObject::new(3, "av", EngineeringUnits::NO_UNITS).unwrap()),
         Box::new(BinaryOutputObject::new(3, "bo").unwrap()),
         Box::new(BinaryValueObject::new(3, "bv").unwrap()),
         Box::new(MultiStateOutputObject::new(3, "mso", 3).unwrap()),
@@ -312,33 +313,35 @@ async fn value_source_cov_send_failure_and_confirmation_baselines() {
                     "the baseline waits for the ACK (#896)"
                 );
                 f.finish(true).await;
-                assert!(f
-                    .table
-                    .read()
-                    .await
-                    .get_subscription(sub.key())
-                    .unwrap()
-                    .last_notified_observation
-                    .as_ref()
-                    .unwrap()
-                    .source_companions()
-                    .is_some());
+                assert!(
+                    f.table
+                        .read()
+                        .await
+                        .get_subscription(sub.key())
+                        .unwrap()
+                        .last_notified_observation
+                        .as_ref()
+                        .unwrap()
+                        .source_companions()
+                        .is_some()
+                );
             } else {
                 assert!(observation.is_none());
                 f.fail.store(false, Ordering::Relaxed);
                 f.sent.lock().unwrap().clear();
                 f.fire(true, std::slice::from_ref(&sub)).await;
-                assert!(f
-                    .table
-                    .read()
-                    .await
-                    .get_subscription(sub.key())
-                    .unwrap()
-                    .last_notified_observation
-                    .as_ref()
-                    .unwrap()
-                    .source_companions()
-                    .is_some());
+                assert!(
+                    f.table
+                        .read()
+                        .await
+                        .get_subscription(sub.key())
+                        .unwrap()
+                        .last_notified_observation
+                        .as_ref()
+                        .unwrap()
+                        .source_companions()
+                        .is_some()
+                );
                 f.finish(false).await;
             }
         }

@@ -9,11 +9,11 @@ use crate::multistate::MultiStateValueObject;
 use crate::present_value_access::PresentValueAccess;
 use crate::property_metadata::{PropertyPresenceCondition, PropertyWriteCapability};
 use crate::traits::BACnetObject;
-use bacnet_types::constructed::BACnetAddress;
-use bacnet_types::enums::{ErrorCode, ObjectType, PropertyIdentifier as P};
-use bacnet_types::error::Error;
-use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bacnet_types::MacAddr;
+use bacnet_types::constructed::BACnetAddress;
+use bacnet_types::enums::{EngineeringUnits, ErrorCode, ObjectType, PropertyIdentifier as P};
+use bacnet_types::error::{Error, RemoteError};
+use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(object_type, instance).unwrap()
@@ -58,7 +58,9 @@ fn values(
     access: PresentValueAccess,
     tracked: bool,
 ) -> Vec<(Box<dyn BACnetObject>, PropertyValue)> {
-    let mut av = AnalogValueObject::with_access(1, "AV-1", 62, access).unwrap();
+    let mut av =
+        AnalogValueObject::with_access(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS, access)
+            .unwrap();
     let mut bv = BinaryValueObject::with_access(1, "BV-1", access).unwrap();
     let mut msv = MultiStateValueObject::with_access(1, "MSV-1", 3, access).unwrap();
     av.set_value_source_tracking(tracked);
@@ -73,8 +75,8 @@ fn values(
 
 fn assert_code(result: Result<impl std::fmt::Debug, Error>, expected: ErrorCode) {
     match result {
-        Err(Error::Protocol { code, .. }) => {
-            assert_eq!(code, expected.to_raw() as u32, "expected {expected:?}")
+        Err(Error::Remote(RemoteError::Error { code, .. })) => {
+            assert_eq!(code, expected, "expected {expected:?}")
         }
         other => panic!("expected {expected:?}, got {other:?}"),
     }
@@ -93,7 +95,10 @@ fn write_from(
 fn untracked_noncommandable_values_have_no_value_source() {
     for access in [PresentValueAccess::Writable, PresentValueAccess::ReadOnly] {
         for (mut object, _) in values(access, false) {
-            assert!(!object.property_list().contains(&P::VALUE_SOURCE));
+            assert!(!crate::property_metadata::has_property(
+                &object.property_metadata(),
+                P::VALUE_SOURCE
+            ));
             assert_code(
                 object.read_property(P::VALUE_SOURCE, None),
                 ErrorCode::UNKNOWN_PROPERTY,
@@ -118,13 +123,19 @@ fn tracked_noncommandable_values_list_a_required_value_source() {
     for access in [PresentValueAccess::Writable, PresentValueAccess::ReadOnly] {
         let untracked: Vec<_> = values(access, false)
             .into_iter()
-            .map(|(object, _)| object.property_list().into_owned())
+            .map(|(object, _)| crate::test_rows::listed(&object.property_metadata()))
             .collect();
         for ((object, _), mut expected) in values(access, true).into_iter().zip(untracked) {
             // Where a commandable object lists it: last, before Property_List.
             expected.push(P::VALUE_SOURCE);
-            assert_eq!(object.property_list().as_ref(), expected);
-            assert!(object.required_properties().contains(&P::VALUE_SOURCE));
+            assert_eq!(
+                crate::test_rows::listed(&object.property_metadata()),
+                crate::test_rows::listed_from(&expected)
+            );
+            assert!(
+                crate::property_metadata::required_properties(&object.property_metadata())
+                    .any(|required| required == P::VALUE_SOURCE)
+            );
             let metadata = object.property_metadata();
             let row = metadata
                 .iter()
@@ -341,7 +352,12 @@ fn application_updates_name_the_device_or_nobody() {
     for (mut object, value) in values(PresentValueAccess::ReadOnly, true) {
         let object = object.as_mut();
         object
-            .set_present_value_from_internal(value.clone(), &local(9, None))
+            .local_input()
+            .unwrap()
+            .apply_local_input(crate::traits::LocalInputValue::present_value_from(
+                value.clone(),
+                local(9, None).clone(),
+            ))
             .unwrap();
         assert_eq!(
             object.read_property(P::VALUE_SOURCE, None).unwrap(),
@@ -351,9 +367,18 @@ fn application_updates_name_the_device_or_nobody() {
         write_from(object, P::VALUE_SOURCE, none(), &local(9, None)).unwrap();
         // Without a Device, no source is known and nobody may correct.
         object
-            .set_present_value_from_internal(value.clone(), &local(9, None))
+            .local_input()
+            .unwrap()
+            .apply_local_input(crate::traits::LocalInputValue::present_value_from(
+                value.clone(),
+                local(9, None).clone(),
+            ))
             .unwrap();
-        object.set_present_value_internal(value.clone()).unwrap();
+        object
+            .local_input()
+            .unwrap()
+            .apply_local_input(crate::traits::LocalInputValue::present_value(value.clone()))
+            .unwrap();
         assert_eq!(object.read_property(P::VALUE_SOURCE, None).unwrap(), none());
         assert_code(
             write_from(object, P::VALUE_SOURCE, none(), &local(9, None)),
@@ -364,7 +389,9 @@ fn application_updates_name_the_device_or_nobody() {
             .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Boolean(true), None)
             .unwrap();
         assert_code(
-            object.set_present_value_from_internal(value, &local(9, None)),
+            object.local_input().unwrap().apply_local_input(
+                crate::traits::LocalInputValue::present_value_from(value, local(9, None).clone()),
+            ),
             ErrorCode::WRITE_ACCESS_DENIED,
         );
         assert_eq!(object.read_property(P::VALUE_SOURCE, None).unwrap(), none());
@@ -373,7 +400,7 @@ fn application_updates_name_the_device_or_nobody() {
 
 #[test]
 fn tracking_is_for_noncommandable_values_only_and_can_be_turned_off() {
-    let mut av = AnalogValueObject::new(1, "AV-1", 62).unwrap();
+    let mut av = AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     let commandable = av.property_metadata().into_owned();
     av.set_value_source_tracking(true);
     assert_eq!(av.property_metadata().as_ref(), commandable);
@@ -382,8 +409,13 @@ fn tracking_is_for_noncommandable_values_only_and_can_be_turned_off() {
         ErrorCode::WRITE_ACCESS_DENIED,
     );
 
-    let mut av =
-        AnalogValueObject::with_access(2, "AV-2", 62, PresentValueAccess::Writable).unwrap();
+    let mut av = AnalogValueObject::with_access(
+        2,
+        "AV-2",
+        EngineeringUnits::DEGREES_CELSIUS,
+        PresentValueAccess::Writable,
+    )
+    .unwrap();
     let untracked = av.property_metadata().into_owned();
     av.set_value_source_tracking(true);
     av.set_value_source_tracking(false);

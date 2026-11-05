@@ -31,15 +31,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Each release target with the CLI's features there: packet capture (pcap)
-# only on Linux, as in .github/workflows/release.yml. The Python extension has
+# Each release target with the CLI's features there, on top of its default
+# ones (the terminal UI, #974): the MCP server (mcp, #2068) everywhere, and
+# packet capture (pcap) and MS/TP (serial, #969) only on Linux, as in
+# scripts/release/build_linux.sh. The Python extension has
 # the same features everywhere.
 TARGETS = {
-    "x86_64-unknown-linux-gnu": "sc-tls,pcap",
-    "aarch64-unknown-linux-gnu": "sc-tls,pcap",
-    "x86_64-apple-darwin": "sc-tls",
-    "aarch64-apple-darwin": "sc-tls",
-    "x86_64-pc-windows-msvc": "sc-tls",
+    "x86_64-unknown-linux-gnu": "sc-tls,pcap,serial,mcp",
+    "aarch64-unknown-linux-gnu": "sc-tls,pcap,serial,mcp",
+    "x86_64-apple-darwin": "sc-tls,mcp",
+    "aarch64-apple-darwin": "sc-tls,mcp",
+    "x86_64-pc-windows-msvc": "sc-tls,mcp",
 }
 LICENSE_FILE = re.compile(r"^(licen[cs]e|copying|copyright|notice|unlicense)([-._].*)?$", re.IGNORECASE)
 SOURCE_SUFFIXES = {".rs", ".py", ".toml", ".json", ".sh", ".c", ".h", ".yml", ".yaml", ".html"}
@@ -58,10 +60,23 @@ EXTRA_LICENSES = {
          " BSD-3-Clause terms AWS-LC elects"),
     ],
 }
+# Licence texts kept in scripts/release/licenses/ for crates whose published
+# package leaves out the licence file its repository has: {name: (version,
+# file, where the text came from)}. The version is pinned, so a bump has to
+# check the new release's licence again.
+VENDORED_LICENSES = {
+    # The MCP SDK, in the release CLI since 0.15 (#2068). Its LICENSE holds the
+    # Apache-2.0 text and the MIT text that still covers some contributions.
+    "rmcp": ("3.5.1", "rmcp-3.5.1-LICENSE",
+             "LICENSE from github.com/modelcontextprotocol/rust-sdk at tag rmcp-v3.5.1"),
+    "tui-tree-widget": ("0.24.1", "tui-tree-widget-0.24.1-LICENSE",
+                        "LICENSE from github.com/EdJoPaTo/tui-rs-tree-widget at tag v0.24.1"),
+}
+VENDORED_DIR = Path(__file__).resolve().parent / "licenses"
 # SPDX identifiers whose terms don't ask for the notice to go with a binary.
 # Any other identifier, unknown ones included, counts as needing its notice.
 # BSL-1.0 asks for it in copies of the software except machine-executable
-# object code, so not in a binary (clipboard-win, in the Windows CLI).
+# object code, so not in a binary.
 NO_NOTICE = {"0BSD", "BSL-1.0", "CC0-1.0", "MIT-0", "Unlicense", "WTFPL"}
 # Crates that may ship no licence file although their licence needs its notice:
 # {name: why that's fine}. Empty: every such crate ships one.
@@ -145,6 +160,15 @@ def license_files(pkg):
         text = licence_comment(path) if kind == "comment" else normalize(
             path.read_text(encoding="utf-8", errors="replace"))
         found.append((f"{extra}: {covers}" if covers else extra, text))
+    if pkg["name"] in VENDORED_LICENSES:
+        version, name, origin = VENDORED_LICENSES[pkg["name"]]
+        if pkg["version"] != version:
+            raise NoticesError(f"{pkg['name']} is {pkg['version']}, but its vendored licence is for {version};"
+                               " check the new release's licence and update VENDORED_LICENSES")
+        path = VENDORED_DIR / name
+        if not path.is_file():
+            raise NoticesError(f"the vendored licence {name} for {pkg['name']} is missing")
+        found.append((f"{name}: {origin}", normalize(path.read_text(encoding="utf-8"))))
     return found
 
 
@@ -206,7 +230,8 @@ def render(version, own_license, crates, libpcap):
         f"Rusty BACnet {version} release binaries:",
         "- CLI: the bacnet command-line tool (bacnet-linux-amd64, bacnet-linux-arm64,",
         "  bacnet-macos-amd64, bacnet-macos-arm64, bacnet-windows-amd64.exe), built",
-        "  with the sc-tls feature, and on Linux also with the pcap feature;",
+        "  with the sc-tls and mcp features, and on Linux also with the pcap and",
+        "  serial features;",
         "- Python: the rusty_bacnet extension module in the wheels for Linux, macOS",
         "  and Windows.",
         "",

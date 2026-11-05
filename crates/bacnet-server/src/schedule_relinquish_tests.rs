@@ -10,18 +10,19 @@
 //! a missing object or property, is reported as a reference the target can't
 //! write (#1433).
 
+use bacnet_objects::property_metadata::PropertyMetadata;
 use std::borrow::Cow;
 use std::sync::Mutex;
 
+use ScheduleTargetOutcome::{Accepted, Failed, ReferenceRefused};
 use bacnet_objects::analog::{AnalogInputObject, AnalogOutputObject};
 use bacnet_objects::binary::BinaryValueObject;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::multistate::MultiStateValueObject;
-use bacnet_objects::traits::BACnetObject;
+use bacnet_objects::traits::{BACnetObject, ScheduleRunner};
 use bacnet_types::constructed::BACnetObjectPropertyReference;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::error::Error;
-use ScheduleTargetOutcome::{Accepted, Failed, ReferenceRefused};
 
 use super::*;
 
@@ -75,10 +76,10 @@ impl BACnetObject for OwingSchedule {
             p if p == PropertyIdentifier::OBJECT_TYPE => {
                 Ok(PropertyValue::Enumerated(ObjectType::SCHEDULE.to_raw()))
             }
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw() as u32,
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw() as u32,
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
 
@@ -89,14 +90,29 @@ impl BACnetObject for OwingSchedule {
         _value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw() as u32,
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
+    }
+
+    fn schedule_runner(&mut self) -> Option<&mut dyn ScheduleRunner> {
+        Some(self)
+    }
+}
+
+impl ScheduleRunner for OwingSchedule {
+    fn tick_schedule(
+        &mut self,
+        _today: SpecificDate,
+        _time: Time,
+        _calendar_active: &dyn Fn(ObjectIdentifier) -> bool,
+    ) -> Option<ScheduleWrite> {
+        None
     }
 
     fn take_owed_schedule_writes(&mut self) -> Vec<ScheduleWrite> {
@@ -135,15 +151,11 @@ fn read(
 #[tokio::test]
 async fn a_schedule_null_relinquishes_a_commandable_target_and_leaves_the_others_as_they_are() {
     use PropertyIdentifier as P;
+    use bacnet_types::enums::EngineeringUnits;
     let outcomes = Outcomes::default();
     // Both writes are owed ones, which go out without a clock: a Real at
     // priority 9, then the NULL that relinquishes it.
-    let write = |value, references| ScheduleWrite {
-        value,
-        priority: 9,
-        references,
-        retry: false,
-    };
+    let write = |value, references| ScheduleWrite::new(value, 9, references);
     let schedule = OwingSchedule {
         owed: vec![
             write(
@@ -174,10 +186,14 @@ async fn a_schedule_null_relinquishes_a_commandable_target_and_leaves_the_others
         DeviceObject::new(DeviceConfig::default()).unwrap(),
     ))
     .unwrap();
-    db.add(Box::new(AnalogInputObject::new(1, "AI-1", 62).unwrap()))
-        .unwrap();
-    db.add(Box::new(AnalogOutputObject::new(2, "AO-2", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(2, "AO-2", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     db.add(Box::new(schedule)).unwrap();
     let db = Arc::new(RwLock::new(db));
 
@@ -216,15 +232,11 @@ fn indexed(
 #[tokio::test]
 async fn a_schedule_target_index_is_checked_as_write_property_checks_it() {
     use PropertyIdentifier as P;
+    use bacnet_types::enums::EngineeringUnits;
     let outcomes = Outcomes::default();
     let msv = oid(ObjectType::MULTI_STATE_VALUE, 1);
     let bv = oid(ObjectType::BINARY_VALUE, 1);
-    let write = |value, references| ScheduleWrite {
-        value,
-        priority: 9,
-        references,
-        retry: false,
-    };
+    let write = |value, references| ScheduleWrite::new(value, 9, references);
     let schedule = OwingSchedule {
         owed: vec![
             write(
@@ -259,8 +271,10 @@ async fn a_schedule_target_index_is_checked_as_write_property_checks_it() {
         DeviceObject::new(DeviceConfig::default()).unwrap(),
     ))
     .unwrap();
-    db.add(Box::new(AnalogInputObject::new(1, "AI-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     db.add(Box::new(BinaryValueObject::new(1, "BV-1").unwrap()))
         .unwrap();
     db.add(Box::new(MultiStateValueObject::new(1, "MSV-1", 3).unwrap()))

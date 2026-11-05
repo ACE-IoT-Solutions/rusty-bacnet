@@ -1,11 +1,11 @@
 //! Criterion suite: ReadProperty and WriteProperty throughput over BACnet/IPv6 on loopback.
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use tokio::runtime::Runtime;
 
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 
-use bacnet_benchmarks::helpers::{make_bip6_client, make_bip6_server};
+use bacnet_benchmarks::helpers::{make_bip6_client, make_bip6_server, resolve_bip6_server};
 
 fn bench_read_property_throughput(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
@@ -13,7 +13,7 @@ fn bench_read_property_throughput(c: &mut Criterion) {
     let (mut server, mut client, server_mac) = rt.block_on(async {
         let server = make_bip6_server().await.unwrap();
         let client = make_bip6_client().await.unwrap();
-        let mac = server.local_mac().to_vec();
+        let mac = resolve_bip6_server(&client, &server).await.unwrap();
         (server, client, mac)
     });
 
@@ -55,7 +55,7 @@ fn bench_write_property_throughput(c: &mut Criterion) {
     let (mut server, mut client, server_mac) = rt.block_on(async {
         let server = make_bip6_server().await.unwrap();
         let client = make_bip6_client().await.unwrap();
-        let mac = server.local_mac().to_vec();
+        let mac = resolve_bip6_server(&client, &server).await.unwrap();
         (server, client, mac)
     });
 

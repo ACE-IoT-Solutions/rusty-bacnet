@@ -1,8 +1,9 @@
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::event::{EventStateChange, EventTransition, EventTransitionCommit};
+use bacnet_objects::traits::EventReporting as _;
 use bacnet_services::enrollment_summary::GetEnrollmentSummaryRequest;
 use bacnet_types::bitstring::EventTransitionBits;
-use bacnet_types::enums::{AcknowledgmentFilter, EventType};
+use bacnet_types::enums::{AcknowledgmentFilter, EngineeringUnits, EventType};
 use bacnet_types::primitives::BACnetTimeStamp;
 
 use super::enrollment_summary_support::*;
@@ -33,7 +34,8 @@ fn database(candidate: SummaryFixture) -> ObjectDatabase {
 
 #[test]
 fn intrinsic_rejected_detection_write_preserves_summary_transition_coordinate() {
-    let mut object = AnalogInputObject::new(1, "AI-preserved", 62).unwrap();
+    let mut object =
+        AnalogInputObject::new(1, "AI-preserved", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     object
         .write_property(
             PropertyIdentifier::NOTIFICATION_CLASS,
@@ -43,7 +45,7 @@ fn intrinsic_rejected_detection_write_preserves_summary_transition_coordinate() 
         )
         .unwrap();
     object
-        .commit_event_transition_internal(EventTransitionCommit {
+        .commit_event_transition(EventTransitionCommit {
             change: EventStateChange {
                 from: EventState::NORMAL,
                 to: EventState::HIGH_LIMIT,
@@ -77,20 +79,22 @@ fn intrinsic_rejected_detection_write_preserves_summary_transition_coordinate() 
     );
     assert_eq!(
         object
-            .enrollment_summary_capability_internal()
+            .enrollment_summary_capability()
             .unwrap()
             .last_transition,
         Some(EventTransition::ToOffnormal)
     );
 
-    assert!(object
-        .write_property(
-            PropertyIdentifier::EVENT_DETECTION_ENABLE,
-            None,
-            PropertyValue::Unsigned(0),
-            None
-        )
-        .is_err());
+    assert!(
+        object
+            .write_property(
+                PropertyIdentifier::EVENT_DETECTION_ENABLE,
+                None,
+                PropertyValue::Unsigned(0),
+                None
+            )
+            .is_err()
+    );
 
     assert_eq!(
         object
@@ -118,7 +122,7 @@ fn intrinsic_rejected_detection_write_preserves_summary_transition_coordinate() 
     );
     assert_eq!(
         object
-            .enrollment_summary_capability_internal()
+            .enrollment_summary_capability()
             .unwrap()
             .last_transition,
         Some(EventTransition::ToOffnormal)

@@ -37,7 +37,7 @@ impl BACnetServer {
         &self,
         object_id: PyObjectIdentifier,
         input: AccessControlInput,
-    ) -> impl std::future::Future<Output = PyResult<()>> + Send + 'static {
+    ) -> impl std::future::Future<Output = PyResult<()>> + Send + 'static + use<> {
         let inner = self.inner.clone();
         let oid = object_id.to_rust();
         async move {
@@ -55,6 +55,8 @@ impl BACnetServer {
                 AccessControlInput::DoorState(report) => {
                     srv.report_door_state_local(&oid, report).await
                 }
+                // A kind of record this binding doesn't build yet.
+                _ => Err(bacnet_objects::traits::not_supported()),
             }
             .map_err(to_py_err)
         }

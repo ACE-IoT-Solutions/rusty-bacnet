@@ -45,11 +45,16 @@ pub(super) async fn receive_confirmed_audit_notification(
         audit_log_sink: sink,
         request: request.clone(),
     };
-    if !config
-        .audit_notification_authorizer
-        .as_ref()
-        .is_some_and(|authorizer| fail_closed_authorize(|| authorizer(&context)))
-    {
+    let allowed = match &config.policy {
+        Some(policy) => {
+            ask_policy(policy, context, |policy, context| {
+                policy.authorize_audit_notification(context)
+            })
+            .await
+        }
+        None => false,
+    };
+    if !allowed {
         return Err(request_denied());
     }
 
@@ -59,6 +64,7 @@ pub(super) async fn receive_confirmed_audit_notification(
     )?;
     store_staged(
         db,
+        crate::local_device::initiating_device(&config.device),
         sink,
         &request,
         Some(receipt),
@@ -73,6 +79,7 @@ pub(super) async fn receive_confirmed_audit_notification(
 /// commit is durable. Returns the outcome and the post-commit forwarding.
 async fn store_staged(
     db: &Arc<RwLock<ObjectDatabase>>,
+    device: ObjectIdentifier,
     sink: ObjectIdentifier,
     request: &bacnet_services::audit::AuditNotificationRequest,
     receipt: Option<bacnet_objects::audit::CompletedAuditReceipt>,
@@ -89,7 +96,13 @@ async fn store_staged(
     loop {
         let staged = {
             let mut db = db.write().await;
-            match handlers::stage_audit_notification(&mut db, sink, request, receipt.clone())? {
+            match handlers::stage_audit_notification(
+                &mut db,
+                device,
+                sink,
+                request,
+                receipt.clone(),
+            )? {
                 AuditBatchStage::Done(outcome, changed) => {
                     let forward = ForwardBatch::after_commit(&db, sink, changed, payload.clone());
                     return Ok((outcome, forward));
@@ -125,26 +138,30 @@ pub(super) async fn receive_unconfirmed_audit_notification(
     service_request: &Bytes,
 ) -> Result<Option<ForwardBatch>, Error> {
     validate_payload_size("UnconfirmedAuditNotification", service_request)?;
-    decode_authorize_and_store(
-        db,
-        config,
-        "UnconfirmedAuditNotification",
-        service_request,
-        |sink, request| {
-            let context = UnconfirmedAuditNotificationAuthorizationContext {
-                source_mac: MacAddr::from_slice(source_mac),
-                source_network: source_network.cloned(),
-                provenance,
-                audit_log_sink: sink,
-                request: request.clone(),
-            };
-            config
-                .unconfirmed_audit_notification_authorizer
-                .as_ref()
-                .is_some_and(|authorizer| fail_closed_authorize(|| authorizer(&context)))
-        },
-    )
-    .await
+    let request = decode_request("UnconfirmedAuditNotification", service_request)?;
+    let sink = config.audit_notification_sink.ok_or_else(request_denied)?;
+    let context = UnconfirmedAuditNotificationAuthorizationContext {
+        source_mac: MacAddr::from_slice(source_mac),
+        source_network: source_network.cloned(),
+        provenance,
+        audit_log_sink: sink,
+        request: request.clone(),
+    };
+    let allowed = match &config.policy {
+        Some(policy) => {
+            ask_policy(policy, context, |policy, context| {
+                policy.authorize_unconfirmed_audit_notification(context)
+            })
+            .await
+        }
+        None => false,
+    };
+    if !allowed {
+        return Err(request_denied());
+    }
+    let device = crate::local_device::initiating_device(&config.device);
+    let (_, forward) = store_staged(db, device, sink, &request, None, service_request).await?;
+    Ok(forward)
 }
 
 fn validate_payload_size(service: &str, service_request: &Bytes) -> Result<(), Error> {
@@ -154,26 +171,6 @@ fn validate_payload_size(service: &str, service_request: &Bytes) -> Result<(), E
         )));
     }
     Ok(())
-}
-
-async fn decode_authorize_and_store<F>(
-    db: &Arc<RwLock<ObjectDatabase>>,
-    config: &ServerConfig,
-    service: &str,
-    service_request: &Bytes,
-    authorize: F,
-) -> Result<Option<ForwardBatch>, Error>
-where
-    F: FnOnce(ObjectIdentifier, &bacnet_services::audit::AuditNotificationRequest) -> bool,
-{
-    let request = decode_request(service, service_request)?;
-    let sink = config.audit_notification_sink.ok_or_else(request_denied)?;
-    if !authorize(sink, &request) {
-        return Err(request_denied());
-    }
-
-    let (_, forward) = store_staged(db, sink, &request, None, service_request).await?;
-    Ok(forward)
 }
 
 fn decode_request(
@@ -202,9 +199,27 @@ pub(in crate::server) fn fail_closed_authorize(authorize: impl FnOnce() -> bool)
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(authorize)).unwrap_or(false)
 }
 
-pub(super) fn request_denied() -> Error {
-    Error::Protocol {
-        class: ErrorClass::SERVICES.to_raw() as u32,
-        code: ErrorCode::SERVICE_REQUEST_DENIED.to_raw() as u32,
+/// Ask `policy` about `context` through `ask` on Tokio's blocking pool, as
+/// [`ask_mutation_policy`] does for mutations
+/// (#2032): the request task awaits the answer, so a policy that blocks holds
+/// no runtime worker and `stop()` can still abort the request. A panic, or a
+/// call that never reports back, denies. A policy that
+/// [`decides_inline`](crate::ServerPolicy::decides_inline) is asked on the
+/// request task instead, with no trip (#2049).
+pub(in crate::server) async fn ask_policy<C: Send + 'static>(
+    policy: &Arc<dyn crate::ServerPolicy>,
+    context: C,
+    ask: fn(&dyn crate::ServerPolicy, &C) -> bool,
+) -> bool {
+    if policy.decides_inline() {
+        return fail_closed_authorize(|| ask(&**policy, &context));
     }
+    let policy = Arc::clone(policy);
+    tokio::task::spawn_blocking(move || fail_closed_authorize(|| ask(&*policy, &context)))
+        .await
+        .unwrap_or(false)
+}
+
+pub(super) fn request_denied() -> Error {
+    Error::protocol(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED)
 }

@@ -122,7 +122,9 @@ async fn sc_recv_error_transitions_to_disconnected_without_reconnect() {
     transport.stop().await.unwrap();
 }
 
-#[tokio::test]
+// Paused clock (#2310): the 50 ms heartbeat (#2124) and the 500 ms state wait
+// both run on virtual time, so runner load can't stretch one past the other.
+#[tokio::test(start_paused = true)]
 async fn sc_heartbeat_send_error_transitions_to_disconnected() {
     let client_vmac = [0x01; 6];
     let hub_vmac = [0x10; 6];
@@ -168,9 +170,11 @@ async fn sc_receive_loop_discards_frame_above_local_max_bvlc() {
     assert!(buf.len() > 1476);
 
     ws_hub.send(&buf).await.unwrap();
-    assert!(tokio::time::timeout(Duration::from_millis(50), rx.recv())
-        .await
-        .is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), rx.recv())
+            .await
+            .is_err()
+    );
     transport.stop().await.unwrap();
 }
 
@@ -187,7 +191,6 @@ async fn sc_reconnect_exhaustion_leaves_connection_disconnected() {
             initial_delay_ms: 10,
             max_delay_ms: 10,
             max_retries: 1,
-            retry_forever: false,
         });
 
     let hub_task = tokio::spawn(async move {

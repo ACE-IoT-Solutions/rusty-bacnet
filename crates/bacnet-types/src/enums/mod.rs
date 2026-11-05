@@ -17,11 +17,12 @@ macro_rules! bacnet_enum {
         $vis:vis struct $Name:ident($inner:ty);
         $(
             $(#[$vmeta:meta])*
-            const $VARIANT:ident = $val:expr;
+            const $VARIANT:ident = $val:expr_2021;
         )*
     ) => {
         $(#[$meta])*
-        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        // Ordered by raw value, so a value can key a B-tree map (#2303).
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         $vis struct $Name($inner);
 
         impl $Name {
@@ -44,6 +45,14 @@ macro_rules! bacnet_enum {
             #[inline]
             pub const fn to_raw(self) -> $inner {
                 self.0
+            }
+
+            /// The constant's name, or `None` for a value without one.
+            pub const fn name(self) -> Option<&'static str> {
+                match self.0 {
+                    $( $val => Some(stringify!($VARIANT)), )*
+                    _ => None,
+                }
             }
 
             /// All named constants as (name, value) pairs.
@@ -140,8 +149,6 @@ mod property_id;
 pub use property_id::*;
 mod protocol;
 pub use protocol::*;
-mod network;
-pub use network::*;
 mod object_level;
 pub use object_level::*;
 mod network_port;
@@ -162,8 +169,12 @@ mod audit;
 pub use audit::*;
 mod units;
 pub use units::*;
+// Resolution promotes a PropertyValue, which needs alloc.
+#[cfg(feature = "alloc")]
 mod resolve;
+#[cfg(feature = "alloc")]
 pub use resolve::*;
 
-#[cfg(test)]
+// The tests resolve values, which needs alloc.
+#[cfg(all(test, feature = "alloc"))]
 mod tests;

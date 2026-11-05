@@ -11,7 +11,7 @@ use tokio::sync::Notify;
 
 use super::notification_transactions::NotificationReserveError;
 use super::*;
-use crate::server::test_transport::{TestTransport, BIP_LOCAL_MAC};
+use crate::server::test_transport::{BIP_LOCAL_MAC, TestTransport};
 use bacnet_transport::port::TransportProvenance;
 
 const COV_SERVICE: ConfirmedServiceChoice = ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION;
@@ -134,19 +134,23 @@ async fn notification_terminals_complete_exactly_once() {
         (simple_ack(0, COV_SERVICE), CovAckResult::Ack),
         (
             error(0, COV_SERVICE),
-            CovAckResult::Error(Refusal::Error {
+            CovAckResult::Error(RemoteError::Error {
                 class: ErrorClass::DEVICE,
                 code: ErrorCode::OTHER,
             }),
         ),
         (
             reject(0),
-            CovAckResult::Error(Refusal::Reject(RejectReason::OTHER)),
+            CovAckResult::Error(RemoteError::Reject {
+                reason: RejectReason::OTHER,
+            }),
         ),
         // The recipient serves the notification: its Abort has the server flag.
         (
             abort(0, true),
-            CovAckResult::Error(Refusal::Abort(AbortReason::OTHER)),
+            CovAckResult::Error(RemoteError::Abort {
+                reason: AbortReason::OTHER,
+            }),
         ),
     ] {
         let transactions = NotificationTransactions::new();
@@ -394,6 +398,7 @@ async fn dispatch_keeps_segment_and_complex_acks_out_of_notification_completion(
             source_mac.as_slice(),
             apdu,
             bacnet_network::layer::ReceivedApdu {
+                router_response: None,
                 direct_response: None,
                 apdu: Bytes::new(),
                 source_mac: source_mac.clone(),
@@ -455,7 +460,7 @@ async fn server_lifecycle_stop_and_drop_close_notification_transactions() {
 /// still ends the transaction: the withdrawal does not lose it (#1327).
 #[tokio::test(start_paused = true)]
 async fn an_answer_ahead_of_a_withdrawn_retry_still_ends_the_transaction() {
-    use super::notification_transactions::{run_attempts, Attempt, AttemptsEnd};
+    use super::notification_transactions::{Attempt, AttemptsEnd, run_attempts};
     let transactions = NotificationTransactions::new();
     let (operation, receiver) = transactions.reserve(direct_peer(10), COV_SERVICE).unwrap();
     let invoke_id = operation.invoke_id();
@@ -483,7 +488,7 @@ async fn an_answer_ahead_of_a_withdrawn_retry_still_ends_the_transaction() {
 /// data; a notification's lease never does (#1342).
 #[tokio::test(start_paused = true)]
 async fn only_a_read_lease_takes_a_complex_ack_and_its_data() {
-    use super::notification_transactions::{run_attempts, Attempt, AttemptsEnd};
+    use super::notification_transactions::{Attempt, AttemptsEnd, run_attempts};
     const READ: ConfirmedServiceChoice = ConfirmedServiceChoice::READ_PROPERTY;
     let complex_ack = |invoke_id, service_choice| {
         Apdu::ComplexAck(ComplexAck {

@@ -1,5 +1,6 @@
 //! Custom LifeSafetyOperation contract exercised through confirmed dispatch.
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::{BACnetObject, LifeSafetyOperationEffect, LifeSafetyOperationOutcome};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use std::borrow::Cow;
@@ -32,10 +33,10 @@ impl CustomPoint {
                     changed_properties: vec![],
                 })
             }
-            Behavior::Refuse => Err(Error::Protocol {
-                class: ErrorClass::OBJECT.to_raw().into(),
-                code: ErrorCode::INVALID_OPERATION_IN_THIS_STATE.to_raw().into(),
-            }),
+            Behavior::Refuse => Err(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::INVALID_OPERATION_IN_THIS_STATE,
+            )),
             Behavior::AlreadyApplied => Ok(LifeSafetyOperationOutcome {
                 effect: LifeSafetyOperationEffect::AlreadyApplied,
                 changed_properties: vec![],
@@ -62,8 +63,8 @@ impl BACnetObject for CustomPoint {
     fn object_name(&self) -> &str {
         &self.name
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[
             PropertyIdentifier::PRESENT_VALUE,
             PropertyIdentifier::TRACKING_VALUE,
             PropertyIdentifier::SILENCED,
@@ -88,10 +89,10 @@ impl BACnetObject for CustomPoint {
                 unused_bits: 4,
                 data: vec![0],
             }),
-            _ => Err(Error::Protocol {
-                class: ErrorClass::PROPERTY.to_raw().into(),
-                code: ErrorCode::UNKNOWN_PROPERTY.to_raw().into(),
-            }),
+            _ => Err(Error::protocol(
+                ErrorClass::PROPERTY,
+                ErrorCode::UNKNOWN_PROPERTY,
+            )),
         }
     }
     fn write_property(
@@ -101,23 +102,27 @@ impl BACnetObject for CustomPoint {
         _: PropertyValue,
         _: Option<u8>,
     ) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::PROPERTY.to_raw().into(),
-            code: ErrorCode::WRITE_ACCESS_DENIED.to_raw().into(),
-        })
+        Err(Error::protocol(
+            ErrorClass::PROPERTY,
+            ErrorCode::WRITE_ACCESS_DENIED,
+        ))
     }
-    fn supports_cov(&self) -> bool {
-        true
+    fn cov(&self) -> Option<&dyn bacnet_objects::traits::CovReporting> {
+        Some(self)
     }
+
+    fn life_safety(&mut self) -> Option<&mut dyn bacnet_objects::traits::LifeSafety> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::CovReporting for CustomPoint {
     fn supports_cov_property(&self, p: PropertyIdentifier) -> bool {
-        [
-            PropertyIdentifier::PRESENT_VALUE,
-            PropertyIdentifier::TRACKING_VALUE,
-            PropertyIdentifier::SILENCED,
-            PropertyIdentifier::STATUS_FLAGS,
-        ]
-        .contains(&p)
+        bacnet_objects::life_safety::COV_PROPERTIES.contains(&p)
     }
+}
+
+impl bacnet_objects::traits::LifeSafety for CustomPoint {
     fn apply_life_safety_operation(
         &mut self,
         _: LifeSafetyOperation,
@@ -167,7 +172,11 @@ fn subscriptions(oid: ObjectIdentifier) -> Vec<CovSubscription> {
 }
 fn assert_notifications(apdus: &[Apdu], oid: ObjectIdentifier, invoke_id: u8) {
     assert!(matches!(&apdus[0], Apdu::SimpleAck(ack) if ack.invoke_id == invoke_id));
-    assert_eq!(apdus.len(), 3, "ACK precedes exactly the whole-object and Tracking_Value COV; unchanged Silenced is silent");
+    assert_eq!(
+        apdus.len(),
+        3,
+        "ACK precedes exactly the whole-object and Tracking_Value COV; unchanged Silenced is silent"
+    );
     let mut payloads = Vec::new();
     for apdu in &apdus[1..] {
         let Apdu::UnconfirmedRequest(request) = apdu else {
@@ -359,6 +368,8 @@ async fn applied_without_readback_deltas_succeeds_without_cov() {
         let mut db = fixture.db.write().await;
         let object = db.get_mut(&point_oid()).unwrap();
         let next = object
+            .life_safety()
+            .unwrap()
             .apply_life_safety_operation(LifeSafetyOperation::SILENCE)
             .unwrap();
         assert_eq!(

@@ -2,7 +2,7 @@ use super::*;
 use crate::server::dcc_outcomes::trace_tests::Capture;
 use bacnet_services::device_mgmt::DeviceCommunicationControlRequest;
 use bacnet_types::enums::EnableDisable;
-use std::future::{poll_fn, Future};
+use std::future::{Future, poll_fn};
 use std::task::Poll;
 use tracing::instrument::WithSubscriber;
 
@@ -40,7 +40,7 @@ async fn handle_source(
     source: Option<NpduAddress>,
 ) {
     BACnetServer::handle_admitted_confirmed_request(
-        &RequestServices {
+        &Arc::new(RequestServices {
             db: Arc::clone(&server.db),
             cov_table: Arc::clone(&server.cov_table),
             seg_ack_senders: Arc::clone(&server.seg_ack_senders),
@@ -54,7 +54,7 @@ async fn handle_source(
             dcc_outcomes: Arc::clone(&server.dcc_outcomes),
             mutation_decisions: Arc::clone(&server.mutation_decisions),
             ..RequestServices::for_test(Arc::clone(server.test_network()), server.config.clone())
-        },
+        }),
         &server.request_tasks.spawner(),
         RequestOrigin {
             mac,

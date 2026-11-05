@@ -4,6 +4,7 @@
 
 use super::*;
 use bacnet_types::constructed::{BACnetCalendarEntry, BACnetWeekNDay, SpecialEventPeriod};
+use bacnet_types::error::RemoteError;
 
 const ANY: u8 = 0xFF;
 
@@ -76,8 +77,8 @@ fn eval(sched: &ScheduleObject, today: SpecificDate, time: Time) -> Option<Prope
 
 fn assert_code(result: Result<(), Error>, code: ErrorCode, what: &str) {
     match result {
-        Err(Error::Protocol { code: c, .. }) => {
-            assert_eq!(c, code.to_raw() as u32, "{what}: expected {code:?}");
+        Err(Error::Remote(RemoteError::Error { code: c, .. })) => {
+            assert_eq!(c, code, "{what}: expected {code:?}");
         }
         other => panic!("{what}: expected {code:?}, got {other:?}"),
     }
@@ -429,6 +430,7 @@ fn tick_schedule_writes_the_typed_value_at_priority_for_writing() {
             priority: 9,
             references: references(),
             retry: false,
+            relinquish: false,
         })
     );
     assert_eq!(tick(&mut sched, monday(), at(7, 30)), None);
@@ -616,7 +618,7 @@ fn schedule_setters_refuse_values_outside_their_datatype_or_range() {
     );
     assert!(matches!(
         ScheduleObject::new(2, "SCHED-2", list),
-        Err(Error::Protocol { code, .. }) if code == ErrorCode::INVALID_DATA_TYPE.to_raw() as u32
+        Err(Error::Remote(RemoteError::Error { code, .. })) if code == ErrorCode::INVALID_DATA_TYPE
     ));
     // Nothing was stored.
     assert!(sched.weekly_schedule.iter().all(Vec::is_empty));

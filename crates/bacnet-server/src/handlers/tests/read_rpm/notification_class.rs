@@ -1,11 +1,12 @@
 use super::*;
+use PropertyIdentifier as P;
 use bacnet_objects::{notification_class::NotificationClass, traits::BACnetObject};
 use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{
     BACnetDestination, BACnetRecipient, PropertyReference, ReadAccessSpecification,
 };
+use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::Time;
-use PropertyIdentifier as P;
 
 #[test]
 fn rpm_notification_class_indexed_reads_and_constructed_bytes_are_unchanged() {
@@ -98,9 +99,9 @@ fn rpm_notification_class_indexed_reads_and_constructed_bytes_are_unchanged() {
     }
     .encode(&mut request_bytes)
     .unwrap();
-    let mut legacy = BytesMut::new();
-    handle_read_property_multiple(&db, &request_bytes, &mut legacy).unwrap();
-    let ack = ReadPropertyMultipleACK::decode(&legacy).unwrap();
+    let mut unlimited = BytesMut::new();
+    handle_read_property_multiple(&db, &request_bytes, &mut unlimited).unwrap();
+    let ack = ReadPropertyMultipleACK::decode(&unlimited).unwrap();
     assert_eq!(ack.list_of_read_access_results.len(), 1);
     let access = &ack.list_of_read_access_results[0];
     assert_eq!(access.object_identifier, oid);
@@ -140,27 +141,30 @@ fn rpm_notification_class_indexed_reads_and_constructed_bytes_are_unchanged() {
             Err(expected) => {
                 assert!(result.property_value.is_none());
                 assert_eq!(result.error, Some((ErrorClass::PROPERTY, expected)));
-                assert!(matches!(rp, Err(Error::Protocol { class, code })
-                    if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32));
+                assert!(
+                    matches!(rp, Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == ErrorClass::PROPERTY && code == expected)
+                );
                 assert!(response.is_empty());
             }
         }
     }
-    let budget = crate::server::ReadPropertyMultipleBudget {
+    let budget = bacnet_device_core::read::ReadPropertyMultipleBudget {
         max_result_elements: cases.len(),
-        max_service_ack_bytes: legacy.len(),
+        max_service_ack_bytes: unlimited.len(),
     };
-    use crate::handlers::{rpm_budget::handle_rpm_budgeted, ReadFailure};
+    use crate::handlers::rpm_budget::handle_rpm_budgeted;
+    use bacnet_device_core::read::ReadFailure;
     let mut bounded = BytesMut::new();
     handle_rpm_budgeted(&db, &request_bytes, &mut bounded, budget).unwrap();
-    assert_eq!(bounded, legacy);
+    assert_eq!(bounded, unlimited);
     let mut prefix = BytesMut::from(&b"prefix"[..]);
     assert!(matches!(
         handle_rpm_budgeted(
             &db,
             &request_bytes,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
                 max_result_elements: cases.len() - 1,
                 ..budget
             }
@@ -173,8 +177,8 @@ fn rpm_notification_class_indexed_reads_and_constructed_bytes_are_unchanged() {
             &db,
             &request_bytes,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
-                max_service_ack_bytes: legacy.len() - 1,
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
+                max_service_ack_bytes: unlimited.len() - 1,
                 ..budget
             }
         ),

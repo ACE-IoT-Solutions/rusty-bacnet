@@ -1,7 +1,8 @@
 //! One shared Tags owner for profile-bearing objects.
 
-use std::sync::Arc;
-use std::time::Duration;
+use crate::prelude::*;
+use alloc::sync::Arc;
+use core::time::Duration;
 
 use bacnet_types::constructed::BACnetNameValue;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
@@ -9,7 +10,7 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::persistence::encode_snapshot;
-use super::{write_tags, ObjectProfile, TagsPersistence, TagsSnapshot};
+use super::{ObjectProfile, TagsPersistence, TagsSnapshot, write_tags};
 use crate::common;
 use crate::durable::staged::{self, StagedSaves};
 use crate::durable::{DurableWrites, PendingWrite, SaveWait, SaveWriter, StageStep};
@@ -43,13 +44,15 @@ impl ProfileState {
         persistence: Arc<dyn TagsPersistence>,
     ) -> Result<Self, Error> {
         let snapshot = persistence.load(oid)?.unwrap_or_default();
-        encode_snapshot(&snapshot)?;
+        // As the file backend refuses the same Tags in a file.
+        crate::snapshot::tags::check_loaded(&snapshot)
+            .map_err(|error| Error::from(error.in_format("Tags snapshot")))?;
         let writer = SaveWriter::new(
             format!("bacnet-tags-{oid}-save"),
             move |snapshot: &TagsSnapshot| persistence.save(oid, snapshot),
             move |_, result| {
                 if let Err(error) = result {
-                    tracing::warn!(object = %oid, %error, "Failed to save object Tags");
+                    log_warn!(object = %oid, %error, "Failed to save object Tags");
                 }
             },
         );
@@ -64,10 +67,10 @@ impl ProfileState {
         profile.check()?;
         // Validate first: refusal must not release another request's stage.
         self.with_storage(Storage::drop_staged);
-        if profile.tags.is_some() {
-            if let Some(saved) = &self.saved {
-                profile.tags = Some(saved.clone());
-            }
+        if profile.tags.is_some()
+            && let Some(saved) = &self.saved
+        {
+            profile.tags = Some(saved.clone());
         }
         self.profile = profile;
         self.writes = self.writes.wrapping_add(1);
@@ -78,7 +81,7 @@ impl ProfileState {
         &self.profile
     }
 
-    pub(crate) fn metadata(&self) -> impl Iterator<Item = PropertyMetadata> {
+    pub(crate) fn metadata(&self) -> impl Iterator<Item = PropertyMetadata> + use<> {
         self.profile.metadata()
     }
 
@@ -90,6 +93,7 @@ impl ProfileState {
         self.profile.read(property, index)
     }
 
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn capability(&mut self) -> Option<&mut dyn DurableWrites> {
         self.storage.is_some().then_some(self)
     }
@@ -186,10 +190,6 @@ impl ProfileState {
         self.storage = Some(storage);
         Some(result)
     }
-
-    pub(crate) fn expire(&mut self, now: Duration) {
-        self.with_storage(|storage| storage.expire(now));
-    }
 }
 
 impl DurableWrites for ProfileState {
@@ -249,5 +249,9 @@ impl DurableWrites for ProfileState {
         let wait = storage.drop_forgotten(|| self.snapshot());
         self.storage = Some(storage);
         Some(wait)
+    }
+
+    fn expire_staged(&mut self, now: Duration) {
+        self.with_storage(|storage| storage.expire(now));
     }
 }

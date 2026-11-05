@@ -1,6 +1,6 @@
 use super::*;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 
 struct FailingTransport {
     inner: LoopbackTransport,
@@ -136,7 +136,7 @@ async fn endpoint_requester_queue_rejection_is_silent_and_releases_prepared_leas
             vec![0x10, 8],
             destination.clone(),
             false,
-            NetworkPriority::NORMAL,
+            NetworkPriority::Normal,
             Vec::new(),
             None,
         )
@@ -148,7 +148,7 @@ async fn endpoint_requester_queue_rejection_is_silent_and_releases_prepared_leas
             vec![0x10, 8],
             destination.clone(),
             false,
-            NetworkPriority::NORMAL,
+            NetworkPriority::Normal,
             Vec::new(),
             None,
         )

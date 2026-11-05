@@ -16,12 +16,15 @@ use bacnet_objects::event_log::EventLogObject;
 use bacnet_objects::group::{GlobalGroupObject, GroupObject, StructuredViewObject};
 use bacnet_objects::multistate::MultiStateInputObject;
 use bacnet_objects::notification_class::NotificationClass;
+use bacnet_objects::property_metadata::is_array_property;
 use bacnet_objects::schedule::{CalendarObject, ScheduleObject};
 use bacnet_objects::staging::{StagingConfig, StagingObject};
 use bacnet_objects::value_types::CharacterStringValueObject;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetStageLimitValue};
+use bacnet_types::enums::EngineeringUnits;
+use bacnet_types::error::RemoteError;
 
 fn oid(object_type: ObjectType, instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(object_type, instance).unwrap()
@@ -34,7 +37,7 @@ fn staging(instance: u32, name: &str) -> StagingObject {
         StagingConfig {
             present_value: 0.0,
             min_present_value: -1.0,
-            units: 62,
+            units: EngineeringUnits::DEGREES_CELSIUS,
             priority_for_writing: 8,
             stages: vec![
                 BACnetStageLimitValue {
@@ -68,8 +71,7 @@ fn gating_db() -> ObjectDatabase {
     let mut db = ObjectDatabase::new();
 
     let mut device = DeviceObject::new(DeviceConfig {
-        instance: 1,
-        name: "GateDevice".into(),
+        identity: bacnet_objects::DeviceIdentity::default().with_name("GateDevice"),
         ..Default::default()
     })
     .unwrap();
@@ -80,10 +82,14 @@ fn gating_db() -> ObjectDatabase {
     ]);
     db.add(Box::new(device)).unwrap();
 
-    db.add(Box::new(AnalogInputObject::new(1, "AI-1", 62).unwrap()))
-        .unwrap();
-    db.add(Box::new(AnalogOutputObject::new(1, "AO-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
+    db.add(Box::new(
+        AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     db.add(Box::new(MultiStateInputObject::new(1, "MSI-1", 3).unwrap()))
         .unwrap();
     db.add(Box::new(CalendarObject::new(1, "CAL-1").unwrap()))
@@ -172,15 +178,11 @@ fn read_indexed(
 
 fn assert_not_an_array(result: Result<(), Error>, context: &str) {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(
-                class,
-                ErrorClass::PROPERTY.to_raw() as u32,
-                "{context}: wrong error class"
-            );
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY, "{context}: wrong error class");
             assert_eq!(
                 code,
-                ErrorCode::PROPERTY_IS_NOT_AN_ARRAY.to_raw() as u32,
+                ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,
                 "{context}: wrong error code"
             );
         }
@@ -190,17 +192,9 @@ fn assert_not_an_array(result: Result<(), Error>, context: &str) {
 
 fn assert_protocol_error(result: Result<(), Error>, expected_code: ErrorCode, context: &str) {
     match result {
-        Err(Error::Protocol { class, code }) => {
-            assert_eq!(
-                class,
-                ErrorClass::PROPERTY.to_raw() as u32,
-                "{context}: wrong error class"
-            );
-            assert_eq!(
-                code,
-                expected_code.to_raw() as u32,
-                "{context}: wrong error code"
-            );
+        Err(Error::Remote(RemoteError::Error { class, code })) => {
+            assert_eq!(class, ErrorClass::PROPERTY, "{context}: wrong error class");
+            assert_eq!(code, expected_code, "{context}: wrong error code");
         }
         other => panic!("{context}: expected PROPERTY/{expected_code:?}, got {other:?}"),
     }
@@ -536,65 +530,69 @@ fn schedule_list_of_object_property_references_rejects_indexed_read_and_write() 
 fn object_level_classification_matrix() {
     // Classification truth source: identifier-stable arrays (Table 12-17/…),
     // identifier-stable lists, and the type-dependent identifiers.
-    use bacnet_objects::traits::BACnetObject;
+    use PropertyIdentifier as P;
+    use bacnet_types::enums::EngineeringUnits;
 
     let nc = NotificationClass::new(9, "NC-9").unwrap();
     // PRIORITY is BACnetARRAY[3] on Notification Class (Table 12-24).
-    assert!(nc.is_array_property(PropertyIdentifier::PRIORITY));
-    assert!(!nc.is_array_property(PropertyIdentifier::RECIPIENT_LIST));
-    assert!(!nc.is_array_property(PropertyIdentifier::ACK_REQUIRED));
+    assert!(is_array_property(&nc, P::PRIORITY));
+    assert!(!is_array_property(&nc, P::RECIPIENT_LIST));
+    assert!(!is_array_property(&nc, P::ACK_REQUIRED));
 
     let schedule = ScheduleObject::new(9, "SCH-9", PropertyValue::Unsigned(0)).unwrap();
     // LIST_OF_OBJECT_PROPERTY_REFERENCES is a BACnetLIST on Schedule (Table 12-28).
-    assert!(!schedule.is_array_property(PropertyIdentifier::LIST_OF_OBJECT_PROPERTY_REFERENCES));
-    assert!(schedule.is_array_property(PropertyIdentifier::WEEKLY_SCHEDULE));
-    assert!(schedule.is_array_property(PropertyIdentifier::EXCEPTION_SCHEDULE));
-    assert!(!schedule.is_array_property(PropertyIdentifier::PRESENT_VALUE));
+    assert!(!is_array_property(
+        &schedule,
+        P::LIST_OF_OBJECT_PROPERTY_REFERENCES
+    ));
+    assert!(is_array_property(&schedule, P::WEEKLY_SCHEDULE));
+    assert!(is_array_property(&schedule, P::EXCEPTION_SCHEDULE));
+    assert!(!is_array_property(&schedule, P::PRESENT_VALUE));
 
     let calendar = CalendarObject::new(9, "CAL-9").unwrap();
-    assert!(!calendar.is_array_property(PropertyIdentifier::DATE_LIST));
+    assert!(!is_array_property(&calendar, P::DATE_LIST));
 
     let event_log = EventLogObject::new(9, "ELG-9", 16).unwrap();
-    assert!(!event_log.is_array_property(PropertyIdentifier::LOG_BUFFER));
+    assert!(!is_array_property(&event_log, P::LOG_BUFFER));
 
     let gg = GlobalGroupObject::new(9, "GG-9").unwrap();
     // Global Group (Table 12-57): GROUP_MEMBERS, GROUP_MEMBER_NAMES and
     // PRESENT_VALUE are BACnetARRAY — PRESENT_VALUE is scalar elsewhere.
-    assert!(gg.is_array_property(PropertyIdentifier::GROUP_MEMBERS));
-    assert!(gg.is_array_property(PropertyIdentifier::GROUP_MEMBER_NAMES));
-    assert!(gg.is_array_property(PropertyIdentifier::PRESENT_VALUE));
+    assert!(is_array_property(&gg, P::GROUP_MEMBERS));
+    assert!(is_array_property(&gg, P::GROUP_MEMBER_NAMES));
+    assert!(is_array_property(&gg, P::PRESENT_VALUE));
 
     let sv = StructuredViewObject::new(9, "SV-9").unwrap();
     // Structured View (Table 12-34): BACnetARRAY subordinate properties.
-    assert!(sv.is_array_property(PropertyIdentifier::SUBORDINATE_LIST));
-    assert!(sv.is_array_property(PropertyIdentifier::SUBORDINATE_ANNOTATIONS));
+    assert!(is_array_property(&sv, P::SUBORDINATE_LIST));
+    assert!(is_array_property(&sv, P::SUBORDINATE_ANNOTATIONS));
 
-    let ai = AnalogInputObject::new(9, "AI-9", 62).unwrap();
-    assert!(!ai.is_array_property(PropertyIdentifier::PRESENT_VALUE));
-    assert!(ai.is_array_property(PropertyIdentifier::PROPERTY_LIST));
+    let ai = AnalogInputObject::new(9, "AI-9", EngineeringUnits::DEGREES_CELSIUS).unwrap();
+    assert!(!is_array_property(&ai, P::PRESENT_VALUE));
+    assert!(is_array_property(&ai, P::PROPERTY_LIST));
 
     let csv = CharacterStringValueObject::new(9, "CSV-9").unwrap();
-    assert!(csv.is_array_property(PropertyIdentifier::ALARM_VALUES));
-    assert!(csv.is_array_property(PropertyIdentifier::FAULT_VALUES));
-    assert!(csv.is_array_property(PropertyIdentifier::PRIORITY_ARRAY));
+    assert!(is_array_property(&csv, P::ALARM_VALUES));
+    assert!(is_array_property(&csv, P::FAULT_VALUES));
+    assert!(is_array_property(&csv, P::PRIORITY_ARRAY));
 
-    let ao = AnalogOutputObject::new(9, "AO-9", 62).unwrap();
-    assert!(ao.is_array_property(PropertyIdentifier::PRIORITY_ARRAY));
-    assert!(!ao.is_array_property(PropertyIdentifier::PRESENT_VALUE));
+    let ao = AnalogOutputObject::new(9, "AO-9", EngineeringUnits::DEGREES_CELSIUS).unwrap();
+    assert!(is_array_property(&ao, P::PRIORITY_ARRAY));
+    assert!(!is_array_property(&ao, P::PRESENT_VALUE));
 
     let cmd = CommandObject::new(9, "CMD-9").unwrap();
     // Command (Table 12-12): ACTION and its parallel ACTION_TEXT are both
     // BACnetARRAY[N] (#1150).
-    assert!(cmd.is_array_property(PropertyIdentifier::ACTION));
-    assert!(cmd.is_array_property(PropertyIdentifier::ACTION_TEXT));
-    assert!(!cmd.is_array_property(PropertyIdentifier::PRESENT_VALUE));
+    assert!(is_array_property(&cmd, P::ACTION));
+    assert!(is_array_property(&cmd, P::ACTION_TEXT));
+    assert!(!is_array_property(&cmd, P::PRESENT_VALUE));
 
     let stg = staging(9, "STG-9");
     // Staging (Table 12-80): all three collection properties are arrays.
-    assert!(stg.is_array_property(PropertyIdentifier::STAGES));
-    assert!(stg.is_array_property(PropertyIdentifier::STAGE_NAMES));
-    assert!(stg.is_array_property(PropertyIdentifier::TARGET_REFERENCES));
-    assert!(!stg.is_array_property(PropertyIdentifier::PRESENT_STAGE));
+    assert!(is_array_property(&stg, P::STAGES));
+    assert!(is_array_property(&stg, P::STAGE_NAMES));
+    assert!(is_array_property(&stg, P::TARGET_REFERENCES));
+    assert!(!is_array_property(&stg, P::PRESENT_STAGE));
 }
 
 // ── #266: omitted-index PRIORITY_ARRAY writes are protocol errors ─────────
@@ -779,12 +777,17 @@ fn reference_properties_reject_indexed_read_property() {
     use bacnet_objects::accumulator::PulseConverterObject;
     use bacnet_objects::averaging::AveragingObject;
     use bacnet_objects::loop_obj::LoopObject;
+    use bacnet_types::enums::EngineeringUnits;
 
     let mut db = ObjectDatabase::new();
-    db.add(Box::new(LoopObject::new(1, "LOOP-1", 62).unwrap()))
-        .unwrap();
-    db.add(Box::new(PulseConverterObject::new(1, "PC-1", 62).unwrap()))
-        .unwrap();
+    db.add(Box::new(
+        LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
+    db.add(Box::new(
+        PulseConverterObject::new(1, "PC-1", EngineeringUnits::DEGREES_CELSIUS).unwrap(),
+    ))
+    .unwrap();
     db.add(Box::new(AveragingObject::new(1, "AVG-1").unwrap()))
         .unwrap();
 

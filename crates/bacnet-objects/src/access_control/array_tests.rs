@@ -7,17 +7,19 @@
 //! Each array reads whole with no index, its size at index 0, one element at
 //! 1 to N and INVALID_ARRAY_INDEX past N.
 
+use crate::property_metadata::{is_array_property, is_list_property};
 use bacnet_types::constructed::{BACnetAuthenticationFactorFormat, BACnetDeviceObjectReference};
 use bacnet_types::enums::PropertyIdentifier as P;
 use bacnet_types::enums::{AuthenticationFactorType as F, ErrorClass, ErrorCode};
+use bacnet_types::error::RemoteError;
 
 use super::*;
 
 fn assert_property_error(result: Result<PropertyValue, Error>, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code: actual })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && actual == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code: actual }))
+            if class == ErrorClass::PROPERTY
+                && actual == code),
         "expected PROPERTY / {code:?}, got {result:?}"
     );
 }
@@ -25,8 +27,8 @@ fn assert_property_error(result: Result<PropertyValue, Error>, code: ErrorCode) 
 /// Read `property` of `object` whole, at index 0, at every index and past
 /// the end, and check each against `elements`.
 fn assert_array(object: &dyn BACnetObject, property: P, elements: &[PropertyValue]) {
-    assert!(object.is_array_property(property), "{property:?}");
-    assert!(!object.is_list_property(property), "{property:?}");
+    assert!(is_array_property(object, property), "{property:?}");
+    assert!(!is_list_property(object, property), "{property:?}");
     assert_eq!(
         object.read_property(property, None).unwrap(),
         PropertyValue::List(elements.to_vec()),
@@ -145,8 +147,8 @@ fn credential_data_input_set_supported_formats_refuses_ill_formed_formats() {
             (format, 0),
         ]);
         assert!(
-            matches!(result, Err(Error::Protocol { code, .. })
-                if code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32),
+            matches!(result, Err(Error::Remote(RemoteError::Error { code, .. }))
+                if code == ErrorCode::VALUE_OUT_OF_RANGE),
             "{format:?}: {result:?}"
         );
         assert_array(&reader, P::SUPPORTED_FORMATS, &[data(&[0x09, 0x14])]);
@@ -211,8 +213,8 @@ fn access_point_access_doors_read_as_an_array() {
         local(ObjectType::BINARY_OUTPUT, 1),
     ]);
     assert!(
-        matches!(result, Err(Error::Protocol { code, .. })
-            if code == ErrorCode::VALUE_OUT_OF_RANGE.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { code, .. }))
+            if code == ErrorCode::VALUE_OUT_OF_RANGE),
         "{result:?}"
     );
     assert_array(&point, P::ACCESS_DOORS, &doors);

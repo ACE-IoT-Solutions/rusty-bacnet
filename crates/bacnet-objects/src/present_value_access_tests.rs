@@ -5,8 +5,8 @@ use crate::multistate::MultiStateValueObject;
 use crate::present_value_access::PresentValueAccess;
 use crate::property_metadata::PropertyWriteCapability;
 use crate::traits::BACnetObject;
-use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
-use bacnet_types::error::Error;
+use bacnet_types::enums::{EngineeringUnits, ErrorClass, ErrorCode, PropertyIdentifier as P};
+use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::PropertyValue;
 
 const LOWER_PRIORITY: u8 = 8;
@@ -30,7 +30,15 @@ fn values(
 ) -> [(Box<dyn BACnetObject>, PropertyValue, PropertyValue); 3] {
     [
         (
-            Box::new(AnalogValueObject::with_access(1, "AV-1", 62, access).unwrap()),
+            Box::new(
+                AnalogValueObject::with_access(
+                    1,
+                    "AV-1",
+                    EngineeringUnits::DEGREES_CELSIUS,
+                    access,
+                )
+                .unwrap(),
+            ),
             PropertyValue::Real(21.5),
             PropertyValue::Real(30.0),
         ),
@@ -51,7 +59,7 @@ fn values(
 fn commandable_values() -> [(Box<dyn BACnetObject>, PropertyValue, PropertyValue); 3] {
     [
         (
-            Box::new(AnalogValueObject::new(1, "AV-1", 62).unwrap()),
+            Box::new(AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS).unwrap()),
             PropertyValue::Real(21.5),
             PropertyValue::Real(30.0),
         ),
@@ -74,12 +82,12 @@ fn assert_protocol<T: std::fmt::Debug>(
     code: ErrorCode,
 ) {
     match result {
-        Err(Error::Protocol {
+        Err(Error::Remote(RemoteError::Error {
             class: actual_class,
             code: actual_code,
-        }) => {
-            assert_eq!(actual_class, class.to_raw() as u32);
-            assert_eq!(actual_code, code.to_raw() as u32);
+        })) => {
+            assert_eq!(actual_class, class);
+            assert_eq!(actual_code, code);
         }
         other => panic!("expected {class:?} / {code:?}, got {other:?}"),
     }
@@ -153,7 +161,7 @@ fn read_only_and_writable_have_no_command_prioritization() {
         for (mut object, _, _) in values(access) {
             for property in COMMANDABLE_ONLY {
                 assert!(
-                    !object.property_list().contains(&property),
+                    !crate::property_metadata::has_property(&object.property_metadata(), property),
                     "{access:?} lists {property:?}"
                 );
                 assert_protocol(
@@ -232,7 +240,11 @@ fn writable_takes_every_peer_write_directly() {
 fn the_application_sets_present_value_while_in_service() {
     for access in [PresentValueAccess::ReadOnly, PresentValueAccess::Writable] {
         for (mut object, value, _) in values(access) {
-            object.set_present_value_internal(value.clone()).unwrap();
+            object
+                .local_input()
+                .unwrap()
+                .apply_local_input(crate::traits::LocalInputValue::present_value(value.clone()))
+                .unwrap();
 
             assert_eq!(present_value(object.as_ref()), value, "{access:?}");
         }
@@ -248,7 +260,10 @@ fn the_application_is_refused_while_out_of_service() {
             let before = present_value(object.as_ref());
 
             assert_protocol(
-                object.set_present_value_internal(value),
+                object
+                    .local_input()
+                    .unwrap()
+                    .apply_local_input(crate::traits::LocalInputValue::present_value(value)),
                 ErrorClass::PROPERTY,
                 ErrorCode::WRITE_ACCESS_DENIED,
             );
@@ -261,7 +276,10 @@ fn the_application_is_refused_while_out_of_service() {
 fn the_application_does_not_set_a_commandable_present_value() {
     for (mut object, value, _) in commandable_values() {
         assert_protocol(
-            object.set_present_value_internal(value),
+            object
+                .local_input()
+                .unwrap()
+                .apply_local_input(crate::traits::LocalInputValue::present_value(value)),
             ErrorClass::OBJECT,
             ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
         );
@@ -275,7 +293,9 @@ fn a_value_of_the_wrong_kind_is_refused() {
             let before = present_value(object.as_ref());
 
             assert_protocol(
-                object.set_present_value_internal(PropertyValue::Boolean(true)),
+                object.local_input().unwrap().apply_local_input(
+                    crate::traits::LocalInputValue::present_value(PropertyValue::Boolean(true)),
+                ),
                 ErrorClass::PROPERTY,
                 ErrorCode::INVALID_DATA_TYPE,
             );
@@ -303,7 +323,11 @@ fn noncommandable_network_null_is_a_successful_noop() {
     for access in [PresentValueAccess::Writable, PresentValueAccess::ReadOnly] {
         for sourced in [true, false] {
             for (mut object, value, _) in values(access) {
-                object.set_present_value_internal(value.clone()).unwrap();
+                object
+                    .local_input()
+                    .unwrap()
+                    .apply_local_input(crate::traits::LocalInputValue::present_value(value.clone()))
+                    .unwrap();
                 if access == PresentValueAccess::ReadOnly {
                     take_out_of_service(object.as_mut());
                 }
@@ -359,9 +383,15 @@ fn noncommandable_write_errors_preserve_value_and_internal_null_is_invalid() {
                 PropertyValue::Enumerated(2),
                 PropertyValue::Unsigned(4),
             ]) {
-                object.set_present_value_internal(value.clone()).unwrap();
+                object
+                    .local_input()
+                    .unwrap()
+                    .apply_local_input(crate::traits::LocalInputValue::present_value(value.clone()))
+                    .unwrap();
                 assert_protocol(
-                    object.set_present_value_internal(PropertyValue::Null),
+                    object.local_input().unwrap().apply_local_input(
+                        crate::traits::LocalInputValue::present_value(PropertyValue::Null),
+                    ),
                     ErrorClass::PROPERTY,
                     ErrorCode::INVALID_DATA_TYPE,
                 );

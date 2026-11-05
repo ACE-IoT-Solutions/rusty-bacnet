@@ -13,7 +13,7 @@
 //! *local* time, derived from the wall clock plus the Device object's
 //! `UTC_Offset` property (signed minutes) at the sender. A window with
 //! `to_time < from_time` (e.g. 22:00–02:00) crosses midnight and is active
-//! outside the `[from, to]` interval; see `time_in_window`.
+//! outside the `[from, to]` interval; see [`in_window`].
 //!
 //! # Restarts
 //!
@@ -27,33 +27,36 @@
 //!
 //! [`add_destination`]: NotificationClass::add_destination
 
+use crate::prelude::*;
+use alloc::borrow::Cow;
 use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
 use bacnet_types::constructed::{BACnetDestination, BACnetRecipient};
 use bacnet_types::enums::{EventState, ObjectType, PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags, Time};
-use std::borrow::Cow;
 
 use crate::common::{self, read_common_properties};
 use crate::database::ObjectDatabase;
-use crate::durable::DurableWrites;
 use crate::event::EventTransition;
 use crate::traits::BACnetObject;
 
+mod creation_only;
 mod enrollment_summary;
 mod metadata;
 mod persistence;
 pub(crate) mod recipient_list;
 mod saving;
+mod window;
 #[doc(hidden)]
 pub use enrollment_summary::{
-    resolve_enrollment_summary_class_internal, EnrollmentSummaryClassProjection,
-    EnrollmentSummaryClassProjectionError,
+    EnrollmentSummaryClassProjection, EnrollmentSummaryClassProjectionError,
+    resolve_enrollment_summary_class_internal,
 };
-pub use persistence::{
-    FileNotificationClassPersistence, NotificationClassPersistence, NotificationClassSnapshot,
-};
+#[cfg(feature = "std")]
+pub use persistence::FileNotificationClassPersistence;
+pub use persistence::{NotificationClassPersistence, NotificationClassSnapshot};
 pub use recipient_list::MAX_RECIPIENT_LIST_DESTINATIONS;
+pub use window::{always_in_window, in_window};
 
 /// BACnet NotificationClass object.
 ///
@@ -74,14 +77,18 @@ pub struct NotificationClass {
     pub ack_required: EventTransitionBits,
     /// Recipient list, at most [`MAX_RECIPIENT_LIST_DESTINATIONS`] long.
     recipient_list: Vec<BACnetDestination>,
-    /// Where a written Recipient_List is saved, with persistence.
+    /// Where a written Recipient_List and Description are saved, with
+    /// persistence.
     storage: Option<saving::Storage>,
-    /// Recipient_List writes taken, so a staged write can tell whether
-    /// another came between.
-    list_writes: u64,
+    /// Kept writes taken, so a staged write can tell whether another came
+    /// between.
+    kept_writes: u64,
     /// A write set Recipient_List, now or before a restart, so storage keeps
     /// it and configured destinations no longer apply.
     recipient_list_written: bool,
+    /// A write set Description, now or before a restart, so storage keeps
+    /// it and `set_description` no longer applies (#2364).
+    description_written: bool,
 }
 
 impl NotificationClass {
@@ -102,14 +109,19 @@ impl NotificationClass {
             ack_required: EventTransitionBits::empty(),
             recipient_list: Vec::new(),
             storage: None,
-            list_writes: 0,
+            kept_writes: 0,
             recipient_list_written: false,
+            description_written: false,
         })
     }
 
-    /// Set the description string.
+    /// Set the description string. On a class
+    /// [`with_persistence`](Self::with_persistence), a Description a write
+    /// saved wins (#2364).
     pub fn set_description(&mut self, desc: impl Into<String>) {
-        self.description = desc.into();
+        if !self.description_saved() {
+            self.description = desc.into();
+        }
     }
 
     /// Add a destination to the recipient list.
@@ -130,7 +142,7 @@ impl NotificationClass {
     pub fn add_destination(&mut self, dest: BACnetDestination) -> Result<(), Error> {
         recipient_list::check_added(&dest)?;
         if self.recipient_list_saved() {
-            tracing::debug!(
+            log_debug!(
                 class = %self.oid,
                 "Saved Recipient_List kept over a configured destination"
             );
@@ -163,6 +175,7 @@ impl BACnetObject for NotificationClass {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // Table 12-24 has no Out_Of_Service (#1064), and Clause 12.21 holds the
         // OUT_OF_SERVICE flag FALSE.
         if let Some(result) =
@@ -219,6 +232,7 @@ impl BACnetObject for NotificationClass {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if property == PropertyIdentifier::NOTIFICATION_CLASS {
             if let PropertyValue::Unsigned(v) = value {
                 self.notification_class = common::u64_to_u32(v)?;
@@ -236,7 +250,11 @@ impl BACnetObject for NotificationClass {
             if array_index.is_some() {
                 return Err(common::property_is_not_an_array_error());
             }
-            return self.write_recipient_list(value);
+            return self.write_kept(property, value);
+        }
+        // Saved first with storage (#2364).
+        if self.storage.is_some() && saving::kept(property, &value) {
+            return self.write_kept(property, value);
         }
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
@@ -244,7 +262,6 @@ impl BACnetObject for NotificationClass {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
@@ -252,65 +269,21 @@ impl BACnetObject for NotificationClass {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: std::time::Duration) -> bool {
-        self.expire_staged_write(now);
-        false
-    }
-
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn DurableWrites> {
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
         Some(self)
     }
 }
 
-/// Convert a `Time` to centiseconds (hundredths of a second since midnight).
-fn time_to_centiseconds(t: &Time) -> u32 {
-    let h = if t.hour == Time::UNSPECIFIED {
-        0
-    } else {
-        t.hour as u32
-    };
-    let m = if t.minute == Time::UNSPECIFIED {
-        0
-    } else {
-        t.minute as u32
-    };
-    let s = if t.second == Time::UNSPECIFIED {
-        0
-    } else {
-        t.second as u32
-    };
-    let cs = if t.hundredths == Time::UNSPECIFIED {
-        0
-    } else {
-        t.hundredths as u32
-    };
-    h * 360_000 + m * 6_000 + s * 100 + cs
-}
+impl crate::creation::Creatable for NotificationClass {
+    const CREATION_ONLY_PROPERTIES: &'static [PropertyIdentifier] = creation_only::CREATION_ONLY;
 
-/// Check if `current` falls within the `[from, to]` time window.
-///
-/// If either bound has an unspecified hour (0xFF), the window is treated as
-/// "all day". A window whose `to` is earlier than its `from` (e.g.
-/// 22:00–02:00) crosses midnight: it is active from `from` up to midnight and
-/// again from midnight up to `to`, i.e. when `current >= from || current <= to`.
-/// This matches the ASHRAE 135-2020 reading that `To_Time` is the end of the
-/// active period; a wrap-around pair denotes an overnight schedule.
-fn time_in_window(current: &Time, from: &Time, to: &Time) -> bool {
-    if from.hour == Time::UNSPECIFIED || to.hour == Time::UNSPECIFIED {
-        return true;
-    }
-    let cur = time_to_centiseconds(current);
-    let from_cs = time_to_centiseconds(from);
-    let to_cs = time_to_centiseconds(to);
-    if to_cs < from_cs {
-        // Overnight window crossing midnight.
-        cur >= from_cs || cur <= to_cs
-    } else {
-        cur >= from_cs && cur <= to_cs
+    fn initialize_property(
+        &mut self,
+        property: PropertyIdentifier,
+        value: PropertyValue,
+    ) -> Result<(), Error> {
+        creation_only::initialize(self, property, value)
     }
 }
 
@@ -349,15 +322,14 @@ fn find_notification_class(
     notification_class: u32,
 ) -> Option<&dyn BACnetObject> {
     // Try direct OID lookup first (instance == notification_class is the common case)
-    if let Ok(nc_oid) = ObjectIdentifier::new(ObjectType::NOTIFICATION_CLASS, notification_class) {
-        if let Some(obj) = db.get(&nc_oid) {
-            if matches!(
-                obj.read_property(PropertyIdentifier::NOTIFICATION_CLASS, None),
-                Ok(PropertyValue::Unsigned(n)) if n as u32 == notification_class
-            ) {
-                return Some(obj);
-            }
-        }
+    if let Ok(nc_oid) = ObjectIdentifier::new(ObjectType::NOTIFICATION_CLASS, notification_class)
+        && let Some(obj) = db.get(&nc_oid)
+        && matches!(
+            obj.read_property(PropertyIdentifier::NOTIFICATION_CLASS, None),
+            Ok(PropertyValue::Unsigned(n)) if n as u32 == notification_class
+        )
+    {
+        return Some(obj);
     }
 
     // Fall back to scanning all NotificationClass objects
@@ -599,8 +571,7 @@ fn filter_destinations(
     let transition_mask = transition.bit_mask();
     destinations
         .into_iter()
-        .filter(|dest| dest.valid_days.intersects(today))
-        .filter(|dest| time_in_window(current_time, &dest.from_time, &dest.to_time))
+        .filter(|dest| in_window(dest, today, current_time))
         .filter(|dest| dest.transitions.intersects(transition_mask))
         .map(|dest| {
             (

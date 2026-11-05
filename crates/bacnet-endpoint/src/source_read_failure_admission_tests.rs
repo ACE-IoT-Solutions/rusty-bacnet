@@ -1,19 +1,18 @@
 //! Deterministic admission seam: saturated requester leases, without a scheduler
 //! race to refill the just-completed READ lease before its audit admission.
 use super::*;
-use bacnet_encoding::apdu::{decode_apdu, Apdu, SimpleAck};
+use bacnet_encoding::apdu::{Apdu, SimpleAck, decode_apdu};
 use bacnet_endpoint_core::coordinator::{
-    LeaseMetadata, OutboundTransactionCoordinator, TerminalPolicy,
+    CanonicalPeer, LeaseMetadata, OutboundTransactionCoordinator, TerminalPolicy,
 };
 use bacnet_endpoint_core::endpoint_ingress::EndpointIngress;
-use bacnet_network::layer::{NetworkLayer, ReceivedApdu};
+use bacnet_network::layer::NetworkLayer;
 use bacnet_objects::audit::AuditReporterObject;
 use bacnet_services::audit::AuditNotificationRequest;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_types::bitstring::BACnetPriorityFilter;
 use bacnet_types::enums::{ConfirmedServiceChoice, Reliability};
-use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 
 const WAIT: Duration = Duration::from_secs(1);
 fn oid(kind: ObjectType, instance: u32) -> ObjectIdentifier {
@@ -26,7 +25,7 @@ struct Fixture {
     coordinator: Arc<OutboundTransactionCoordinator>,
     ingress: EndpointIngress<LoopbackTransport>,
     peer: NetworkLayer<LoopbackTransport>,
-    records: mpsc::Receiver<ReceivedApdu>,
+    records: bacnet_network::layer::ApduReceiver,
     status: Arc<AuditReporterStatus>,
 }
 impl Fixture {
@@ -49,7 +48,9 @@ impl Fixture {
         flags.insert(AuditOperation::READ);
         flags.insert(AuditOperation::AUDITING_FAILURE);
         reporter
-            .configure_audit_reporter_internal(
+            .audit_reporter_mut()
+            .expect("an Audit Reporter")
+            .configure(
                 AuditLevel::AUDIT_ALL,
                 flags,
                 confirmed,
@@ -96,8 +97,8 @@ impl Fixture {
             status,
         }
     }
-    fn ticket(&self, confirmed: bool) -> AuditFailureTicket<MacAddr> {
-        let route = MacAddr::from_slice(self.peer.local_mac());
+    fn ticket(&self, confirmed: bool) -> AuditFailureTicket<SourceRoute> {
+        let route = SourceRoute::Direct(MacAddr::from_slice(self.peer.local_mac()));
         self.source
             .failures
             .observe(AuditFailureContext {
@@ -105,7 +106,7 @@ impl Fixture {
                 epoch: self.status.auditing_failure_epoch().unwrap(),
                 device: oid(ObjectType::DEVICE, 123),
                 confirmed,
-                peer: CanonicalPeer::direct(&route),
+                peer: route.peer(),
                 route,
                 max_apdu: 1476,
             })
@@ -147,7 +148,7 @@ impl Fixture {
             &self.source,
             &self.owner,
             confirmed,
-            MacAddr::from_slice(self.peer.local_mac()),
+            SourceRoute::Direct(MacAddr::from_slice(self.peer.local_mac())),
             notification,
             delivery::Completion::new(self.status.clone(), self.status.begin_delivery()),
             Some(self.ticket(confirmed)),

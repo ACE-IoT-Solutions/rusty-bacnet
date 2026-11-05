@@ -48,17 +48,21 @@
 //!   since. Leaving Effective_Period gives them up. Clause 12.24.6 has
 //!   seasonal Schedules share references and a priority, each writing only in
 //!   its own period, so an out-of-season Schedule whose list or priority is
-//!   edited must not clear the command of the one in season.
+//!   edited must not clear the command of the one in season. Each of those
+//!   NULLs is a [`relinquish`](ScheduleWrite::relinquish) write, which the
+//!   bundled server sends only to a slot whose Value_Source still names
+//!   this Schedule (#2264): another writer may have taken the slot since.
 //! - Every accepted write counts as a change, even of the value already
 //!   held; sending the current value again is harmless.
 
+use crate::prelude::*;
 use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetObjectPropertyReference,
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 
-use super::{writes, ScheduleObject, ScheduleWrite};
+use super::{ScheduleObject, ScheduleWrite, writes};
 use crate::{common, device_reference};
 
 /// Resource cap on List_Of_Object_Property_References members, the bound
@@ -131,6 +135,7 @@ impl ScheduleObject {
                     priority,
                     references: left,
                     retry: false,
+                    relinquish: true,
                 });
             }
             if !kept.is_empty() {
@@ -165,14 +170,33 @@ impl ScheduleObject {
             priority: self.priority_for_writing,
             references: references.clone(),
             retry: false,
+            relinquish: false,
         })
+    }
+
+    /// The NULLs that give up every slot this Schedule holds, for its
+    /// deletion (#2256): the ones a change of the targets still owes, then
+    /// one to each slot its last value filled. Nothing is held afterwards,
+    /// and no value write stays owed.
+    pub(super) fn relinquish_all(&mut self) -> Vec<ScheduleWrite> {
+        let mut writes = core::mem::take(&mut self.relinquish_owed);
+        writes.extend(self.held.take().map(|held| ScheduleWrite {
+            value: PropertyValue::Null,
+            priority: held.priority,
+            references: held.references,
+            retry: false,
+            relinquish: true,
+        }));
+        self.simulated_write = None;
+        self.rewrite_owed = false;
+        writes
     }
 
     /// The writes owed apart from the calculation, in order: the NULLs a
     /// change of the targets owes, then the Present_Value owed out of service,
     /// for a client's write or a change of the targets (`out_of_service.rs`).
     pub(super) fn take_owed_writes(&mut self) -> Vec<ScheduleWrite> {
-        let mut writes = std::mem::take(&mut self.relinquish_owed);
+        let mut writes = core::mem::take(&mut self.relinquish_owed);
         let owed = match self.simulated_write.take() {
             Some(value) => Some(value),
             None if self.out_of_service && self.rewrite_owed => Some(self.present_value.clone()),

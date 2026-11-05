@@ -2,6 +2,9 @@
 //! Out_Of_Service is TRUE (Clauses 12.36.4, 12.36.7 and 12.36.8, Table 12-43
 //! footnote 1, #1168).
 
+use crate::property_metadata::is_writable_property;
+use crate::traits::Timed;
+use bacnet_types::error::RemoteError;
 use std::sync::Arc;
 
 use bacnet_types::constructed::{BACnetAuthenticationFactor, BACnetAuthenticationFactorFormat};
@@ -63,7 +66,10 @@ pub(super) fn reader() -> CredentialDataInputObject {
     reader
         .set_present_value(card(&[0x12, 0x34, 0x56]), stamp(9))
         .unwrap();
-    reader.bind_clock_internal(Some(Arc::new(FixedClock(11))));
+    reader.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(FixedClock(11))),
+        ..crate::traits::Clocks::default()
+    });
     reader
 }
 
@@ -148,9 +154,9 @@ fn status_flags(fault: bool, out_of_service: bool) -> PropertyValue {
 
 pub(super) fn assert_property_error(result: Result<(), Error>, code: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code: actual })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && actual == code.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code: actual }))
+            if class == ErrorClass::PROPERTY
+                && actual == code),
         "expected PROPERTY / {code:?}, got {result:?}"
     );
 }
@@ -185,8 +191,8 @@ fn credential_data_input_refuses_simulated_rows_in_service() {
         assert_eq!(served(&reader), device(false), "{property:?}");
     }
     // Both rows have a write route, open only out of service.
-    assert!(reader.is_writable_property(P::PRESENT_VALUE));
-    assert!(reader.is_writable_property(P::RELIABILITY));
+    assert!(is_writable_property(&reader, P::PRESENT_VALUE));
+    assert!(is_writable_property(&reader, P::RELIABILITY));
 }
 
 #[test]
@@ -203,7 +209,10 @@ fn credential_data_input_takes_simulated_rows_out_of_service() {
 
     // The form the server hands over, one chunk per context tag, is the same
     // factor. The same card again is a new read and stamps again.
-    reader.bind_clock_internal(Some(Arc::new(FixedClock(12))));
+    reader.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(FixedClock(12))),
+        ..crate::traits::Clocks::default()
+    });
     for _ in 0..2 {
         write(
             &mut reader,
@@ -238,7 +247,10 @@ fn credential_data_input_takes_simulated_rows_out_of_service() {
 
     // A simulated fault sets the FAULT flag and leaves Update_Time alone; a
     // proprietary value is taken too.
-    reader.bind_clock_internal(Some(Arc::new(FixedClock(13))));
+    reader.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(FixedClock(13))),
+        ..crate::traits::Clocks::default()
+    });
     for reliability in [Reliability::UNRELIABLE_OTHER, Reliability::from_raw(64)] {
         write(
             &mut reader,
@@ -258,7 +270,10 @@ fn credential_data_input_takes_simulated_rows_out_of_service() {
 #[test]
 fn credential_data_input_without_a_clock_stamps_update_time_with_a_sequence_number() {
     let mut reader = reader();
-    reader.bind_clock_internal(None);
+    reader.bind_clocks(&crate::traits::Clocks {
+        clock: None,
+        ..crate::traits::Clocks::default()
+    });
     set_out_of_service(&mut reader, true);
     // Each simulated read takes the object's next number, from 1, so Update_Time
     // moves even for the same factor; a Reliability write takes none.
@@ -290,7 +305,10 @@ fn credential_data_input_without_a_clock_stamps_update_time_with_a_sequence_numb
     );
 
     // With a clock again, updates take its date and time.
-    reader.bind_clock_internal(Some(Arc::new(FixedClock(12))));
+    reader.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(FixedClock(12))),
+        ..crate::traits::Clocks::default()
+    });
     set_out_of_service(&mut reader, true);
     write(&mut reader, P::PRESENT_VALUE, data(factor(2, 3, &[0x01]))).unwrap();
     assert_eq!(read(&reader, P::UPDATE_TIME), stamped(12));
@@ -417,7 +435,10 @@ fn credential_data_input_return_to_service_serves_the_reader_again() {
     // is refused as on the other Reliability carriers.
     reader.set_present_value(card(&[0x99]), stamp(10)).unwrap();
     assert_property_error(
-        reader.set_reliability_internal(Reliability::COMMUNICATION_FAILURE),
+        reader
+            .reliability_eval()
+            .unwrap()
+            .set_reliability(Reliability::COMMUNICATION_FAILURE),
         ErrorCode::WRITE_ACCESS_DENIED,
     );
     assert_eq!(served(&reader), simulated);
@@ -437,11 +458,15 @@ fn credential_data_input_return_to_service_serves_the_reader_again() {
 
     // In service the application's values are served at once.
     reader
-        .set_reliability_internal(Reliability::COMMUNICATION_FAILURE)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::COMMUNICATION_FAILURE)
         .unwrap();
     assert_eq!(read(&reader, P::STATUS_FLAGS), status_flags(true, false));
     reader
-        .set_reliability_internal(Reliability::NO_FAULT_DETECTED)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::NO_FAULT_DETECTED)
         .unwrap();
     reader
         .set_present_value(card(&[0x12, 0x34, 0x56]), stamp(9))
@@ -468,15 +493,20 @@ fn credential_data_input_null_out_of_service_write_keeps_the_simulation() {
 }
 
 #[test]
-fn credential_data_input_set_reliability_internal_checks_the_production() {
+fn credential_data_input_set_reliability_checks_the_production() {
     let mut reader = reader();
     for raw in [11, 65_536] {
-        let result = reader.set_reliability_internal(Reliability::from_raw(raw));
+        let result = reader
+            .reliability_eval()
+            .unwrap()
+            .set_reliability(Reliability::from_raw(raw));
         assert_property_error(result, ErrorCode::VALUE_OUT_OF_RANGE);
     }
     assert_eq!(served(&reader), device(false));
     reader
-        .set_reliability_internal(Reliability::from_raw(64))
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::from_raw(64))
         .unwrap();
     assert_eq!(read(&reader, P::RELIABILITY), PropertyValue::Enumerated(64));
 }

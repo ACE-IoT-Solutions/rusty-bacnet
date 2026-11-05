@@ -3,9 +3,9 @@
 
 use bacnet_types::constructed::BACnetPropertyValue;
 use bacnet_types::enums::{PropertyIdentifier, RejectReason};
-use bacnet_types::error::Error;
+use bacnet_types::error::{DecodeError, DecodingKind, Error};
 
-use super::{extract_property_value, matches_property_boundary, PropertyValueBoundary};
+use super::{PropertyValueBoundary, extract_property_value, matches_property_boundary};
 use crate::constructed::tagged::misplaced_kind;
 use crate::{primitives, tags};
 
@@ -83,16 +83,14 @@ fn reason_of(error: &Error) -> RejectReason {
 }
 
 fn error_offset(error: &Error, fallback: usize) -> usize {
-    match error {
-        Error::Decoding { offset, .. } => *offset,
-        _ => fallback,
-    }
+    error.decode_fault().map_or(fallback, |(offset, _)| offset)
 }
 
 /// Decode a property value at `offset` in `data`; returns it and the offset just past it.
 ///
 /// The value may be followed by the end of the input, the next value's
-/// context `[0]`, or a context `[3]` that runs to the end.
+/// context `[0]`, a context `[3]` priority that runs to the end, or a
+/// one-octet priority followed by the next value (#2376).
 pub fn decode_bacnet_property_value(
     data: &[u8],
     offset: usize,
@@ -104,6 +102,7 @@ pub fn decode_bacnet_property_value(
             PropertyValueBoundary::End,
             PropertyValueBoundary::Context(0),
             PropertyValueBoundary::ContextToEnd(3),
+            PropertyValueBoundary::OneOctetContext(3),
         ],
     )
 }
@@ -394,10 +393,13 @@ fn decode_with_boundaries_detailed(
             })?;
             if !(1..=16).contains(&prio) {
                 return Err(PropertyValueDecodeError {
-                    error: Error::out_of_range(
+                    error: DecodeError::new(
+                        DecodingKind::OutOfRange,
                         new_pos,
-                        format!("BACnetPropertyValue priority {prio} out of range 1-16"),
-                    ),
+                        "BACnetPropertyValue priority {} out of range 1-16",
+                    )
+                    .with_value(prio)
+                    .into(),
                     offset: new_pos,
                     stage: PropertyValueDecodeStage::Priority,
                     kind: PropertyValueDecodeFailure::PriorityOutOfRange,

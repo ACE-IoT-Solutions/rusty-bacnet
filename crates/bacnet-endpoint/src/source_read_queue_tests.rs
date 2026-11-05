@@ -39,7 +39,7 @@ impl TransportPort for Gated {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_read_queued_egress_is_owned_before_caller_cancellation() {
     let source_mac = encode_bip_mac([127, 0, 0, 1], 30001);
     let peer_mac = encode_bip_mac([127, 0, 0, 1], 30002);
@@ -85,7 +85,7 @@ async fn source_read_queued_egress_is_owned_before_caller_cancellation() {
                 destination_mac: peer_mac.into_iter().collect(),
             },
             false,
-            NetworkPriority::NORMAL,
+            NetworkPriority::Normal,
             Vec::new(),
             None,
         )
@@ -97,13 +97,10 @@ async fn source_read_queued_egress_is_owned_before_caller_cancellation() {
             .read_property(&peer_mac, target(), PropertyIdentifier::PRESENT_VALUE, None)
             .await
     });
-    timeout(WAIT, async {
-        while session.active_leases() != 1 {
-            tokio::task::yield_now().await;
-        }
+    eventually(WAIT, "the request holds its lease", async || {
+        session.active_leases() == 1
     })
-    .await
-    .unwrap();
+    .await;
     // Yield to the owned task's egress admission before cancelling its waiter.
     tokio::task::yield_now().await;
     caller.abort();
@@ -124,7 +121,7 @@ async fn source_read_queued_egress_is_owned_before_caller_cancellation() {
     let (invoke, rp) = read_request(&request);
     let mut encoded = BytesMut::new();
     encode_apdu(&mut encoded, &ack(invoke, &rp)).unwrap();
-    peer.send_apdu(&encoded, &source_mac, false, NetworkPriority::NORMAL)
+    peer.send_apdu(&encoded, &source_mac, false, NetworkPriority::Normal)
         .await
         .unwrap();
     let (record, _) = notification(&receive(&mut received).await, false);
@@ -134,7 +131,7 @@ async fn source_read_queued_egress_is_owned_before_caller_cancellation() {
     peer.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_recipient_full_egress_fails_one_sibling_after_commit_without_retry() {
     let source_mac = encode_bip_mac([127, 0, 0, 1], 30001);
     let peer_mac = encode_bip_mac([127, 0, 0, 1], 30002);
@@ -181,7 +178,7 @@ async fn source_recipient_full_egress_fails_one_sibling_after_commit_without_ret
                 destination_mac: MacAddr::from_slice(&peer_mac),
             },
             false,
-            NetworkPriority::NORMAL,
+            NetworkPriority::Normal,
             Vec::new(),
             None,
         )
@@ -208,26 +205,10 @@ async fn source_recipient_full_egress_fails_one_sibling_after_commit_without_ret
     }
     // The first postcommit attempt queues; the second encounters the bounded
     // queue while the unrelated transport operation is deliberately held.
-    timeout(WAIT, async {
-        loop {
-            let health = session
-                .database
-                .as_ref()
-                .unwrap()
-                .read()
-                .await
-                .get(&selected())
-                .unwrap()
-                .read_property(PropertyIdentifier::RELIABILITY, None)
-                .unwrap();
-            if health == PropertyValue::Enumerated(Reliability::COMMUNICATION_FAILURE.to_raw()) {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+    eventually(WAIT, "Reliability is COMMUNICATION_FAILURE", async || {
+        reliability(&session).await == Reliability::COMMUNICATION_FAILURE.to_raw()
     })
-    .await
-    .unwrap();
+    .await;
     gate.add_permits(2);
     blocker.complete().await.result.unwrap();
     let probe = receive(&mut received).await;
@@ -256,6 +237,77 @@ async fn source_recipient_full_egress_fails_one_sibling_after_commit_without_ret
     );
     drop(db);
     assert!(received.try_recv().is_err());
+    session.stop().await.unwrap();
+    peer.stop().await.unwrap();
+}
+
+/// An I-Am queued behind a held send holds no database guard (#2199): a
+/// writer finishes while it waits, and it goes out unchanged once released.
+#[tokio::test(start_paused = true)]
+async fn queued_i_am_holds_no_database_guard() {
+    let source_mac = encode_bip_mac([127, 0, 0, 1], 30001);
+    let peer_mac = encode_bip_mac([127, 0, 0, 1], 30002);
+    let (transport, peer) = LoopbackTransport::pair(source_mac.to_vec(), peer_mac.to_vec());
+    let entered = Arc::new(Notify::new());
+    let gate = Arc::new(Semaphore::new(0));
+    let identity = crate::DeviceIdentity::new(123, 42).unwrap();
+    let mut session = EndpointSession::new(
+        Gated {
+            inner: transport,
+            entered: Arc::clone(&entered),
+            gate: Arc::clone(&gate),
+        },
+        SessionRole::ClientOnly,
+        SessionConfig::default(),
+    )
+    .unwrap()
+    .with_database(database(false))
+    .device(identity.clone());
+    let mut peer = NetworkLayer::new(peer);
+    let mut received = peer.start().await.unwrap();
+    session.start().await.unwrap();
+    let blocker = session
+        .egress
+        .as_ref()
+        .unwrap()
+        .admit_apdu(
+            vec![0x10, 8],
+            bacnet_endpoint_core::endpoint_ingress::EndpointApduDestination::Direct {
+                destination_mac: peer_mac.into_iter().collect(),
+            },
+            false,
+            NetworkPriority::Normal,
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+    timeout(WAIT, entered.notified()).await.unwrap();
+    let db = Arc::clone(session.database.as_ref().unwrap());
+    let (announced, ()) = tokio::join!(biased; session.broadcast_i_am(), async {
+        // The biased join polls the I-Am first, so it now waits behind the
+        // held send.
+        let mut db = timeout(WAIT, db.write())
+            .await
+            .expect("a database write must not wait for the queued I-Am");
+        db.add(Box::new(
+            bacnet_objects::analog::AnalogValueObject::new(
+                9,
+                "Added",
+                bacnet_types::enums::EngineeringUnits::NO_UNITS,
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+        drop(db);
+        gate.add_permits(1);
+    });
+    announced.unwrap();
+    assert!(blocker.complete().await.result.is_ok());
+    assert_eq!(&receive(&mut received).await.apdu[..], [0x10, 8]);
+    assert_eq!(
+        receive(&mut received).await.apdu.to_vec(),
+        crate::identity::encode_iam_apdu(&identity).unwrap()
+    );
     session.stop().await.unwrap();
     peer.stop().await.unwrap();
 }

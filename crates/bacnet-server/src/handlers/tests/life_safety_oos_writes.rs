@@ -7,6 +7,7 @@ use bacnet_objects::life_safety::{LifeSafetyPointObject, LifeSafetyZoneObject};
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::{WriteAccessSpecification, WritePropertyMultipleRequest};
 use bacnet_types::enums::{LifeSafetyState, Reliability};
+use bacnet_types::error::RemoteError;
 
 /// One Point and one Zone, both in service with a Tracking_Value of
 /// PRE_ALARM.
@@ -92,9 +93,9 @@ fn read_bytes(db: &ObjectDatabase, oid: ObjectIdentifier, property: PropertyIden
 
 fn assert_property_error(result: Result<(), Error>, expected: ErrorCode) {
     assert!(
-        matches!(result, Err(Error::Protocol { class, code })
-            if class == ErrorClass::PROPERTY.to_raw() as u32
-                && code == expected.to_raw() as u32),
+        matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
+            if class == ErrorClass::PROPERTY
+                && code == expected),
         "expected PROPERTY / {expected:?}, got {result:?}"
     );
 }

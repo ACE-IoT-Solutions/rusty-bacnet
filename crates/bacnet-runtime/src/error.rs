@@ -1,4 +1,4 @@
-use crate::{AttachmentId, DeviceKey};
+use crate::AttachmentId;
 
 /// Stable machine-readable runtime error category.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -6,65 +6,45 @@ use crate::{AttachmentId, DeviceKey};
 pub enum ErrorCode {
     /// Configuration is invalid.
     InvalidConfig,
-    /// A requested reconcile revision is stale.
-    StaleRevision,
-    /// The requested attachment does not exist.
+    /// The requested attachment is not configured.
     AttachmentNotFound,
-    /// The attachment transport is unsupported by this build.
+    /// The requested transport is not implemented by this runtime slice.
     UnsupportedTransport,
-    /// A local socket address is already occupied.
+    /// A local UDP bind failed because the address is unavailable.
     BindConflict,
-    /// A BBMD rejected foreign-device registration.
+    /// A BBMD rejected or lost foreign-device registration.
     ForeignDeviceRegistrationFailed,
-    /// A serial device is unavailable.
-    SerialUnavailable,
-    /// Secure-connect TLS configuration is invalid.
-    TlsConfig,
-    /// Secure-connect peer authentication failed.
-    TlsAuth,
-    /// Secure-connect is disconnected.
-    ScDisconnected,
     /// A BACnet operation timed out.
     Timeout,
-    /// A BACnet reject was received.
-    Reject,
-    /// A BACnet abort was received.
-    Abort,
-    /// A BACnet error response was received.
-    BacnetError,
-    /// A wire value could not be decoded.
-    Decode,
-    /// No route is available.
-    RouteUnavailable,
-    /// A device is unavailable.
+    /// A BACnet peer or transport is unavailable.
     DeviceUnavailable,
-    /// One property failed.
-    PropertyError,
-    /// A bounded queue rejected work.
+    /// A BACnet service returned an error, reject or abort.
+    BacnetError,
+    /// The bounded operation scheduler has no available slot.
     Backpressure,
-    /// The operation was cancelled.
+    /// The runtime or operation was cancelled.
     Cancelled,
-    /// The operation expired before completion.
+    /// An operation exceeded its configured deadline.
     DeadlineExceeded,
-    /// Runtime events were lost to bounded-buffer pressure.
-    EventLagged,
-    /// A transactional replacement could not restore prior state.
+    /// A reconcile revision is not newer than the applied revision.
+    StaleRevision,
+    /// A replacement failed and the prior attachment could not be restored.
     RollbackFailed,
-    /// An invariant or unexpected internal operation failed.
+    /// An unexpected internal failure occurred.
     Internal,
 }
 
-/// Structured runtime failure suitable for stable language bindings.
-#[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
+/// Structured runtime failure suitable for language bindings.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("{code:?}: {message}")]
 pub struct RuntimeError {
     /// Machine-readable category.
     pub code: ErrorCode,
-    /// Whether retrying without a configuration change may succeed.
+    /// Whether retrying without changing configuration may succeed.
     pub retryable: bool,
-    /// Optional attachment context.
+    /// Attachment context, when applicable.
     pub attachment_id: Option<AttachmentId>,
-    /// Human-readable detail; callers must branch on `code`, not this value.
+    /// Human-readable diagnostic detail.
     pub message: String,
 }
 
@@ -78,114 +58,68 @@ impl RuntimeError {
         }
     }
 
-    #[cfg(any(not(feature = "mstp"), not(feature = "sc")))]
-    pub(crate) fn unsupported_transport(attachment_id: AttachmentId, transport: &str) -> Self {
-        Self {
-            code: ErrorCode::UnsupportedTransport,
-            retryable: false,
-            attachment_id: Some(attachment_id),
-            message: format!("{transport} attachment factory is not enabled yet"),
-        }
-    }
-
-    pub(crate) fn invalid_attachment_config(
-        attachment_id: AttachmentId,
-        message: impl Into<String>,
-    ) -> Self {
+    pub(crate) fn attachment_config(id: AttachmentId, message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::InvalidConfig,
             retryable: false,
-            attachment_id: Some(attachment_id),
+            attachment_id: Some(id),
             message: message.into(),
         }
     }
 
-    pub(crate) fn attachment_start(
-        attachment_id: AttachmentId,
-        error: bacnet_types::error::Error,
-    ) -> Self {
+    pub(crate) fn unsupported(id: AttachmentId, transport: &str) -> Self {
+        Self {
+            code: ErrorCode::UnsupportedTransport,
+            retryable: false,
+            attachment_id: Some(id),
+            message: format!("{transport} runtime support is not available in this release"),
+        }
+    }
+
+    pub(crate) fn attachment_not_found(id: AttachmentId) -> Self {
+        Self {
+            code: ErrorCode::AttachmentNotFound,
+            retryable: false,
+            attachment_id: Some(id),
+            message: format!("attachment {id} is not configured"),
+        }
+    }
+
+    pub(crate) fn start(id: AttachmentId, error: bacnet_types::error::Error) -> Self {
         let (code, retryable) = match &error {
             bacnet_types::error::Error::Transport(io) if is_bind_conflict(io) => {
                 (ErrorCode::BindConflict, true)
             }
             bacnet_types::error::Error::Transport(_) => (ErrorCode::DeviceUnavailable, true),
             bacnet_types::error::Error::Timeout(_) => (ErrorCode::Timeout, true),
-            bacnet_types::error::Error::Decoding { .. } => (ErrorCode::Decode, false),
             _ => (ErrorCode::Internal, false),
         };
         Self {
             code,
             retryable,
-            attachment_id: Some(attachment_id),
+            attachment_id: Some(id),
             message: error.to_string(),
         }
     }
 
-    #[cfg(feature = "mstp")]
-    pub(crate) fn serial_unavailable(
-        attachment_id: AttachmentId,
-        error: bacnet_types::error::Error,
-    ) -> Self {
-        Self {
-            code: ErrorCode::SerialUnavailable,
-            retryable: true,
-            attachment_id: Some(attachment_id),
-            message: error.to_string(),
-        }
-    }
+    pub(crate) fn operation(id: AttachmentId, error: bacnet_types::error::Error) -> Self {
+        use bacnet_types::error::RemoteError;
 
-    #[cfg(feature = "sc")]
-    pub(crate) fn tls_config(
-        attachment_id: AttachmentId,
-        error: bacnet_types::error::Error,
-    ) -> Self {
-        Self {
-            code: ErrorCode::TlsConfig,
-            retryable: false,
-            attachment_id: Some(attachment_id),
-            message: error.to_string(),
-        }
-    }
-
-    #[cfg(feature = "sc")]
-    pub(crate) fn sc_connect(
-        attachment_id: AttachmentId,
-        error: bacnet_types::error::Error,
-    ) -> Self {
-        let code = match &error {
-            bacnet_types::error::Error::Timeout(_) => ErrorCode::ScDisconnected,
-            bacnet_types::error::Error::Transport(_) => ErrorCode::ScDisconnected,
-            _ => ErrorCode::TlsAuth,
+        let (code, retryable) = match &error {
+            bacnet_types::error::Error::Remote(RemoteError::Abort { .. }) => {
+                (ErrorCode::BacnetError, true)
+            }
+            bacnet_types::error::Error::Remote(_)
+            | bacnet_types::error::Error::Structured { .. } => (ErrorCode::BacnetError, false),
+            bacnet_types::error::Error::Timeout(_) => (ErrorCode::Timeout, true),
+            bacnet_types::error::Error::Transport(_) => (ErrorCode::DeviceUnavailable, true),
+            _ => (ErrorCode::Internal, false),
         };
         Self {
             code,
-            retryable: code == ErrorCode::ScDisconnected,
-            attachment_id: Some(attachment_id),
+            retryable,
+            attachment_id: Some(id),
             message: error.to_string(),
-        }
-    }
-
-    pub(crate) fn stale_revision(revision: u64, current: u64) -> Self {
-        Self {
-            code: ErrorCode::StaleRevision,
-            retryable: false,
-            attachment_id: None,
-            message: format!("reconcile revision {revision} is not newer than {current}"),
-        }
-    }
-
-    pub(crate) fn rollback_failed(
-        attachment_id: AttachmentId,
-        original: &RuntimeError,
-        rollback: &RuntimeError,
-    ) -> Self {
-        Self {
-            code: ErrorCode::RollbackFailed,
-            retryable: false,
-            attachment_id: Some(attachment_id),
-            message: format!(
-                "replacement failed ({original}); restoring prior attachment failed ({rollback})"
-            ),
         }
     }
 
@@ -198,87 +132,18 @@ impl RuntimeError {
         }
     }
 
-    pub(crate) fn operation(
-        attachment_id: AttachmentId,
-        error: bacnet_types::error::Error,
-    ) -> Self {
-        let (code, retryable) = match &error {
-            bacnet_types::error::Error::Protocol { .. } => (ErrorCode::BacnetError, false),
-            bacnet_types::error::Error::Reject { .. } => (ErrorCode::Reject, false),
-            bacnet_types::error::Error::Abort { .. } => (ErrorCode::Abort, true),
-            bacnet_types::error::Error::Timeout(_) => (ErrorCode::Timeout, true),
-            bacnet_types::error::Error::Decoding { .. } => (ErrorCode::Decode, false),
-            bacnet_types::error::Error::Transport(_) => (ErrorCode::DeviceUnavailable, true),
-            _ => (ErrorCode::Internal, false),
-        };
-        Self {
-            code,
-            retryable,
-            attachment_id: Some(attachment_id),
-            message: error.to_string(),
-        }
-    }
-
-    pub(crate) fn attachment_not_found(attachment_id: AttachmentId) -> Self {
-        Self {
-            code: ErrorCode::AttachmentNotFound,
-            retryable: false,
-            attachment_id: Some(attachment_id),
-            message: format!("attachment {attachment_id} is not configured"),
-        }
-    }
-
-    pub(crate) fn device_not_found(device: DeviceKey) -> Self {
-        Self {
-            code: ErrorCode::DeviceUnavailable,
-            retryable: true,
-            attachment_id: Some(device.attachment_id),
-            message: format!(
-                "device {} has no observation on attachment {}",
-                device.device_instance, device.attachment_id
-            ),
-        }
-    }
-
-    pub(crate) fn deadline_exceeded(message: impl Into<String>) -> Self {
+    pub(crate) fn deadline() -> Self {
         Self {
             code: ErrorCode::DeadlineExceeded,
             retryable: true,
             attachment_id: None,
-            message: message.into(),
-        }
-    }
-
-    pub(crate) fn property_error(message: impl Into<String>) -> Self {
-        Self {
-            code: ErrorCode::PropertyError,
-            retryable: false,
-            attachment_id: None,
-            message: message.into(),
-        }
-    }
-
-    pub(crate) fn decode(message: impl Into<String>) -> Self {
-        Self {
-            code: ErrorCode::Decode,
-            retryable: false,
-            attachment_id: None,
-            message: message.into(),
+            message: "batch deadline exceeded".to_owned(),
         }
     }
 
     pub(crate) fn internal(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::Internal,
-            retryable: false,
-            attachment_id: None,
-            message: message.into(),
-        }
-    }
-
-    pub(crate) fn cancelled(message: impl Into<String>) -> Self {
-        Self {
-            code: ErrorCode::Cancelled,
             retryable: false,
             attachment_id: None,
             message: message.into(),
@@ -293,7 +158,44 @@ fn is_bind_conflict(error: &std::io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_bind_conflict;
+    use super::{ErrorCode, RuntimeError, is_bind_conflict};
+
+    #[test]
+    fn remote_responses_keep_runtime_categories_and_retry_policy() {
+        use bacnet_types::enums::{AbortReason, ErrorClass, ErrorCode as BacnetCode, RejectReason};
+        use bacnet_types::error::{Error, RemoteError};
+
+        let id = crate::AttachmentId::from(1);
+        for (remote, retryable) in [
+            (
+                RemoteError::Error {
+                    class: ErrorClass::PROPERTY,
+                    code: BacnetCode::UNKNOWN_PROPERTY,
+                },
+                false,
+            ),
+            (
+                RemoteError::Reject {
+                    reason: RejectReason::OTHER,
+                },
+                false,
+            ),
+            (
+                RemoteError::Abort {
+                    reason: AbortReason::OTHER,
+                },
+                true,
+            ),
+        ] {
+            let error = Error::Remote(remote);
+            let message = error.to_string();
+            let mapped = RuntimeError::operation(id, error);
+            assert_eq!(mapped.code, ErrorCode::BacnetError);
+            assert_eq!(mapped.retryable, retryable);
+            assert_eq!(mapped.attachment_id, Some(id));
+            assert_eq!(mapped.message, message);
+        }
+    }
 
     #[test]
     fn address_in_use_is_a_bind_conflict() {

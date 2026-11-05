@@ -1,12 +1,17 @@
 //! Saving object state off the object database lock (#1270).
 //!
-//! The Audit Log, the Notification Forwarder, the Notification Class and the
-//! Access Rights object keep state in storage the application provides
-//! ([`AuditLogPersistence`], [`NotificationForwarderPersistence`],
-//! [`NotificationClassPersistence`] and [`AccessRightsPersistence`]).
+//! The Audit Log, the Notification Forwarder, the Notification Class, the
+//! Access Rights object, and the Timer and Channel keep state in storage the
+//! application provides ([`AuditLogPersistence`],
+//! [`NotificationForwarderPersistence`], [`NotificationClassPersistence`],
+//! [`AccessRightsPersistence`] and [`WriteConfigPersistence`]).
 //! A storage call can be slow, since the file backends write, synchronize and
 //! rename, so none of these objects makes one while its caller holds the
 //! database's write guard. They all follow the pattern this module provides.
+//! The Trend Log, Trend Log Multiple and Event Log commit to their
+//! [`LogPersistence`] through the same writer, mostly on a cadence rather
+//! than per request (see [`crate::log_persistence`]); only a write of a
+//! reporting setting they keep stages its commit (#1952).
 //!
 //! - Under the guard, the object copies the state to keep and queues the copy
 //!   on its save writer. The writer's own thread makes the storage calls, one
@@ -80,9 +85,18 @@
 //!
 //! The writer's thread is a plain `std` thread with no Tokio runtime, so a
 //! storage implementation that needs one brings its own handle. A storage
-//! call that panics fails that save. An object starts the thread with its
-//! first save and keeps it, parked while idle, until the object is dropped:
-//! one thread per object that has saved.
+//! call that panics fails that save. A save starts the thread when none is
+//! running, and the thread ends once the object has queued nothing for a
+//! while (#1956), so a device with many durable objects holds a thread only
+//! for each one that is saving. The thread is detached, so one that has
+//! ended holds nothing. Saves stay in order across a new thread: the old one
+//! ends only with nothing queued and never touches the queue again, and
+//! dropping the object waits until no thread runs it.
+//!
+//! Without std there are no threads: each save runs on the caller's thread
+//! before the call that queued it returns, so every wait is already over
+//! (#1615). The staging above works the same way; only the storage call now
+//! runs under the caller's guard.
 //!
 //! # Adding an object
 //!
@@ -100,7 +114,7 @@
 //!    `StagedSaves::submit_coalescing`.
 //! 2. Implement [`DurableWrites`] for the object, including
 //!    `settle_forgotten_writes` (`StagedSaves::drop_forgotten`), and return
-//!    it from `BACnetObject::durable_writes_internal`.
+//!    it from `BACnetObject::durable_writes`.
 //! 3. Add the object type, and the properties it saves, to `may_save` in the
 //!    server's `durable_writes` module. The server stages only the writes
 //!    listed there; any other write saves in place.
@@ -111,51 +125,72 @@
 //! The Notification Forwarder's `saving` module is the full example: a list
 //! write stages, and the operation task's saves coalesce. The Notification
 //! Class's is the smallest: a Recipient_List write stages, and nothing else
-//! saves. The Access Rights object's stages indexed array writes too, keyed
+//! saves. The Timer and Channel share theirs (`write_config::saving`): an
+//! object hands it its configuration and how a write changes it. The Access Rights object's stages indexed array writes too, keyed
 //! by the index as well as the value.
 //!
 //! [`AuditLogPersistence`]: crate::audit::AuditLogPersistence
 //! [`NotificationForwarderPersistence`]: crate::notification_forwarder::NotificationForwarderPersistence
 //! [`NotificationClassPersistence`]: crate::notification_class::NotificationClassPersistence
 //! [`AccessRightsPersistence`]: crate::access_control::AccessRightsPersistence
+//! [`LogPersistence`]: crate::log_persistence::LogPersistence
+//! [`WriteConfigPersistence`]: crate::write_config::WriteConfigPersistence
 
-use std::collections::VecDeque;
-use std::future::Future;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use alloc::sync::Arc;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
+#[cfg(feature = "std")]
 use std::path::Path;
-use std::pin::Pin;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
-use std::task::{Context, Poll, Waker};
-use std::thread::JoinHandle;
+#[cfg(feature = "std")]
+use std::sync::OnceLock;
+#[cfg(feature = "std")]
 use std::time::Instant;
 
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 
+use crate::prelude::*;
+use crate::sync::Mutex;
+
+#[cfg(feature = "std")]
 pub(crate) mod file;
+// Without std there are no threads, so each save runs inline, on the
+// caller's (#1615).
+#[cfg(not(feature = "std"))]
+mod inline;
 pub(crate) mod staged;
+#[cfg(feature = "std")]
+mod thread;
+
+#[cfg(not(feature = "std"))]
+pub(crate) use inline::SaveWriter;
+#[cfg(feature = "std")]
+pub(crate) use thread::SaveWriter;
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use file::MemoryFiles;
 
 /// How long a staged write may wait for its request once its save has run.
 /// It counts from the end of the save, so a slow save never uses it up. Past
 /// it the request is taken to be gone, and the object drops the staged state
 /// at the next stage or operation task call.
 #[cfg(not(test))]
-pub(crate) const STAGED_WRITE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(10);
+pub(crate) const STAGED_WRITE_LIFETIME: core::time::Duration = core::time::Duration::from_secs(10);
 /// Short in tests, so one can watch a forgotten staged write go.
 #[cfg(test)]
-pub(crate) const STAGED_WRITE_LIFETIME: std::time::Duration = std::time::Duration::from_millis(300);
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
+pub(crate) const STAGED_WRITE_LIFETIME: core::time::Duration =
+    core::time::Duration::from_millis(300);
 
 /// Something that happens once, which any number of threads and tasks can
 /// wait for.
 #[derive(Default)]
 pub(crate) struct Event {
     state: Mutex<EventState>,
-    happened: Condvar,
+    #[cfg(feature = "std")]
+    happened: std::sync::Condvar,
 }
 
 #[derive(Default)]
@@ -168,10 +203,11 @@ impl Event {
     /// Mark the event as happened and wake every waiter.
     pub(crate) fn set(&self) {
         let wakers = {
-            let mut state = lock(&self.state);
+            let mut state = self.state.lock();
             state.done = true;
-            std::mem::take(&mut state.wakers)
+            core::mem::take(&mut state.wakers)
         };
+        #[cfg(feature = "std")]
         self.happened.notify_all();
         for waker in wakers {
             waker.wake();
@@ -179,16 +215,27 @@ impl Event {
     }
 
     pub(crate) fn is_set(&self) -> bool {
-        lock(&self.state).done
+        self.state.lock().done
     }
 
+    #[cfg(feature = "std")]
     fn wait_blocking(&self) {
-        let mut state = lock(&self.state);
+        let mut state = self.state.lock();
         while !state.done {
             state = self
                 .happened
                 .wait(state)
-                .unwrap_or_else(PoisonError::into_inner);
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// Without std nothing can park the thread, so this spins. A save runs
+    /// on the caller's thread there, so a save's event is set before anyone
+    /// can wait on it.
+    #[cfg(not(feature = "std"))]
+    fn wait_blocking(&self) {
+        while !self.is_set() {
+            core::hint::spin_loop();
         }
     }
 }
@@ -202,27 +249,59 @@ impl Event {
 #[derive(Clone)]
 pub struct SaveWait {
     event: Arc<Event>,
+    /// A second wait this one also ends after, when an object that keeps
+    /// two kinds of state in storage settles both ([`and`](Self::and)).
+    then: Option<Arc<SaveWait>>,
 }
 
 impl SaveWait {
     pub(crate) fn new(event: Arc<Event>) -> Self {
-        Self { event }
+        Self { event, then: None }
+    }
+
+    /// A wait that ends once both this wait and `other` have.
+    pub(crate) fn and(self, other: SaveWait) -> SaveWait {
+        let then = match self.then {
+            Some(then) => SaveWait::clone(&then).and(other),
+            None => other,
+        };
+        SaveWait {
+            event: self.event,
+            then: Some(Arc::new(then)),
+        }
     }
 
     /// Whether the wait is already over.
     pub fn is_ready(&self) -> bool {
-        self.event.is_set()
+        self.event.is_set() && self.then.as_ref().is_none_or(|then| then.is_ready())
     }
 
     /// Block this thread until the wait is over, for a caller that waits
     /// off its async runtime, such as on Tokio's blocking pool.
+    ///
+    /// Without std, await the wait instead; never block on one that isn't
+    /// over. A save's wait is over by the time anyone holds it, since the
+    /// save ran on the caller's thread, but [`StageStep::Busy`] hands out a
+    /// wait for another request's staged write, which only that request can
+    /// end. Nothing can park the thread, so `block` would spin, and on a
+    /// single-threaded executor it would spin forever. A debug build panics
+    /// instead; a release build spins, for firmware that releases the write
+    /// from another core or an interrupt.
     pub fn block(&self) {
+        #[cfg(not(feature = "std"))]
+        debug_assert!(
+            self.is_ready(),
+            "SaveWait::block without std on a wait that isn't over: await it instead"
+        );
         self.event.wait_blocking();
+        if let Some(then) = &self.then {
+            then.block();
+        }
     }
 }
 
-impl std::fmt::Debug for SaveWait {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for SaveWait {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SaveWait")
             .field("ready", &self.is_ready())
             .finish()
@@ -233,14 +312,19 @@ impl Future for SaveWait {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let mut state = lock(&self.event.state);
-        if state.done {
-            return Poll::Ready(());
+        {
+            let mut state = self.event.state.lock();
+            if !state.done {
+                if !state.wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
+                    state.wakers.push(cx.waker().clone());
+                }
+                return Poll::Pending;
+            }
         }
-        if !state.wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
-            state.wakers.push(cx.waker().clone());
+        match &self.then {
+            Some(then) => Pin::new(&mut SaveWait::clone(then)).poll(cx),
+            None => Poll::Ready(()),
         }
-        Poll::Pending
     }
 }
 
@@ -253,7 +337,10 @@ pub(crate) struct SaveTicket {
 #[derive(Default)]
 struct TicketSlot {
     outcome: Mutex<Outcome>,
-    /// When the save finished; set before `done`.
+    /// When the save finished; set before `done`. Only std has a clock for
+    /// it; without std a staged write expires only by the operation task's
+    /// clock ([`staged::StagedSaves::expire`]).
+    #[cfg(feature = "std")]
     finished_at: OnceLock<Instant>,
     done: Arc<Event>,
 }
@@ -269,7 +356,8 @@ enum Outcome {
 
 impl SaveTicket {
     fn complete(&self, result: Result<(), Error>) {
-        *lock(&self.slot.outcome) = Outcome::Done(result);
+        *self.slot.outcome.lock() = Outcome::Done(result);
+        #[cfg(feature = "std")]
         let _ = self.slot.finished_at.set(Instant::now());
         self.slot.done.set();
     }
@@ -285,28 +373,42 @@ impl SaveTicket {
     }
 
     /// Whether `wait` is the one [`wait`](Self::wait) hands out for this
-    /// save, so a request releasing a staged write can show it staged it.
+    /// save, or a wait [joined](SaveWait::and) with it, so a request
+    /// releasing a staged write can show it staged it. A colour object
+    /// stages a Tags write and a default write for one request, and hands
+    /// it their two waits joined (#1956).
     pub(crate) fn issued(&self, wait: &SaveWait) -> bool {
         Arc::ptr_eq(&self.slot.done, &wait.event)
+            || wait.then.as_deref().is_some_and(|then| self.issued(then))
     }
 
     /// Whether, at `now`, a staged write waiting on this save has outlived
     /// [`STAGED_WRITE_LIFETIME`]. The lifetime starts when the save finishes;
     /// a save still running never outlives it.
+    #[cfg(feature = "std")]
     pub(crate) fn outlived_at(&self, now: Instant) -> bool {
         self.slot.finished_at.get().is_some_and(|finished| {
             now.saturating_duration_since(*finished) >= STAGED_WRITE_LIFETIME
         })
     }
 
-    /// [`outlived_at`](Self::outlived_at) now.
+    /// Whether a staged write waiting on this save has outlived
+    /// [`STAGED_WRITE_LIFETIME`] by now. Never without std, which has no
+    /// clock to tell.
     pub(crate) fn outlived(&self) -> bool {
-        self.outlived_at(Instant::now())
+        #[cfg(feature = "std")]
+        {
+            self.outlived_at(Instant::now())
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            false
+        }
     }
 
     /// Whether the save succeeded, once it has run.
     pub(crate) fn succeeded(&self) -> Option<bool> {
-        match &*lock(&self.slot.outcome) {
+        match &*self.slot.outcome.lock() {
             Outcome::Pending => None,
             Outcome::Done(result) => Some(result.is_ok()),
             Outcome::Taken(ok) => Some(*ok),
@@ -318,8 +420,8 @@ impl SaveTicket {
     /// error that says so.
     pub(crate) fn take_outcome(&self) -> Result<(), Error> {
         self.slot.done.wait_blocking();
-        let mut outcome = lock(&self.slot.outcome);
-        match std::mem::take(&mut *outcome) {
+        let mut outcome = self.slot.outcome.lock();
+        match core::mem::take(&mut *outcome) {
             Outcome::Done(result) => {
                 *outcome = Outcome::Taken(result.is_ok());
                 result
@@ -339,221 +441,6 @@ impl SaveTicket {
     }
 }
 
-type SaveFn<S> = dyn Fn(&S) -> Result<(), Error> + Send + Sync;
-type DoneFn<S> = dyn Fn(&S, &Result<(), Error>) + Send + Sync;
-
-/// Runs one object's storage calls on a thread of its own, one at a time, in
-/// the order they were queued. See the [module documentation](self).
-///
-/// The thread starts with the first save and ends when the writer is
-/// dropped. Dropping the writer waits for the saves already queued, so state
-/// saved just before an object goes away is in storage when a new object
-/// loads it.
-pub(crate) struct SaveWriter<S: Send + 'static> {
-    shared: Arc<Shared<S>>,
-    /// Asserted unwind safe, as std's `JoinHandle` is not (#1428). That is
-    /// sound: only `enqueue`, which stores it, and the drop, which joins it,
-    /// touch the handle, both through `&mut self`, and a panic leaves it
-    /// either stored or not.
-    thread: Option<AssertUnwindSafe<JoinHandle<()>>>,
-    name: String,
-}
-
-struct Shared<S> {
-    queue: Mutex<Queue<S>>,
-    /// The thread has a job to run, or the writer is closing.
-    work: Condvar,
-    // A boxed closure is not `RefUnwindSafe`, so these would take that trait
-    // and `UnwindSafe` from the objects that own a writer (#1428). Asserting
-    // them is sound: `run_job` is their only caller and catches a panic from
-    // each call, on the writer's thread or on the caller's when `enqueue`
-    // could not start one. No panic from them reaches the caller's frames,
-    // and one that panics fails only that save.
-    save: AssertUnwindSafe<Box<SaveFn<S>>>,
-    done: AssertUnwindSafe<Box<DoneFn<S>>>,
-}
-
-struct Queue<S> {
-    jobs: VecDeque<Job<S>>,
-    running: bool,
-    closed: bool,
-    /// Waits [`SaveWriter::idle`] handed out, set once the queue next
-    /// empties with no job running.
-    idle_waits: Vec<Arc<Event>>,
-}
-
-struct Job<S> {
-    snapshot: S,
-    ticket: Option<SaveTicket>,
-}
-
-impl<S: Send + 'static> SaveWriter<S> {
-    /// A writer whose thread, named `name`, saves each snapshot with `save`
-    /// and then reports the result to `done`.
-    pub(crate) fn new(
-        name: String,
-        save: impl Fn(&S) -> Result<(), Error> + Send + Sync + 'static,
-        done: impl Fn(&S, &Result<(), Error>) + Send + Sync + 'static,
-    ) -> Self {
-        Self {
-            shared: Arc::new(Shared {
-                queue: Mutex::new(Queue {
-                    jobs: VecDeque::new(),
-                    running: false,
-                    closed: false,
-                    idle_waits: Vec::new(),
-                }),
-                work: Condvar::new(),
-                save: AssertUnwindSafe(Box::new(save)),
-                done: AssertUnwindSafe(Box::new(done)),
-            }),
-            thread: None,
-            name,
-        }
-    }
-
-    /// Queue a save whose outcome the caller wants.
-    pub(crate) fn submit(&mut self, snapshot: S) -> SaveTicket {
-        let ticket = SaveTicket::default();
-        self.enqueue(Job {
-            snapshot,
-            ticket: Some(ticket.clone()),
-        });
-        ticket
-    }
-
-    /// Queue a save nobody waits for. A save of this kind still queued and
-    /// not started is replaced, so only the latest state is saved.
-    pub(crate) fn submit_coalescing(&mut self, snapshot: S) {
-        {
-            let mut queue = lock(&self.shared.queue);
-            if let Some(last) = queue.jobs.back_mut().filter(|job| job.ticket.is_none()) {
-                last.snapshot = snapshot;
-                return;
-            }
-        }
-        self.enqueue(Job {
-            snapshot,
-            ticket: None,
-        });
-    }
-
-    /// A wait that ends once every save queued so far has run.
-    pub(crate) fn idle(&self) -> SaveWait {
-        let event = Arc::new(Event::default());
-        let mut queue = lock(&self.shared.queue);
-        if queue.running || !queue.jobs.is_empty() {
-            queue.idle_waits.push(Arc::clone(&event));
-        } else {
-            drop(queue);
-            event.set();
-        }
-        SaveWait::new(event)
-    }
-
-    /// Block until every queued save has run.
-    pub(crate) fn wait_idle(&self) {
-        self.idle().block();
-    }
-
-    /// The object is going away while storage may hold a staged state it
-    /// never served: save `served`, the state it does serve, and wait for
-    /// the save. The writer's own drop, which follows, would wait for it
-    /// anyway, so this blocks no longer than that drop does. A save that
-    /// fails is logged twice, by the done hook and here: storage then keeps
-    /// the staged state, and the next start serves it.
-    pub(crate) fn put_back(&mut self, served: S) {
-        if let Err(error) = self.submit(served).take_outcome() {
-            tracing::warn!(
-                writer = %self.name,
-                %error,
-                "Could not put storage back to the served state as the object closed; \
-                 the next start serves the state staged for a request that never finished"
-            );
-        }
-    }
-
-    fn enqueue(&mut self, job: Job<S>) {
-        if self.thread.is_none() {
-            let shared = Arc::clone(&self.shared);
-            match std::thread::Builder::new()
-                .name(self.name.clone())
-                .spawn(move || run(&shared))
-            {
-                Ok(handle) => self.thread = Some(AssertUnwindSafe(handle)),
-                Err(error) => {
-                    // Without a thread the save runs here, as it did before
-                    // saves left the caller's thread.
-                    tracing::warn!(%error, writer = %self.name, "Could not start a save thread");
-                    run_job(&self.shared, job);
-                    return;
-                }
-            }
-        }
-        lock(&self.shared.queue).jobs.push_back(job);
-        self.shared.work.notify_one();
-    }
-}
-
-impl<S: Send + 'static> Drop for SaveWriter<S> {
-    fn drop(&mut self) {
-        lock(&self.shared.queue).closed = true;
-        self.shared.work.notify_one();
-        if let Some(AssertUnwindSafe(thread)) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
-}
-
-fn run<S>(shared: &Shared<S>) {
-    loop {
-        let job = {
-            let mut queue = lock(&shared.queue);
-            loop {
-                if let Some(job) = queue.jobs.pop_front() {
-                    queue.running = true;
-                    break job;
-                }
-                if queue.closed {
-                    return;
-                }
-                queue = shared
-                    .work
-                    .wait(queue)
-                    .unwrap_or_else(PoisonError::into_inner);
-            }
-        };
-        run_job(shared, job);
-        let idle = {
-            let mut queue = lock(&shared.queue);
-            queue.running = false;
-            if queue.jobs.is_empty() {
-                std::mem::take(&mut queue.idle_waits)
-            } else {
-                Vec::new()
-            }
-        };
-        for event in idle {
-            event.set();
-        }
-    }
-}
-
-/// Make one storage call. A storage implementation that panics fails the save
-/// instead of ending the thread, so every ticket still completes. The
-/// snapshot is dropped before the ticket completes, so a caller that shares
-/// it through an `Arc` holds the only reference once the save has run.
-fn run_job<S>(shared: &Shared<S>, job: Job<S>) {
-    let Job { snapshot, ticket } = job;
-    let result = catch_unwind(AssertUnwindSafe(|| (shared.save.0)(&snapshot)))
-        .unwrap_or_else(|_| Err(Error::Encoding("persistence panicked during a save".into())));
-    let _ = catch_unwind(AssertUnwindSafe(|| (shared.done.0)(&snapshot, &result)));
-    drop(snapshot);
-    if let Some(ticket) = ticket {
-        ticket.complete(result);
-    }
-}
-
 /// Make a rename or a newly created file in `path`'s directory durable by
 /// synchronizing the directory.
 ///
@@ -569,6 +456,7 @@ fn run_job<S>(shared: &Shared<S>, job: Job<S>) {
 /// open a directory through `std::fs`, so there the call does nothing: NTFS
 /// journals the rename, but a power loss right after it may still bring back
 /// the previous file.
+#[cfg(feature = "std")]
 pub(crate) fn sync_parent_dir(path: &Path) {
     #[cfg(unix)]
     {
@@ -579,9 +467,9 @@ pub(crate) fn sync_parent_dir(path: &Path) {
         let result = std::fs::File::open(parent).and_then(|directory| directory.sync_all());
         if let Err(error) = result {
             if directory_sync_unsupported(&error) {
-                tracing::debug!(directory = %parent.display(), %error, "Directory sync not supported here");
+                log_debug!(directory = %parent.display(), %error, "Directory sync not supported here");
             } else {
-                tracing::warn!(
+                log_warn!(
                     directory = %parent.display(),
                     %error,
                     "Could not synchronize the directory after a save; the save stands"
@@ -593,9 +481,36 @@ pub(crate) fn sync_parent_dir(path: &Path) {
     let _ = path;
 }
 
+/// The CRC-32 (IEEE 802.3, reflected) of `data`, which the two-slot
+/// snapshot files end with. One table lookup per octet rather than eight
+/// shift steps (#2233).
+pub(crate) fn crc32(data: &[u8]) -> u32 {
+    !data.iter().fold(!0u32, |crc, &byte| {
+        CRC32_TABLE[usize::from(crc as u8 ^ byte)] ^ (crc >> 8)
+    })
+}
+
+/// [`crc32`]'s table: entry `n` is the remainder of octet `n` shifted
+/// through the reflected polynomial eight times.
+static CRC32_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut n = 0;
+    while n < 256 {
+        let mut crc = n as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
+            bit += 1;
+        }
+        table[n] = crc;
+        n += 1;
+    }
+    table
+};
+
 /// Whether a directory sync failed only because the filesystem cannot
 /// synchronize a directory.
-#[cfg(unix)]
+#[cfg(all(feature = "std", unix))]
 fn directory_sync_unsupported(error: &std::io::Error) -> bool {
     // ENOTSUP and EOPNOTSUPP are one value on Linux, two on macOS.
     error.raw_os_error().is_some_and(|code| {
@@ -643,7 +558,14 @@ pub struct PendingWrite {
 /// again, and in that same critical section calls
 /// [`release_staged_write`](Self::release_staged_write). A write made
 /// without staging still works: the object then saves in place.
-#[doc(hidden)]
+///
+/// An object opts in by implementing this trait and returning itself, or
+/// the field that keeps its storage, from
+/// [`BACnetObject::durable_writes`](crate::traits::BACnetObject::durable_writes).
+/// The server's monotonic pass also calls
+/// [`expire_staged`](Self::expire_staged) on it about once a second, so a
+/// staged write whose request never came back doesn't stay in storage. See
+/// the [module docs](self) for the parts an implementation owns.
 pub trait DurableWrites {
     /// Stage a write of `value` to `property` (at `array_index`).
     fn stage_write(
@@ -682,10 +604,10 @@ pub trait DurableWrites {
     /// object serves, if there is one, or purge in place. The default
     /// refuses with OBJECT / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
     fn commit_purge(&mut self) -> Result<(), Error> {
-        Err(Error::Protocol {
-            class: ErrorClass::OBJECT.to_raw() as u32,
-            code: ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.to_raw() as u32,
-        })
+        Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+        ))
     }
 
     /// The request that staged a write is done, whether or not the write
@@ -712,8 +634,25 @@ pub trait DurableWrites {
     fn settle_forgotten_writes(&mut self) -> Option<SaveWait> {
         None
     }
+
+    /// The host's monotonic pass at `now`, on the monotonic clock's time
+    /// base: drop a staged write whose request has neither taken nor
+    /// released it within the staged-write lifetime of its save finishing,
+    /// and queue a save of the served state, so storage follows the object
+    /// again. An object that keeps its staged saves in a
+    /// `staged::StagedSaves` forwards `now` to its `expire`.
+    ///
+    /// The server calls it on every pass, before it advances the object's
+    /// [`Timed`](crate::traits::Timed) operations, so an object that only
+    /// stages writes needs no `Timed`. The default has nothing that expires.
+    fn expire_staged(&mut self, _now: core::time::Duration) {}
 }
 
-#[cfg(test)]
+// std: these run saves on the writer thread and sync directories.
+#[cfg(all(test, feature = "std"))]
 #[path = "durable/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "durable/shared_tests.rs"]
+mod shared_tests;

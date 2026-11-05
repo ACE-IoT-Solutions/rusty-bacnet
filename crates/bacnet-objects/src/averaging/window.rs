@@ -8,13 +8,13 @@
 //! first tells a reader how many attempts in the window failed (Clauses
 //! 12.5.11 and 12.5.12).
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::time::Duration;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
+use core::time::Duration;
 
 use bacnet_types::error::Error;
 
-use super::schedule::{SampleSchedule, MIN_SAMPLE_PERIOD};
+use super::schedule::{MIN_SAMPLE_PERIOD, SampleSchedule};
 use crate::common;
 use crate::traits::MonotonicClock;
 
@@ -173,6 +173,11 @@ impl SampleWindow {
     pub(super) fn bind_clock(&mut self, clock: Option<Arc<MonotonicClock>>) {
         let period = self.period();
         self.schedule.bind(clock, period);
+    }
+
+    /// The bound monotonic clock, if any.
+    pub(super) fn clock(&self) -> Option<&Arc<MonotonicClock>> {
+        self.schedule.clock()
     }
 
     /// When the next scheduled sample is due, once a clock is bound.

@@ -1,12 +1,12 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use bacnet_encoding::apdu::{decode_apdu, Apdu};
+use bacnet_encoding::apdu::{Apdu, decode_apdu};
 use bacnet_network::layer::{IssuedApdu, NetworkLayer, ReceivedApdu, RoutedTarget};
+use bacnet_npdu::NetworkPriority;
 use bacnet_transport::port::{DataAttribute, TransportPort};
-use bacnet_types::enums::NetworkPriority;
-use bacnet_types::error::Error;
 use bacnet_types::MacAddr;
+use bacnet_types::error::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -17,48 +17,9 @@ fn shutdown_error() -> Error {
 const EFFECTIVE_GROUP_APDU_ERROR: &str =
     "effective group destination requires a valid unconfirmed request APDU";
 
-/// Network-layer destination for one hidden endpoint APDU send.
-#[doc(hidden)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EndpointApduDestination {
-    /// Direct unicast on the local data link. A MAC that reaches a group of
-    /// nodes here, such as the link's broadcast MAC or a multicast address,
-    /// is a local broadcast, so it carries only an Unconfirmed-Request APDU
-    /// (Clause 6.3, #1479).
-    Direct {
-        /// Destination MAC on the local data link.
-        destination_mac: MacAddr,
-    },
-    /// Routed unicast through a known next-hop router. An empty
-    /// `destination_mac` asks that router to broadcast on the network, so it
-    /// carries only an Unconfirmed-Request APDU (Clause 6.3, #1479).
-    Routed {
-        /// Ultimate BACnet network number.
-        destination_network: u16,
-        /// Ultimate BACnet MAC address.
-        destination_mac: MacAddr,
-        /// Immediate router MAC on the local data link.
-        router_mac: MacAddr,
-    },
-    /// Routed unicast using a local broadcast because the router MAC is unknown.
-    /// An empty `destination_mac` is refused: [`Self::RemoteBroadcast`]
-    /// sends that network's broadcast (#1479).
-    RoutedViaLocalBroadcast {
-        /// Ultimate BACnet network number.
-        destination_network: u16,
-        /// Ultimate BACnet MAC address.
-        destination_mac: MacAddr,
-    },
-    /// Broadcast on only the local BACnet network.
-    LocalBroadcast,
-    /// Broadcast to one remote BACnet network.
-    RemoteBroadcast {
-        /// Ultimate BACnet network number.
-        destination_network: u16,
-    },
-    /// Broadcast to all reachable BACnet networks.
-    GlobalBroadcast,
-}
+#[path = "endpoint_destination.rs"]
+mod destination;
+pub use destination::EndpointApduDestination;
 
 #[path = "endpoint_egress.rs"]
 mod egress;
@@ -111,12 +72,19 @@ pub struct IngressReceivers {
     /// independently supported port capacity.
     #[doc(hidden)]
     pub bip_port: Option<(bacnet_transport::port::BipPort, u16)>,
+    /// The same for a B/IPv6 link: its bound address, VMAC, group and mode,
+    /// with the port capacity.
+    #[doc(hidden)]
+    pub bip6_port: Option<(bacnet_transport::port::Bip6Port, u16)>,
     /// Actual announced IPv4 address and bound UDP port, when this is B/IP.
     #[doc(hidden)]
     pub bip_local_address: Option<std::net::SocketAddrV4>,
     /// Actual IPv4 B/IP broadcast endpoint after transport startup.
     #[doc(hidden)]
     pub bip_broadcast_endpoint: Option<std::net::SocketAddrV4>,
+    /// The link's own MAC after transport startup, in its own format (#2357).
+    #[doc(hidden)]
+    pub local_mac: MacAddr,
     /// Confirmed and unconfirmed request traffic.
     pub inbound_requests: mpsc::Receiver<ReceivedApdu>,
     /// Terminal response and segmentation traffic.
@@ -179,10 +147,34 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
         self.network.as_ref()?.transport().bip_broadcast_endpoint()
     }
 
+    /// Pre-start unicast facts of any link (#2357): the transport's own MAC
+    /// as configured, and its group-destination rule. The MAC is empty when
+    /// the link learns it only at start: B/IPv6 reports a zero VMAC until
+    /// then, which is also Device 0's, so its self check waits for
+    /// [`IngressReceivers::local_mac`].
+    #[doc(hidden)]
+    pub fn link_unicast_facts(
+        &self,
+    ) -> Option<(MacAddr, bacnet_transport::port::GroupDestinations)> {
+        let transport = self.network.as_ref()?.transport();
+        let local = if transport.bip6_port().is_some() {
+            MacAddr::new()
+        } else {
+            MacAddr::from_slice(transport.local_mac())
+        };
+        Some((local, transport.group_destinations()))
+    }
+
     /// Pre-bind B/IP registration capability, with the configured mode.
     #[doc(hidden)]
     pub fn bip_port(&self) -> Option<bacnet_transport::port::BipPort> {
         self.network.as_ref()?.transport().bip_port()
+    }
+
+    /// Pre-bind B/IPv6 registration capability, with the configured mode.
+    #[doc(hidden)]
+    pub fn bip6_port(&self) -> Option<bacnet_transport::port::Bip6Port> {
+        self.network.as_ref()?.transport().bip6_port()
     }
     /// Attach selected-object protection before starting the transport.
     #[doc(hidden)]
@@ -228,11 +220,11 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
             .supports_local_nonrouter_number_controls()
             .then_some(controls)
             .flatten();
-        let bip_port = network
-            .transport()
-            .bip_port()
-            .map(|port| (port, network.transport().local_receive_apdu_capacity()));
+        let capacity = network.transport().local_receive_apdu_capacity();
+        let bip_port = network.transport().bip_port().map(|port| (port, capacity));
+        let bip6_port = network.transport().bip6_port().map(|port| (port, capacity));
         let bip_broadcast_endpoint = network.transport().bip_broadcast_endpoint();
+        let local_mac = MacAddr::from_slice(network.local_mac());
         let bip_local_address = bip_broadcast_endpoint.and_then(|_| {
             bacnet_transport::bvll::decode_bip_mac(network.local_mac())
                 .ok()
@@ -277,8 +269,10 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
         Ok(IngressReceivers {
             network_controls: controls,
             bip_port,
+            bip6_port,
             bip_local_address,
             bip_broadcast_endpoint,
+            local_mac,
             inbound_requests,
             terminal_or_segment,
             policy_outcomes,
@@ -294,13 +288,13 @@ impl<T: TransportPort + 'static> EndpointIngress<T> {
         ) {
             return Err(Error::Encoding("endpoint ingress is not running".into()));
         }
-        if self.lifecycle == Lifecycle::Starting {
-            if let Some(mut network) = self.network.take() {
-                self.session_task = Some(tokio::spawn(async move {
-                    network.stop().await?;
-                    Ok(ClassifierExit::Cancelled)
-                }));
-            }
+        if self.lifecycle == Lifecycle::Starting
+            && let Some(mut network) = self.network.take()
+        {
+            self.session_task = Some(tokio::spawn(async move {
+                network.stop().await?;
+                Ok(ClassifierExit::Cancelled)
+            }));
         }
         self.lifecycle = Lifecycle::Stopping;
         if let Some(open) = self.egress_open.take() {
@@ -350,7 +344,7 @@ struct IngressQueues {
 
 async fn session_task<T: TransportPort + 'static>(
     mut network: NetworkLayer<T>,
-    mut apdu_rx: mpsc::Receiver<ReceivedApdu>,
+    mut apdu_rx: bacnet_network::layer::ApduReceiver,
     queues: IngressQueues,
     mut egress_rx: mpsc::Receiver<NetworkServiceCommand>,
     mut cancel_rx: oneshot::Receiver<()>,
@@ -441,7 +435,7 @@ enum PendingEvent {
 async fn drive_network_service<T: TransportPort + 'static>(
     network: &NetworkLayer<T>,
     command: NetworkServiceCommand,
-    apdu_rx: &mut mpsc::Receiver<ReceivedApdu>,
+    apdu_rx: &mut bacnet_network::layer::ApduReceiver,
     queues: &IngressQueues,
     cancel_rx: &mut oneshot::Receiver<()>,
     prefer_ingress: &mut bool,
@@ -498,7 +492,7 @@ async fn drive_network_service<T: TransportPort + 'static>(
                             _ => {
                                 return Err(Error::Encoding(
                                     "response requires a unicast destination".into(),
-                                ))
+                                ));
                             }
                         };
                         network

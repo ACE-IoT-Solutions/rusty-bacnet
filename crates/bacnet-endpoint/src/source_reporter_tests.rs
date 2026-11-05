@@ -2,6 +2,7 @@
 
 use super::*;
 use bacnet_objects::audit::AuditReporterObject;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::ReceivedNpdu;
@@ -27,14 +28,14 @@ struct ObservedTransport {
 impl TransportPort for ObservedTransport {
     fn bip_broadcast_endpoint(&self) -> Option<std::net::SocketAddrV4> {
         self.observed.bip_reads.fetch_add(1, Ordering::SeqCst);
-        Some(std::net::SocketAddrV4::new(
-            [192, 168, 1, 255].into(),
-            if self.observed.starts.load(Ordering::SeqCst) == 0 {
-                0
-            } else {
-                47808
-            },
-        ))
+        // Before start, an unrelated placeholder: the started link's
+        // broadcast endpoint is a fact learned post-start, which the source
+        // routes then recheck.
+        Some(if self.observed.starts.load(Ordering::SeqCst) == 0 {
+            std::net::SocketAddrV4::new([198, 51, 100, 255].into(), 0)
+        } else {
+            std::net::SocketAddrV4::new([192, 168, 1, 255].into(), 47808)
+        })
     }
     async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
         self.observed.starts.fetch_add(1, Ordering::SeqCst);
@@ -160,7 +161,7 @@ async fn success(role: SessionRole) {
     let (session, peer, observed) = session(role);
     let mut session = session
         .with_database(database())
-        .with_identity(crate::identity::DeviceIdentity::new(123, 42).unwrap())
+        .device(crate::identity::DeviceIdentity::new(123, 42).unwrap())
         .with_source_audit_reporter(selected());
     assert!(!source(
         &*session.database.as_ref().unwrap().read().await,
@@ -181,10 +182,9 @@ async fn success(role: SessionRole) {
     {
         let db = db.read().await;
         assert!(source(&db, selected()));
-        assert!(!db.get(&selected()).unwrap().is_deleteable());
-        assert!(!db.get(&selected()).unwrap().is_createable());
+        assert!(db.check_removable(&selected()).is_err());
         assert!(!source(&db, target()));
-        assert!(db.get(&target()).unwrap().is_deleteable());
+        assert!(db.check_removable(&target()).is_ok());
     }
     tokio::time::advance(Duration::from_secs(60)).await;
     tokio::task::yield_now().await;
@@ -248,7 +248,7 @@ async fn rejected(
                         object
                             .read_property(PropertyIdentifier::AUDIT_SOURCE_REPORTER, None)
                             .ok(),
-                        object.is_deleteable(),
+                        db.check_removable(&oid).is_ok(),
                         std::ptr::from_ref(object).cast::<()>(),
                     )
                 })
@@ -287,13 +287,13 @@ async fn rejected(
                         .ok(),
                     value
                 );
-                assert_eq!(object.is_deleteable(), *deleteable);
+                assert_eq!(db.check_removable(oid).is_ok(), *deleteable);
             }
         }
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn server_only_rejects_source_without_consuming_start() {
     let (session, _peer, observed) = session(SessionRole::ServerOnly);
     let mut session = session
@@ -302,7 +302,7 @@ async fn server_only_rejects_source_without_consuming_start() {
     rejected(&mut session, &observed, "requires a client role").await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn missing_database_can_be_attached_after_validation_failure() {
     let (session, _peer, observed) = session(SessionRole::ClientOnly);
     let mut session = session.with_source_audit_reporter(selected());
@@ -319,7 +319,7 @@ async fn missing_database_can_be_attached_after_validation_failure() {
     assert_eq!(observed.starts.load(Ordering::SeqCst), 1);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn device_validation_is_atomic_and_correctable() {
     for case in ["missing", "lower", "mismatch"] {
         let (session, _peer, observed) = session(SessionRole::Both);
@@ -343,7 +343,7 @@ async fn device_validation_is_atomic_and_correctable() {
                 .unwrap();
         let mut session = session
             .with_database(db)
-            .with_identity(identity)
+            .device(identity)
             .with_source_audit_reporter(selected());
         rejected(
             &mut session,
@@ -351,13 +351,13 @@ async fn device_validation_is_atomic_and_correctable() {
             if case == "missing" {
                 "concrete local Device"
             } else {
-                "does not match session identity"
+                "must match identity"
             },
         )
         .await;
         session = session
             .with_database(database())
-            .with_identity(crate::identity::DeviceIdentity::new(123, 42).unwrap());
+            .device(crate::identity::DeviceIdentity::new(123, 42).unwrap());
         session.start().await.unwrap();
         session.stop().await.unwrap();
     }
@@ -371,7 +371,7 @@ struct ForeignReporter {
 }
 
 impl BACnetObject for ForeignReporter {
-    fn audit_reporter_internal(&self) -> Option<&AuditReporterObject> {
+    fn audit_reporter(&self) -> Option<&AuditReporterObject> {
         self.capability.as_ref()
     }
     fn object_identifier(&self) -> ObjectIdentifier {
@@ -383,10 +383,10 @@ impl BACnetObject for ForeignReporter {
             .map_or("Foreign Reporter", |reporter| reporter.object_name())
     }
     fn read_property(&self, p: PropertyIdentifier, _: Option<u32>) -> Result<PropertyValue, Error> {
-        if p == PropertyIdentifier::AUDIT_SOURCE_REPORTER {
-            if let Some(source) = self.source {
-                return Ok(PropertyValue::Boolean(source));
-            }
+        if p == PropertyIdentifier::AUDIT_SOURCE_REPORTER
+            && let Some(source) = self.source
+        {
+            return Ok(PropertyValue::Boolean(source));
         }
         Err(Error::Encoding("unsupported property".into()))
     }
@@ -399,12 +399,12 @@ impl BACnetObject for ForeignReporter {
     ) -> Result<(), Error> {
         Err(Error::Encoding("not writable".into()))
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn selection_validation_is_atomic_and_correctable() {
     for case in [
         "absent",
@@ -445,7 +445,7 @@ async fn selection_validation_is_atomic_and_correctable() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn conflicting_or_unknown_foreign_source_is_rejected_before_mutation() {
     for state in [Some(true), None] {
         let (session, _peer, observed) = session(SessionRole::ClientOnly);
@@ -472,7 +472,7 @@ async fn conflicting_or_unknown_foreign_source_is_rejected_before_mutation() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn existing_source_is_idempotent_but_conflicting_selection_is_not() {
     let (session, _peer, observed) = session(SessionRole::Both);
     let mut db = database();
@@ -491,12 +491,12 @@ async fn existing_source_is_idempotent_but_conflicting_selection_is_not() {
     {
         let db = session.database.as_ref().unwrap().read().await;
         assert!(source(&db, target()));
-        assert!(!db.get(&target()).unwrap().is_deleteable());
+        assert!(db.check_removable(&target()).is_err());
     }
     session.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_database_is_released_on_drop_without_stop() {
     for role in [SessionRole::ClientOnly, SessionRole::Both] {
         let (session, _peer, _) = session(role);
@@ -507,12 +507,16 @@ async fn source_database_is_released_on_drop_without_stop() {
         let weak = Arc::downgrade(session.database.as_ref().unwrap());
         drop(session);
         // Dispatch owns a responder clone until its abort is observed.
-        tokio::task::yield_now().await;
-        assert!(weak.upgrade().is_none());
+        crate::session::eventually::eventually(
+            Duration::from_secs(2),
+            "the dropped session lets go of the database",
+            async || weak.upgrade().is_none(),
+        )
+        .await;
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn duplicate_sources_assembled_locally_are_rejected_atomically() {
     let (session, _peer, observed) = session(SessionRole::Both);
     let mut first = database();
@@ -535,7 +539,7 @@ async fn duplicate_sources_assembled_locally_are_rejected_atomically() {
     rejected(&mut session, &observed, "conflicting source").await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 #[should_panic(expected = "endpoint configuration must precede startup")]
 async fn source_selection_cannot_change_after_start() {
     let (session, _peer, _) = session(SessionRole::ClientOnly);
@@ -546,7 +550,7 @@ async fn source_selection_cannot_change_after_start() {
     let _ = session.with_source_audit_reporter(target());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn repeated_pre_start_selection_only_wraps_the_final_choice() {
     let (session, _peer, _) = session(SessionRole::ClientOnly);
     let mut session = session
@@ -557,21 +561,21 @@ async fn repeated_pre_start_selection_only_wraps_the_final_choice() {
     {
         let db = session.database.as_ref().unwrap().read().await;
         assert!(!source(&db, selected()));
-        assert!(db.get(&selected()).unwrap().is_deleteable());
+        assert!(db.check_removable(&selected()).is_ok());
         assert!(source(&db, target()));
-        assert!(!db.get(&target()).unwrap().is_deleteable());
+        assert!(db.check_removable(&target()).is_err());
     }
     session.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn selected_source_requires_typed_recipient_before_start() {
     let (session, _peer, observed) = session(SessionRole::ClientOnly);
     let mut db = database();
     db.remove(&oid(ObjectType::DEVICE, 123)).unwrap();
     db.add(Box::new(
         bacnet_objects::device::DeviceObject::new(bacnet_objects::device::DeviceConfig {
-            instance: 123,
+            identity: bacnet_objects::DeviceIdentity::new(123, 0).expect("valid Device identity"),
             ..Default::default()
         })
         .unwrap(),
@@ -579,7 +583,9 @@ async fn selected_source_requires_typed_recipient_before_start() {
     .unwrap();
     db.get_mut(&selected())
         .unwrap()
-        .configure_audit_reporter_internal(
+        .audit_reporter_mut()
+        .expect("an Audit Reporter")
+        .configure(
             AuditLevel::NONE,
             bacnet_types::bitstring::AuditOperationFlags::empty(),
             false,
@@ -606,7 +612,7 @@ async fn selected_source_requires_typed_recipient_before_start() {
     session.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_both_requires_explicit_authorizer_before_owner_installation() {
     let (mut session, _peer, observed) = session(SessionRole::Both);
     session.device_write_authorizer = None;

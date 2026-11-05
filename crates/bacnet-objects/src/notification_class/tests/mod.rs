@@ -1,4 +1,6 @@
 mod enrollment_summary_projection;
+// std: these hold a save open on the writer thread.
+#[cfg(feature = "std")]
 mod fold_tests;
 mod lookup;
 mod persistence_tests;

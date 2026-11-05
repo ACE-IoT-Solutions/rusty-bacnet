@@ -142,6 +142,11 @@ impl LogWindow {
         Ok(())
     }
 
+    /// Start_Time and Stop_Time, as configured or written.
+    pub(crate) fn ends(&self) -> ((Date, Time), (Date, Time)) {
+        (self.start, self.stop)
+    }
+
     /// Whether both ends are open, so the span admits every moment and a look
     /// needs no clock.
     pub(crate) fn is_unbounded(&self) -> bool {
@@ -187,6 +192,7 @@ impl LogWindow {
 mod tests {
     use super::*;
     use bacnet_types::enums::{ErrorClass, ErrorCode};
+    use bacnet_types::error::RemoteError;
 
     fn at(day: u8, hour: u8) -> (Date, Time) {
         (
@@ -306,9 +312,9 @@ mod tests {
             let mut copy = span;
             let error = copy.write(P::STOP_TIME, &value).unwrap().unwrap_err();
             assert!(
-                matches!(error, Error::Protocol { class, code: c }
-                    if class == ErrorClass::PROPERTY.to_raw() as u32
-                        && c == code.to_raw() as u32),
+                matches!(error, Error::Remote(RemoteError::Error { class, code: c })
+                    if class == ErrorClass::PROPERTY
+                        && c == code),
                 "{error:?}"
             );
             assert_eq!(copy, span);

@@ -1,5 +1,5 @@
 use super::LoopObject;
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
@@ -46,7 +46,7 @@ const BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::DERIVATIVE_CONSTANT_UNITS, Optional, None, ReadOnly),
     PropertyMetadata::new(P::PRIORITY_FOR_WRITING, RequiredRead, None, ReadOnly),
     // Table 12-20 footnote 4: present because the object supports COV.
-    PropertyMetadata::new(P::COV_INCREMENT, Optional, None, Always),
+    crate::property_metadata::COV_INCREMENT_ROW,
     PropertyMetadata::new(P::PROPERTY_LIST, RequiredRead, None, ReadOnly),
 ];
 
@@ -58,13 +58,14 @@ pub(super) fn for_object(_object: &LoopObject) -> Cow<'_, [PropertyMetadata]> {
 mod tests {
     use super::*;
     use crate::traits::BACnetObject;
+    use bacnet_types::enums::EngineeringUnits;
     use bacnet_types::enums::{ErrorClass, ErrorCode};
-    use bacnet_types::error::Error;
+    use bacnet_types::error::{Error, RemoteError};
     use bacnet_types::primitives::PropertyValue;
 
     #[test]
     fn property_metadata_loop_exact_sets_and_indexed_list() {
-        let object = LoopObject::new(1, "LOOP-1", 62).unwrap();
+        let object = LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
         let all = [
             P::OBJECT_IDENTIFIER,
             P::OBJECT_NAME,
@@ -110,19 +111,30 @@ mod tests {
             P::SETPOINT,
             P::ACTION,
             P::PRIORITY_FOR_WRITING,
+            // Table 12-20 footnote 4: required of a Loop that reports COV (#2193).
+            P::COV_INCREMENT,
             P::PROPERTY_LIST,
         ];
         assert!(matches!(object.property_metadata(), Cow::Borrowed(_)));
         assert_eq!(object.property_metadata().len(), all.len() + 1);
-        assert_eq!(object.property_list().as_ref(), all);
-        assert_eq!(object.required_properties().as_ref(), required);
-        assert!(object.supports_cov());
-        assert!(!object.is_createable());
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(&all)
+        );
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            required
+        );
+        assert!(object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
         for row in object.property_metadata().iter() {
-            assert_eq!(row.presence_condition, None);
+            let cov = row.property_identifier == P::COV_INCREMENT;
+            assert_eq!(
+                row.presence_condition,
+                cov.then_some(crate::property_metadata::PropertyPresenceCondition::CovReporting)
+            );
             assert_eq!(
                 row.conformance,
-                if required.contains(&row.property_identifier) {
+                if required.contains(&row.property_identifier) && !cov {
                     RequiredRead
                 } else {
                     Optional
@@ -160,8 +172,8 @@ mod tests {
 
     fn assert_error(error: Error, expected: ErrorCode) {
         assert!(
-            matches!(error, Error::Protocol { class, code }
-            if class == ErrorClass::PROPERTY.to_raw() as u32 && code == expected.to_raw() as u32),
+            matches!(error, Error::Remote(RemoteError::Error { class, code })
+            if class == ErrorClass::PROPERTY && code == expected),
             "expected {expected:?}, got {error:?}"
         );
     }
@@ -169,7 +181,8 @@ mod tests {
     #[test]
     fn property_metadata_loop_write_capabilities_match_dispatch() {
         for out_of_service in [false, true] {
-            let mut object = LoopObject::new(1, "LOOP-1", 62).unwrap();
+            let mut object =
+                LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
             object
                 .write_property(
                     P::OUT_OF_SERVICE,
@@ -198,7 +211,10 @@ mod tests {
                     _ => ReadOnly,
                 };
                 assert_eq!(row.write_capability, capability, "{p:?}");
-                assert_eq!(object.is_writable_property(p), capability.is_writable());
+                assert_eq!(
+                    crate::property_metadata::is_writable_property(&object, p),
+                    capability.is_writable()
+                );
                 let value = object.read_property(p, None).unwrap();
                 let result = object.write_property(p, None, value, None);
                 if capability == Always || (capability == WhenOutOfService && out_of_service) {
@@ -226,7 +242,7 @@ mod tests {
                 P::CURRENT_COMMAND_PRIORITY,
                 P::ALL,
             ] {
-                assert!(!object.is_writable_property(p));
+                assert!(!crate::property_metadata::is_writable_property(&object, p));
                 assert_error(
                     object.read_property(p, None).unwrap_err(),
                     ErrorCode::UNKNOWN_PROPERTY,

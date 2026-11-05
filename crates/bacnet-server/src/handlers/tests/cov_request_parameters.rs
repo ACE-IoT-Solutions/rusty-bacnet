@@ -1,6 +1,7 @@
 use super::*;
 use bacnet_encoding::primitives;
-use std::time::{Duration, Instant};
+use bacnet_types::error::RemoteError;
+use std::time::Duration;
 
 fn object(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::ANALOG_INPUT, instance).unwrap()
@@ -34,7 +35,8 @@ fn subscribe_cov_lifetime_only_preserves_whole_table_and_quota_before_lookup_or_
     let mut expired = (*finite).clone();
     expired.subscriber_mac = MacAddr::from_slice(&[2]);
     expired.subscriber_process_identifier = 99;
-    expired.expires_at = Some(Instant::now() - Duration::from_secs(1));
+    expired.expires_at =
+        Some(crate::runtime_clock::core_now() - bacnet_time::Duration::from_secs(1));
     table.subscribe(expired.clone()).unwrap();
     let counters = table.counters().snapshot();
     for target in [object(1), object(999)] {
@@ -46,14 +48,16 @@ fn subscribe_cov_lifetime_only_preserves_whole_table_and_quota_before_lookup_or_
                 &raw(target, None, Some(lifetime)),
             )
             .unwrap_err();
-            assert!(matches!(error, Error::Reject { reason }
-                if reason == RejectReason::INCONSISTENT_PARAMETERS.to_raw()));
+            assert!(
+                matches!(error, Error::Remote(RemoteError::Reject { reason })
+                if reason == RejectReason::INCONSISTENT_PARAMETERS)
+            );
             assert_eq!(table.len(), 2);
             assert_eq!(table.counters().snapshot(), counters);
             for before in [&finite, &expired] {
                 let after = table
-                    .get_subscription(&crate::cov::CovSubscriptionKey::Object {
-                        recipient: crate::cov::CovRecipient::from_endpoint(
+                    .get_subscription(&bacnet_device_core::cov::CovSubscriptionKey::Object {
+                        recipient: bacnet_device_core::cov::CovRecipient::from_endpoint(
                             &before.subscriber_mac,
                             None,
                         ),
@@ -85,13 +89,15 @@ fn subscribe_cov_lifetime_only_on_empty_table_consumes_no_capacity() {
     let mut table = CovSubscriptionTable::new();
     let before = table.counters().snapshot();
     for lifetime in [0, 300] {
-        assert!(handle_subscribe_cov_with_initial(
-            &mut table,
-            &db,
-            &[1],
-            &raw(object(1), None, Some(lifetime))
-        )
-        .is_err());
+        assert!(
+            handle_subscribe_cov_with_initial(
+                &mut table,
+                &db,
+                &[1],
+                &raw(object(1), None, Some(lifetime))
+            )
+            .is_err()
+        );
         assert!(table.is_empty());
         assert_eq!(table.counters().snapshot(), before);
     }
@@ -117,16 +123,16 @@ async fn subscribe_cov_valid_renewal_expiry_and_nonexistent_cancel_remain_suppor
     )
     .unwrap()
     .remove(0);
-    assert!(renewed.expires_at.unwrap() > first.expires_at.unwrap() + Duration::from_secs(28000));
+    assert!(
+        renewed.expires_at.unwrap()
+            > first.expires_at.unwrap() + bacnet_time::Duration::from_secs(28000)
+    );
     assert_eq!(table.len(), 1);
-    assert!(handle_subscribe_cov_with_initial(
-        &mut table,
-        &db,
-        &[1],
-        &raw(object(999), None, None)
-    )
-    .unwrap()
-    .is_empty());
+    assert!(
+        handle_subscribe_cov_with_initial(&mut table, &db, &[1], &raw(object(999), None, None))
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(table.len(), 1);
     handle_subscribe_cov_with_initial(&mut table, &db, &[1], &raw(object(1), Some(false), Some(1)))
         .unwrap();

@@ -7,8 +7,10 @@ use crate::{BvlcFunction, SinkFull};
 /// A BVLL message could not be decoded or encoded.
 ///
 /// Each variant names the direction it comes from. None of them allocates,
-/// so the type is `Copy`.
+/// so the type is `Copy`. Later releases may add variants, so a match
+/// outside this crate needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BvllError {
     /// Decode: the datagram is shorter than the 4-octet BVLL header.
     TooShort {

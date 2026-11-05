@@ -1,4 +1,6 @@
 use super::*;
+use bacnet_device_core::cov::CovNotificationKind;
+use bacnet_types::MacAddr;
 
 fn routed_proposal(router: u8, index: Option<u32>) -> CovSubscription {
     let mut sub = proposal(index, false);
@@ -21,8 +23,8 @@ fn cov_multiple_route_empty_renewal_fences_all_old_snapshots_without_new_generat
             .unwrap(),
     ];
     let context = context(&a);
-    let expiry = Instant::now() + Duration::from_secs(600);
-    table.generation = u64::MAX;
+    let expiry = crate::runtime_clock::core_now() + Duration::from_secs(600);
+    table.core.set_generation_for_test(u64::MAX);
     table
         .subscribe_multiple(&context, &a.endpoint(), expiry, 2, None, vec![])
         .unwrap();
@@ -31,11 +33,13 @@ fn cov_multiple_route_empty_renewal_fences_all_old_snapshots_without_new_generat
         "same-route renewal preserves authority"
     );
     let b = routed_proposal(2, None);
-    assert!(table
-        .subscribe_multiple(&context, &b.endpoint(), expiry, 3, None, vec![])
-        .unwrap()
-        .is_empty());
-    assert_eq!(table.generation, u64::MAX);
+    assert!(
+        table
+            .subscribe_multiple(&context, &b.endpoint(), expiry, 3, None, vec![])
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(table.core.generation_for_test(), u64::MAX);
     for snapshot in &old {
         assert!(!table.is_current(snapshot));
         assert!(!table.complete_for_test(
@@ -43,7 +47,7 @@ fn cov_multiple_route_empty_renewal_fences_all_old_snapshots_without_new_generat
             snapshot.last_notified_observation.clone().unwrap()
         ));
         let live = table.get_subscription(snapshot.key()).unwrap();
-        assert_eq!(live.generation, snapshot.generation);
+        assert_eq!(live.generation(), snapshot.generation());
         assert_eq!(
             live.last_notified_observation,
             snapshot.last_notified_observation
@@ -100,7 +104,7 @@ fn cov_multiple_route_rejected_generation_or_identity_preserves_live_target() {
         ),
         "a proposal through A cannot publish on a separately supplied B route"
     );
-    table.generation = u64::MAX;
+    table.core.set_generation_for_test(u64::MAX);
     let exhausted = table
         .subscribe_multiple(&context, &b.endpoint(), expiry, 9, None, vec![b.clone()])
         .unwrap_err();
@@ -108,13 +112,17 @@ fn cov_multiple_route_rejected_generation_or_identity_preserves_live_target() {
     resource_error(exhausted.error);
     let mut wrong_route = b.endpoint();
     wrong_route.network.as_mut().unwrap().network = 11;
-    assert!(table
-        .subscribe_multiple(&context, &wrong_route, expiry, 9, None, vec![])
-        .is_err());
+    assert!(
+        table
+            .subscribe_multiple(&context, &wrong_route, expiry, 9, None, vec![])
+            .is_err()
+    );
     b.subscriber_process_identifier += 1;
-    assert!(table
-        .subscribe_multiple(&context, &b.endpoint(), expiry, 9, None, vec![b.clone()])
-        .is_err());
+    assert!(
+        table
+            .subscribe_multiple(&context, &b.endpoint(), expiry, 9, None, vec![b.clone()])
+            .is_err()
+    );
     assert_eq!(table.len(), 1);
     assert!(table.is_current(&before));
     let live = table.get_subscription(before.key()).unwrap();
@@ -176,7 +184,7 @@ fn cov_multiple_route_distinct_contexts_and_cleanup_remain_independent() {
         .subscribe_multiple(
             &context(&base),
             &b.endpoint(),
-            Instant::now(),
+            crate::runtime_clock::core_now(),
             0,
             None,
             vec![],
