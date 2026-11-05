@@ -111,6 +111,7 @@ impl BACnetObject for AccessUserObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // Clause 12.33 holds the OUT_OF_SERVICE flag FALSE.
         if let Some(result) =
             read_common_properties!(self, property, array_index, no_out_of_service)
@@ -143,10 +144,11 @@ impl BACnetObject for AccessUserObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
@@ -169,17 +171,12 @@ impl BACnetObject for AccessUserObject {
             _ => Err(crate::common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                _array_index,
             )),
         }
     }
 
     fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
         super::metadata_identity::for_access_user_object(self)
-    }
-
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
     }
 }
 

@@ -158,6 +158,7 @@ impl bacnet_transport::port::TransportPort for MemTransport {
 
                 response: None,
                 reject_origin: None,
+                count_forward: false,
             })
             .map_err(|_| bacnet_types::error::Error::Encoding("wire full".into()))
     }
@@ -172,6 +173,7 @@ impl bacnet_transport::port::TransportPort for MemTransport {
                 data_attributes: data_attributes.to_vec(),
 
                 reject_origin: None,
+                count_forward: false,
             })
             .map_err(|_| bacnet_types::error::Error::Encoding("wire full".into()))
     }

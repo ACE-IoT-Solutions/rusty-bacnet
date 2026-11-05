@@ -20,6 +20,15 @@ pub(crate) enum McpAction {
         #[arg(long)]
         passive: bool,
     },
+    /// Bridge stdin and stdout to the MCP socket (a named pipe on Windows)
+    /// of a TUI that has the profile open, so an agent shares its client.
+    /// Its writes, if the profile offers them, wait for confirmation there.
+    Connect {
+        /// The profile the TUI has open; needed when more than one TUI is
+        /// listening.
+        #[arg(long, value_name = "NAME")]
+        profile: Option<String>,
+    },
     /// Record, after showing what an agent may reach, that you authorize
     /// the MCP server on a profile. Needs a terminal.
     Authorize {

@@ -1,13 +1,15 @@
 use super::*;
+use crate::session::bus_port::BusPort;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::error::RemoteError;
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn endpoint_rp_only_wire_omits_nonexecuted_cov_properties() {
     wire_contract(false, false).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn endpoint_execution_view_covers_write_opt_in_and_custom_device_reader() {
     wire_contract(true, false).await;
     wire_contract(false, true).await;
@@ -25,20 +27,14 @@ async fn wire_contract(writes: bool, custom: bool) {
             .role(SessionRole::ServerOnly)
             .database(db)
             .device(identity)
-            .build_session()
+            .build_session_over(BusPort::new())
             .unwrap();
     if writes {
         endpoint = endpoint.with_device_writes(Arc::new(|_| true));
     }
     endpoint.start().await.unwrap();
-    // The endpoint bound port 0; the client talks to the port it actually got.
     let port = endpoint.bip_local_address().unwrap().port();
-    let mut client = bacnet_client::client::BACnetClient::bip_builder()
-        .interface(Ipv4Addr::LOCALHOST)
-        .port(0)
-        .build()
-        .await
-        .unwrap();
+    let mut client = bus_client().await;
     let mac = bacnet_transport::bvll::encode_bip_mac([127, 0, 0, 1], port);
     let profile = client
         .read_property(
@@ -103,11 +99,22 @@ impl BACnetObject for CustomDevice {
     fn object_name(&self) -> &str {
         "custom-device"
     }
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        std::borrow::Cow::Owned(vec![
-            PropertyIdentifier::ACTIVE_COV_SUBSCRIPTIONS,
-            PropertyIdentifier::ACTIVE_COV_MULTIPLE_SUBSCRIPTIONS,
-        ])
+    // The owned COV lists claim to be arrays; the executor serves them from
+    // its own rows.
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        let array = bacnet_objects::property_metadata::ValueType::array(
+            bacnet_objects::property_metadata::Datatype::Unsigned,
+        );
+        crate::test_rows::typed(
+            crate::test_rows::read_only(&[
+                PropertyIdentifier::ACTIVE_COV_SUBSCRIPTIONS,
+                PropertyIdentifier::ACTIVE_COV_MULTIPLE_SUBSCRIPTIONS,
+            ]),
+            &[
+                (PropertyIdentifier::ACTIVE_COV_SUBSCRIPTIONS, array),
+                (PropertyIdentifier::ACTIVE_COV_MULTIPLE_SUBSCRIPTIONS, array),
+            ],
+        )
     }
     fn read_property(
         &self,
@@ -141,9 +148,6 @@ impl BACnetObject for CustomDevice {
         _: Option<u8>,
     ) -> Result<(), Error> {
         panic!("read-only fixture")
-    }
-    fn is_array_property(&self, property: PropertyIdentifier) -> bool {
-        property != PropertyIdentifier::PROPERTY_LIST
     }
 }
 
@@ -236,7 +240,7 @@ async fn generated_identity_preflight_failure_can_change_identity_and_retry() {
     session.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn endpoint_wildcard_keeps_frozen_identity_and_identity_free_selection_stays_global() {
     use std::net::Ipv4Addr;
     for composed in [true, false] {
@@ -251,14 +255,9 @@ async fn endpoint_wildcard_keeps_frozen_identity_and_identity_free_selection_sta
         if composed {
             builder = builder.device(identity.clone());
         }
-        let mut endpoint = builder.build_session().unwrap();
+        let mut endpoint = builder.build_session_over(BusPort::new()).unwrap();
         endpoint.start().await.unwrap();
-        let mut client = bacnet_client::client::BACnetClient::bip_builder()
-            .interface(Ipv4Addr::LOCALHOST)
-            .port(0)
-            .build()
-            .await
-            .unwrap();
+        let mut client = bus_client().await;
         let mac = bacnet_transport::bvll::encode_bip_mac(
             [127, 0, 0, 1],
             endpoint.bip_local_address().unwrap().port(),
@@ -276,6 +275,12 @@ async fn endpoint_wildcard_keeps_frozen_identity_and_identity_free_selection_sta
             ))
             .unwrap();
         assert_eq!(database.read().await.selected_device(), Some(oid(1)));
+        // A composed identity binds the database to its Device (#2227); an
+        // identity-free endpoint keeps the lowest.
+        assert_eq!(
+            database.read().await.local_device().identifier(),
+            Some(oid(if composed { 123 } else { 1 }))
+        );
         let wildcard = oid(ObjectIdentifier::MAX_INSTANCE);
         for phase in 0..3 {
             if phase == 1 {
@@ -335,4 +340,20 @@ async fn endpoint_wildcard_keeps_frozen_identity_and_identity_free_selection_sta
         client.stop().await.unwrap();
         endpoint.stop().await.unwrap();
     }
+}
+
+/// A preflight that fails leaves the database unbound (#2227): with the
+/// identity's Device removed, it names no Device rather than the identity's.
+#[tokio::test]
+async fn a_failed_preflight_leaves_the_database_unbound() {
+    let (session, _peer, _starts) = session(SessionRole::ServerOnly);
+    let mut session = session.with_database(database(&[123])).device(
+        crate::DeviceIdentity::new(123, 42)
+            .unwrap()
+            .with_services(&[ServiceSupported::SUBSCRIBE_COV]),
+    );
+    assert!(session.start().await.is_err());
+    let database = session.database.as_ref().unwrap();
+    database.write().await.remove(&oid(123)).unwrap();
+    assert_eq!(database.read().await.local_device().identifier(), None);
 }

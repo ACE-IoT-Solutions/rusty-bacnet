@@ -1,4 +1,5 @@
 use super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::error::RemoteError;
 
 #[test]
@@ -6,7 +7,9 @@ fn ordinary_reporter_has_no_source_role_even_after_local_configuration() {
     let mut reporter = AuditReporterObject::new(1, "Reporter").unwrap();
     for level in [AuditLevel::NONE, AuditLevel::AUDIT_ALL] {
         reporter
-            .configure_audit_reporter_internal(
+            .audit_reporter_mut()
+            .expect("an Audit Reporter")
+            .configure(
                 level,
                 AuditOperationFlags::from_bits(0xff).unwrap(),
                 true,
@@ -21,9 +24,13 @@ fn ordinary_reporter_has_no_source_role_even_after_local_configuration() {
                 .unwrap(),
             PropertyValue::Boolean(false)
         );
-        assert!(reporter.is_deleteable());
-        assert!(!reporter.is_createable());
-        assert!(!reporter.is_writable_property(PropertyIdentifier::AUDIT_SOURCE_REPORTER));
+        assert!(crate::creation::builtin_deleteable(
+            reporter.object_identifier().object_type()
+        ));
+        assert!(!is_writable_property(
+            &reporter,
+            PropertyIdentifier::AUDIT_SOURCE_REPORTER
+        ));
         assert!(matches!(reporter.write_property(
             PropertyIdentifier::AUDIT_SOURCE_REPORTER, None, PropertyValue::Boolean(true), None,
         ), Err(Error::Remote(RemoteError::Error { class, code }))

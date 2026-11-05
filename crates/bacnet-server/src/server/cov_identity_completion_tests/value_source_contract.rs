@@ -1,5 +1,6 @@
 use super::value_source::{FIELDS, decoded};
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
 use bacnet_types::enums::EngineeringUnits;
@@ -23,18 +24,15 @@ impl BACnetObject for Probe {
     fn object_name(&self) -> &str {
         "command COV probe"
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        let mut list = self.inner.property_list().into_owned();
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        let mut rows = self.inner.property_metadata().into_owned();
         if self.state.lock().unwrap().noncommandable {
-            list.retain(|p| *p != PropertyIdentifier::PRIORITY_ARRAY);
+            rows.retain(|row| row.property_identifier != PropertyIdentifier::PRIORITY_ARRAY);
         }
-        Cow::Owned(list)
+        Cow::Owned(rows)
     }
-    fn supports_cov(&self) -> bool {
-        true
-    }
-    fn cov_increment(&self) -> Option<f64> {
-        Some(2.0)
+    fn cov(&self) -> Option<&dyn bacnet_objects::traits::CovReporting> {
+        Some(self)
     }
     fn read_property(&self, p: PropertyIdentifier, i: Option<u32>) -> Result<PropertyValue, Error> {
         let mut state = self.state.lock().unwrap();
@@ -55,6 +53,12 @@ impl BACnetObject for Probe {
         _: Option<u8>,
     ) -> Result<(), Error> {
         Err(Error::Encoding("read only probe".into()))
+    }
+}
+
+impl bacnet_objects::traits::CovReporting for Probe {
+    fn cov_increment(&self) -> Option<f64> {
+        Some(2.0)
     }
 }
 async fn fixture(
@@ -79,7 +83,7 @@ async fn fixture(
 async fn baseline(
     f: &Fixture,
     sub: &CovSubscriptionSnapshot,
-) -> Option<crate::cov::CovObservation> {
+) -> Option<bacnet_device_core::cov::CovObservation> {
     f.table
         .read()
         .await

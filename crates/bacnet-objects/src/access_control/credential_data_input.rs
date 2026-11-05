@@ -1,5 +1,3 @@
-use alloc::sync::Arc;
-
 use bacnet_encoding::constructed::{
     encode_authentication_factor, encode_authentication_factor_format,
 };
@@ -156,6 +154,7 @@ impl BACnetObject for CredentialDataInputObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = crate::common::read_identity_properties!(self, property, array_index)
         {
             return result;
@@ -212,6 +211,7 @@ impl BACnetObject for CredentialDataInputObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         // The reader's entry edge is always seen (it starts in service and
         // only this write moves Out_Of_Service), so there is no fallback.
         if let Some(result) = common::write_out_of_service_with_restore(
@@ -239,7 +239,6 @@ impl BACnetObject for CredentialDataInputObject {
         Err(common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
@@ -247,29 +246,52 @@ impl BACnetObject for CredentialDataInputObject {
         super::metadata_identity::for_credential_data_input_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
+    // Table 13-1 lists Credential Data Input, so it takes SubscribeCOV.
+    crate::traits::lend_cov_reporting!();
+
+    crate::traits::lend_reliability_eval!();
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
     }
 
-    /// Table 13-1 lists Credential Data Input, so it takes SubscribeCOV.
-    fn supports_cov(&self) -> bool {
-        true
+    fn local_input(&mut self) -> Option<&mut dyn crate::traits::LocalInput> {
+        Some(self)
     }
+}
 
-    fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
-        self.clock.clock = clock;
+impl crate::traits::CovReporting for CredentialDataInputObject {}
+
+impl crate::traits::ReliabilityEval for CredentialDataInputObject {
+    /// The application's Reliability for the reader. Like the other
+    /// Reliability carriers, the reader refuses it with WRITE_ACCESS_DENIED
+    /// while Out_Of_Service is TRUE, so a client's simulated value stays
+    /// served; the return to service brings back the value from before.
+    /// A value outside the BACnetReliability production is refused with
+    /// VALUE_OUT_OF_RANGE.
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
+        if self.out_of_service {
+            return Err(common::write_access_denied_error());
+        }
+        self.reading.reliability = super::checked_reliability(reliability)?;
+        Ok(())
     }
+}
 
-    /// Take a read the application reports (#1132): Present_Value and
-    /// Update_Time together, the time stamped from the Device clock, or the
-    /// object's next sequence number, when the report has none. Checked and
-    /// stored as [`Self::set_present_value`] stores a read: while
-    /// Out_Of_Service is TRUE it replaces the reader's values put aside, and
-    /// a client's simulated ones stay served. Any other record is
-    /// OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
-    fn report_access_input_internal(&mut self, input: AccessControlInput) -> Result<(), Error> {
-        let AccessControlInput::CredentialRead(report) = input else {
-            return Err(common::optional_functionality_not_supported_error());
+/// Take a read the application reports (#1132): Present_Value and
+/// Update_Time together, the time stamped from the Device clock, or the
+/// object's next sequence number, when the report has none. Checked and
+/// stored as [`Self::set_present_value`] stores a read: while
+/// Out_Of_Service is TRUE it replaces the reader's values put aside, and
+/// a client's simulated ones stay served. Any other record is
+/// OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
+impl crate::traits::LocalInput for CredentialDataInputObject {
+    fn apply_local_input(&mut self, input: crate::traits::LocalInputValue) -> Result<(), Error> {
+        let crate::traits::LocalInputValue::AccessControl(AccessControlInput::CredentialRead(
+            report,
+        )) = input
+        else {
+            return Err(crate::traits::not_supported());
         };
         if !is_declared(&report.factor, &self.supported_formats) {
             return Err(common::value_out_of_range_error());
@@ -277,19 +299,11 @@ impl BACnetObject for CredentialDataInputObject {
         let update_time = report.update_time.unwrap_or_else(|| self.clock.stamp());
         self.set_present_value(report.factor, update_time)
     }
+}
 
-    /// The application's Reliability for the reader. Like the other
-    /// Reliability carriers, the reader refuses it with WRITE_ACCESS_DENIED
-    /// while Out_Of_Service is TRUE, so a client's simulated value stays
-    /// served; the return to service brings back the value from before.
-    /// A value outside the BACnetReliability production is refused with
-    /// VALUE_OUT_OF_RANGE.
-    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
-        if self.out_of_service {
-            return Err(common::write_access_denied_error());
-        }
-        self.reading.reliability = super::checked_reliability(reliability)?;
-        Ok(())
+impl crate::traits::Timed for CredentialDataInputObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.clock.clock = clocks.clock.clone();
     }
 }
 

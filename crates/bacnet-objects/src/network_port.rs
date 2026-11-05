@@ -172,6 +172,7 @@ impl BACnetObject for NetworkPortObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         use PropertyIdentifier as P;
         if let Some(result) = read_common_properties!(self, property, array_index) {
             return result;
@@ -188,7 +189,7 @@ impl BACnetObject for NetworkPortObject {
             )),
             P::MAC_ADDRESS => Ok(PropertyValue::OctetString(self.mac_address.to_vec())),
             P::APDU_LENGTH => Ok(PropertyValue::Unsigned(self.apdu_length.into())),
-            // Optional unknown rate, not a measured NIC speed (errata item 23).
+            // Zero says the rate is unknown (Clause 12.56); no NIC speed is measured.
             P::LINK_SPEED => Ok(PropertyValue::Real(0.0)),
             P::CHANGES_PENDING => Ok(PropertyValue::Boolean(self.changes_pending())),
             _ => {
@@ -221,6 +222,7 @@ impl BACnetObject for NetworkPortObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if property == PropertyIdentifier::OUT_OF_SERVICE && self.is_bound() {
             return Err(common::write_access_denied_error());
         }
@@ -254,15 +256,6 @@ impl BACnetObject for NetworkPortObject {
     fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
         metadata::for_object(self)
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
-    fn is_createable(&self) -> bool {
-        false
-    }
-    fn is_deleteable(&self) -> bool {
-        false
-    }
 }
 
 #[cfg(test)]
@@ -277,5 +270,9 @@ mod multicast_tests;
 mod nat_pending_tests;
 #[cfg(test)]
 mod pending_tests;
+#[cfg(test)]
+mod required_rows_tests;
+#[cfg(test)]
+mod round_trip_tests;
 #[cfg(test)]
 mod tests;

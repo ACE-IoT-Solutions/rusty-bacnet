@@ -8,11 +8,15 @@ pub(crate) mod mstp;
 mod mstp_tests;
 #[cfg(test)]
 mod multicast_tests;
+#[cfg(test)]
+mod nat_tests;
 pub(crate) mod overrides;
 pub(crate) mod sc;
 #[cfg(test)]
 pub(crate) mod sc_tests;
 pub(crate) mod service;
+#[cfg(test)]
+mod share_port_tests;
 pub(crate) mod startup;
 pub(crate) mod store;
 #[cfg(test)]
@@ -20,6 +24,7 @@ pub(crate) mod tests;
 
 use crate::transport::TransportArgs;
 use crate::tui::worker::session::TransportKind;
+use bacnet_transport::bip::ForeignBbmd;
 pub(crate) use mcp::McpSection;
 pub(crate) use mstp::Mstp;
 pub(crate) use overrides::Overrides;
@@ -48,7 +53,8 @@ pub(crate) struct Profile {
     /// MS/TP settings, present for `transport = "mstp"` (#969).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) mstp: Option<Box<Mstp>>,
-    /// Recorded policy. The current TUI always remains read-only.
+    /// Recorded write policy: the TUI stays read-only until a write session
+    /// is armed, and only on a profile whose policy allows one.
     pub(crate) safety: Safety,
     /// Explicit first-use authorization, persisted before connecting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -95,9 +101,17 @@ pub(crate) struct Bip {
     pub(crate) broadcast: Ipv4Addr,
     pub(crate) timeout_ms: u64,
     pub(crate) min_interval_ms: u64,
-    pub(crate) bbmd: Option<SocketAddrV4>,
+    /// `ip:port` or `host:port` (#2308), saved as text as an address
+    /// always was.
+    #[serde(with = "bbmd_text")]
+    pub(crate) bbmd: Option<ForeignBbmd>,
     pub(crate) ttl: u16,
     pub(crate) renewal_secs: Option<u64>,
+    /// Our address as the BBMD records it when a NAT router translates the
+    /// registration (#1943): a display hint for the Network screen, which
+    /// changes nothing sent. Needs a BBMD.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) nat_global_address: Option<SocketAddrV4>,
     /// A B/IP-M group to join (Annex J.8, #941); needs an explicit
     /// interface and no BBMD.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,6 +125,11 @@ pub(crate) struct Bip {
     /// one host at one address each take their own `port` and share this.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) multicast_port: Option<u16>,
+    /// Share `port` with other programs on this host that bind it the same
+    /// way, as `--share-port` does (#2366); off by default, and then left
+    /// out of the file, so older profiles save unchanged.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) share_port: bool,
 }
 
 impl Default for Bip {
@@ -124,9 +143,11 @@ impl Default for Bip {
             bbmd: None,
             ttl: 300,
             renewal_secs: None,
+            nat_global_address: None,
             multicast: None,
             multicast_ttl: 1,
             multicast_port: None,
+            share_port: false,
         }
     }
 }
@@ -151,8 +172,9 @@ pub(crate) enum Writes {
 pub(crate) struct Safety {
     /// Whether a write session may be armed.
     pub(crate) writes: Writes,
-    /// Allow dangerous operations (today, commanding priority 6) inside an
-    /// armed write session.
+    /// Allow dangerous operations inside an armed write session: commanding
+    /// priority 6, and device management (DeviceCommunicationControl and
+    /// ReinitializeDevice).
     pub(crate) dangerous: bool,
 }
 
@@ -278,10 +300,13 @@ impl Profile {
         let mut args = TransportArgs {
             interface: Ipv4Addr::UNSPECIFIED,
             port: 0,
+            share_port: false,
             broadcast: Ipv4Addr::BROADCAST,
             timeout_ms: 0,
             min_interval_ms: 0,
             foreign_device: None,
+            bip6_foreign_device: None,
+            nat_global_address: None,
             multicast: None,
             mstp: None,
             sc: false,
@@ -301,10 +326,12 @@ impl Profile {
         if let Some(b) = &self.bip {
             args.interface = b.interface;
             args.port = b.port;
+            args.share_port = b.share_port;
             args.broadcast = b.broadcast;
             args.timeout_ms = b.timeout_ms;
             args.min_interval_ms = b.min_interval_ms;
-            args.foreign_device = crate::foreign::config(b.bbmd, b.ttl, b.renewal_secs);
+            args.foreign_device = crate::foreign::config(b.bbmd.clone(), b.ttl, b.renewal_secs);
+            args.nat_global_address = b.nat_global_address;
             args.multicast = b.multicast()?;
         }
         if let Some(sc) = &self.sc {
@@ -342,14 +369,17 @@ impl Bip {
         if b.min_interval_ms > bacnet_client::client::MAX_MIN_REQUEST_INTERVAL_MS {
             return Err("min_interval_ms must be at most 3600000".into());
         }
-        if let Some(bbmd) = b.bbmd {
-            if bbmd.port() == 0
-                || bbmd.ip().is_unspecified()
-                || bbmd.ip().is_multicast()
-                || bbmd.ip().is_broadcast()
-                || (*bbmd.ip() == b.broadcast
-                    && !bbmd.ip().is_loopback()
-                    && *bbmd.ip() != b.interface)
+        if let Some(named) = &b.bbmd {
+            // A host name's form was checked when it was read; its address
+            // is checked once it resolves.
+            if let Some(bbmd) = named.address()
+                && (bbmd.port() == 0
+                    || bbmd.ip().is_unspecified()
+                    || bbmd.ip().is_multicast()
+                    || bbmd.ip().is_broadcast()
+                    || (*bbmd.ip() == b.broadcast
+                        && !bbmd.ip().is_loopback()
+                        && *bbmd.ip() != b.interface))
             {
                 return Err("BBMD must be a unicast IPv4 endpoint with a nonzero port".into());
             }
@@ -361,6 +391,12 @@ impl Bip {
             }
         } else if b.renewal_secs.is_some() {
             return Err("renewal requires a BBMD (clear renewal for Normal mode)".into());
+        } else if b.nat_global_address.is_some() {
+            return Err("nat_global_address requires a BBMD".into());
+        }
+        if let Some(global) = b.nat_global_address {
+            crate::foreign::nat_global_address(global)
+                .map_err(|why| format!("nat_global_address {global} {why}"))?;
         }
         self.multicast().map(drop)
     }
@@ -401,5 +437,30 @@ impl Profile {
     }
     pub(crate) fn mstp_mut(&mut self) -> &mut Mstp {
         self.mstp.as_mut().expect("an MS/TP profile")
+    }
+}
+
+/// A BBMD saved as text, `ip:port` or `host:port`, as `SocketAddrV4` saved
+/// one (#2308), so profiles written before host names load unchanged.
+mod bbmd_text {
+    use bacnet_transport::bip::ForeignBbmd;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        value: &Option<ForeignBbmd>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(bbmd) => serializer.serialize_some(&bbmd.to_string()),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<ForeignBbmd>, D::Error> {
+        let text = Option::<String>::deserialize(deserializer)?;
+        text.map(|text| text.parse().map_err(serde::de::Error::custom))
+            .transpose()
     }
 }

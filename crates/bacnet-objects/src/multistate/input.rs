@@ -34,6 +34,10 @@ pub struct MultiStateInputObject {
     /// event-state-machine evaluation under Clause 13.2.2.1.
     event_detection_enable: bool,
     pub(crate) event_history: EventHistory,
+    /// The reporting settings a write set, kept in storage once the
+    /// object opts in (#2331).
+    #[cfg(feature = "event-reporting")]
+    reporting_store: crate::write_config::reporting::ReportingStore,
 }
 
 impl MultiStateInputObject {
@@ -64,6 +68,8 @@ impl MultiStateInputObject {
             event_detector: ChangeOfStateDetector::default(),
             event_detection_enable: true,
             event_history: EventHistory::default(),
+            #[cfg(feature = "event-reporting")]
+            reporting_store: Default::default(),
         })
     }
 
@@ -146,11 +152,6 @@ impl MultiStateInputObject {
         Ok(())
     }
 
-    /// Set the description string.
-    pub fn set_description(&mut self, desc: impl Into<String>) {
-        self.description = desc.into();
-    }
-
     /// The values the object keeps that name a state, which a new count
     /// may not strand: Present_Value and Alarm_Values.
     fn held_states(&self) -> impl Iterator<Item = u32> + '_ {
@@ -170,6 +171,8 @@ impl MultiStateInputObject {
     }
 }
 
+crate::write_config::reporting::impl_reporting_persistence!(MultiStateInputObject);
+
 impl BACnetObject for MultiStateInputObject {
     fn object_identifier(&self) -> ObjectIdentifier {
         self.oid
@@ -179,42 +182,16 @@ impl BACnetObject for MultiStateInputObject {
         &self.name
     }
 
-    fn supports_cov(&self) -> bool {
-        true
-    }
+    crate::traits::lend_cov_reporting!();
 
-    crate::event::impl_builtin_intrinsic_reporting!(
-        event_detector,
-        event_history,
-        [present_value],
-        reliability,
-        event_detection_enable,
-        ChangeOfStateDetector::ALGORITHM
-    );
-
-    fn acknowledge_alarm_correlated_internal(
-        &mut self,
-        event_state: EventState,
-        timestamp: &BACnetTimeStamp,
-    ) -> Result<(), Error> {
-        if !self.event_detection_enable {
-            return Err(Error::protocol(
-                ErrorClass::OBJECT,
-                ErrorCode::NO_ALARM_CONFIGURED,
-            ));
-        }
-        self.event_history.acknowledge_correlated(
-            &mut self.event_detector.acked_transitions,
-            event_state,
-            timestamp,
-        )
-    }
+    crate::traits::lend_event_reporting!();
 
     fn read_property(
         &self,
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if property == PropertyIdentifier::STATUS_FLAGS {
             return Ok(common::compute_status_flags(
                 self.status_flags,
@@ -282,6 +259,8 @@ impl BACnetObject for MultiStateInputObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        crate::write_config::reporting::admit(self, property, array_index, &value)?;
         if property == PropertyIdentifier::PRESENT_VALUE {
             if !self.out_of_service {
                 return Err(common::write_access_denied_error());
@@ -377,33 +356,28 @@ impl BACnetObject for MultiStateInputObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
-        self.profile.capability()
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: core::time::Duration) -> bool {
-        self.profile.expire(now);
-        false
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.durable_capability()
     }
 
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
+    crate::traits::lend_reliability_eval!();
 
-    fn is_createable(&self) -> bool {
-        true
+    fn local_input(&mut self) -> Option<&mut dyn crate::traits::LocalInput> {
+        Some(self)
     }
-    fn creation_only_properties(&self) -> &'static [PropertyIdentifier] {
-        CREATION_ONLY
-    }
+}
+
+impl crate::creation::Creatable for MultiStateInputObject {
+    const CREATION_ONLY_PROPERTIES: &'static [PropertyIdentifier] = CREATION_ONLY;
+
     fn initialize_property(
         &mut self,
         property: PropertyIdentifier,
@@ -420,7 +394,12 @@ impl BACnetObject for MultiStateInputObject {
         let _ = self.recompute_reliability();
         Ok(())
     }
-    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
+}
+
+impl crate::traits::CovReporting for MultiStateInputObject {}
+
+impl crate::traits::ReliabilityEval for MultiStateInputObject {
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
         if self.out_of_service || self.reliability_inhibit.enabled() {
             return Err(common::write_access_denied_error());
         }
@@ -432,26 +411,43 @@ impl BACnetObject for MultiStateInputObject {
         Ok(())
     }
 
-    fn set_present_value_internal(&mut self, value: PropertyValue) -> Result<(), Error> {
+    fn evaluate_reliability(&mut self) -> Result<ReliabilityEvaluation, Error> {
+        Ok(self.recompute_reliability())
+    }
+
+    fn reliability_evaluation_inhibited(&self) -> bool {
+        self.reliability_inhibit.enabled()
+    }
+}
+
+crate::event::impl_builtin_intrinsic_reporting!(
+    MultiStateInputObject,
+    event_detector,
+    event_history,
+    [present_value],
+    reliability,
+    event_detection_enable,
+    ChangeOfStateDetector::ALGORITHM
+);
+
+/// The Present_Value the application supplies.
+impl crate::traits::LocalInput for MultiStateInputObject {
+    fn apply_local_input(&mut self, input: crate::traits::LocalInputValue) -> Result<(), Error> {
+        let crate::traits::LocalInputValue::PresentValue { value, .. } = input else {
+            return Err(crate::traits::not_supported());
+        };
         // Local safe-ownership policy: preserve the client's OOS simulation.
         if self.out_of_service {
             return Err(common::write_access_denied_error());
         }
         self.apply_present_value(value)
     }
-
-    fn evaluate_reliability_internal(&mut self) -> Result<ReliabilityEvaluation, Error> {
-        Ok(self.recompute_reliability())
-    }
-
-    fn reliability_evaluation_inhibited_internal(&self) -> bool {
-        self.reliability_inhibit.enabled()
-    }
 }
 
 #[cfg(test)]
 mod detection_enable_tests {
     use super::*;
+    use crate::traits::EventReporting as _;
 
     #[test]
     fn msi_detection_enable_resets_and_gates_intrinsic_reporting() {
@@ -505,11 +501,14 @@ mod detection_enable_tests {
             msi.event_detector.pending.is_none(),
             "evaluate/tick re-armed a countdown while detection is disabled"
         );
-        assert!(
-            msi.property_list()
-                .contains(&PropertyIdentifier::EVENT_DETECTION_ENABLE)
-        );
-        assert!(msi.is_writable_property(PropertyIdentifier::EVENT_DETECTION_ENABLE));
+        assert!(crate::property_metadata::has_property(
+            &msi.property_metadata(),
+            PropertyIdentifier::EVENT_DETECTION_ENABLE
+        ));
+        assert!(crate::property_metadata::is_writable_property(
+            &msi,
+            PropertyIdentifier::EVENT_DETECTION_ENABLE
+        ));
     }
 }
 
@@ -525,14 +524,20 @@ mod reliability_safety_net_tests {
         msi.present_value = 3;
 
         assert_eq!(
-            msi.evaluate_reliability_internal().unwrap(),
+            msi.reliability_eval()
+                .unwrap()
+                .evaluate_reliability()
+                .unwrap(),
             ReliabilityEvaluation::Changed {
                 old_reliability: Reliability::NO_FAULT_DETECTED,
                 new_reliability: Reliability::MULTI_STATE_OUT_OF_RANGE,
             }
         );
         assert_eq!(
-            msi.evaluate_reliability_internal().unwrap(),
+            msi.reliability_eval()
+                .unwrap()
+                .evaluate_reliability()
+                .unwrap(),
             ReliabilityEvaluation::Unchanged
         );
     }

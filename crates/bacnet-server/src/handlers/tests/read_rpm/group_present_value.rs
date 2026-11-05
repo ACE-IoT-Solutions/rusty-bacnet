@@ -157,7 +157,7 @@ fn group_present_value(db: &ObjectDatabase, group: ObjectIdentifier) -> Vec<Vec<
         .iter()
         .map(|result| {
             let mut encoded = BytesMut::new();
-            result.encode(&mut encoded);
+            result.encode(&mut encoded).unwrap();
             encoded.to_vec()
         })
         .collect()
@@ -248,7 +248,8 @@ fn expanded_rows(db: &ObjectDatabase, specs: Vec<ReadAccessSpecification>) -> us
 
 #[test]
 fn member_rows_are_charged_to_the_rpm_work_budget_and_shared_between_groups() {
-    use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted_observed};
+    use crate::handlers::rpm_budget::handle_rpm_budgeted_observed;
+    use bacnet_device_core::read::ReadFailure;
     let input = oid(ObjectType::ANALOG_INPUT, 1);
     let value = oid(ObjectType::ANALOG_VALUE, 2);
     // Group 7 expands ALL on AV-2; Group 8 is two explicit rows.
@@ -270,7 +271,7 @@ fn member_rows_are_charged_to_the_rpm_work_budget_and_shared_between_groups() {
     let read_seven = member(seven, &[(P::PRESENT_VALUE, None)]);
     let read_eight = member(eight, &[(P::PRESENT_VALUE, None)]);
     let pair = 1 + seven_members + 1 + 2;
-    let budget = |max_result_elements| crate::server::ReadPropertyMultipleBudget {
+    let budget = |max_result_elements| bacnet_device_core::read::ReadPropertyMultipleBudget {
         max_result_elements,
         max_service_ack_bytes: 16384,
     };
@@ -300,9 +301,9 @@ fn member_rows_are_charged_to_the_rpm_work_budget_and_shared_between_groups() {
         let mut ack = BytesMut::new();
         handle_rpm_budgeted_observed(&db, &request, &mut ack, budget(work), |_, _, _, _| {})
             .unwrap();
-        let mut legacy = BytesMut::new();
-        handle_read_property_multiple(&db, &request, &mut legacy).unwrap();
-        assert_eq!(ack, legacy, "{specs:?}");
+        let mut unlimited = BytesMut::new();
+        handle_read_property_multiple(&db, &request, &mut unlimited).unwrap();
+        assert_eq!(ack, unlimited, "{specs:?}");
         // One row short fails as any request over its work budget does:
         // nothing read, nothing written, nothing observed.
         let mut prefix = BytesMut::from(&b"prefix"[..]);

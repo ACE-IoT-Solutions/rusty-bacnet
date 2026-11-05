@@ -1,13 +1,15 @@
 use super::*;
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_read_delay_preflight_is_atomic_and_adapter_rejects_even_zero() {
     let (mut sink, _records) = network().await;
     for seconds in [0, 3600] {
         let mut db = database(false);
         db.get_mut(&selected())
             .unwrap()
-            .configure_audit_reporter_internal(
+            .audit_reporter_mut()
+            .expect("an Audit Reporter")
+            .configure(
                 AuditLevel::AUDIT_ALL,
                 AuditOperationFlags::from_bits(1).unwrap(),
                 false,
@@ -33,7 +35,9 @@ async fn source_read_delay_preflight_is_atomic_and_adapter_rejects_even_zero() {
             PropertyValue::Boolean(false)
         );
         object
-            .configure_audit_reporter_internal(
+            .audit_reporter_mut()
+            .expect("an Audit Reporter")
+            .configure(
                 AuditLevel::AUDIT_ALL,
                 AuditOperationFlags::from_bits(1).unwrap(),
                 false,
@@ -48,7 +52,9 @@ async fn source_read_delay_preflight_is_atomic_and_adapter_rejects_even_zero() {
             let object = db.get_mut(&selected()).unwrap();
             assert!(
                 object
-                    .configure_audit_reporter_internal(
+                    .audit_reporter_mut()
+                    .expect("an Audit Reporter")
+                    .configure(
                         AuditLevel::NONE,
                         AuditOperationFlags::empty(),
                         true,

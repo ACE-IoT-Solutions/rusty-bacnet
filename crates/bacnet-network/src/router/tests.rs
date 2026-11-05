@@ -205,6 +205,17 @@ async fn forward_unicast_drops_hop_count_zero() {
 }
 
 #[tokio::test]
+async fn no_route_is_attributed_to_the_ingress_port() {
+    let mut h = Harness::two_port();
+    h.dispatch(h.ctx(0, &[0x0A], apdu_to(3000, &[0x01], 10)))
+        .await;
+
+    assert_eq!(h.port_counters()[0].no_route_drops, 1);
+    assert_eq!(h.port_counters()[1].no_route_drops, 0);
+    assert_eq!(h.counters().rejects, 1);
+}
+
+#[tokio::test]
 async fn forward_broadcast_drops_hop_count_zero() {
     let mut h = Harness::two_port();
     // Should cause broadcast to be dropped.

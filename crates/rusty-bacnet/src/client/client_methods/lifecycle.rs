@@ -31,6 +31,7 @@ impl BACnetClient {
         mstp_reply_timeout_ms=None,
         sc_device_uuid=None,
         share_port_by_address=false,
+        share_wildcard_port=false,
         min_request_interval_ms=0,
         ipv6_device_instance=None,
         bbmd=None,
@@ -70,6 +71,7 @@ impl BACnetClient {
         mstp_reply_timeout_ms: Option<u32>,
         sc_device_uuid: Option<Vec<u8>>,
         share_port_by_address: bool,
+        share_wildcard_port: bool,
         min_request_interval_ms: u64,
         ipv6_device_instance: Option<u32>,
         bbmd: Option<PyRef<'_, crate::bip_options::PyBbmd>>,
@@ -96,13 +98,14 @@ impl BACnetClient {
                 "reconnect applies only to transport='sc'",
             ));
         }
-        sc_hub_options(
+        crate::sc_reconnect::hub_options(
             transport,
             reconnect.is_some(),
             sc_failover_hub.as_deref(),
             sc_connect_timeout_ms,
         )?;
-        crate::bip_options::only_on_bip(share_port_by_address, transport)?;
+        crate::bip_options::only_on_bip("share_port_by_address", share_port_by_address, transport)?;
+        crate::bip_options::only_on_bip("share_wildcard_port", share_wildcard_port, transport)?;
         let crate::bip_options::IpModes {
             bip: bip_mode,
             bip6_foreign,
@@ -141,6 +144,7 @@ impl BACnetClient {
             port,
             broadcast_address: broadcast_address.to_string(),
             share_port_by_address,
+            share_wildcard_port,
             bip_mode,
             bip6_foreign,
             multicast,
@@ -189,6 +193,7 @@ impl BACnetClient {
         let port = slf.borrow().port;
         let broadcast_str = slf.borrow().broadcast_address.clone();
         let share_port_by_address = slf.borrow().share_port_by_address;
+        let share_wildcard_port = slf.borrow().share_wildcard_port;
         let bip_mode = slf.borrow().bip_mode.clone();
         let bip6_foreign = slf.borrow().bip6_foreign.clone();
         let multicast = slf.borrow().multicast;
@@ -227,6 +232,7 @@ impl BACnetClient {
                             .port(port)
                             .broadcast_address(broadcast)
                             .share_port_by_address(share_port_by_address)
+                            .share_wildcard_port(share_wildcard_port)
                             .mode(bip_mode)
                             .multicast(multicast)
                             .apdu_timeout_ms(timeout_ms)
@@ -367,34 +373,6 @@ impl BACnetClient {
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         crate::py_async::future_into_py(py, crate::unit_result(state::close(self.inner.clone())))
     }
-}
-
-/// The `sc_failover_hub` and `sc_connect_timeout_ms` keywords (#1829):
-/// SC only, and a failover hub only with `reconnect`, since without
-/// reconnection the client would never turn to it or come back. Each is
-/// refused with `ValueError` at construction, before any I/O.
-fn sc_hub_options(
-    transport: &str,
-    reconnect: bool,
-    failover_hub: Option<&str>,
-    connect_timeout_ms: Option<u64>,
-) -> PyResult<()> {
-    if transport != "sc" && (failover_hub.is_some() || connect_timeout_ms.is_some()) {
-        return Err(PyValueError::new_err(
-            "sc_failover_hub and sc_connect_timeout_ms apply only to transport='sc'",
-        ));
-    }
-    if failover_hub.is_some() && !reconnect {
-        return Err(PyValueError::new_err(
-            "sc_failover_hub requires reconnect=ScReconnect(...)",
-        ));
-    }
-    if connect_timeout_ms == Some(0) {
-        return Err(PyValueError::new_err(
-            "sc_connect_timeout_ms must be at least 1",
-        ));
-    }
-    Ok(())
 }
 
 /// The `ipv6_device_instance` keyword: the device instance whose VMAC an ipv6

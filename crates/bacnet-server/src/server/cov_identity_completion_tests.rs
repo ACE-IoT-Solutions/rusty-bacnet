@@ -65,11 +65,13 @@ fn proposal(
         issue_confirmed_notifications: confirmed,
         // A Multiple context always has a finite lifetime.
         expires_at: (kind == CovNotificationKind::Multiple)
-            .then(|| Instant::now() + Duration::from_secs(3600)),
+            .then(|| crate::runtime_clock::core_now() + bacnet_time::Duration::from_secs(3600)),
         last_notified_observation: Some(
-            crate::cov::CovObservation::new(
-                crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(1.0))
-                    .unwrap(),
+            bacnet_device_core::cov::CovObservation::new(
+                bacnet_device_core::cov::CovSample::new(
+                    &bacnet_types::primitives::PropertyValue::Real(1.0),
+                )
+                .unwrap(),
                 None,
             )
             .unwrap(),
@@ -260,6 +262,12 @@ async fn stale_completion(
     } else {
         None
     };
+    // Start the single poll below on a fresh Tokio coop budget. The callers
+    // loop over many cases inside one task poll, and once the budget runs out
+    // even an uncontended lock pends, so whether the send happened in that
+    // poll would depend on how many awaits earlier cases took (#2217 removed
+    // one and moved the point where it ran out).
+    tokio::task::yield_now().await;
     let mut work = Box::pin(fixture.fire(initial, &snapshots));
     assert!(futures_util::poll!(work.as_mut()).is_pending());
     if !confirmed {
@@ -273,10 +281,10 @@ async fn stale_completion(
         if !matches!(change, Change::Remove) {
             let mut renewed = original;
             renewed.last_notified_observation = Some(
-                crate::cov::CovObservation::new(
-                    crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(
-                        99.0,
-                    ))
+                bacnet_device_core::cov::CovObservation::new(
+                    bacnet_device_core::cov::CovSample::new(
+                        &bacnet_types::primitives::PropertyValue::Real(99.0),
+                    )
                     .unwrap(),
                     None,
                 )
@@ -310,10 +318,10 @@ async fn stale_completion(
                     .unwrap()
                     .last_notified_observation,
                 Some(
-                    crate::cov::CovObservation::new(
-                        crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(
-                            99.0
-                        ))
+                    bacnet_device_core::cov::CovObservation::new(
+                        bacnet_device_core::cov::CovSample::new(
+                            &bacnet_types::primitives::PropertyValue::Real(99.0)
+                        )
                         .unwrap(),
                         None
                     )
@@ -329,10 +337,10 @@ async fn stale_completion(
                     .unwrap()
                     .last_notified_observation,
                 Some(
-                    crate::cov::CovObservation::new(
-                        crate::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(
-                            0.0
-                        ))
+                    bacnet_device_core::cov::CovObservation::new(
+                        bacnet_device_core::cov::CovSample::new(
+                            &bacnet_types::primitives::PropertyValue::Real(0.0)
+                        )
                         .unwrap(),
                         Some(&PropertyValue::BitString {
                             unused_bits: 4,

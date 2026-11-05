@@ -1,6 +1,7 @@
 //! Real dispatcher evidence for the read-only Priority_Array contract (§19.2.1).
 use super::*;
 use bacnet_objects::analog::AnalogOutputObject;
+use bacnet_objects::property_metadata::{is_array_property, is_writable_property};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::error::RemoteError;
@@ -90,8 +91,8 @@ fn priority_array_all_twenty_profiles_trait_metadata_and_pics_are_read_only() {
     let mut database = ObjectDatabase::new();
     for mut object in cases {
         let oid = object.object_identifier();
-        assert!(object.is_array_property(PA));
-        assert!(!object.is_writable_property(PA), "{oid:?}");
+        assert!(is_array_property(&*object, PA));
+        assert!(!is_writable_property(&*object, PA), "{oid:?}");
         let rows = object.property_metadata().into_owned();
         let row = rows
             .iter()
@@ -158,7 +159,8 @@ fn priority_array_all_twenty_profiles_trait_metadata_and_pics_are_read_only() {
         &database,
         &ServerConfig::default(),
         &crate::pics::PicsConfig::default(),
-    );
+    )
+    .instance_types_only(&database);
     assert_eq!(pics.supported_object_types.len(), 20);
     for support in pics.supported_object_types {
         let row = support
@@ -171,7 +173,7 @@ fn priority_array_all_twenty_profiles_trait_metadata_and_pics_are_read_only() {
     }
     let mut door =
         bacnet_objects::access_control::AccessDoorObject::new(842, "door control").unwrap();
-    assert!(!door.is_writable_property(PA));
+    assert!(!is_writable_property(&door, PA));
     denied(door.write_property(PA, Some(8), PropertyValue::Null, None));
 }
 
@@ -444,8 +446,10 @@ async fn priority_array_custom_object_write_policy_is_not_globally_restricted() 
         fn object_name(&self) -> &str {
             "custom-array"
         }
-        fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-            std::borrow::Cow::Owned(vec![PA])
+        fn property_metadata(
+            &self,
+        ) -> std::borrow::Cow<'_, [bacnet_objects::property_metadata::PropertyMetadata]> {
+            crate::test_rows::rows(&[PA], &[PA])
         }
         fn read_property(
             &self,

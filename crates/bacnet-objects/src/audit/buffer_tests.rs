@@ -1,5 +1,6 @@
 //! Buffer_Size writes and the application's purge of an Audit Log (#1238).
 
+use crate::traits::Timed;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -14,8 +15,10 @@ use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use crate::durable::{DurableWrites, PendingWrite, StageStep};
 use crate::traits::BACnetObject;
 
+#[cfg(feature = "std")]
+use super::staging_tests::WAIT;
 use super::staging_tests::{
-    SlowPersistence, WAIT, block_on, log, notification, receipt, staged, staged_write,
+    SlowPersistence, block_on, log, notification, receipt, staged, staged_write,
 };
 use super::{
     AuditBatchStage, AuditLogNotificationSink, AuditLogObject, AuditLogSnapshot, AuditLogStorage,
@@ -135,7 +138,10 @@ fn assert_unchanged(log: &AuditLogObject, storage: &SlowPersistence, before: &Au
 
 fn reopen(storage: &Arc<SlowPersistence>, configured: u32) -> AuditLogObject {
     let mut log = AuditLogObject::new(1, "audit", configured, Arc::clone(storage) as _).unwrap();
-    log.bind_clock_internal(Some(Arc::new(super::staging_tests::FixedClock)));
+    log.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(super::staging_tests::FixedClock)),
+        ..crate::traits::Clocks::default()
+    });
     log
 }
 
@@ -388,6 +394,8 @@ fn a_failing_store_refuses_a_resize_or_purge_and_leaves_the_log_unchanged() {
     assert_eq!(held(&log), [5]);
 }
 
+// std: holds a commit open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_staged_resize_or_purge_commits_while_the_log_serves_its_committed_state() {
     let (mut log, storage) = log();
@@ -432,6 +440,8 @@ fn a_staged_resize_or_purge_commits_while_the_log_serves_its_committed_state() {
     assert_eq!(storage.commits.load(Ordering::SeqCst), commits + 2);
 }
 
+// std: holds a commit open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_purge_staged_behind_a_batch_lands_after_it() {
     let (mut log, storage) = log();
@@ -465,6 +475,8 @@ fn a_purge_staged_behind_a_batch_lands_after_it() {
     assert_eq!(storage.committed().total_record_count, 2);
 }
 
+// std: holds a commit open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_batch_that_arrives_during_a_purge_lands_after_it() {
     let (mut log, storage) = log();
@@ -536,11 +548,12 @@ fn staging_skips_a_resize_the_write_would_refuse_or_not_need() {
     assert_eq!(storage.commits.load(Ordering::SeqCst), commits);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn an_object_without_a_log_refuses_a_purge() {
     let mut forwarder =
         crate::notification_forwarder::NotificationForwarderObject::new(1, "NF").unwrap();
-    let writes = forwarder.durable_writes_internal().unwrap();
+    let writes = forwarder.durable_writes().unwrap();
     assert!(matches!(writes.stage_purge(), StageStep::Skip));
     let error = writes.commit_purge().unwrap_err();
     assert!(
@@ -578,6 +591,8 @@ fn off_then_resize(size: u64) -> [PendingWrite; 3] {
     ]
 }
 
+// std: holds a commit open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_request_folds_its_log_enable_and_buffer_size_writes_into_one_commit() {
     let (mut log, storage) = log();

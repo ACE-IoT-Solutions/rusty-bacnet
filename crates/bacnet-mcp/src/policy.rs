@@ -6,7 +6,14 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use bacnet_ops::limits::RequestLimits;
+use bacnet_ops::limits::{Overlay, RequestLimits};
+
+mod writes;
+
+pub use writes::{
+    ArmMode, MAX_PLAN_SECS, MAX_PLAN_WRITES, MAX_WRITES, PlanGrant, Workspace, WriteMode,
+    WritePolicy,
+};
 
 /// The server's launch policy. [`Policy::default`] is the read-only
 /// default every deployment starts from: every network and device, no
@@ -35,6 +42,8 @@ pub struct Policy {
     pub rates: Rates,
     /// The per-call caps.
     pub caps: Caps,
+    /// What the server may change: no write tool by default.
+    pub writes: WritePolicy,
 }
 
 /// Requests a second, at each layer (design §7.6).
@@ -114,6 +123,7 @@ impl Policy {
     /// Check the policy before anything starts: a bad configuration
     /// refuses to start rather than run with a guess.
     pub fn validate(&self) -> Result<(), String> {
+        self.writes.validate()?;
         if let Some(networks) = &self.networks
             && networks.contains(&u16::MAX)
         {
@@ -188,10 +198,21 @@ impl Policy {
     /// The request limits the engine runs under: the global rate, and a
     /// rate per network.
     pub fn request_limits(&self) -> RequestLimits {
+        let overlay = self.overlay();
+        RequestLimits::new(overlay.global).with_network_rates(overlay.network, overlay.rates)
+    }
+
+    /// The same rates as an overlay on another front end's limits: the
+    /// TUI's while an agent is attached to it (#2185).
+    pub fn overlay(&self) -> Overlay {
         let rates = self.rates;
         let slow = self.slow_networks.iter().map(|&n| (n, rates.slow));
         let fast = self.fast_networks.iter().map(|&n| (n, rates.fast));
-        RequestLimits::new(rates.global).with_network_rates(rates.network, slow.chain(fast))
+        Overlay {
+            global: rates.global,
+            network: rates.network,
+            rates: slow.chain(fast).collect(),
+        }
     }
 
     /// The fastest a request to `network` may go, for the limits block.

@@ -15,7 +15,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::{Agent, Lab, Recording};
 use crate::Policy;
-use crate::listen::Follow;
+use crate::follow::Follow;
 use crate::policy::Caps;
 use crate::resources::uri::{self, Uri};
 
@@ -31,7 +31,7 @@ async fn settle() {
 
 impl Agent {
     /// The 2025-06-18 handshake, as Codex opens; the answer's result.
-    async fn initialize_legacy(&mut self) -> Value {
+    pub(super) async fn initialize_legacy(&mut self) -> Value {
         let reply = self
             .request(
                 "initialize",
@@ -45,7 +45,7 @@ impl Agent {
     }
 
     /// A legacy `resources/subscribe`: the result, or the error.
-    async fn subscribe(&mut self, uri: &str) -> Result<Value, Value> {
+    pub(super) async fn subscribe(&mut self, uri: &str) -> Result<Value, Value> {
         let reply = self
             .request("resources/subscribe", json!({ "uri": uri }))
             .await;
@@ -191,8 +191,10 @@ async fn a_point_watched_again_is_followed_on_its_new_watch() {
     };
     let mut follow = Follow::new();
     let first = hub.watch(point).unwrap();
+    let signals = crate::writes::notify::Signals::default();
     follow.set(
         Some(&*engine),
+        &signals,
         vec![(AI1.to_string(), Some(first.changes()))],
     );
     assert!(first.changes().same(follow.signal(AI1).unwrap()));
@@ -201,6 +203,7 @@ async fn a_point_watched_again_is_followed_on_its_new_watch() {
     assert!(!second.changes().same(&follow.signal(AI1).unwrap().clone()));
     follow.set(
         None::<&Engine<Recording>>,
+        &signals,
         vec![(AI1.to_string(), Some(second.changes()))],
     );
     assert!(second.changes().same(follow.signal(AI1).unwrap()));
@@ -439,4 +442,68 @@ async fn device_list_pages_count_against_the_uri_bound() {
     assert_eq!(lab.agent.subscribe(&pages[0]).await, Ok(json!({})));
     assert_eq!(watches(&mut lab).await, (json!(0), json!(4)));
     lab.stop().await;
+}
+
+/// Per-device alarm URIs on listen streams share the session's URI bound
+/// (twice the point cap) with legacy subscriptions (#2150): a stream asking
+/// for more gets exactly the room left, the alarm poll reads only those
+/// devices, and the room comes back when the stream goes.
+#[tokio::test(start_paused = true)]
+async fn listen_alarm_uris_share_the_session_uri_bound() {
+    let policy = Policy {
+        caps: Caps {
+            watches: 2,
+            ..Caps::default()
+        },
+        ..Policy::default()
+    };
+    let mut lab = Lab::start_site(policy, Duration::ZERO).await;
+    lab.agent.initialize_legacy().await;
+    lab.known().await;
+    assert_eq!(lab.agent.subscribe("bacnet://session").await, Ok(json!({})));
+    let asked: Vec<String> = (1201..1206)
+        .map(|device| format!("bacnet://device/{device}/alarms"))
+        .collect();
+    let asked: Vec<&str> = asked.iter().map(String::as_str).collect();
+    let (stream, accepted) = lab.agent.listen(&asked).await;
+    assert_eq!(accepted, asked[..3], "the bound of 4 less the legacy URI");
+    assert_eq!(lab.mcp.alarm_state(), (4, vec![]));
+    let error = lab.agent.subscribe("bacnet://ledger").await.unwrap_err();
+    assert_eq!(error["data"]["reason"], json!("principal-cap"), "{error}");
+    // The alarm poll reads the accepted devices and no other.
+    tokio::time::sleep(Duration::from_secs(61)).await;
+    assert_eq!(lab.mcp.alarm_state(), (4, vec![1201, 1202, 1203]));
+
+    lab.agent.cancel(stream).await;
+    settle().await;
+    assert_eq!(lab.mcp.alarm_state().0, 1);
+    assert_eq!(lab.agent.subscribe("bacnet://ledger").await, Ok(json!({})));
+    lab.stop().await;
+}
+
+/// A legacy subscribe whose handler panics ends the session with the
+/// panic as its reason, as a tool call's does (#2203), on stdio too.
+#[tokio::test(start_paused = true)]
+async fn a_panicking_subscribe_ends_the_session() {
+    use bacnet_transport::bip::BipTransport;
+    let policy = Policy {
+        passive: true,
+        ..Policy::default()
+    };
+    let server = crate::McpServer::<BipTransport>::new(None, policy, "tester").unwrap();
+    let (pipe, end) = tokio::io::duplex(1 << 20);
+    let (read, write) = tokio::io::split(end);
+    let serving = tokio::spawn(server.serve(read, write));
+    let mut agent = Agent::over(pipe);
+    agent.initialize_legacy().await;
+    let error = agent.subscribe(super::PANIC_URI).await.unwrap_err();
+    assert_eq!(error["code"], json!(-32603), "an internal error: {error}");
+    let served = tokio::time::timeout(Duration::from_secs(60), serving).await;
+    let why = served
+        .expect("the session ends")
+        .unwrap()
+        .unwrap_err()
+        .to_string();
+    assert!(why.contains("a request panicked"), "{why}");
+    assert!(why.contains("injected bug"), "{why}");
 }

@@ -23,6 +23,7 @@ use tracing::{debug, warn};
 
 use super::actions::drain;
 use super::control_policy::ControlGate;
+use super::counters::PortCounterEntry;
 use super::engine::Engine;
 use super::hosted_host::{EngineWarnings, HostedHost};
 use super::local_control::LocalControl;
@@ -43,12 +44,31 @@ pub(super) struct Shared {
     /// The smallest NPDU limits among the ports, as they change: what the
     /// router's application ports report (#2070).
     pub(super) application_limits: watch::Sender<NpduLimits>,
+    /// Stable per-port counters, shared by dispatch, queue and sender tasks.
+    pub(super) port_counters: Arc<[PortCounterEntry]>,
 }
 
 impl Shared {
     /// The state the dispatch tasks share, for `engine` on ports with
     /// `networks`, gated by `gate`.
+    #[cfg(test)]
     pub(super) fn new(engine: Engine, gate: Arc<ControlGate>, networks: Vec<u16>) -> Self {
+        let counters = networks
+            .iter()
+            .enumerate()
+            .map(|(index, network)| PortCounterEntry::test(*network, index))
+            .collect();
+        Self::with_counters(engine, gate, networks, counters)
+    }
+
+    /// Build the shared state with the startup-captured configured-port
+    /// metadata and its cumulative counters.
+    pub(super) fn with_counters(
+        engine: Engine,
+        gate: Arc<ControlGate>,
+        networks: Vec<u16>,
+        counters: Vec<PortCounterEntry>,
+    ) -> Self {
         let limits = super::limits::smallest(engine.lock().ports());
         Self {
             engine,
@@ -56,7 +76,12 @@ impl Shared {
             networks,
             warnings: EngineWarnings::default(),
             application_limits: watch::Sender::new(limits),
+            port_counters: counters.into(),
         }
+    }
+
+    pub(super) fn port_counter(&self, port: PortId) -> Option<&PortCounterEntry> {
+        self.port_counters.get(usize::from(port.0))
     }
 
     /// Queue the startup announcements and send them on `send_txs`.
@@ -79,10 +104,11 @@ impl Shared {
 
     /// Run the engine's sweep if it is due, and return when the next is.
     pub(super) fn sweep(&self) -> Option<bacnet_router_core::Instant> {
-        let mut host = HostedHost::new(
+        let mut host = HostedHost::with_counters(
             &self.gate,
             &self.warnings,
             TransportProvenance::unverified(),
+            Arc::clone(&self.port_counters),
         );
         let mut router = self.engine.lock();
         router.on_deadline(self.engine.now(), &mut host);
@@ -150,7 +176,12 @@ impl PortDispatch {
             link_group: received.link_layer_group,
             npdu: &received.npdu,
         };
-        let mut host = HostedHost::new(&shared.gate, &shared.warnings, received.provenance.clone());
+        let mut host = HostedHost::with_counters(
+            &shared.gate,
+            &shared.warnings,
+            received.provenance.clone(),
+            Arc::clone(&shared.port_counters),
+        );
         let outcome = {
             let mut router = shared.engine.lock();
             let failures = router.counters().write_failures;
@@ -201,6 +232,11 @@ impl PortDispatch {
             }
             Outcome::ToRouter(None) => {}
             Outcome::Discarded(reason) => {
+                if matches!(reason, Discard::Unroutable)
+                    && let Some(counter) = shared.port_counter(port)
+                {
+                    counter.state.no_route();
+                }
                 log_discard(reason, self.port, received.source_mac.len());
             }
             Outcome::Handled => {}

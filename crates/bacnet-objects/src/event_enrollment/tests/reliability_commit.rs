@@ -1,11 +1,15 @@
 use super::super::*;
-use crate::event::{
-    EventStateChange, EventTransition, EventTransitionCommit, EventTransitionCommitError,
-};
+#[cfg(feature = "event-reporting")]
+use crate::event::EventTransitionCommitError;
+#[cfg(feature = "event-reporting")]
+use crate::event::{EventStateChange, EventTransition, EventTransitionCommit};
+#[cfg(feature = "event-reporting")]
 use bacnet_encoding::primitives::decode_timestamp_choice;
 use bacnet_types::enums::Reliability;
+#[cfg(feature = "event-reporting")]
 use bacnet_types::primitives::BACnetTimeStamp;
 
+#[cfg(feature = "event-reporting")]
 fn timestamp_at(object: &EventEnrollmentObject, index: u32) -> BACnetTimeStamp {
     let PropertyValue::ApplicationData(bytes) = object
         .read_property(PropertyIdentifier::EVENT_TIME_STAMPS, Some(index))
@@ -18,6 +22,7 @@ fn timestamp_at(object: &EventEnrollmentObject, index: u32) -> BACnetTimeStamp {
     timestamp
 }
 
+#[cfg(feature = "event-reporting")]
 fn snapshot(object: &EventEnrollmentObject) -> [PropertyValue; 5] {
     [
         object
@@ -38,6 +43,7 @@ fn snapshot(object: &EventEnrollmentObject) -> [PropertyValue; 5] {
     ]
 }
 
+#[cfg(feature = "event-reporting")]
 fn transition(from: EventState, to: EventState, timestamp: u16) -> EventTransitionCommit {
     EventTransitionCommit {
         change: EventStateChange { from, to },
@@ -48,13 +54,16 @@ fn transition(from: EventState, to: EventState, timestamp: u16) -> EventTransiti
     }
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn stock_reliability_commit_is_atomic_across_fault_reentry_and_recovery() {
     let mut object =
         EventEnrollmentObject::new(31, "EE-reliability", EventType::CHANGE_OF_BITSTRING).unwrap();
 
     object
-        .commit_event_enrollment_reliability_internal(EventEnrollmentReliabilityCommit {
+        .enrollment_eval_mut()
+        .unwrap()
+        .commit_reliability(EventEnrollmentReliabilityCommit {
             reliability: Reliability::UNDER_RANGE,
             transition: Some(transition(EventState::NORMAL, EventState::FAULT, 11)),
         })
@@ -89,7 +98,9 @@ fn stock_reliability_commit_is_atomic_across_fault_reentry_and_recovery() {
     );
 
     object
-        .commit_event_enrollment_reliability_internal(EventEnrollmentReliabilityCommit {
+        .enrollment_eval_mut()
+        .unwrap()
+        .commit_reliability(EventEnrollmentReliabilityCommit {
             reliability: Reliability::OVER_RANGE,
             transition: Some(transition(EventState::FAULT, EventState::FAULT, 12)),
         })
@@ -100,7 +111,9 @@ fn stock_reliability_commit_is_atomic_across_fault_reentry_and_recovery() {
     );
 
     object
-        .commit_event_enrollment_reliability_internal(EventEnrollmentReliabilityCommit {
+        .enrollment_eval_mut()
+        .unwrap()
+        .commit_reliability(EventEnrollmentReliabilityCommit {
             reliability: Reliability::NO_FAULT_DETECTED,
             transition: Some(transition(EventState::FAULT, EventState::NORMAL, 13)),
         })
@@ -129,6 +142,7 @@ fn stock_reliability_commit_is_atomic_across_fault_reentry_and_recovery() {
     );
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn rejected_stock_reliability_commit_changes_nothing() {
     let mut object =
@@ -139,10 +153,12 @@ fn rejected_stock_reliability_commit_changes_nothing() {
     let mut invalid = transition(EventState::NORMAL, EventState::FAULT, 99);
     invalid.coordinate = EventTransition::ToNormal;
     assert_eq!(
-        object.commit_event_enrollment_reliability_internal(EventEnrollmentReliabilityCommit {
-            reliability: Reliability::CONFIGURATION_ERROR,
-            transition: Some(invalid),
-        }),
+        object.enrollment_eval_mut().unwrap().commit_reliability(
+            EventEnrollmentReliabilityCommit {
+                reliability: Reliability::CONFIGURATION_ERROR,
+                transition: Some(invalid),
+            }
+        ),
         Err(EventTransitionCommitError::CoordinateTargetMismatch {
             coordinate: EventTransition::ToNormal,
             target: EventState::FAULT,
@@ -171,5 +187,50 @@ fn network_reliability_write_remains_denied() {
             .read_property(PropertyIdentifier::RELIABILITY, None)
             .unwrap(),
         PropertyValue::Enumerated(Reliability::NO_FAULT_DETECTED.to_raw())
+    );
+}
+
+#[cfg(feature = "event-reporting")]
+#[test]
+fn detection_off_refuses_a_reliability_transition_and_keeps_reliability_alone() {
+    // The hidden reliability route meets the same Event_Detection_Enable
+    // gate as the transition commit (#2271): a transition is refused, and
+    // the Reliability staged beside it is not taken either.
+    let mut object =
+        EventEnrollmentObject::new(32, "EE-reliability-off", EventType::CHANGE_OF_BITSTRING)
+            .unwrap();
+    object
+        .write_property(
+            PropertyIdentifier::EVENT_DETECTION_ENABLE,
+            None,
+            PropertyValue::Boolean(false),
+            None,
+        )
+        .unwrap();
+    let before = snapshot(&object);
+
+    let refused = object.enrollment_eval_mut().unwrap().commit_reliability(
+        EventEnrollmentReliabilityCommit {
+            reliability: Reliability::UNDER_RANGE,
+            transition: Some(transition(EventState::NORMAL, EventState::FAULT, 21)),
+        },
+    );
+    assert_eq!(refused, Err(EventTransitionCommitError::DetectionDisabled));
+    assert_eq!(snapshot(&object), before);
+
+    // Reliability alone is not an event property, so it still commits.
+    object
+        .enrollment_eval_mut()
+        .unwrap()
+        .commit_reliability(EventEnrollmentReliabilityCommit {
+            reliability: Reliability::UNDER_RANGE,
+            transition: None,
+        })
+        .unwrap();
+    assert_eq!(
+        object
+            .read_property(PropertyIdentifier::RELIABILITY, None)
+            .unwrap(),
+        PropertyValue::Enumerated(Reliability::UNDER_RANGE.to_raw())
     );
 }

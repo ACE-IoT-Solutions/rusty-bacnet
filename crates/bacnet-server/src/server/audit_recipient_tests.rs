@@ -1,6 +1,7 @@
 //! Observable target recipient changes through the same wire and local owners.
 use super::*;
 use bacnet_objects::audit::AuditReporterObject;
+use bacnet_objects::property_metadata::is_writable_property;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::{WriteAccessSpecification, WritePropertyMultipleRequest};
 
@@ -192,7 +193,7 @@ async fn recipient_second_reservation_failure_and_noops_are_atomic() {
         .await
         .get(&oid(ObjectType::AUDIT_REPORTER, 1))
         .unwrap()
-        .audit_reporter_internal()
+        .audit_reporter()
         .unwrap()
         .status_internal();
     let before = status.begin_delivery();
@@ -332,7 +333,7 @@ async fn recipient_invalid_and_unauthorized_requests_preserve_value_epoch_and_se
         .await
         .get(&oid(ObjectType::AUDIT_REPORTER, 1))
         .unwrap()
-        .audit_reporter_internal()
+        .audit_reporter()
         .unwrap()
         .status_internal();
     let before = status.begin_delivery();
@@ -461,9 +462,16 @@ async fn recipient_active_metadata_rpm_and_property_list_follow_runtime_presence
         }
         let db = fixture.server.db.read().await;
         let object = db.get(&target).unwrap();
-        assert_eq!(object.property_list().contains(&property), active);
-        assert_eq!(object.required_properties().contains(&property), active);
-        assert_eq!(object.is_writable_property(property), active);
+        assert_eq!(
+            bacnet_objects::property_metadata::has_property(&object.property_metadata(), property),
+            active
+        );
+        assert_eq!(
+            bacnet_objects::property_metadata::required_properties(&object.property_metadata())
+                .any(|required| required == property),
+            active
+        );
+        assert_eq!(is_writable_property(object, property), active);
         if active {
             let metadata = object.property_metadata();
             let row = metadata

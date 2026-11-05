@@ -3,6 +3,7 @@
 //! Split out to keep every file under the 700-LOC cap.
 
 use super::super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::enums::{ErrorClass, ErrorCode, NotifyType};
 use bacnet_types::error::RemoteError;
 
@@ -77,9 +78,9 @@ fn alert_enrollment_present_value_is_the_explicit_initial_source_and_is_read_onl
 #[test]
 fn record_alert_source_changes_only_present_value() {
     let mut ae = AlertEnrollmentObject::new(1, "AE", alert_source(1)).unwrap();
-    ae.set_event_state_internal(EventState::OFFNORMAL).unwrap();
-    ae.set_acked_transitions_internal(EventTransitionBits::TO_OFFNORMAL, false)
-        .unwrap();
+    ae.event_state = EventState::OFFNORMAL;
+    ae.acked_transitions
+        .remove(EventTransitionBits::TO_OFFNORMAL);
     let observed_properties = [
         PropertyIdentifier::EVENT_STATE,
         PropertyIdentifier::EVENT_DETECTION_ENABLE,
@@ -224,19 +225,27 @@ fn alert_enrollment_removed_common_properties_are_unknown_and_nonmutating() {
 }
 
 #[test]
-fn alert_enrollment_disabled_state_rejects_internal_transition_updates() {
+fn alert_enrollment_disabled_state_reads_its_initial_condition() {
     let mut ae = AlertEnrollmentObject::new(1, "AE", alert_source(1)).unwrap();
     ae.set_event_detection_enable(false);
+    // A direct assignment skips the reset; reads still serve the initial
+    // condition while detection is off.
+    ae.event_state = EventState::OFFNORMAL;
+    ae.acked_transitions
+        .remove(EventTransitionBits::TO_OFFNORMAL);
 
-    assert!(ae.set_event_state_internal(EventState::OFFNORMAL).is_err());
-    assert!(
-        ae.set_acked_transitions_internal(EventTransitionBits::TO_OFFNORMAL, false)
-            .is_err()
-    );
     assert_eq!(
         ae.read_property(PropertyIdentifier::EVENT_STATE, None)
             .unwrap(),
         PropertyValue::Enumerated(EventState::NORMAL.to_raw())
+    );
+    assert_eq!(
+        ae.read_property(PropertyIdentifier::ACKED_TRANSITIONS, None)
+            .unwrap(),
+        PropertyValue::BitString {
+            unused_bits: 5,
+            data: vec![EventTransitionBits::all().to_bacnet()],
+        }
     );
 }
 
@@ -310,12 +319,9 @@ fn alert_enrollment_write_notification_class() {
 fn alert_enrollment_property_list() {
     let ae = AlertEnrollmentObject::new(1, "AE", alert_source(1)).unwrap();
     assert_eq!(
-        ae.property_list().as_ref(),
+        crate::test_rows::listed(&ae.property_metadata()),
         [
-            PropertyIdentifier::OBJECT_IDENTIFIER,
-            PropertyIdentifier::OBJECT_NAME,
             PropertyIdentifier::DESCRIPTION,
-            PropertyIdentifier::OBJECT_TYPE,
             PropertyIdentifier::PRESENT_VALUE,
             PropertyIdentifier::EVENT_STATE,
             PropertyIdentifier::EVENT_DETECTION_ENABLE,
@@ -420,7 +426,7 @@ fn alert_enrollment_writability_matches_write_routes() {
         PropertyIdentifier::NOTIFICATION_CLASS,
         PropertyIdentifier::NOTIFY_TYPE,
     ] {
-        assert!(ae.is_writable_property(property));
+        assert!(is_writable_property(&ae, property));
     }
     for property in [
         PropertyIdentifier::OBJECT_NAME,
@@ -431,6 +437,6 @@ fn alert_enrollment_writability_matches_write_routes() {
         PropertyIdentifier::OUT_OF_SERVICE,
         PropertyIdentifier::RELIABILITY,
     ] {
-        assert!(!ae.is_writable_property(property));
+        assert!(!is_writable_property(&ae, property));
     }
 }

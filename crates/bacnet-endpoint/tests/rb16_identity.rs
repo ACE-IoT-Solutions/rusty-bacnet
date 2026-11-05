@@ -207,7 +207,7 @@ fn identity_iam_bytes_match_server_discovery_construction() {
 
     // Server side builds the same four fields from the derived config.
     let server_config = bacnet_endpoint::identity::server_config(&id);
-    let server_req = bacnet_server::server::discovery_iam_for_test(&server_config);
+    let server_req = bacnet_device_core::discovery::i_am(&server_config.device);
     assert_eq!(
         server_req,
         bacnet_services::who_is::IAmRequest {
@@ -219,7 +219,7 @@ fn identity_iam_bytes_match_server_discovery_construction() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn session_identity_overrides_480_and_iam_broadcasts() {
     // SessionConfig 480 default is kept for standalone sessions; composed
     // identity overrides to 1476. I-Am broadcast derives from identity.
@@ -273,7 +273,7 @@ async fn session_identity_overrides_480_and_iam_broadcasts() {
     b_net.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn capability_matrix_services_and_segmentation_refuse() {
     // Services == reality: ReadProperty succeeds; WriteProperty (unexecuted)
     // draws Reject UNRECOGNIZED_SERVICE from the narrow responder.
@@ -530,7 +530,10 @@ fn configured_port_both_database_builders_keep_capacity_separate_from_device() {
             PropertyIdentifier::IP_DNS_SERVER,
         ] {
             assert!(sc.read_property(p, None).is_err());
-            assert!(!sc.property_list().contains(&p));
+            assert!(!bacnet_objects::property_metadata::has_property(
+                &sc.property_metadata(),
+                p
+            ));
         }
     }
 }
@@ -645,12 +648,12 @@ fn identity_maps_its_segment_timeout_to_both_database_builders_and_full_server()
     }
     let identity = DeviceIdentity::new(42, 7).unwrap();
     let db = identity.build_database().unwrap();
-    assert!(
-        !db.get(&object_id(ObjectType::DEVICE, 42))
+    assert!(!bacnet_objects::property_metadata::has_property(
+        &db.get(&object_id(ObjectType::DEVICE, 42))
             .unwrap()
-            .property_list()
-            .contains(&PropertyIdentifier::APDU_SEGMENT_TIMEOUT)
-    );
+            .property_metadata(),
+        PropertyIdentifier::APDU_SEGMENT_TIMEOUT
+    ));
     let mut client = bacnet_client::client::ClientConfig {
         apdu_timeout_ms: 1234,
         ..Default::default()
@@ -662,7 +665,7 @@ fn identity_maps_its_segment_timeout_to_both_database_builders_and_full_server()
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn endpoint_roles_reject_non_none_identity_before_consuming_transport() {
     for role in [
         SessionRole::ClientOnly,
@@ -695,7 +698,7 @@ async fn endpoint_roles_reject_non_none_identity_before_consuming_transport() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn endpoint_roles_reject_segmented_database_without_identity_and_allow_correction() {
     for role in [
         SessionRole::ClientOnly,

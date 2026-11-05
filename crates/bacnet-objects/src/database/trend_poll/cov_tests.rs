@@ -11,7 +11,12 @@ use bacnet_types::bitstring::LogStatus;
 use bacnet_types::primitives::StatusFlags;
 
 fn records(db: &ObjectDatabase, oid: ObjectIdentifier) -> Vec<BACnetLogRecord> {
-    let records = db.get(&oid).unwrap().log_buffer_internal().unwrap();
+    let records = db
+        .get(&oid)
+        .unwrap()
+        .log_buffer()
+        .and_then(|log| log.buffer_records())
+        .unwrap();
     (0..records.record_count())
         .map(|index| {
             let mut bytes = BytesMut::new();
@@ -33,7 +38,11 @@ fn logged(db: &ObjectDatabase, oid: ObjectIdentifier) -> Vec<(LogDatum, Option<S
 fn set_value(db: &mut ObjectDatabase, value: f32) {
     db.get_mut(&target())
         .unwrap()
-        .set_present_value_internal(PropertyValue::Real(value))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(
+            PropertyValue::Real(value),
+        ))
         .unwrap();
 }
 
@@ -297,7 +306,9 @@ fn cov_log_of(db: &mut ObjectDatabase, object: ObjectIdentifier) -> ObjectIdenti
 fn set_present_value(db: &mut ObjectDatabase, object: ObjectIdentifier, value: PropertyValue) {
     db.get_mut(&object)
         .unwrap()
-        .set_present_value_internal(value)
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(value))
         .unwrap();
 }
 
@@ -339,7 +350,7 @@ fn a_target_without_a_cov_increment_logs_every_change_under_a_null_increment() {
     )
     .unwrap();
     let msv_oid = msv.object_identifier();
-    assert_eq!(msv.cov_increment(), None);
+    assert_eq!(msv.cov().and_then(|cov| cov.cov_increment()), None);
     db.add(Box::new(msv)).unwrap();
     // The log's own Client_COV_Increment is NULL by default.
     let oid = cov_log_of(&mut db, msv_oid);

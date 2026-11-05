@@ -4,6 +4,8 @@
 //! 80x24 is the smallest supported terminal and 120x40 the full layout.
 //! Below the minimum only a notice is drawn.
 
+#[cfg(feature = "mcp")]
+mod agents;
 mod bars;
 mod browser;
 mod capture;
@@ -88,6 +90,8 @@ pub(crate) fn draw(frame: &mut Frame, app: &App) {
         _ if app.screen == Screen::Sc => sc::draw(frame, body, app, &theme),
         _ if app.screen == Screen::Mstp => mstp::draw(frame, body, app, &theme),
         _ if app.screen == Screen::Capture => capture::draw(frame, body, app, &theme),
+        #[cfg(feature = "mcp")]
+        _ if app.screen == Screen::Agents => agents::draw(frame, body, app, &theme),
         Some(open) if app.screen == Screen::Browse => {
             browser::draw(frame, body, open, Names::of(app), &theme)
         }
@@ -202,15 +206,22 @@ impl Theme {
     }
 }
 
-/// `text` with each control character (a newline, a tab, an escape) as a
-/// space, as the log pane shows them, and each invisible format character
+/// `text` with each control character (a newline, a tab, an escape) and
+/// line or paragraph separator as a space, as the log pane shows them, and
+/// each invisible format character
 /// (a bidirectional override or isolate, a zero-width one) dropped: a
 /// device-supplied string must not move the cursor, break a row or
 /// reorder what follows it.
 pub(super) fn sanitize(text: &str) -> String {
     text.chars()
-        .filter(|ch| !bacnet_ops::format::is_hidden_on_screen(*ch))
-        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .filter(|ch| !bacnet_types::text::is_hidden_on_screen(*ch))
+        .map(|ch| {
+            if bacnet_types::text::breaks_line(ch) {
+                ' '
+            } else {
+                ch
+            }
+        })
         .collect()
 }
 

@@ -7,6 +7,7 @@
 
 use super::super::*;
 use super::{assert_invalid_data_type, assert_value_out_of_range};
+use crate::property_metadata::{is_array_property, is_writable_property};
 use bacnet_types::constructed::{BACnetLandingDoorStatus, LandingDoor};
 use bacnet_types::enums::{DoorStatus, EngineeringUnits, ErrorClass, ErrorCode, LiftFault};
 use bacnet_types::error::RemoteError;
@@ -51,7 +52,10 @@ fn landing(doors: &[(u8, DoorStatus)]) -> BACnetLandingDoorStatus {
 fn lift_tracking_value_and_floor_number_are_gone() {
     let mut lift = lift();
     for property in [P::TRACKING_VALUE, P::FLOOR_NUMBER] {
-        assert!(!lift.property_list().contains(&property), "{property:?}");
+        assert!(
+            !crate::property_metadata::has_property(&lift.property_metadata(), property),
+            "{property:?}"
+        );
         assert_property_error(
             lift.read_property(property, None),
             ErrorCode::UNKNOWN_PROPERTY,
@@ -141,7 +145,7 @@ fn lift_car_load_units_is_set_by_the_application_only() {
         );
         assert_eq!(lift.car_load_units().to_raw(), 65_535);
     }
-    assert!(!lift.is_writable_property(P::CAR_LOAD_UNITS));
+    assert!(!is_writable_property(&lift, P::CAR_LOAD_UNITS));
     assert_property_error(
         write(&mut lift, P::CAR_LOAD_UNITS, PropertyValue::Enumerated(39)),
         ErrorCode::WRITE_ACCESS_DENIED,
@@ -152,7 +156,7 @@ fn lift_car_load_units_is_set_by_the_application_only() {
 fn lift_car_door_status_is_an_array_of_door_status() {
     let mut lift = lift();
     // One car door, status UNKNOWN (2).
-    assert!(lift.is_array_property(P::CAR_DOOR_STATUS));
+    assert!(is_array_property(&lift, P::CAR_DOOR_STATUS));
     assert_eq!(lift.car_door_status(), [DoorStatus::UNKNOWN]);
     assert_eq!(
         read(&lift, P::CAR_DOOR_STATUS),
@@ -208,7 +212,7 @@ fn lift_set_car_door_status_refuses_statuses_outside_door_status_atomically() {
 #[test]
 fn lift_landing_door_status_holds_one_element_per_car_door() {
     let mut lift = lift();
-    assert!(lift.is_array_property(P::LANDING_DOOR_STATUS));
+    assert!(is_array_property(&lift, P::LANDING_DOOR_STATUS));
     // One car door with no landing doors: the empty landing-doors frame.
     assert_eq!(
         read(&lift, P::LANDING_DOOR_STATUS),
@@ -310,7 +314,7 @@ fn lift_floor_text_and_in_service_door_arrays_refuse_writes() {
         for &property in denied {
             let before = read(&lift, property);
             assert_eq!(
-                lift.is_writable_property(property),
+                is_writable_property(&lift, property),
                 property != P::FLOOR_TEXT,
                 "{property:?}"
             );
@@ -329,7 +333,7 @@ fn lift_floor_text_and_in_service_door_arrays_refuse_writes() {
 #[test]
 fn lift_floor_text_is_an_array_indexed_by_floor() {
     let lift = lift();
-    assert!(lift.is_array_property(P::FLOOR_TEXT));
+    assert!(is_array_property(&lift, P::FLOOR_TEXT));
     assert_eq!(
         lift.read_property(P::FLOOR_TEXT, Some(0)).unwrap(),
         PropertyValue::Unsigned(3)
@@ -370,7 +374,7 @@ fn lift_passenger_alarm_is_a_writable_boolean() {
 fn lift_fault_signals_accepts_sets_of_lift_faults() {
     let mut lift = lift();
     assert_eq!(read(&lift, P::FAULT_SIGNALS), PropertyValue::List(vec![]));
-    assert!(!lift.is_array_property(P::FAULT_SIGNALS));
+    assert!(!is_array_property(&lift, P::FAULT_SIGNALS));
     // Every named fault at once, then the proprietary bounds, then a
     // wire singleton, then the empty set.
     let named = PropertyValue::List(

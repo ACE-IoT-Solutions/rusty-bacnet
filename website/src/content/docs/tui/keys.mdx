@@ -22,7 +22,7 @@ Keys are case-sensitive: `w` writes and `W` arms a write session. Text fields (f
 | `p` | The profile dialog |
 | `c` | Connect again, or retry a failed connection |
 
-The number keys switch screens: `1` the devices, `2` Browse (the browser of the device you opened, as you left it; with none open it stays on the devices and says so), `3` the watch list, `4` Network, `5` BACnet/SC, `6` MS/TP, `7` Capture. The status bar's strip numbers the screens that apply to the session, with the one shown in brackets: `1 Devices 2 Browse [3 Watch] 4 Network 7 Capture`, or `1 2 [3 Watch] 4 7` in a narrow terminal. Network appears once a session is connected, BACnet/SC for SC, and MS/TP with a serial port; the keys work on every session. `1` hides an open browser without closing it; `Esc` in the browser closes it.
+The number keys switch screens: `1` the devices, `2` Browse (the browser of the device you opened, as you left it; with none open it stays on the devices and says so), `3` the watch list, `4` Network, `5` BACnet/SC, `6` MS/TP, `7` Capture, `8` Agents. The status bar's strip numbers the screens that apply to the session, with the one shown in brackets: `1 Devices 2 Browse [3 Watch] 4 Network 7 Capture`, or `1 2 [3 Watch] 4 7` in a narrow terminal. Network appears once a session is connected, BACnet/SC for SC, MS/TP with a serial port, and Agents while agents can attach to the profile ([AI agents](/rusty-bacnet/guides/ai-agents/)); the keys work on every session, but `8` only with agents' listener running. `1` hides an open browser without closing it; `Esc` in the browser closes it.
 
 The help overlay (`?`) lists these keys, then the screen's own and the command bar's commands.
 
@@ -32,7 +32,7 @@ The help overlay (`?`) lists these keys, then the screen's own and the command b
 |---|---|
 | `d` | Devices: the Who-Is form |
 | `Enter` | Browse the selected device; in the browser, read the selected object |
-| `Esc` | Browser: clear the filter, then close the browser and go back to the devices (`1` only hides it, keeping it as it was) |
+| `Esc` | Devices: clear the filter, or a notice. Browser: clear the filter, then close the browser and go back to the devices (`1` only hides it, keeping it as it was) |
 | `/` | Filter the devices, or in the browser the objects |
 | `s` | Devices: sort by the next column |
 | `S` | Devices: reverse the sort order |
@@ -48,7 +48,7 @@ The help overlay (`?`) lists these keys, then the screen's own and the command b
 | `Up`, `Down`, `k`, `j` | Move |
 | `PgUp`, `PgDn` | Move a page |
 | `Home`, `End`, `g`, `G` | First or last row |
-| `1`, `2`, `3`, `4`, `5`, `6`, `7` | Switch screens |
+| `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8` | Switch screens |
 | `W`, `u`, `:`, `?`, `L`, `q` | As everywhere |
 
 ## Watch list
@@ -66,7 +66,7 @@ The help overlay (`?`) lists these keys, then the screen's own and the command b
 
 | Key | Action |
 |---|---|
-| `Tab`, `Shift-Tab` | Next or previous tab: BDT, FDT, Matrix, Networks |
+| `Tab`, `Shift-Tab` | Next or previous tab: BDT, FDT, Matrix, Networks; from 160 columns wide, the next pane |
 | `r` | Read the BBMD's tables again; on the Networks tab, ask the routers |
 | `m` | Survey every BBMD the tables lead to, for the matrix |
 | `x` | Disconnect |
@@ -79,7 +79,7 @@ The help overlay (`?`) lists these keys, then the screen's own and the command b
 
 | Key | Action |
 |---|---|
-| `Tab`, `Shift-Tab` | Next or previous view: hub certificates, doctor, my credentials |
+| `Tab`, `Shift-Tab` | Next or previous view: hub certificates, doctor, my credentials; from 160 columns the credentials view shows the hub's chain on its left |
 | `p` | The profile dialog |
 | `c` | Reconnect |
 | `x` | Disconnect |
@@ -92,10 +92,10 @@ The help overlay (`?`) lists these keys, then the screen's own and the command b
 
 | Key | Action |
 |---|---|
-| `Tab`, `Shift-Tab` | Monitor: next or previous view (stations, token ring, findings, errors) |
+| `Tab`, `Shift-Tab` | Monitor: next or previous view (stations, token ring, findings, errors, scan) |
 | `J` | Monitor: start the safe join |
-| `Up` | Development Scan tab: select the previous baud row for detailed errors |
-| `Down` | Development Scan tab: select the next baud row for detailed errors |
+| `Up` | Safe join: propose the previous free MAC; on the Scan view, select the previous baud row for its error breakdown |
+| `Down` | Safe join: propose the next free MAC; on the Scan view, select the next baud row for its error breakdown |
 | `+`, `=` | Safe join: propose the next free MAC |
 | `-` | Safe join: propose the previous free MAC |
 | `Enter` | Safe join: review the proposal in the join confirmation |
@@ -126,6 +126,17 @@ The help overlay (`?`) lists these keys, then the screen's own and the command b
 | `Esc` | Clear the filter, then back to the devices |
 | `1`, `2`, `3`, `4`, `5`, `6` | Devices, Browse, watch list, Network, BACnet/SC, MS/TP |
 | `W`, `u`, `:`, `?`, `L`, `q` | As everywhere |
+
+## Agent pane
+
+Screen `8`, while agents can attach to the profile ([AI agents](/rusty-bacnet/guides/ai-agents/)): the attached agents' MCP calls, newest first, with each one's outcome and cost, and the write requests waiting for you, with their ages.
+
+| Key | Action |
+|---|---|
+| `Up`, `Down`, `k`, `j`, `PgUp`, `PgDn`, `Home`, `End`, `g`, `G` | Scroll the calls |
+| `Esc`, `1` | Back to the devices |
+| `2`, `3`, `4`, `5`, `6`, `7` | Browse, watch list, Network, BACnet/SC, MS/TP, Capture |
+| `W`, `u`, `:`, `?`, `L`, `q`, `p`, `c` | As everywhere |
 
 ## MS/TP join confirmation
 
@@ -239,26 +250,20 @@ The arm dialog, the write and relinquish forms, the previews, the ledger and the
 
 Single or double quotes group words, and a backslash makes a following quote, whitespace character or backslash plain text. A quote left open shows an error instead of running the line. In `writem`, a quoted or escaped value is a character string; a quoted number, such as `'72.5'`, is a string too, so a numeric property refuses it. `find` takes the rest of the line as typed, and unwraps a name that is one quoted word, such as `find "Zone  Temp"`.
 
-### Development scan commands
+### MS/TP baud scan
 
-These commands are on the development branch, not v{release}. See the
-[baud-scan flow](/rusty-bacnet/tui/mstp/#development-receive-only-baud-scan).
+These run from a live monitor. See [Scan: find the baud rate](/rusty-bacnet/tui/mstp/#scan-find-the-baud-rate).
 
 | Command | What it does |
 |---|---|
 | `mstp scan SECS` | Measure six baud rates from a live receive-only monitor; 1..3600 whole seconds per rate |
-| `mstp scan cancel` | Retain partial evidence, await release and restore the original configured rate |
+| `mstp scan cancel` | Stop the scan, keep what it measured so far, and go back to the monitor's original baud rate |
 
-In the development Scan tab, Up/Down or `+`/`-` selects a row's detailed error
-counts. A suggestion never applies a rate, joins or writes a profile.
+On the Scan view, Up and Down or `+` and `-` select the row whose error counts are broken down. A suggestion never applies a rate, joins the trunk or changes a profile.
 
-### Development device management commands
+### Device management commands
 
-These commands are on the development branch, not v{release}. See
-[DCC and reinitialize](/rusty-bacnet/tui/writes/#development-dcc-and-reinitialize).
-Both go to the device open in Browse or selected on the Devices screen, ask
-for a masked password, and confirm at T3. They need an armed session on a
-profile with `dangerous = true`.
+See [DCC and reinitialize](/rusty-bacnet/tui/writes/#dcc-and-reinitialize). Both go to the device open in Browse or selected on the Devices screen, ask for a masked password, and confirm at T3. They need an armed session on a profile with `dangerous = true`.
 
 | Command | What it does |
 |---|---|

@@ -6,6 +6,8 @@
 //! `multistate/mod.rs` and already holds `objects.rs` and `state_text.rs`.
 
 use super::super::*;
+use crate::property_metadata::is_writable_property;
+use crate::traits::EventReporting as _;
 use bacnet_encoding::primitives::encode_timestamp_choice;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::enums::{ErrorClass, ErrorCode, EventState};
@@ -75,6 +77,7 @@ fn msi_event_enable_bit_selects_which_transition_distributes() {
 /// because they all target OFFNORMAL. A gate keyed to a fixed bit rather than to
 /// the transition being reported — `event_enable & 0x01` where
 /// `& transition_bit` belongs — answers one of these two rows wrongly.
+#[cfg(feature = "event-reporting")]
 #[test]
 fn msi_event_enable_bit_selects_whether_the_return_to_normal_distributes() {
     for (bits, distributes) in [
@@ -132,8 +135,8 @@ fn assert_write_access_denied(
 }
 
 /// Every property that commissions intrinsic reporting must survive a network
-/// write and read back, and be advertised in both `property_list` and
-/// `is_writable_property` so the PICS matches dispatch.
+/// write and read back, and be advertised in both the served Property_List
+/// and `is_writable_property` so the PICS matches dispatch.
 fn assert_event_properties_round_trip(object: &mut dyn BACnetObject, label: &str) {
     for (property, value) in [
         (
@@ -166,11 +169,11 @@ fn assert_event_properties_round_trip(object: &mut dyn BACnetObject, label: &str
             "{label}: {property:?} must read back what was written"
         );
         assert!(
-            object.property_list().contains(&property),
+            crate::property_metadata::has_property(&object.property_metadata(), property),
             "{label}: {property:?} must be advertised in Property_List"
         );
         assert!(
-            object.is_writable_property(property),
+            is_writable_property(&*object, property),
             "{label}: {property:?} must be advertised writable"
         );
     }
@@ -247,12 +250,14 @@ fn assert_event_properties_round_trip(object: &mut dyn BACnetObject, label: &str
         PropertyIdentifier::ACKED_TRANSITIONS,
         label,
     );
-    assert!(!object.is_writable_property(PropertyIdentifier::ACKED_TRANSITIONS));
-    assert!(
-        object
-            .property_list()
-            .contains(&PropertyIdentifier::ACKED_TRANSITIONS)
-    );
+    assert!(!is_writable_property(
+        &*object,
+        PropertyIdentifier::ACKED_TRANSITIONS
+    ));
+    assert!(crate::property_metadata::has_property(
+        &object.property_metadata(),
+        PropertyIdentifier::ACKED_TRANSITIONS
+    ));
 
     // Event_State is maintained by the detector, never assignable from the
     // network — a write arm would let a client fake an alarm state.
@@ -266,7 +271,10 @@ fn assert_event_properties_round_trip(object: &mut dyn BACnetObject, label: &str
         PropertyIdentifier::EVENT_STATE,
         label,
     );
-    assert!(!object.is_writable_property(PropertyIdentifier::EVENT_STATE));
+    assert!(!is_writable_property(
+        &*object,
+        PropertyIdentifier::EVENT_STATE
+    ));
 }
 
 #[test]
@@ -363,7 +371,10 @@ fn multistate_event_history_is_listed_readable_and_read_only() {
             (PropertyIdentifier::EVENT_TIME_STAMPS, &timestamps),
             (PropertyIdentifier::EVENT_MESSAGE_TEXTS, &messages),
         ] {
-            assert!(object.property_list().contains(&property), "{label}");
+            assert!(
+                crate::property_metadata::has_property(&object.property_metadata(), property),
+                "{label}"
+            );
             assert_eq!(object.read_property(property, None).unwrap(), *expected);
             assert_eq!(
                 object.read_property(property, Some(0)).unwrap(),
@@ -385,7 +396,7 @@ fn multistate_event_history_is_listed_readable_and_read_only() {
                 property,
                 label,
             );
-            assert!(!object.is_writable_property(property));
+            assert!(!is_writable_property(&*object, property));
         }
     }
 }
@@ -469,12 +480,14 @@ fn multistate_alarm_values_round_trip_and_match_pics() {
                 .unwrap(),
             value
         );
-        assert!(
-            object
-                .property_list()
-                .contains(&PropertyIdentifier::ALARM_VALUES)
-        );
-        assert!(object.is_writable_property(PropertyIdentifier::ALARM_VALUES));
+        assert!(crate::property_metadata::has_property(
+            &object.property_metadata(),
+            PropertyIdentifier::ALARM_VALUES
+        ));
+        assert!(is_writable_property(
+            &*object,
+            PropertyIdentifier::ALARM_VALUES
+        ));
         assert_property_error(
             object.write_property(
                 PropertyIdentifier::ALARM_VALUES,
@@ -616,28 +629,31 @@ fn unsupported_fault_and_output_alarm_surfaces_are_unknown() {
             object.read_property(PropertyIdentifier::FAULT_VALUES, None),
             ErrorCode::UNKNOWN_PROPERTY,
         );
-        assert!(
-            !object
-                .property_list()
-                .contains(&PropertyIdentifier::FAULT_VALUES)
-        );
-        assert!(!object.is_writable_property(PropertyIdentifier::FAULT_VALUES));
+        assert!(!crate::property_metadata::has_property(
+            &object.property_metadata(),
+            PropertyIdentifier::FAULT_VALUES
+        ));
+        assert!(!is_writable_property(
+            object,
+            PropertyIdentifier::FAULT_VALUES
+        ));
     }
     let mso = MultiStateOutputObject::new(1, "MSO-1", 3).unwrap();
     assert_property_read_error(
         mso.read_property(PropertyIdentifier::ALARM_VALUES, None),
         ErrorCode::UNKNOWN_PROPERTY,
     );
-    assert!(
-        !mso.property_list()
-            .contains(&PropertyIdentifier::ALARM_VALUES)
-    );
-    assert!(
-        !mso.property_list()
-            .contains(&PropertyIdentifier::FAULT_VALUES)
-    );
+    assert!(!crate::property_metadata::has_property(
+        &mso.property_metadata(),
+        PropertyIdentifier::ALARM_VALUES
+    ));
+    assert!(!crate::property_metadata::has_property(
+        &mso.property_metadata(),
+        PropertyIdentifier::FAULT_VALUES
+    ));
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn recommissioning_alarm_values_while_offnormal_returns_to_normal() {
     let mut msi = MultiStateInputObject::new(1, "MSI-1", 3).unwrap();

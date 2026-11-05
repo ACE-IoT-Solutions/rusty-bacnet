@@ -1,5 +1,6 @@
 use super::*;
 use crate::server::GetEventInformationBudget;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_types::bitstring::EventTransitionBits;
 use bacnet_types::error::RemoteError;
 use std::sync::{
@@ -21,10 +22,10 @@ impl BACnetObject for Counted {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.inner.object_name()
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.projections.fetch_add(1, Ordering::SeqCst);
-        self.inner.property_list()
+        self.inner.property_metadata()
     }
     fn read_property(
         &self,

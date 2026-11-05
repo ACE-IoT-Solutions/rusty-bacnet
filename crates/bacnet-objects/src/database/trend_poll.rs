@@ -2,6 +2,7 @@
 
 use crate::collections::{HashMap, HashSet};
 use crate::prelude::*;
+use crate::property_metadata::is_array_property;
 use core::time::Duration;
 
 use bacnet_encoding::constructed::encode_log_multiple_record;
@@ -199,12 +200,12 @@ impl ObjectDatabase {
         // Every log looks at its window, Event Logs included, whether or not
         // a monotonic clock drives acquisition.
         for oid in &logs {
-            if let Some(log) = self.get_mut(oid) {
-                log.refresh_log_window_internal();
+            if let Some(log) = self.get_mut(oid).and_then(|log| log.log_buffer_mut()) {
+                log.refresh_window();
             }
         }
         logs.truncate(trend_logs);
-        let Some(monotonic) = self.monotonic_clock.clone() else {
+        let Some(monotonic) = self.clocks.monotonic.clone() else {
             return RECONCILE;
         };
         let mut eligible = HashSet::new();
@@ -291,15 +292,15 @@ impl ObjectDatabase {
                 .iter()
                 .map(|member| self.acquire(local, member))
                 .collect();
-            let object = self.get_mut(&oid).unwrap();
-            let inserted = if oid.object_type() == ObjectType::TREND_LOG_MULTIPLE {
-                object.add_trend_multiple_record(BACnetLogMultipleRecord {
-                    date: frame.local_date,
-                    time: frame.local_time,
-                    log_data: LogData::Values(values),
-                })
-            } else {
-                object.add_trend_record(BACnetLogRecord {
+            let inserted = match self.get_mut(&oid).unwrap().log_buffer_mut() {
+                None => Err(crate::traits::not_supported()),
+                Some(log) if oid.object_type() == ObjectType::TREND_LOG_MULTIPLE => log
+                    .add_trend_multiple_record(BACnetLogMultipleRecord {
+                        date: frame.local_date,
+                        time: frame.local_time,
+                        log_data: LogData::Values(values),
+                    }),
+                Some(log) => log.add_trend_record(BACnetLogRecord {
                     date: frame.local_date,
                     time: frame.local_time,
                     // A Trend Log has exactly one reference.
@@ -308,7 +309,7 @@ impl ObjectDatabase {
                         .next()
                         .map_or(LogDatum::NullValue, LogDatum::from),
                     status_flags: None,
-                })
+                }),
             };
             inserted
                 .inspect_err(|error| {
@@ -375,7 +376,7 @@ impl ObjectDatabase {
         // ReadProperty's gate, which the Averaging sampler shares: only an
         // array has elements, whatever an object's read arm does with the
         // index.
-        if index.is_some() && !target.is_array_property(property) {
+        if index.is_some() && !is_array_property(target, property) {
             return Err(failure(
                 ErrorClass::PROPERTY,
                 ErrorCode::PROPERTY_IS_NOT_AN_ARRAY,

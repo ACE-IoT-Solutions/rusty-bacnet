@@ -4,7 +4,7 @@ description: "BACnetServer, its policies and counters, and ScHub, generated from
 ---
 
 :::note[On `dev` after the release]
-This page is generated from the type stub on the `dev` branch and tracks the next release, so it can list classes, methods and keywords merged after v0.14.0 that the released wheel doesn't have. The [v0.14.0 release notes](https://github.com/jscott3201/rusty-bacnet/releases/tag/v0.14.0) and the [changes waiting for the next release](https://github.com/jscott3201/rusty-bacnet/tree/dev/changelog.d) say what changed.
+This page is generated from the type stub on the `dev` branch and tracks the next release, so it can list classes, methods and keywords merged after v0.15.0 that the released wheel doesn't have. The [v0.15.0 release notes](https://github.com/jscott3201/rusty-bacnet/releases/tag/v0.15.0) and the [changes waiting for the next release](https://github.com/jscott3201/rusty-bacnet/tree/dev/changelog.d) say what changed.
 :::
 
 The server, its policies and counters, and the BACnet/SC hub. The [Python reference](/rusty-bacnet/reference/python/) lists every group. Each page opens with its main classes, then the other classes, the dictionaries (`TypedDict`) and the type aliases, in stub order.
@@ -34,6 +34,10 @@ Segmentation defaults to NONE. When enabled, apdu\_segment\_timeout\_ms must
 be positive; it supplies Device APDU\_SEGMENT\_TIMEOUT, response SegmentACK
 waits, and the 4\*Tseg receive inactivity timer. A separate 16-second
 no-progress resource limit aborts abandoned request transfers with OTHER.
+
+`device_instance` takes 0 to 4194302. Instance 4194303 is reserved, as
+no object may have it, so it, or anything larger, raises ValueError at
+construction (#2171).
 
 Usage:
 
@@ -232,6 +236,8 @@ def add_analog_input(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
 ) -> None
 ```
 
@@ -243,6 +249,19 @@ primitive, a location whose URI scheme isn't http, https or bacnet,
 or a profile name without its vendor-number prefix (`"555-room"`)
 raises BacnetProtocolError, and wrong shapes TypeError or
 ValueError.
+
+`storage_path` (a `str`) keeps the reporting settings a peer
+writes (Notification\_Class, Event\_Enable, Notify\_Type,
+Event\_Detection\_Enable, Event\_Message\_Texts\_Config and the
+Event\_Algorithm\_Inhibit pair) and a written Description in that
+file: such a write is saved before it is answered, refused when it
+can't be, and served again after a restart; a Description past
+16 KiB is refused with NO\_SPACE\_TO\_WRITE\_PROPERTY.
+`clear_written_reporting=True` drops what was saved first,
+Description included, so the object starts from its defaults. A file that
+doesn't load raises BacnetError. Every analog, binary and multi-state
+builder takes both, as do `add_access_door`, `add_access_zone`,
+`add_event_enrollment` and `add_alert_enrollment`.
 
 ### BACnetServer.add_analog_output
 
@@ -256,6 +275,8 @@ def add_analog_output(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
 ) -> None
 ```
 
@@ -278,6 +299,8 @@ def add_analog_value(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
 ) -> None
 ```
 
@@ -303,6 +326,8 @@ def add_binary_input(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
 ) -> None
 ```
 
@@ -319,6 +344,8 @@ def add_binary_output(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
 ) -> None
 ```
 
@@ -340,6 +367,8 @@ def add_binary_value(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
 ) -> None
 ```
 
@@ -358,6 +387,8 @@ def add_multistate_input(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
 ) -> None
 ```
 
@@ -375,6 +406,8 @@ def add_multistate_output(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
 ) -> None
 ```
 
@@ -394,6 +427,8 @@ def add_multistate_value(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
 ) -> None
 ```
 
@@ -494,10 +529,11 @@ def add_notification_class(
 ```
 
 Add a Notification Class (Clause 12.21). With `storage_path`, a
-Recipient\_List a client writes is kept in that file across restarts; a
-write whose list cannot be saved is refused with DEVICE /
-OPERATIONAL\_PROBLEM and the old list stays. Without it the list lives in
-memory only.
+Recipient\_List or Description a client writes is kept in that file
+across restarts; a write that cannot be saved is refused with DEVICE /
+OPERATIONAL\_PROBLEM and the old value stays, and a Description past
+16 KiB is refused with RESOURCES / NO\_SPACE\_TO\_WRITE\_PROPERTY. Without
+it they live in memory only.
 
 `storage_path` is a `str`; a `pathlib.Path` raises TypeError, as
 for `add_notification_forwarder`. Give each class a file of its own:
@@ -533,8 +569,10 @@ def add_notification_forwarder(
 Add a Notification Forwarder (Clause 12.51) that sends the event
 notifications this server receives on to its Recipient\_List and
 Subscribed\_Recipients. `process_identifier_filter=None` forwards every
-process identifier. With `storage_path`, Recipient\_List and
-Subscribed\_Recipients are kept in that file across restarts.
+process identifier. With `storage_path`, Recipient\_List,
+Subscribed\_Recipients and a Description a client writes are kept in
+that file across restarts; a Description past 16 KiB is refused with
+RESOURCES / NO\_SPACE\_TO\_WRITE\_PROPERTY.
 
 `recipients` seeds Recipient\_List in order; more than 32 destinations,
 or an address MAC past 18 octets, raises BacnetProtocolError, as a
@@ -562,6 +600,7 @@ def add_trend_log(
     align_intervals: bool | None = None,
     interval_offset: int | None = None,
     storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
     total_record_count: int = 0,
 ) -> None
 ```
@@ -607,9 +646,13 @@ a reader's handling of the wrap be tested. Out of range raises
 OverflowError.
 
 `storage_path` keeps the log in files, as on
-`add_trend_log_multiple`. `client_cov_increment` and
-`cov_resubscription_interval` aren't saved: they apply on every
-start, reopened or not.
+`add_trend_log_multiple`. A Client\_COV\_Increment or
+COV\_Resubscription\_Interval written over the network, or with
+`write_property_local`, is saved too, and refused when it can't be;
+once saved it wins over `client_cov_increment` and
+`cov_resubscription_interval` at every later start.
+`clear_written_reporting=True` drops the saved writes first, so
+the keywords apply again. Unwritten, they apply on every start.
 
 ### BACnetServer.add_trend_log_multiple
 
@@ -628,6 +671,7 @@ def add_trend_log_multiple(
     align_intervals: bool | None = None,
     interval_offset: int | None = None,
     storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
     total_record_count: int = 0,
 ) -> None
 ```
@@ -674,12 +718,16 @@ minute, and once more at `stop()`, so a power loss costs at most
 about a minute of records; a failed commit is retried. A log reopened
 from those files serves its saved records, Total\_Record\_Count,
 BUFFER\_READY counts and Notification\_Threshold, Enable,
-Stop\_When\_Full and every setting a peer can write, and appends one
+Stop\_When\_Full and every setting a peer can write, Notification\_Class,
+the other reporting settings and Description among them
+(`clear_written_reporting=True` drops those first, as on
+`add_trend_log`; a Description past 16 KiB is refused with
+RESOURCES / NO\_SPACE\_TO\_WRITE\_PROPERTY), and appends one
 LOG\_INTERRUPTED record to mark the restart (none when it reopens full
 and stopped); the saved state wins over the keyword arguments.
 `buffer_size` wins over the saved Buffer\_Size: a smaller one keeps
-the newest records. A durable Trend Log Multiple holds at most 15849
-records (178437 for an Event Log, 828302 for a Trend Log); a larger
+the newest records. A durable Trend Log Multiple holds at most 15848
+records (178426 for an Event Log, 828251 for a Trend Log); a larger
 `buffer_size`, or a file pair that can't be read or holds another
 object's state, raises BacnetError. To tell whether a log will
 reopen, check whether either slot file exists before the call. The
@@ -696,6 +744,7 @@ def add_event_log(
     log_received_notifications: bool = False,
     *,
     storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
     total_record_count: int = 0,
 ) -> None
 ```
@@ -718,7 +767,10 @@ from a peer.
 `add_trend_log`; BUFFER\_READY counts from the seeded value.
 
 `storage_path` keeps the log in files, as on
-`add_trend_log_multiple`. `log_received_notifications` isn't
+`add_trend_log_multiple`, Notification\_Class, the other reporting
+settings and Description a write set included; such a write is
+refused when it can't be saved, and `clear_written_reporting=True`
+drops them first, as on `add_trend_log`. `log_received_notifications` isn't
 saved and applies on every start.
 
 ### BACnetServer.add_audit_log
@@ -898,8 +950,41 @@ VALUE\_OUT\_OF\_RANGE.
 ### BACnetServer.add_timer
 
 ```python
-def add_timer(self, instance: int, name: str) -> None
+def add_timer(
+    self,
+    instance: int,
+    name: str,
+    *,
+    state_change_values: Optional[list[Optional[PropertyValue]]] = None,
+    references: Optional[list[tuple[ObjectIdentifier, PropertyIdentifier] | tuple[ObjectIdentifier, PropertyIdentifier, Optional[int]] | DeviceObjectPropertyReference]] = None,
+    priority_for_writing: Optional[int] = None,
+    storage_path: Optional[str] = None,
+    clear_written_config: bool = False,
+) -> None
 ```
+
+Add a Timer object.
+
+With `state_change_values` or `references` the Timer serves
+State\_Change\_Values, List\_Of\_Object\_Property\_References and
+Priority\_For\_Writing, and each transition writes its entry of
+`state_change_values` to every reference at
+`priority_for_writing` (16 when omitted). The seven entries run from
+IDLE\_TO\_RUNNING to EXPIRED\_TO\_RUNNING; `None` writes nothing and a
+NULL relinquishes. References take the `add_channel` members shape.
+A wrong entry count, or `priority_for_writing` without either of
+the other two, raises ValueError, a non-primitive entry TypeError,
+and a priority outside 1..=16 BacnetProtocolError with
+VALUE\_OUT\_OF\_RANGE.
+
+With `storage_path` the Timer keeps in that file what a peer writes
+to State\_Change\_Values, List\_Of\_Object\_Property\_References (with
+Priority\_For\_Writing), Default\_Timeout and Description, and a saved
+write wins over the keywords at the next start; such a write is refused when it can't
+be saved, and a Description past 16 KiB is refused with RESOURCES /
+NO\_SPACE\_TO\_WRITE\_PROPERTY. `clear_written_config=True` drops what
+was saved first, so the keywords apply again. A file that doesn't
+load raises BacnetError.
 
 ### BACnetServer.add_load_control
 
@@ -1001,6 +1086,7 @@ def add_color(
     present_value: Optional[tuple[float, float]] = None,
     default_color: Optional[tuple[float, float]] = None,
     storage_path: Optional[str] = None,
+    clear_written_default: bool = False,
     value_source_tracking: bool = False,
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
@@ -1021,7 +1107,11 @@ keeps the colour from before the restart instead, kept in
 `storage_path` (the file the object keeps Present\_Value in); with
 nothing stored it keeps `present_value`, and with neither,
 In\_Progress reads NOT\_CONTROLLED until a write drives the output.
-A file that doesn't load raises BacnetError.
+The file keeps a Default\_Color written over the network too, which
+wins over `default_color` at the next start; such a write is
+refused when it can't be saved. `clear_written_default=True` drops
+a saved one first, so `default_color` applies again. A file that
+doesn't load raises BacnetError.
 
 ### BACnetServer.add_color_temperature
 
@@ -1036,6 +1126,7 @@ def add_color_temperature(
     max_pres_value: Optional[int] = None,
     default_color_temperature: Optional[int] = None,
     storage_path: Optional[str] = None,
+    clear_written_default: bool = False,
     value_source_tracking: bool = False,
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
@@ -1050,9 +1141,9 @@ range and come together (ValueError otherwise); `present_value` is
 clamped to them. A value out of range raises BacnetProtocolError.
 `value_source_tracking` is as on `add_color`.
 `default_color_temperature` (4000 unless given, clamped to the
-limits) and `storage_path` work as `default_color` and
-`storage_path` on `add_color`, with 0 keeping the temperature
-from before the restart.
+limits), `storage_path` and `clear_written_default` work as on
+`add_color`, with 0 keeping the temperature from before the
+restart.
 
 ### BACnetServer.add_channel
 
@@ -1067,6 +1158,8 @@ def add_channel(
     control_groups: Optional[list[int]] = None,
     *,
     allow_group_delay_inhibit: bool = False,
+    storage_path: Optional[str] = None,
+    clear_written_config: bool = False,
 ) -> None
 ```
 
@@ -1092,6 +1185,15 @@ count that differs from the member count or an empty group list
 raises BacnetProtocolError with VALUE\_OUT\_OF\_RANGE; more than
 1024 members or 64 groups, NO\_SPACE\_TO\_WRITE\_PROPERTY. Nothing is
 registered after any of them.
+
+With `storage_path` the Channel keeps in that file what a peer
+writes to its members, Execution\_Delay, Channel\_Number,
+Control\_Groups, Allow\_Group\_Delay\_Inhibit and Description, and each
+saved write wins over its argument at the next start; such a write is refused
+when it can't be saved, and a Description past 16 KiB is refused with
+RESOURCES / NO\_SPACE\_TO\_WRITE\_PROPERTY. `clear_written_config=True`
+drops what was saved first, so the arguments apply again. A file
+that doesn't load raises BacnetError.
 
 ### BACnetServer.add_life_safety_point
 
@@ -1160,6 +1262,8 @@ def add_access_door(
     alarm_values: Optional[list[int]] = None,
     fault_values: Optional[list[int]] = None,
     masked_alarm_values: Optional[list[int]] = None,
+    storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
 ) -> None
 ```
 
@@ -1181,6 +1285,10 @@ door to NORMAL. An alarm value raises a CHANGE\_OF\_STATE alarm after
 Time\_Delay, and a fault value makes Reliability MULTI\_STATE\_FAULT. Any
 other number, NORMAL (0) included, raises BacnetProtocolError with
 VALUE\_OUT\_OF\_RANGE, and nothing is registered.
+
+`storage_path` and `clear_written_reporting` keep the reporting
+settings and Description a peer writes in that file, as on
+`add_analog_input`.
 
 ### BACnetServer.add_access_credential
 
@@ -1332,10 +1440,12 @@ whose device isn't a Device raises ValueError, and any other object
 type raises BacnetProtocolError with VALUE\_OUT\_OF\_RANGE. A read
 gives the reference back in the form the keyword takes.
 
-With `storage_path`, a rule array, Enable or Accompaniment that a
-client writes is kept in that file across restarts, and wins over the
-keyword given for it at the next start, which is then checked but not
-applied; a saved Accompaniment is served even without the keyword.
+With `storage_path`, a rule array, Enable, Accompaniment or
+Description that a client writes is kept in that file across
+restarts, and wins over the keyword given for it at the next start,
+which is then checked but not applied; a saved Accompaniment is
+served even without the keyword. A Description past 16 KiB is
+refused with RESOURCES / NO\_SPACE\_TO\_WRITE\_PROPERTY.
 To lift a saved requirement, write the no-accompaniment reference
 (instance 4194303), which keeps the row; to drop the row, remove the
 storage file, which also drops the saved rules and Enable. A
@@ -1387,6 +1497,8 @@ def add_access_zone(
     entry_points: Optional[list[ObjectIdentifier | tuple[ObjectIdentifier, ObjectIdentifier]]] = None,
     exit_points: Optional[list[ObjectIdentifier | tuple[ObjectIdentifier, ObjectIdentifier]]] = None,
     alarm_values: Optional[list[int]] = None,
+    storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
 ) -> None
 ```
 
@@ -1408,6 +1520,10 @@ BACnetAccessZoneOccupancyState numbers other than NORMAL (1 to 6, or
 included, raises BacnetProtocolError with VALUE\_OUT\_OF\_RANGE and
 `first_failed_element_number` naming it, from 1, and nothing is
 registered. Left out, the list starts empty.
+
+`storage_path` and `clear_written_reporting` keep the reporting
+settings and Description a peer writes in that file, as on
+`add_analog_input`.
 
 ### BACnetServer.add_credential_data_input
 
@@ -1444,8 +1560,17 @@ def add_alert_enrollment(
     instance: int,
     name: str,
     initial_source: ObjectIdentifier,
+    *,
+    storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
 ) -> None
 ```
+
+Add an Alert Enrollment to the server (before starting).
+
+`storage_path` and `clear_written_reporting` keep the reporting
+settings and Description a peer writes in that file, as on
+`add_analog_input`.
 
 ### BACnetServer.add_event_enrollment
 
@@ -1455,6 +1580,9 @@ def add_event_enrollment(
     instance: int,
     name: str,
     event_type: EventType = ...,
+    *,
+    storage_path: Optional[str] = None,
+    clear_written_reporting: bool = False,
 ) -> None
 ```
 
@@ -1472,6 +1600,10 @@ Object\_Property\_Reference, read-only to peers, reads as one typed
 Fault\_Parameters reads as the context-tagged `none` choice while no
 fault algorithm is set, and writing that clears it; a null written to
 it succeeds and changes nothing.
+
+`storage_path` and `clear_written_reporting` keep the reporting
+settings and Description a peer writes in that file, as on
+`add_analog_input`.
 
 ### BACnetServer.add_elevator_group
 
@@ -1779,6 +1911,11 @@ def start(self) -> Awaitable[None]
 
 Start the server and begin accepting BACnet requests.
 
+An added object the database won't take raises ValueError: "duplicate
+object name: ..." for a name another object holds, or "object
+refused: ..." for any other reason, an instance of 4194303 among them
+(#2171).
+
 ### BACnetServer.stop
 
 ```python
@@ -1817,7 +1954,9 @@ instance and subsequent address queries raise RuntimeError.
 ### BACnetServer.foreign_registration
 
 ```python
-def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]
+def foreign_registration(
+    self,
+) -> Awaitable[Union[ForeignRegistrationStatus, Bip6ForeignRegistrationStatus]]
 ```
 
 How the foreign-device registration is going (#938), as for
@@ -1909,7 +2048,10 @@ Update Present\_Value through the narrow, non-generic application Input authorit
 
 Accepted values are a finite REAL for Analog Input and for a Loop's
 control output, logical Enumerated 0/1 (INACTIVE/ACTIVE) for Binary Input,
-and Unsigned 1..=Number\_Of\_States for Multi-state Input. Binary values are
+and Unsigned 1..=Number\_Of\_States for Multi-state Input. A noncommandable
+Analog, Binary or Multi-state Value takes the same datatype as its Input
+counterpart; a commandable one raises OPTIONAL\_FUNCTIONALITY\_NOT\_SUPPORTED
+(use `write_property_local` with a priority). Binary values are
 BACnet logical values after Polarity, not raw hardware/interface levels.
 An object with Out\_Of\_Service set rejects this update to preserve
 network simulation ownership. A Life Safety Point or Zone takes an
@@ -2030,6 +2172,26 @@ a client's simulated Tracking\_Value stays in place. In service a
 SubscribeCOVProperty on Tracking\_Value is notified of the change; a
 SubscribeCOV report doesn't carry it.
 
+### BACnetServer.set_program_state_local
+
+```python
+def set_program_state_local(
+    self,
+    object_id: ObjectIdentifier,
+    value: PropertyValue,
+) -> Awaitable[None]
+```
+
+Report a Program's Program\_State, the state of the process the application runs.
+
+Program\_State is read-only on the network, and `write_property_local`
+refuses it with WRITE\_ACCESS\_DENIED too, so this is the application's
+route; a client asks for a change through Program\_Change. The value
+is an Enumerated BACnetProgramState from 0 (IDLE) to 5 (UNLOADING): a
+larger number raises VALUE\_OUT\_OF\_RANGE and another datatype
+INVALID\_DATA\_TYPE. An unknown object raises UNKNOWN\_OBJECT and any
+object other than a Program OPTIONAL\_FUNCTIONALITY\_NOT\_SUPPORTED.
+
 ### BACnetServer.report_device_reset_local
 
 ```python
@@ -2112,6 +2274,34 @@ positive infinity, negative infinity and NaN. A SubscribeCOVProperty
 on one of them is notified when it changes (by the subscription's COV
 increment, if it gave one); SubscribeCOV on an Averaging object is
 refused.
+
+### BACnetServer.add_pulses_local
+
+```python
+def add_pulses_local(self, object_id: ObjectIdentifier, pulses: int) -> Awaitable[None]
+```
+
+Feed an Accumulator the input pulses its meter produced since the
+last call, counted by the application.
+
+In service the pulses step Present\_Value, through Prescale's ratio
+when the object has one, rolling over modulo Max\_Pres\_Value + 1. They
+also count toward Pulse\_Rate: once Limit\_Monitoring\_Interval is set
+(`write_property_local` or a client's write), the server closes a
+window at the end of each interval and Pulse\_Rate becomes that
+window's count, which a SubscribeCOVProperty on it is notified of.
+While Out\_Of\_Service is set Present\_Value holds and Pulse\_Rate keeps
+a client's value: the pulses still fill the rate window, but
+Present\_Value drops them rather than catching up later. Present\_Value
+takes a write only then, an Unsigned up to Max\_Pres\_Value, and once
+back in service the pulses count on from the written value.
+Reliability takes a write only then too, to simulate a fault: one
+that isn't an Enumerated raises INVALID\_DATA\_TYPE, and the return to
+service puts back the Reliability held before.
+`pulses` is an unsigned 64-bit count; a negative or larger int
+raises OverflowError. An unknown object raises
+UNKNOWN\_OBJECT and any object other than an Accumulator
+OPTIONAL\_FUNCTIONALITY\_NOT\_SUPPORTED.
 
 ### BACnetServer.comm_state
 

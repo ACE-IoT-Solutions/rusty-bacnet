@@ -160,9 +160,74 @@ impl BACnetServer {
     }
 
     /// Add a Timer object to the server (before starting).
-    #[pyo3(signature = (instance, name))]
-    fn add_timer(&self, instance: u32, name: &str) -> PyResult<()> {
-        let obj = TimerObject::new(instance, name).map_err(to_py_err)?;
+    ///
+    /// With `state_change_values` or `references`, the Timer serves
+    /// State_Change_Values, List_Of_Object_Property_References and
+    /// Priority_For_Writing (#2206): each transition writes its element of
+    /// `state_change_values` to every reference at `priority_for_writing`.
+    /// `state_change_values` holds seven entries, IDLE_TO_RUNNING first; an
+    /// entry is a primitive `PropertyValue` (a NULL relinquishes) or `None`,
+    /// which writes nothing. References take the `add_channel` members shape,
+    /// and `priority_for_writing` defaults to 16. A wrong shape or type raises
+    /// TypeError or ValueError, as does `priority_for_writing` given alone;
+    /// the Timer's setter refuses a priority outside 1..=16 with
+    /// VALUE_OUT_OF_RANGE.
+    ///
+    /// With `storage_path` (a `str`), the Timer keeps in that file what a
+    /// peer writes to State_Change_Values, List_Of_Object_Property_References
+    /// (with Priority_For_Writing), Default_Timeout (#2312) and Description
+    /// (#2364), and a saved write wins over the keywords at the next start. A write that cannot
+    /// be saved is refused with DEVICE / OPERATIONAL_PROBLEM.
+    /// `clear_written_config` drops what was saved first, so the keywords
+    /// apply. A file that doesn't load raises BacnetError.
+    #[pyo3(signature = (
+        instance,
+        name,
+        *,
+        state_change_values=None,
+        references=None,
+        priority_for_writing=None,
+        storage_path=None,
+        clear_written_config=false
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn add_timer(
+        &self,
+        instance: u32,
+        name: &str,
+        state_change_values: Option<Vec<Option<crate::types::PyPropertyValue>>>,
+        references: Option<Bound<'_, PyAny>>,
+        priority_for_writing: Option<u64>,
+        storage_path: Option<&str>,
+        clear_written_config: bool,
+    ) -> PyResult<()> {
+        let set = if state_change_values.is_none() && references.is_none() {
+            if priority_for_writing.is_some() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "priority_for_writing needs state_change_values or references",
+                ));
+            }
+            None
+        } else {
+            // Past 255 is out of range too: the setter refuses 0 as it would.
+            let priority = priority_for_writing.map_or(16, |p| u8::try_from(p).unwrap_or(0));
+            let values = timer_values(state_change_values)?;
+            let references = references
+                .map(|references| self.members_from_py(&references, "references"))
+                .transpose()?
+                .unwrap_or_default();
+            Some((values, references, priority))
+        };
+        let mut obj = match storage_path {
+            Some(path) => {
+                timer_on_storage(instance, name, path, clear_written_config).map_err(to_py_err)?
+            }
+            None => TimerObject::new(instance, name).map_err(to_py_err)?,
+        };
+        if let Some((values, references, priority)) = set {
+            obj.set_state_change(values, references, priority)
+                .map_err(to_py_err)?;
+        }
         self.push_pending(Box::new(obj))
     }
 
@@ -245,15 +310,28 @@ impl BACnetServer {
     }
 
     /// Add an Alert Enrollment object to the server (before starting).
-    #[pyo3(signature = (instance, name, initial_source))]
+    ///
+    /// `storage_path` and `clear_written_reporting` keep the reporting
+    /// settings and Description a peer writes in that file, as on
+    /// `add_analog_input` (#2331, #2364).
+    #[pyo3(signature = (
+        instance, name, initial_source, *, storage_path=None, clear_written_reporting=false
+    ))]
     fn add_alert_enrollment(
         &self,
         instance: u32,
         name: &str,
         initial_source: PyObjectIdentifier,
+        storage_path: Option<&str>,
+        clear_written_reporting: bool,
     ) -> PyResult<()> {
-        let obj = AlertEnrollmentObject::new(instance, name, initial_source.to_rust())
-            .map_err(to_py_err)?;
+        let obj = crate::object_options::keep_reporting(
+            || AlertEnrollmentObject::new(instance, name, initial_source.to_rust()),
+            storage_path,
+            clear_written_reporting,
+            AlertEnrollmentObject::with_reporting_persistence,
+            AlertEnrollmentObject::clear_written_reporting,
+        )?;
         self.push_pending(Box::new(obj))
     }
 
@@ -426,19 +504,33 @@ impl BACnetServer {
     /// `event_type` defaults to `EventType.CHANGE_OF_BITSTRING`. Event_Type
     /// follows Event_Parameters; this type applies only while the legacy
     /// octet-string parameters, which name no algorithm, are held (#1868).
+    ///
+    /// `storage_path` and `clear_written_reporting` keep the reporting
+    /// settings and Description a peer writes in that file, as on
+    /// `add_analog_input` (#2331, #2364).
     #[pyo3(signature = (
         instance,
         name,
-        event_type=PyEventType { inner: EventType::CHANGE_OF_BITSTRING }
+        event_type=PyEventType { inner: EventType::CHANGE_OF_BITSTRING },
+        *,
+        storage_path=None,
+        clear_written_reporting=false
     ))]
     fn add_event_enrollment(
         &self,
         instance: u32,
         name: &str,
         event_type: PyEventType,
+        storage_path: Option<&str>,
+        clear_written_reporting: bool,
     ) -> PyResult<()> {
-        let obj =
-            EventEnrollmentObject::new(instance, name, event_type.to_rust()).map_err(to_py_err)?;
+        let obj = crate::object_options::keep_reporting(
+            || EventEnrollmentObject::new(instance, name, event_type.to_rust()),
+            storage_path,
+            clear_written_reporting,
+            EventEnrollmentObject::with_reporting_persistence,
+            EventEnrollmentObject::clear_written_reporting,
+        )?;
         self.push_pending(Box::new(obj))
     }
 
@@ -494,8 +586,10 @@ impl BACnetServer {
     /// on `add_trend_log`: a log reopened from it keeps its saved records
     /// and settings, ignores `total_record_count`, and appends a
     /// LOG_INTERRUPTED record (#1541); `buffer_size` wins over the saved
-    /// Buffer_Size.
-    /// `log_received_notifications` isn't saved and applies on every start.
+    /// Buffer_Size. The settings include the reporting settings a write set
+    /// (#1952); `clear_written_reporting` drops those first, as on
+    /// `add_trend_log`. `log_received_notifications` isn't saved and applies
+    /// on every start.
     #[pyo3(signature = (
         instance,
         name,
@@ -503,6 +597,7 @@ impl BACnetServer {
         log_received_notifications=false,
         *,
         storage_path=None,
+        clear_written_reporting=false,
         total_record_count=0
     ))]
     fn add_event_log(
@@ -512,6 +607,7 @@ impl BACnetServer {
         buffer_size: u32,
         log_received_notifications: bool,
         storage_path: Option<&str>,
+        clear_written_reporting: bool,
         total_record_count: u32,
     ) -> PyResult<()> {
         let mut obj = match storage_path {
@@ -523,6 +619,9 @@ impl BACnetServer {
             None => EventLogObject::new(instance, name, buffer_size),
         }
         .map_err(to_py_err)?;
+        if clear_written_reporting {
+            obj.clear_written_reporting().map_err(to_py_err)?;
+        }
         obj.set_log_received_notifications(log_received_notifications);
         if !obj.reopened() {
             obj.restore_log_buffer(total_record_count, [])
@@ -622,3 +721,53 @@ fn command(
 #[cfg(test)]
 #[path = "registration_tests.rs"]
 mod tests;
+
+/// A Timer kept in the file at `path`. With `clear`, what the file holds is
+/// dropped first, and the Timer opened again on the cleared file, so it
+/// serves what a new Timer does until the keywords configure it: a cleared
+/// object keeps serving the written values, and `add_timer` has no keyword
+/// for Default_Timeout to set it back.
+fn timer_on_storage(
+    instance: u32,
+    name: &str,
+    path: &str,
+    clear: bool,
+) -> Result<TimerObject, bacnet_types::error::Error> {
+    let storage = Arc::new(bacnet_objects::write_config::FileWriteConfigPersistence::new(path)?);
+    let open = || TimerObject::with_persistence(instance, name, storage.clone());
+    let mut obj = open()?;
+    if clear {
+        obj.clear_written_config()?;
+        // Dropping it waits for its saves.
+        drop(obj);
+        obj = open()?;
+    }
+    Ok(obj)
+}
+
+/// The seven State_Change_Values entries `add_timer` takes; all `no-value`
+/// when omitted.
+fn timer_values(
+    values: Option<Vec<Option<crate::types::PyPropertyValue>>>,
+) -> PyResult<bacnet_objects::timer::StateChangeValues> {
+    use bacnet_types::constructed::BACnetTimerStateChangeValue as V;
+    let Some(values) = values else {
+        return Ok(core::array::from_fn(|_| V::NoValue));
+    };
+    let values: Vec<V> = values
+        .into_iter()
+        .map(|value| match value {
+            None => Ok(V::NoValue),
+            Some(value) if value.inner.is_primitive() => Ok(V::Primitive(value.inner)),
+            Some(_) => Err(pyo3::exceptions::PyTypeError::new_err(
+                "state_change_values entries must be None or a primitive PropertyValue",
+            )),
+        })
+        .collect::<PyResult<_>>()?;
+    values.try_into().map_err(|values: Vec<V>| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "state_change_values needs 7 entries, one per transition, not {}",
+            values.len()
+        ))
+    })
+}

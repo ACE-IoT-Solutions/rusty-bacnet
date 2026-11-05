@@ -92,6 +92,15 @@ pub(crate) const VMAC_FIELD: usize = 6;
 /// See [`VMAC_FIELD`].
 pub(crate) const UUID_FIELD: usize = 7;
 
+/// An SC identity adopted for the profile `name` (see
+/// [`Connection::adopted`]): the editor's VMAC and device UUID texts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Adopted {
+    name: String,
+    vmac: String,
+    uuid: String,
+}
+
 /// State retained while a connection is running or the dialog is closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Connection {
@@ -110,6 +119,11 @@ pub(crate) struct Connection {
     pub(crate) fields: Vec<String>,
     pub(crate) focus: usize,
     pub(crate) creating: bool,
+    /// A new SC profile's identity adopted from a save whose file went in
+    /// place, and the name it went in under: saved under another name, the
+    /// profile draws an identity of its own, since that one is the stray
+    /// file's; saved under that name again, it gets it back (#2196).
+    pub(crate) adopted: Option<Adopted>,
     pub(crate) error: Option<String>,
     pub(crate) overrides: Overrides,
     /// A queued disk operation disables further mutations until its reply.
@@ -147,6 +161,7 @@ impl Connection {
             fields: Vec::new(),
             focus: 0,
             creating: false,
+            adopted: None,
             error: None,
             overrides,
             pending: false,
@@ -197,7 +212,28 @@ impl Connection {
                 self.checks = checks;
                 self.accepted.clear();
                 self.creating = false;
+                self.adopted = None;
                 self.screen = Screen::Preview;
+            }
+            Ok(Reply::InPlace { error, profile }) => {
+                // The retry must write the same identity (#2196).
+                if let Some(sc) = profile
+                    .sc
+                    .as_ref()
+                    .filter(|_| self.transport == Transport::Sc)
+                    && self.fields.len() == SC_LABELS.len()
+                {
+                    self.fields[VMAC_FIELD] = sc.vmac.map(|v| v.to_string()).unwrap_or_default();
+                    self.fields[UUID_FIELD] =
+                        sc.device_uuid.map(|v| v.to_string()).unwrap_or_default();
+                    // The name is not editable while the save is pending.
+                    self.adopted = Some(Adopted {
+                        name: self.fields[0].clone(),
+                        vmac: self.fields[VMAC_FIELD].clone(),
+                        uuid: self.fields[UUID_FIELD].clone(),
+                    });
+                }
+                self.error = Some(error);
             }
             Err(error) => self.error = Some(error),
         }
@@ -212,6 +248,7 @@ impl Connection {
         self.checks = Checks::default();
         self.accepted.clear();
         self.creating = true;
+        self.adopted = None;
         self.edit(profile);
     }
     fn edit(&mut self, p: Profile) {
@@ -224,7 +261,7 @@ impl Connection {
                 b.broadcast.to_string(),
                 b.timeout_ms.to_string(),
                 b.min_interval_ms.to_string(),
-                b.bbmd.map(|v| v.to_string()).unwrap_or_default(),
+                b.bbmd.as_ref().map(ToString::to_string).unwrap_or_default(),
                 b.ttl.to_string(),
                 b.renewal_secs.map(|v| v.to_string()).unwrap_or_default(),
                 b.multicast.map(|v| v.to_string()).unwrap_or_default(),
@@ -295,12 +332,14 @@ impl Connection {
             b.bbmd = if f[6].is_empty() {
                 None
             } else {
-                Some(crate::foreign::parse_bbmd_arg(&f[6])?)
+                Some(crate::foreign::parse_foreign_bbmd_arg(&f[6])?)
             };
             b.ttl = f[7].parse().map_err(|_| "TTL must be 0-65535")?;
             b.renewal_secs = optional(&f[8], "Renewal must be an unsigned number")?;
             if b.bbmd.is_none() {
+                // Both need a BBMD, and only the file sets the NAT address.
                 b.renewal_secs = None;
+                b.nat_global_address = None;
             }
             // A blank group clears multicast, and the group port with it.
             b.multicast = optional(&f[9], "Group must be an IPv4 multicast address")?;
@@ -380,6 +419,24 @@ impl Connection {
         self.overrides.resolve(&profile)?;
         Ok(profile)
     }
+    /// Put an adopted SC identity in the editor for its own name, and a
+    /// blank one (drawn by the save) for any other. The memory is kept, so
+    /// a refused rename typed back finds the identity again.
+    fn apply_adopted(&mut self) -> &mut Self {
+        if let Some(adopted) = &self.adopted
+            && self.fields.len() == SC_LABELS.len()
+        {
+            let own = adopted.name == self.fields[0];
+            let (vmac, uuid) = if own {
+                (adopted.vmac.clone(), adopted.uuid.clone())
+            } else {
+                (String::new(), String::new())
+            };
+            self.fields[VMAC_FIELD] = vmac;
+            self.fields[UUID_FIELD] = uuid;
+        }
+        self
+    }
     pub(crate) fn resolved(&self) -> Result<Profile, String> {
         self.overrides
             .resolve(self.saved.as_ref().ok_or("No profile selected")?)
@@ -426,6 +483,7 @@ impl Connection {
             (Screen::Edit, Key::Discard) => {
                 self.fields.clear();
                 self.creating = false;
+                self.adopted = None;
                 self.screen = if self.saved.is_some() {
                     Screen::Preview
                 } else {
@@ -433,7 +491,7 @@ impl Connection {
                 };
                 None
             }
-            (Screen::Edit, Key::Submit) => match self.edited() {
+            (Screen::Edit, Key::Submit) => match self.apply_adopted().edited() {
                 Ok(profile) => Some(Request::Save {
                     name: self.fields[0].clone(),
                     profile,

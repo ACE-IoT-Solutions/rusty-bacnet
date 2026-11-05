@@ -1,5 +1,6 @@
 use super::*;
 use crate::server::GetAlarmSummaryBudget;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -19,9 +20,9 @@ impl BACnetObject for Counted {
         self.callbacks.fetch_add(1, Ordering::SeqCst);
         self.object.object_name()
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
         self.callbacks.fetch_add(1, Ordering::SeqCst);
-        self.object.property_list()
+        self.object.property_metadata()
     }
     fn read_property(&self, p: PropertyIdentifier, i: Option<u32>) -> Result<PropertyValue, Error> {
         self.callbacks.fetch_add(1, Ordering::SeqCst);

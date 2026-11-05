@@ -1,4 +1,6 @@
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
+use bacnet_objects::traits::LogBuffer;
 use bacnet_types::error::Error;
 use std::borrow::Cow;
 use std::future::Future;
@@ -77,8 +79,8 @@ impl BACnetObject for GateTrend {
     fn object_name(&self) -> &str {
         self.object.object_name()
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        self.object.property_list()
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        self.object.property_metadata()
     }
     fn read_property(
         &self,
@@ -111,14 +113,30 @@ impl BACnetObject for GateTrend {
     ) -> Result<(), Error> {
         self.object.write_property(p, i, v, priority)
     }
-    fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
-        self.object.bind_clock_internal(clock);
+    fn timed(&mut self) -> Option<&mut dyn bacnet_objects::traits::Timed> {
+        self.object.timed()
+    }
+    fn log_buffer(&self) -> Option<&dyn LogBuffer> {
+        Some(self)
+    }
+    fn log_buffer_mut(&mut self) -> Option<&mut dyn LogBuffer> {
+        Some(self)
+    }
+}
+/// Only the trend insertion hook, as before #2179: no identities, no paged
+/// buffer and no window refresh, which keep their defaults.
+impl LogBuffer for GateTrend {
+    fn record_identities(&self) -> Vec<bacnet_objects::log_buffer::LogRecordIdentity> {
+        Vec::new()
     }
     fn add_trend_record(
         &mut self,
         record: bacnet_types::constructed::BACnetLogRecord,
     ) -> Result<(), Error> {
-        self.object.add_trend_record(record)?;
+        self.object
+            .log_buffer_mut()
+            .unwrap()
+            .add_trend_record(record)?;
         self.appended.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }

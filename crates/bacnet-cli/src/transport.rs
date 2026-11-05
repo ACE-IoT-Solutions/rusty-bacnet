@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use bacnet_client::client::BACnetClient;
 use bacnet_transport::bip::{BipMode, BipMulticast, BipTransport, ForeignDeviceConfig};
-use bacnet_transport::bip6::Bip6Transport;
+use bacnet_transport::bip6::{Bip6ForeignDeviceConfig, Bip6Transport};
 use bacnet_types::error::Error;
 
 /// CLI-level transport arguments for constructing a BACnet client.
@@ -12,6 +12,8 @@ use bacnet_types::error::Error;
 pub struct TransportArgs {
     pub interface: Ipv4Addr,
     pub port: u16,
+    /// `--share-port` (#2366): share the B/IP port instead of claiming it.
+    pub share_port: bool,
     pub broadcast: Ipv4Addr,
     pub timeout_ms: u64,
     pub min_interval_ms: u64,
@@ -37,6 +39,11 @@ pub struct TransportArgs {
     pub device_instance: Option<u32>,
     /// `--foreign-bbmd`, with `--ttl` and `--renewal` (#938).
     pub foreign_device: Option<ForeignDeviceConfig>,
+    /// `--foreign-bbmd` with `--ttl`, in a B/IPv6 session (#2365).
+    pub bip6_foreign_device: Option<Bip6ForeignDeviceConfig>,
+    /// `--nat-global-address` (#1943): our address as the BBMD records it
+    /// behind a NAT router. Only the TUI's Network screen reads it.
+    pub nat_global_address: Option<std::net::SocketAddrV4>,
     /// `--bip-multicast` and `--bip-multicast-ttl` (#941).
     pub multicast: Option<BipMulticast>,
     /// `--mstp` and its settings (#969).
@@ -59,11 +66,36 @@ impl TransportArgs {
                     .map_err(|e| format!("invalid --ipv6-interface address '{s}': {e}"))
             })
             .transpose()?;
-        if cli.foreign_bbmd.is_some() && (cli.sc || cli.ipv6) {
+        if cli.foreign_bbmd.is_some() && cli.sc {
             return Err(
-                "--foreign-bbmd requires BACnet/IP transport (do not use --sc or --ipv6)".into(),
+                "--foreign-bbmd requires BACnet/IP or BACnet/IPv6 (do not use --sc)".into(),
             );
         }
+        // The BBMD of the session's transport (#2365).
+        let (foreign_device, bip6_foreign_device) = match &cli.foreign_bbmd {
+            Some(_) if cli.ipv6 && cli.renewal.is_some() => {
+                return Err(
+                    "--renewal applies only to B/IP: a B/IPv6 foreign device renews \
+                     at half the --ttl, but never more often than every 30 s"
+                        .into(),
+                );
+            }
+            Some(bbmd) if cli.ipv6 => {
+                let config = Bip6ForeignDeviceConfig {
+                    bbmd: bbmd.bip6()?,
+                    ttl: cli.ttl,
+                };
+                config
+                    .check()
+                    .map_err(|refusal| format!("--foreign-bbmd: {refusal}"))?;
+                (None, Some(config))
+            }
+            Some(bbmd) => (
+                crate::foreign::config(Some(bbmd.bip()?), cli.ttl, cli.renewal),
+                None,
+            ),
+            None => (None, None),
+        };
         let multicast = crate::multicast::from_cli(cli, interface)?;
         if let (Some(failover), Some(primary)) = (&cli.sc_failover_url, &cli.sc_url)
             && same_hub_url(failover, primary)
@@ -73,6 +105,7 @@ impl TransportArgs {
         Ok(Self {
             interface,
             port: cli.port,
+            share_port: cli.share_port,
             broadcast,
             timeout_ms: cli.timeout,
             min_interval_ms: cli.min_interval_ms,
@@ -92,7 +125,9 @@ impl TransportArgs {
             ipv6: cli.ipv6,
             ipv6_interface,
             device_instance: cli.device_instance,
-            foreign_device: crate::foreign::config(cli.foreign_bbmd, cli.ttl, cli.renewal),
+            foreign_device,
+            bip6_foreign_device,
+            nat_global_address: cli.nat_global_address,
             multicast,
             mstp: crate::mstp::MstpArgs::from_cli(cli)?,
         })
@@ -154,6 +189,7 @@ pub async fn build_bip_client(args: &TransportArgs) -> Result<BACnetClient<BipTr
     BACnetClient::bip_builder()
         .interface(args.interface)
         .port(args.port)
+        .share_wildcard_port(args.share_port)
         .broadcast_address(args.broadcast)
         .apdu_timeout_ms(args.timeout_ms)
         .min_request_interval_ms(args.min_interval_ms)
@@ -351,6 +387,9 @@ pub async fn build_bip6_client(args: &TransportArgs) -> Result<BACnetClient<Bip6
     if let Some(instance) = args.device_instance {
         builder = builder.device_instance(instance);
     }
+    if let Some(foreign) = &args.bip6_foreign_device {
+        builder = builder.foreign_device(foreign.clone());
+    }
 
     builder.build().await
 }
@@ -359,11 +398,43 @@ pub async fn build_bip6_client(args: &TransportArgs) -> Result<BACnetClient<Bip6
 mod tests {
     use super::*;
 
+    /// `--share-port` reaches the B/IP client builder (#2366): on a port
+    /// another socket holds, the claiming client's error names the opt-in,
+    /// and a sharing one's says the holder doesn't share. Windows decides a
+    /// sharing bind beside a socket that set no options by the two sockets'
+    /// accounts (Microsoft's SO_REUSEADDR table), so only the claiming case
+    /// runs there.
+    #[tokio::test]
+    async fn the_share_port_flag_reaches_the_bip_client() {
+        let holder = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let port = holder.local_addr().unwrap().port().to_string();
+        for (share, says) in [(false, "share_wildcard_port"), (true, "refuses sharing")] {
+            if share && cfg!(windows) {
+                continue;
+            }
+            let mut argv = vec!["bacnet".to_string(), "-p".into(), port.clone()];
+            argv.extend(share.then(|| "--share-port".to_string()));
+            argv.push("discover".into());
+            let cli = crate::parse_on_large_stack(move || {
+                <crate::args::Cli as clap::Parser>::try_parse_from(argv)
+            })
+            .unwrap();
+            assert_eq!(cli.share_port, share);
+            let args =
+                TransportArgs::from_cli(&cli, Ipv4Addr::LOCALHOST, Ipv4Addr::BROADCAST).unwrap();
+            let Err(Error::Transport(refused)) = build_bip_client(&args).await else {
+                panic!("the client started on a held port (share: {share})");
+            };
+            assert!(refused.to_string().contains(says), "{refused}");
+        }
+    }
+
     #[cfg(feature = "sc-tls")]
     fn sc_args() -> TransportArgs {
         TransportArgs {
             interface: Ipv4Addr::UNSPECIFIED,
             port: 0xBAC0,
+            share_port: false,
             broadcast: Ipv4Addr::BROADCAST,
             timeout_ms: 6000,
             min_interval_ms: 0,
@@ -381,6 +452,8 @@ mod tests {
             ipv6_interface: None,
             device_instance: None,
             foreign_device: None,
+            bip6_foreign_device: None,
+            nat_global_address: None,
             multicast: None,
             mstp: None,
         }

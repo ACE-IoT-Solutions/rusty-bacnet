@@ -1,4 +1,5 @@
 use super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::error::RemoteError;
 
 use crate::analog::{AnalogInputObject, AnalogOutputObject, AnalogValueObject};
@@ -112,6 +113,10 @@ fn property_metadata_analog_exact_required_and_instance_projections() {
             if kind == ObjectType::ANALOG_OUTPUT {
                 requires.extend(commandable);
             }
+            // Tables 12-2 and 12-4 footnote 2, Table 12-3 footnote 1: an
+            // analog object that reports COV, as these do, has COV_Increment
+            // (#2193).
+            requires.push(P::COV_INCREMENT);
             if kind != ObjectType::ANALOG_INPUT {
                 expected.extend([P::VALUE_SOURCE, P::VALUE_SOURCE_ARRAY, P::LAST_COMMAND_TIME]);
                 requires.extend([P::VALUE_SOURCE, P::VALUE_SOURCE_ARRAY, P::LAST_COMMAND_TIME]);
@@ -133,8 +138,14 @@ fn property_metadata_analog_exact_required_and_instance_projections() {
                 .collect();
             required.push(P::PROPERTY_LIST);
             assert_unique_and_canonical(object.as_ref());
-            assert_eq!(object.required_properties().as_ref(), required);
-            assert_eq!(object.property_list().as_ref(), expected);
+            assert_eq!(
+                crate::test_rows::required(&object.property_metadata()),
+                required
+            );
+            assert_eq!(
+                crate::test_rows::listed(&object.property_metadata()),
+                crate::test_rows::listed_from(&expected)
+            );
             let metadata = object.property_metadata();
             assert_eq!(metadata.len(), expected.len() + 1);
             for row in metadata.iter() {
@@ -149,6 +160,12 @@ fn property_metadata_analog_exact_required_and_instance_projections() {
                     assert_eq!(
                         row.presence_condition,
                         Some(PropertyPresenceCondition::IntrinsicReportingOptional),
+                        "{kind:?} {p:?}"
+                    );
+                } else if p == P::COV_INCREMENT {
+                    assert_eq!(
+                        row.presence_condition,
+                        Some(PropertyPresenceCondition::CovReporting),
                         "{kind:?} {p:?}"
                     );
                 }
@@ -252,7 +269,7 @@ fn property_metadata_analog_write_capabilities_match_dispatch() {
                     _ => PropertyWriteCapability::ReadOnly,
                 };
                 assert_eq!(row.write_capability, capability, "{p:?}");
-                assert_eq!(object.is_writable_property(p), capability.is_writable());
+                assert_eq!(is_writable_property(&*object, p), capability.is_writable());
                 let index = (p == P::PRIORITY_ARRAY).then_some(8);
                 let value = object.read_property(p, index).unwrap();
                 let result = object.write_property_from(

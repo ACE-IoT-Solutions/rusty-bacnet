@@ -18,7 +18,8 @@ use std::time::Duration;
 
 pub(crate) use bacnet_ops::bbmd::{BdtRow, FdtRow, address_of, mac, probe_error};
 use bacnet_ops::bbmd::{Probe, Unfollowed, unreachable_reason};
-use bacnet_transport::bip::{BvlcExchangeError, ForeignRegistrationSnapshot};
+use bacnet_transport::bip::{BvlcExchangeError, ForeignBbmd, ForeignRegistrationSnapshot};
+use bacnet_transport::bip6::Bip6ForeignStatus;
 
 /// UI to the network worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,24 +38,59 @@ pub(crate) enum NetworkCommand {
 }
 
 /// The configured foreign-device registration, from the connection plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Foreign {
-    /// The BBMD the client registers with.
-    pub(crate) bbmd: SocketAddrV4,
+    /// The BBMD as configured: an address, or a host name (#2308).
+    pub(crate) configured: ForeignBbmd,
+    /// The address the client registers with: the configured one, or the
+    /// one its host name last resolved to. `None` until it first resolves.
+    pub(crate) bbmd: Option<SocketAddrV4>,
     /// The time-to-live it asks for, in seconds.
     pub(crate) ttl: u16,
     /// How often it registers again.
     pub(crate) renewal: Duration,
+    /// Our address as the BBMD records it, when a NAT router translates
+    /// the registration (`--nat-global-address`, #1943).
+    pub(crate) nat_global: Option<SocketAddrV4>,
 }
 
-/// The FDT entry that is this client's own: the one recorded at our local
-/// address. A client bound to `0.0.0.0` matches on the port alone. `None`
-/// when no entry has our address, as when a NAT router rewrote the source
-/// of our registration.
-pub(crate) fn own_entry(entries: &[FdtRow], local: SocketAddrV4) -> Option<usize> {
-    entries.iter().position(|entry| {
+/// Which FDT entry is this client's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OwnEntry {
+    /// Its row in the FDT.
+    pub(crate) index: usize,
+    /// Found at the NAT global address, not at our local one: a NAT router
+    /// translated the registration's source.
+    pub(crate) translated: bool,
+}
+
+/// The FDT entry that is this client's own. With a NAT global address set,
+/// the entry recorded there is ours, marked translated: the user said a NAT
+/// router sits between us and the BBMD, so an entry at our private address
+/// may be another site's device on the same range, or one left from before
+/// the NAT. Otherwise, or when no entry has the global address, the one at
+/// our local address; a client bound to `0.0.0.0` matches on the port
+/// alone. `None` when neither has an entry.
+pub(crate) fn own_entry(
+    entries: &[FdtRow],
+    local: SocketAddrV4,
+    nat_global: Option<SocketAddrV4>,
+) -> Option<OwnEntry> {
+    let at_global =
+        nat_global.and_then(|global| entries.iter().position(|entry| entry.address == global));
+    if let Some(index) = at_global {
+        return Some(OwnEntry {
+            index,
+            translated: true,
+        });
+    }
+    let index = entries.iter().position(|entry| {
         entry.address.port() == local.port()
             && (local.ip().is_unspecified() || entry.address.ip() == local.ip())
+    })?;
+    Some(OwnEntry {
+        index,
+        translated: false,
     })
 }
 
@@ -72,6 +108,12 @@ pub(crate) fn read_error(error: &BvlcExchangeError) -> String {
 pub(crate) enum NetworkEvent {
     /// How the foreign-device registration is going, polled once a second.
     Registration(ForeignRegistrationSnapshot),
+    /// How a B/IPv6 foreign device's registration stands, polled once a
+    /// second (#2378): the status the CLI's one-shot wait reads.
+    Bip6Registration(Bip6ForeignStatus),
+    /// The registration's BBMD is at this address now: its host name
+    /// resolved, at last or elsewhere (#2308).
+    Bbmd(SocketAddrV4),
     /// A BBMD's tables, from [`NetworkCommand::Tables`].
     Tables {
         /// The BBMD read.
@@ -112,11 +154,42 @@ mod tests {
             ttl: 60,
             remaining: 90,
         };
-        let fdt = [entry("10.0.0.9:47808"), entry("10.0.0.5:50000")];
-        assert_eq!(own_entry(&fdt, "10.0.0.5:50000".parse().unwrap()), Some(1));
-        assert_eq!(own_entry(&fdt, "0.0.0.0:50000".parse().unwrap()), Some(1));
-        // Behind NAT the BBMD recorded another address: nothing matches.
-        assert_eq!(own_entry(&fdt, "192.168.1.5:50000".parse().unwrap()), None);
+        let at = |text: &str| text.parse::<SocketAddrV4>().unwrap();
+        let direct = |index| {
+            Some(OwnEntry {
+                index,
+                translated: false,
+            })
+        };
+        let fdt = [
+            entry("10.0.0.9:47808"),
+            entry("10.0.0.5:50000"),
+            entry("203.0.113.7:61000"),
+        ];
+        assert_eq!(own_entry(&fdt, at("10.0.0.5:50000"), None), direct(1));
+        assert_eq!(own_entry(&fdt, at("0.0.0.0:50000"), None), direct(1));
+        // With both in the FDT, the global address wins: the user said a
+        // NAT router translates us.
+        let global = Some(at("203.0.113.7:61000"));
+        let translated = Some(OwnEntry {
+            index: 2,
+            translated: true,
+        });
+        assert_eq!(own_entry(&fdt, at("10.0.0.5:50000"), global), translated);
+        // A global address with no entry leaves the local match standing.
+        let absent = Some(at("203.0.113.9:61000"));
+        assert_eq!(own_entry(&fdt, at("10.0.0.5:50000"), absent), direct(1));
+        // Behind NAT the BBMD recorded another address: with no global
+        // address nothing matches, and with one its entry is ours.
+        let private = at("192.168.1.5:50000");
+        assert_eq!(own_entry(&fdt, private, None), None);
+        assert_eq!(own_entry(&fdt, private, global), translated);
+        // The global address must match exactly, port included.
+        assert_eq!(
+            own_entry(&fdt, private, Some(at("203.0.113.7:61001"))),
+            None
+        );
+        assert_eq!(own_entry(&fdt, private, Some(at("0.0.0.0:61000"))), None);
     }
 
     #[test]

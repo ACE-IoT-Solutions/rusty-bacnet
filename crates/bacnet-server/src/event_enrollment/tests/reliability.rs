@@ -3,6 +3,7 @@ use super::*;
 use bacnet_encoding::primitives::decode_timestamp_choice;
 use bacnet_objects::analog::{AnalogInputObject, AnalogValueObject};
 use bacnet_objects::event_enrollment::EventEnrollmentObject;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetEventParameter, BACnetPropertyStates,
     FaultParameters,
@@ -66,8 +67,8 @@ impl BACnetObject for OptionalReliabilityTarget {
         ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 }
 
@@ -627,7 +628,8 @@ fn fault_recovery_resets_cached_event_state_once_and_restarts_full_delay_next_pa
     assert!(
         db.get(&enrollment_oid)
             .unwrap()
-            .enrollment_eval_state_internal()
+            .enrollment_eval()
+            .map(|e| e.eval_state())
             .unwrap()
             .pending
             .is_none()
@@ -639,7 +641,8 @@ fn fault_recovery_resets_cached_event_state_once_and_restarts_full_delay_next_pa
     assert_eq!(
         db.get(&enrollment_oid)
             .unwrap()
-            .enrollment_eval_state_internal()
+            .enrollment_eval()
+            .map(|e| e.eval_state())
             .unwrap()
             .pending
             .unwrap()

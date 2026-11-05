@@ -21,10 +21,14 @@ use tracing::{debug, warn};
 use event_delivery::EventDelivery;
 
 use bacnet_encoding::apdu::{
-    self, AbortPdu, Apdu, ComplexAck, ConfirmedRequest as ConfirmedRequestPdu, ErrorPdu, RejectPdu,
+    self, AbortPdu, Apdu, ComplexAck, ConfirmedRequest as ConfirmedRequestPdu, RejectPdu,
     SegmentAck as SegmentAckPdu, SimpleAck, UnconfirmedRequest as UnconfirmedRequestPdu,
     encode_apdu,
 };
+// The server's tests build Error and Reject PDUs; its code takes them from
+// bacnet_device_core::reply.
+#[cfg(test)]
+use bacnet_encoding::apdu::ErrorPdu;
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_encoding::primitives::encode_property_value;
 use bacnet_encoding::segmentation::{
@@ -37,7 +41,11 @@ use bacnet_objects::notification_class::{
     lookup_notification_recipients, resolve_transition_priority_ack,
 };
 use bacnet_services::alarm_event::EventNotificationRequest;
+// The server's tests name these through `use super::*`; the Single fanout
+// that used them here builds its notifications in bacnet-device-core now.
+#[cfg(test)]
 use bacnet_services::common::BACnetPropertyValue;
+#[cfg(test)]
 use bacnet_services::cov::COVNotificationRequest;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
 use bacnet_services::who_is::{DeviceInstanceRange, IAmRequest, WhoIsRequest};
@@ -47,9 +55,11 @@ use bacnet_transport::port::TransportPort;
 use bacnet_transport::warn_throttle::WarnThrottle;
 use bacnet_transport::warn_throttled;
 use bacnet_types::MacAddr;
+#[cfg(test)]
+use bacnet_types::enums::RejectReason;
 use bacnet_types::enums::{
     AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, LifeSafetyOperation, NotifyType,
-    ObjectType, PropertyIdentifier, RejectReason, Segmentation, UnconfirmedServiceChoice,
+    ObjectType, PropertyIdentifier, Segmentation, UnconfirmedServiceChoice,
 };
 use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
@@ -58,12 +68,12 @@ use crate::audit_notification::{
     AuditNotificationAuthorizationContext, MAX_AUDIT_NOTIFICATION_BYTES, MAX_AUDIT_NOTIFICATIONS,
     UnconfirmedAuditNotificationAuthorizationContext,
 };
-pub use crate::cov::{CovCounters, CovPolicy};
-use crate::cov::{
-    CovNotificationKind, CovSubscription, CovSubscriptionSnapshot, CovSubscriptionTable,
-};
+use crate::cov::CovSubscriptionTable;
 use crate::life_safety::LifeSafetyOperationAuthorizationContext;
 use crate::{handlers, runtime_clock};
+use bacnet_device_core::cov::CovNotificationKind;
+use bacnet_device_core::cov::{CovCounters, CovPolicy};
+use bacnet_device_core::cov::{CovSubscription, CovSubscriptionSnapshot};
 use confirmed_request_tracker::{
     ConfirmedRequestAdmission, ConfirmedRequestTracker, PendingConfirmedRequest,
 };
@@ -134,6 +144,9 @@ pub struct TimeSyncData {
 
 mod config;
 pub use config::ServerConfig;
+mod object_type_registry;
+pub use object_type_registry::ObjectTypeRegistry;
+pub(crate) use object_type_registry::construct as construct_registered_object;
 mod audit_batch_queue;
 mod audit_batch_runtime;
 mod audit_context_preparation;
@@ -329,6 +342,7 @@ impl BipServerBuilder {
         let mut transport =
             BipTransport::new(config.interface, config.port, config.broadcast_address);
         transport.set_share_port_by_address(config.share_port_by_address);
+        transport.set_share_wildcard_port(config.share_wildcard_port);
         transport.set_mode(self.mode);
         transport.set_multicast(self.multicast)?;
         let db = crate::local_device::prepare_database(
@@ -481,6 +495,8 @@ mod cov_snapshot;
 mod dcc_disable_rate;
 pub(crate) mod dcc_outcomes;
 mod dcc_policy;
+#[cfg(test)]
+mod device_core_parity_tests;
 mod lso_replay;
 pub use dcc_disable_rate::DccDisableRateLimit;
 mod dcc_timer;
@@ -491,8 +507,6 @@ pub use dcc_timer::DccState;
 mod binding_probes;
 mod device_bindings;
 mod discovery;
-#[doc(hidden)]
-pub use discovery::iam_request_for as discovery_iam_for_test;
 pub use discovery::{DiscoveryCounters, DiscoveryPolicy};
 pub(crate) use discovery::{DiscoveryLimiter, PreCheckDecision, WhoHasTarget};
 mod audit_log_purge;
@@ -565,10 +579,9 @@ mod segmentation;
 mod segmented_receive;
 mod segmented_send;
 pub(crate) use segmented_send::*;
+mod alarm_summary_budget;
 mod request_admission;
 mod rpm_budget;
-pub use rpm_budget::ReadPropertyMultipleBudget;
-mod alarm_summary_budget;
 pub use alarm_summary_budget::GetAlarmSummaryBudget;
 mod atomic_read_file_budget;
 mod atomic_write_file_budget;
@@ -600,6 +613,8 @@ mod access_door_pulse_task_tests;
 #[cfg(test)]
 mod access_zone_event_tests;
 #[cfg(test)]
+mod accumulator_pulse_feed_tests;
+#[cfg(test)]
 mod acknowledge_alarm_tests;
 #[cfg(test)]
 mod active_cov_subscriptions_tests;
@@ -611,6 +626,8 @@ mod averaging_reference_write_tests;
 mod averaging_sample_tests;
 #[cfg(test)]
 mod binary_lighting_task_tests;
+#[cfg(test)]
+mod catalogue_wire_tests;
 #[cfg(test)]
 mod channel_member_concurrency_tests;
 #[cfg(test)]
@@ -638,6 +655,8 @@ mod command_run_cancel_tests;
 #[cfg(test)]
 mod command_run_stop_tests;
 #[cfg(test)]
+mod commanding_delete_tests;
+#[cfg(test)]
 mod confirmed_broadcast_tests;
 #[cfg(test)]
 mod cov_background_tests;
@@ -653,6 +672,8 @@ mod cov_multiple_admission_tests;
 mod cov_notifications_tests;
 #[cfg(test)]
 mod cov_quota_tests;
+#[cfg(test)]
+mod cov_stalled_send_tests;
 #[cfg(test)]
 mod cov_timed_capture_order_tests;
 #[cfg(test)]
@@ -680,7 +701,11 @@ mod direct_principal_tests;
 #[cfg(test)]
 mod discovery_dcc_tests;
 #[cfg(test)]
+mod discovery_lock_tests;
+#[cfg(test)]
 mod discovery_tests;
+#[cfg(test)]
+mod empty_array_wire_tests;
 #[cfg(test)]
 mod event_confirmed_routing_tests;
 #[cfg(test)]
@@ -705,6 +730,8 @@ mod event_network_priority_tests;
 mod event_notifications_tests;
 #[cfg(test)]
 mod event_recipient_routing_tests;
+#[cfg(test)]
+mod legacy_event_parameters_wire_tests;
 #[cfg(test)]
 mod life_safety_application_tests;
 #[cfg(test)]
@@ -738,7 +765,11 @@ mod noncommandable_null_cov_tests;
 #[cfg(test)]
 mod notification_dcc_tests;
 #[cfg(test)]
+mod notification_initiator_tests;
+#[cfg(test)]
 mod notification_transactions_tests;
+#[cfg(test)]
+mod program_state_application_tests;
 #[cfg(test)]
 mod pulse_converter_cov_tests;
 #[cfg(test)]
@@ -756,6 +787,10 @@ mod run_cycle_tests;
 #[cfg(test)]
 mod schedule_create_retry_tests;
 #[cfg(test)]
+mod schedule_delete_tests;
+#[cfg(test)]
+mod schedule_ownership_tests;
+#[cfg(test)]
 mod schedule_reference_list_tests;
 #[cfg(test)]
 mod schedule_reference_write_tests;
@@ -765,6 +800,10 @@ mod schedule_write_tests;
 mod segmentation_tests;
 #[cfg(test)]
 mod staging_cov_tests;
+#[cfg(test)]
+mod staging_delete_tests;
+#[cfg(test)]
+mod staging_ref_change_tests;
 #[cfg(test)]
 mod staging_reference_write_tests;
 #[cfg(test)]
@@ -777,6 +816,10 @@ pub(crate) mod test_forwarder;
 pub(crate) mod test_transport;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod timer_state_change_tests;
+#[cfg(test)]
+mod timer_task_tests;
 #[cfg(test)]
 mod trailing_octet_wire_tests;
 #[cfg(test)]

@@ -29,25 +29,30 @@ pub struct AlertEnrollmentObject {
     pub(super) event_state: EventState,
     /// Source of the most recent alert handed to this enrollment.
     pub present_value: ObjectIdentifier,
-    /// Whether event detection is enabled.
-    ///
-    /// Prefer [`Self::set_event_detection_enable`] so disabling also clears
-    /// stored event state. This field remains public for compatibility;
-    /// property reads and internal transition hooks still enforce the
-    /// disabled-state invariant after a direct assignment. Re-enable through
-    /// the setter as well: a direct FALSE-to-TRUE assignment cannot run the
-    /// reset and may expose state stored before the direct disable.
-    pub event_detection_enable: bool,
+    /// Whether event detection is enabled; set through
+    /// [`Self::set_event_detection_enable`], so disabling also clears stored
+    /// event state. Property reads still enforce the disabled-state
+    /// invariant after a direct assignment in this module's tests.
+    pub(super) event_detection_enable: bool,
     /// Acked_Transitions: a set flag means that transition was acknowledged.
     pub(super) acked_transitions: EventTransitionBits,
     pub(super) event_history: EventHistory,
     /// Event_Enable: the transitions whose notifications are distributed.
-    pub event_enable: EventTransitionBits,
+    event_enable: EventTransitionBits,
     /// Notification class number.
-    pub notification_class: u32,
+    notification_class: u32,
     /// Notification category for generated notifications. The local default is
     /// ALARM; ACK_NOTIFICATION is output-only acknowledgement-flow vocabulary.
     notify_type: NotifyType,
+    /// The reporting settings a write set, kept in storage once the
+    /// enrollment opts in (#2331).
+    reporting_store: crate::write_config::reporting::ReportingStore,
+}
+
+/// Whether an Alert Enrollment takes `notify_type` as its Notify_Type: only
+/// ALARM and EVENT, the categories its notifications go out as.
+fn takes_notify_type(notify_type: NotifyType) -> bool {
+    notify_type == NotifyType::ALARM || notify_type == NotifyType::EVENT
 }
 
 impl AlertEnrollmentObject {
@@ -71,6 +76,7 @@ impl AlertEnrollmentObject {
             event_enable: EventTransitionBits::all(),
             notification_class: 0,
             notify_type: NotifyType::ALARM,
+            reporting_store: Default::default(),
         })
     }
 
@@ -83,10 +89,51 @@ impl AlertEnrollmentObject {
         self.present_value = source;
     }
 
+    /// Seed a committed, unacknowledged transition to `state` for a test:
+    /// Alert Enrollment has no transition commit of its own.
+    #[cfg(all(test, feature = "event-reporting"))]
+    pub(crate) fn seed_unacknowledged(
+        &mut self,
+        state: EventState,
+        transition: EventTransitionBits,
+    ) {
+        self.event_state = state;
+        self.acked_transitions.remove(transition);
+    }
+
     /// Enable or disable event detection.
     ///
     /// Disabling applies the Clause 13.2.2.1 initial conditions immediately.
+    /// On an enrollment keeping its reporting settings, a value a write
+    /// saved wins until `clear_written_reporting` (#2331), as for the next
+    /// two setters.
     pub fn set_event_detection_enable(&mut self, enabled: bool) {
+        if !self.kept_over_setter(PropertyIdentifier::EVENT_DETECTION_ENABLE) {
+            self.apply_event_detection_enable(enabled);
+        }
+    }
+
+    /// Set Notification_Class.
+    pub fn set_notification_class(&mut self, class: u32) {
+        if !self.kept_over_setter(PropertyIdentifier::NOTIFICATION_CLASS) {
+            self.notification_class = class;
+        }
+    }
+
+    /// Set Event_Enable: the transitions whose notifications are
+    /// distributed. Flags outside the three named transitions are dropped.
+    pub fn set_event_enable(&mut self, enable: EventTransitionBits) {
+        if !self.kept_over_setter(PropertyIdentifier::EVENT_ENABLE) {
+            self.event_enable = enable & EventTransitionBits::all();
+        }
+    }
+
+    fn kept_over_setter(&self, property: PropertyIdentifier) -> bool {
+        crate::write_config::reporting::setter_gives_way(&self.reporting_store, self.oid, property)
+    }
+
+    /// Event_Detection_Enable as a write or an unguarded setter makes it.
+    fn apply_event_detection_enable(&mut self, enabled: bool) {
         if !enabled || !self.event_detection_enable {
             self.event_state = EventState::NORMAL;
             self.acked_transitions = EventTransitionBits::all();
@@ -115,9 +162,8 @@ impl AlertEnrollmentObject {
                 Some(Ok(PropertyValue::CharacterString(self.description.clone())))
             }
             PropertyIdentifier::PROPERTY_LIST => {
-                let properties = self.property_list();
-                Some(common::read_property_list_property(
-                    &properties,
+                Some(crate::property_metadata::read_property_list(
+                    &self.property_metadata(),
                     array_index,
                 ))
             }
@@ -140,6 +186,7 @@ impl BACnetObject for AlertEnrollmentObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // The history arrays read their initial condition while detection is
         // off, even after a direct field assignment skipped the reset.
         if !self.event_detection_enable
@@ -211,9 +258,11 @@ impl BACnetObject for AlertEnrollmentObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        crate::write_config::reporting::admit(self, property, array_index, &value)?;
         if property == PropertyIdentifier::EVENT_DETECTION_ENABLE {
             if let PropertyValue::Boolean(v) = value {
-                self.set_event_detection_enable(v);
+                self.apply_event_detection_enable(v);
                 return Ok(());
             }
             return Err(common::invalid_data_type_error());
@@ -238,7 +287,7 @@ impl BACnetObject for AlertEnrollmentObject {
         if property == PropertyIdentifier::NOTIFY_TYPE {
             if let PropertyValue::Enumerated(v) = value {
                 let notify_type = NotifyType::from_raw(v);
-                if notify_type != NotifyType::ALARM && notify_type != NotifyType::EVENT {
+                if !takes_notify_type(notify_type) {
                     return Err(common::value_out_of_range_error());
                 }
                 self.notify_type = notify_type;
@@ -258,70 +307,34 @@ impl BACnetObject for AlertEnrollmentObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
-    fn set_event_state_internal(&mut self, state: EventState) -> Result<(), Error> {
-        if !self.event_detection_enable && state != EventState::NORMAL {
-            return Err(common::write_access_denied_error());
-        }
-        self.event_state = state;
-        Ok(())
-    }
+    crate::traits::lend_event_reporting!();
 
-    fn set_acked_transitions_internal(
-        &mut self,
-        transition_bit: EventTransitionBits,
-        acknowledged: bool,
-    ) -> Result<(), Error> {
-        if !self.event_detection_enable {
-            return Err(common::write_access_denied_error());
-        }
-        let transition_bit = transition_bit & EventTransitionBits::all();
-        if acknowledged {
-            self.acked_transitions.insert(transition_bit);
-        } else {
-            // Alert Enrollment never requires acknowledgment for TO_NORMAL
-            // (Clause 12.52.8), so that bit cannot enter the unacknowledged
-            // state even if a generic transition hook asks to clear it.
-            self.acked_transitions
-                .remove(transition_bit.difference(EventTransitionBits::TO_NORMAL));
-        }
-        self.acked_transitions
-            .insert(EventTransitionBits::TO_NORMAL);
-        Ok(())
-    }
-
-    fn is_writable_property(&self, property: PropertyIdentifier) -> bool {
-        matches!(
-            property,
-            PropertyIdentifier::DESCRIPTION
-                | PropertyIdentifier::EVENT_DETECTION_ENABLE
-                | PropertyIdentifier::EVENT_ENABLE
-                | PropertyIdentifier::NOTIFICATION_CLASS
-                | PropertyIdentifier::NOTIFY_TYPE
-                | PropertyIdentifier::EVENT_MESSAGE_TEXTS_CONFIG
-                | PropertyIdentifier::EVENT_ALGORITHM_INHIBIT_REF
-                | PropertyIdentifier::EVENT_ALGORITHM_INHIBIT
-        )
-    }
-
-    fn event_algorithm_inhibit_reference_internal(
-        &self,
-    ) -> Option<bacnet_types::constructed::BACnetObjectPropertyReference> {
-        self.event_history.options.inhibit_reference().cloned()
-    }
-
-    fn follow_event_algorithm_inhibit_internal(&mut self, inhibit: bool) -> bool {
-        self.event_history.options.follow(inhibit)
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.durable_capability()
     }
 
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
         Cow::Borrowed(metadata::ALERT_ENROLLMENT_PROPERTIES)
     }
+}
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(metadata::ALERT_ENROLLMENT_PROPERTIES)
+crate::write_config::reporting::impl_reporting_persistence!(AlertEnrollmentObject, without_tags);
+keep_enrollment_reporting!(AlertEnrollmentObject, takes_notify_type: takes_notify_type);
+
+/// An Alert Enrollment's alerts come from its server-side evaluator, so it
+/// lends event reporting for its Event_Algorithm_Inhibit_Ref alone.
+impl crate::traits::EventReporting for AlertEnrollmentObject {
+    fn event_algorithm_inhibit_reference(
+        &self,
+    ) -> Option<bacnet_types::constructed::BACnetObjectPropertyReference> {
+        self.event_history.options.inhibit_reference().cloned()
+    }
+
+    fn follow_event_algorithm_inhibit(&mut self, inhibit: bool) -> bool {
+        self.event_history.options.follow(inhibit)
     }
 }

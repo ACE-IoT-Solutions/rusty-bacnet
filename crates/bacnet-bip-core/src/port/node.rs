@@ -15,9 +15,11 @@ use bacnet_npdu::MAX_NPDU;
 /// A port on a B/IP node in normal or foreign-device mode, which it owns,
 /// with `X` exchange slots and held-broadcast slots of `N` octets.
 ///
-/// It carries out every action the node queues: the registrations, and the
-/// broadcasts held until the first registration attempt resolves, which it
-/// sends or drops as the node says. It drops the rest: the registration
+/// It carries out every action the node queues: the registrations, the
+/// release of the BBMD a move left
+/// ([`Foreign::release_previous`](crate::node::Foreign::release_previous)),
+/// and the broadcasts held until the first registration attempt resolves,
+/// which it sends or drops as the node says. It drops the rest: the registration
 /// events, and a manual exchange's end, whose response it also swallows
 /// (the node matches it, and [`receive`](Self::receive) says only
 /// [`Ingress::Handled`]). What the events carried stays readable in
@@ -112,7 +114,9 @@ impl<'h, const X: usize, const N: usize> NodePort<'h, X, N> {
     }
 
     /// Move a foreign device to `foreign`'s BBMD and time-to-live at `now`
-    /// ([`Node::retarget`]): its first attempt there goes out at once.
+    /// ([`Node::retarget`]): its first attempt there goes out at once, and
+    /// with [`Foreign::release_previous`] the release of the BBMD it left
+    /// right after.
     /// Refused, changing nothing, when the node is not a foreign device,
     /// when the link refuses the registration, or when the port's held
     /// slots can't take what `foreign` holds.
@@ -189,10 +193,21 @@ impl<'h, const X: usize, const N: usize> NodePort<'h, X, N> {
         now: Instant,
         out: &mut impl Datagrams,
     ) -> Result<Admission, SendRefusal> {
-        let (outgoing, _) = self.node.link().broadcast(npdu)?;
+        // The link refuses what it can't carry. One whose BBMD isn't known
+        // yet has nowhere to send, and the node holds or refuses the
+        // broadcast meanwhile.
+        let decided = self.node.link().broadcast(npdu);
+        if let Err(refusal) = decided
+            && refusal != SendRefusal::NoBbmd
+        {
+            return Err(refusal);
+        }
         let admission = self.node.admit_broadcast(now)?;
         match admission {
-            Admission::Send => out.send(outgoing.to, &outgoing.message)?,
+            Admission::Send => {
+                let (outgoing, _) = decided?;
+                out.send(outgoing.to, &outgoing.message)?;
+            }
             Admission::Hold => {
                 // `new` lent a slot for each broadcast the node holds, each
                 // as long as any the link's limit lets through.
@@ -218,8 +233,13 @@ impl<'h, const X: usize, const N: usize> NodePort<'h, X, N> {
         loop {
             match self.node.poll_action() {
                 Action::Idle => return,
-                Action::Register { exchange, to, ttl } => {
-                    if out.send(to, &Bvll::RegisterForeignDevice { ttl }).is_ok() {
+                // A registration, or the release of the BBMD a move left,
+                // whose outcome the node counts. One send for both keeps a
+                // single copy of the socket's code.
+                request @ (Action::Register { exchange, to, .. }
+                | Action::ReleasePrevious { exchange, to, .. }) => {
+                    let sent = request.message().map(|message| out.send(to, &message));
+                    if let Some(Ok(())) = sent {
                         self.node.exchange_sent(exchange, now);
                     } else {
                         let failure = LocalFailure::SendFailed;

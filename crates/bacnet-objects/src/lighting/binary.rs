@@ -349,6 +349,7 @@ impl BACnetObject for BinaryLightingOutputObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = self
             .value_source
             .read(property, array_index, &self.priority_array)
@@ -393,13 +394,7 @@ impl BACnetObject for BinaryLightingOutputObject {
         priority: Option<u8>,
         origin: &CommandOrigin,
     ) -> Result<(), Error> {
-        if matches!(
-            property,
-            PropertyIdentifier::PRESENT_VALUE | PropertyIdentifier::VALUE_SOURCE
-        ) && array_index.is_some()
-        {
-            return Err(common::property_is_not_an_array_error());
-        }
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if property == PropertyIdentifier::VALUE_SOURCE {
             return self.value_source.correct(value, priority, origin);
         }
@@ -428,6 +423,7 @@ impl BACnetObject for BinaryLightingOutputObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         // A command needs its writer (`write_property_from`, #1866).
         if matches!(
             property,
@@ -472,49 +468,58 @@ impl BACnetObject for BinaryLightingOutputObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
         self.profile.capability()
-    }
-
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
     }
 
     fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
         super::metadata::for_binary_lighting_output_object(self)
     }
 
-    fn supports_cov(&self) -> bool {
-        true
+    crate::traits::lend_cov_reporting!();
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
+    }
+}
+
+impl crate::traits::CovReporting for BinaryLightingOutputObject {}
+
+impl crate::traits::Timed for BinaryLightingOutputObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.monotonic_clock = clocks.monotonic.clone();
     }
 
-    fn advance_time_internal(&mut self, elapsed: Duration) -> bool {
-        self.logical_now = self.logical_now.saturating_add(elapsed);
-        self.expire_at(self.logical_now)
-    }
-
-    fn bind_monotonic_clock_internal(&mut self, clock: Option<Arc<MonotonicClock>>) {
-        self.monotonic_clock = clock;
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: Duration) -> bool {
-        self.profile.expire(now);
+    fn advance_monotonic_time(&mut self, now: Duration) -> bool {
         self.expire_at(now)
     }
 
-    fn next_monotonic_deadline_internal(&self) -> Option<Duration> {
+    fn next_monotonic_deadline(&self) -> Option<Duration> {
         self.active_operation.map(|operation| operation.deadline)
     }
 
-    fn cov_snapshot_internal(&self) -> Option<Box<dyn BACnetObject>> {
+    fn cov_snapshot(&self) -> Option<Box<dyn BACnetObject>> {
         Some(Box::new(self.clone()))
     }
+}
 
-    fn lighting_blink_count_internal(&self) -> u64 {
+#[cfg(test)]
+impl BinaryLightingOutputObject {
+    pub(crate) fn advance_time(&mut self, elapsed: Duration) -> bool {
+        self.logical_now = self.logical_now.saturating_add(elapsed);
+        self.expire_at(self.logical_now)
+    }
+}
+
+impl BinaryLightingOutputObject {
+    /// How many blink-warn notifications the object has asked for: a
+    /// conformance-test channel, read through
+    /// `ObjectDatabase::lighting_blink_count_internal`.
+    pub(crate) fn lighting_blink_count(&self) -> u64 {
         self.blink_request_count
     }
 }

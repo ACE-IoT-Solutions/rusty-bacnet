@@ -9,6 +9,7 @@
 //! Reason_For_Disable and so read-only, and has no Present_Value row.
 
 use super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::error::RemoteError;
 
@@ -149,7 +150,7 @@ fn access_credential_status_is_read_only() {
     let mut credential = AccessCredentialObject::new(1, "CRED-1").unwrap();
     // Nothing disables a new credential, so the derived status is ACTIVE;
     // no write reaches it, whatever the value or type (#1073).
-    assert!(!credential.is_writable_property(CS));
+    assert!(!is_writable_property(&credential, CS));
     for value in [
         PropertyValue::Enumerated(BinaryPV::INACTIVE.to_raw()),
         PropertyValue::Enumerated(BinaryPV::ACTIVE.to_raw()),
@@ -171,14 +172,17 @@ fn access_credential_status_is_read_only() {
 #[test]
 fn access_credential_has_no_present_value() {
     let mut credential = AccessCredentialObject::new(1, "CRED-1").unwrap();
-    assert!(!credential.property_list().contains(&P));
+    assert!(!crate::property_metadata::has_property(
+        &credential.property_metadata(),
+        P
+    ));
     assert!(
         !credential
             .property_metadata()
             .iter()
             .any(|row| row.property_identifier == P)
     );
-    assert!(!credential.is_writable_property(P));
+    assert!(!is_writable_property(&credential, P));
     assert_property_error(
         credential.read_property(P, None).map(|_| ()),
         ErrorCode::UNKNOWN_PROPERTY,

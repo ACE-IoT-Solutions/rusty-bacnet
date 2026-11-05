@@ -440,7 +440,7 @@ async fn object_audit_policy_wpm_each_element_captures_committed_prestate() {
 }
 
 #[tokio::test]
-async fn object_audit_policy_bv_create_delete_and_failed_av_create_fallback() {
+async fn object_audit_policy_bv_create_delete_and_failed_access_point_create_fallback() {
     use bacnet_services::object_mgmt::{CreateObjectRequest, DeleteObjectRequest, ObjectSpecifier};
     let mut r = reporter();
     r.set_auditable_operations(flags(&[AuditOperation::CREATE, AuditOperation::DELETE]))
@@ -462,7 +462,8 @@ async fn object_audit_policy_bv_create_delete_and_failed_av_create_fallback() {
                 })
                 .collect(),
         }
-        .encode(&mut bytes);
+        .encode(&mut bytes)
+        .unwrap();
         assert!(matches!(
             dispatch(
                 &f.server,
@@ -491,10 +492,11 @@ async fn object_audit_policy_bv_create_delete_and_failed_av_create_fallback() {
     }
     let mut bytes = BytesMut::new();
     CreateObjectRequest {
-        object_specifier: ObjectSpecifier::Type(ObjectType::ANALOG_VALUE),
+        object_specifier: ObjectSpecifier::Type(ObjectType::ACCESS_POINT),
         list_of_initial_values: vec![],
     }
-    .encode(&mut bytes);
+    .encode(&mut bytes)
+    .unwrap();
     assert!(matches!(
         dispatch(
             &f.server,
@@ -508,7 +510,10 @@ async fn object_audit_policy_bv_create_delete_and_failed_av_create_fallback() {
     assert_eq!(count(&f), 3);
     assert_eq!(
         notifications(&f.transport.sent)[2].notifications[0].result,
-        Some((ErrorClass::OBJECT, ErrorCode::UNSUPPORTED_OBJECT_TYPE))
+        Some((
+            ErrorClass::OBJECT,
+            ErrorCode::DYNAMIC_CREATION_NOT_SUPPORTED
+        ))
     );
     f.server.stop().await.unwrap();
 }

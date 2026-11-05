@@ -124,31 +124,33 @@ async def first_seen(server: BACnetServer, expected: dict) -> dict:
 class ChannelStubContractTests(unittest.TestCase):
     def test_runtime_and_stub_take_the_same_arguments(self) -> None:
         parameters = inspect.signature(BACnetServer.add_channel).parameters
-        self.assertEqual(
-            list(parameters), ["self", *ARGUMENTS, "allow_group_delay_inhibit"]
-        )
+        keywords = ["allow_group_delay_inhibit", "storage_path", "clear_written_config"]
+        self.assertEqual(list(parameters), ["self", *ARGUMENTS, *keywords])
         for argument in ARGUMENTS:
             self.assertIs(
                 parameters[argument].kind, inspect.Parameter.POSITIONAL_OR_KEYWORD
             )
         for argument in ARGUMENTS[3:]:
             self.assertIsNone(parameters[argument].default)
-        inhibit = parameters["allow_group_delay_inhibit"]
-        self.assertIs(inhibit.kind, inspect.Parameter.KEYWORD_ONLY)
-        self.assertIs(inhibit.default, False)
+        for keyword in keywords:
+            self.assertIs(parameters[keyword].kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIs(parameters["allow_group_delay_inhibit"].default, False)
+        self.assertIsNone(parameters["storage_path"].default)
+        self.assertIs(parameters["clear_written_config"].default, False)
 
         method = installed_stub_method("add_channel")
         self.assertEqual(
             [argument.arg for argument in method.args.args], ["self", *ARGUMENTS]
         )
         self.assertEqual(
-            [argument.arg for argument in method.args.kwonlyargs],
-            ["allow_group_delay_inhibit"],
+            [argument.arg for argument in method.args.kwonlyargs], keywords
         )
         for default in method.args.defaults:
             self.assertIsInstance(default, ast.Constant)
             self.assertIsNone(default.value)
-        self.assertIs(method.args.kw_defaults[0].value, False)
+        self.assertEqual(
+            [default.value for default in method.args.kw_defaults], [False, None, False]
+        )
 
 
 class ChannelMembersTests(unittest.IsolatedAsyncioTestCase):
@@ -292,12 +294,11 @@ class ChannelMembersTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ChannelWildcardDeviceTests(unittest.IsolatedAsyncioTestCase):
-    async def test_a_wildcard_device_server_keeps_every_device_member(self) -> None:
-        # Instance 4194303 names no particular device, so the server has no
-        # own Device: a member naming Device 4194303 keeps it, as the
-        # database's local-device rule says.
+    async def test_a_member_naming_the_wildcard_device_keeps_it(self) -> None:
+        # Instance 4194303 names no particular device, so a member naming
+        # Device 4194303 isn't this server's and keeps its device.
         wildcard = ObjectIdentifier(ObjectType.DEVICE, 4_194_303)
-        server = make_server(4_194_303)
+        server = make_server()
         server.add_analog_value(1, "AV-1")
         server.add_channel(
             1,
@@ -317,6 +318,12 @@ class ChannelWildcardDeviceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(element, member(AV1, wildcard))
         finally:
             await server.stop()
+
+    async def test_a_server_cannot_be_the_wildcard_device(self) -> None:
+        # No object may have instance 4194303 (#2171), the Device included,
+        # so the constructor refuses it.
+        with self.assertRaisesRegex(ValueError, "4194303"):
+            make_server(4_194_303)
 
 
 class ChannelArgumentTests(unittest.IsolatedAsyncioTestCase):

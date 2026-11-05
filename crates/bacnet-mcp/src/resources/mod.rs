@@ -20,7 +20,7 @@ pub(crate) mod uri;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bacnet_ops::limits::{Account, charged};
+use bacnet_ops::limits::charged;
 use bacnet_transport::port::TransportPort;
 use rmcp::ErrorData;
 use rmcp::model::{ReadResourceResult, Resource, ResourceContents, ResourceTemplate};
@@ -62,7 +62,7 @@ pub(crate) fn list<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Vec<Resource> {
             LEDGER,
             "ledger",
             "Write ledger",
-            "This principal's writes still in effect: none, since the server can't write",
+            "This principal's writes still in effect, with what undoes each",
         ),
     ];
     all.into_iter()
@@ -136,7 +136,7 @@ pub(crate) async fn read<T: TransportPort + 'static>(
         let error = ToolError::invalid("uri", why);
         ErrorData::invalid_params(error.summary(), Some(error.json()))
     })?;
-    let account = Arc::new(Account::new(Some(Arc::clone(&ctx.bucket))));
+    let account = ctx.account();
     let budget = ctx.policy.caps.budget;
     let call = Call::new(budget, Arc::clone(&account));
     let work = async {
@@ -148,7 +148,7 @@ pub(crate) async fn read<T: TransportPort + 'static>(
             Uri::Alarms => content::alarms(ctx, &call).await,
             Uri::DeviceAlarms(device) => content::device_alarms(ctx, &call, device).await,
             Uri::Session => Ok(content::session(ctx)),
-            Uri::Ledger => Ok(content::ledger()),
+            Uri::Ledger => Ok(content::ledger(ctx)),
         }
     };
     let finished = tokio::select! {

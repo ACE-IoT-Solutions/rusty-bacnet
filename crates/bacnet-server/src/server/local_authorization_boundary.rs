@@ -1,6 +1,7 @@
 //! Custom reader instrumentation keeps the native point's atomic install hook.
 use super::fixture::*;
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use std::borrow::Cow;
 use std::sync::atomic::AtomicUsize;
 
@@ -14,6 +15,9 @@ pub(super) struct Boundary {
 }
 
 impl Boundary {
+    /// Take `oid` out of `db` to wrap it. The removal is a real one, so a
+    /// Schedule wrapped this way would give up its held slots (#2264); only
+    /// Access Points are wrapped, and the wrapper lends no `ScheduleRunner`.
     pub(super) fn wrap(db: &mut ObjectDatabase, oid: ObjectIdentifier) -> Self {
         Self {
             inner: db.remove(&oid).unwrap().unwrap(),
@@ -27,17 +31,8 @@ impl Boundary {
 }
 
 impl BACnetObject for Boundary {
-    fn supports_cov(&self) -> bool {
-        self.inner.supports_cov()
-    }
-    fn supports_subscribe_cov_property(&self) -> bool {
-        self.inner.supports_subscribe_cov_property()
-    }
-    fn supports_cov_property(&self, p: P) -> bool {
-        self.inner.supports_cov_property(p)
-    }
-    fn cov_reported_properties(&self) -> &'static [bacnet_objects::traits::CovReportedProperty] {
-        self.inner.cov_reported_properties()
+    fn cov(&self) -> Option<&dyn bacnet_objects::traits::CovReporting> {
+        self.inner.cov()
     }
     fn object_identifier(&self) -> ObjectIdentifier {
         self.inner.object_identifier()
@@ -66,30 +61,44 @@ impl BACnetObject for Boundary {
     ) -> Result<(), Error> {
         self.inner.write_property(p, index, value, priority)
     }
-    fn property_list(&self) -> Cow<'static, [P]> {
-        let mut properties = self.inner.property_list().into_owned();
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        let mut rows = self.inner.property_metadata().into_owned();
         for (p, _) in &self.overrides {
-            if !properties.contains(p) {
-                properties.push(*p);
+            if !rows.iter().any(|row| row.property_identifier == *p) {
+                rows.push(PropertyMetadata::new(
+                    *p,
+                    bacnet_objects::property_metadata::PropertyConformance::Optional,
+                    None,
+                    bacnet_objects::property_metadata::PropertyWriteCapability::ReadOnly,
+                ));
             }
         }
-        Cow::Owned(properties)
+        Cow::Owned(rows)
     }
-    fn bind_clock_internal(&mut self, clock: Option<Arc<dyn bacnet_objects::clock::ClockReader>>) {
-        self.inner.bind_clock_internal(clock);
+    fn timed(&mut self) -> Option<&mut dyn bacnet_objects::traits::Timed> {
+        self.inner.timed()
     }
-    fn report_access_input_internal(&mut self, input: AccessControlInput) -> Result<(), Error> {
-        self.inner.report_access_input_internal(input)
+    fn local_input(&mut self) -> Option<&mut dyn bacnet_objects::traits::LocalInput> {
+        self.inner.local_input()
     }
-    fn supports_access_event_batch_internal(&self) -> bool {
-        self.supports && self.inner.supports_access_event_batch_internal()
+    fn access_events(&mut self) -> Option<&mut dyn bacnet_objects::traits::AccessEvents> {
+        if self.supports {
+            self.inner.access_events()
+        } else {
+            None
+        }
     }
-    fn record_access_event_batch_internal(
-        &mut self,
-        reports: &[AccessEventReport],
-    ) -> Result<Vec<CommittedAccessEvent>, Error> {
-        self.inner.record_access_event_batch_internal(reports)
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
     }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+}
+
+/// Only the evaluation reaches the wrapped object, as before the capability
+/// existed: every other event hook keeps its default.
+impl bacnet_objects::traits::EventReporting for Boundary {
     fn evaluate_intrinsic_reporting(&mut self) -> Option<bacnet_objects::event::TransitionOutcome> {
         if self
             .panic_event
@@ -98,7 +107,9 @@ impl BACnetObject for Boundary {
         {
             panic!("authorization post-commit test panic");
         }
-        self.inner.evaluate_intrinsic_reporting()
+        self.inner
+            .event_reporting_mut()
+            .and_then(|reporting| reporting.evaluate_intrinsic_reporting())
     }
 }
 

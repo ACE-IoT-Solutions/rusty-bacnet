@@ -4,7 +4,7 @@ description: "The B/IP, SC and MS/TP endpoints and their client and server roles
 ---
 
 :::note[On `dev` after the release]
-This page is generated from the type stub on the `dev` branch and tracks the next release, so it can list classes, methods and keywords merged after v0.14.0 that the released wheel doesn't have. The [v0.14.0 release notes](https://github.com/jscott3201/rusty-bacnet/releases/tag/v0.14.0) and the [changes waiting for the next release](https://github.com/jscott3201/rusty-bacnet/tree/dev/changelog.d) say what changed.
+This page is generated from the type stub on the `dev` branch and tracks the next release, so it can list classes, methods and keywords merged after v0.15.0 that the released wheel doesn't have. The [v0.15.0 release notes](https://github.com/jscott3201/rusty-bacnet/releases/tag/v0.15.0) and the [changes waiting for the next release](https://github.com/jscott3201/rusty-bacnet/tree/dev/changelog.d) say what changed.
 :::
 
 One transport that runs both the client and server roles. The [Python reference](/rusty-bacnet/reference/python/) lists every group. Each page opens with its main classes, then the other classes, the dictionaries (`TypedDict`) and the type aliases, in stub order.
@@ -27,6 +27,10 @@ Cancelled waiters do not abandon admitted session startup or cleanup;
 cancellation can race publication, so always await close for cleanup.
 Setup errors are delivered by awaiting start/context entry. BIPv6/Ethernet
 have no endpoint owner.
+
+`device_instance` takes 0 to 4194302. Instance 4194303 is reserved, as
+no object may have it, so it, or anything larger, raises ValueError at
+construction (#2171).
 
 Properties:
 
@@ -256,6 +260,8 @@ SC endpoint: one hub connection that both initiates and executes.
 
 `sc_device_uuid` is the single durable lifetime identity for both the
 hub dial and DEVICE\_UUID. Lifecycle mirrors `BipEndpoint`.
+`device_instance` takes 0 to 4194302, as there: 4194303 or more raises
+ValueError at construction (#2171).
 
 Properties:
 
@@ -447,6 +453,8 @@ MS/TP endpoint: one serial owner that both initiates and executes.
 
 Opens a real serial device via `TokioSerialPort` like the current
 wrappers. Lifecycle mirrors `BipEndpoint`.
+`device_instance` takes 0 to 4194302, as there: 4194303 or more raises
+ValueError at construction (#2171).
 
 Properties:
 

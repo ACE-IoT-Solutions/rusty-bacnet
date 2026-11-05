@@ -15,7 +15,7 @@
 use super::local_writes::LocalWriter;
 use super::*;
 use crate::command_lists::TakenRuns;
-use crate::life_safety_cov::LifeSafetyCovChange;
+use bacnet_device_core::cov::life_safety::LifeSafetyCovChange;
 use bacnet_objects::staging::StagingWritePlan;
 use futures_util::FutureExt;
 use std::future::Future;
@@ -149,12 +149,14 @@ impl<T: TransportPort + 'static> LocalWriter<'_, T> {
         )
         .await;
         command_runs.extend(schedule_cov.command_runs);
-        BACnetServer::<T>::execute_staging_plans(
-            &self.event_delivery(),
-            &self.cov_context(),
-            staging_plans,
-        )
-        .await;
+        command_runs.extend(
+            BACnetServer::<T>::execute_staging_plans(
+                &self.event_delivery(),
+                &self.cov_context(),
+                staging_plans,
+            )
+            .await,
+        );
         command_runs
     }
 }

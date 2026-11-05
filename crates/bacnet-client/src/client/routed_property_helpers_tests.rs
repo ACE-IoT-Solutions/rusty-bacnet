@@ -54,7 +54,7 @@ async fn explicit_routed_rpm_preserves_dadr_and_decodes_ack() {
             }],
         };
         let mut service_ack = BytesMut::new();
-        ack.encode(&mut service_ack);
+        ack.encode(&mut service_ack).unwrap();
         super::tests::send_routed_response(
             &router,
             &[1],

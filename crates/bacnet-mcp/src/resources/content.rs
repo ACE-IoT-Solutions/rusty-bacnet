@@ -7,7 +7,7 @@ use std::time::Duration;
 use bacnet_ops::engine::{Wanted, unreachable};
 use bacnet_ops::format::{self, RawRow, RowError};
 use bacnet_ops::label::kebab;
-use bacnet_ops::limits::{Account, charged};
+use bacnet_ops::limits::charged;
 use bacnet_ops::watch::{Point, Snapshot, Source, State, Watched};
 use bacnet_transport::port::TransportPort;
 use serde_json::{Map, Value, json};
@@ -319,7 +319,7 @@ pub(crate) async fn refresh_alarms<T: TransportPort + 'static>(ctx: &Ctx<T>, tex
         }
         _ => return false,
     };
-    let account = Arc::new(Account::new(Some(Arc::clone(&ctx.bucket))));
+    let account = ctx.account();
     let call = Call::new(ctx.policy.caps.budget, Arc::clone(&account));
     let events =
         |device: u32| cached(&ctx.alarms, device, Duration::MAX).map(|body| body["events"].clone());
@@ -350,11 +350,50 @@ pub(crate) async fn refresh_alarms<T: TransportPort + 'static>(ctx: &Ctx<T>, tex
 /// The session: the server's level, limits, rate and watch footprint.
 pub(super) fn session<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Value {
     let caps = &ctx.policy.caps;
+    let policy = &ctx.policy.writes;
+    let offered = policy.offered() && !ctx.policy.passive;
+    let level = if ctx.policy.passive {
+        "passive"
+    } else {
+        ctx.writes.level(policy).audit_name()
+    };
+    let writes = if offered {
+        json!({
+            "mode": "elicit",
+            "arm": match policy.arm {
+                crate::policy::ArmMode::Never => "never",
+                crate::policy::ArmMode::Elicit => "elicit",
+            },
+            "client_confirms": "T1 only",
+        })
+    } else {
+        json!("not offered")
+    };
+    let grants: Vec<Value> = policy
+        .plan
+        .iter()
+        .filter(|_| offered)
+        .map(|plan| {
+            // What is enforced: no count to trust refuses the plan's writes.
+            let (used, unavailable) = match ctx.writes.count_error() {
+                Some(why) => (Value::Null, json!(why)),
+                None => (json!(ctx.writes.plan_used()), Value::Null),
+            };
+            json!({
+                "kind": "plan",
+                "in_force": ctx.writes.plan(policy).is_some(),
+                "used": used,
+                "count_unavailable": unavailable,
+                "max_writes": plan.max_writes,
+                "expires_unix": plan.expires_unix,
+            })
+        })
+        .collect();
     let mut body = json!({
-        "level": if ctx.policy.passive { "passive" } else { "read-only" },
-        "writes": "not offered",
-        "expires": null,
-        "grants": [],
+        "level": level,
+        "writes": writes,
+        "expires": ctx.writes.armed_for().map(|s| json!({ "in_s": s })),
+        "grants": grants,
         "limits": ctx.limits(None),
         "watches": {
             "held": ctx.subs.held(),
@@ -364,7 +403,16 @@ pub(super) fn session<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Value {
         },
     });
     if let Some(engine) = &ctx.engine {
-        body["rate"] = json!({ "requests_last_10_s": engine.limits().recent() });
+        let limits = engine.limits();
+        body["rate"] = json!({
+            "requests_last_10_s": limits.recent(),
+            "agents_requests_last_10_s": limits.recent_agents(),
+        });
+    }
+    // Attached to the TUI: whether a write could be confirmed there now
+    // (#2185). Read-only: only the person at the TUI arms it.
+    if let Some(pane) = &ctx.pane {
+        body["tui"] = json!({ "armed": pane.board.armed() });
     }
     if let Some(hub) = &ctx.hub {
         let stats = hub.stats();
@@ -383,10 +431,33 @@ pub(super) fn session<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Value {
     body
 }
 
-/// This principal's ledger entries in effect: none, since nothing writes.
-pub(super) fn ledger() -> Value {
-    json!({
-        "entries": [],
-        "note": "this server can't write, so its ledger is empty",
-    })
+/// This principal's ledger entries in effect, read from the workspace's
+/// ledger (which the TUI shares): none when the server can't write.
+pub(super) fn ledger<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Value {
+    let Some(workspace) = &ctx.policy.writes.workspace else {
+        return json!({
+            "entries": [],
+            "note": "this server can't write, so its ledger is empty",
+        });
+    };
+    let entries: Vec<Value> = bacnet_ops::safety::ledger::Ledger::open(&workspace.dir)
+        .map(|ledger| ledger.entries().to_vec())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| {
+            e.origin.front_end == bacnet_ops::safety::FrontEnd::Mcp
+                && e.origin.principal.as_deref() == Some(ctx.principal.as_str())
+        })
+        .map(|e| {
+            json!({
+                "ledger_id": e.id,
+                "target": e.label(),
+                "written": crate::untrusted::clean(&e.written.text, ctx.policy.caps.text).0,
+                "undo": e.undo().map(|u| crate::untrusted::clean(&u.text, ctx.policy.caps.text).0),
+                "state": e.state,
+                "at": e.at,
+            })
+        })
+        .collect();
+    json!({ "entries": entries })
 }

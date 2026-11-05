@@ -3,7 +3,7 @@ use super::notification_transactions::{
     AuditFailureContext, AuditFailureTicket, NotificationReservation, NotificationReserveError,
 };
 use super::*;
-use crate::handlers::{WriteCommitObserver, WriteTarget};
+use bacnet_device_core::write::{WriteCommitObserver, WriteTarget};
 use bacnet_objects::audit::AuditReporterStatus;
 use bacnet_services::audit::AuditNotificationRequest;
 use bacnet_types::constructed::{
@@ -35,9 +35,9 @@ mod policy_precommit;
 /// omit Result; execution failures include the mapped BACnet Error. There is no
 /// source-side reporting, forwarding, or durable outbox.
 /// Provision the typed recipient on the built-in Device before startup; configure
-/// Device routes with `device_binding`. Startup requires a concrete built-in
-/// local Device ([`ObjectDatabase::local_device`]: the lowest instance when the
-/// database holds several), a provision, and the selected Reporter capability.
+/// Device routes with `device_binding`. Startup requires the built-in Device
+/// the server's identity ([`ServerConfig::device`]) names, a provision, and the
+/// selected Reporter capability.
 /// That Device names this device in every record and owns the recipient; any
 /// other Device in the database takes no part. Unresolved
 /// configured Device routes permit startup with CONFIGURATION_ERROR. Address
@@ -258,16 +258,15 @@ impl<'a, T: TransportPort + 'static> WriteAudit<'a, T> {
         config: &'a ServerConfig,
         network: &'a Arc<NetworkLayer<T>>,
         transactions: &'a Arc<NotificationTransactions>,
-        db: &ObjectDatabase,
-    ) -> Option<Self> {
-        Some(Self {
+    ) -> Self {
+        Self {
             config,
             network,
             transactions,
-            source: BACnetRecipient::Device(db.local_device().identifier()?),
+            source: BACnetRecipient::Device(crate::local_device::initiating_device(&config.device)),
             invoke_id: None,
             pending: None,
-        })
+        }
     }
 
     pub(super) async fn new(
@@ -377,7 +376,7 @@ impl<T: TransportPort + 'static> WriteAudit<'_, T> {
     ) -> Option<(bacnet_objects::audit::SelectedAuditReporter, bool)> {
         let mandatory = db
             .get(&target)
-            .and_then(|object| object.audit_reporter_internal())
+            .and_then(|object| object.audit_reporter())
             .is_some_and(|reporter| reporter.configuration_internal().enabled());
         let association = self.transactions.audit_association.get()?;
         let selected = if mandatory {
@@ -400,16 +399,15 @@ impl<T: TransportPort + 'static> WriteAudit<'_, T> {
             return;
         };
         let reporter = &selected_reporter.configuration;
-        let device = db.local_device().identifier();
-        let route = device
-            .and_then(|device| recipient(db, device))
+        let device = crate::local_device::initiating_device(&self.config.device);
+        let route = recipient(db, device)
             .and_then(|value| self.transactions.audit_routes.get()?.resolve(&value));
         let status = Arc::clone(&selected_reporter.status);
-        status.set_configured(device.is_some() && route.is_some());
-        let Some(device) = device else { return };
+        status.set_configured(route.is_some());
         let policy = db
             .get(&target)
-            .map(|object| object.audit_object_policy_internal())
+            .and_then(|object| object.audit_policy())
+            .map(|policy| policy.object_policy())
             .unwrap_or_default()
             .effective_internal(reporter);
         let selected = if mandatory {
@@ -471,16 +469,15 @@ impl<T: TransportPort + 'static> WriteAudit<'_, T> {
             return;
         };
         let reporter = &selected_reporter.configuration;
-        let device = db.local_device().identifier();
-        let route = device
-            .and_then(|device| recipient(db, device))
+        let device = crate::local_device::initiating_device(&self.config.device);
+        let route = recipient(db, device)
             .and_then(|value| self.transactions.audit_routes.get()?.resolve(&value));
         let status = Arc::clone(&selected_reporter.status);
-        status.set_configured(device.is_some() && route.is_some());
-        let Some(device) = device else { return };
+        status.set_configured(route.is_some());
         let policy = db
             .get(&request.object_identifier)
-            .map(|object| object.audit_object_policy_internal())
+            .and_then(|object| object.audit_policy())
+            .map(|policy| policy.object_policy())
             .unwrap_or_default()
             .effective_internal(reporter);
         let selected = if mandatory {
@@ -554,13 +551,11 @@ impl<T: TransportPort + 'static> WriteAudit<'_, T> {
             return;
         };
         let reporter = &selected_reporter.configuration;
-        let device = db.local_device().identifier();
-        let route = device
-            .and_then(|device| recipient(db, device))
+        let device = crate::local_device::initiating_device(&self.config.device);
+        let route = recipient(db, device)
             .and_then(|value| self.transactions.audit_routes.get()?.resolve(&value));
         let status = Arc::clone(&selected_reporter.status);
-        status.set_configured(device.is_some() && route.is_some());
-        let Some(device) = device else { return };
+        status.set_configured(route.is_some());
         let selected = target.map_or_else(
             || reporter.monitors_unassigned(kind),
             |oid| reporter.monitors(oid),
@@ -568,7 +563,8 @@ impl<T: TransportPort + 'static> WriteAudit<'_, T> {
         let policy = target
             .filter(|_| use_object_policy)
             .and_then(|oid| db.get(&oid))
-            .map(|object| object.audit_object_policy_internal())
+            .and_then(|object| object.audit_policy())
+            .map(|policy| policy.object_policy())
             .unwrap_or_default()
             .effective_internal(reporter);
         if !selected || !policy.reports(operation, None, None) {

@@ -9,8 +9,9 @@ use bacnet_types::constructed::{BACnetEventLogRecord, BACnetLogMultipleRecord, B
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
-use super::codec::{self, Decoded, MAX_SNAPSHOT_BYTES, SnapshotRecord};
+use super::codec::MAX_SNAPSHOT_BYTES;
 use super::{LogPersistence, LogSnapshot};
+use crate::snapshot::log::{self, LogRecord};
 
 /// Two-slot, versioned and checksummed file store for one log's snapshots,
 /// as [`FileAuditLogPersistence`](crate::audit::FileAuditLogPersistence)
@@ -29,9 +30,15 @@ use super::{LogPersistence, LogSnapshot};
 /// another object or uses a schema this build can't read, when reading
 /// either slot fails, and when both slots hold different snapshots of one
 /// generation. It does not coordinate several processes.
+///
+/// Each slot holds what [`snapshot::log::encode`](crate::snapshot::log::encode)
+/// returns; that module documents the format.
 #[derive(Clone, Debug)]
 pub struct FileLogPersistence {
     slot_paths: [PathBuf; 2],
+    /// Test support: keep the slots here instead of at `slot_paths`.
+    #[cfg(feature = "test-support")]
+    memory: Option<crate::durable::MemoryFiles>,
 }
 
 impl FileLogPersistence {
@@ -51,7 +58,24 @@ impl FileLogPersistence {
         };
         Ok(Self {
             slot_paths: [slot(".slot0"), slot(".slot1")],
+            #[cfg(feature = "test-support")]
+            memory: None,
         })
+    }
+
+    /// Test support, not a stable API: keep the slots in `memory`'s
+    /// entries 0 and 1 instead of on disk, decoding, selecting and encoding
+    /// them as on disk (#2233). [`slot_paths`](Self::slot_paths) are then
+    /// empty placeholders, which cost no allocation.
+    /// Nothing reaches disk: the state is gone when the process ends, so
+    /// never use this outside tests.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn in_memory(memory: crate::durable::MemoryFiles) -> Self {
+        Self {
+            slot_paths: [PathBuf::new(), PathBuf::new()],
+            memory: Some(memory),
+        }
     }
 
     /// The two slot paths, for application backup and diagnostics.
@@ -59,46 +83,32 @@ impl FileLogPersistence {
         self.slot_paths.clone()
     }
 
-    fn load_slots<R: SnapshotRecord>(
+    fn load_slots<R: LogRecord>(
         &self,
         expected: ObjectIdentifier,
     ) -> Result<Option<LogSnapshot<R>>, Error> {
-        let mut newest: Option<LogSnapshot<R>> = None;
-        let mut damage = None;
-        for path in &self.slot_paths {
-            let Some(data) = read_slot(path)? else {
-                continue;
-            };
-            match codec::decode::<R>(&data, expected) {
-                Decoded::Refused(error) => return Err(error),
-                Decoded::Corrupt(error) => {
-                    log_warn!(slot = %path.display(), %error, "Passing over a damaged log snapshot slot");
-                    damage = Some(error);
-                }
-                Decoded::Valid(snapshot) => match &newest {
-                    Some(current) if current.generation > snapshot.generation => {}
-                    Some(current) if current.generation == snapshot.generation => {
-                        if *current != snapshot {
-                            return Err(Error::Encoding(
-                                "log snapshot slots hold different snapshots of one generation"
-                                    .into(),
-                            ));
-                        }
-                    }
-                    _ => newest = Some(snapshot),
-                },
+        let slots = [self.read_slot(0)?, self.read_slot(1)?];
+        let Some(newest) = log::newest::<R>(expected, [slots[0].as_deref(), slots[1].as_deref()])?
+        else {
+            return Ok(None);
+        };
+        for (path, error) in self.slot_paths.iter().zip(&newest.passed_over) {
+            if let Some(error) = error {
+                log_warn!(slot = %path.display(), %error, "Passing over a damaged log snapshot slot");
             }
         }
-        match (newest, damage) {
-            (Some(snapshot), _) => Ok(Some(snapshot)),
-            (None, Some(error)) => Err(error),
-            (None, None) => Ok(None),
-        }
+        Ok(Some(newest.snapshot))
     }
 
-    fn commit_slot<R: SnapshotRecord>(&self, snapshot: &LogSnapshot<R>) -> Result<(), Error> {
-        let bytes = codec::encode(snapshot)?;
-        let path = &self.slot_paths[(snapshot.generation % 2) as usize];
+    fn commit_slot<R: LogRecord>(&self, snapshot: &LogSnapshot<R>) -> Result<(), Error> {
+        let bytes = log::encode(snapshot)?;
+        let slot = (snapshot.generation % 2) as usize;
+        #[cfg(feature = "test-support")]
+        if let Some(memory) = &self.memory {
+            memory.write(slot, bytes);
+            return Ok(());
+        }
+        let path = &self.slot_paths[slot];
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -128,12 +138,22 @@ impl FileLogPersistence {
         }
         Ok(())
     }
+
+    /// Slot `slot`'s octets, or `None` when it doesn't exist. A slot past
+    /// the size cap is read only up to one octet past it, which then fails
+    /// its length check as damage.
+    fn read_slot(&self, slot: usize) -> Result<Option<Vec<u8>>, Error> {
+        #[cfg(feature = "test-support")]
+        if let Some(memory) = &self.memory {
+            return Ok(memory.read(slot, MAX_SNAPSHOT_BYTES + 1));
+        }
+        read_file(&self.slot_paths[slot])
+    }
 }
 
-/// A slot's octets, or `None` when it doesn't exist. A slot past the size
-/// cap is read only up to one octet past it, which then fails its length
-/// check as damage.
-fn read_slot(path: &Path) -> Result<Option<Vec<u8>>, Error> {
+/// The octets of the slot file at `path`, as [`FileLogPersistence::read_slot`]
+/// reads them.
+fn read_file(path: &Path) -> Result<Option<Vec<u8>>, Error> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
@@ -157,6 +177,11 @@ macro_rules! file_log_persistence {
 
             fn commit(&self, snapshot: &LogSnapshot<$record>) -> Result<(), Error> {
                 self.commit_slot(snapshot)
+            }
+
+            #[cfg(feature = "test-support")]
+            fn commits_inline(&self) -> bool {
+                self.memory.is_some()
             }
         }
     )*};

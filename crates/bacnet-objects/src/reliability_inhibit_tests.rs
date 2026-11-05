@@ -1,9 +1,14 @@
 use crate::analog::{AnalogInputObject, AnalogOutputObject, AnalogValueObject};
 use crate::binary::{BinaryInputObject, BinaryOutputObject, BinaryValueObject};
 use crate::multistate::{MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject};
+use crate::property_metadata::is_writable_property;
 use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
+#[cfg(feature = "event-reporting")]
+use crate::traits::EventReporting as _;
 use crate::traits::{BACnetObject, ReliabilityEvaluation};
-use bacnet_types::enums::{EngineeringUnits, EventState, PropertyIdentifier, Reliability};
+#[cfg(feature = "event-reporting")]
+use bacnet_types::enums::EventState;
+use bacnet_types::enums::{EngineeringUnits, PropertyIdentifier, Reliability};
 use bacnet_types::primitives::PropertyValue;
 
 const INHIBIT: PropertyIdentifier = PropertyIdentifier::RELIABILITY_EVALUATION_INHIBIT;
@@ -87,9 +92,12 @@ fn all_nine_expose_default_false_boolean_writable_property_and_pics_truth() {
             PropertyValue::Boolean(false),
             "{name}"
         );
-        assert!(object.property_list().contains(&INHIBIT), "{name}");
         assert!(
-            object.is_writable_property(INHIBIT),
+            crate::property_metadata::has_property(&object.property_metadata(), INHIBIT),
+            "{name}"
+        );
+        assert!(
+            is_writable_property(&*object, INHIBIT),
             "{name} PICS writability must match dispatch"
         );
         let wire_list = read(&*object, PropertyIdentifier::PROPERTY_LIST);
@@ -138,7 +146,9 @@ fn all_nine_expose_default_false_boolean_writable_property_and_pics_truth() {
 fn true_normalizes_existing_fault_and_false_does_not_restore_it_on_all_nine() {
     for (name, mut object) in nine_objects() {
         object
-            .set_reliability_internal(Reliability::NO_SENSOR)
+            .reliability_eval()
+            .unwrap()
+            .set_reliability(Reliability::NO_SENSOR)
             .unwrap();
         write_bool(&mut *object, INHIBIT, true);
         assert_eq!(
@@ -148,7 +158,9 @@ fn true_normalizes_existing_fault_and_false_does_not_restore_it_on_all_nine() {
         );
         assert!(
             object
-                .set_reliability_internal(Reliability::OVER_RANGE)
+                .reliability_eval()
+                .unwrap()
+                .set_reliability(Reliability::OVER_RANGE)
                 .is_err()
         );
         assert_eq!(
@@ -171,7 +183,7 @@ fn inhibited_ai_and_av_range_faults_skip_and_reenable_current_evaluation() {
     ai.configure_fault_out_of_range(10.0, 20.0).unwrap();
     ai.set_present_value(21.0);
     assert!(matches!(
-        ai.evaluate_reliability_internal().unwrap(),
+        ai.reliability_eval().unwrap().evaluate_reliability().unwrap(),
         ReliabilityEvaluation::Changed { new_reliability, .. }
             if new_reliability == Reliability::OVER_RANGE
     ));
@@ -181,12 +193,18 @@ fn inhibited_ai_and_av_range_faults_skip_and_reenable_current_evaluation() {
         Reliability::NO_FAULT_DETECTED.to_raw()
     );
     assert_eq!(
-        ai.evaluate_reliability_internal().unwrap(),
+        ai.reliability_eval()
+            .unwrap()
+            .evaluate_reliability()
+            .unwrap(),
         ReliabilityEvaluation::Unchanged
     );
     write_bool(&mut ai, INHIBIT, false);
     assert_eq!(
-        ai.evaluate_reliability_internal().unwrap(),
+        ai.reliability_eval()
+            .unwrap()
+            .evaluate_reliability()
+            .unwrap(),
         ReliabilityEvaluation::Changed {
             old_reliability: Reliability::NO_FAULT_DETECTED,
             new_reliability: Reliability::OVER_RANGE,
@@ -199,7 +217,10 @@ fn inhibited_ai_and_av_range_faults_skip_and_reenable_current_evaluation() {
     av.set_relinquish_default(9.0).unwrap();
     write_bool(&mut av, INHIBIT, true);
     assert_eq!(
-        av.evaluate_reliability_internal().unwrap(),
+        av.reliability_eval()
+            .unwrap()
+            .evaluate_reliability()
+            .unwrap(),
         ReliabilityEvaluation::Unchanged
     );
     assert_eq!(
@@ -208,7 +229,10 @@ fn inhibited_ai_and_av_range_faults_skip_and_reenable_current_evaluation() {
     );
     write_bool(&mut av, INHIBIT, false);
     assert_eq!(
-        av.evaluate_reliability_internal().unwrap(),
+        av.reliability_eval()
+            .unwrap()
+            .evaluate_reliability()
+            .unwrap(),
         ReliabilityEvaluation::Changed {
             old_reliability: Reliability::NO_FAULT_DETECTED,
             new_reliability: Reliability::UNDER_RANGE,
@@ -221,7 +245,9 @@ fn out_of_service_ordering_without_client_override_always_exposes_zero() {
     for inhibit_first in [false, true] {
         let mut object = BinaryInputObject::new(1, "BI-order").unwrap();
         object
-            .set_reliability_internal(Reliability::OVER_RANGE)
+            .reliability_eval()
+            .unwrap()
+            .set_reliability(Reliability::OVER_RANGE)
             .unwrap();
         if inhibit_first {
             write_bool(&mut object, INHIBIT, true);
@@ -251,7 +277,9 @@ fn out_of_service_ordering_without_client_override_always_exposes_zero() {
 fn accepted_oos_alternate_is_owned_even_when_same_value_and_restores_by_exit_mode() {
     let mut same_value = BinaryInputObject::new(1, "BI-same").unwrap();
     same_value
-        .set_reliability_internal(Reliability::NO_SENSOR)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::NO_SENSOR)
         .unwrap();
     write_bool(&mut same_value, PropertyIdentifier::OUT_OF_SERVICE, true);
     write_client_reliability(&mut same_value, Reliability::NO_SENSOR.to_raw());
@@ -271,7 +299,9 @@ fn accepted_oos_alternate_is_owned_even_when_same_value_and_restores_by_exit_mod
 
     let mut inhibited_exit = BinaryInputObject::new(2, "BI-inhibited-exit").unwrap();
     inhibited_exit
-        .set_reliability_internal(Reliability::OVER_RANGE)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::OVER_RANGE)
         .unwrap();
     write_bool(
         &mut inhibited_exit,
@@ -305,7 +335,9 @@ fn rejected_oos_reliability_writes_do_not_create_an_override() {
     for rejected in [PropertyValue::Boolean(true), PropertyValue::Enumerated(11)] {
         let mut object = BinaryInputObject::new(1, "BI-invalid").unwrap();
         object
-            .set_reliability_internal(Reliability::OVER_RANGE)
+            .reliability_eval()
+            .unwrap()
+            .set_reliability(Reliability::OVER_RANGE)
             .unwrap();
         write_bool(&mut object, PropertyIdentifier::OUT_OF_SERVICE, true);
         assert!(
@@ -327,7 +359,9 @@ fn rejected_oos_reliability_writes_do_not_create_an_override() {
 fn repeated_oos_cycles_clear_old_client_ownership() {
     let mut object = BinaryInputObject::new(1, "BI-cycles").unwrap();
     object
-        .set_reliability_internal(Reliability::OVER_RANGE)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::OVER_RANGE)
         .unwrap();
     write_bool(&mut object, PropertyIdentifier::OUT_OF_SERVICE, true);
     write_client_reliability(&mut object, Reliability::NO_SENSOR.to_raw());
@@ -349,12 +383,15 @@ fn repeated_oos_cycles_clear_old_client_ownership() {
     }
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn inhibit_does_not_change_detection_enable_and_recovery_is_reportable() {
     let mut object =
         AnalogInputObject::new(1, "AI-report", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     object
-        .set_reliability_internal(Reliability::NO_SENSOR)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::NO_SENSOR)
         .unwrap();
     let fault = object
         .evaluate_intrinsic_reporting()

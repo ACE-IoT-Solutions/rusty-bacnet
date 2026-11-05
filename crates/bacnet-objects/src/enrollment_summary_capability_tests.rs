@@ -4,8 +4,8 @@ use crate::binary::{BinaryInputObject, BinaryOutputObject, BinaryValueObject};
 use crate::event::{EventStateChange, EventTransition, EventTransitionCommit};
 use crate::multistate::{MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject};
 use crate::traits::BACnetObject;
-use bacnet_types::enums::{EngineeringUnits, EventState, EventType};
-use bacnet_types::primitives::BACnetTimeStamp;
+use bacnet_types::enums::{EngineeringUnits, EventState, EventType, PropertyIdentifier};
+use bacnet_types::primitives::{BACnetTimeStamp, PropertyValue};
 
 #[test]
 fn all_eleven_intrinsic_families_report_implied_algorithm_and_shared_commit_coordinate() {
@@ -58,13 +58,27 @@ fn all_eleven_intrinsic_families_report_implied_algorithm_and_shared_commit_coor
 
     for (object, expected_event_type) in &mut objects {
         let capability = object
-            .enrollment_summary_capability_internal()
+            .event_reporting()
+            .expect("lends event reporting")
+            .enrollment_summary_capability()
             .expect("built-in family must opt in");
         assert_eq!(capability.event_type, *expected_event_type);
         assert_eq!(capability.last_transition, None);
 
+        // Binary and Multi-state Output start with detection off, which
+        // refuses this commit (#2271).
         object
-            .commit_event_transition_internal(EventTransitionCommit {
+            .write_property(
+                PropertyIdentifier::EVENT_DETECTION_ENABLE,
+                None,
+                PropertyValue::Boolean(true),
+                None,
+            )
+            .unwrap();
+        object
+            .event_reporting_mut()
+            .unwrap()
+            .commit_event_transition(EventTransitionCommit {
                 change: EventStateChange {
                     from: EventState::NORMAL,
                     to: EventState::OFFNORMAL,
@@ -75,7 +89,11 @@ fn all_eleven_intrinsic_families_report_implied_algorithm_and_shared_commit_coor
                 message_text: None,
             })
             .unwrap();
-        let capability = object.enrollment_summary_capability_internal().unwrap();
+        let capability = object
+            .event_reporting()
+            .expect("lends event reporting")
+            .enrollment_summary_capability()
+            .unwrap();
         assert_eq!(capability.event_type, *expected_event_type);
         assert_eq!(
             capability.last_transition,

@@ -15,6 +15,8 @@
 //! at once; a zero default keeps the value the object came back with from
 //! its storage (see `persistence`), and with nothing stored the output stays
 //! undriven. Until it is driven, In_Progress reads NOT_CONTROLLED (#1526).
+//! Storage keeps a default a peer writes too, so the rule applies to a zero
+//! default written over the network (#1956).
 //!
 //! Neither object has a priority array, and their property tables have no
 //! Status_Flags, Event_State, Reliability or Out_Of_Service, so the objects
@@ -50,10 +52,12 @@ pub use xy::ColorObject;
 #[cfg(test)]
 mod command_tests;
 #[cfg(test)]
+mod default_tests;
+#[cfg(test)]
 mod engine_tests;
 #[cfg(test)]
 mod metadata_tests;
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
 mod persistence_tests;
 #[cfg(test)]
 mod rows_tests;

@@ -29,12 +29,18 @@ async fn receive_from(
 ) {
     let mut service_request = BytesMut::new();
     encode_event_notification(notification, &mut service_request).unwrap();
+    receive_raw(h, mac, broadcast, service_request.freeze()).await;
+}
+
+/// Deliver an UnconfirmedEventNotification of these request octets from
+/// `mac`, broadcast on the link when `broadcast`.
+async fn receive_raw(h: &Harness, mac: [u8; 6], broadcast: bool, service_request: Bytes) {
     let mut payload = BytesMut::new();
     encode_apdu(
         &mut payload,
         &Apdu::UnconfirmedRequest(UnconfirmedRequestPdu {
             service_choice: UnconfirmedServiceChoice::UNCONFIRMED_EVENT_NOTIFICATION,
-            service_request: service_request.freeze(),
+            service_request,
         }),
     )
     .unwrap();
@@ -374,6 +380,8 @@ async fn trend_log_reports_follow_their_class_and_are_logged() {
         for _ in 0..2 {
             db.get_mut(&tl1())
                 .unwrap()
+                .log_buffer_mut()
+                .unwrap()
                 .add_trend_record(BACnetLogRecord {
                     date: at(40).local_date,
                     time: time(40),
@@ -383,6 +391,8 @@ async fn trend_log_reports_follow_their_class_and_are_logged() {
                 .unwrap();
         }
         db.get_mut(&tlm1())
+            .unwrap()
+            .log_buffer_mut()
             .unwrap()
             .add_trend_multiple_record(BACnetLogMultipleRecord {
                 date: at(40).local_date,
@@ -436,5 +446,101 @@ async fn trend_log_reports_follow_their_class_and_are_logged() {
         );
     }
     drop(db);
+    h.server.stop().await.unwrap();
+}
+
+/// A BUFFER_READY report names the log's buffer in the identity's Device,
+/// as its initiator does, beside a lower-instance Device the application
+/// added once the server ran (#2227).
+#[tokio::test(start_paused = true)]
+async fn a_report_names_the_buffer_in_the_identity_device_beside_a_lower_one() {
+    let mut h = Harness::start_with(ServerConfig::default(), |db| collecting(db, 2)).await;
+    let lower = crate::local_device::lower_device(5);
+    h.server.database().write().await.add(lower).unwrap();
+    h.set_clock(40);
+    h.write_local(90.0).await;
+    sent_notification(&h).await;
+    h.set_clock(41);
+    h.write_local(10.0).await;
+    sent_notification(&h).await;
+    let report = sent_notification(&h).await;
+    let identity = ObjectIdentifier::new(ObjectType::DEVICE, 856).unwrap();
+    assert_eq!(report.initiating_device_identifier, identity);
+    let Some(NotificationParameters::BufferReady {
+        buffer_property, ..
+    }) = report.event_values
+    else {
+        panic!(
+            "expected a BUFFER_READY report, got {:?}",
+            report.event_values
+        );
+    };
+    assert_eq!(buffer_property.device_identifier, Some(identity));
+    h.server.stop().await.unwrap();
+}
+
+/// An ACK_NOTIFICATION that carries ackRequired, fromState and event values
+/// (#2247): confirmed, it draws a Reject; unconfirmed, it is dropped, neither
+/// logged nor forwarded. A well-formed alarm after it goes through both.
+#[tokio::test(start_paused = true)]
+async fn an_acknowledgment_with_alarm_only_fields_is_refused() {
+    let mut h = Harness::start_with(ServerConfig::default(), |db| {
+        collecting(db, 0);
+        let mut forwarder = NotificationForwarderObject::new(1, "NF-1").unwrap();
+        forwarder
+            .add_destination(destination(address_recipient(0, &PEER), 9, false))
+            .unwrap();
+        db.add(Box::new(forwarder)).unwrap();
+    })
+    .await;
+    h.set_clock(41);
+    let mut malformed = BytesMut::new();
+    encode_event_notification(&alarm_numbered(1), &mut malformed).unwrap();
+    let notify_type = malformed
+        .windows(2)
+        .position(|pair| pair == [0x89, 0x00])
+        .expect("[8] notifyType ALARM");
+    malformed[notify_type + 1] = 0x02;
+
+    receive_raw(&h, OTHER, false, Bytes::copy_from_slice(&malformed)).await;
+    h.settle().await;
+    assert!(!notification_pending(&h), "nothing forwarded");
+
+    h.request(
+        ConfirmedServiceChoice::CONFIRMED_EVENT_NOTIFICATION,
+        malformed,
+    )
+    .await;
+    let invoke_id = h.invoke_id;
+    let reject = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let found = h.frames.lock().unwrap().iter().find_map(|apdu| match apdu {
+                Apdu::Reject(reject) if reject.invoke_id == invoke_id => Some(reject.reject_reason),
+                Apdu::SimpleAck(ack) if ack.invoke_id == invoke_id => {
+                    panic!("the malformed request was acknowledged")
+                }
+                _ => None,
+            });
+            match found {
+                Some(reason) => return reason,
+                None => h.settle().await,
+            }
+        }
+    })
+    .await
+    .expect("a Reject");
+    assert_eq!(reject, bacnet_types::enums::RejectReason::INVALID_TAG);
+    assert!(!notification_pending(&h), "nothing forwarded");
+    assert!(read_log(&mut h, el(1)).await.is_empty(), "nothing logged");
+
+    h.set_clock(42);
+    receive_from(&h, OTHER, false, &alarm_numbered(2)).await;
+    let mut forwarded = alarm_numbered(2);
+    forwarded.process_identifier = 9;
+    assert_eq!(sent_notification(&h).await, forwarded);
+    assert_eq!(
+        read_log(&mut h, el(1)).await,
+        [arrived(42, &alarm_numbered(2))]
+    );
     h.server.stop().await.unwrap();
 }

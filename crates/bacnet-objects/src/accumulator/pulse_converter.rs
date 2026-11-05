@@ -12,7 +12,7 @@
 //! FAULT flag, while it names one that isn't Unsigned or INTEGER, or one the
 //! object can't reach. Only the database can look at the named object, so it
 //! judges the reference (`ObjectDatabase::check_input_reference`, #1341) and
-//! hands the verdict over through `set_input_usable_internal`. An unset
+//! hands the verdict over through `set_input_usable`. An unset
 //! reference is no fault: the object then stands for the physical input
 //! itself (Clause 12.23.6). While Out_Of_Service is TRUE, Reliability is
 //! decoupled from the verdict and takes a client's value, for simulation
@@ -51,8 +51,7 @@ mod metadata;
 
 /// One reading of the property a Pulse Converter counts from (#1341), which
 /// the database hands over through
-/// [`BACnetObject::take_input_reading_internal`].
-#[doc(hidden)]
+/// `PulseConverterObject::take_input_reading`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputReading {
     /// The property's value, an Unsigned or INTEGER widened to `i128`.
@@ -148,13 +147,65 @@ impl PulseConverterObject {
     /// the last verdict until the database judges it.
     fn store_input_reference(&mut self, reference: Option<BACnetObjectPropertyReference>) {
         if reference.is_none() {
-            self.set_input_usable_internal(true);
+            self.set_input_usable(true);
         }
         // Another property starts its own baseline.
         if reference != self.input_reference {
             self.last_input = None;
         }
         self.input_reference = reference;
+    }
+
+    /// The local property the converter counts its input from, its
+    /// Input_Reference (Clause 12.23.6), or `None` while it holds none. The
+    /// database judges it against its own objects
+    /// (`ObjectDatabase::check_input_reference`) and hands the verdict to
+    /// [`set_input_usable`](Self::set_input_usable).
+    pub(crate) fn counted_reference(&self) -> Option<&BACnetObjectPropertyReference> {
+        self.input_reference.as_ref()
+    }
+
+    /// Take the database's verdict on [`counted_reference`](Self::counted_reference):
+    /// `false` when it names a property the converter can't count from,
+    /// which Clause 12.23.9 reports as a CONFIGURATION_ERROR Reliability.
+    /// Returns whether a readable property changed, so a caller owes COV.
+    pub(crate) fn set_input_usable(&mut self, usable: bool) -> bool {
+        self.input_unusable = !usable;
+        if self.out_of_service {
+            return false;
+        }
+        let reliability = self.evaluated_reliability();
+        core::mem::replace(&mut self.reliability, reliability) != reliability
+    }
+
+    /// Take a reading of the property [`counted_reference`](Self::counted_reference)
+    /// names, or `None` when there is nothing to read. Each increase over
+    /// the last reading counts into Count (Clause 12.23.14), across a wrap
+    /// when the reading carries its bound. Returns whether a readable
+    /// property changed, so a caller owes COV.
+    pub(crate) fn take_input_reading(&mut self, reading: Option<InputReading>) -> bool {
+        let Some(reading) = reading else {
+            self.last_input = None;
+            return false;
+        };
+        let Some(last) = self.last_input.replace(reading.value) else {
+            return false;
+        };
+        let pulses = if reading.value >= last {
+            reading.value - last
+        } else {
+            match reading.wraps_after.map(i128::from) {
+                // Up to the maximum, one more round to zero, then on to the
+                // reading.
+                Some(max) if last <= max => max - last + 1 + reading.value,
+                _ => return false,
+            }
+        };
+        if pulses == 0 {
+            return false;
+        }
+        self.add_pulses(u64::try_from(pulses).unwrap_or(u64::MAX))
+            .is_ok()
     }
 
     /// Reliability as the input reference decides it, out of service aside.
@@ -262,6 +313,7 @@ impl BACnetObject for PulseConverterObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = read_common_properties!(self, property, array_index) {
             return result;
         }
@@ -314,10 +366,11 @@ impl BACnetObject for PulseConverterObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         let in_service_value = self.present_value();
         let was_out_of_service = self.out_of_service;
         if let Some(result) =
@@ -399,7 +452,6 @@ impl BACnetObject for PulseConverterObject {
             _ => Err(crate::common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                _array_index,
             )),
         }
     }
@@ -408,58 +460,22 @@ impl BACnetObject for PulseConverterObject {
         metadata::for_pulse_converter_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
+    crate::traits::lend_cov_reporting!();
 
-    fn supports_cov(&self) -> bool {
-        true
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
     }
+}
 
+impl crate::traits::CovReporting for PulseConverterObject {
     fn cov_increment(&self) -> Option<f64> {
         Some(f64::from(self.cov_increment))
     }
+}
 
-    fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
-        self.clock = clock;
-    }
-
-    fn input_reference_internal(&self) -> Option<Option<&BACnetObjectPropertyReference>> {
-        Some(self.input_reference.as_ref())
-    }
-
-    fn set_input_usable_internal(&mut self, usable: bool) -> bool {
-        self.input_unusable = !usable;
-        if self.out_of_service {
-            return false;
-        }
-        let reliability = self.evaluated_reliability();
-        core::mem::replace(&mut self.reliability, reliability) != reliability
-    }
-
-    fn take_input_reading_internal(&mut self, reading: Option<InputReading>) -> bool {
-        let Some(reading) = reading else {
-            self.last_input = None;
-            return false;
-        };
-        let Some(last) = self.last_input.replace(reading.value) else {
-            return false;
-        };
-        let pulses = if reading.value >= last {
-            reading.value - last
-        } else {
-            match reading.wraps_after.map(i128::from) {
-                // Up to the maximum, one more round to zero, then on to the
-                // reading.
-                Some(max) if last <= max => max - last + 1 + reading.value,
-                _ => return false,
-            }
-        };
-        if pulses == 0 {
-            return false;
-        }
-        self.add_pulses(u64::try_from(pulses).unwrap_or(u64::MAX))
-            .is_ok()
+impl crate::traits::Timed for PulseConverterObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.clock = clocks.clock.clone();
     }
 }
 

@@ -1,5 +1,9 @@
+use crate::traits::Timed;
+#[cfg(feature = "std")]
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(feature = "std")]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bacnet_types::bitstring::LogStatus;
@@ -14,15 +18,18 @@ use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, Time};
 use crate::clock::{ClockFrame, ClockReader};
 use crate::traits::BACnetObject;
 
-use super::{
-    AuditLogObject, AuditLogPersistence, AuditLogSnapshot, AuditReporterObject,
-    FileAuditLogPersistence, MAX_AUDIT_RECORDS,
-};
+use super::{AuditLogObject, AuditLogPersistence, AuditLogSnapshot, AuditReporterObject};
+#[cfg(feature = "std")]
+use super::{FileAuditLogPersistence, MAX_AUDIT_RECORDS};
 
 mod reporter;
 
+// std: the file backend.
+#[cfg(feature = "std")]
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+// std: the file backend.
+#[cfg(feature = "std")]
 fn temp_base(label: &str) -> PathBuf {
     let serial = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
@@ -33,12 +40,16 @@ fn temp_base(label: &str) -> PathBuf {
     dir.join("state")
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 fn cleanup_base(base: &std::path::Path) {
     if let Some(parent) = base.parent() {
         let _ = std::fs::remove_dir_all(parent);
     }
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 fn rewrite_snapshot_checksum(data: &mut [u8]) {
     let checksum_start = data.len() - 4;
     let mut crc = !0u32;
@@ -140,20 +151,18 @@ impl AuditLogPersistence for MemoryPersistence {
 
     fn commit(&self, snapshot: &AuditLogSnapshot) -> Result<(), Error> {
         if self.fail_write.load(Ordering::Acquire) {
-            return Err(Error::Transport(std::io::Error::other(
-                "injected write failure",
-            )));
+            return Err(Error::Encoding("injected write failure".into()));
         }
         if self.fail_sync.load(Ordering::Acquire) {
-            return Err(Error::Transport(std::io::Error::other(
-                "injected sync failure",
-            )));
+            return Err(Error::Encoding("injected sync failure".into()));
         }
         *self.snapshot.lock().unwrap() = Some(snapshot.clone());
         Ok(())
     }
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn audit_restart_restores_exact_typed_state() {
     let base = temp_base("restart");
@@ -222,7 +231,10 @@ fn audit_capacity_eviction_and_total_wrap_are_transactional() {
 fn zero_capacity_counts_then_discards_ordinary_and_status_records() {
     let persistence = Arc::new(MemoryPersistence::default());
     let mut log = AuditLogObject::new(1, "AL-1", 0, persistence).unwrap();
-    log.bind_clock_internal(Some(Arc::new(FixedClock(Some(frame(1))))));
+    log.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(FixedClock(Some(frame(1))))),
+        ..crate::traits::Clocks::default()
+    });
 
     assert_eq!(
         log.add_record(record(0, BACnetAuditLogDatum::TimeChange(1.0)))
@@ -305,6 +317,8 @@ fn zero_capacity_validates_enabled_records_before_advancing_sequence() {
     );
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn newer_slot_corruption_falls_back_but_no_valid_slot_fails_closed() {
     let base = temp_base("fallback");
@@ -335,6 +349,8 @@ fn newer_slot_corruption_falls_back_but_no_valid_slot_fails_closed() {
     cleanup_base(&base);
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn corrupted_header_falls_back_but_checksum_valid_incompatibility_is_fatal() {
     let base = temp_base("incompatible-newer");
@@ -374,6 +390,8 @@ fn corrupted_header_falls_back_but_checksum_valid_incompatibility_is_fatal() {
     cleanup_base(&base);
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn persistence_identity_version_capacity_and_length_validation_fail_closed() {
     let base = temp_base("validation");
@@ -423,6 +441,8 @@ fn persistence_identity_version_capacity_and_length_validation_fail_closed() {
     cleanup_base(&base);
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn oversized_record_is_rejected_before_durable_or_memory_mutation() {
     let base = temp_base("record-bound");
@@ -573,7 +593,10 @@ fn log_enable_commit_failure_preserves_persistent_generation_and_retries() {
     let mut log = AuditLogObject::new(1, "AL-1", 4, persistence.clone()).unwrap();
     log.add_record(record(1, BACnetAuditLogDatum::TimeChange(1.0)))
         .unwrap();
-    log.bind_clock_internal(Some(Arc::new(FixedClock(Some(frame(2))))));
+    log.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(FixedClock(Some(frame(2))))),
+        ..crate::traits::Clocks::default()
+    });
     let before = persistence.snapshot.lock().unwrap().clone().unwrap();
     log.write_property(
         PropertyIdentifier::LOG_ENABLE,
@@ -647,7 +670,10 @@ fn clocked_enable_and_purge_statuses_persist_and_record_count_is_read_only() {
 
     let mut invalid = frame(1);
     invalid.local_time.hour = 24;
-    log.bind_clock_internal(Some(Arc::new(FixedClock(Some(invalid)))));
+    log.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(FixedClock(Some(invalid)))),
+        ..crate::traits::Clocks::default()
+    });
     let error = log
         .write_property(
             PropertyIdentifier::LOG_ENABLE,
@@ -663,7 +689,10 @@ fn clocked_enable_and_purge_statuses_persist_and_record_count_is_read_only() {
     assert_matches_snapshot(&log, &before);
     assert_eq!(persistence.snapshot.lock().unwrap().as_ref(), Some(&before));
 
-    log.bind_clock_internal(Some(Arc::new(FixedClock(Some(frame(2))))));
+    log.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(FixedClock(Some(frame(2))))),
+        ..crate::traits::Clocks::default()
+    });
     log.write_property(
         PropertyIdentifier::LOG_ENABLE,
         None,

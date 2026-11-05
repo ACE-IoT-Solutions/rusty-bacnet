@@ -20,8 +20,7 @@ async fn foreign() -> (Endpoint, SocketAddrV4, UdpSocket) {
         builder()
             .role(SessionRole::ClientOnly)
             .mode(BipMode::Foreign(ForeignDeviceConfig {
-                bbmd_ip: Ipv4Addr::LOCALHOST,
-                bbmd_port: address(&bbmd).port(),
+                bbmd: (Ipv4Addr::LOCALHOST, address(&bbmd).port()).into(),
                 renewal_interval: None,
                 ttl: 60,
             })),
@@ -169,6 +168,7 @@ async fn endpoint_number_bbmd_server_wire_admission() {
         let impostor = udp().await;
         let (observer, port) = observer();
         let configured = builder_on(port)
+            .share_wildcard_port(true)
             .role(SessionRole::ServerOnly)
             .mode(BipMode::Bbmd(BbmdOptions {
                 bdt: vec![BdtEntry {

@@ -6,6 +6,7 @@
 use super::engine_tests::{Fixture, op};
 use super::*;
 use crate::property_metadata::PropertyPresenceCondition;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::enums::{ErrorClass, ErrorCode, LightingInProgress, LightingOperation as Op};
 use bacnet_types::error::RemoteError;
 
@@ -52,7 +53,10 @@ impl Fixture {
 fn the_trim_rows_are_absent_until_set_then_present_and_writable() {
     let mut f = Fixture::new();
     for p in [HIGH, LOW, FADE_TIME] {
-        assert!(!f.lo.property_list().contains(&p));
+        assert!(!crate::property_metadata::has_property(
+            &f.lo.property_metadata(),
+            p
+        ));
         assert_error(f.lo.read_property(p, None), ErrorCode::UNKNOWN_PROPERTY);
         assert_error(
             f.lo.write_property(p, None, PropertyValue::Real(50.0), None),
@@ -61,10 +65,16 @@ fn the_trim_rows_are_absent_until_set_then_present_and_writable() {
     }
     // A high trim brings Trim_Fade_Time with it, which is then required.
     f.lo.set_high_end_trim(Some(80.0)).unwrap();
-    let list = f.lo.property_list();
+    let list = crate::test_rows::listed(&f.lo.property_metadata());
     assert!(list.contains(&HIGH) && list.contains(&FADE_TIME) && !list.contains(&LOW));
-    assert!(f.lo.required_properties().contains(&FADE_TIME));
-    assert!(!f.lo.required_properties().contains(&HIGH));
+    assert!(
+        crate::property_metadata::required_properties(&f.lo.property_metadata())
+            .any(|required| required == FADE_TIME)
+    );
+    assert!(
+        !crate::property_metadata::required_properties(&f.lo.property_metadata())
+            .any(|required| required == HIGH)
+    );
     let metadata = f.lo.property_metadata();
     let row = |p| {
         *metadata
@@ -76,7 +86,7 @@ fn the_trim_rows_are_absent_until_set_then_present_and_writable() {
         row(FADE_TIME).presence_condition,
         Some(PropertyPresenceCondition::LightingTrims)
     );
-    assert!(f.lo.is_writable_property(HIGH) && f.lo.is_writable_property(FADE_TIME));
+    assert!(is_writable_property(&f.lo, HIGH) && is_writable_property(&f.lo, FADE_TIME));
     assert_eq!(
         metadata.last().unwrap().property_identifier,
         PropertyIdentifier::PROPERTY_LIST

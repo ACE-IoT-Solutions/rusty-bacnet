@@ -10,7 +10,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 
 use crate::clock::{ClockFrame, ClockReader};
 use crate::event_enrollment::EventEnrollmentMonitoredSource;
-use crate::traits::{BACnetObject, DeadlineWaker, MonotonicClock};
+use crate::traits::{BACnetObject, Clocks, DeadlineWaker, MonotonicClock};
 
 mod averaging_sampling;
 mod event_algorithm_inhibit;
@@ -31,14 +31,16 @@ use trend_poll::TrendPollSchedule;
 /// Maintains secondary indexes for O(1) name lookup and O(1) type lookup.
 pub struct ObjectDatabase {
     audit_owner: Option<alloc::sync::Weak<AuditOwnership>>,
+    /// The Device a running server or endpoint speaks for, set from its
+    /// frozen identity (#2227). `None` falls back to the lowest Device.
+    bound_device: Option<ObjectIdentifier>,
     network_port: Option<network_port::NetworkPortRegistration>,
     objects: HashMap<ObjectIdentifier, Box<dyn BACnetObject>>,
     trend_poll: TrendPollSchedule,
-    /// Shared Device clock reader. `None` is an explicit clockless database.
-    clock: Option<Arc<dyn ClockReader>>,
-    monotonic_clock: Option<Arc<MonotonicClock>>,
-    /// Bound into every object with the monotonic clock (#1384).
-    deadline_waker: Option<Arc<DeadlineWaker>>,
+    /// The clocks every object is bound to: the shared Device clock reader
+    /// (`None` is an explicit clockless database), the monotonic source and
+    /// the deadline waker (#1384).
+    clocks: Clocks,
     /// Device-local EventNotification ordering source for clockless operation.
     event_sequence: Arc<EventSequence>,
     /// Reverse index: object name → ObjectIdentifier for uniqueness enforcement.
@@ -87,11 +89,10 @@ impl ObjectDatabase {
         Self {
             objects: HashMap::new(),
             trend_poll: TrendPollSchedule::default(),
-            clock: None,
-            monotonic_clock: None,
-            deadline_waker: None,
+            clocks: Clocks::default(),
             event_sequence: Arc::default(),
             audit_owner: None,
+            bound_device: None,
             network_port: None,
             name_index: HashMap::new(),
             type_index: HashMap::new(),
@@ -102,6 +103,9 @@ impl ObjectDatabase {
     }
 
     /// Add an object to the database.
+    ///
+    /// Returns [`Error::Range`] if the object's instance number is the
+    /// reserved 4194303 (Clause 12.1.1), which no object may hold.
     ///
     /// Returns PROPERTY / DUPLICATE_NAME if another object already has the
     /// same `object_name()`, as
@@ -114,13 +118,16 @@ impl ObjectDatabase {
     /// judged again (`ObjectDatabase::check_input_reference`); one whose
     /// Reliability changes is queued for the server's COV fanout. A Schedule
     /// holding a refused reference to it is queued for the server to retry
-    /// that reference (#1440).
+    /// that reference (#1440). A Schedule replaced gives up the slots it
+    /// held, as [`remove`](Self::remove) has it do (#2264).
     pub fn add(&mut self, mut object: Box<dyn BACnetObject>) -> Result<(), Error> {
-        self.check_network_port_membership(&object.object_identifier())?;
-        self.check_audit_membership(&object.object_identifier(), true)?;
-        object.bind_clock_internal(self.clock.clone());
-        object.bind_monotonic_clock_internal(self.monotonic_clock.clone());
-        object.bind_deadline_waker_internal(self.deadline_waker.clone());
+        let identifier = object.object_identifier();
+        ObjectIdentifier::new_addressable(identifier.object_type(), identifier.instance_number())?;
+        self.check_network_port_membership(&identifier)?;
+        self.check_audit_membership(&identifier, true)?;
+        if let Some(timed) = object.timed() {
+            timed.bind_clocks(&self.clocks);
+        }
         let oid = object.object_identifier();
         let name = object.object_name().to_string();
 
@@ -130,7 +137,7 @@ impl ObjectDatabase {
         // If replacing an existing object, remove its old name from the index
         // and invalidate state owned by enrollments that monitor it.
         if let Some(old) = self.objects.get(&oid) {
-            if let Some(reporter) = old.audit_reporter_internal() {
+            if let Some(reporter) = old.audit_reporter() {
                 reporter.status_internal().configuration_changed();
             }
             let old_name = old.object_name().to_string();
@@ -142,7 +149,12 @@ impl ObjectDatabase {
         let is_new = !self.objects.contains_key(&oid);
         self.enrollment_eval_sources.remove(&oid);
         self.trend_poll.retire(&oid);
-        self.objects.insert(oid, object);
+        // A Schedule or Staging object replaced gives up the slots it held,
+        // as a removed one does (#2264, #2265); the new object starts from
+        // what it holds.
+        if let Some(mut replaced) = self.objects.insert(oid, object) {
+            self.commander_removed(oid, replaced.as_mut());
+        }
         self.audit_membership_changed(oid, true);
         if is_new {
             self.type_index
@@ -201,6 +213,23 @@ impl ObjectDatabase {
         self.objects.get(oid).map(|o| o.as_ref())
     }
 
+    /// The datatype and shape of `property` on the object `oid` names: the
+    /// object's metadata row's
+    /// ([`object_value_type`](crate::property_metadata::object_value_type)),
+    /// or the standard one for its type when the database doesn't hold it,
+    /// so a request naming a missing object still decodes its value as the
+    /// property's datatype implies.
+    pub fn value_type(
+        &self,
+        oid: &ObjectIdentifier,
+        property: bacnet_types::enums::PropertyIdentifier,
+    ) -> Option<crate::property_metadata::ValueType> {
+        match self.get(oid) {
+            Some(object) => crate::property_metadata::object_value_type(object, property),
+            None => crate::property_metadata::standard_value_type(oid.object_type(), property),
+        }
+    }
+
     /// Get a mutable reference to an object by identifier.
     pub fn get_mut(&mut self, oid: &ObjectIdentifier) -> Option<&mut (dyn BACnetObject + '_)> {
         if let Some(object) = self.objects.get_mut(oid) {
@@ -208,6 +237,37 @@ impl ObjectDatabase {
         } else {
             None
         }
+    }
+
+    /// The object stored at `oid` as the concrete type `T`, or `None` when it
+    /// is another type, or an adapter around a `T` that
+    /// [`with_object_adapter`](Self::with_object_adapter) installed. This
+    /// reflects the stored object itself, never its `Box`: downcasting the
+    /// box would match the blanket `StoredObject` impl on `Box` and miss
+    /// every time.
+    pub(crate) fn stored_as<T: 'static>(&self, oid: &ObjectIdentifier) -> Option<&T> {
+        let object: &(dyn BACnetObject + 'static) = self.objects.get(oid)?.as_ref();
+        object
+            .as_stored_any(crate::traits::ObjectStorageAccess(()))
+            .downcast_ref()
+    }
+
+    /// The mutable form of [`stored_as`](Self::stored_as), with the same
+    /// limits.
+    pub(crate) fn stored_as_mut<T: 'static>(&mut self, oid: &ObjectIdentifier) -> Option<&mut T> {
+        let object: &mut (dyn BACnetObject + 'static) = self.objects.get_mut(oid)?.as_mut();
+        object
+            .as_stored_any_mut(crate::traits::ObjectStorageAccess(()))
+            .downcast_mut()
+    }
+
+    /// The stored object itself, with the `'static` bound the crate's
+    /// concrete access needs.
+    pub(crate) fn stored_object_mut(
+        &mut self,
+        oid: &ObjectIdentifier,
+    ) -> Option<&mut (dyn BACnetObject + 'static)> {
+        Some(self.objects.get_mut(oid)?.as_mut())
     }
 
     /// Install an identity-preserving adapter through scoped structural access.
@@ -218,6 +278,15 @@ impl ObjectDatabase {
     /// Poll ownership is retired before invocation, even if the callback returns
     /// an error or unwinds after modifying the slot. Slot borrows cannot escape.
     /// An installed Audit runtime can reject protected members before the callback.
+    ///
+    /// Some answers come from the built-in object only, never through an
+    /// adapter: whether a COV Trend Log is collecting (Enable and its window),
+    /// whether an Event Log takes received notifications, and a Pulse
+    /// Converter's Input_Reference judging and counting. A wrapped Trend Log
+    /// logging by COV keeps no Enable or window gate and no baseline restart,
+    /// a wrapped Event Log takes no received notifications, and a wrapped
+    /// Pulse Converter counts nothing and its Reliability no longer follows
+    /// its Input_Reference.
     ///
     /// ```compile_fail
     /// use bacnet_objects::{database::ObjectDatabase, traits::BACnetObject};
@@ -235,8 +304,7 @@ impl ObjectDatabase {
     where
         F: for<'slot> FnOnce(&'slot mut Box<dyn BACnetObject>) -> R,
     {
-        self.check_network_port_membership(oid)?;
-        self.check_audit_membership(oid, false)?;
+        self.check_removable(oid)?;
         self.trend_poll.retire(oid);
         Ok(self.objects.get_mut(oid).map(adapt))
     }
@@ -289,7 +357,8 @@ impl ObjectDatabase {
             .iter()
             .filter_map(|(oid, object)| {
                 let source = object
-                    .enrollment_eval_source_internal()
+                    .enrollment_eval()
+                    .and_then(|eval| eval.eval_source())
                     .flatten()
                     .or_else(|| self.enrollment_eval_sources.get(oid).copied());
                 source
@@ -303,33 +372,32 @@ impl ObjectDatabase {
     /// Remove an object by identifier. Installed Audit membership protection
     /// returns an error before removing the object or changing indexes.
     /// Pulse Converters whose Input_Reference names a removed object have
-    /// the reference judged again, as [`add`](Self::add) does.
+    /// the reference judged again, as [`add`](Self::add) does. A removed
+    /// Schedule gives up the slots it holds on its targets: the NULLs are
+    /// queued for the server, which writes them under its next guard and
+    /// fans COV out (#2264). Without a server they wait in the queue.
     pub fn remove(
         &mut self,
         oid: &ObjectIdentifier,
     ) -> Result<Option<Box<dyn BACnetObject>>, Error> {
-        self.check_network_port_membership(oid)?;
-        self.check_audit_membership(oid, false)?;
+        self.check_removable(oid)?;
         self.trend_poll.retire(oid);
         if self.objects.contains_key(oid) {
             self.invalidate_enrollments_monitoring(oid);
         }
         match self.objects.remove(oid) {
             Some(mut obj) => {
-                if let Some(reporter) = obj.audit_reporter_internal() {
+                if let Some(reporter) = obj.audit_reporter() {
                     reporter.status_internal().configuration_changed();
                 }
                 self.enrollment_eval_sources.remove(oid);
-                if obj.enrollment_eval_state_internal().is_some() {
-                    if obj
-                        .set_enrollment_eval_state_internal(Default::default())
-                        .is_err()
-                    {
+                if let Some(eval) = obj.enrollment_eval_mut() {
+                    if eval.set_eval_state(Default::default()).is_err() {
                         self.invalid_enrollment_eval_state.insert(*oid);
                     } else {
                         self.invalid_enrollment_eval_state.remove(oid);
                     }
-                    let _ = obj.set_enrollment_eval_source_internal(None);
+                    let _ = eval.set_eval_source(None);
                 } else {
                     self.invalid_enrollment_eval_state.remove(oid);
                 }
@@ -338,11 +406,22 @@ impl ObjectDatabase {
                     type_set.retain(|o| o != oid);
                 }
                 self.audit_membership_changed(*oid, false);
+                self.commander_removed(*oid, obj.as_mut());
                 self.membership_changed(*oid, false);
                 Ok(Some(obj))
             }
             _ => Ok(None),
         }
+    }
+
+    /// Whether [`remove`](Self::remove) would take the object at `oid` out:
+    /// OBJECT / OBJECT_DELETION_NOT_PERMITTED while a running runtime holds
+    /// it (the Network Port a server or endpoint registered, or the Device
+    /// and Audit Reporters an installed Audit runtime protects). The bundled
+    /// server's DeleteObject refuses with this answer too.
+    pub fn check_removable(&self, oid: &ObjectIdentifier) -> Result<(), Error> {
+        self.check_network_port_membership(oid)?;
+        self.check_audit_membership(oid, false)
     }
 
     /// List all object identifiers in the database.
@@ -372,35 +451,80 @@ impl ObjectDatabase {
     ///
     /// Devices added after this call receive the same reader in [`add`](Self::add).
     pub fn set_clock_reader(&mut self, clock: Option<Arc<dyn ClockReader>>) {
-        self.clock = clock;
-        for object in self.objects.values_mut() {
-            object.bind_clock_internal(self.clock.clone());
-        }
+        self.clocks.clock = clock;
+        self.rebind_clocks();
     }
 
-    /// Bind one process-local monotonic source to every contained object.
-    #[doc(hidden)]
-    pub fn set_monotonic_clock_internal(&mut self, clock: Option<Arc<MonotonicClock>>) {
+    /// Bind one process-local monotonic source to the database and every
+    /// object it contains, through [`Timed::bind_clocks`].
+    ///
+    /// Objects added later receive it in [`add`](Self::add). Deadlines the
+    /// objects arm, and the instants a host passes to
+    /// [`Timed::advance_monotonic_time`], are on this clock's time base. The
+    /// bundled server binds the time since its monotonic task started.
+    ///
+    /// [`Timed::bind_clocks`]: crate::traits::Timed::bind_clocks
+    /// [`Timed::advance_monotonic_time`]: crate::traits::Timed::advance_monotonic_time
+    pub fn set_monotonic_clock(&mut self, clock: Option<Arc<MonotonicClock>>) {
         self.trend_poll.clear();
-        self.monotonic_clock = clock;
-        for object in self.objects.values_mut() {
-            object.bind_monotonic_clock_internal(self.monotonic_clock.clone());
-        }
+        self.clocks.monotonic = clock;
+        self.rebind_clocks();
     }
 
     /// Bind the waker objects call when a write arms a monotonic deadline to
-    /// every contained object, and to each one added later.
-    #[doc(hidden)]
-    pub fn set_deadline_waker_internal(&mut self, waker: Option<Arc<DeadlineWaker>>) {
-        self.deadline_waker = waker;
+    /// every contained object, and to each one added later, so the host's
+    /// monotonic pass looks again sooner than its next routine wake (#1384).
+    pub fn set_deadline_waker(&mut self, waker: Option<Arc<DeadlineWaker>>) {
+        self.clocks.deadline_waker = waker;
+        self.rebind_clocks();
+    }
+
+    /// The device is starting: call [`Timed::start_output`] on every timed
+    /// object, as a server does once before it shares the database (#1526).
+    ///
+    /// [`Timed::start_output`]: crate::traits::Timed::start_output
+    pub fn start_outputs(&mut self) {
         for object in self.objects.values_mut() {
-            object.bind_deadline_waker_internal(self.deadline_waker.clone());
+            if let Some(timed) = object.timed() {
+                timed.start_output();
+            }
         }
+    }
+
+    /// Hand the database's clocks to every timed object again, after one of
+    /// them changed.
+    fn rebind_clocks(&mut self) {
+        for object in self.objects.values_mut() {
+            if let Some(timed) = object.timed() {
+                timed.bind_clocks(&self.clocks);
+            }
+        }
+    }
+
+    /// How many blink-warn notifications the Lighting Output or Binary
+    /// Lighting Output at `oid` has asked for. A conformance-test channel,
+    /// not a BACnet property or host callback; `None` for any other object.
+    #[doc(hidden)]
+    pub fn lighting_blink_count_internal(&mut self, oid: &ObjectIdentifier) -> Option<u64> {
+        use crate::lighting::{BinaryLightingOutputObject, LightingOutputObject};
+        let object = self
+            .objects
+            .get_mut(oid)?
+            .as_mut()
+            .as_stored_any_mut(crate::traits::ObjectStorageAccess(()));
+        if object.is::<LightingOutputObject>() {
+            return object
+                .downcast_mut::<LightingOutputObject>()
+                .map(|object| object.lighting_blink_count());
+        }
+        object
+            .downcast_mut::<BinaryLightingOutputObject>()
+            .map(|object| object.lighting_blink_count())
     }
 
     /// Read one coherent sample from the database's shared clock.
     pub fn clock_frame(&self) -> Option<ClockFrame> {
-        self.clock.as_ref()?.read_clock()
+        self.clocks.clock.as_ref()?.read_clock()
     }
 
     #[doc(hidden)]

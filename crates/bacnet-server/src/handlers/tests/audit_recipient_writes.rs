@@ -2,6 +2,7 @@
 //! This fixture does not add the property to the built-in Device object.
 
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_services::common::BACnetPropertyValue;
 use bacnet_services::wpm::WriteAccessSpecification;
 use bacnet_types::error::RemoteError;
@@ -28,8 +29,8 @@ impl BACnetObject for RecipientObject {
         "Recipient boundary fixture"
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[PROPERTY])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::rows(&[PROPERTY], &[PROPERTY])
     }
 
     fn read_property(
@@ -111,7 +112,7 @@ fn wp(db: &mut ObjectDatabase, value: &[u8]) -> Result<ObjectIdentifier, Error> 
     handle_write_property(db, &request)
 }
 
-fn wpm(db: &mut ObjectDatabase, values: &[&[u8]]) -> WritePropertyMultipleOutcome {
+fn wpm(db: &mut ObjectDatabase, values: &[&[u8]]) -> WpmOutcome {
     let mut request = BytesMut::new();
     WritePropertyMultipleRequest {
         list_of_write_access_specs: vec![WriteAccessSpecification {
@@ -129,11 +130,7 @@ fn wpm(db: &mut ObjectDatabase, values: &[&[u8]]) -> WritePropertyMultipleOutcom
     }
     .encode(&mut request)
     .unwrap();
-    handle_write_property_multiple_detailed(
-        db,
-        &request,
-        &mut crate::life_safety_cov::LifeSafetyCovSnapshots::default(),
-    )
+    write::write_property_multiple(db, &request, None, None, None, None)
 }
 
 fn valid_values() -> Vec<&'static [u8]> {
@@ -200,8 +197,7 @@ fn wp_accepts_exact_device_and_address_bytes() {
 fn wpm_accepts_exact_device_and_address_bytes() {
     for value in valid_values() {
         let (mut db, writes) = fixture();
-        let WritePropertyMultipleOutcome::Success { committed_oids } = wpm(&mut db, &[value])
-        else {
+        let WpmOutcome::Success { committed_oids } = wpm(&mut db, &[value]) else {
             panic!("valid Recipient rejected: {value:02x?}");
         };
         assert_eq!(committed_oids, vec![oid()]);
@@ -225,9 +221,7 @@ fn recipient_null_relinquishment_is_noop_and_wpm_continues() {
     let (mut db, writes) = fixture();
     assert_eq!(wp(&mut db, &[0x00]).unwrap(), oid());
     assert_value(&db, INITIAL);
-    let WritePropertyMultipleOutcome::Success { committed_oids } =
-        wpm(&mut db, &[&[0x00], DEVICE, &[0x00]])
-    else {
+    let WpmOutcome::Success { committed_oids } = wpm(&mut db, &[&[0x00], DEVICE, &[0x00]]) else {
         panic!("NULL relinquishment must not stop the valid WPM suffix");
     };
     assert_eq!(committed_oids, vec![oid()]);
@@ -245,7 +239,7 @@ fn wpm_rejects_invalid_recipient_preserving_only_committed_prefix() {
             } else {
                 vec![&value, DEVICE]
             };
-            let WritePropertyMultipleOutcome::Error {
+            let WpmOutcome::Error {
                 error,
                 first_failed_write_attempt,
                 committed_oids,

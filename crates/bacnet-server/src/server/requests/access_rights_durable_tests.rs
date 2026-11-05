@@ -30,7 +30,7 @@ use bacnet_types::enums::{AccessRuleLocationSpecifier, AccessRuleTimeRangeSpecif
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-type RightsStorage = HeldStorage<AccessRightsSnapshot>;
+pub(super) type RightsStorage = HeldStorage<AccessRightsSnapshot>;
 
 impl AccessRightsPersistence for RightsStorage {
     fn load(&self, _rights: ObjectIdentifier) -> Result<Option<AccessRightsSnapshot>, Error> {
@@ -284,6 +284,7 @@ async fn a_write_property_multiple_with_several_rights_writes_saves_once_and_sur
         negative_access_rules: Some(vec![grown_rule()]),
         enable: Some(false),
         accompaniment: None,
+        description: None,
     };
     assert_eq!(storage.load_saved(), Some(expected.clone()));
     drop(fixture);
@@ -456,7 +457,7 @@ async fn saves_done(fixture: &Fixture, rights: ObjectIdentifier) {
     let mut db = fixture.db.write().await;
     let writes = db
         .get_mut(&rights)
-        .and_then(|object| object.durable_writes_internal())
+        .and_then(|object| object.durable_writes())
         .expect("the object saves");
     assert!(!writes.has_staged_write(), "a write is still staged");
     let wait = writes.settle_forgotten_writes().expect("the object saves");

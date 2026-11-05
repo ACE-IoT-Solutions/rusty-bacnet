@@ -50,8 +50,8 @@ const FAIL: u8 = 3;
 
 /// The session's own address, learned from a frame it sends `peer`.
 async fn session_mac(
-    session: &EndpointSession<BipTransport>,
-    peer: &NetworkLayer<BipTransport>,
+    session: &EndpointSession<BusPort>,
+    peer: &NetworkLayer<BusPort>,
     replies: &mut bacnet_network::layer::ApduReceiver,
 ) -> MacAddr {
     session
@@ -73,7 +73,7 @@ async fn session_mac(
 }
 
 async fn reinitialize(
-    peer: &NetworkLayer<BipTransport>,
+    peer: &NetworkLayer<BusPort>,
     session: &[u8],
     replies: &mut bacnet_network::layer::ApduReceiver,
     state: ReinitializedState,
@@ -110,7 +110,7 @@ async fn reinitialize(
 /// Every refusal kind, then the accepted request, for each state family.
 /// The records carry consecutive sequence-number timestamps, so a record
 /// built for a refusal or for ACTIVATE_CHANGES would show as a gap.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn endpoint_records_accepted_reinitialize_requests_only() {
     let (mut sink, mut records) = network().await;
     let (mut peer, mut replies) = network().await;
@@ -126,7 +126,9 @@ async fn endpoint_records_accepted_reinitialize_requests_only() {
     }
     db.get_mut(&selected())
         .unwrap()
-        .configure_audit_reporter_internal(
+        .audit_reporter_mut()
+        .expect("an Audit Reporter")
+        .configure(
             AuditLevel::AUDIT_ALL,
             operations,
             false,
@@ -198,4 +200,84 @@ async fn endpoint_records_accepted_reinitialize_requests_only() {
     session.stop().await.unwrap();
     sink.stop().await.unwrap();
     peer.stop().await.unwrap();
+}
+
+/// Point the session's Reporter at `level` and `operations`.
+async fn configure_reporter(
+    session: &EndpointSession<BusPort>,
+    level: AuditLevel,
+    operations: &[AuditOperation],
+) {
+    let mut flags = AuditOperationFlags::empty();
+    for operation in operations {
+        flags.insert(*operation);
+    }
+    session
+        .database
+        .as_ref()
+        .unwrap()
+        .write()
+        .await
+        .get_mut(&selected())
+        .unwrap()
+        .audit_reporter_mut()
+        .expect("an Audit Reporter")
+        .configure(
+            level,
+            flags,
+            false,
+            None,
+            BACnetPriorityFilter::empty(),
+            None,
+        )
+        .unwrap();
+}
+
+/// A reset the application reports (#1837) is this device's DEVICE_RESET,
+/// with no invoke ID, filtered by the Reporter's level and operations like
+/// a peer's: a filtered report builds no record, so the first record built
+/// takes the first sequence number.
+#[tokio::test(start_paused = true)]
+async fn endpoint_records_a_local_reset_through_the_reporters_filters() {
+    let (mut sink, mut records) = network().await;
+    let mut db = database(false);
+    db.set_clock_reader(None);
+    let mut session = session(db, SessionRole::Both, &sink);
+    assert!(session.report_device_reset_local().await.is_err());
+    session.start().await.unwrap();
+    // Filtered out by the operations, then by the level.
+    configure_reporter(
+        &session,
+        AuditLevel::AUDIT_ALL,
+        &[AuditOperation::DEVICE_BACKUP],
+    )
+    .await;
+    session.report_device_reset_local().await.unwrap();
+    configure_reporter(&session, AuditLevel::NONE, &[AuditOperation::DEVICE_RESET]).await;
+    session.report_device_reset_local().await.unwrap();
+    configure_reporter(
+        &session,
+        AuditLevel::AUDIT_ALL,
+        &[AuditOperation::DEVICE_RESET],
+    )
+    .await;
+    session.report_device_reset_local().await.unwrap();
+    let (record, _) = notification(&receive(&mut records).await, false);
+    let device = BACnetRecipient::Device(oid(ObjectType::DEVICE, 123));
+    assert_eq!(record.operation, AuditOperation::DEVICE_RESET);
+    assert_eq!(record.source_device, device);
+    assert_eq!(record.target_device, device);
+    assert_eq!(record.invoke_id, None);
+    assert_eq!(
+        record.target_timestamp,
+        Some(BACnetTimeStamp::SequenceNumber(0)),
+        "the filtered reports built no record"
+    );
+    assert_eq!(record.target_object, None);
+    assert_eq!(record.result, None);
+    tokio::time::sleep(WAIT).await;
+    assert!(records.try_recv().is_err(), "one record only");
+    session.stop().await.unwrap();
+    assert!(session.report_device_reset_local().await.is_err());
+    sink.stop().await.unwrap();
 }

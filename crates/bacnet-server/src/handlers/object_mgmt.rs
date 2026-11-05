@@ -1,47 +1,6 @@
 use super::*;
-use bacnet_types::enums::EngineeringUnits;
+use bacnet_objects::creation::CreationOnly;
 use bacnet_types::error::RemoteError;
-
-/// Handle a WhoHas request and return an IHave response if we have the object.
-///
-/// Returns `Some(IHaveRequest)` if we have the requested object, `None` otherwise.
-pub fn handle_who_has(
-    db: &ObjectDatabase,
-    service_data: &[u8],
-    device_oid: ObjectIdentifier,
-) -> Result<Option<IHaveRequest>, Error> {
-    let request = WhoHasRequest::decode(service_data)?;
-
-    let instance = device_oid.instance_number();
-    if request.range.is_some_and(|range| !range.contains(instance)) {
-        return Ok(None);
-    }
-
-    match &request.object {
-        WhoHasObject::Identifier(oid) => {
-            if let Some(obj) = db.get(oid) {
-                return Ok(Some(IHaveRequest {
-                    device_identifier: device_oid,
-                    object_identifier: *oid,
-                    object_name: obj.object_name().to_string(),
-                }));
-            }
-        }
-        WhoHasObject::Name(name) => {
-            for (oid, obj) in db.iter_objects() {
-                if obj.object_name() == name {
-                    return Ok(Some(IHaveRequest {
-                        device_identifier: device_oid,
-                        object_identifier: oid,
-                        object_name: name.clone(),
-                    }));
-                }
-            }
-        }
-    }
-
-    Ok(None)
-}
 
 /// Handle a CreateObject request.
 ///
@@ -50,12 +9,17 @@ pub fn handle_who_has(
 /// A refused initial value is `Error::Structured` naming its position in the
 /// List of Initial Values (Clause 15.3.1.3); any other refusal is
 /// `Error::protocol` or a decoding error.
+///
+/// This builds only the types of the built-in table,
+/// [`bacnet_objects::creation`]; the running server also builds those of
+/// its [`ObjectTypeRegistry`](crate::server::ObjectTypeRegistry).
 pub fn handle_create_object(
     db: &mut ObjectDatabase,
     service_data: &[u8],
     buf: &mut BytesMut,
 ) -> Result<(), Error> {
-    handle_create_object_observed(db, service_data, buf, &mut None, None)
+    let constructors = crate::server::ObjectTypeRegistry::default();
+    handle_create_object_observed(db, &constructors, service_data, buf, &mut None, None)
         .map_err(CreateObjectRefusal::into_error)
 }
 
@@ -99,6 +63,7 @@ impl CreateObjectRefusal {
 /// allocated candidate, or final identity. Before by-type allocation it is absent.
 pub(crate) fn handle_create_object_observed(
     db: &mut ObjectDatabase,
+    constructors: &crate::server::ObjectTypeRegistry,
     service_data: &[u8],
     buf: &mut BytesMut,
     target: &mut Option<ObjectIdentifier>,
@@ -110,12 +75,22 @@ pub(crate) fn handle_create_object_observed(
     if let ObjectSpecifier::Identifier(oid) = request.object_specifier {
         *target = Some(oid);
     }
-    let created_oid = create(db, &request, target).map_err(CreateObjectRefusal::Failed)?;
-    let counts = StateCounts::of(db, created_oid, &request);
+    let created_oid =
+        create(db, constructors, &request, target).map_err(CreateObjectRefusal::Failed)?;
+    // What the type takes only at creation (#2179): the registration's
+    // answer for a registered type, the built-in table's for the rest.
+    let creation_only = constructors.creation_only(created_oid.object_type());
+    let counts = StateCounts::of(creation_only, &request);
+    let creating = Creating {
+        oid: created_oid,
+        creation_only,
+        counts,
+        command_origin,
+    };
 
     // Apply initial values; on failure, remove the created object.
-    for (position, pv) in apply_counts_first(db, created_oid, &request, counts, command_origin) {
-        if let Err(refusal) = initialize(db, created_oid, pv, counts, command_origin) {
+    for (position, pv) in apply_sizes_first(db, &creating, &request) {
+        if let Err(refusal) = initialize(db, &creating, pv) {
             let _ = db.remove(&created_oid);
             return Err(refusal.of_initial_value(position));
         }
@@ -126,6 +101,16 @@ pub(crate) fn handle_create_object_observed(
     }
     .encode(buf);
     Ok(())
+}
+
+/// The object a CreateObject request is creating, and what its initial
+/// values need to know about it.
+struct Creating<'a> {
+    oid: ObjectIdentifier,
+    /// The type's creation-only properties and their initializer.
+    creation_only: CreationOnly,
+    counts: StateCounts,
+    command_origin: Option<&'a bacnet_objects::command_source::CommandOrigin>,
 }
 
 /// Which initial values give a multi-state object its state count.
@@ -142,16 +127,8 @@ enum StateCounts {
 }
 
 impl StateCounts {
-    fn of(
-        db: &ObjectDatabase,
-        created_oid: ObjectIdentifier,
-        request: &CreateObjectRequest,
-    ) -> Self {
-        let object = db.get(&created_oid).expect("created above");
-        if !object
-            .creation_only_properties()
-            .contains(&PropertyIdentifier::NUMBER_OF_STATES)
-        {
+    fn of(creation_only: CreationOnly, request: &CreateObjectRequest) -> Self {
+        if !creation_only.contains(PropertyIdentifier::NUMBER_OF_STATES) {
             Self::None
         } else if request
             .list_of_initial_values
@@ -177,9 +154,14 @@ impl StateCounts {
     }
 }
 
-/// Apply the initial values that give a multi-state object its state count
-/// first ([`StateCounts`]), and return the initial values left to apply,
-/// with their positions, in request order (#1429, #1443).
+/// Apply the initial values that size the new object first: those that
+/// give a multi-state object its state count ([`StateCounts`]), and a Trend
+/// Log's Buffer_Size (#2208). Return the initial values left to apply, with
+/// their positions, in request order (#1429, #1443).
+///
+/// Buffer_Size goes first because a log takes it only while it holds no
+/// record, and other initial values (a new Log_DeviceObjectProperty, Enable
+/// FALSE) record a status, so the result must not depend on their order.
 ///
 /// Present_Value, Relinquish_Default, Alarm_Values, the State_Text elements
 /// and State_Text written whole are then judged against the count the
@@ -190,30 +172,63 @@ impl StateCounts {
 /// request order, so the last of those sets the count. A refusal always
 /// names the value's own position. On a fresh object a count can only fail
 /// its own checks here, since every state the object holds is 1.
-fn apply_counts_first<'a>(
+fn apply_sizes_first<'a>(
     db: &mut ObjectDatabase,
-    created_oid: ObjectIdentifier,
+    creating: &Creating<'_>,
     request: &'a CreateObjectRequest,
-    counts: StateCounts,
-    command_origin: Option<&bacnet_objects::command_source::CommandOrigin>,
 ) -> Vec<(u32, &'a bacnet_services::common::BACnetPropertyValue)> {
     // A refused attempt leaves the object as it was, and the value is tried
     // again in its place.
     (1u32..)
         .zip(&request.list_of_initial_values)
         .filter(|(_, pv)| {
-            !counts.gives(pv) || initialize(db, created_oid, pv, counts, command_origin).is_err()
+            let sizes = creating.counts.gives(pv)
+                || (pv.property_identifier == PropertyIdentifier::BUFFER_SIZE
+                    && pv.property_array_index.is_none());
+            !sizes || initialize(db, creating, pv).is_err()
         })
         .collect()
 }
 
 /// Create the requested object with its default values, setting `target` to
-/// its identifier once one is known.
+/// its identifier once one is known. An application's registered
+/// constructor for the type comes before the built-in table's.
 fn create(
     db: &mut ObjectDatabase,
+    constructors: &crate::server::ObjectTypeRegistry,
     request: &CreateObjectRequest,
     target: &mut Option<ObjectIdentifier>,
 ) -> Result<ObjectIdentifier, Error> {
+    // Clause 15.3.1.3 has the device look for a named object before
+    // anything else, so an identifier already in use is refused first,
+    // whatever its type: an application's own object of a vendor type too.
+    if let ObjectSpecifier::Identifier(oid) = &request.object_specifier
+        && db.get(oid).is_some()
+    {
+        return Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OBJECT_IDENTIFIER_ALREADY_EXISTS,
+        ));
+    }
+    // The clause keeps apart a type the device supports but does not create
+    // from one it does not support. The Device advertises exactly
+    // SUPPORTED_OBJECT_TYPES, and the application supports the proprietary
+    // types it registered, so any other type is refused next, whatever
+    // instance the request names; only a supported type gets the refusals
+    // below, DYNAMIC_CREATION_NOT_SUPPORTED among them.
+    let object_type = match &request.object_specifier {
+        ObjectSpecifier::Type(object_type) => *object_type,
+        ObjectSpecifier::Identifier(oid) => oid.object_type(),
+    };
+    let registered = constructors.get(object_type);
+    if registered.is_none()
+        && !bacnet_objects::device::SUPPORTED_OBJECT_TYPES.contains(&object_type)
+    {
+        return Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::UNSUPPORTED_OBJECT_TYPE,
+        ));
+    }
     const MAX_OBJECTS: usize = 10_000;
     if db.len() >= MAX_OBJECTS {
         return Err(Error::protocol(
@@ -229,104 +244,62 @@ fn create(
                 .iter()
                 .map(|oid| oid.instance_number())
                 .collect();
-            let next =
-                (1u32..=4_194_303)
-                    .find(|i| !existing.contains(i))
-                    .ok_or(Error::protocol(
-                        ErrorClass::RESOURCES,
-                        ErrorCode::NO_SPACE_FOR_OBJECT,
-                    ))?;
+            // 4194303 is reserved (Clause 12.1.1), so the last instance the
+            // server can pick is 4194302.
+            let next = (1u32..=ObjectIdentifier::MAX_ADDRESSABLE_INSTANCE)
+                .find(|i| !existing.contains(i))
+                .ok_or(Error::protocol(
+                    ErrorClass::RESOURCES,
+                    ErrorCode::NO_SPACE_FOR_OBJECT,
+                ))?;
             (*obj_type, next)
         }
         ObjectSpecifier::Identifier(oid) => {
-            if db.get(oid).is_some() {
+            // Clause 12.1.1 gives no object the instance 4194303 (it only
+            // means "not initialized" in properties), and the Clause 15.3.1.3
+            // error table has no row for asking for it. The device can't
+            // create such an object, so it answers as for a creation it won't
+            // perform; nothing is added.
+            if oid.instance_number() == ObjectIdentifier::WILDCARD_INSTANCE {
                 return Err(Error::protocol(
                     ErrorClass::OBJECT,
-                    ErrorCode::OBJECT_IDENTIFIER_ALREADY_EXISTS,
+                    ErrorCode::DYNAMIC_CREATION_NOT_SUPPORTED,
                 ));
             }
             (oid.object_type(), oid.instance_number())
         }
     };
 
-    // Unsupported extensible types need not fit an ObjectIdentifier. Do not
-    // truncate them or manufacture an instance when allocation did not occur.
-    *target = (object_type.to_raw() <= 1023)
-        .then(|| ObjectIdentifier::new(object_type, instance).ok())
-        .flatten();
-    // Named only once the type is known to be one the server builds.
-    let name = || default_name(db, object_type, instance);
-
-    let object: Box<dyn bacnet_objects::traits::BACnetObject> = if object_type
-        == ObjectType::ANALOG_INPUT
-    {
-        Box::new(bacnet_objects::analog::AnalogInputObject::new(
-            instance,
-            name(),
-            EngineeringUnits::NO_UNITS,
-        )?)
-    } else if object_type == ObjectType::ANALOG_OUTPUT {
-        Box::new(bacnet_objects::analog::AnalogOutputObject::new(
-            instance,
-            name(),
-            EngineeringUnits::NO_UNITS,
-        )?)
-    } else if object_type == ObjectType::BINARY_INPUT {
-        Box::new(bacnet_objects::binary::BinaryInputObject::new(
-            instance,
-            name(),
-        )?)
-    } else if object_type == ObjectType::BINARY_OUTPUT {
-        Box::new(bacnet_objects::binary::BinaryOutputObject::new(
-            instance,
-            name(),
-        )?)
-    } else if object_type == ObjectType::BINARY_VALUE {
-        let mut object = bacnet_objects::binary::BinaryValueObject::new(instance, name())?;
-        // Initial values provision only the optional rows actually requested.
-        // Normal WP cannot materialize an absent property. Values still pass
-        // the same writer below, including rollback on invalid initialization.
-        let mut policy = bacnet_objects::audit::ObjectAuditPolicy::default();
-        for value in &request.list_of_initial_values {
-            match value.property_identifier {
-                PropertyIdentifier::AUDIT_LEVEL => {
-                    policy.level = Some(bacnet_types::enums::AuditLevel::DEFAULT)
-                }
-                PropertyIdentifier::AUDITABLE_OPERATIONS => {
-                    policy.operations = Some(bacnet_types::bitstring::AuditOperationFlags::empty())
-                }
-                PropertyIdentifier::AUDIT_PRIORITY_FILTER => {
-                    policy.priority_filter =
-                        Some(bacnet_objects::audit::AuditPriorityPolicy::Inherit)
-                }
-                _ => {}
-            }
-        }
-        object.set_audit_policy(policy);
-        Box::new(object)
-    } else if object_type == ObjectType::MULTI_STATE_INPUT {
-        Box::new(bacnet_objects::multistate::MultiStateInputObject::new(
-            instance,
-            name(),
-            2,
-        )?)
-    } else if object_type == ObjectType::MULTI_STATE_OUTPUT {
-        Box::new(bacnet_objects::multistate::MultiStateOutputObject::new(
-            instance,
-            name(),
-            2,
-        )?)
-    } else if object_type == ObjectType::MULTI_STATE_VALUE {
-        Box::new(bacnet_objects::multistate::MultiStateValueObject::new(
-            instance,
-            name(),
-            2,
-        )?)
+    // A supported type fits an ObjectIdentifier: a listed one does, and a
+    // registration takes no type past 1023.
+    let oid = ObjectIdentifier::new(object_type, instance)?;
+    *target = Some(oid);
+    let object = if let Some(registration) = registered {
+        crate::server::construct_registered_object(
+            &registration.constructor,
+            oid,
+            &default_name(db, object_type, instance),
+        )?
     } else {
-        return Err(Error::protocol(
-            ErrorClass::OBJECT,
-            ErrorCode::UNSUPPORTED_OBJECT_TYPE,
-        ));
+        // A listed type the table doesn't build (#2172).
+        let constructor =
+            bacnet_objects::creation::builtin_constructor(object_type).ok_or(Error::protocol(
+                ErrorClass::OBJECT,
+                ErrorCode::DYNAMIC_CREATION_NOT_SUPPORTED,
+            ))?;
+        // The constructor provisions the optional rows the initial values
+        // name, since WriteProperty can't add an absent one; the values
+        // themselves go through the writer below, with rollback on a refusal.
+        let initial_properties: Vec<PropertyIdentifier> = request
+            .list_of_initial_values
+            .iter()
+            .map(|value| value.property_identifier)
+            .collect();
+        constructor(
+            instance,
+            default_name(db, object_type, instance),
+            &initial_properties,
+        )?
     };
 
     let created_oid = object.object_identifier();
@@ -357,29 +330,25 @@ fn default_name(db: &ObjectDatabase, object_type: ObjectType, instance: u32) -> 
 
 /// Apply one initial value to the created object the way WriteProperty
 /// applies its value: the array index checked against the object, the value
-/// decoded whole with the object's list classification, the Object_Name kept
+/// decoded whole by the property's value type on the object, the Object_Name kept
 /// unique, and a NULL the property leaves as it is taken as applied
-/// ([`relinquish`]). A whole value for one of the object's
-/// [`creation_only_properties`] goes to its
-/// [`initialize_property`] instead of the write route, which keeps refusing
-/// it (#1429). A State_Text written whole goes the write route, which sets
+/// ([`relinquish`](bacnet_device_core::write::relinquish)). A whole value for one of the type's
+/// creation-only properties goes to its initializer
+/// ([`CreationOnly::initialize`]) instead of the write route, which keeps
+/// refusing it (#1429). A State_Text written whole goes the write route, which sets
 /// the state count from it (#1443); when the request gives the count
 /// itself ([`StateCounts::Given`]), one that would change it is
 /// VALUE_OUT_OF_RANGE. The caller removes the object when this fails.
-///
-/// [`creation_only_properties`]: bacnet_objects::traits::BACnetObject::creation_only_properties
-/// [`initialize_property`]: bacnet_objects::traits::BACnetObject::initialize_property
 fn initialize(
     db: &mut ObjectDatabase,
-    created_oid: ObjectIdentifier,
+    creating: &Creating<'_>,
     pv: &bacnet_services::common::BACnetPropertyValue,
-    counts: StateCounts,
-    command_origin: Option<&bacnet_objects::command_source::CommandOrigin>,
 ) -> Result<(), CreateObjectRefusal> {
-    use super::write_property::{
-        WriteTarget, check_and_prepare_name_write, check_write_array_index, commit_attempt,
-        decode_write_property_value,
+    use bacnet_device_core::write::{
+        WriteTarget, check_and_prepare_name_write, commit_attempt, decode_write_property_value,
     };
+    use bacnet_objects::property_metadata::{check_write_array_index, object_value_type};
+    let created_oid = creating.oid;
     let property = pv.property_identifier;
     let array_index = pv.property_array_index;
     let object = db.get(&created_oid).expect("created above");
@@ -388,31 +357,43 @@ fn initialize(
     // not a write that was tried and failed.
     let value = decode_write_property_value(
         property,
+        object_value_type(object, property),
         array_index,
-        object.is_list_property(property),
         &pv.value,
     )
     .map_err(CreateObjectRefusal::Malformed)?;
-    let value = crate::local_references::localize(db, created_oid, property, value);
-    let object = db.get_mut(&created_oid).expect("created above");
-    if array_index.is_none() && object.creation_only_properties().contains(&property) {
-        return match object.initialize_property(property, value) {
-            Ok(()) => Ok(()),
-            // A NULL is judged as on the write route.
-            Err(error)
-                if super::relinquish::is_null_octets(&pv.value)
-                    && super::relinquish::leaves_unchanged(object, property, None, &error) =>
-            {
-                Ok(())
-            }
-            Err(error) => Err(CreateObjectRefusal::Failed(error)),
-        };
-    }
+    let value = bacnet_device_core::write::localize(db, created_oid, property, value);
     // The object was added under its default name; a new one has to be free,
-    // and the write moves the database's name index along with it.
+    // and the database's name index moves along with it, whichever route
+    // sets it.
     if property == PropertyIdentifier::OBJECT_NAME {
         check_and_prepare_name_write(db, &created_oid, &value)
             .map_err(CreateObjectRefusal::Failed)?;
+    }
+    if array_index.is_none() && creating.creation_only.contains(property) {
+        let applied = match creating
+            .creation_only
+            .initialize(db, &created_oid, property, value)
+        {
+            Ok(()) => true,
+            // A NULL is judged as on the write route.
+            Err(error)
+                if bacnet_device_core::write::relinquish::is_null_octets(&pv.value)
+                    && bacnet_device_core::write::relinquish::leaves_unchanged(
+                        db.get(&created_oid).expect("created above"),
+                        property,
+                        None,
+                        &error,
+                    ) =>
+            {
+                false
+            }
+            Err(error) => return Err(CreateObjectRefusal::Failed(error)),
+        };
+        if applied && property == PropertyIdentifier::OBJECT_NAME {
+            db.update_name_index(&created_oid);
+        }
+        return Ok(());
     }
     let target = WriteTarget {
         oid: created_oid,
@@ -421,11 +402,11 @@ fn initialize(
         priority: pv.priority,
         value: &pv.value,
     };
-    let fixed_count = (counts == StateCounts::Given
+    let fixed_count = (creating.counts == StateCounts::Given
         && property == PropertyIdentifier::STATE_TEXT
         && array_index.is_none())
     .then(|| state_count(db, created_oid));
-    commit_attempt(db, None, target, value, None, command_origin)
+    commit_attempt(db, None, target, value, None, creating.command_origin)
         .map_err(CreateObjectRefusal::Failed)?;
     // The labels have to fit the count the request gives; the caller drops
     // the object on a refusal, so the resize needs no undoing.
@@ -446,11 +427,16 @@ fn state_count(db: &ObjectDatabase, created_oid: ObjectIdentifier) -> Option<Pro
 
 /// Handle a DeleteObject request.
 ///
-/// Removes the object from the database. Returns an error if the object
-/// doesn't exist or is an object type that cannot be deleted at runtime
-/// (Device and NetworkPort, which model the running node itself). The set
-/// of non-deleteable types is kept in sync with `BACnetObject::is_deleteable`
-/// so PICS and runtime dispatch share one truth source.
+/// Removes the object from the database. An absent object is OBJECT /
+/// UNKNOWN_OBJECT whatever its type. One of a type DeleteObject doesn't
+/// remove ([`bacnet_objects::creation::builtin_deleteable`]: the Device and
+/// Network Port objects, which model the running node itself), or one the
+/// database keeps for a running runtime
+/// ([`ObjectDatabase::check_removable`]), is OBJECT /
+/// OBJECT_DELETION_NOT_PERMITTED; the PICS reports the same type-level
+/// answer. The running server also keeps the types its
+/// [`ObjectTypeRegistry`](crate::server::ObjectTypeRegistry) keep from
+/// deletion.
 ///
 /// Returns the removed object. Drop it after releasing the database guard,
 /// and off the async runtime: an object that saves its state (a Notification
@@ -460,21 +446,32 @@ pub fn handle_delete_object(
     db: &mut ObjectDatabase,
     service_data: &[u8],
 ) -> Result<Box<dyn bacnet_objects::traits::BACnetObject>, Error> {
+    let constructors = crate::server::ObjectTypeRegistry::default();
+    delete_object(db, &constructors, service_data)
+}
+
+/// [`handle_delete_object`] with the server's registry.
+pub(crate) fn delete_object(
+    db: &mut ObjectDatabase,
+    constructors: &crate::server::ObjectTypeRegistry,
+    service_data: &[u8],
+) -> Result<Box<dyn bacnet_objects::traits::BACnetObject>, Error> {
     let request = DeleteObjectRequest::decode(service_data).map_err(Error::into_request_reject)?;
-
-    match request.object_identifier.object_type() {
-        ObjectType::DEVICE | ObjectType::NETWORK_PORT => {
-            return Err(Error::protocol(
-                ErrorClass::OBJECT,
-                ErrorCode::OBJECT_DELETION_NOT_PERMITTED,
-            ));
-        }
-        _ => {}
-    }
-
-    db.remove(&request.object_identifier)?
-        .ok_or(Error::protocol(
+    let oid = request.object_identifier;
+    if db.get(&oid).is_none() {
+        return Err(Error::protocol(
             ErrorClass::OBJECT,
             ErrorCode::UNKNOWN_OBJECT,
-        ))
+        ));
+    }
+    if !constructors.deletes(oid.object_type()) {
+        return Err(Error::protocol(
+            ErrorClass::OBJECT,
+            ErrorCode::OBJECT_DELETION_NOT_PERMITTED,
+        ));
+    }
+    db.remove(&oid)?.ok_or(Error::protocol(
+        ErrorClass::OBJECT,
+        ErrorCode::UNKNOWN_OBJECT,
+    ))
 }

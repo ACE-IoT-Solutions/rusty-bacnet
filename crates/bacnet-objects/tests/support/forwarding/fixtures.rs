@@ -11,7 +11,7 @@ use bacnet_objects::property_metadata::{
     PropertyConformance, PropertyMetadata, PropertyWriteCapability,
 };
 use bacnet_objects::schedule::ScheduleWrite;
-use bacnet_objects::traits::{DeadlineWaker, MonotonicClock};
+use bacnet_objects::traits::{Clocks, DeadlineWaker, MonotonicClock};
 use bacnet_types::calendar::SpecificDate;
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier as P};
 use bacnet_types::error::Error;
@@ -67,18 +67,18 @@ pub fn waker() -> Arc<DeadlineWaker> {
     WAKER.clone()
 }
 
+/// The three clocks together, as a database lends them.
+pub fn clocks() -> Clocks {
+    Clocks::new(Some(clock()), Some(monotonic()), Some(waker()))
+}
+
 /// A capability or handle, rendered as the address it points at.
 pub fn address<T: ?Sized>(reference: &T) -> String {
     format!("{:p}", std::ptr::from_ref(reference).cast::<()>())
 }
 
 pub fn schedule_write(value: u64) -> ScheduleWrite {
-    ScheduleWrite {
-        value: PropertyValue::Unsigned(value),
-        priority: 16,
-        references: Vec::new(),
-        retry: false,
-    }
+    ScheduleWrite::new(PropertyValue::Unsigned(value), 16, Vec::new())
 }
 
 /// DESCRIPTION is writable here, and CUSTOM is absent, unlike the probe's

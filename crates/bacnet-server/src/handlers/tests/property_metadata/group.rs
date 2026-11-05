@@ -151,11 +151,8 @@ fn rpm_group_metadata_does_not_enable_create_object() {
             ObjectType::GLOBAL_GROUP,
             ObjectIdentifier::new(ObjectType::GLOBAL_GROUP, 7).unwrap(),
         ),
-        (
-            ObjectType::STRUCTURED_VIEW,
-            ObjectIdentifier::new(ObjectType::STRUCTURED_VIEW, 7).unwrap(),
-        ),
     ];
+    // A Structured View is createable (#2208).
     for (kind, oid) in cases {
         for object_specifier in [
             ObjectSpecifier::Type(kind),
@@ -167,13 +164,14 @@ fn rpm_group_metadata_does_not_enable_create_object() {
                 object_specifier,
                 list_of_initial_values: vec![],
             }
-            .encode(&mut request);
+            .encode(&mut request)
+            .unwrap();
             let mut response = BytesMut::new();
             let result = handle_create_object(&mut db, &request, &mut response);
             assert!(
                 matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
                 if class == ErrorClass::OBJECT
-                    && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE)
+                    && code == ErrorCode::DYNAMIC_CREATION_NOT_SUPPORTED)
             );
             assert!(response.is_empty());
             assert!(db.is_empty());

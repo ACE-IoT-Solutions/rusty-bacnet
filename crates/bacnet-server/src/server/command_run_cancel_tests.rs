@@ -20,6 +20,7 @@ use super::command_action_wire_tests::{ao, cmd, idle, read_db, slot8};
 use super::command_run_stop_tests::{channel_status, db_flags, db_state, objects, with_channel};
 use super::cov_wire_test_support::*;
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_types::enums::{EngineeringUnits, WriteStatus};
 use std::future::Future;
 use std::pin::Pin;
@@ -213,10 +214,22 @@ impl bacnet_objects::traits::BACnetObject for PanicsAfterCommit {
         Ok(())
     }
 
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        std::borrow::Cow::Borrowed(&[])
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::rows(
+            &[PropertyIdentifier::PRESENT_VALUE],
+            &[PropertyIdentifier::PRESENT_VALUE],
+        )
     }
 
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::EventReporting for PanicsAfterCommit {
     fn evaluate_intrinsic_reporting(&mut self) -> Option<bacnet_objects::event::TransitionOutcome> {
         panic!("AFTER-99 panics in the work after its write");
     }
@@ -384,15 +397,23 @@ impl bacnet_objects::traits::BACnetObject for Rearmable {
         self.0.write_property(p, i, value, priority)
     }
 
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        self.0.property_list()
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        self.0.property_metadata()
     }
 
-    fn supports_cov(&self) -> bool {
-        true
+    fn cov(&self) -> Option<&dyn bacnet_objects::traits::CovReporting> {
+        Some(self)
     }
 
-    fn set_life_safety_operation_expected_internal(
+    fn life_safety(&mut self) -> Option<&mut dyn bacnet_objects::traits::LifeSafety> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::CovReporting for Rearmable {}
+
+impl bacnet_objects::traits::LifeSafety for Rearmable {
+    fn set_life_safety_operation_expected(
         &mut self,
         operation: LifeSafetyOperation,
     ) -> Result<(), Error> {

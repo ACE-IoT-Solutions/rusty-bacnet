@@ -271,6 +271,7 @@ impl BACnetObject for AccessCredentialObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // Table 12-40 has no Out_Of_Service (#1064), and Clause 12.35 holds the
         // OUT_OF_SERVICE flag FALSE.
         if let Some(result) =
@@ -331,6 +332,7 @@ impl BACnetObject for AccessCredentialObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
@@ -361,7 +363,6 @@ impl BACnetObject for AccessCredentialObject {
             _ => Err(crate::common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                array_index,
             )),
         }
     }
@@ -370,12 +371,14 @@ impl BACnetObject for AccessCredentialObject {
         super::metadata_identity::for_access_credential_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
     }
+}
 
-    fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
-        self.clock = clock;
+impl crate::traits::Timed for AccessCredentialObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.clock = clocks.clock.clone();
     }
 }
 

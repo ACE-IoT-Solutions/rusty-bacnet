@@ -102,6 +102,10 @@ impl WhoIsSpec {
 }
 
 /// UI to worker.
+// One command per operator action crosses the channel, so a profile's size
+// (two of them in a save, a BBMD host name in each, #2308) costs nothing
+// worth a box.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Command {
     /// Load, save or start a named B/IP profile.
@@ -271,13 +275,36 @@ impl std::fmt::Display for Failure {
     }
 }
 
-/// An OS error by its kind (`address in use`); one the stack wrote itself
-/// (`own address not local`) by its own message.
+/// An OS error by its kind (`address in use`), wrapped or not; one the
+/// stack wrote itself (`own address not local`) by its own message.
 fn io_summary(error: &std::io::Error) -> String {
-    match error.raw_os_error() {
-        Some(_) => error.kind().to_string(),
+    match os_error(error) {
+        Some(os) => os.kind().to_string(),
         None => strip_os_error(&error.to_string()).to_string(),
     }
+}
+
+/// The first error in `error`'s source chain, `error` included, that
+/// carries an OS code: B/IP wraps a bind error with advice and keeps the OS
+/// error as its source (#2231, #2366).
+fn os_error(error: &std::io::Error) -> Option<&std::io::Error> {
+    let mut next: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(current) = next {
+        let Some(io) = current.downcast_ref::<std::io::Error>() else {
+            next = current.source();
+            continue;
+        };
+        if io.raw_os_error().is_some() {
+            return Some(io);
+        }
+        // An `io::Error`'s `source()` skips its own payload, which may be
+        // another `io::Error`.
+        next = match io.get_ref() {
+            Some(inner) => Some(inner),
+            None => std::error::Error::source(io),
+        };
+    }
+    None
 }
 
 /// `text` without a trailing ` (os error N)`.
@@ -402,6 +429,55 @@ pub(crate) enum WorkerEvent {
     MonitorScan(super::monitor::scan::ScanReport),
     /// Captured frames and capture reports (#971).
     Capture(super::capture::CaptureEvent),
+    /// The MCP listener's state (#2185).
+    #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
+    Mcp(McpListener),
+}
+
+/// The session's MCP listener, for the status bar (#2185).
+#[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "mcp"), allow(dead_code))]
+pub(crate) enum McpListener {
+    /// Listening: the agents attached, always the latest count.
+    Agents(tokio::sync::watch::Receiver<usize>),
+    /// The profile asked for a listener, and it couldn't start.
+    Off,
+    /// An attached agent's write, for the person here to confirm; it
+    /// leaves the bar's state as it was.
+    #[cfg(feature = "mcp")]
+    Request(bacnet_mcp::attach::AgentApproval),
+    /// The listener's board, for the agent pane; it leaves the bar's state
+    /// as it was.
+    #[cfg(feature = "mcp")]
+    Board(bacnet_mcp::attach::Board),
+}
+
+impl McpListener {
+    /// The agents attached; `None` when the listener is off.
+    pub(crate) fn agents(&self) -> Option<usize> {
+        match self {
+            Self::Agents(count) => Some(*count.borrow()),
+            Self::Off => None,
+            #[cfg(feature = "mcp")]
+            Self::Request(_) | Self::Board(_) => None,
+        }
+    }
+}
+
+impl PartialEq for McpListener {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            #[cfg(feature = "mcp")]
+            (Self::Request(a), Self::Request(b)) => a == b,
+            #[cfg(feature = "mcp")]
+            (Self::Board(a), Self::Board(b)) => a == b,
+            #[cfg(feature = "mcp")]
+            (Self::Request(_) | Self::Board(_), _) | (_, Self::Request(_) | Self::Board(_)) => {
+                false
+            }
+            _ => self.agents() == other.agents(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -426,5 +502,35 @@ mod tests {
         assert!(!bounded.wants(100) && !bounded.wants(104));
         assert_eq!(bounded.describe(), "network 5 101-103");
         assert_eq!(spec(WhoIsScope::Global, None).describe(), "global, all");
+    }
+
+    /// A B/IP start on a held port fails with advice wrapping the OS error
+    /// (#2366): the summary is the OS error's kind, and the detail keeps
+    /// the advice.
+    #[tokio::test]
+    async fn a_held_port_summarizes_by_the_wrapped_os_error() {
+        use bacnet_transport::port::TransportPort;
+        let holder = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let port = holder.local_addr().unwrap().port();
+        let mut transport = bacnet_transport::bip::BipTransport::new(
+            std::net::Ipv4Addr::LOCALHOST,
+            port,
+            std::net::Ipv4Addr::BROADCAST,
+        );
+        let error = transport.start().await.expect_err("a held port");
+        let failure = Failure::of(&error);
+        assert_eq!(failure.summary, "address in use");
+        assert!(
+            failure.detail.contains("--share-port"),
+            "{}",
+            failure.detail
+        );
+        // An `io::Error` that wraps the OS error directly, whose `source()`
+        // skips it.
+        let os = std::net::UdpSocket::bind(holder.local_addr().unwrap()).unwrap_err();
+        let direct = std::io::Error::new(os.kind(), os);
+        assert_eq!(direct.raw_os_error(), None);
+        let failure = Failure::of(&bacnet_types::error::Error::Transport(direct));
+        assert_eq!(failure.summary, "address in use");
     }
 }

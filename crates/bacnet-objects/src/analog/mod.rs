@@ -3,12 +3,14 @@
 //! Per ASHRAE 135-2020 Clauses 12.2 (AI), 12.3 (AO), and 12.4 (AV).
 
 use alloc::borrow::Cow;
-use bacnet_types::enums::{
-    EngineeringUnits, ErrorClass, ErrorCode, EventState, ObjectType, PropertyIdentifier,
-    Reliability,
-};
+use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier, Reliability};
 use bacnet_types::error::Error;
-use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier, PropertyValue, StatusFlags};
+use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
+#[cfg(test)]
+use bacnet_types::{
+    enums::{ErrorClass, ErrorCode, EventState},
+    primitives::BACnetTimeStamp,
+};
 
 use crate::common::{self, read_common_properties};
 use crate::event::{OutOfRangeDetector, history::EventHistory};
@@ -114,13 +116,15 @@ impl FaultOutOfRangeState {
 }
 
 /// What a createable analog object takes only from a CreateObject initial
-/// value (#1429): Units, which stays read-only to WriteProperty.
-const CREATION_ONLY: &[PropertyIdentifier] = &[PropertyIdentifier::UNITS];
+/// value (#1429): Units, which stays read-only to WriteProperty. Integer,
+/// Positive Integer and Large Analog Value take it the same way.
+pub(crate) const CREATION_ONLY: &[PropertyIdentifier] = &[PropertyIdentifier::UNITS];
 
 /// Set `units` from a Units initial value. An Enumerated above 65535 is
 /// outside BACnetEngineeringUnits (Clause 21) and is VALUE_OUT_OF_RANGE;
-/// any other property is WRITE_ACCESS_DENIED, as the trait default answers.
-fn initialize_units(
+/// any other property is WRITE_ACCESS_DENIED, as `Creatable`'s default
+/// answers.
+pub(crate) fn initialize_units(
     units: &mut EngineeringUnits,
     property: PropertyIdentifier,
     value: PropertyValue,

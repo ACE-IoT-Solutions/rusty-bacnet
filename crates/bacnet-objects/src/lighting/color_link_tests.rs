@@ -3,6 +3,7 @@
 //! `ObjectDatabase::lighting_color` following the reference in use, with the
 //! override switching sources without disturbing a colour fade.
 
+use crate::property_metadata::is_writable_property;
 use bacnet_types::error::RemoteError;
 use std::sync::{Arc, Mutex};
 
@@ -63,7 +64,10 @@ fn outputs(link: Option<ColorLink>) -> [Box<dyn BACnetObject>; 2] {
 fn the_rows_follow_the_link_in_table_order_and_are_required() {
     for object in outputs(None) {
         for p in [REFERENCE, OVERRIDE, OVERRIDE_REFERENCE] {
-            assert!(!object.property_list().contains(&p));
+            assert!(!crate::property_metadata::has_property(
+                &object.property_metadata(),
+                p
+            ));
             assert_error(object.read_property(p, None), ErrorCode::UNKNOWN_PROPERTY);
         }
     }
@@ -85,8 +89,11 @@ fn the_rows_follow_the_link_in_table_order_and_are_required() {
                     row.presence_condition,
                     Some(PropertyPresenceCondition::LightingColor)
                 );
-                assert!(object.required_properties().contains(&p));
-                assert!(object.is_writable_property(p));
+                assert!(
+                    crate::property_metadata::required_properties(&object.property_metadata())
+                        .any(|required| required == p)
+                );
+                assert!(is_writable_property(&*object, p));
             }
             if rows.len() == 1 {
                 assert_error(
@@ -100,7 +107,7 @@ fn the_rows_follow_the_link_in_table_order_and_are_required() {
     let mut lo = LightingOutputObject::new(1, "LO-1").unwrap();
     lo.set_high_end_trim(Some(90.0)).unwrap();
     lo.set_color_link(Some(ColorLink::new(color(1)))).unwrap();
-    let list = lo.property_list();
+    let list = crate::test_rows::listed(&lo.property_metadata());
     let at = |p| list.iter().position(|&q| q == p).unwrap();
     assert!(at(REFERENCE) < at(PropertyIdentifier::HIGH_END_TRIM));
 }
@@ -208,7 +215,7 @@ fn linked_database() -> (ObjectDatabase, Arc<Mutex<Duration>>) {
     let mut db = ObjectDatabase::new();
     let now = Arc::new(Mutex::new(Duration::ZERO));
     let source = Arc::clone(&now);
-    db.set_monotonic_clock_internal(Some(Arc::new(move || *source.lock().unwrap())));
+    db.set_monotonic_clock(Some(Arc::new(move || *source.lock().unwrap())));
     for object in outputs(Some(overridable())) {
         db.add(object).unwrap();
     }
@@ -295,7 +302,7 @@ fn lighting_color_is_none_while_the_companion_is_undriven() {
     assert_eq!(db.lighting_color(&lo), None);
     // The start drives COLOR 1 to its D65 default; CT 2's zero default with
     // nothing to keep leaves it undriven, so the override shows nothing.
-    db.for_each_object_mut(|_, object| object.start_output_internal());
+    db.start_outputs();
     assert_eq!(
         db.lighting_color(&lo),
         Some(LightingColor {

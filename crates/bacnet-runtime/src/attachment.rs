@@ -1,8 +1,8 @@
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use bacnet_client::client::BACnetClient;
-use bacnet_transport::bip::{BipMode, BipTransport, ForeignDeviceConfig};
+use bacnet_transport::bip::{BipMode, BipTransport, ForeignBbmd, ForeignDeviceConfig};
 use tokio::sync::Mutex;
 
 use crate::config::{AttachmentConfig, TransportConfig};
@@ -217,12 +217,11 @@ pub(super) async fn start_attachment(
         .port(bip.port)
         .broadcast_address(broadcast);
     if let (Some(address), Some(ttl)) = (&bip.bbmd_address, bip.foreign_device_ttl) {
-        let bbmd = address.parse::<SocketAddrV4>().map_err(|error| {
+        let bbmd = address.parse::<ForeignBbmd>().map_err(|error| {
             RuntimeError::attachment_config(config.id, format!("invalid BBMD address: {error}"))
         })?;
         builder = builder.mode(BipMode::Foreign(ForeignDeviceConfig {
-            bbmd_ip: *bbmd.ip(),
-            bbmd_port: bbmd.port(),
+            bbmd,
             ttl,
             renewal_interval: None,
         }));

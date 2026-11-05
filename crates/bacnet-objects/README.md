@@ -14,7 +14,22 @@ transport, a server executor or event/COV delivery.
 | Profile | Features | What it has |
 | --- | --- | --- |
 | Hosted | `std` (default) | Everything, including the file persistence backends (`FileAuditLogPersistence`, `FileLogPersistence` and the others), a writer thread per saving object, and tracing. |
-| `no_std` with a heap | `alloc` (without `std`) | Every object type, the database and the persistence traits, for a target with a global allocator and atomic compare-and-swap (#1615). A save runs on the caller's thread, and the application supplies the storage. |
+| `no_std` with a heap | `alloc` (without `std`) | Every object type, the database and the persistence traits, for a target with a global allocator and atomic compare-and-swap (#1615). A save runs on the caller's thread, and the application supplies the storage; `snapshot` gives it the octets the file backends write (#2047). |
+
+Two capability features (#2215) let a firmware image drop code it never
+uses. `std` turns both on, so a hosted build has them; a `no_std` build with
+`alloc` alone has neither until it names them.
+
+| Feature | Off, the built-in objects lend nothing through | What drops out | Objects image, flash saved (thumbv7m / thumbv7em / riscv32imac) |
+| --- | --- | --- | --- |
+| `event-reporting` | `event_reporting()`, `event_reporting_mut()`, `enrollment_eval()`, `enrollment_eval_mut()` | Intrinsic reporting's evaluation and commits, alarm acknowledgment, the Event and Alert Enrollments' transitions and the logs' buffer-ready reports. The event properties still read and write. | 3,020 / 2,464 / 3,684 octets |
+| `durable-writes` | `durable_writes()` | Staged saves, which a host runs off the database lock. A write to an object with storage still saves, on the writer's own path. | 2,044 / 1,924 / 2,304 octets |
+
+With both off, the objects image in `firmware/link` (a Device, two Analog
+Inputs and two Binary Values behind `bacnet-device-core`'s responder) is
+4,952 / 4,444 / 5,984 octets of flash smaller. The object types, their
+properties and the capability traits are the same with either feature on or
+off, so turning one on never breaks another crate's build.
 
 There is no build with neither feature: the database boxes every object, so a
 heap-free device answers from a static table instead. ARMv6-M
@@ -98,6 +113,7 @@ property and service documentation for its supported behavior.
 ## Documentation profile
 
 This README is included as the crate landing page and the program runs as a
-doctest. The docs.rs profile explicitly selects no features, disables defaults
-and targets `x86_64-unknown-linux-gnu`. Those metadata settings do not make this
-crate `no_std`, and a local render does not establish a docs.rs deployment.
+doctest. The docs.rs profile disables defaults, explicitly selects `std` and
+targets `x86_64-unknown-linux-gnu`, so it shows the hosted API, the file
+persistence backends included; it does not render the `alloc`-only build, and a
+local render does not establish a docs.rs deployment.

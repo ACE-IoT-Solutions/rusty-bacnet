@@ -12,7 +12,8 @@ fn expected_rows(kind: ObjectType) -> Vec<PropertyRow> {
             (P::OBJECT_NAME, false, false),
             (P::DESCRIPTION, true, true),
             (P::OBJECT_TYPE, false, false),
-            (P::PRESENT_VALUE, false, false),
+            // Writable out of service (Table 12-79 footnote 1, #2267).
+            (P::PRESENT_VALUE, false, true),
             (P::MAX_PRES_VALUE, false, true),
             (P::SCALE, false, false),
             // Prescale only once one is set, which a fresh object hasn't.
@@ -22,7 +23,8 @@ fn expected_rows(kind: ObjectType) -> Vec<PropertyRow> {
             (P::STATUS_FLAGS, false, false),
             (P::EVENT_STATE, false, false),
             (P::OUT_OF_SERVICE, false, true),
-            (P::RELIABILITY, true, false),
+            // Writable out of service (Clause 12.61.10, #2280).
+            (P::RELIABILITY, true, true),
             (P::VALUE_BEFORE_CHANGE, true, false),
             (P::VALUE_SET, true, false),
             (P::PROPERTY_LIST, false, false),
@@ -40,8 +42,10 @@ fn expected_rows(kind: ObjectType) -> Vec<PropertyRow> {
             (P::UPDATE_TIME, false, false),
             (P::COUNT_CHANGE_TIME, false, false),
             (P::COUNT_BEFORE_CHANGE, false, false),
-            (P::COV_INCREMENT, true, true),
-            (P::COV_PERIOD, true, false),
+            // Required of an object that reports COV (Table 12-27
+            // footnote 2, #2193).
+            (P::COV_INCREMENT, false, true),
+            (P::COV_PERIOD, false, false),
             (P::INPUT_REFERENCE, true, true),
             (P::STATUS_FLAGS, false, false),
             (P::EVENT_STATE, false, false),
@@ -95,10 +99,14 @@ fn pics_accumulator_property_metadata_is_exact() {
                         None,
                     )
                     .unwrap();
-                let required = object.required_properties();
+                let required: Vec<_> = bacnet_objects::property_metadata::required_properties(
+                    &object.property_metadata(),
+                )
+                .collect();
                 let mut db = ObjectDatabase::new();
                 db.add(object).unwrap();
-                let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+                let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+                    .instance_types_only(&db);
                 assert_eq!(pics.supported_object_types.len(), 1);
                 let support = &pics.supported_object_types[0];
                 assert_eq!(support.object_type, kind);

@@ -5,6 +5,7 @@
 //! Lighting Output's COV_Increment follows them (#1227).
 
 use super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::error::RemoteError;
 use std::time::Duration;
@@ -42,7 +43,7 @@ fn lighting_output_default_ramp_rate_and_step_increment_take_writes_within_their
         PropertyIdentifier::DEFAULT_STEP_INCREMENT,
     ] {
         let mut lo = LightingOutputObject::new(1, "LO-1").unwrap();
-        assert!(lo.is_writable_property(property));
+        assert!(is_writable_property(&lo, property));
         // Both ends of 0.1..=100.0 are allowed.
         for value in [0.1, 42.5, 100.0] {
             lo.write_property(property, None, PropertyValue::Real(value), None)
@@ -102,7 +103,7 @@ fn lighting_output_default_fade_time_starts_at_100_ms_and_takes_writes_within_it
     let mut lo = LightingOutputObject::new(1, "LO-1").unwrap();
     // Clause 12.54.16 allows 100 ms to one day; a new object starts at 100.
     assert_eq!(read(&lo, fade), PropertyValue::Unsigned(100));
-    assert!(lo.is_writable_property(fade));
+    assert!(is_writable_property(&lo, fade));
     for value in [100, 2_500, 86_400_000] {
         lo.write_property(fade, None, PropertyValue::Unsigned(value), None)
             .unwrap();
@@ -170,7 +171,7 @@ fn assert_current_command_priority_tracks_commands(
     command(object, PropertyValue::Null, 16);
     assert_eq!(read(object, ccp), PropertyValue::Null);
     // Derived from Priority_Array, so no write reaches it.
-    assert!(!object.is_writable_property(ccp));
+    assert!(!is_writable_property(&*object, ccp));
     for value in [PropertyValue::Unsigned(8), PropertyValue::Null] {
         assert_error(
             object.write_property(ccp, None, value, None),
@@ -218,19 +219,19 @@ fn binary_lighting_output_current_command_priority_holds_through_egress() {
         PropertyValue::Boolean(true)
     );
     assert_eq!(read(&blo, ccp), PropertyValue::Unsigned(8));
-    assert!(blo.advance_time_internal(Duration::from_secs(5)));
+    assert!(blo.advance_time(Duration::from_secs(5)));
     assert_eq!(read(&blo, ccp), PropertyValue::Null);
 }
 
 #[test]
 fn lighting_output_cov_increment_starts_at_zero_and_takes_writes() {
     let mut lo = LightingOutputObject::new(1, "LO-1").unwrap();
-    assert!(lo.is_writable_property(PropertyIdentifier::COV_INCREMENT));
+    assert!(is_writable_property(&lo, PropertyIdentifier::COV_INCREMENT));
     assert_eq!(
         read(&lo, PropertyIdentifier::COV_INCREMENT),
         PropertyValue::Real(0.0)
     );
-    assert_eq!(lo.cov_increment(), Some(0.0));
+    assert_eq!(lo.cov().and_then(|cov| cov.cov_increment()), Some(0.0));
     lo.write_property(
         PropertyIdentifier::COV_INCREMENT,
         None,
@@ -242,11 +243,11 @@ fn lighting_output_cov_increment_starts_at_zero_and_takes_writes() {
         read(&lo, PropertyIdentifier::COV_INCREMENT),
         PropertyValue::Real(2.5)
     );
-    assert_eq!(lo.cov_increment(), Some(2.5));
-    assert!(
-        lo.property_list()
-            .contains(&PropertyIdentifier::COV_INCREMENT)
-    );
+    assert_eq!(lo.cov().and_then(|cov| cov.cov_increment()), Some(2.5));
+    assert!(crate::property_metadata::has_property(
+        &lo.property_metadata(),
+        PropertyIdentifier::COV_INCREMENT
+    ));
 }
 
 #[test]
@@ -279,11 +280,11 @@ fn lighting_output_cov_increment_refuses_bad_values_and_keeps_the_old_one() {
         ),
         ErrorCode::INVALID_DATA_TYPE,
     );
-    assert_eq!(lo.cov_increment(), Some(1.0));
+    assert_eq!(lo.cov().and_then(|cov| cov.cov_increment()), Some(1.0));
 }
 
 #[test]
 fn binary_lighting_output_has_no_cov_increment() {
     let blo = BinaryLightingOutputObject::new(1, "BLO-1").unwrap();
-    assert_eq!(blo.cov_increment(), None);
+    assert_eq!(blo.cov().and_then(|cov| cov.cov_increment()), None);
 }

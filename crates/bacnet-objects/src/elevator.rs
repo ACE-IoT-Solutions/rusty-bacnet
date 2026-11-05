@@ -205,6 +205,7 @@ impl BACnetObject for ElevatorGroupObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // No read_common_properties!: it would serve Status_Flags,
         // Out_Of_Service and Reliability, which Table 12-76 doesn't define.
         match property {
@@ -221,7 +222,7 @@ impl BACnetObject for ElevatorGroupObject {
                 ObjectType::ELEVATOR_GROUP.to_raw(),
             )),
             p if p == PropertyIdentifier::PROPERTY_LIST => {
-                common::read_property_list_property(&self.property_list(), array_index)
+                crate::property_metadata::read_property_list(&self.property_metadata(), array_index)
             }
             p if p == PropertyIdentifier::MACHINE_ROOM_ID => {
                 Ok(PropertyValue::ObjectIdentifier(self.machine_room_id))
@@ -258,10 +259,11 @@ impl BACnetObject for ElevatorGroupObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
@@ -291,17 +293,12 @@ impl BACnetObject for ElevatorGroupObject {
             _ => Err(crate::common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                _array_index,
             )),
         }
     }
 
     fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
         metadata::for_elevator_group_object(self)
-    }
-
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
     }
 }
 

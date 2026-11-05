@@ -68,8 +68,14 @@ mod tests {
         let metadata = object.property_metadata();
         assert!(matches!(metadata, Cow::Borrowed(_)));
         assert_eq!(metadata.len(), 7);
-        assert_eq!(object.property_list().as_ref(), all);
-        assert_eq!(object.required_properties().as_ref(), required);
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(&all)
+        );
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            required
+        );
         assert_eq!(
             metadata
                 .iter()
@@ -78,9 +84,10 @@ mod tests {
                 .len(),
             metadata.len()
         );
-        assert!(!object.is_createable());
-        assert!(object.is_deleteable());
-        assert!(!object.supports_cov());
+        assert!(crate::creation::builtin_deleteable(
+            object.object_identifier().object_type()
+        ));
+        assert!(!object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
         for row in metadata.iter() {
             assert_eq!(row.presence_condition, None);
             assert_eq!(
@@ -97,7 +104,10 @@ mod tests {
             .iter()
             .map(|p| PropertyValue::Enumerated(p.to_raw()))
             .collect();
-        assert!(object.is_array_property(P::PROPERTY_LIST));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::PROPERTY_LIST
+        ));
         assert_eq!(
             object.read_property(P::PROPERTY_LIST, None).unwrap(),
             PropertyValue::List(wire.clone())
@@ -136,7 +146,11 @@ mod tests {
                 row.write_capability,
                 if writable { Always } else { ReadOnly }
             );
-            assert_eq!(object.is_writable_property(p), writable, "{p:?}");
+            assert_eq!(
+                crate::property_metadata::is_writable_property(&object, p),
+                writable,
+                "{p:?}"
+            );
             let before = object.read_property(p, None).unwrap();
             let result = object.write_property(p, None, before.clone(), None);
             if writable {
@@ -167,12 +181,19 @@ mod tests {
             object.read_property(P::DESCRIPTION, None).unwrap(),
             PropertyValue::CharacterString("updated".into())
         );
-        for index in [None, Some(0), Some(1), Some(u32::MAX)] {
+        // A read-only scalar: denied whole, and an index is refused first,
+        // as the server's gate refuses it (#2258).
+        for (index, expected) in [
+            (None, ErrorCode::WRITE_ACCESS_DENIED),
+            (Some(0), ErrorCode::PROPERTY_IS_NOT_AN_ARRAY),
+            (Some(1), ErrorCode::PROPERTY_IS_NOT_AN_ARRAY),
+            (Some(u32::MAX), ErrorCode::PROPERTY_IS_NOT_AN_ARRAY),
+        ] {
             assert_error(
                 object
                     .write_property(P::PRESENT_VALUE, index, PropertyValue::Null, Some(8))
                     .unwrap_err(),
-                ErrorCode::WRITE_ACCESS_DENIED,
+                expected,
             );
         }
         // Date_List is a BACnetLIST of calendar entries: no index, no NULL.
@@ -201,7 +222,7 @@ mod tests {
             P::RELINQUISH_DEFAULT,
             P::ALL,
         ] {
-            assert!(!object.is_writable_property(p));
+            assert!(!crate::property_metadata::is_writable_property(&object, p));
             assert_error(
                 object.read_property(p, None).unwrap_err(),
                 ErrorCode::UNKNOWN_PROPERTY,

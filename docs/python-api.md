@@ -2,8 +2,8 @@
 
 `rusty_bacnet` provides Python bindings for the Rust BACnet protocol stack via PyO3. All I/O operations are async (`asyncio`-based).
 
-This reference follows the `dev` branch. At the `v0.14.0` tag it describes the
-[published 0.14.0 package](https://pypi.org/project/rusty-bacnet/0.14.0/), which
+This reference follows the `dev` branch. At the `v0.15.0` tag it describes the
+[published 0.15.0 package](https://pypi.org/project/rusty-bacnet/0.15.0/), which
 the site's tutorials also target; see the [installation guidance](../README.md#install).
 Changes merged after the release wait in [`changelog.d/`](../changelog.d/); to
 use them, follow [Build from source](https://jscott3201.github.io/rusty-bacnet/development/overview/#build-a-source-checkout).
@@ -38,10 +38,10 @@ that yields a notification or raises `StopAsyncIteration` when the channel close
 
 ## Installation
 
-Install the published 0.14.0 package with:
+Install the published 0.15.0 package with:
 
 ```bash
-pip install "rusty-bacnet==0.14.0"
+pip install "rusty-bacnet==0.15.0"
 ```
 
 Wheels cover CPython 3.11 to 3.14 on Linux (glibc 2.17 or newer; x86_64,
@@ -225,7 +225,7 @@ All enums have class-level named constants, plus `from_raw(int)` and `to_raw()` 
 
 ### ObjectType
 
-BACnet object types (u32). Constants include `ANALOG_INPUT`, `ANALOG_OUTPUT`, `ANALOG_VALUE`, `BINARY_INPUT`, `BINARY_OUTPUT`, `BINARY_VALUE`, `CALENDAR`, `DEVICE`, `LOOP`, `MULTI_STATE_INPUT`, `MULTI_STATE_OUTPUT`, `MULTI_STATE_VALUE`, `NOTIFICATION_CLASS`, `SCHEDULE`, `TREND_LOG`, `FILE`, `AUDIT_LOG`, `AUDIT_REPORTER`, `COMMAND`, `TIMER`, `LOAD_CONTROL`, `PROGRAM`, `LIGHTING_OUTPUT`, `BINARY_LIGHTING_OUTPUT`, `LIFE_SAFETY_POINT`, `LIFE_SAFETY_ZONE`, `GROUP`, `GLOBAL_GROUP`, `STRUCTURED_VIEW`, `NOTIFICATION_FORWARDER`, `ALERT_ENROLLMENT`, `ACCESS_DOOR`, `ACCESS_CREDENTIAL`, `ACCESS_POINT`, `ACCESS_RIGHTS`, `ACCESS_USER`, `ACCESS_ZONE`, `CREDENTIAL_DATA_INPUT`, `ELEVATOR_GROUP`, `ESCALATOR`, `LIFT`, `STAGING`, `ACCUMULATOR`, `PULSE_CONVERTER`, `EVENT_ENROLLMENT`, `CHANNEL`, `EVENT_LOG`, `TREND_LOG_MULTIPLE`, `NETWORK_PORT`, `INTEGER_VALUE`, `POSITIVE_INTEGER_VALUE`, `LARGE_ANALOG_VALUE`, `CHARACTER_STRING_VALUE`, `OCTET_STRING_VALUE`, `BIT_STRING_VALUE`, `DATE_VALUE`, `TIME_VALUE`, `DATE_TIME_VALUE`, `DATE_PATTERN_VALUE`, `TIME_PATTERN_VALUE`, `DATE_TIME_PATTERN_VALUE`, `AVERAGING`, etc.
+BACnet object types (u32). Constants include `ANALOG_INPUT`, `ANALOG_OUTPUT`, `ANALOG_VALUE`, `BINARY_INPUT`, `BINARY_OUTPUT`, `BINARY_VALUE`, `CALENDAR`, `DEVICE`, `LOOP`, `MULTI_STATE_INPUT`, `MULTI_STATE_OUTPUT`, `MULTI_STATE_VALUE`, `NOTIFICATION_CLASS`, `SCHEDULE`, `TREND_LOG`, `FILE`, `AUDIT_LOG`, `AUDIT_REPORTER`, `COMMAND`, `TIMER`, `LOAD_CONTROL`, `PROGRAM`, `LIGHTING_OUTPUT`, `BINARY_LIGHTING_OUTPUT`, `LIFE_SAFETY_POINT`, `LIFE_SAFETY_ZONE`, `GROUP`, `GLOBAL_GROUP`, `STRUCTURED_VIEW`, `NOTIFICATION_FORWARDER`, `ALERT_ENROLLMENT`, `ACCESS_DOOR`, `ACCESS_CREDENTIAL`, `ACCESS_POINT`, `ACCESS_RIGHTS`, `ACCESS_USER`, `ACCESS_ZONE`, `CREDENTIAL_DATA_INPUT`, `ELEVATOR_GROUP`, `ESCALATOR`, `LIFT`, `STAGING`, `ACCUMULATOR`, `PULSE_CONVERTER`, `EVENT_ENROLLMENT`, `CHANNEL`, `EVENT_LOG`, `TREND_LOG_MULTIPLE`, `NETWORK_PORT`, `INTEGER_VALUE`, `POSITIVE_INTEGER_VALUE`, `LARGE_ANALOG_VALUE`, `CHARACTERSTRING_VALUE`, `OCTETSTRING_VALUE`, `BITSTRING_VALUE`, `DATE_VALUE`, `TIME_VALUE`, `DATETIME_VALUE`, `DATEPATTERN_VALUE`, `TIMEPATTERN_VALUE`, `DATETIMEPATTERN_VALUE`, `AVERAGING`, etc.
 
 ```python
 ot = ObjectType.ANALOG_INPUT
@@ -308,7 +308,7 @@ es = EventState.NORMAL
 
 ### EventType
 
-BACnet event types. Constants: `CHANGE_OF_BITSTRING`, `CHANGE_OF_STATE`, `CHANGE_OF_VALUE`, `COMMAND_FAILURE`, `FLOATING_LIMIT`, `OUT_OF_RANGE`, `COMPLEX_EVENT_TYPE`, etc.
+BACnet event types. Constants: `CHANGE_OF_BITSTRING`, `CHANGE_OF_STATE`, `CHANGE_OF_VALUE`, `COMMAND_FAILURE`, `FLOATING_LIMIT`, `OUT_OF_RANGE`, `EXTENDED`, etc.
 
 ```python
 et = EventType.CHANGE_OF_VALUE
@@ -515,8 +515,8 @@ is an error.
   octet, falls through to the rules below.
 - **Other context-tagged content** comes back as `application_data` whose
   `.value` holds the octets as served. Constructed values with no typed form,
-  such as a Load Control's Requested_Shed_Level or an Event Enrollment's
-  Event_Parameters, take this form, as local reads of them always have. Element
+  any not in [the table below](#typed-constructed-values), take this form, as
+  local reads of them always have. Element
   boundaries of a constructed list aren't marked in the octets, so the
   binding doesn't split one: decode the octets with the datatype's layout,
   or read single array elements with `array_index`. Writing the value back
@@ -754,6 +754,10 @@ Read-only incoming COV notification (frozen).
 | `.initiating_device_identifier` | `ObjectIdentifier` | Source device |
 | `.monitored_object_identifier` | `ObjectIdentifier` | Changed object |
 | `.time_remaining` | `int` | Subscription seconds remaining |
+| `.delivery` | `str` | `"confirmed"` or `"unconfirmed"`: the service the notification came by |
+| `.source_mac` | `bytes` | The MAC the notification came from (the router's, if routed) |
+| `.source_network` | `int \| None` | Remote network number (if routed) |
+| `.source_address` | `bytes \| None` | Remote MAC address (if routed) |
 | `.values` | `list[dict]` | Changed properties (see below) |
 
 Each item in `.values` is a dict:
@@ -803,10 +807,14 @@ client = BACnetClient(
     port=47808,                  # UDP port
     broadcast_address="255.255.255.255",
     apdu_timeout_ms=6000,
-    transport="bip",             # "bip", "ipv6", "sc" or "mstp"
+    transport="bip",             # "bip", "ipv6", "sc", "mstp" or "router"
     share_port_by_address=False, # Keyword-only; B/IP, see "Sharing a port by address"
+    share_wildcard_port=False,   # Keyword-only; B/IP, see "Claiming the port"
     bbmd=None,                   # Keyword-only; B/IP, a Bbmd: see "BBMD and foreign-device modes"
     foreign_device=None,         # Keyword-only; B/IP or B/IPv6, a ForeignDevice; not with bbmd
+    multicast=None,              # Keyword-only; B/IP, a Multicast: see "B/IP multicast"
+    router=None,                 # Keyword-only; a BACnetRouter, with transport="router"
+    # MS/TP options (serial_port, mstp_*): see "MS/TP serial ports"
     # IPv6 options:
     ipv6_interface=None,         # IPv6 selected local address; None means ::
     ipv6_device_instance=None,   # Keyword-only; 0..=4194303 for the VMAC of that instance, None for random
@@ -823,6 +831,8 @@ client = BACnetClient(
     reconnect=None,              # Keyword-only; SC only, a ScReconnect configuration
     sc_npdu_per_origin_limit=None, # Keyword-only; SC only, None uses native quota 32
     sc_control_rate_limit=None,  # Keyword-only; SC only, (burst, per_second); None is (256, 32)
+    sc_failover_hub=None,        # Keyword-only; SC only, see "SC failover hub"
+    sc_connect_timeout_ms=None,  # Keyword-only; SC only, see "SC failover hub"
 )
 ```
 
@@ -841,6 +851,27 @@ same keyword-only `min_request_interval_ms`, validated the same way, and pace
 their `EndpointClient`'s confirmed requests with the same pacer (#1542). On
 both, only new confirmed requests wait: a retry keeps its request's turn, and
 replies, notifications and unconfirmed requests go at once.
+
+### Claiming the port
+
+A B/IP client, server or `BipEndpoint` claims its UDP port (#2366): a second
+bind of it on this host fails, and `start()` (for a client, `async with`)
+raises when another socket already holds it, with a message naming the port
+and `share_wildcard_port`. Earlier releases shared an explicitly requested
+port, so on Linux and Windows another program could bind it beside the
+device and take the unicast sent to it. macOS and the BSDs still let a
+socket that sets `SO_REUSEADDR` bind a specific address on the port, and
+get the unicast sent there. On Linux a B/IP multicast member with its group
+on its own port binds its `interface` address instead of `0.0.0.0`.
+
+The keyword-only `share_wildcard_port=True` keeps the old sharing, for a
+setup that runs two stacks on one port of one host. Broadcasts then reach
+both, but each unicast reaches only one of them (on Linux the one that
+bound last), so replies can go astray; prefer `share_port_by_address=True`
+on separate addresses, or separate ports. It has no effect with `port=0`,
+which is never shared, and another transport raises `ValueError`. Two B/IP
+multicast members on one host at one unicast port need it too. See
+[Claiming the port](rust-api.md#claiming-the-port) for each OS.
 
 ### Sharing a port by address
 
@@ -863,7 +894,7 @@ when the device starts: restart it after its interface changes. The
 `255.255.255.255` (a loopback `interface` may also name itself), or
 `start()` fails. On Windows the address is claimed
 exclusively, though the bind still succeeds beside another program's socket
-on `0.0.0.0` at that port. See
+of the same user on `0.0.0.0` at that port if that socket shares it. See
 [Sharing a port by address](rust-api.md#sharing-a-port-by-address) for each
 OS.
 
@@ -893,12 +924,16 @@ async with BACnetClient(port=0, foreign_device=ForeignDevice(
     status = await client.foreign_registration()
 ```
 
-`ForeignDevice(bbmd, ttl=300, renewal=None)` takes the BBMD as `"ip"` or
-`"ip:port"` (port 47808 by default), how many seconds the BBMD keeps the entry (at least
+`ForeignDevice(bbmd, ttl=300, renewal=None)` takes the BBMD as `"ip"`, `"host"` or
+either with `":port"` (port 47808 by default), how many seconds the BBMD keeps the entry (at least
 1), and the seconds between registrations, at least 0.1 and less than
 `ttl`; `None` renews at half the TTL. The owner registers when it starts and renews
 on its own; its first broadcasts wait for the first registration to be
-answered.
+answered. A host name (#2308) is looked up by the system's resolver when the owner
+starts, and again alongside the registrations at most every 30 seconds; the owner
+registers with the first IPv4 address it stands for. One that doesn't resolve still
+starts the owner: registration waits, broadcasts are held and then refused, and the
+name is tried again every 30 seconds.
 
 `foreign_device=` also works with `transport="ipv6"` on `BACnetClient` and
 `BACnetServer` (#1941): give `ForeignDevice` a B/IPv6 BBMD as `"ip"`,
@@ -915,8 +950,29 @@ Distribute-Broadcast-To-Network. A registered Network Port
 (`add_bip6_network_port`) reads BACnet_IPv6_Mode FOREIGN (1) with the
 FD_BBMD_Address and FD_Subscription_Lifetime rows; with `on_reinitialize`, a
 written lifetime or BBMD takes effect at ReinitializeDevice ACTIVATE_CHANGES,
-and the next registration, sent at once, carries it. `foreign_registration()`
-is B/IP only.
+and the next registration, sent at once, carries it. The BBMD may also be
+written as a host name, looked up by the system's resolver as on B/IP: the
+device moves to the first IPv6 address it stands for (#2308).
+
+A host name in `ForeignDevice` serves B/IPv6 too (#2365), with the IPv6 addresses it
+stands for. An owner on `ipv6_interface="::"` picks its source address from the route
+to the BBMD, so its start looks the name up first and fails if it has no usable IPv6
+address. On an explicit interface the owner starts and waits: nothing is registered,
+broadcasts raise `OSError` (the transport error), and the name is tried again 30
+seconds after each failure. On a B/IPv6 owner `foreign_registration()` returns a
+`Bip6ForeignRegistrationStatus`: `bbmd` (the address in use, or None while waiting),
+`bbmd_name` (the host name it is known by, `"host:port"`, or None for an address),
+`waiting_for_bbmd`, `bbmd_lookups`, `bbmd_lookup_failures`, `last_bbmd_lookup_failure`
+(as on B/IP, with `"no_ipv6_address"` for a name with no IPv6 address), the
+`previous_releases`, `previous_released`, `previous_release_refused` and
+`previous_release_unanswered` totals, `broadcasts_refused`, and `registrations_sent`.
+The BBMD's answer to the latest registration reads as on B/IP (#2388): `last_outcome`
+is `"accepted"` or `"refused"`, with `last_result` the BVLC result code (0x0090 for a
+refusal), or `"timed_out"` once its renewal went first, the BBMD silent, or an
+activation's registration did after 3 s of silence; `last_outcome_age` says how many
+seconds ago it came, `unanswered` how many registrations in a row went unanswered, and
+`refused` counts the refusals. A change of BBMD, the wait for its name and a stop
+clear the answer.
 
 ```python
 from rusty_bacnet import BACnetClient, ForeignDevice
@@ -976,8 +1032,14 @@ is going without sending anything: `registered`, `lease_remaining` and
 `"local_error"` or `"cancelled"`), and the `attempts`, `accepted`, `refused`,
 `lapses` (leases that ran out with no newer success) and `renewal_hints`
 (the BBMD's Distribute-Broadcast-To-Network NAKs, each bringing the next
-attempt forward) totals. The latest attempt clears when the owner stops; the
-totals stay. It raises `RuntimeError` before start and after stop. See
+attempt forward) totals. A BBMD named by host name (#2308) adds its lookups:
+`bbmd_lookups` and `bbmd_lookup_failures` count them, `last_bbmd_lookup_failure`
+says why the newest failed (`"not_resolved"`, `"timed_out"` when the resolver
+had no answer within 10 seconds, `"no_ipv4_address"`, `"unusable_address"`,
+`"abandoned"`, or `"other"` for a failure this version doesn't name), None once one
+succeeds, and `waiting_for_bbmd` is true while
+the name hasn't resolved yet, so no attempt is due. The latest attempt, the
+newest lookup failure and the wait clear when the owner stops; the totals stay. It raises `RuntimeError` before start and after stop. See
 [B/IP modes on the builders](rust-api.md#bip-modes-on-the-builders) for the
 Rust side.
 
@@ -1162,6 +1224,9 @@ Entry holds exclusive lifecycle ownership while building and publishing the
 client. Entering an already running or closing client raises `RuntimeError`.
 Cancelling pending entry drops its unfinished connection setup. A concurrent
 `stop()` waits for entry to complete or be cancelled, then closes the client.
+A call or a second entry queued behind that pending entry fails with
+`RuntimeError` ("client closing") as soon as `stop()` is called, without
+waiting for the entry to finish (#2030).
 
 `stop()` and context exit refuse new operations, let existing native operations
 finish or be cancelled, and join transport teardown. Operations remain concurrent
@@ -1477,6 +1542,24 @@ where a node is, not which VMAC it has. Find the VMAC with
 
 ### Property Access
 
+For explicit B/IP routing, `RoutedTarget(router, network, address)` names the
+next-hop router as an `ip:port`, a remote DNET from 1 to 65534, and a 1–18-byte
+remote MAC. `DirectTarget(ip_port)` explicitly names a direct B/IP peer. The
+client's read/write property, RPM/WPM, and basic COV subscribe/unsubscribe
+methods accept these typed targets as well as their existing address strings;
+string parsing remains transport-specific. This is useful when discovery is
+unavailable or two test devices intentionally share an instance number.
+
+```python
+from rusty_bacnet import RoutedTarget
+
+target = RoutedTarget("192.0.2.1:47808", 200, b"\x02\x00\x00\x00\x00\x05")
+value = await client.read_property(
+    target, ObjectIdentifier(ObjectType.ANALOG_INPUT, 0),
+    PropertyIdentifier.PRESENT_VALUE,
+)
+```
+
 #### `read_property(address, object_id, property_id, array_index=None) -> PropertyValue`
 
 Standalone and endpoint clients validate the ACK's object, property and array
@@ -1591,8 +1674,8 @@ await client.write_property_multiple("192.168.1.100:47808", [
 The full server's network Device reads use its actual execution profile:
 service bits reflect the fixed dispatcher with clock-dependent time services,
 and both COV list properties remain present after underlying Device declaration
-changes. The selected Device receives live lists; other Devices receive empty
-lists. Property_List and RPM selector/index behavior follow the same definitions.
+changes. The identity's Device receives live lists, even beside a
+lower-instance Device added later; other Devices receive empty lists. Property_List and RPM selector/index behavior follow the same definitions.
 WP and WPM reject assignment to Device service bits, both COV lists and
 Property_List, including custom Device writers. Other custom properties retain
 their existing write behavior. Changing a Device's declaration is not a runtime
@@ -1980,6 +2063,11 @@ await client.delete_object(
 
 ### Device Management
 
+`device_communication_control` and `reinitialize_device` take an optional
+`password` of 1 to 20 characters. An empty one, or one over 20 characters,
+raises `ValueError` before anything is sent; pass `None` to send no password
+(#2085, #2094).
+
 #### `device_communication_control(address, enable_disable, time_duration=None, password=None)`
 
 ```python
@@ -2083,8 +2171,8 @@ array index zero and omitted or zero counts for a selected range raise
 `ValueError` before address parsing or I/O. A count outside INTEGER16
 (-32768 to 32767) raises `OverflowError` before address parsing or I/O (#1360). Omitted reference values default
 to zero; zero position/sequence references are valid and may return no matches.
-The typed `ReadRangeResult` dictionary preserves raw item bytes, the three-boolean
-flags tuple and optional first sequence number. Endpoint responses must be
+The typed `ReadRangeResult` dictionary preserves raw item bytes, the result
+flags as a `BitString` and optional first sequence number. Endpoint responses must be
 unsegmented; the standalone client's existing segmentation support is unchanged.
 
 `range_type="time"` (#1533) reads the `count` items logged after
@@ -2818,11 +2906,12 @@ ACE mixed-router callers migrating from the 0.14 integration must import
 `AceMixedRouter.from_ports(...)`. The upstream `BACnetRouter` above now owns
 the B/IP application client/server API. Its `BipRouterPort` configuration
 and `close()` lifecycle are separate from the ACE typed ports and `stop()`.
-`AceMixedRouter` does not expose `port_counters()` or application attachment;
-downstream callers requiring those features need additional integration.
+`AceMixedRouter` does not expose application attachment. It does expose
+per-port forwarding counters, while the upstream `BACnetRouter` retains its
+separate application-facing API.
 
 `AceMixedRouter` composes two or more typed B/IP or BACnet/SC ports over the
-native 0.13 routing engine. Construction validates configuration without I/O;
+native 0.15 routing engine. Construction validates configuration without I/O;
 `start()` binds/dials every port and `stop()` joins the router tasks. Both
 awaitables return `None`, and a stopped router can be started again.
 
@@ -2836,6 +2925,7 @@ router = AceMixedRouter.from_ports([
 await router.start()
 print(await router.local_address())
 print(await router.port_health())
+print(await router.port_counters())
 print(await router.routing_table())
 await router.stop()
 ```
@@ -2846,20 +2936,21 @@ also reannounces only that port through the native router's bounded send queue.
 
 `RouterScPort` requires a `wss://` primary hub, non-reserved six-byte VMAC,
 nonzero 16-byte durable device UUID, and explicit mutual-TLS credential paths.
-The current upstream transport fixes local receive capacity at 1497-octet NPDU
-and 5705-octet BVLC values. Other values and `failover_hub` are rejected: this
-binding does not claim cold-start TLS failover until upstream can preserve the
-active-hub identity across that path. For compatibility with the earlier
+The upstream transport fixes local receive capacity at 1497-octet NPDU
+and 5705-octet BVLC values. Other receive-limit values are rejected.
+An optional `failover_hub` must differ from the primary; upstream's SC dialer
+handles initial failover, reconnect, and primary restoration. For compatibility with the earlier
 Python router, `reconnect_max_retries=0` is rejected unless
 `reconnect_forever=True`; the latter maps to the upstream finite retry counter's
 maximum value.
 
-`port_health()` deliberately exposes only state upstream owns. A bound B/IP
-port is `Up`; SC maps its connection state to `Down`, `Connecting`, or `Up`.
-Legacy detail, active-hub, error, attempt, and elapsed fields remain empty for
-compatibility and are not retry telemetry. `routing_table()` returns detached,
+`port_health()` reports a bound B/IP port as `Up`; SC reports connection state,
+active primary or failover hub, reconnect attempt, post-start connection error, and
+elapsed time in the current state. `port_counters()` returns cumulative
+per-configured-port forwarding, refusal, and no-route counts; it complements
+the native router's aggregate counters. `routing_table()` returns detached,
 sorted route snapshots, so it never lends the live router lock to Python. After
-`stop()`, both methods return their last pre-stop snapshot; in particular, an
+`stop()`, all three methods return their last snapshot; in particular, an
 `Up` health value is historical and does not assert that a stopped link remains
 available.
 
@@ -2883,6 +2974,13 @@ shutdown begins. Successful stop clears the Python server's running instance.
 
 Async BACnet server that hosts objects and responds to remote requests.
 
+`device_instance` takes 0 to 4194302. Instance 4194303 is reserved, since no
+object may have it (Clause 12.1.1), so the constructor raises `ValueError` for
+it or anything larger (#2171). At `start()`, an added object the database
+won't take raises `ValueError`: "duplicate object name" for a name already
+held, "object refused" for any other reason, such as an object at instance
+4194303.
+
 ### Constructor
 
 ```python
@@ -2892,10 +2990,16 @@ server = BACnetServer(
     interface="0.0.0.0",
     port=47808,
     broadcast_address="255.255.255.255",
-    transport="bip",             # "bip", "ipv6", "sc" or "mstp"
+    transport="bip",             # "bip", "ipv6", "sc", "mstp" or "router"
     share_port_by_address=False, # keyword-only; B/IP, see "Sharing a port by address"
+    share_wildcard_port=False,   # keyword-only; B/IP, see "Claiming the port"
     bbmd=None,                   # keyword-only; B/IP, see "BBMD and foreign-device modes"
     foreign_device=None,         # keyword-only; B/IP or B/IPv6; not with bbmd
+    multicast=None,              # keyword-only; B/IP, see "B/IP multicast"
+    router=None,                 # keyword-only; a BACnetRouter, with transport="router"
+    registered_network_port=None, # keyword-only; see "Registered B/IP Network Port"
+    # MS/TP options same as BACnetClient (see "MS/TP serial ports");
+    # request admission limits: see "Request admission limits"
     segmentation_supported=Segmentation.NONE, # keyword-only; full-server capabilities
     apdu_segment_timeout_ms=5000, # keyword-only; shared Device/runtime segment timeout
     # SC options same as BACnetClient
@@ -2954,6 +3058,44 @@ server.add_multistate_input(instance=1, name="Mode", number_of_states=4)
 server.add_multistate_output(instance=1, name="Speed", number_of_states=3)
 server.add_multistate_value(instance=1, name="Season", number_of_states=4)
 ```
+
+#### Keeping written reporting settings
+
+The analog, binary and multi-state builders, `add_access_door`,
+`add_access_zone`, `add_event_enrollment` and `add_alert_enrollment` take
+keyword-only `storage_path` (a `str`) and `clear_written_reporting` (#2331):
+
+```python
+server.add_analog_input(
+    instance=1,
+    name="Zone Temp",
+    units=64,
+    storage_path="/application/state/ai-1",  # optional
+)
+```
+
+With `storage_path`, the reporting settings a peer writes
+(Notification_Class, Event_Enable, Notify_Type, Event_Detection_Enable,
+Event_Message_Texts_Config and the Event_Algorithm_Inhibit pair) are kept in
+that file, and so is a written Description (#2364). Each write is saved
+before it is answered, and refused with DEVICE / OPERATIONAL_PROBLEM when the
+save fails; an Event_Message_Texts_Config string or a Description past 16 KiB
+is refused with RESOURCES / NO_SPACE_TO_WRITE_PROPERTY. A NULL to Description
+succeeds and saves nothing. A server started on the same file serves the
+saved settings. `clear_written_reporting=True` drops what was saved first,
+Description included, so the object starts from its defaults. A file that doesn't load raises `BacnetError`.
+An Alert Enrollment takes only ALARM and EVENT as Notify_Type, so a file
+holding another fails its build the same way.
+
+These builders, `add_timer`, `add_channel`, the three log builders,
+`add_notification_class`, `add_notification_forwarder` and
+`add_access_rights` keep a written Description in their `storage_path` file,
+with these rules. On every other object type, a Description a peer writes
+lasts until the server restarts.
+
+The endpoints' object builders (`BipEndpoint.add_analog_input` and the rest)
+don't take these keywords: an endpoint executes WriteProperty only on its own
+Device, so no peer can write these settings there.
 
 #### Object profiles and Value_Source
 
@@ -3069,8 +3211,8 @@ server.add_event_enrollment(
 ```
 
 A Notification Class with `storage_path` keeps the Recipient_List a client
-writes in that file and serves it again after a restart; without it the list
-lives in memory only. The file is replaced whole on each list write, and the
+writes in that file and serves it again after a restart, and a written
+Description too (#2364); without it they live in memory only. The file is replaced whole on each list write, and the
 save runs on a thread of its own while the server goes on answering other
 requests. A write whose list cannot be saved is refused with DEVICE /
 OPERATIONAL_PROBLEM, and the class keeps its old list. `storage_path` takes a
@@ -3086,8 +3228,9 @@ applies at every start and is not saved (#1364).
 The Notification Forwarder sends each event notification the server
 receives, and each one its own objects address to its Device, on to the
 destinations its Recipient_List and Subscribed_Recipients name. Clients
-configure both lists over the network. `storage_path` keeps both lists in
-one file, replaced whole when either list changes and at most once a minute
+configure both lists over the network. `storage_path` keeps both lists, and
+a written Description (#2364), in one file, replaced whole when either list
+or the Description changes and at most once a minute
 while the Subscribed_Recipients entries count down, so the lists and each
 entry's remaining minutes survive a restart; without it the lists live in
 memory only. Saves run on a thread of their own, and the server waits for a
@@ -3253,14 +3396,23 @@ server.add_trend_log_multiple(
   trend logs Logging_Type, Log_Interval, Align_Intervals, Interval_Offset and
   Log_DeviceObjectProperty, as peers last wrote them: the saved state wins
   over `total_record_count` and the configuration keywords.
-  `add_trend_log`'s `client_cov_increment` and `cov_resubscription_interval`,
-  `add_event_log`'s `log_received_notifications`, and the reporting settings
-  other than Notification_Threshold aren't saved, so they apply on every
-  start.
+- It keeps the reporting settings a peer writes too (#1952):
+  Notification_Class, Event_Enable, Notify_Type, Event_Detection_Enable,
+  Event_Message_Texts_Config and the Event_Algorithm_Inhibit pair, and on a
+  Trend Log Client_COV_Increment and COV_Resubscription_Interval. Each is
+  saved before the write is answered, and once saved wins over
+  `add_trend_log`'s `client_cov_increment` and `cov_resubscription_interval`.
+  A written Description is kept with them (#2364), and one past 16 KiB is
+  refused with RESOURCES / NO_SPACE_TO_WRITE_PROPERTY.
+  All three take keyword-only `clear_written_reporting`: `True` drops the
+  saved settings, Description included, so `add_trend_log`'s keywords apply
+  again; the others keep their values until the next start.
+  `add_event_log`'s `log_received_notifications` isn't saved and applies on
+  every start.
 - `buffer_size` is the application's, so it wins over the saved Buffer_Size:
   a larger one keeps every record, and a smaller one keeps the newest
-  records that fit and logs a warning. A durable log holds at most 828,302
-  records (Trend Log), 178,437 (Event Log) or 15,849 (Trend Log Multiple); a
+  records that fit and logs a warning. A durable log holds at most 828,251
+  records (Trend Log), 178,426 (Event Log) or 15,848 (Trend Log Multiple); a
   larger `buffer_size` raises `BacnetError`.
 - The `add_*` methods return nothing, so to tell whether a log will reopen,
   check whether `<storage_path>.slot0` or `.slot1` exists before the call.
@@ -3781,7 +3933,17 @@ server.add_command(
     ],
     action_text=["Occupied", "Unoccupied"],  # one text per list
 )
-server.add_timer(instance=1, name="Timer")
+server.add_timer(
+    instance=1,
+    name="Timer",
+    # IDLE_TO_RUNNING .. EXPIRED_TO_RUNNING; None writes nothing.
+    state_change_values=[PropertyValue.enumerated(1), PropertyValue.null(), None,
+                         PropertyValue.enumerated(0), PropertyValue.enumerated(0),
+                         None, PropertyValue.enumerated(1)],
+    references=[(ObjectIdentifier(ObjectType.BINARY_OUTPUT, 1), PropertyIdentifier.PRESENT_VALUE)],
+    priority_for_writing=8,
+    storage_path="/application/state/timer-1",  # optional; see below
+)
 server.add_load_control(instance=1, name="Load Control")
 server.add_program(instance=1, name="Program")
 server.add_averaging(
@@ -3804,6 +3966,20 @@ server.add_staging(
     stage_names=["Off", "On"],
 )
 ```
+
+`add_timer`'s `storage_path` keeps in that file what a peer writes to
+State_Change_Values, List_Of_Object_Property_References (with
+Priority_For_Writing), Default_Timeout (#2312) and Description (#2364). Each write is saved before
+it is answered, and refused with DEVICE / OPERATIONAL_PROBLEM when the save
+fails; a Description past 16 KiB is refused with RESOURCES /
+NO_SPACE_TO_WRITE_PROPERTY. At the next start a saved write wins over the keywords;
+`clear_written_config=True` drops what was saved, so they apply again.
+`add_channel` takes the same two keywords (see [Channels](#channels)).
+
+Program_State is read-only on the network, and `write_property_local` refuses
+it with WRITE_ACCESS_DENIED too. A running server's application reports it with
+`await server.set_program_state_local(program_id, PropertyValue.enumerated(2))`
+(RUNNING), an Enumerated BACnetProgramState from 0 to 5 (#2258).
 
 `add_command`'s keyword-only `action` sets the Command's Action array: one list
 per element, each a list of `ActionCommand` mappings with
@@ -3908,6 +4084,39 @@ which used to clear it, now succeeds and changes nothing.
 An Accumulator serves Prescale only once one is configured; until then a
 read is UNKNOWN_PROPERTY and Property_List leaves it out, instead of a null
 read.
+
+The application feeds an Accumulator the pulses its meter produced with
+`await server.add_pulses_local(accumulator_id, pulses)` (#2259). In service
+they step Present_Value, by Prescale's ratio when one is configured (the
+remainder carries to the next call), and Present_Value rolls over modulo
+Max_Pres_Value + 1. Once Limit_Monitoring_Interval is set, by a peer or with
+`write_property_local`, the running server closes a window at the end of
+each interval: Pulse_Rate becomes the number of pulses fed into it, and a
+SubscribeCOVProperty on Pulse_Rate is notified. While Out_Of_Service is
+set, Present_Value holds, dropping fed pulses instead of catching up later,
+and Pulse_Rate keeps the value a peer wrote until a window closes back in
+service; the pulses fed meanwhile still count toward that window. Any other object raises
+OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
+
+An Accumulator's Present_Value takes a write, from a peer or
+`write_property_local`, only while Out_Of_Service is set (#2267): an
+Unsigned no larger than Max_Pres_Value. A larger value raises
+VALUE_OUT_OF_RANGE, another datatype INVALID_DATA_TYPE, and a write in
+service WRITE_ACCESS_DENIED. The written value starts with an empty Prescale
+remainder, and fed pulses count on from it once back in service.
+A Pulse Converter whose Input_Reference names that Present_Value counts a
+written value as input: an increase by its delta, a decrease as a wrap
+through Max_Pres_Value.
+
+An Accumulator's Reliability takes a write the same way, only while
+Out_Of_Service is set, to simulate a fault (#2280): in service the write
+raises WRITE_ACCESS_DENIED, a value that isn't an Enumerated
+INVALID_DATA_TYPE, and a value outside BACnetReliability
+VALUE_OUT_OF_RANGE. Status_Flags FAULT follows it, and the return to service
+puts back the Reliability the object had before. A Max_Pres_Value write
+below the current Present_Value raises VALUE_OUT_OF_RANGE and changes
+nothing; to shrink the range, write a Present_Value that fits while out of
+service first.
 
 A Pulse Converter checks what its Input_Reference names (#1341). Reliability
 reads CONFIGURATION_ERROR (10), and Status_Flags FAULT, while the reference
@@ -4072,8 +4281,8 @@ server.add_channel(
 ```
 
 `add_channel(instance, name, channel_number, members=None,
-execution_delay=None, control_groups=None, *, allow_group_delay_inhibit=False)`
-registers a Channel. A member is an `(object, property)` or
+execution_delay=None, control_groups=None, *, allow_group_delay_inhibit=False,
+storage_path=None, clear_written_config=False)` registers a Channel. A member is an `(object, property)` or
 `(object, property, array_index)` tuple for a property in this device, or a
 `DeviceObjectPropertyReference` mapping, the shape an access rule's
 `time_range` takes: `object_identifier`, `property_identifier`, and optionally
@@ -4091,7 +4300,11 @@ under [Lighting & Color](rust-api.md#lighting--color-5)).
 `execution_delay` holds one delay in milliseconds per member (zeros when
 omitted), `control_groups` the groups whose WriteGroup the Channel takes, and
 `allow_group_delay_inhibit` whether a WriteGroup that asks for no delays skips
-them. Peers can write all of these, and Channel_Number, over the network.
+them. Peers can write all of these, and Channel_Number, over the network. With
+`storage_path` the Channel keeps those writes in that file, and a written
+Description too (#2364), and each saved one wins over its argument at the
+next start, Channel_Number over `channel_number` included, until
+`clear_written_config=True` drops them (#2312).
 
 Once the server runs, a value written to the Channel's Present_Value, over the
 network or with `write_property_local`, goes on to each member at the write's
@@ -4384,8 +4597,8 @@ Device raises `ValueError`, and another object type raises
 `BacnetProtocolError` (VALUE_OUT_OF_RANGE), from the keyword or a write.
 
 With `storage_path`, the arrays, Enable and Accompaniment that peers write are
-kept in that file and served again after a restart; without it they live in
-memory only:
+kept in that file and served again after a restart, and so is a written
+Description (#2364); without it they live in memory only:
 
 ```python
 server.add_access_rights(
@@ -4615,10 +4828,14 @@ time-to-live. With an `on_reinitialize` handler (see
 [ReinitializeDevice](#reinitializedevice)), a BBMD port's
 BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations accept
 writes, set Changes_Pending, and take effect on an accepted ACTIVATE_CHANGES or
-WARMSTART (#1578, #1566). A foreign device's FD_BBMD_Address (an IPv4
-`BACnetHostNPort`, written as `PropertyValue.application_data`) and
-FD_Subscription_Lifetime do the same (#1825): once activated, the next
-registration goes to the new BBMD with the new time-to-live. Without an
+WARMSTART (#1578, #1566). A foreign device's FD_BBMD_Address (a
+`BACnetHostNPort` with an IPv4 address or a host name, written as
+`PropertyValue.application_data`) and FD_Subscription_Lifetime do the same
+(#1825): once activated, the next registration goes to the new BBMD with the
+new time-to-live. A host name is looked up by the system's resolver at each
+activation, and again alongside later registrations at most every 30 seconds;
+until a lookup succeeds, and whenever one fails, the device keeps registering
+with the address it had (#1852). Without an
 `on_reinitialize` handler nothing could activate a written value, so writes
 to these rows raise `BacnetProtocolError` (WRITE_ACCESS_DENIED) and
 Changes_Pending stays FALSE. A stopped transport refuses FD_BBMD_Address and
@@ -4778,7 +4995,10 @@ server = BACnetServer(1234, reinit_password="secret",
 endpoint's only Audit Reporter is its source Reporter, which Clause 19.6.2
 casts as the operation source's; writing the DEVICE_RESET, DEVICE_BACKUP and
 DEVICE_RESTORE records of requests it carries out through that Reporter is
-this library's local choice.
+this library's local choice. Endpoints take `await endpoint.report_device_reset_local()`
+too (#1837), recorded through that Reporter when one is selected (see
+[Endpoint source Audit Reporter](#endpoint-source-audit-reporter)) and a
+no-op otherwise; it raises RuntimeError when the endpoint is not running.
 
 ### Runtime Object Access
 
@@ -5136,6 +5356,15 @@ counters = await server.forwarder_save_counters()
 counters[1]["failed_saves"]  # refused saves of forwarder 1's lists
 ```
 
+#### `dcc_outcome_counters() -> DccOutcomeCounters`
+
+Sample the server's lifetime DeviceCommunicationControl outcome totals: a dict
+with `accepted_total`, `policy_denied_total`, `password_failure_total`,
+`deprecated_denied_total` and `malformed_total`, typed as the
+`DccOutcomeCounters` TypedDict in the stub. Each field saturates and is read on
+its own. Like `cov_counters()`, it raises `RuntimeError` before start and after
+stop. See [DCC policy](dcc-policy.md) for what each total counts.
+
 #### `local_address() -> str`
 
 Get the server's bound address after start: `"ip:port"` on B/IP, the station
@@ -5182,7 +5411,7 @@ import rusty_bacnet
 
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("rusty_bacnet.bacnet_transport").setLevel(logging.DEBUG)
-# A client, server, hub or endpoint started from here on reads these levels.
+# A client, server, hub, endpoint or router started from here on reads these levels.
 ```
 
 If you configure logging with `logging.config.dictConfig`, pass
@@ -5194,7 +5423,7 @@ from import on, so the default (`True`) would disable it.
 The bridge decides which events to forward from a copy of the logging
 levels, so an event your configuration doesn't want costs the stack one
 atomic load and never takes the GIL. It reads the levels at import and
-whenever a client, server, hub or endpoint starts (`start()` or `async
+whenever a client, server, hub, endpoint or router starts (`start()` or `async
 with`), so the usual order (import, configure logging, start) just works.
 If you lower a level later (to see more), call
 `rusty_bacnet.refresh_logging()`; until then, the events it newly allows are
@@ -5245,6 +5474,7 @@ All BACnet errors are raised as Python exceptions:
 | `BacnetBvlcNakError` | A BBMD refused a management request (`read_bdt` and its siblings) with a BVLC-Result NAK; `result_code` holds its code |
 | `BacnetBvlcUnexpectedResponseError` | A management request was answered by a BVLC message it doesn't take; `expected` and `got` hold the function codes |
 | `BacnetTransportError` | A socket or I/O failure: a bind or listen that fails (B/IP, B/IPv6, `ScHub.start`), a failed SC dial. Also an `OSError` |
+| `BacnetRouterCloseError` | A `BACnetRouter`'s cleanup failed; `failures` holds a tuple of `RouterCleanupFailure` records (see [B/IP router](#bip-router)) |
 
 ```python
 from rusty_bacnet import (
@@ -5277,7 +5507,7 @@ except BacnetError as e:
 | `error_parameters` | ConfirmedPrivateTransfer-Error | Encoded vendor-defined error parameters (`bytes`), when present |
 | `vt_session_identifiers` | VT-Close error that lists them | Local identifiers of the sessions that could not be closed |
 
-`BacnetRejectError` and `BacnetAbortError` have a `reason` integer attribute.
+`BacnetRejectError` and `BacnetAbortError` have a `reason` attribute, a `RejectReason` or `AbortReason` member (an `int`).
 
 `BacnetTransportError` derives from both `BacnetError` and `OSError`, so either `except` clause catches it. Its `errno` is the operating system's code when it reported one, otherwise the code for the failure's kind where one exists (`None` if not), and `strerror` is the message:
 
@@ -5293,7 +5523,7 @@ except OSError as e:
         raise
 ```
 
-`errno` is the operating system's own code, so platforms differ: Windows can refuse a bind to a UDP port another socket holds with `errno.WSAEACCES` rather than `errno.EADDRINUSE`, so check both there. It is not narrowed to the `OSError` subclasses (`ConnectionRefusedError` and the like), so compare `errno` rather than the class. `list_serial_ports()` raises a plain `OSError` instead.
+`errno` is the operating system's own code, so platforms differ: Windows can refuse a bind to a UDP port another socket holds with `errno.WSAEACCES` rather than `errno.EADDRINUSE`, so check both there. It is not narrowed to the `OSError` subclasses (`ConnectionRefusedError` and the like), so compare `errno` rather than the class. `list_serial_ports()` raises an `OSError` (or the subclass for the failure's kind) instead, not a `BacnetTransportError`.
 
 ---
 
@@ -5379,7 +5609,9 @@ sibling roles. Each exposes `await endpoint.client()` (`EndpointClient`) and
 `await endpoint.server()` (`EndpointServer`); roles hold no lifecycle and fail
 closed with `BacnetError` after the owner closes. Builder-time config only:
 `DeviceIdentity` (instance/vendor/APDU/segmentation/services/ports/UUID) is
-validated in the constructor; there is no post-start owner mutation.
+validated in the constructor; there is no post-start owner mutation. A
+`device_instance` of 4194303, which no object may have, or anything larger
+raises `ValueError` there, as `BACnetServer`'s does (#2171).
 
 ```python
 endpoint = BipEndpoint(device_instance=1001, vendor_id=42, port=47808)
@@ -5389,13 +5621,27 @@ async with endpoint:
     value = await client.read_property("127.0.0.1:47808", oid, pid)
 ```
 
+The endpoint builders `add_analog_input`, `add_analog_value`,
+`add_binary_input` and `add_binary_value` take the same keyword-only options
+as `BACnetServer`'s (#1867), checked by the same code: `tags`,
+`profile_location` and `profile_name` on all four, and `present_value_access`
+and `value_source_tracking` on the two Value builders (see
+[Object profiles and Value_Source](#object-profiles-and-value_source)).
+The endpoint serves those rows to ReadProperty, the one object service its
+server role answers. Peers can't write these objects through an endpoint, so
+there `present_value_access` and `value_source_tracking` only describe the
+object: a tracked object's Value_Source reads null.
+
 `await endpoint.status()` returns a redacted snapshot (`is_running`,
 `device_instance`, `vendor_id`, `max_apdu`, `transport`, `local_address`,
 `active_leases`, plus policy counters). `BipEndpoint` also takes `bbmd=` and
 `foreign_device=`, and reports a registration with `foreign_registration()`
 (see [BBMD and foreign-device modes](#bbmd-and-foreign-device-modes)). `local_address()` is `"ip:port"`
 (BIP), VMAC hex (SC), or station string (MS/TP). Roles expose no callbacks;
-the client initiates `read_property`, `read_range` and `read_property_multiple`; concurrent use is
+the client initiates `read_property`, `read_property_multiple`, `read_range`,
+`read_log_page` and `write_property` (see
+[Endpoint direct WriteProperty](#endpoint-direct-writeproperty)), and the owner
+broadcasts one I-Am for its identity with `await endpoint.broadcast_i_am()`; concurrent use is
 `asyncio.gather` over these reads plus
 `is_session_alive()` polling. The Rust-calls-Python paths are the owner's
 optional `on_reinitialize` / `after_reinitialize` pair and its optional
@@ -5435,6 +5681,134 @@ neither Device COV list property. A supplied `services` list must include RP and
 cannot claim unsupported execution; incompatible server-role profiles fail
 startup before ingress.
 ClientOnly has no responder and keeps its service list as a local declaration.
+
+### ScEndpoint reconnect, failover hub and link events
+
+`ScEndpoint` takes the keyword-only `reconnect`, `sc_failover_hub` and
+`sc_connect_timeout_ms` that `BACnetClient` takes, with the same names,
+defaults and checks (#1946); see [SC reconnect](#sc-reconnect) and
+[SC failover hub, connection events and link status](#sc-failover-hub-connection-events-and-link-status).
+`reconnect=ScReconnect(...)` redials a lost hub; `sc_failover_hub` needs
+`reconnect` (`ValueError` otherwise); `sc_connect_timeout_ms` (default 10,000,
+at least 1) bounds each hub dial and Connect-Request, the one `start()` makes
+included. Without them the endpoint dials its hub once at start and stays
+disconnected after a loss, as before; that first dial is now bounded by the
+10-second default.
+
+```python
+endpoint = ScEndpoint(
+    1001, "wss://hub.example.com/bacnet", node_vmac,
+    "site-ca.pem", "node.pem", "node.key",
+    sc_device_uuid=persistent_node_uuid,
+    sc_failover_hub="wss://failover.example.com/bacnet",
+    reconnect=ScReconnect(initial_delay_ms=1_000, max_delay_ms=30_000, max_retries=3),
+)
+async with endpoint:
+    events = await endpoint.connection_events()
+    async for event in events:
+        print(event.kind, event.hub)
+```
+
+`await endpoint.connection_events()` and `await endpoint.connection_status()`
+return the client's `ScEventIterator` and `ScLinkStatus`, with the same event
+names and lag rules. The first `connection_events()` call after a start gets
+the events since the session was built, from its first `connected` (#1908);
+a later call is a late subscriber. Iteration ends when the endpoint closes,
+and both methods raise `RuntimeError` before start or after close.
+
+A reconnect or a change of hub keeps the session: its VMAC, Device, roles and
+source Audit Reporter carry on once a hub is connected again, and the server
+role answers through whichever hub is in use. Nothing is replayed. While no
+hub is connected, anything the endpoint sends fails at once: a reply, an
+I-Am, an Audit notification (counted as undelivered) or a client-role
+request, which raises. A request whose answer was lost with the old
+connection times out, since the endpoint's client role makes no retries.
+
+### Endpoint source Audit Reporter
+
+`BipEndpoint`, `ScEndpoint` and `MstpEndpoint` can name a source Audit
+Reporter (#2348, #2357), the Python side of the Rust session's
+`with_source_audit_reporter`. Through it the session
+reports the ReinitializeDevice resets, backup steps and restore steps it
+carries out for peers, each `report_device_reset_local()` call, and the
+client role's reads, each filtered by the Reporter's Audit_Level and
+Auditable_Operations, and sends the records to the Device's Audit recipient.
+
+```python
+reporter = ObjectIdentifier(ObjectType.AUDIT_REPORTER, 1)
+logger = ObjectIdentifier(ObjectType.DEVICE, 999)
+endpoint = BipEndpoint(
+    1001, interface="192.168.1.10", port=47808,
+    on_reinitialize=lambda request: None,
+    # Only the trusted workstation (192.168.1.5:47808, as a B/IP MAC) may
+    # change the Device's Audit recipient.
+    device_write_policy=lambda context: context.source_mac == bytes([192, 168, 1, 5, 0xBA, 0xC0]),
+    source_audit_reporter=reporter,
+    audit_recipient={"kind": "device", "object_identifier": logger},
+    audit_device_bindings=[(logger, "192.168.1.20:47808")],
+)
+endpoint.add_audit_reporter(1, "Source", audit_level="audit_all",
+                            auditable_operations=1 << AuditOperation.DEVICE_RESET.to_raw())
+```
+
+- `source_audit_reporter` is the `ObjectIdentifier` of a Reporter added with
+  `add_audit_reporter(instance, name, *, audit_level, auditable_operations,
+  issue_confirmed_notifications=False)`. The level and operations are
+  required, as on `configure_audit_reporters`, and peers can't change the
+  Reporter through an endpoint. A Reporter that `source_audit_reporter`
+  doesn't select starts and records nothing.
+- `audit_recipient` (an `AuditRecipientInput`) provisions the local Device's
+  Audit recipient, and `audit_device_bindings` lists `(Device identifier,
+  "ipv4:port")` routes to recipient Devices. Each binding follows the
+  recipient's address rule: a direct unicast address with a nonzero port,
+  never the link's broadcast address at any port. A Device recipient with no
+  binding starts, records nothing, and the Reporter's Reliability reads
+  CONFIGURATION_ERROR.
+- The Reporter needs `device_write_policy` and `audit_recipient`. With both
+  roles running, the Rust session requires a Device-write authorizer,
+  because the Device's Audit recipient is writable: a policy that allows
+  every peer lets any of them redirect the audit trail, so allow only the
+  sources you trust.
+- **When keywords are refused:** construction raises ValueError for anything
+  it can check: an identifier that isn't a concrete Audit Reporter, a
+  recipient or binding without a Reporter, a recipient the session could
+  never deliver to (this device, network 65535, or an address that isn't
+  another node's unicast address on the endpoint's link, by the rules
+  below), and a malformed, repeated or non-unicast binding, each naming its
+  keyword. Whether the Reporter was added is known
+  only at start, which raises BacnetError for a missing one.
+- **Each link's bindings** (#2357) take the address format of that link's
+  `local_address()`:
+  - `BipEndpoint`: `"ipv4:port"`, by the rule above.
+  - `ScEndpoint`: a VMAC, `"xx:xx:xx:xx:xx:xx"` or the same twelve hex
+    digits with no separators; never the broadcast or all-zero VMAC or the
+    endpoint's own.
+  - `MstpEndpoint`: a station in decimal digits, `"0"` to `"254"`; never 255
+    or the endpoint's own `mstp_mac`.
+  - Any endpoint (#2371): a Device behind a router, `"network:0xMAC"`, as the
+    CLI writes a routed target (`"2:0x05"` is station 5 on network 2). The
+    network is 1 to 65534 and the MAC 1 to 18 octets, in the remote link's
+    format. Records go through the router to that network, which the session
+    learns from traffic back from there or from the router's
+    I-Am-Router-To-Network; until then they go with the link's broadcast
+    address. A failed delivery sets the Reporter's Reliability to
+    COMMUNICATION_FAILURE as a direct one does.
+
+  An address `audit_recipient` follows the same rule on each link, so an SC
+  or MS/TP endpoint takes one too, unlike `BACnetServer`, whose address
+  recipients are B/IP only: its `mac_address` is another node's VMAC or
+  station, on network 0 or one the endpoint's network number may name.
+
+```python
+endpoint = MstpEndpoint(
+    1001, "/dev/ttyUSB0", mstp_mac=3,
+    on_reinitialize=lambda request: None,
+    device_write_policy=lambda context: context.source_mac == bytes([7]),
+    source_audit_reporter=reporter,
+    audit_recipient={"kind": "device", "object_identifier": logger},
+    audit_device_bindings=[(logger, "7")],
+)
+```
 
 ### Endpoint lifecycle and cancellation
 
@@ -5529,8 +5903,9 @@ indexes outside native unsigned32 raise `OverflowError` during conversion.
 Requests and raw ACKs must fit the configured unsegmented max APDU. Protocol,
 size, malformed/mismatched ACK and closed-owner failures raise `BacnetError`.
 Standalone RPM retains its broader selector profile but now rejects empty lists
-through the shared fallible encoder. Endpoint source Reporter configuration is
-still Rust-only; this method does not expose it in Python.
+through the shared fallible encoder. A `BipEndpoint` with a source Audit
+Reporter reports these reads through it, filtered by its operations (see
+[Endpoint source Audit Reporter](#endpoint-source-audit-reporter)).
 
 ### Migration: separately-constructed client/server to endpoint
 
@@ -6037,8 +6412,8 @@ same stored bytes into every fresh hub/client/server object; do not call `uuid4(
 otherwise generate a new ID during startup. The library does not choose a path,
 store UUIDs, or detect a changed UUID without application-owned history. It cannot
 guarantee lifetime identity. Python nodes retain their existing lifecycle support:
-stop/start or recreate them with the persisted UUID; no automatic Python reconnect
-support is added or claimed.
+stop/start or recreate them with the persisted UUID. A client's opt-in
+[`reconnect=ScReconnect(...)`](#sc-reconnect) redials with the same retained UUID.
 
 For illustration only, three independently provisioned **test** identities might be:
 
@@ -6169,8 +6544,9 @@ ms and require `sc_heartbeat_timeout_ms` to be greater than the interval.
 Native code retains a verified direct leaf fingerprint
 and connection incarnation through queued server work, duplicate/replay admission,
 and partial request reassembly. Python does not expose a principal authorizer or
-the direct listener through this API; its mutation policy remains the existing
-static `permissive`/`deny_all` choice. The Rust identity APIs are new in
+the direct listener through this API; its `mutation_policy` is `permissive`,
+`deny_all` or a callable whose `MutationContext.principal` is always `None` (see
+[Runtime Object Access](#runtime-object-access)). The Rust identity APIs are new in
 0.12.0. Hub admission's scope-only channel assertion and Hub-relayed application
 traffic never become downstream direct leaf identities. See the
 [Rust identity contract](rust-api.md#accepted-direct-tls-identity). Native

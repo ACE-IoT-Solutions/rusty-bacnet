@@ -6,6 +6,8 @@ mod identity;
 
 use super::*;
 use crate::clock::{ClockFrame, ClockReader};
+use crate::property_metadata::{is_array_property, is_writable_property};
+use crate::traits::Timed;
 use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::{Date, Time};
 use std::sync::{Arc, Mutex};
@@ -49,7 +51,10 @@ fn clock_frame(hour: u8, minute: u8) -> ClockFrame {
 }
 
 fn bind_clock(device: &mut DeviceObject, clock: FakeClock) {
-    device.bind_clock_internal(Some(Arc::new(clock)));
+    device.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(clock)),
+        ..crate::traits::Clocks::default()
+    });
 }
 
 fn make_device() -> DeviceObject {
@@ -151,10 +156,10 @@ fn device_set_description_convenience() {
 #[test]
 fn device_description_in_property_list() {
     let dev = make_device();
-    assert!(
-        dev.property_list()
-            .contains(&PropertyIdentifier::DESCRIPTION)
-    );
+    assert!(crate::property_metadata::has_property(
+        &dev.property_metadata(),
+        PropertyIdentifier::DESCRIPTION
+    ));
 }
 
 #[test]
@@ -264,13 +269,23 @@ fn set_system_status_through_the_device_authority() {
 #[test]
 fn property_list_contains_expected() {
     let dev = make_device();
-    let props = dev.property_list();
-    assert!(props.contains(&PropertyIdentifier::OBJECT_IDENTIFIER));
-    assert!(props.contains(&PropertyIdentifier::OBJECT_NAME));
-    assert!(props.contains(&PropertyIdentifier::OBJECT_TYPE));
+    let props = crate::test_rows::listed(&dev.property_metadata());
+    // Property_List leaves out the identity properties and itself, which
+    // are rows like the rest (Clause 12.1.1.4.1).
+    for excluded in [
+        PropertyIdentifier::OBJECT_IDENTIFIER,
+        PropertyIdentifier::OBJECT_NAME,
+        PropertyIdentifier::OBJECT_TYPE,
+        PropertyIdentifier::PROPERTY_LIST,
+    ] {
+        assert!(!props.contains(&excluded));
+        assert!(crate::property_metadata::has_property(
+            &dev.property_metadata(),
+            excluded
+        ));
+    }
     assert!(props.contains(&PropertyIdentifier::VENDOR_NAME));
     assert!(props.contains(&PropertyIdentifier::OBJECT_LIST));
-    assert!(props.contains(&PropertyIdentifier::PROPERTY_LIST));
     assert!(props.contains(&PropertyIdentifier::PROTOCOL_OBJECT_TYPES_SUPPORTED));
     assert!(props.contains(&PropertyIdentifier::PROTOCOL_SERVICES_SUPPORTED));
 }
@@ -346,7 +361,7 @@ fn clockless_device_omits_clock_properties_and_sync_services() {
     use bacnet_types::bitstring::ServicesSupported;
 
     let dev = make_device();
-    let props = dev.property_list();
+    let props = crate::test_rows::listed(&dev.property_metadata());
     for property in [
         PropertyIdentifier::LOCAL_DATE,
         PropertyIdentifier::LOCAL_TIME,
@@ -407,7 +422,10 @@ fn bound_device_reads_one_advancing_clock_source() {
         PropertyIdentifier::UTC_OFFSET,
         PropertyIdentifier::DAYLIGHT_SAVINGS_STATUS,
     ] {
-        assert!(dev.property_list().contains(&property));
+        assert!(crate::property_metadata::has_property(
+            &dev.property_metadata(),
+            property
+        ));
     }
 }
 
@@ -445,10 +463,10 @@ fn active_cov_subscriptions_default_empty() {
 #[test]
 fn active_cov_subscriptions_in_property_list() {
     let dev = make_device();
-    assert!(
-        dev.property_list()
-            .contains(&PropertyIdentifier::ACTIVE_COV_SUBSCRIPTIONS)
-    );
+    assert!(crate::property_metadata::has_property(
+        &dev.property_metadata(),
+        PropertyIdentifier::ACTIVE_COV_SUBSCRIPTIONS
+    ));
 }
 
 #[test]
@@ -475,7 +493,10 @@ fn active_cov_multiple_subscriptions_standalone_optional_read_only_list() {
         dev.read_property(property, None).unwrap(),
         PropertyValue::ApplicationData(Vec::new())
     );
-    assert!(dev.property_list().contains(&property));
+    assert!(crate::property_metadata::has_property(
+        &dev.property_metadata(),
+        property
+    ));
     let metadata = dev.property_metadata();
     let row = metadata
         .iter()
@@ -483,7 +504,7 @@ fn active_cov_multiple_subscriptions_standalone_optional_read_only_list() {
         .unwrap();
     assert!(!row.is_required());
     assert!(!row.write_capability.is_writable());
-    assert!(!dev.is_array_property(property));
+    assert!(!is_array_property(&dev, property));
     let denied = dev.write_property(
         property,
         None,
@@ -562,9 +583,10 @@ fn device_property_metadata_preserves_dynamic_list_and_write_dispatch() {
         // Bind, lose a sample, recover, and unbind on the same instance.
         for state in [0, 1, 2, 1, 0] {
             *clock.0.lock().unwrap() = (state == 1).then(|| clock_frame(12, 0));
-            device.bind_clock_internal(
-                (state != 0).then(|| Arc::new(clock.clone()) as Arc<dyn ClockReader>),
-            );
+            device.bind_clocks(&crate::traits::Clocks {
+                clock: (state != 0).then(|| Arc::new(clock.clone()) as Arc<dyn ClockReader>),
+                ..crate::traits::Clocks::default()
+            });
             let mut expected: Vec<_> = device.properties.keys().copied().collect();
             expected.extend([
                 P::OBJECT_LIST,
@@ -592,7 +614,15 @@ fn device_property_metadata_preserves_dynamic_list_and_write_dispatch() {
                     .collect::<Vec<_>>(),
                 expected
             );
-            assert_eq!(device.property_list().as_ref(), expected);
+            let listed: Vec<_> = expected
+                .iter()
+                .copied()
+                .filter(|p| *p != P::PROPERTY_LIST)
+                .collect();
+            assert_eq!(
+                crate::test_rows::listed(&device.property_metadata()),
+                crate::test_rows::listed_from(&listed)
+            );
             let wire: Vec<_> = expected
                 .iter()
                 .copied()
@@ -637,7 +667,7 @@ fn device_property_metadata_preserves_dynamic_list_and_write_dispatch() {
                         PropertyWriteCapability::ReadOnly
                     }
                 );
-                assert_eq!(device.is_writable_property(p), p == P::DESCRIPTION);
+                assert_eq!(is_writable_property(&device, p), p == P::DESCRIPTION);
                 let result = device.write_property(p, None, before.clone(), None);
                 if p == P::DESCRIPTION {
                     result.unwrap();

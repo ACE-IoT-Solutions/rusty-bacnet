@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -15,8 +16,8 @@ impl BACnetObject for ReadProbe {
     fn object_name(&self) -> &str {
         self.inner.object_name()
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        self.inner.property_list()
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        self.inner.property_metadata()
     }
     fn read_property(
         &self,
@@ -46,11 +47,8 @@ impl BACnetObject for ReadProbe {
     ) -> Result<(), Error> {
         self.inner.write_property(property, index, value, priority)
     }
-    fn supports_cov(&self) -> bool {
-        true
-    }
-    fn supports_cov_property(&self, property: PropertyIdentifier) -> bool {
-        self.inner.supports_cov_property(property)
+    fn cov(&self) -> Option<&dyn bacnet_objects::traits::CovReporting> {
+        self.inner.cov()
     }
 }
 
@@ -117,7 +115,7 @@ async fn mixed_case(initial: bool, confirmed: bool, retain_value: bool) {
     a.issue_confirmed_notifications = confirmed;
     // On tokio's clock, which both callers pause, so the notification reports
     // exactly the 100 s however long the runner stalls (#1556).
-    a.expires_at = Some(runtime_clock::now() + Duration::from_secs(100));
+    a.expires_at = Some(crate::runtime_clock::core_now() + bacnet_time::Duration::from_secs(100));
     let mut b = a.clone();
     b.monitored_object_identifier = second_oid;
     b.monitored_property = Some(PropertyIdentifier::OPERATION_EXPECTED);

@@ -5,6 +5,7 @@ use crate::committed_cov::BackgroundCommit;
 
 #[path = "lifecycle_period.rs"]
 mod period;
+use super::binary_lighting_lifecycle::spawn_binary_lighting_operation_task as spawn_operation;
 use super::heap_futures::boxed;
 use super::{audit_recipient::spawn_owned, audit_recipient_routes::AuditRoutes};
 pub(super) use period::{MonotonicClocks, event_enrollment_period};
@@ -48,6 +49,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         // reply is sized to its route instead (#2093).
         super::network_port::validate_apdu_capacity(&mut config, &transport)?;
         crate::local_device::validate_startup(&db, &config.device)?;
+        crate::local_device::bind_database(&mut db, &config.device);
         let is_group = |mac: &[u8]| transport.is_group_destination(mac);
         let device_bindings =
             DeviceBindingTable::from_configured(configured_device_bindings, is_group)?;
@@ -68,7 +70,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         // runs before `network_port::start`, which can still fail; that's
         // harmless, since the drive is what any start does, and a later
         // start over the same objects drives them the same way again.
-        db.for_each_object_mut(|_, object| object.start_output_internal());
+        db.start_outputs();
         let membership = crate::membership::install_waker(&mut db);
 
         let (network, mut apdu_rx, audit_routes, network_controls) =
@@ -84,7 +86,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         let cov_counters = Arc::new(crate::cov::AtomicCovCounters::default());
         let cov_table = Arc::new(RwLock::new(
             CovSubscriptionTable::with_policy(config.cov_policy.clone(), Arc::clone(&cov_counters))
-                .with_max_apdu_length(u32::from(config.device.max_apdu_length()) as usize),
+                .with_max_apdu_length(u32::from(config.device.max_apdu_length()) as usize)
+                .with_flight_timing(config.cov_flight_timing()),
         ));
         let seg_ack_senders = Arc::new(segmented_send::SegmentedSendRegistry::default());
         let seg_send_permits = Arc::new(Semaphore::new(MAX_SEG_SENDERS));
@@ -167,10 +170,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             request_tasks: Arc::clone(&request_tasks),
         };
         // A Schedule tick that writes a Command's Present_Value starts its list.
-        let schedule_runner = super::command_runs::CommandRunner::new(
+        let command_runs = super::command_runs::CommandRunner::new(
             &dispatch_context.services,
             &request_tasks.spawner(),
         );
+        let timer_runner = command_runs.clone(); // A Timer's expiry starts its writes (#2206).
         let dispatch_task = spawn_owned(audit_owner.clone(), move || async move {
             let mut seg_receivers: HashMap<SegRecvKey, SegmentedRequestState> = HashMap::new();
             let mut notifications_open = true;
@@ -185,14 +189,18 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             loop {
                 requests.reap_finished();
                 // Drain all selected ownership before the first asynchronous Abort.
-                Self::reap_expired_requests(
-                    &network_dispatch,
-                    &mut seg_receivers,
-                    runtime_clock::now(),
-                    receive_timeout,
-                )
-                .await;
-                let received = tokio::select! {
+                // With no reassembly open nothing can expire, so the clock
+                // isn't read (#1978 item 6).
+                if !seg_receivers.is_empty() {
+                    Self::reap_expired_requests(
+                        &network_dispatch,
+                        &mut seg_receivers,
+                        runtime_clock::now(),
+                        receive_timeout,
+                    )
+                    .await;
+                }
+                let mut received = tokio::select! {
                     () = super::segmented_receive::wait_receive_deadline(&seg_receivers, receive_timeout), if !seg_receivers.is_empty() => continue,
                     result = notification_transactions_dispatch.join_next(), if notifications_open => {
                         notifications_open = result.is_some();
@@ -218,13 +226,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 };
                 // Input and the timer can become ready together. Apply expiry
                 // before interpreting this segment in either scheduling order.
-                Self::reap_expired_requests(
-                    &network_dispatch,
-                    &mut seg_receivers,
-                    runtime_clock::now(),
-                    receive_timeout,
-                )
-                .await;
+                if !seg_receivers.is_empty() {
+                    Self::reap_expired_requests(
+                        &network_dispatch,
+                        &mut seg_receivers,
+                        runtime_clock::now(),
+                        receive_timeout,
+                    )
+                    .await;
+                }
 
                 match apdu::decode_apdu(received.apdu.clone()) {
                     Ok(decoded) => {
@@ -261,8 +271,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                         {
                             continue;
                         }
-                        let source_mac = received.source_mac.clone();
-                        let source_network = received.source_network.clone();
+                        let source_mac = MacAddr::from_slice(&received.source_mac);
 
                         // Clause 5.4.5.2 AbortPDU_Received: a peer's Abort
                         // ('server' = FALSE) ends any reassembly session for
@@ -270,262 +279,141 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                         // circuit — the PDU still reaches `dispatch`, whose
                         // Abort arm cancels in-flight segmented response
                         // senders and records server-TSM results (#377).
-                        // Provenance snapshot for this ingress (RB-07, by value).
-                        let provenance = received.provenance.clone();
-                        let route = received.response_route();
                         super::segmented_receive::remove_peer_aborted_request(
                             &mut seg_receivers,
                             &received,
                             &decoded,
                         );
 
-                        let mut received = Some(received);
-                        let handled = if let Apdu::ConfirmedRequest(ref req) = decoded {
-                            if req.segmented {
-                                let seq = req.sequence_number.unwrap_or(0);
-                                let key = segmented_receive_key(
-                                    source_mac.as_slice(),
-                                    source_network.as_ref(),
-                                    req.invoke_id,
-                                    provenance.clone(),
-                                );
-                                if let Some(conflict) =
-                                    super::segmented_receive::find_receive_provenance_conflict(
-                                        &seg_receivers,
-                                        &key,
-                                    )
-                                {
-                                    seg_receivers.remove(&conflict);
-                                    warn_throttled!(
-                                        segment_warning,
-                                        invoke_id = req.invoke_id,
-                                        "Aborting segmented request on provenance mismatch (fail-closed)"
-                                    );
-                                    Self::send_server_abort(
-                                        &network_dispatch,
-                                        &source_mac,
-                                        source_network.as_ref(),
-                                        &route,
-                                        req.invoke_id,
-                                        AbortReason::INVALID_APDU_IN_THIS_STATE,
-                                    )
-                                    .await;
-                                    continue;
-                                }
-
-                                if !Self::accept_segment_route(
-                                    &network_dispatch,
-                                    &mut seg_receivers,
+                        if let Apdu::ConfirmedRequest(ref req) = decoded
+                            && req.segmented
+                        {
+                            // Only segment reassembly needs the addressing
+                            // here; `dispatch` takes its own response route
+                            // from `received` (#1978).
+                            let source_network = received.source_network.clone();
+                            // Provenance snapshot for this ingress (RB-07, by value).
+                            let provenance = received.provenance.clone();
+                            let route = received.response_route();
+                            let seq = req.sequence_number.unwrap_or(0);
+                            let key = segmented_receive_key(
+                                source_mac.as_slice(),
+                                source_network.as_ref(),
+                                req.invoke_id,
+                                provenance.clone(),
+                            );
+                            if let Some(conflict) =
+                                super::segmented_receive::find_receive_provenance_conflict(
+                                    &seg_receivers,
                                     &key,
-                                    &route,
                                 )
-                                .await
-                                {
-                                    continue;
-                                }
+                            {
+                                seg_receivers.remove(&conflict);
+                                warn_throttled!(
+                                    segment_warning,
+                                    invoke_id = req.invoke_id,
+                                    "Aborting segmented request on provenance mismatch (fail-closed)"
+                                );
+                                Self::send_server_abort(
+                                    &network_dispatch,
+                                    &source_mac,
+                                    source_network.as_ref(),
+                                    &route,
+                                    req.invoke_id,
+                                    AbortReason::INVALID_APDU_IN_THIS_STATE,
+                                )
+                                .await;
+                                continue;
+                            }
 
-                                // Clause 5.4.5.1
-                                // ConfirmedSegmentedReceivedNotSupported: a
-                                // device that does not support segmented
-                                // reception answers segment traffic with this
-                                // Abort instead of reassembling — the
-                                // configured Segmentation value is the
-                                // advertisement peers plan transfers around
-                                // (#381).
-                                let receives_segments = config_dispatch.device.segmentation()
-                                    == Segmentation::BOTH
-                                    || config_dispatch.device.segmentation()
-                                        == Segmentation::RECEIVE;
-                                if !receives_segments {
-                                    Self::send_server_abort(
-                                        &network_dispatch,
-                                        &source_mac,
-                                        source_network.as_ref(),
-                                        &route,
-                                        req.invoke_id,
-                                        AbortReason::SEGMENTATION_NOT_SUPPORTED,
-                                    )
-                                    .await;
-                                    continue;
-                                }
+                            if !Self::accept_segment_route(
+                                &network_dispatch,
+                                &mut seg_receivers,
+                                &key,
+                                &route,
+                            )
+                            .await
+                            {
+                                continue;
+                            }
 
-                                let mut ack_to_send: Option<SegmentAckPdu> = None;
-                                let mut final_total: Option<usize> = None;
+                            // Clause 5.4.5.1
+                            // ConfirmedSegmentedReceivedNotSupported: a
+                            // device that does not support segmented
+                            // reception answers segment traffic with this
+                            // Abort instead of reassembling — the
+                            // configured Segmentation value is the
+                            // advertisement peers plan transfers around
+                            // (#381).
+                            let receives_segments = config_dispatch.device.segmentation()
+                                == Segmentation::BOTH
+                                || config_dispatch.device.segmentation() == Segmentation::RECEIVE;
+                            if !receives_segments {
+                                Self::send_server_abort(
+                                    &network_dispatch,
+                                    &source_mac,
+                                    source_network.as_ref(),
+                                    &route,
+                                    req.invoke_id,
+                                    AbortReason::SEGMENTATION_NOT_SUPPORTED,
+                                )
+                                .await;
+                                continue;
+                            }
 
-                                // The live session is consulted before the
-                                // `seq == 0` open path: Clause 20.1.2.7 wraps
-                                // the sequence number modulo 256, so segment
-                                // 256 of a long request arrives as another
-                                // `seq == 0` — treating it as a fresh initial
-                                // segment would silently replace the session
-                                // and reassemble only the tail (#364).
-                                let saved_bytes =
-                                    super::segmented_receive::saved_request_payload_bytes(
-                                        &seg_receivers,
-                                    );
-                                if let Some(state) = seg_receivers.get_mut(&key) {
-                                    // Compat-mode live read: key isolates
-                                    // contexts; snapshot must match the key.
-                                    debug_assert_eq!(state.provenance, provenance);
-                                    // Clause 5.4.5.2 restarts SegmentTimer
-                                    // for accepted, duplicate and
-                                    // out-of-order segments alike, so the
-                                    // refresh precedes the ordering checks.
-                                    state.last_activity = runtime_clock::now();
-                                    if seq != state.expected_seq {
-                                        ack_to_send =
-                                            super::segmented_receive::classify_non_next_segment(
-                                                state,
-                                                req.invoke_id,
-                                                seq,
-                                                segment_warning,
-                                            );
-                                    } else {
-                                        // In-order NEW segment: duplicates
-                                        // and gaps returned above, so a
-                                        // retransmission can never trip the
-                                        // cap (Clause 5.4.5.2
-                                        // DuplicateSegmentReceived requires
-                                        // duplicates be discarded, not
-                                        // punished).
-                                        if state.accepted_segments >= MAX_REQUEST_SEGMENTS {
-                                            // Clause 5.4.5.2 has no overflow
-                                            // transition; SendAbort ('server'
-                                            // = TRUE, reason a local matter)
-                                            // is its one generic escape, and
-                                            // Clause 18.10's BUFFER_OVERFLOW
-                                            // fits a reassembly that exceeds
-                                            // available buffer capacity (#364).
-                                            warn_throttled!(
-                                                segment_warning,
-                                                invoke_id = req.invoke_id,
-                                                accepted = state.accepted_segments,
-                                                "Segmented request exceeds reassembly capacity, aborting"
-                                            );
-                                            seg_receivers.remove(&key);
-                                            Self::send_server_abort(
-                                                &network_dispatch,
-                                                &source_mac,
-                                                source_network.as_ref(),
-                                                &route,
-                                                req.invoke_id,
-                                                AbortReason::BUFFER_OVERFLOW,
-                                            )
-                                            .await;
-                                            continue;
-                                        }
-                                        if let Err(e) = state.payload.save_new(
+                            let mut ack_to_send: Option<SegmentAckPdu> = None;
+                            let mut final_total: Option<usize> = None;
+
+                            // The live session is consulted before the
+                            // `seq == 0` open path: Clause 20.1.2.7 wraps
+                            // the sequence number modulo 256, so segment
+                            // 256 of a long request arrives as another
+                            // `seq == 0` — treating it as a fresh initial
+                            // segment would silently replace the session
+                            // and reassemble only the tail (#364).
+                            let saved_bytes = super::segmented_receive::saved_request_payload_bytes(
+                                &seg_receivers,
+                            );
+                            if let Some(state) = seg_receivers.get_mut(&key) {
+                                // Compat-mode live read: key isolates
+                                // contexts; snapshot must match the key.
+                                debug_assert_eq!(state.provenance, provenance);
+                                // Clause 5.4.5.2 restarts SegmentTimer
+                                // for accepted, duplicate and
+                                // out-of-order segments alike, so the
+                                // refresh precedes the ordering checks.
+                                state.last_activity = runtime_clock::now();
+                                if seq != state.expected_seq {
+                                    ack_to_send =
+                                        super::segmented_receive::classify_non_next_segment(
+                                            state,
+                                            req.invoke_id,
                                             seq,
-                                            req.service_request.clone(),
-                                            saved_bytes,
-                                        ) {
-                                            // An unsaveable segment ends the
-                                            // session the same way — leaving
-                                            // it dangling told the peer
-                                            // nothing while this side could
-                                            // never complete (#364).
-                                            warn_throttled!(
-                                                segment_warning,
-                                                error = %e,
-                                                "Rejecting unsaveable segment"
-                                            );
-                                            seg_receivers.remove(&key);
-                                            Self::send_server_abort(
-                                                &network_dispatch,
-                                                &source_mac,
-                                                source_network.as_ref(),
-                                                &route,
-                                                req.invoke_id,
-                                                AbortReason::BUFFER_OVERFLOW,
-                                            )
-                                            .await;
-                                            continue;
-                                        }
-                                        state.last_progress = runtime_clock::now();
-                                        state.accepted_segments += 1;
-                                        state.expected_seq = seq.wrapping_add(1);
-                                        state.last_acked_seq = seq;
-                                        state.window_pos += 1;
-                                        let should_ack = !req.more_follows
-                                            || state.window_pos >= state.actual_window_size;
-                                        if should_ack {
-                                            state.window_pos = 0;
-                                            state.initial_sequence_number = state.last_acked_seq;
-                                            state.duplicate_count = 0;
-                                            ack_to_send = Some(SegmentAckPdu {
-                                                negative_ack: false,
-                                                sent_by_server: true,
-                                                invoke_id: req.invoke_id,
-                                                sequence_number: seq,
-                                                actual_window_size: state.actual_window_size,
-                                            });
-                                        }
-                                        if !req.more_follows {
-                                            // The count, not `seq + 1`: the
-                                            // wire sequence number is modulo
-                                            // 256 (Clause 20.1.2.7) and says
-                                            // nothing about how many segments
-                                            // were accepted (#364).
-                                            final_total = Some(state.accepted_segments);
-                                        }
-                                    }
-                                } else if seq == 0 {
-                                    let proposed_window_size =
-                                        req.proposed_window_size.unwrap_or(0);
-                                    if !(1..=127).contains(&proposed_window_size) {
+                                            segment_warning,
+                                        );
+                                } else {
+                                    // In-order NEW segment: duplicates
+                                    // and gaps returned above, so a
+                                    // retransmission can never trip the
+                                    // cap (Clause 5.4.5.2
+                                    // DuplicateSegmentReceived requires
+                                    // duplicates be discarded, not
+                                    // punished).
+                                    if state.accepted_segments >= MAX_REQUEST_SEGMENTS {
+                                        // Clause 5.4.5.2 has no overflow
+                                        // transition; SendAbort ('server'
+                                        // = TRUE, reason a local matter)
+                                        // is its one generic escape, and
+                                        // Clause 18.10's BUFFER_OVERFLOW
+                                        // fits a reassembly that exceeds
+                                        // available buffer capacity (#364).
                                         warn_throttled!(
                                             segment_warning,
                                             invoke_id = req.invoke_id,
-                                            proposed_window_size,
-                                            "Rejecting segmented request with invalid proposed window size"
+                                            accepted = state.accepted_segments,
+                                            "Segmented request exceeds reassembly capacity, aborting"
                                         );
-                                        Self::send_server_abort(
-                                            &network_dispatch,
-                                            &source_mac,
-                                            source_network.as_ref(),
-                                            &route,
-                                            req.invoke_id,
-                                            AbortReason::WINDOW_SIZE_OUT_OF_RANGE,
-                                        )
-                                        .await;
-                                        continue;
-                                    }
-
-                                    // New sessions only; global capacity precedes peer quota.
-                                    if let Some(reason) =
-                                        super::segmented_receive::segmented_request_admission_error(
-                                            &seg_receivers,
-                                            &key,
-                                        )
-                                    {
-                                        Self::send_server_abort(
-                                            &network_dispatch,
-                                            &source_mac,
-                                            source_network.as_ref(),
-                                            &route,
-                                            req.invoke_id,
-                                            reason,
-                                        )
-                                        .await;
-                                        continue;
-                                    }
-
-                                    let mut payload =
-                                        super::segmented_receive::RequestPayload::new(req);
-                                    if let Err(e) = payload.save_new(
-                                        seq,
-                                        req.service_request.clone(),
-                                        saved_bytes,
-                                    ) {
-                                        // No session exists to drop on this
-                                        // path; the Abort is what tells the
-                                        // peer instead of leaving it to time
-                                        // out (#364).
-                                        warn_throttled!(
-                                            segment_warning,
-                                            error = %e,
-                                            "Rejecting unsaveable segment"
-                                        );
+                                        seg_receivers.remove(&key);
                                         Self::send_server_abort(
                                             &network_dispatch,
                                             &source_mac,
@@ -537,25 +425,69 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                         .await;
                                         continue;
                                     }
-                                    let (state, initial_ack) =
-                                        super::segmented_receive::initial_state(
-                                            payload,
-                                            route.clone(),
-                                            source_mac.clone(),
-                                            source_network.clone(),
-                                            req,
+                                    if let Err(e) = state.payload.save_new(
+                                        seq,
+                                        req.service_request.clone(),
+                                        saved_bytes,
+                                    ) {
+                                        // An unsaveable segment ends the
+                                        // session the same way — leaving
+                                        // it dangling told the peer
+                                        // nothing while this side could
+                                        // never complete (#364).
+                                        warn_throttled!(
+                                            segment_warning,
+                                            error = %e,
+                                            "Rejecting unsaveable segment"
                                         );
-                                    ack_to_send = initial_ack;
-                                    if !req.more_follows {
-                                        final_total = Some(1);
+                                        seg_receivers.remove(&key);
+                                        Self::send_server_abort(
+                                            &network_dispatch,
+                                            &source_mac,
+                                            source_network.as_ref(),
+                                            &route,
+                                            req.invoke_id,
+                                            AbortReason::BUFFER_OVERFLOW,
+                                        )
+                                        .await;
+                                        continue;
                                     }
-                                    seg_receivers.insert(key.clone(), state);
-                                } else {
+                                    state.last_progress = runtime_clock::now();
+                                    state.accepted_segments += 1;
+                                    state.expected_seq = seq.wrapping_add(1);
+                                    state.last_acked_seq = seq;
+                                    state.window_pos += 1;
+                                    let should_ack = !req.more_follows
+                                        || state.window_pos >= state.actual_window_size;
+                                    if should_ack {
+                                        state.window_pos = 0;
+                                        state.initial_sequence_number = state.last_acked_seq;
+                                        state.duplicate_count = 0;
+                                        ack_to_send = Some(SegmentAckPdu {
+                                            negative_ack: false,
+                                            sent_by_server: true,
+                                            invoke_id: req.invoke_id,
+                                            sequence_number: seq,
+                                            actual_window_size: state.actual_window_size,
+                                        });
+                                    }
+                                    if !req.more_follows {
+                                        // The count, not `seq + 1`: the
+                                        // wire sequence number is modulo
+                                        // 256 (Clause 20.1.2.7) and says
+                                        // nothing about how many segments
+                                        // were accepted (#364).
+                                        final_total = Some(state.accepted_segments);
+                                    }
+                                }
+                            } else if seq == 0 {
+                                let proposed_window_size = req.proposed_window_size.unwrap_or(0);
+                                if !(1..=127).contains(&proposed_window_size) {
                                     warn_throttled!(
                                         segment_warning,
                                         invoke_id = req.invoke_id,
-                                        seq = seq,
-                                        "Received non-initial segment without prior segment 0, aborting"
+                                        proposed_window_size,
+                                        "Rejecting segmented request with invalid proposed window size"
                                     );
                                     Self::send_server_abort(
                                         &network_dispatch,
@@ -563,85 +495,138 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                         source_network.as_ref(),
                                         &route,
                                         req.invoke_id,
-                                        AbortReason::INVALID_APDU_IN_THIS_STATE,
+                                        AbortReason::WINDOW_SIZE_OUT_OF_RANGE,
                                     )
                                     .await;
                                     continue;
                                 }
 
-                                if let Some(seg_ack) = ack_to_send {
-                                    let seg_ack = Apdu::SegmentAck(seg_ack);
-                                    let mut ack_buf = BytesMut::new();
-                                    encode_apdu(&mut ack_buf, &seg_ack)
-                                        .expect("valid APDU encoding");
-                                    if let Err(e) = Self::send_confirmed_response_apdu(
+                                // New sessions only; global capacity precedes peer quota.
+                                if let Some(reason) =
+                                    super::segmented_receive::segmented_request_admission_error(
+                                        &seg_receivers,
+                                        &key,
+                                    )
+                                {
+                                    Self::send_server_abort(
                                         &network_dispatch,
-                                        &ack_buf,
                                         &source_mac,
                                         source_network.as_ref(),
                                         &route,
+                                        req.invoke_id,
+                                        reason,
                                     )
-                                    .await
-                                    {
-                                        warn!(
+                                    .await;
+                                    continue;
+                                }
+
+                                let mut payload =
+                                    super::segmented_receive::RequestPayload::new(req);
+                                if let Err(e) =
+                                    payload.save_new(seq, req.service_request.clone(), saved_bytes)
+                                {
+                                    // No session exists to drop on this
+                                    // path; the Abort is what tells the
+                                    // peer instead of leaving it to time
+                                    // out (#364).
+                                    warn_throttled!(
+                                        segment_warning,
+                                        error = %e,
+                                        "Rejecting unsaveable segment"
+                                    );
+                                    Self::send_server_abort(
+                                        &network_dispatch,
+                                        &source_mac,
+                                        source_network.as_ref(),
+                                        &route,
+                                        req.invoke_id,
+                                        AbortReason::BUFFER_OVERFLOW,
+                                    )
+                                    .await;
+                                    continue;
+                                }
+                                let (state, initial_ack) = super::segmented_receive::initial_state(
+                                    payload,
+                                    route.clone(),
+                                    source_mac.clone(),
+                                    source_network.clone(),
+                                    req,
+                                );
+                                ack_to_send = initial_ack;
+                                if !req.more_follows {
+                                    final_total = Some(1);
+                                }
+                                seg_receivers.insert(key.clone(), state);
+                            } else {
+                                warn_throttled!(
+                                    segment_warning,
+                                    invoke_id = req.invoke_id,
+                                    seq = seq,
+                                    "Received non-initial segment without prior segment 0, aborting"
+                                );
+                                Self::send_server_abort(
+                                    &network_dispatch,
+                                    &source_mac,
+                                    source_network.as_ref(),
+                                    &route,
+                                    req.invoke_id,
+                                    AbortReason::INVALID_APDU_IN_THIS_STATE,
+                                )
+                                .await;
+                                continue;
+                            }
+
+                            if let Some(seg_ack) = ack_to_send {
+                                let seg_ack = Apdu::SegmentAck(seg_ack);
+                                let mut ack_buf = BytesMut::new();
+                                encode_apdu(&mut ack_buf, &seg_ack).expect("valid APDU encoding");
+                                if let Err(e) = Self::send_confirmed_response_apdu(
+                                    &network_dispatch,
+                                    &ack_buf,
+                                    &source_mac,
+                                    source_network.as_ref(),
+                                    &route,
+                                )
+                                .await
+                                {
+                                    warn!(
+                                        error = %e,
+                                        "Failed to send SegmentAck for segmented request"
+                                    );
+                                }
+                            }
+
+                            if let Some(total) = final_total
+                                && let Some(state) = seg_receivers.remove(&key)
+                            {
+                                received.set_response_route(state.route);
+                                match state.payload.complete(total) {
+                                    Ok(reassembled) => {
+                                        debug!(
+                                            invoke_id = reassembled.invoke_id,
+                                            segments = total,
+                                            payload_len = reassembled.service_request.len(),
+                                            "Reassembled segmented ConfirmedRequest"
+                                        );
+                                        Self::dispatch(
+                                            &dispatch_context,
+                                            &source_mac,
+                                            Apdu::ConfirmedRequest(reassembled),
+                                            received,
+                                        )
+                                        .await;
+                                    }
+                                    Err(e) => {
+                                        warn_throttled!(
+                                            segment_warning,
                                             error = %e,
-                                            "Failed to send SegmentAck for segmented request"
+                                            "Failed to reassemble segmented request"
                                         );
                                     }
                                 }
-
-                                if let Some(total) = final_total
-                                    && let Some(state) = seg_receivers.remove(&key)
-                                {
-                                    if let Some(envelope) = received.as_mut() {
-                                        envelope.set_response_route(state.route.clone());
-                                    }
-                                    match state.payload.complete(total) {
-                                        Ok(reassembled) => {
-                                            debug!(
-                                                invoke_id = reassembled.invoke_id,
-                                                segments = total,
-                                                payload_len = reassembled.service_request.len(),
-                                                "Reassembled segmented ConfirmedRequest"
-                                            );
-                                            Self::dispatch(
-                                                    &dispatch_context,
-                                                    &source_mac,
-                                                    Apdu::ConfirmedRequest(reassembled),
-                                                    received.take().unwrap_or_else(
-                                                        super::segmented_receive::empty_reassembled_envelope,
-                                                    ),
-                                                )
-                                                .await;
-                                        }
-                                        Err(e) => {
-                                            warn_throttled!(
-                                                segment_warning,
-                                                error = %e,
-                                                "Failed to reassemble segmented request"
-                                            );
-                                        }
-                                    }
-                                }
-
-                                true
-                            } else {
-                                false
                             }
                         } else {
-                            false
-                        };
-
-                        if !handled {
-                            Self::dispatch(
-                                &dispatch_context,
-                                &source_mac,
-                                decoded,
-                                received.take().unwrap_or_else(
-                                    super::segmented_receive::empty_reassembled_envelope,
-                                ),
-                            )
-                            .await;
+                            Self::dispatch(&dispatch_context, &source_mac, decoded, received).await;
                         }
                     }
                     Err(e) => {
@@ -730,8 +715,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                         device_bindings: Arc::clone(&device_bindings),
                         suppressions: Arc::clone(&event_suppressions),
                         period: ee_period,
-                        retry_ms: config.cov_retry_timeout_ms,
-                        local_apdu_capacity: u32::from(config.device.max_apdu_length()),
+                        config: Arc::clone(&config),
                     },
                 ),
             )
@@ -759,7 +743,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     }
                 };
                 schedule_fanout.fire(&committed).await;
-                schedule_runner.start(committed.command_runs);
+                command_runs.start(committed.command_runs);
             }
         }));
 
@@ -798,11 +782,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             cov_fanout.clone().run_revisits()
         }));
 
-        let binary_lighting_operation_task = Some(
-            super::binary_lighting_lifecycle::spawn_binary_lighting_operation_task(
-                cov_fanout, monotonic,
-            ),
-        );
+        let binary_lighting_operation_task =
+            Some(spawn_operation(cov_fanout, monotonic, timer_runner));
 
         let broadcaster = super::broadcaster::BroadcasterState::new(
             &network,

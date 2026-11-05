@@ -182,9 +182,9 @@ fn rpm_network_port_configured_profile_wire_bytes_and_dns_indices() {
         }
         .encode(&mut request)
         .unwrap();
-        let mut legacy = BytesMut::new();
-        handle_read_property_multiple(&db, &request, &mut legacy).unwrap();
-        let ack = ReadPropertyMultipleACK::decode(&legacy).unwrap();
+        let mut unlimited = BytesMut::new();
+        handle_read_property_multiple(&db, &request, &mut unlimited).unwrap();
+        let ack = ReadPropertyMultipleACK::decode(&unlimited).unwrap();
         assert_eq!(ack.list_of_read_access_results.len(), 1);
         let access = &ack.list_of_read_access_results[0];
         assert_eq!(access.object_identifier, oid);
@@ -232,21 +232,22 @@ fn rpm_network_port_configured_profile_wire_bytes_and_dns_indices() {
                 }
             }
         }
-        use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
-        let budget = crate::server::ReadPropertyMultipleBudget {
+        use crate::handlers::rpm_budget::handle_rpm_budgeted;
+        use bacnet_device_core::read::ReadFailure;
+        let budget = bacnet_device_core::read::ReadPropertyMultipleBudget {
             max_result_elements: cases.len(),
-            max_service_ack_bytes: legacy.len(),
+            max_service_ack_bytes: unlimited.len(),
         };
         let mut bounded = BytesMut::new();
         handle_rpm_budgeted(&db, &request, &mut bounded, budget).unwrap();
-        assert_eq!(bounded, legacy);
+        assert_eq!(bounded, unlimited);
         let mut prefix = BytesMut::from(&b"prefix"[..]);
         assert!(matches!(
             handle_rpm_budgeted(
                 &db,
                 &request,
                 &mut prefix,
-                crate::server::ReadPropertyMultipleBudget {
+                bacnet_device_core::read::ReadPropertyMultipleBudget {
                     max_result_elements: cases.len() - 1,
                     ..budget
                 }
@@ -259,8 +260,8 @@ fn rpm_network_port_configured_profile_wire_bytes_and_dns_indices() {
                 &db,
                 &request,
                 &mut prefix,
-                crate::server::ReadPropertyMultipleBudget {
-                    max_service_ack_bytes: legacy.len() - 1,
+                bacnet_device_core::read::ReadPropertyMultipleBudget {
+                    max_service_ack_bytes: unlimited.len() - 1,
                     ..budget
                 }
             ),

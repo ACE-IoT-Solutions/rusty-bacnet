@@ -2,23 +2,28 @@
 //!
 //! A private lifecycle owner orders connection preparation and session teardown.
 //! The single `device_uuid` parameter feeds both the transport dial and the
-//! composed `DeviceIdentity` — no split identities.
+//! composed `DeviceIdentity` — no split identities. The hub link's events and
+//! status come from the session's link monitor (#1946).
+
+use std::sync::Arc;
 
 use bacnet_endpoint::identity::DeviceIdentity;
 use bacnet_endpoint::sc::ScEndpointBuilder;
 use bacnet_endpoint::session::{EndpointSession, SessionRole};
+use bacnet_transport::sc::{ScHubDialer, ScLinkMonitor, ScReconnectConfig};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::endpoint::common::{
     PendingObject, build_database, build_identity, build_pending_boxes, lifecycle_error,
-    make_analog_input, make_analog_value, make_binary_input, make_binary_value, parse_device_uuid,
-    parse_read_work_limit, parse_segmentation, parse_services, pending_group, with_sc_port,
+    parse_device_uuid, parse_read_work_limit, parse_segmentation, parse_services, pending_group,
+    with_sc_port,
 };
 use crate::endpoint::lifecycle::Lifecycle;
 use crate::endpoint::roles::{PyEndpointClient, PyEndpointServer};
 use crate::errors::to_py_err;
+use crate::sc_events::{FirstScEvents, PyScEventIterator, PyScLinkStatus};
 use crate::types::{PyReadAccessSpec, PySegmentation};
 
 type ScSession =
@@ -42,10 +47,24 @@ struct ScEndpointConfig {
     reinitialize: crate::reinitialize::EndpointReinitialize,
     /// The `device_write_policy` callable, if any (#2033).
     device_writes: crate::mutation_policy::DeviceWritePolicy,
+    /// The source Audit Reporter keywords, if any (#2357).
+    source_audit: Option<super::source_audit::SourceAuditKeywords>,
+    /// The `reconnect` keyword's policy, if any (#1946).
+    reconnect: Option<ScReconnectConfig>,
+    /// The `sc_failover_hub` URL, if any; needs `reconnect`.
+    failover_hub: Option<String>,
+    /// The `sc_connect_timeout_ms` bound, if given; the dialer's 10 s if not.
+    connect_timeout_ms: Option<u64>,
 }
 
 impl ScEndpointConfig {
-    async fn prepare(self, objects: Vec<PendingObject>) -> PyResult<ScSession> {
+    /// Dial the hub through the shared SC hub dialer and compose the session,
+    /// keeping an event receiver subscribed before the lifecycle starts it.
+    async fn prepare(
+        self,
+        objects: Vec<PendingObject>,
+        first_events: Arc<FirstScEvents>,
+    ) -> PyResult<ScSession> {
         let config = self;
         let tls_config = crate::tls::build_client_tls_config(
             Some(config.ca_cert.as_str()),
@@ -53,21 +72,41 @@ impl ScEndpointConfig {
             Some(config.client_key.as_str()),
         )
         .map_err(|e| PyRuntimeError::new_err(format!("TLS config error: {e}")))?;
-        let ws = bacnet_transport::sc_tls::TlsWebSocket::connect(&config.hub_url, tls_config)
-            .await
-            .map_err(to_py_err)?;
         let boxes = build_pending_boxes(&objects)?;
-        let db = build_database(&config.identity, boxes)?;
-        let session = ScEndpointBuilder::new(config.vmac, config.device_uuid)
+        let mut db = build_database(&config.identity, boxes)?;
+        if let Some(source) = &config.source_audit {
+            source.provision(&config.identity, &mut db)?;
+        }
+        let mut hubs = ScHubDialer::new(&config.hub_url, tls_config);
+        if let Some(url) = &config.failover_hub {
+            hubs = hubs.failover_url(url);
+        }
+        if let Some(ms) = config.connect_timeout_ms {
+            hubs = hubs.connect_timeout_ms(ms);
+        }
+        let mut builder = ScEndpointBuilder::new(config.vmac, config.device_uuid)
             .role(SessionRole::Both)
             .queue_capacity(config.queue_capacity)
             .read_work_limit(config.read_work_limit)
             .min_request_interval_ms(config.min_request_interval_ms)
             .heartbeat(config.heartbeat_interval_ms, config.heartbeat_timeout_ms)
             .database(db)
-            .device(config.identity.clone())
-            .build_hub_session(ws)
+            .device(config.identity.clone());
+        if let Some(reconnect) = config.reconnect.clone() {
+            builder = builder.reconnect(reconnect);
+        }
+        let session = Box::pin(builder.connect_hub_session(hubs))
+            .await
             .map_err(to_py_err)?;
+        // Subscribed before the lifecycle starts the session, so the first
+        // connection_events() call sees the first connected (#1908).
+        if let Some(link) = session.sc_link() {
+            first_events.keep(link.connection_events());
+        }
+        let session = match &config.source_audit {
+            Some(source) => source.select(session),
+            None => session,
+        };
         let session = config.device_writes.install(session);
         Ok(config.reinitialize.install(session))
     }
@@ -85,6 +124,21 @@ impl ScEndpointConfig {
 pub struct PyScEndpoint {
     lifecycle: Lifecycle<ScSession, PendingObject>,
     config: ScEndpointConfig,
+    /// Each start's receiver for the first `connection_events()` call; the
+    /// next start replaces one nobody took.
+    first_events: Arc<FirstScEvents>,
+}
+
+/// The started session's hub link; RuntimeError before start or after close.
+async fn sc_link(session: &tokio::sync::Mutex<Option<ScSession>>) -> PyResult<ScLinkMonitor> {
+    session
+        .lock()
+        .await
+        .as_ref()
+        .and_then(EndpointSession::sc_link)
+        .ok_or_else(|| {
+            PyRuntimeError::new_err("endpoint not started — use 'async with' or await start()")
+        })
 }
 
 impl PyScEndpoint {
@@ -105,6 +159,8 @@ impl PyScEndpoint {
             .join(":")
     }
 }
+
+super::builders::endpoint_builders!(PyScEndpoint);
 
 #[pymethods]
 impl PyScEndpoint {
@@ -145,6 +201,18 @@ impl PyScEndpoint {
     ///         `MutationContext` and returns a bool, with the fail-closed
     ///         rules of `BACnetServer`'s `mutation_policy` callable. Without
     ///         it the endpoint executes no WriteProperty.
+    ///     source_audit_reporter / audit_recipient / audit_device_bindings:
+    ///         Keyword-only, as on `BipEndpoint` (#2348, #2357), each binding
+    ///         address a VMAC as `local_address()` gives it
+    ///         (`"xx:xx:xx:xx:xx:xx"`) or as twelve hex digits, or a routed
+    ///         `"network:0xMAC"` (#2371). An address
+    ///         `audit_recipient` takes another node's VMAC: never the
+    ///         broadcast or all-zero VMAC or this endpoint's own.
+    ///     reconnect / sc_failover_hub / sc_connect_timeout_ms: Keyword-only
+    ///         (default None), named and checked as on `BACnetClient`
+    ///         (#1946): an `ScReconnect` to redial a lost hub, a failover
+    ///         hub's URL (needs `reconnect`), and a bound of at least 1 ms
+    ///         on each hub dial and Connect-Request (default 10000).
     #[new]
     #[pyo3(signature = (
         device_instance,
@@ -170,7 +238,13 @@ impl PyScEndpoint {
         on_reinitialize=None,
         after_reinitialize=None,
         reinit_password=None,
-        device_write_policy=None
+        device_write_policy=None,
+        source_audit_reporter=None,
+        audit_recipient=None,
+        audit_device_bindings=None,
+        reconnect=None,
+        sc_failover_hub=None,
+        sc_connect_timeout_ms=None
     ))]
     fn new(
         device_instance: u32,
@@ -196,6 +270,12 @@ impl PyScEndpoint {
         after_reinitialize: Option<&Bound<'_, PyAny>>,
         reinit_password: Option<String>,
         device_write_policy: Option<&Bound<'_, PyAny>>,
+        source_audit_reporter: Option<crate::types::PyObjectIdentifier>,
+        audit_recipient: Option<&Bound<'_, PyAny>>,
+        audit_device_bindings: Option<Vec<(crate::types::PyObjectIdentifier, String)>>,
+        reconnect: Option<PyRef<'_, crate::sc_reconnect::PyScReconnect>>,
+        sc_failover_hub: Option<String>,
+        sc_connect_timeout_ms: Option<u64>,
     ) -> PyResult<Self> {
         let reinitialize = crate::reinitialize::EndpointReinitialize::parse(
             on_reinitialize,
@@ -211,6 +291,12 @@ impl PyScEndpoint {
         let read_work_limit = parse_read_work_limit(read_work_limit)?;
         let min_request_interval_ms =
             crate::client::parse_min_request_interval_ms(min_request_interval_ms)?;
+        crate::sc_reconnect::hub_options(
+            "sc",
+            reconnect.is_some(),
+            sc_failover_hub.as_deref(),
+            sc_connect_timeout_ms,
+        )?;
         // Credential presence first (mirrors hub/client ordering).
         crate::tls::required_sc_credentials(
             (!sc_ca_cert.is_empty()).then_some(sc_ca_cert),
@@ -259,6 +345,14 @@ impl PyScEndpoint {
         )
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
         let identity = with_sc_port(identity, network_port_instance, network_number, vmac)?;
+        let source_audit = super::source_audit::SourceAuditKeywords::parse(
+            source_audit_reporter,
+            audit_recipient,
+            audit_device_bindings,
+            device_instance,
+            super::source_audit::AuditLink::Sc(vmac),
+            device_writes.enabled(),
+        )?;
         Ok(Self {
             lifecycle: Lifecycle::new(),
             config: ScEndpointConfig {
@@ -276,7 +370,12 @@ impl PyScEndpoint {
                 min_request_interval_ms,
                 reinitialize,
                 device_writes,
+                source_audit,
+                reconnect: reconnect.map(|options| options.config.clone()),
+                failover_hub: sc_failover_hub,
+                connect_timeout_ms: sc_connect_timeout_ms,
             },
+            first_events: Arc::default(),
         })
     }
 
@@ -285,82 +384,6 @@ impl PyScEndpoint {
     #[doc(hidden)]
     fn _pending_registration_count(&self) -> PyResult<usize> {
         Ok(self.lifecycle.pending_count())
-    }
-
-    /// Add an Analog Input object (before start).
-    #[pyo3(signature = (instance, name, units=62, present_value=0.0))]
-    fn add_analog_input(
-        &self,
-        instance: u32,
-        name: &str,
-        units: u32,
-        present_value: f32,
-    ) -> PyResult<()> {
-        make_analog_input(instance, name, units, present_value)?;
-        self.push_pending(PendingObject::AnalogInput {
-            instance,
-            name: name.to_string(),
-            units,
-            present_value,
-        })
-    }
-
-    /// Add an Analog Value object (before start).
-    #[pyo3(signature = (instance, name, units=62, *, audit_level=None, auditable_operations=None, audit_priority_filter=None))]
-    fn add_analog_value(
-        &self,
-        instance: u32,
-        name: &str,
-        units: u32,
-        audit_level: Option<&str>,
-        auditable_operations: Option<&Bound<'_, PyAny>>,
-        audit_priority_filter: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<()> {
-        let audit_policy = crate::object_audit_policy::parse(
-            audit_level,
-            auditable_operations,
-            audit_priority_filter,
-        )?;
-        make_analog_value(instance, name, units, audit_policy)?;
-        self.push_pending(PendingObject::AnalogValue {
-            instance,
-            audit_policy,
-            name: name.to_string(),
-            units,
-        })
-    }
-
-    /// Add a Binary Input object (before start).
-    #[pyo3(signature = (instance, name))]
-    fn add_binary_input(&self, instance: u32, name: &str) -> PyResult<()> {
-        make_binary_input(instance, name)?;
-        self.push_pending(PendingObject::BinaryInput {
-            instance,
-            name: name.to_string(),
-        })
-    }
-
-    /// Add a Binary Value object (before start).
-    #[pyo3(signature = (instance, name, *, audit_level=None, auditable_operations=None, audit_priority_filter=None))]
-    fn add_binary_value(
-        &self,
-        instance: u32,
-        name: &str,
-        audit_level: Option<&str>,
-        auditable_operations: Option<&Bound<'_, PyAny>>,
-        audit_priority_filter: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<()> {
-        let audit_policy = crate::object_audit_policy::parse(
-            audit_level,
-            auditable_operations,
-            audit_priority_filter,
-        )?;
-        make_binary_value(instance, name, audit_policy)?;
-        self.push_pending(PendingObject::BinaryValue {
-            instance,
-            audit_policy,
-            name: name.to_string(),
-        })
     }
 
     /// Add a Group object (before start); its Present_Value is rebuilt from
@@ -385,10 +408,11 @@ impl PyScEndpoint {
         crate::logging_bridge::refresh_at_start(py);
         let lifecycle = self.lifecycle.clone();
         let config = self.config.clone();
+        let first_events = Arc::clone(&self.first_events);
         config.reinitialize.bind_event_loop(py)?;
         crate::py_async::future_into_py(py, async move {
             lifecycle
-                .start(false, |objects| config.prepare(objects))
+                .start(false, |objects| config.prepare(objects, first_events))
                 .await
                 .map_err(lifecycle_error)?;
             crate::py_async::attach(|py| Ok(py.None()))
@@ -408,14 +432,18 @@ impl PyScEndpoint {
     fn __aenter__<'py>(slf: Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         crate::logging_bridge::refresh_at_start(py);
         let self_ref = slf.clone().unbind();
-        let (lifecycle, config) = {
+        let (lifecycle, config, first_events) = {
             let borrowed = slf.borrow();
-            (borrowed.lifecycle.clone(), borrowed.config.clone())
+            (
+                borrowed.lifecycle.clone(),
+                borrowed.config.clone(),
+                Arc::clone(&borrowed.first_events),
+            )
         };
         config.reinitialize.bind_event_loop(py)?;
         crate::py_async::future_into_py(py, async move {
             lifecycle
-                .start(true, |objects| config.prepare(objects))
+                .start(true, |objects| config.prepare(objects, first_events))
                 .await
                 .map_err(lifecycle_error)?;
             Ok(self_ref)
@@ -523,6 +551,35 @@ impl PyScEndpoint {
                 dict.set_item("responder_declined", snapshot.0.responder_declined)?;
                 Ok(dict.into_any().unbind())
             })
+        })
+    }
+
+    /// Subscribe to the hub-connector events (#1946): an async iterator of
+    /// `ScEvent`, as `BACnetClient.connection_events()` gives. The first call
+    /// after a start gets the events since the session was built, from its
+    /// first `connected` (#1908); each later call gets the events from that
+    /// call on. Iteration ends when the endpoint closes. Raises RuntimeError
+    /// before start or after close.
+    fn connection_events<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.lifecycle.session.clone();
+        let first_events = Arc::clone(&self.first_events);
+        crate::py_async::future_into_py(py, async move {
+            let link = sc_link(&inner).await?;
+            Ok(PyScEventIterator::new(
+                first_events
+                    .take()
+                    .unwrap_or_else(|| link.connection_events()),
+            ))
+        })
+    }
+
+    /// A snapshot of the hub link (#1946), as `BACnetClient.connection_status()`
+    /// gives: state, active hub, hub VMAC and heartbeat timing, without
+    /// network I/O. Raises RuntimeError before start or after close.
+    fn connection_status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.lifecycle.session.clone();
+        crate::py_async::future_into_py(py, async move {
+            Ok(PyScLinkStatus(sc_link(&inner).await?.connection_status()))
         })
     }
 

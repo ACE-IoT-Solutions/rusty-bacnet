@@ -2,12 +2,14 @@
 
 Rusty BACnet is a workspace of library crates implementing the BACnet protocol stack (ASHRAE 135-2020). The [installation guide](https://jscott3201.github.io/rusty-bacnet/start/installation/#add-the-rust-crates) lists the crates each release publishes to crates.io.
 
-This reference follows the `dev` branch. At the `v0.14.0` tag it describes the
-published 0.14.0 crates, which the site's tutorials also target; see
-[docs.rs](https://docs.rs/bacnet-client/0.14.0/bacnet_client/) and the
+This reference follows the `dev` branch. At the `v0.15.0` tag it describes the
+published 0.15.0 crates, which the site's tutorials also target; see
+[docs.rs](https://docs.rs/bacnet-client/0.15.0/bacnet_client/) and the
 [installation guidance](../README.md#install). Changes merged after the release
 wait in [`changelog.d/`](../changelog.d/); to use them, follow
 [Build from source](https://jscott3201.github.io/rusty-bacnet/development/overview/#build-a-source-checkout).
+From 0.15.0 the workspace uses Rust edition 2024 and needs Rust 1.95 or newer
+(#1011); consumers keep their own edition.
 
 ## Crate Dependency Order
 
@@ -18,6 +20,16 @@ bacnet-types → bacnet-encoding → bacnet-services → bacnet-transport → ba
                                                                           ↓
                                                                    bacnet-server
 ```
+
+`bacnet-device-core` sits between `bacnet-objects` and `bacnet-server`: the
+read and write paths the server runs ReadProperty, ReadPropertyMultiple,
+WriteProperty, WritePropertyMultiple, Who-Is and Who-Has through, which
+firmware can run without the server
+([bacnet-device-core](#bacnet-device-core)).
+Above them, `bacnet-endpoint` (on `bacnet-endpoint-core`) runs client and
+server roles through one transport ([bacnet-endpoint](#bacnet-endpoint)), and
+`bacnet-ops` and `bacnet-mcp` sit on `bacnet-client`
+([bacnet-ops and bacnet-mcp](#bacnet-ops-and-bacnet-mcp)).
 
 The portable `no_std` crates sit apart, below `bacnet-transport` and
 `bacnet-network`: `bacnet-time`, `bacnet-npdu` and the two codecs depend on
@@ -195,8 +207,9 @@ Core BACnet types, enums, and error definitions.
 `bacnet-types`, `bacnet-encoding` and `bacnet-services` also build without
 the standard library. With `default-features = false, features = ["alloc"]`
 they keep everything but the hosted parts, for firmware that has a global
-allocator: without `std`, `bacnet_types::bip_port` and `Error::Transport`
-don't exist, and `bacnet-encoding` logs nothing. `bytes` has to build for the
+allocator: without `std`, `Error::Transport` doesn't exist and
+`bacnet-encoding` logs nothing, and `bacnet_types::bip_port` needs atomic
+compare-and-swap on the target as well as `alloc` (#1615). `bytes` has to build for the
 target too: on one without atomic compare-and-swap, such as ARMv6-M, that
 takes its `extra-platforms` feature and a `portable-atomic` backend the
 firmware chooses.
@@ -246,6 +259,18 @@ let val = PropertyValue::Boolean(true);
 let val = PropertyValue::CharacterString("hello".into());
 let val = PropertyValue::Null;
 ```
+
+### Device text (`bacnet_types::text`)
+
+`bacnet_types::text` (#2148) is the one table of characters that device text
+must not carry onto a screen or into a document as they are: controls,
+bidirectional overrides and isolates, zero-width and other invisible format
+characters. `HIDDEN` holds the ranges, `is_hidden(ch)` tests one (the MCP
+server's envelopes drop all of them), `is_hidden_on_screen(ch)` spares the
+zero width joiner that fuses emoji sequences (the CLI, TUI and PICS use it),
+and `breaks_line(ch)` flags a control or line/paragraph separator that a
+one-line rendering shows as a space. It is a `const` table and `char`
+predicates, so it builds without `std` or `alloc`.
 
 ### Error
 
@@ -478,11 +503,12 @@ name the actual plan source after its existing generation check. Failed CreateOb
 WPM retains its successful prefix and failed coordinate.
 
 `BACnetServer::write_local` requires a final `LocalCommandSource` argument:
-`ServerDevice` or `Object(oid)`. Both require a selected concrete local Device for
+`ServerDevice` or `Object(oid)`. Both require the identity's Device object for
 tracked commands; the object form also requires an existing concrete local
 initiator under the database guard. Missing or wildcard-only Device identity and
 missing initiators fail closed. Unrelated local writes retain their behavior
-without a Device. The selected Device owns correction rights; changing the local
+without a Device. The identity's Device owns correction rights, even beside a
+lower-instance Device added later (#2227); changing the local
 initiator changes the published source but not that owner. Custom objects retain
 the default generic writer unless they implement the new hook. Writable
 decorators must forward it, as the endpoint source-reporting decorator does.
@@ -560,11 +586,11 @@ at NONE; `Value_Source_Array` and `Last_Command_Time` stay absent, since Clause
   with WRITE_ACCESS_DENIED while tracking, as a commandable command is, since
   the source it would leave can't be known.
 - `BACnetServer::write_local` names this Device, or the `LocalCommandSource`
-  object, and the Device owns the source. `set_present_value_local` calls the
-  new `set_present_value_from_internal` hook with this Device. The typed
+  object, and the Device owns the source. `set_present_value_local` hands the
+  object a `LocalInputValue::present_value_from` naming this Device. The typed
   setters (`set_present_value`, `set_color_command`, a `set_min_max` that moves
-  a Color Temperature's value, and plain `set_present_value_internal`) name no
-  writer, so they leave Value_Source NONE with no owner.
+  a Color Temperature's value, and `LocalInputValue::present_value` with no
+  origin) name no writer, so they leave Value_Source NONE with no owner.
 
 With tracking on and no local Device identity, a Schedule's or Command's write
 to such an object falls back to a context-free write, which is refused: it fails
@@ -629,13 +655,14 @@ it accepts and refuses exactly the frames the router core does. Its
 
 ## bacnet-services
 
-23 BACnet service modules with request/response encoding and decoding.
+23 BACnet service modules with request/response encoding and decoding, plus
+`common` and `structured_error` for the types they share.
 
 ### ReadProperty / WriteProperty
 
 ```rust
-use bacnet_services::rp::{ReadPropertyRequest, ReadPropertyACK};
-use bacnet_services::wp::WritePropertyRequest;
+use bacnet_services::read_property::{ReadPropertyRequest, ReadPropertyACK};
+use bacnet_services::write_property::WritePropertyRequest;
 ```
 
 `WritePropertyRequest::encode` returns `Result<(), Error>` and validates its
@@ -703,7 +730,7 @@ returns `Error::Decoding` for either failure.
 
 ```rust
 use bacnet_services::cov::{
-    SubscribeCOVRequest, COVNotificationRequest, UnsubscribeCOVRequest,
+    SubscribeCOVRequest, SubscribeCOVPropertyRequest, COVNotificationRequest,
 };
 use bacnet_services::cov_multiple::{
     COVReference, COVSubscriptionSpecification, SubscribeCOVPropertyMultipleRequest,
@@ -763,8 +790,12 @@ use bacnet_services::read_range::{RangeSpec, ReadRangeAck};
 
 ```rust
 use bacnet_services::alarm_event::{
-    AcknowledgeAlarmRequest, GetEventInformationRequest,
-    GetAlarmSummaryRequest, GetEnrollmentSummaryRequest,
+    AcknowledgeAlarmRequest, EventSummary, GetEventInformationAck,
+    GetEventInformationRequest,
+};
+use bacnet_services::alarm_summary::{AlarmSummaryEntry, GetAlarmSummaryAck};
+use bacnet_services::enrollment_summary::{
+    GetEnrollmentSummaryAck, GetEnrollmentSummaryRequest,
 };
 ```
 
@@ -796,17 +827,13 @@ only a class and code still decodes, with no element number.
 ### Private Transfer
 
 ```rust
-use bacnet_services::private_transfer::{
-    ConfirmedPrivateTransferRequest, UnconfirmedPrivateTransferRequest,
-};
+use bacnet_services::private_transfer::{PrivateTransferAck, PrivateTransferRequest};
 ```
 
 ### Text Message
 
 ```rust
-use bacnet_services::text_message::{
-    ConfirmedTextMessageRequest, UnconfirmedTextMessageRequest,
-};
+use bacnet_services::text_message::{MessageClass, TextMessageRequest};
 ```
 
 ### Life Safety
@@ -1049,15 +1076,78 @@ explicit-port rule, but binds a fresh ephemeral port on each start instead of
 remembering one.
 
 By default the transport binds one socket on `0.0.0.0:port`, whatever the
-interface: an explicitly requested port sets `SO_REUSEADDR`, and port zero is
-private. The wildcard socket receives directed and limited broadcasts and
+interface. The wildcard socket receives directed and limited broadcasts and
 unicast alike, in the order they arrive, and the receive loop takes unicast
 only to the interface address (or, for `0.0.0.0`, to one of the host's
 addresses, below). Sends leave from it, so the OS picks their source address
-by route. On an explicit port, Linux lets a second application bind the same
-wildcard address, with the same single-receiver unicast caveat, so two
-devices on two addresses of one host can't both rely on the standard port;
-macOS and BSD refuse a second wildcard bind.
+by route.
+
+#### Claiming the port
+
+The wildcard socket claims its port, whether requested or picked by the OS
+(#2366): it sets no `SO_REUSEADDR`, and on Windows it sets
+`SO_EXCLUSIVEADDRUSE`. Another program that later binds the port fails at
+once, and a transport that finds the port already held fails its `start()`
+with an error naming the port and the opt-in below. Through 0.15, an
+explicitly requested port set `SO_REUSEADDR`, and on Linux and Windows a
+later socket that set it too could bind the port beside the transport and
+take the unicast sent to it: confirmed requests, replies, registrations and
+forwards.
+
+What a later socket on the port gets once the transport holds it:
+
+| Later bind | Linux | macOS, BSDs | Windows |
+| --- | --- | --- | --- |
+| `0.0.0.0:port`, any reuse option | refused | refused | refused |
+| a specific address on the port, with `SO_REUSEADDR` or `SO_REUSEPORT` | refused | **binds, and gets the unicast sent to that address** | refused |
+| a specific address on the port, with neither | refused | refused | refused |
+
+macOS and the BSDs have no option to refuse the second row. A transport that
+binds after such a socket fails there, though, where before it bound beside
+it and lost that unicast without a word.
+
+`BipTransport::set_share_wildcard_port(true)` (the B/IP builders'
+`.share_wildcard_port(true)`, `ClientConfig`'s and `ServerConfig`'s
+`share_wildcard_port`, Python's `share_wildcard_port=True` on
+`BACnetClient`, `BACnetServer` and `BipEndpoint`, the CLI's `--share-port`)
+keeps the old sharing: the socket sets `SO_REUSEADDR`, so on Linux and
+Windows other sockets that set it can bind the port too. Broadcasts reach
+every socket on the port, but each unicast reaches only one of them: on
+Linux the one that bound last. Two wildcard sockets never shared a port on
+macOS and the BSDs, which also want `SO_REUSEPORT` on both. Two stacks on
+one host are better served each on its own address (below) or each on its
+own port. A port the OS picks is never shared, opt-in or not.
+
+A B/IP-M node whose group is on its own port (the default, see [B/IP
+multicast](#bip-multicast-bip-m)) binds that port twice: its own socket and
+the group's listener. On Linux a claimed `0.0.0.0` socket would refuse the
+listener, so a node that starts with such a group binds the per-address shape
+instead: its interface address with no reuse option, the broadcast listeners
+of [Sharing a port by address](#sharing-a-port-by-address) (whose broadcasts a
+member drops, as it did on `0.0.0.0`), and the group's listener. Every later
+bind of `0.0.0.0` or the interface address on the port is then refused,
+whatever reuse options it sets, and another member's listener on the group
+still binds. Its broadcast listeners hear what its `0.0.0.0` socket heard:
+255.255.255.255, and the interface's own subnet broadcast from the netmask the
+host reports (255.255.255.255 alone, with a warning, when there is none). The
+configured broadcast address isn't checked: one that is neither of those is
+logged at warn, and the start goes on. A broadcast address another socket
+holds on the port fails the start, as the `0.0.0.0` bind would have; a
+broadcast listener that can't bind for another reason is logged at warn and
+left out. macOS and the BSDs need nothing, since the listener binds after the
+claimed wildcard socket; on Windows the wildcard socket joins the group itself
+and claims the port. A group on a port of its own leaves the claim whole, and
+a node that shares its port on request keeps `0.0.0.0`.
+
+A group activated later through the Network Port on the own port of a Linux
+node bound to `0.0.0.0` switches that socket to `SO_REUSEPORT` and binds the
+listener with it too, rather than failing. From then until the node
+restarts, a socket of the same user that sets `SO_REUSEPORT` can bind
+`0.0.0.0` on the port and share the node's unicast, and one bound to a
+specific address that way gets the unicast sent there; a socket that sets
+only `SO_REUSEADDR`, or another user's, is still refused. The restart, which
+keeps the activated group, binds the per-address shape. Two members on one
+host at one unicast port need `share_wildcard_port` on both.
 
 #### Sharing a port by address
 
@@ -1125,9 +1215,10 @@ What changes in this mode:
   `SO_REUSEADDR` would let another socket bind the same address and take its
   unicast, so the socket sets `SO_EXCLUSIVEADDRUSE` instead, and no other
   socket can bind that address and port. Other addresses can still share the
-  port, and a socket already bound to `0.0.0.0` on it without
-  `SO_EXCLUSIVEADDRUSE` doesn't stop the bind (it does stop a default-mode
-  start). Under Windows' strong host model a socket bound to one interface
+  port, and a socket of the same user already bound to `0.0.0.0` on it
+  without `SO_EXCLUSIVEADDRUSE` (a transport that shares its wildcard port)
+  doesn't stop the bind; a default-mode transport claims the port, which stops it,
+  and stops a later default-mode start too. Under Windows' strong host model a socket bound to one interface
   sends only through it, so a multihomed BBMD in this mode reaches only the
   peers that interface can.
 
@@ -1255,11 +1346,51 @@ with `local_address()`. This branch requires the existing configured Device inst
 and preserves trusted-BBMD handling without normal multicast prerequisites.
 `Bip6ForeignDeviceConfig::check()` says whether a registration can work: the
 BBMD must be an IPv6 unicast host with a nonzero port (not unspecified,
-multicast, link-local, IPv4-mapped or IPv4-compatible) and the TTL nonzero;
+multicast, link-local, IPv4-mapped or IPv4-compatible, and with no zone index or
+flow label) and the TTL nonzero;
 it returns the `Bip6ForeignDeviceRefusal` otherwise. `start()` fails with
 `InvalidInput` for such a registration, and a Network Port activation refuses
-one. The B/IPv6 client builder takes a registration with
-`.foreign_device(config)` alongside `.device_instance(..)` (#1941).
+one. `Bip6ForeignDeviceConfig::bbmd` is a `Bip6ForeignBbmd` (#2365): an address, or
+a host name and port, parsed from `[ip]:port` or `host:port`. A configured host name
+is looked up as a written one is. On `::` the start needs the BBMD's address to pick
+its source, so it looks the name up first and fails, with an error naming the name and
+why, unless it stands for an IPv6 address the device could register with. The
+address found becomes the registration's once the start succeeds: a start that
+fails later keeps the name, and the next start looks it up again. On an
+explicit interface the start goes ahead and the device waits: no registration, no
+Address-Resolution, no Forwarded-NPDU or Forwarded-Address-Resolution taken, and its
+broadcasts are refused (`NotConnected`) and counted, since B/IPv6 keeps no hold
+queue. The name is tried again 30 seconds after the newest failure, and the first
+usable answer registers at once. A stop ends the retry; a restart looks the name up
+at once.
+`Bip6Transport::foreign_status()` returns a `Bip6ForeignStatus`: the BBMD's address in
+use, `bbmd_name` (the host name it is known by, if any), `waiting_for_bbmd`, the
+lookup and release counters, `broadcasts_refused` and `registrations_sent`, and the
+BBMD's answers (#2388): `last_answer` (`Bip6RegistrationAnswer::Held`, `Refused`, or
+`Unanswered` once its renewal went first, or an activation's registration did
+with the BBMD silent for 3 s), `last_answer_age`, the
+`unanswered` streak and the `registrations_refused` total. A result counts as a
+registration's answer only from the BBMD in use while a registration there awaits
+one, and a success goes first to a release in flight; a move to another BBMD, the
+wait for its name and a stop clear the answer. Registrations keep their half-TTL
+schedule whatever the answer.
+`foreign_device_config()` reads back the name until it first resolves. The B/IPv6
+client builder takes a registration with
+`.foreign_device(config)` alongside `.device_instance(..)` (#1941), and, as the B/IP
+one does, `.bbmd_resolver(..)` for a host name written to FD_BBMD_Address and
+`.release_previous_bbmd(true)` (#2338).
+
+`Bip6Transport::set_release_previous_bbmd(true)` (off by default) gives B/IPv6 B/IP's
+release of the BBMD a move leaves: after a Network Port activation, or a host name
+that now resolves elsewhere, the old BBMD gets one Delete-Foreign-Device-Table-Entry
+naming the device's own bound B/IPv6 address, sent after the first registration with
+the new BBMD (Annex U.4.5.4). A success, the deletion NAK, or no answer within 3
+seconds is counted in `previous_bbmd_releases()` (`Bip6ReleaseCounters`); none of
+them holds up or fails the move. B/IPv6 registration doesn't run on
+`bacnet-bip-core`'s node, so the transport's re-registration task sends the
+release. One waits for its answer at a time: a newer release ends that wait, a
+move before the task sent one drops it, and a stop ends one still out, each counted
+as unanswered.
 
 A Forwarded-NPDU whose original source address is an IPv6 multicast group, a
 group destination at any port, is malformed for the same reason as on B/IP:
@@ -2768,8 +2899,7 @@ let server = BACnetServer::bip_builder()
 let client = BACnetClient::bip_builder()
     .port(0)
     .mode(BipMode::Foreign(ForeignDeviceConfig {
-        bbmd_ip: Ipv4Addr::new(203, 0, 113, 7),
-        bbmd_port: 47808,
+        bbmd: (Ipv4Addr::new(203, 0, 113, 7), 47808).into(),
         ttl: 600,
         renewal_interval: Some(Duration::from_secs(20)),
     }))
@@ -2936,11 +3066,12 @@ transport.set_multicast(Some(group))?;
   one host can share a group; each drops its own looped-back copy as an own
   echo (`ReceiveCounters::own_echo`). On Linux, macOS and the BSDs a
   receive-only listener binds the group's address and port with
-  `SO_REUSEADDR` (and `SO_REUSEPORT` on macOS and the BSDs), joins it, and
-  is read beside the primary in arrival order; the primary takes no group
-  traffic (Linux: `IP_MULTICAST_ALL` off). Members on one host at one IP
-  address need their own unicast ports and a shared group port
-  (`with_port`). Windows can't bind a group address, so there the primary
+  `SO_REUSEADDR` (and `SO_REUSEPORT` on macOS and the BSDs; for a Linux
+  group on the node's own port, see [Claiming the port](#claiming-the-port)),
+  joins it, and is read beside the primary in arrival order; the primary takes no group traffic (Linux:
+  `IP_MULTICAST_ALL` off). Members on one host at one IP address need their
+  own unicast ports and a shared group port (`with_port`), or
+  `share_wildcard_port` on each. Windows can't bind a group address, so there the primary
   socket joins the group, the group's port must be the transport's, and
   Windows multicast is untested; since the group's port is the
   transport's there, two members can't share one Windows host. The group is
@@ -3092,6 +3223,36 @@ The enums a host acts on case by case, and the closed sets, stay exhaustive:
 `Via`, `Registered`, `Admission`, `Operation`, `bbmd::Request` and
 `port::Ingress`.
 
+**Releasing the BBMD a move leaves** (#2307). With `Foreign::release_previous`
+set on the registration given to `Node::retarget`, a move to another BBMD also
+admits one Delete-Foreign-Device-Table-Entry exchange with the BBMD left behind,
+for the node's own address (Annex J.2.9, J.5.2.1.2), once the new BBMD's first
+attempt is admitted, so it never takes that attempt's slot. `poll_action` hands it
+out after the `Register` as `Action::ReleasePrevious { exchange, to, entry }`:
+send `Action::message()` and report it with `exchange_sent` or `exchange_failed`,
+as for a registration (`NodePort` does both). The node counts what comes of it:
+`NodeCounters::previous_releases`, then `previous_released` (success),
+`previous_release_refused` (its NAK) or `previous_release_unanswered` (no answer
+within the old registration's response timeout, a send that failed or was given
+up, or no free slot). It also reports each one's end, with the BBMD, as
+`RegistrationEvent::PreviousRelease { bbmd, outcome }` when the event list has
+room. The move never waits for it. A move back to a BBMD whose release is still
+in flight registers there as soon as the release is answered, since a success
+couldn't tell the two apart; if it goes unanswered, not until one response timeout
+after it ended, so a late answer to it can't pass for the registration's. It is
+off by default, for the reasons `BipTransport::set_release_previous_bbmd` gives.
+
+**A foreign node with no BBMD yet** (#2308). `Foreign::bbmd` is an `Option`:
+`Foreign::new` sets `Some`, and `Foreign::waiting(ttl)` (`None`) starts, or moves, a node that waits for its
+BBMD, as a device whose BBMD's host name hasn't resolved does. It has no
+registration attempt due, holds broadcasts up to `Foreign::hold` and refuses the
+next with `SendRefusal::HoldFull` (with no hold, every one), trusts no
+Forwarded-NPDU from a configured BBMD, and `Link::broadcast` answers
+`SendRefusal::NoBbmd`. The first `Node::retarget` to a known BBMD ends the wait,
+its attempt due at once and the held broadcasts going out when it resolves; there
+is nothing to release from the wait, while a move from a known BBMD into it
+releases that one as any move does.
+
 `bbmd::GRACE_PERIOD` is a `Duration`. `bbmd::StorageFull` and
 `BdtError::Capacity` carry `needed` and `available`, in entries, as the
 codec's `SinkFull` does in octets. `RegistrationRefusal` and `EntryError`
@@ -3191,9 +3352,19 @@ concrete transport names it, as in `RouterPort<BipTransport>`.
 ```rust
 use bacnet_network::router::{BACnetRouter, RouterOptions, StartedRouter};
 
-let StartedRouter { router, apdus, network_control } =
+let StartedRouter { mut router, apdus, network_control } =
     BACnetRouter::start(ports, RouterOptions::new().track_admission()).await?;
+// ...
+router.stop().await?; // Result<(), RouterStopError>
 ```
+
+`BACnetRouter::stop` seals forwarding, joins the router's workers and awaits
+every transport's cleanup, even when one fails (#2002). Only `Ok` guarantees
+the cleanup finished; `Err(RouterStopError)` keeps each transport's original
+error in `failures()`. Calling it again replays the same result without
+retrying. Cancelling the wait leaves the cleanup running, and dropping the
+router starts it without waiting, so neither alone means the ports can be
+bound again.
 
 #### Who may change routes (#518)
 
@@ -3889,6 +4060,30 @@ limit past the slots, is `PortError::HeldLength`.
 
 BACnet object model: trait, database, and object implementations.
 
+`bacnet-objects` also builds without `std` (#1615): with
+`default-features = false, features = ["alloc"]` it needs a global allocator
+and atomic compare-and-swap, and drops the `File*Persistence` backends, the
+save writer's own thread (saves run inline on the caller's thread), the
+wall-clock expiry of staged writes and tracing. Hosted builds that turn
+default features off pick `features = ["std"]`.
+
+Two features compile capabilities out of such a build (#2215). With one
+off, the built-in objects answer `None` from that capability's accessors, as
+an object without the behaviour does, and the code only those accessors
+reach drops out of a firmware image. `std` turns both on; `alloc` alone has
+neither.
+
+| Feature | Accessors | Drops |
+| --- | --- | --- |
+| `event-reporting` | `event_reporting`, `event_reporting_mut`, `enrollment_eval`, `enrollment_eval_mut` | intrinsic reporting, the Event and Alert Enrollments' transitions, the logs' buffer-ready reports |
+| `durable-writes` | `durable_writes` | staged saves; writes still save on the writer's own path |
+
+On the `firmware/link` objects image, both off save 4,952 / 4,444 / 5,984
+octets of flash on thumbv7m / thumbv7em / riscv32imac: `event-reporting`
+about 2.5 to 3.7 KB, `durable-writes` about 2 KB. Audit, COV and the
+clock binding would each save under 400 octets there, so they have no
+feature.
+
 ### BACnetObject Trait
 
 ```rust
@@ -3898,12 +4093,243 @@ use bacnet_objects::traits::BACnetObject;
 trait BACnetObject {
     fn object_identifier(&self) -> ObjectIdentifier;
     fn object_name(&self) -> &str;
-    fn object_type(&self) -> ObjectType;
     fn read_property(&self, property: PropertyIdentifier, array_index: Option<u32>)
         -> Result<PropertyValue, Error>;
     fn write_property(&mut self, property: PropertyIdentifier, array_index: Option<u32>,
         value: PropertyValue, priority: Option<u8>) -> Result<(), Error>;
-    fn property_list(&self) -> Vec<PropertyIdentifier>;
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]>;
+    // ...then `write_property_from` and the capability accessors, all
+    // defaulted.
+}
+```
+
+That is the whole surface a custom object implements (#2179): its identity,
+its reads and writes, and its property rows, plus a capability accessor for
+each optional behaviour it has ([Capabilities](#capabilities)). Answers that
+belong to the object type rather than to an instance aren't trait methods:
+whether CreateObject builds a type, what it takes only at creation, and
+whether DeleteObject removes it ([Creation and deletion](#creation-and-deletion)).
+The rustdoc of `BACnetObject` has a complete custom object that lends one
+capability. Code written against 0.15 moves as
+[Migrating custom objects to 0.16](#migrating-custom-objects-to-016) lists.
+
+`property_metadata` is required (#2181): an object's rows are its property
+model. Each `PropertyMetadata` row names one property the object serves, with
+its `R`/`W`/`O` code, the condition that makes an optional row present, and the
+write route the object implements. Include the universal rows
+(Object_Identifier, Object_Name, Object_Type and Property_List). The rows are
+the only property list an object writes (#2197): the free functions in
+`bacnet_objects::property_metadata` derive the rest. `property_list(rows)` is
+the Property_List the object serves, the rows less the four properties Clause
+12.1.1.4.1 leaves out; `read_property_list(rows, array_index)` answers a
+Property_List read from it; `required_properties(rows)` is the required set; and
+`has_property(rows, property)` says whether the object has a property. The
+iterators borrow the rows and `has_property` doesn't allocate.
+`is_writable_property(&object, property)` derives from the rows too: the row
+names a write route. The server reads them for property presence,
+ReadPropertyMultiple's ALL, REQUIRED and OPTIONAL, the indexed-write gate and
+the PICS. A property without a row is absent to all of those, whatever
+`read_property` answers. Each row also gives the property's datatype and shape
+(#2177): `effective_value_type(object_type)` is the row's own, set with
+`with_value_type`, or else the standard one,
+`bacnet_types::datatype::standard_value_type`. `is_array_property(&object,
+property)` and `is_list_property(&object, property)` read it, as does
+`object_value_type(&object, property)`, which gives the value type itself. The
+server reads it for the array-index gates, the list services, ReadRange, NULL
+writes, device references and how a written value's octets reach the object. An
+object whose rows change per instance returns them owned, as a Staging object
+does for its Stage_Names, and the answers follow. Which lists take typed
+elements and which references stay inside the device is the server's policy, by
+object type (`bacnet_device_core::write::policy`). A row for a vendor property
+states its own. Every built-in object supplies rows. A custom object's smallest
+honest set is the universal rows plus one for each property it serves:
+
+```rust,ignore
+use bacnet_objects::property_metadata::{
+    PropertyConformance as C, PropertyMetadata, PropertyWriteCapability as W,
+    read_property_list,
+};
+use bacnet_types::enums::PropertyIdentifier as P;
+
+const ROWS: &[PropertyMetadata] = &[
+    PropertyMetadata::new(P::OBJECT_IDENTIFIER, C::RequiredRead, None, W::ReadOnly),
+    PropertyMetadata::new(P::OBJECT_NAME, C::RequiredRead, None, W::ReadOnly),
+    PropertyMetadata::new(P::OBJECT_TYPE, C::RequiredRead, None, W::ReadOnly),
+    PropertyMetadata::new(P::PRESENT_VALUE, C::RequiredWrite, None, W::Always),
+    PropertyMetadata::new(P::PROPERTY_LIST, C::RequiredRead, None, W::ReadOnly),
+];
+
+// In `impl BACnetObject for MyObject`:
+fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+    Cow::Borrowed(ROWS)
+}
+
+// In its `read_property`, Property_List comes from the same rows:
+// P::PROPERTY_LIST => read_property_list(ROWS, array_index),
+```
+
+#### Capabilities
+
+Behaviour that only some objects have sits behind a capability (#2179): a
+trait of its own in `bacnet_objects::traits`, and an accessor for it on
+`BACnetObject` that defaults to `None`.
+
+- **`None` means absent.** The host asks the accessor before it drives the
+  behaviour and leaves the object out when the answer is `None`: the time
+  pass skips it, SubscribeCOV refuses it, the fault detector leaves its
+  Reliability alone. Each bullet below says what `None` does for that
+  capability. An object without a behaviour writes nothing for it.
+- **Lending.** An object that has the behaviour implements the capability
+  trait and overrides the accessor to return `Some(self)`, or `Some` of the
+  field that holds the behaviour. Most capability methods have defaults, so
+  the object writes only the parts it uses.
+- **Shared and mutable accessors.** A capability the host drives only while
+  it holds the object exclusively has one `&mut self` accessor with the
+  plain name (`timed()`). One the host also reads under a shared database
+  guard has a `&self` accessor with the plain name and a `_mut` one beside it
+  (`event_reporting()` and `event_reporting_mut()`); an object that lends one
+  lends both. One the host only ever reads has the `&self` accessor alone:
+  `cov()` and `calendar_state()`.
+- **Adapters forward.** An object that wraps another (a read view, an
+  endpoint's source Reporter) forwards every accessor to the object inside,
+  so the inner object's own capability answers.
+- **Public and hidden.** `Timed`, `DurableWrites`, `FileStorage`,
+  `LocalInput`, `LifeSafety`, `EventReporting`, `ReliabilityEval`,
+  `ScheduleRunner` and `CovReporting` are public. The `#[doc(hidden)]` ones
+  (staging, command runs, access events, enrollment evaluation, the
+  Calendar's state, audit, logs and File configuration) serve the built-in
+  types and aren't public API yet.
+
+The capabilities, with what each accessor's `None` means:
+
+- **`timed()` → `Timed`**, for an object whose state moves with time.
+  `bind_clocks(&Clocks)` takes the database's Device clock, monotonic clock
+  and deadline waker together, as the object joins a database and again
+  whenever the host binds one of them. `advance_monotonic_time(now)` runs the
+  object's timers, fades and expiries to `now`, and returns `true` when
+  readable state changed; the server then takes `cov_snapshot()` and reports
+  COV from it. `next_monotonic_deadline()` tells the server's monotonic task
+  when to wake next, `set_tracking_cov_increment` passes the finest
+  Tracking_Value COV increment a subscriber asks for before each advance
+  (#1510), and `start_output` runs once as the server starts (#1526). Every
+  method defaults to a no-op.
+- **`durable_writes()` → `DurableWrites`**, for an object that saves a write
+  before serving it (see `bacnet_objects::durable`). Its `expire_staged(now)`
+  drops a staged write whose request never came back; the server's monotonic
+  pass calls it on every object that has the capability, before it advances
+  the object's `Timed` operations, so an object that only stages writes
+  needs no `Timed`.
+- **`file_storage()` and `file_storage_mut()` → `FileStorage`** (in
+  `bacnet_objects::file`), for a File object's contents. AtomicReadFile reads
+  them through the shared accessor under a read guard, and AtomicWriteFile
+  writes them through the mutable one once its read-only and access-method
+  gates pass. A File-typed object that lends none answers both services with
+  `SERVICES / FILE_ACCESS_DENIED`. An application backing a File with its own
+  storage implements `FileStorage` and lends it from both; the built-in
+  `FileObject` does.
+- **`local_input()` → `LocalInput`**, for an object that takes values the
+  application in the same device supplies. Its one method,
+  `apply_local_input(LocalInputValue)`, takes a Present_Value (built with
+  `LocalInputValue::present_value` or `present_value_from`, the second naming
+  the local Device as its origin), a Life Safety Tracking_Value, a Loop's
+  Controlled_Variable_Value, an Averaging sample, an access-control record or
+  an Accumulator's input pulses (`LocalInputValue::Pulses`) or a Program's
+  Program_State. The enum is `#[non_exhaustive]`: an object matches the inputs it models and
+  answers the rest with `not_supported()`, OBJECT /
+  OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED, the same error the server returns for
+  an object that lends none. `BACnetServer::set_present_value_local` and its
+  siblings reach the object through it (see the example below).
+- **`life_safety()` → `LifeSafety`**, for a Life Safety Point or Zone:
+  `apply_life_safety_operation` runs the LifeSafetyOperation service on the
+  object and `set_life_safety_operation_expected` arms the operation it
+  expects next ([Life Safety execution and COV](#life-safety-execution-and-cov)).
+  Both default to `not_supported()`.
+- **`event_reporting()` and `event_reporting_mut()` → `EventReporting`**, for
+  an object that reports events: an intrinsic reporter, an Event or Alert
+  Enrollment, or a log reporting BUFFER_READY. The shared accessor serves the
+  queries the server makes under a read guard (the Event_Algorithm_Inhibit_Ref
+  the database follows, and GetEnrollmentSummary); the mutable one serves
+  `evaluate_intrinsic_reporting`, `tick_intrinsic_reporting`,
+  `commit_event_transition`, `acknowledge_alarm` and
+  `follow_event_algorithm_inhibit`. An object lends both or neither; the
+  proposal and commit contract is set out below.
+  `acknowledge_alarm(event_state, &timestamp)` takes an AcknowledgeAlarm
+  request's event state and timestamp and returns the acknowledged
+  transition's states when it keeps them; it defaults to, and the server
+  answers an object that lends none with, `no_alarm_configured()`, OBJECT /
+  NO_ALARM_CONFIGURED.
+- **`reliability_eval()` → `ReliabilityEval`**, for an object that judges
+  its own Reliability or takes one its application works out.
+  `evaluate_reliability()` runs the object's fault algorithm and returns
+  `ReliabilityEvaluation::Changed` only after the change landed; the server's
+  fault detector calls it every ten seconds unless
+  `reliability_evaluation_inhibited()` is true. `set_reliability(r)` applies
+  a Reliability the application detects, such as NO_SENSOR from hardware.
+  It is the in-service complement of a client's write: the built-in objects
+  refuse it with PROPERTY / WRITE_ACCESS_DENIED while Out_Of_Service is TRUE.
+  All three default to opting out; `set_reliability` answers
+  `not_supported()`.
+- **`schedule_runner()` → `ScheduleRunner`**, for a Schedule whose writes
+  to its controlled references the server makes. The schedule pass calls
+  `take_owed_schedule_writes`, then `tick_schedule(today, time,
+  calendar_active)`, then `complete_schedule_write(write, outcomes)` for how
+  each target took each write; while the Device clock is invalid it skips the
+  tick but still sends the owed writes, and `calendar_active` answers `false`
+  for an identifier that names no Calendar. The database asks
+  `retry_refusals_naming(target)` when an object is added, and takes
+  `take_relinquish_writes()` from a Schedule as it leaves the database: on
+  every `remove` (DeleteObject's included) and when `add` replaces it. Only
+  `tick_schedule` has no default. The built-in `ScheduleObject` lends it
+  (see Schedule & Notification below).
+- **`cov()` → `CovReporting`**, for an object that reports changes of
+  value. An object that lends none takes no COV subscription, and the server
+  refuses SubscribeCOV, SubscribeCOVProperty and SubscribeCOVPropertyMultiple
+  naming it with OBJECT / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED. The server
+  reads it under a shared guard only, so it has no `_mut` twin.
+  `supports_subscribe_cov()` (default `true`) admits the whole-object form;
+  an object whose type has no Table 13-1 row, like the built-in Averaging and
+  Command, answers `false` and takes property subscriptions only.
+  `supports_cov_property(p)` (default `true`) decides each property
+  subscription, `cov_increment()` (default `None`) is the object's current
+  COV_Increment, read at each evaluation, and `cov_reported_properties()`
+  lists what a whole-object notification carries after Present_Value and
+  Status_Flags. Its default, `None`, has the server report the object type's
+  Table 13-1 row (`CovReportedProperty::standard_for(object_type)`);
+  `Some(list)` reports exactly that list. `supports_cov_property` doesn't
+  read the object type, so a custom Life Safety Point or Zone narrows its own
+  property set, for example to `bacnet_objects::life_safety::COV_PROPERTIES`.
+  Calls on a concrete type need `use bacnet_objects::traits::CovReporting`.
+- **`audit_log()` and `audit_log_mut()` → `AuditLog`** (hidden, #2179), for
+  an Audit Log. `storage()` is the `AuditLogStorage` that AuditLogQuery and
+  ReadRange read under a shared guard (it was the public
+  `audit_log_storage_internal()`); `forwarding()`, `set_parent(..)` and
+  `notification_sink()` replace the forwarding, parent and
+  `audit_log_notification_sink_internal()` hooks. An Audit Log that lends
+  none answers AuditLogQuery with `SERVICES /
+  OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED`. Audit overrides moved the same way
+  to the hidden `AuditPolicy` (`audit_policy()` and `audit_policy_mut()`), and
+  the built-in Reporter is reached through `audit_reporter()` and
+  `audit_reporter_mut()`, whose authority's `configure` replaced
+  `configure_audit_reporter_internal`.
+
+```rust,ignore
+use bacnet_objects::traits::{BACnetObject, Clocks, Timed};
+
+// In `impl BACnetObject for MyTimer`:
+fn timed(&mut self) -> Option<&mut dyn Timed> {
+    Some(self)
+}
+
+impl Timed for MyTimer {
+    fn bind_clocks(&mut self, clocks: &Clocks) {
+        self.monotonic = clocks.monotonic.clone();
+    }
+    fn advance_monotonic_time(&mut self, now: Duration) -> bool {
+        self.expire_if_due(now)
+    }
+    fn next_monotonic_deadline(&self) -> Option<Duration> {
+        self.deadline
+    }
 }
 ```
 
@@ -3926,18 +4352,25 @@ guards retain their precedence; custom object implementations retain their own
 write dispatch. WPM reports the failed coordinate and retains its successful
 prefix.
 
-At the indexed WP/WPM service gate, nonempty effective metadata that omits the
-property produces `PROPERTY/UNKNOWN_PROPERTY` before value decoding. A served
-scalar or BACnetLIST still produces `PROPERTY/PROPERTY_IS_NOT_AN_ARRAY`; a served
-array retains its object-owned element, count and write-access rules. This
-absence-first ordering is a local error-precedence policy. Empty custom metadata
-does not prove absence: those objects keep their array classifier and writer
-delegation. For this early absence failure, WPM keeps its successful prefix and
-reports the exact failed object/property/index, without authorizing or observing
-the failing element or suffix. The rejected indexed attempt produces no execution
-Audit record; present read-only arrays and unindexed absence retain their existing
-Audit handling. The outer WP authorization check and direct object writes are
-unchanged.
+An array index is checked before any object sees a write, on every service
+path the bundled server and `bacnet-device-core` run, custom objects included:
+`PROPERTY/UNKNOWN_PROPERTY` for a property with no row, then
+`PROPERTY/PROPERTY_IS_NOT_AN_ARRAY` for one that isn't an array. A direct call
+to `write_property` skips that gate, so each built-in object runs
+`bacnet_objects::property_metadata::check_write_array_index` first itself,
+and a custom object that is called directly should do the same (#2258).
+
+At the indexed WP/WPM service gate, effective metadata that omits the property
+produces `PROPERTY/UNKNOWN_PROPERTY` before value decoding. A served scalar or
+BACnetLIST still produces `PROPERTY/PROPERTY_IS_NOT_AN_ARRAY`; a served array
+retains its object-owned element, count and write-access rules. This
+absence-first ordering is a local error-precedence policy, and it applies to
+custom objects too: their rows decide presence. For this early absence failure,
+WPM keeps its successful prefix and reports the exact failed
+object/property/index, without authorizing or observing the failing element or
+suffix. The rejected indexed attempt produces no execution Audit record; present
+read-only arrays and unindexed absence retain their existing Audit handling. The
+outer WP authorization check and direct object writes are unchanged.
 
 A NULL written to a property that isn't commandable and has no NULL in its
 datatype succeeds and leaves the property as it is (Clauses 15.9.2 and 15.10.2,
@@ -3960,7 +4393,7 @@ therefore check access and state before the value's datatype, as the built-in
 objects do.
 
 WriteProperty and WritePropertyMultiple give a property that
-`BACnetObject::is_list_property` reports as a BACnetLIST, written whole, to the
+`property_metadata::is_list_property` reports as a BACnetLIST, written whole, to the
 object as a `PropertyValue::List` of any length: a value with no octets is the
 empty list (Clause 20.2.17), so Alarm_Values can be cleared, and one element is
 a list of one. The object judges the list, so an empty value on a read-only list
@@ -3983,16 +4416,27 @@ and instance (`BINARY_VALUE-2`). When another object already holds that
 name, the server takes the first free `BINARY_VALUE-2 (n)` from n = 2, so a
 client that renamed an object to the next default name doesn't make the
 create fail (#1437). A few read-only properties take a CreateObject initial
-value: `BACnetObject::creation_only_properties` lists the ones an object sets
+value: the type's `Creatable::CREATION_ONLY_PROPERTIES` lists the ones it sets
 whole only at creation, and the server gives such a value, sent without an
-array index, to `BACnetObject::initialize_property` instead of the write
-route (#1429). The built-in Analog Input and Analog Output take Units (an
-Enumerated up to 65535). The Multi-state Input, Output and Value take
+array index, to `Creatable::initialize_property` instead of the write route
+(#1429, [Creation and deletion](#creation-and-deletion)). The built-in Analog Input, Output and Value, and Integer,
+Positive Integer and Large Analog Value, take Units (an Enumerated up to
+65535). The Multi-state Input, Output and Value take
 Number_Of_States (1 to `multistate::MAX_NUMBER_OF_STATES`, 1024),
 which resizes State_Text. A count is refused with `PROPERTY/VALUE_OUT_OF_RANGE`
-if a value the object holds would name a state past it. WriteProperty still
-answers `PROPERTY/WRITE_ACCESS_DENIED` for each. The PICS lists each
-createable type's set.
+if a value the object holds would name a state past it. Of the configuration
+objects (#2208), Calendar, Schedule, Notification Class, Trend Log and
+Structured View take Object_Name; Notification Class takes Priority (three
+Unsigned values up to 255) and Ack_Required; Trend Log takes Buffer_Size (up to
+`trend::MAX_CREATED_BUFFER_SIZE`, 10,000); Event Enrollment takes
+Object_Property_Reference; and Structured View takes Node_Type, Node_Subtype,
+Subordinate_List and Subordinate_Annotations, the last two holding at most
+`group::MAX_SUBORDINATES` (1024) entries and keeping one size: either alone
+sets it, and both given in one request must match, or the later one is
+`PROPERTY/VALUE_OUT_OF_RANGE`. CreateObject applies Buffer_Size before the
+other initial values, since a log takes it only while it holds no record. WriteProperty still answers
+`PROPERTY/WRITE_ACCESS_DENIED` for each. The PICS lists each createable type's
+set.
 
 State_Text written whole, by WriteProperty, WritePropertyMultiple or a
 CreateObject initial value, sets Number_Of_States to its number of labels
@@ -4035,20 +4479,19 @@ RemoveListElement can change anything else, since each writes the whole list
 back.
 
 AddListElement and RemoveListElement edit only properties that
-`BACnetObject::is_list_property` reports as a BACnetLIST. The default follows the
+`property_metadata::is_list_property` reports as a BACnetLIST. It follows the
 Clause 12 datatypes, including identifiers whose type depends on the object type
-(Alarm_Values, Present_Value, Member_Of, List_Of_Object_Property_References);
-custom objects with vendor lists override it. Every other target, whether a scalar,
-a constructed single value, a whole array or an indexed array element, returns
-`SERVICES/PROPERTY_IS_NOT_A_LIST` before any element is decoded. Unknown object,
-unknown property and array-index errors come first, and element datatype errors
-after. Only a BACnetLIST of BACnetDestination (Recipient_List) uses the
-destination codec, only Schedule's List_Of_Object_Property_References the
-reference codec (#1121), and only a Notification Forwarder's
-Subscribed_Recipients the subscription codec (#1049). A list the object holds
-framed with no element codec,
-such as the standalone Device's COV subscription lists, returns
-`PROPERTY/WRITE_ACCESS_DENIED`.
+(Alarm_Values, Present_Value, Member_Of, List_Of_Object_Property_References); a
+custom object states a vendor list on its row with `with_value_type`. Every
+other target, whether a scalar, a constructed single value, a whole array or an
+indexed array element, returns `SERVICES/PROPERTY_IS_NOT_A_LIST` before any
+element is decoded. Unknown object, unknown property and array-index errors come
+first, and element datatype errors after. Only a BACnetLIST of BACnetDestination
+(Recipient_List) uses the destination codec, only Schedule's
+List_Of_Object_Property_References the reference codec (#1121), and only a
+Notification Forwarder's Subscribed_Recipients the subscription codec (#1049). A
+list the object holds framed with no element codec, such as the standalone
+Device's COV subscription lists, returns `PROPERTY/WRITE_ACCESS_DENIED`.
 
 Elements compare whole (Clauses 15.1.2 and 15.2.2): two elements are the same
 when their encodings are, so a destination that differs in one field is a
@@ -4097,29 +4540,560 @@ Active_COV_Multiple_Subscriptions. A running
 server pages those two Device lists from the live COV table, through the same
 Device view as ReadProperty and from one snapshot per request, so a page's
 items joined in order are a run of the ReadProperty value. The standalone
-`handle_read_range` pages the Device object's empty lists, as standalone
-`handle_read_property` reads them. A list it cannot split (a framed list with
+`handle_read_range` pages the Device object's empty lists, as a
+`bacnet-device-core` read with no overlay reads them. A list it cannot split (a framed list with
 no element codec, such as a vendor list, or a value of another shape) returns
 `SERVICES/OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED`; ReadProperty still reads it
 whole. Custom objects that hold a vendor list should return
 `PropertyValue::List`, one value per item.
 
-Intrinsic reporting uses one proposal/commit contract. The
-`evaluate_intrinsic_reporting` and `tick_intrinsic_reporting` hooks return a
+Intrinsic reporting uses one proposal/commit contract, on the
+`EventReporting` capability. Its
+`evaluate_intrinsic_reporting` and `tick_intrinsic_reporting` return a
 fire-ready `TransitionOutcome` while leaving event state, acknowledgment bits,
 history, and the ready proposal unchanged until commit succeeds. Implement
-`commit_event_transition_internal` to validate the supplied
+`commit_event_transition` to validate the supplied
 `EventTransitionCommit`, atomically apply all object-owned transition state, and
-return `EventTransitionCommitError` without mutation on failure. Custom objects
+return `EventTransitionCommitError` without mutation on failure. While the
+object's Event_Detection_Enable is FALSE, refuse every commit, NORMAL targets
+included, with `DetectionDisabled`, as the built-in reporters do: detection
+off stops the state machine and holds the event properties at their initial
+values (Clause 13.2.2.1), and turning it off should reset them directly, not
+through a commit. Custom objects
 can use these public types directly; the built-in private commit kernel is not
 required. Both server paths commit before distribution, even when Event_Enable,
-DCC, or an empty recipient list suppresses sending. The default commit hook
-returns `Unsupported`; it never authorizes an intrinsic notification.
+DCC, or an empty recipient list suppresses sending. The default commit
+returns `Unsupported`, as the server does for an object that lends no
+`EventReporting`; it never authorizes an intrinsic notification.
 
 The pre-1.0 API removes `intrinsic_reporting_requires_atomic_commit` and the
 exported `impl_intrinsic_reporting!` macro. Migrate custom objects to the hooks
 above; there is no alternate immediate-commit path. Standalone detector
 `probe`/`tick` methods retain their own detector-local behavior.
+
+#### Keeping written reporting settings (#2331)
+
+With the `event-reporting` feature, which `std` turns on, the analog, binary
+and multi-state Input, Output and Value objects, Access Door, Access Zone,
+Event Enrollment and Alert Enrollment can keep the reporting settings a peer
+writes across a restart: Notification_Class,
+Event_Enable, Notify_Type, Event_Detection_Enable,
+Event_Message_Texts_Config, Event_Algorithm_Inhibit_Ref and
+Event_Algorithm_Inhibit. Opt in with the builder call
+`with_reporting_persistence(storage)` on a built object, where `storage` is
+an `Arc<dyn WriteConfigPersistence>`, the store Timers and Channels use;
+`FileWriteConfigPersistence::new(path)` keeps one file per object.
+
+```rust
+use std::sync::Arc;
+use bacnet_objects::analog::AnalogInputObject;
+use bacnet_objects::write_config::FileWriteConfigPersistence;
+use bacnet_types::enums::EngineeringUnits;
+
+let storage = Arc::new(FileWriteConfigPersistence::new("/var/lib/app/ai-1")?);
+let mut ai = AnalogInputObject::new(1, "Zone temp", EngineeringUnits::DEGREES_CELSIUS)?
+    .with_reporting_persistence(storage)?;
+ai.set_notification_class(5); // a value a peer wrote and saved wins
+```
+
+- **Saved before answered.** A write of one of these properties is saved
+  before the object serves it, and refused with DEVICE /
+  OPERATIONAL_PROBLEM, the old value kept, when the save fails. The server
+  stages the save so it runs off the database guard; a request writing Tags
+  too stages both. A write nobody staged saves where it is. An
+  Event_Message_Texts_Config string past 16 KiB is refused with RESOURCES /
+  NO_SPACE_TO_WRITE_PROPERTY, whatever the storage.
+- **Saved wins.** Only the settings a write set are kept. Once one is saved,
+  its setter (`set_notification_class`, `set_event_enable`,
+  `set_notify_type`, and an Alert Enrollment's `set_event_detection_enable`)
+  leaves it alone, so an application that configures the object at each
+  start keeps a peer's write. Access Door and Access Zone have no setters
+  for these settings. An Alert Enrollment's Event_Enable,
+  Notification_Class and Event_Detection_Enable are no longer public fields:
+  set them through the setters so the rule holds. `written_reporting()` lists what
+  is saved, and `clear_written_reporting()` drops it all, saving before it
+  returns, so the setters apply again; the values served stay until a setter
+  or a write changes them.
+- **Format.** Storage holds a `WriteConfigSnapshot::Reporting`, kind 4 of
+  `RBNWCF01` (`snapshot::write_config::KIND_REPORTING`), so a custom backend
+  stores the same octets; `snapshot::write_config::keeps_reporting` names the
+  object types that take it. Storage holding another kind, or a value no
+  write leaves, fails `with_reporting_persistence` with an error.
+  `WriteConfigSnapshot` and `ReportingWriteConfig` are `#[non_exhaustive]`:
+  a match takes a wildcard arm, and a `ReportingWriteConfig` is built from
+  `Default` with its fields set.
+- **Created objects.** An object CreateObject builds through the built-in
+  constructors (`creation::builtin_constructor`), an Event Enrollment for
+  example, has no storage: its written settings last until a restart. To
+  keep them, register a constructor with the server's
+  `ObjectTypeRegistry::register` that attaches storage with
+  `with_reporting_persistence`.
+- **Feature.** `event-reporting` gates `with_reporting_persistence`, the
+  three setters of the analog, binary and multi-state objects,
+  `written_reporting`, `clear_written_reporting` and
+  `wait_for_reporting_saves`; without it the objects keep nothing, and an
+  image that reports nothing links none of it. The Event and Alert
+  Enrollment setters, and these objects' `set_description`, are there
+  either way, and always apply without it.
+
+#### Keeping a written Description (#2364)
+
+The object types with a store of their own keep a Description a peer
+writes in the same file, with the same rules:
+
+- the thirteen above, through `with_reporting_persistence`: the analog,
+  binary and multi-state Input, Output and Value objects, Access Door,
+  Access Zone, Event Enrollment and Alert Enrollment;
+- Timer and Channel, through `TimerObject::with_persistence` and
+  `ChannelObject::with_persistence`;
+- the Trend Log, Trend Log Multiple and Event Log, beside their written
+  reporting settings, through their `with_persistence`;
+- Notification Class, Notification Forwarder and Access Rights, through
+  their `with_persistence`.
+
+A write of Description is saved before it is answered, refused with DEVICE /
+OPERATIONAL_PROBLEM when the save fails, and staged by the server with the
+request's other kept writes, one save for them all. A Description past
+16 KiB is refused with RESOURCES / NO_SPACE_TO_WRITE_PROPERTY before
+anything is saved; a long one the object took before it had storage refuses
+no other write. A NULL succeeds, changes nothing and saves nothing. A saved
+Description wins over `set_description` (on the analog, binary and
+multi-state objects, Event Enrollment, the logs, Notification Class and
+Notification Forwarder; the others have no setter) until
+`clear_written_reporting`, or a Timer's or Channel's `clear_written_config`,
+drops it; Notification Class, Notification Forwarder and Access Rights have
+no clear, so a saved Description wins until the file goes. A log's
+`written_reporting().description`, and the `description` field of
+`TimerWriteConfig`, `ChannelWriteConfig`, `LogReportingSettings`,
+`NotificationClassSnapshot`, `ForwarderSnapshot` and `AccessRightsSnapshot`,
+show what is saved.
+
+Storage holds it as kind 5 of `RBNWCF01`
+(`snapshot::write_config::KIND_WITH_DESCRIPTION`): the Description, then the
+kind and body the object writes without one. A file with no written
+Description keeps its plain kind, octet for octet, so an older build still
+reads it; one holding a Description fails to load there as an unknown kind.
+`TimerWriteConfig` and `ChannelWriteConfig` are now `#[non_exhaustive]`, as
+`ReportingWriteConfig` is: build them from `Default` and set their fields.
+
+The other formats take a new version for it, written only for a snapshot
+holding a Description, so a file without one keeps its octets and an older
+build refuses one with it as an unknown version:
+
+- the logs' slot, schema version 3 of `RBLOGS01`
+  (`snapshot::log::VERSION_WITH_DESCRIPTION`): the Description follows the
+  written reporting settings;
+- `RBNNCL02`, `RBNFWD02` and `RBNACR02` (each module's
+  `MAGIC_WITH_DESCRIPTION`): the Description, its length in four octets and
+  its UTF-8, between the header and version 1's body.
+
+Every other object type, Device, the colour and lighting objects included,
+keeps a written Description in memory only: it lasts until a restart.
+
+#### Creation and deletion
+
+Createability, the properties a type takes only at creation, and
+deleteability belong to the object type, not to an instance, so no
+`BACnetObject` method answers them (#2172, #2179). The server's CreateObject
+builds a type when the application registered a constructor for it
+([CreateObject constructors](#createobject-constructors)) or the built-in
+table `bacnet_objects::creation` has one: the analog, binary and multi-state
+input, output and value types, the twelve value types (Integer, Positive
+Integer, Large Analog, CharacterString, OctetString, BitString, Date, Time,
+DateTime and the three pattern types), and Calendar, Schedule, Notification
+Class, Trend Log, Event Enrollment and Structured View (#2208). Those six
+start inert: a Schedule with a NULL Schedule_Default and no references, a
+Trend Log of `trend::CREATED_BUFFER_SIZE` (100) records with nothing to log,
+an Event Enrollment with no reference and the `none` event parameters, and so
+on. A create without the initial values a type needs isn't refused, since
+Clause 15.3 leaves properties the request doesn't give to the device; the
+client configures the rest by WriteProperty, and the object starts working
+then. `ObjectTypeRegistry::creates(object_type)` gives that answer, and the
+PICS reports it. Any other type is refused with
+`OBJECT/UNSUPPORTED_OBJECT_TYPE` when the Device doesn't list it in
+Protocol_Object_Types_Supported, or `OBJECT/DYNAMIC_CREATION_NOT_SUPPORTED`
+when it does (#2171).
+
+- **Creation-only properties.** A type implements
+  `bacnet_objects::creation::Creatable`: `CREATION_ONLY_PROPERTIES` lists
+  the read-only properties an initial value may set, and
+  `initialize_property` applies one, checked as a write would be and leaving
+  the object unchanged on a refusal. Both default to none, so a type without
+  any writes `impl Creatable for MyType {}`. Every type the table builds
+  implements it, and the table erases each one into a `CreationOnly`;
+  `ObjectTypeRegistry::creation_only(object_type)` answers for the
+  registered type or else the table (`creation::builtin_creation_only`).
+- **Deleteability.** Every type is deleteable but Device and Network Port,
+  which model the node itself (`creation::builtin_deleteable`).
+  `ObjectTypeRegistry::keep_from_deletion(object_type)` keeps another type,
+  such as one that models a fixed part of the device, and
+  `ObjectTypeRegistry::deletes(object_type)` gives the combined answer. A
+  kept type's DeleteObject gets `OBJECT/OBJECT_DELETION_NOT_PERMITTED` and
+  the object stays; the PICS reports the same answer. Removing an object
+  locally through the database isn't affected, except that the database
+  refuses to remove an object a running runtime holds (the registered
+  Network Port, or the Device and Audit Reporters an Audit runtime
+  protects); `ObjectDatabase::check_removable(oid)` gives that answer, and
+  DeleteObject returns it too.
+
+#### Migrating custom objects to 0.16
+
+0.16 cuts `BACnetObject` from about a hundred methods to the core and the
+capability accessors (#2179, with #2181, #2197 and #2177). The compiler names each
+method a custom object still implements; the tables give each one's new
+home. A method on a capability trait is reached through its accessor, as in
+`object.cov().and_then(|cov| cov.cov_increment())`, and a call on a concrete
+type needs the capability trait in scope. `property_metadata` has no default
+any more (#2181). `is_createable` went too: createability is
+`ObjectTypeRegistry::creates(object_type)` (#2172). Accessors marked hidden
+lend `#[doc(hidden)]` capabilities that aren't public API yet.
+
+**Time and clocks: `Timed`, lent by `timed()` (#2220)**
+
+| 0.15 method | In 0.16 |
+|---|---|
+| `bind_clock_internal`, `bind_monotonic_clock_internal`, `bind_deadline_waker_internal` | `Timed::bind_clocks(&Clocks)`, one call with all three clocks |
+| `advance_monotonic_time_internal` | `Timed::advance_monotonic_time` |
+| `next_monotonic_deadline_internal` | `Timed::next_monotonic_deadline` |
+| `set_tracking_cov_increment_internal` | `Timed::set_tracking_cov_increment` |
+| `start_output_internal` | `Timed::start_output` |
+| `cov_snapshot_internal` | `Timed::cov_snapshot` |
+| `advance_time_internal` | removed: it was test-only |
+| `lighting_blink_count_internal` | removed: a test reads it through `ObjectDatabase::lighting_blink_count_internal` |
+| `durable_writes_internal` | `durable_writes()`; staged-write expiry moved to `DurableWrites::expire_staged` |
+
+**Property lists, writability and shapes (#2181, #2197, #2177)**
+
+| 0.15 method | In 0.16 |
+|---|---|
+| `property_list` | `property_metadata::property_list(&rows)`; a read is `read_property_list(&rows, index)` |
+| `required_properties` | `property_metadata::required_properties(&rows)` |
+| `is_writable_property` | `property_metadata::is_writable_property(&object, property)`, from the row's write capability; state it on the row |
+| `is_array_property` | `property_metadata::is_array_property(&object, property)`, from the row's value type; state a vendor array with `with_value_type(ValueType::array(..))` |
+| `is_list_property` | `property_metadata::is_list_property(&object, property)`, likewise; `with_value_type(ValueType::list(..))` |
+
+A call `object.is_array_property(p)` becomes `is_array_property(&object, p)`;
+the functions take `&dyn BACnetObject`, so pass a boxed object as `&*object`.
+An override that answered differently from the rows moves onto them: give
+the row the write capability or value type the override returned, and
+return owned rows where the answer changes with the instance's state. An
+adapter that wrapped another object and forwarded these three drops them,
+since forwarding `property_metadata` and `object_identifier` is enough.
+
+A custom object with a vendor array and a vendor list states both on its
+rows, where it used to override the two methods:
+
+```rust,ignore
+use bacnet_objects::property_metadata::{
+    Datatype, PropertyConformance as C, PropertyMetadata, PropertyWriteCapability as W,
+    ValueType, is_array_property, is_list_property,
+};
+use bacnet_types::enums::PropertyIdentifier as P;
+
+const SETPOINTS: P = P::from_raw(600); // a BACnetARRAY of REAL
+const ALARM_CODES: P = P::from_raw(601); // a BACnetLIST of Unsigned
+
+const ROWS: &[PropertyMetadata] = &[
+    PropertyMetadata::new(P::OBJECT_IDENTIFIER, C::RequiredRead, None, W::ReadOnly),
+    PropertyMetadata::new(P::OBJECT_NAME, C::RequiredRead, None, W::ReadOnly),
+    PropertyMetadata::new(P::OBJECT_TYPE, C::RequiredRead, None, W::ReadOnly),
+    PropertyMetadata::new(SETPOINTS, C::Optional, None, W::Always)
+        .with_value_type(ValueType::array(Datatype::Real)),
+    PropertyMetadata::new(ALARM_CODES, C::Optional, None, W::ReadOnly)
+        .with_value_type(ValueType::list(Datatype::Unsigned)),
+    PropertyMetadata::new(P::PROPERTY_LIST, C::RequiredRead, None, W::ReadOnly),
+];
+
+// `property_metadata` returns `Cow::Borrowed(ROWS)`; then, for the object:
+assert!(is_array_property(&pump, SETPOINTS));
+assert!(is_list_property(&pump, ALARM_CODES));
+```
+
+The index gates, the list services and ReadRange answer from those rows,
+and a whole write of the list reaches `write_property` as a
+`PropertyValue::List`.
+
+**Staging and command runs: hidden `StagingSource` and `CommandRunner` (#2232)**
+
+| 0.15 method | In 0.16 |
+|---|---|
+| `take_staging_write_plan_internal`, `staging_generation_internal`, `complete_staging_write_plan_internal` | `StagingSource` methods without `_internal`, lent by `staging_source()` |
+| `take_command_run_internal`, `command_generation_internal`, `record_command_write_internal`, `remember_member_datatype_internal`, `complete_command_run_internal` | `CommandRunner` methods without `_internal`, lent by `command_runner()` and `command_runner_mut()` |
+
+**Local input, access events and life safety (#2236)**
+
+| 0.15 method | In 0.16 |
+|---|---|
+| `set_present_value_internal`, `set_present_value_from_internal`, `set_tracking_value_internal`, `set_controlled_variable_value_internal`, `add_averaging_sample_internal`, `report_access_input_internal` | `LocalInput::apply_local_input(LocalInputValue::..)`, lent by `local_input()`; one enum variant per input |
+| `supports_access_event_batch_internal` | `access_events().is_some()` |
+| `record_access_event_batch_internal` | hidden `AccessEvents::record_access_event_batch`, lent by `access_events()` |
+| `apply_life_safety_operation` | `LifeSafety::apply_life_safety_operation`, lent by `life_safety()` |
+| `set_life_safety_operation_expected_internal` | `LifeSafety::set_life_safety_operation_expected` |
+
+**Event reporting: `EventReporting`, lent by `event_reporting()` and `event_reporting_mut()` (#2239)**
+
+| 0.15 method | In 0.16 |
+|---|---|
+| `evaluate_intrinsic_reporting`, `tick_intrinsic_reporting` | `EventReporting` methods of the same names |
+| `commit_event_transition_internal`, `enrollment_summary_capability_internal`, `buffer_ready_report_internal`, `event_algorithm_inhibit_reference_internal`, `follow_event_algorithm_inhibit_internal` | `EventReporting` methods without `_internal` |
+| `acknowledge_alarm_correlated_internal`, `acknowledge_alarm_correlated_detailed_internal` | `EventReporting::acknowledge_alarm(state, &timestamp)` |
+| `acknowledge_alarm` | removed: the bits-only form was never called |
+
+**Enrollment evaluation and reliability (#2241)**
+
+| 0.15 method | In 0.16 |
+|---|---|
+| `enrollment_eval_state_internal`, `set_enrollment_eval_state_internal`, `enrollment_eval_source_internal`, `set_enrollment_eval_source_internal`, `commit_event_enrollment_reliability_internal` | hidden `EnrollmentEval`: `eval_state`, `set_eval_state`, `eval_source`, `set_eval_source`, `commit_reliability`, lent by `enrollment_eval()` and `enrollment_eval_mut()` |
+| `set_event_state_internal`, `set_acked_transitions_internal` | removed; seed an Event Enrollment's Event_State with its own `set_event_state` |
+| `evaluate_reliability_internal`, `reliability_evaluation_inhibited_internal`, `set_reliability_internal` | `ReliabilityEval` methods without `_internal`, lent by `reliability_eval()` |
+
+**Schedules and Calendars (#2244)**
+
+| 0.15 method | In 0.16 |
+|---|---|
+| `tick_schedule`, `take_owed_schedule_writes`, `complete_schedule_write`, `retry_refusals_naming` | `ScheduleRunner` methods of the same names, lent by `schedule_runner()` |
+| `calendar_state_internal` | hidden `CalendarState::state_on`, lent by `calendar_state()` |
+
+**Logs and files (#2254)**
+
+| 0.15 method | In 0.16 |
+|---|---|
+| `file_storage_internal`, `file_storage_internal_mut` | `file_storage()` and `file_storage_mut()`, same `FileStorage` |
+| `file_configuration_internal`, `file_configuration_internal_mut` | hidden `file_configuration()` and `file_configuration_mut()` |
+| `log_buffer_internal`, `log_record_identities_internal`, `refresh_log_window_internal` | hidden `LogBuffer`: `buffer_records`, `record_identities`, `refresh_window`, lent by `log_buffer()` and `log_buffer_mut()` |
+| `add_trend_record`, `add_trend_multiple_record`, `add_event_log_record` | the built-in log's own `add_record`; a custom log implements the hidden `LogBuffer` methods of the same names |
+| `log_collecting_internal`, `logs_received_event_notifications_internal` | removed: the database asks the built-in Trend Log and Event Log directly |
+
+**Audit, Averaging and Pulse Converter (#2261)**
+
+| 0.15 method | In 0.16 |
+|---|---|
+| `audit_log_storage_internal`, `audit_log_forwarding_internal`, `set_audit_log_parent_internal`, `audit_log_notification_sink_internal` | hidden `AuditLog`: `storage`, `forwarding`, `set_parent`, `notification_sink`, lent by `audit_log()` and `audit_log_mut()` |
+| `audit_object_policy_internal`, `audit_policy_authority_internal` | hidden `AuditPolicy`: `object_policy` and `policy_authority`, lent by `audit_policy()` and `audit_policy_mut()` |
+| `audit_reporter_internal`, `audit_reporter_authority_internal` | hidden `audit_reporter()` and `audit_reporter_mut()` |
+| `configure_audit_reporter_internal` | `AuditReporterAuthority::configure`, through `audit_reporter_mut()` |
+| `take_due_averaging_sample_internal` | hidden `Timed::take_due_sample` |
+| `input_reference_internal`, `set_input_usable_internal`, `take_input_reading_internal` | removed: the database judges and counts the built-in Pulse Converter only |
+
+**COV reporting: `CovReporting`, lent by `cov()` (#2270)**
+
+| 0.15 method | In 0.16 |
+|---|---|
+| `supports_cov` | lend `cov()`; the whole-object form is `CovReporting::supports_subscribe_cov` (default `true`) |
+| `supports_subscribe_cov_property` | `cov().is_some()`: an object that lends `cov()` takes property subscriptions |
+| `supports_cov_property`, `cov_increment`, `cov_reported_properties` | `CovReporting` methods of the same names; `cov_reported_properties` returns `None` for the type's standard list |
+| `set_overridden` | removed: an object computes OVERRIDDEN when it reads Status_Flags |
+
+**Creation and deletion: the type table (this release)**
+
+| 0.15 method | In 0.16 |
+|---|---|
+| `creation_only_properties` | `Creatable::CREATION_ONLY_PROPERTIES` on the type; read with `ObjectTypeRegistry::creation_only(type)` or `creation::builtin_creation_only(type)` |
+| `initialize_property` | `Creatable::initialize_property` on the type, which CreateObject applies |
+| `is_deleteable` | `ObjectTypeRegistry::deletes(type)`, from `creation::builtin_deleteable` and `keep_from_deletion`; `ObjectDatabase::check_removable` for an object a runtime holds |
+
+To register a CreateObject constructor, return the concrete type, which
+implements `Creatable`, so the registration carries its creation-only
+answers: `register(ObjectType::from_raw(600), |oid, name|
+Ok(MyPump::new(oid, name)))` with `impl Creatable for MyPump {}`, or the
+builders' `object_constructor` with the same arguments
+([CreateObject constructors](#createobject-constructors)). A custom
+adapter that wrapped another object and forwarded `is_deleteable` drops it:
+an object no longer refuses deletion itself, so keep its type from deletion
+instead.
+
+Before and after, for the capabilities with the most moved code.
+COV reporting moves from its hooks to the capability like this:
+
+```rust,ignore
+// Before: on `impl BACnetObject for MySensor`.
+fn supports_cov(&self) -> bool {
+    true
+}
+fn cov_increment(&self) -> Option<f64> {
+    Some(f64::from(self.cov_increment))
+}
+
+// After: lend the capability; a call site goes through `cov()`.
+use bacnet_objects::traits::{BACnetObject, CovReporting};
+
+fn cov(&self) -> Option<&dyn CovReporting> {
+    Some(self)
+}
+
+impl CovReporting for MySensor {
+    fn cov_increment(&self) -> Option<f64> {
+        Some(f64::from(self.cov_increment))
+    }
+}
+let increment = sensor.cov().and_then(|cov| cov.cov_increment());
+```
+
+Reliability evaluation moves from its hooks to the capability like this:
+
+```rust,ignore
+// Before: on `impl BACnetObject for MySensor`, and a call site.
+fn evaluate_reliability_internal(&mut self) -> Result<ReliabilityEvaluation, Error> {
+    self.check_wiring()
+}
+sensor.set_reliability_internal(Reliability::NO_SENSOR)?;
+
+// After: lend the capability and call through it.
+use bacnet_objects::traits::{BACnetObject, ReliabilityEval};
+
+fn reliability_eval(&mut self) -> Option<&mut dyn ReliabilityEval> {
+    Some(self)
+}
+
+impl ReliabilityEval for MySensor {
+    fn evaluate_reliability(&mut self) -> Result<ReliabilityEvaluation, Error> {
+        self.check_wiring()
+    }
+}
+sensor
+    .reliability_eval()
+    .map(|r| r.set_reliability(Reliability::NO_SENSOR))
+    .transpose()?;
+```
+
+A Schedule's hooks move to the capability like this:
+
+```rust,ignore
+// Before: on `impl BACnetObject for MySchedule`, and a call site.
+fn tick_schedule(
+    &mut self,
+    today: SpecificDate,
+    time: Time,
+    calendar_active: &dyn Fn(ObjectIdentifier) -> bool,
+) -> Option<ScheduleWrite> {
+    self.evaluate_and_write(today, time, calendar_active)
+}
+let owed = schedule.take_owed_schedule_writes();
+
+// After: lend the capability and call through it.
+use bacnet_objects::traits::{BACnetObject, ScheduleRunner};
+
+fn schedule_runner(&mut self) -> Option<&mut dyn ScheduleRunner> {
+    Some(self)
+}
+
+impl ScheduleRunner for MySchedule {
+    fn tick_schedule(
+        &mut self,
+        today: SpecificDate,
+        time: Time,
+        calendar_active: &dyn Fn(ObjectIdentifier) -> bool,
+    ) -> Option<ScheduleWrite> {
+        self.evaluate_and_write(today, time, calendar_active)
+    }
+}
+let owed = schedule
+    .schedule_runner()
+    .map(|runner| runner.take_owed_schedule_writes())
+    .unwrap_or_default();
+```
+
+A local input moves from its hook to the capability like this:
+
+```rust,ignore
+// Before: on `impl BACnetObject for MySensor`.
+fn set_present_value_internal(&mut self, value: PropertyValue) -> Result<(), Error> {
+    self.store(value)
+}
+
+// After: lend the capability, and refuse what the object doesn't model.
+use bacnet_objects::traits::{LocalInput, LocalInputValue, not_supported};
+
+// In `impl BACnetObject for MySensor`:
+fn local_input(&mut self) -> Option<&mut dyn LocalInput> {
+    Some(self)
+}
+
+impl LocalInput for MySensor {
+    fn apply_local_input(&mut self, input: LocalInputValue) -> Result<(), Error> {
+        match input {
+            LocalInputValue::PresentValue { value, .. } => self.store(value),
+            _ => Err(not_supported()),
+        }
+    }
+}
+
+// A caller that held the object:
+object
+    .local_input()
+    .ok_or_else(not_supported)?
+    .apply_local_input(LocalInputValue::present_value(value))?;
+```
+
+Event reporting moves the same way. `commit_event_transition_internal`,
+`enrollment_summary_capability_internal`,
+`event_algorithm_inhibit_reference_internal`,
+`follow_event_algorithm_inhibit_internal` and
+`buffer_ready_report_internal` drop their suffix as `EventReporting` methods.
+`acknowledge_alarm_correlated_internal` and
+`acknowledge_alarm_correlated_detailed_internal` become one
+`acknowledge_alarm`. The old bits-only `BACnetObject::acknowledge_alarm(bits)`
+is removed outright: the server never called it, and its default refused with
+OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED. A call on a concrete type, such as
+`ai.evaluate_intrinsic_reporting()`, needs
+`use bacnet_objects::traits::EventReporting;` in scope; through a
+`dyn BACnetObject`, go through the accessor:
+
+```rust,ignore
+// Before: on `impl BACnetObject for MyAlarm`.
+fn evaluate_intrinsic_reporting(&mut self) -> Option<TransitionOutcome> {
+    self.detector.propose(self.value)
+}
+fn commit_event_transition_internal(
+    &mut self,
+    commit: EventTransitionCommit,
+) -> Result<(), EventTransitionCommitError> {
+    self.history.commit(commit)
+}
+fn acknowledge_alarm_correlated_detailed_internal(
+    &mut self,
+    state: EventState,
+    timestamp: &BACnetTimeStamp,
+) -> Result<Option<EventStateChange>, Error> {
+    self.history.acknowledge(state, timestamp)
+}
+
+// After: lend the capability.
+use bacnet_objects::traits::EventReporting;
+
+// In `impl BACnetObject for MyAlarm`:
+fn event_reporting(&self) -> Option<&dyn EventReporting> {
+    Some(self)
+}
+fn event_reporting_mut(&mut self) -> Option<&mut dyn EventReporting> {
+    Some(self)
+}
+
+impl EventReporting for MyAlarm {
+    fn evaluate_intrinsic_reporting(&mut self) -> Option<TransitionOutcome> {
+        self.detector.propose(self.value)
+    }
+    fn commit_event_transition(
+        &mut self,
+        commit: EventTransitionCommit,
+    ) -> Result<(), EventTransitionCommitError> {
+        self.history.commit(commit)
+    }
+    fn acknowledge_alarm(
+        &mut self,
+        state: EventState,
+        timestamp: &BACnetTimeStamp,
+    ) -> Result<Option<EventStateChange>, Error> {
+        self.history.acknowledge(state, timestamp)
+    }
+}
+
+// A caller that held the object:
+let change = object
+    .event_reporting_mut()
+    .ok_or_else(no_alarm_configured)?
+    .acknowledge_alarm(state, &timestamp)?;
+```
 
 ### Constructed property framing
 
@@ -4168,7 +5142,7 @@ framing, through the shared `bacnet-encoding` codecs.
   `NotificationForwarderObject` holds the list in
   `bacnet_objects::subscribed_recipients::SubscribedRecipients`, and an
   application's own forwarder type can do the same, routing the property's
-  read and write and the `*_monotonic_*_internal` clock hooks to it. The
+  read and write and its `Timed` capability's monotonic hooks to it. The
   server forwards notifications to every live entry (see
   [Notification forwarding](#notification-forwarding)). The store keeps at most
   `MAX_SUBSCRIBED_RECIPIENTS` (32) entries and takes 1 to
@@ -4394,13 +5368,53 @@ framing, through the shared `bacnet-encoding` codecs.
   a non-Device member VALUE_OUT_OF_RANGE, ahead of any refusal of a remote
   device.
 
+### Persisted snapshot formats (#2047)
+
+`bacnet_objects::snapshot` holds the formats the file backends write, with
+`alloc` alone, so storage an application brings (flash, EEPROM, a database
+row) keeps the same octets a hosted build does. Each format's module has
+`encode`, `decode`, its magic tag and its version as constants, and every
+refusal is a `SnapshotError` whose `kind()` names it: `Truncated`,
+`NotThisFormat`, `UnknownVersion`, `UnknownKind`, `OtherObject`, `TooLarge`,
+`Damaged`, or `OutOfRange` for a snapshot refused as it is encoded. It
+carries only static text, so reporting one needs no allocation.
+`is_damage()` says whether a two-slot backend should pass over that copy
+for the other one, and `snapshot::log::newest(object, [slot0, slot1])`
+makes `FileLogPersistence`'s whole choice between two slots, as
+`snapshot::audit_log::newest` does for `FileAuditLogPersistence`. `Error`
+implements `From<SnapshotError>`, the mapping the file backends use.
+
+| Module | Snapshot | Tag and versions | File backend |
+| --- | --- | --- | --- |
+| `snapshot::log` | `LogSnapshot<R>` (Trend Log, Trend Log Multiple, Event Log) | `RBLOGS01`, version 2; version 1 still loads | `FileLogPersistence` (one slot of the two) |
+| `snapshot::audit_log` | `AuditLogSnapshot` | `RBALOG01`, version 3; versions 1 and 2 still load | `FileAuditLogPersistence` (one slot of the two) |
+| `snapshot::write_config` | `WriteConfigSnapshot` (Timer, Channel, an intrinsic reporter's reporting settings, each with a written Description) | `RBNWCF01`, kinds 2 to 5; kind 1 still loads | `FileWriteConfigPersistence` |
+| `snapshot::notification_class` | `NotificationClassSnapshot` | `RBNNCL01` | `FileNotificationClassPersistence` |
+| `snapshot::notification_forwarder` | `ForwarderSnapshot` | `RBNFWD01` | `FileNotificationForwarderPersistence` |
+| `snapshot::tags` | `TagsSnapshot` | `RBNTAG01` | `FileTagsPersistence` |
+| `snapshot::color` | `ColorOutputSnapshot` (Color, Color Temperature) | `RBNCLR02`; `RBNCLR01` still loads | `FileColorOutputPersistence` |
+| `snapshot::access_rights` | `AccessRightsSnapshot` | `RBNACR01` | `FileAccessRightsPersistence` |
+
+```rust
+use bacnet_objects::snapshot::write_config;
+
+let octets = write_config::encode(channel, &snapshot)?; // store these
+let back = write_config::decode(channel, &octets)?;
+```
+
+The promise covers the octets: a later release keeps loading what an
+earlier one wrote. Formats may gain versions and kinds, and a format version
+stops loading only with a migration note. The Rust snapshot types follow the
+crate's usual API rules, so a new field is a breaking Rust API change. The
+module documentation has a complete custom backend.
+
 ### ObjectDatabase
 
 ```rust
 use bacnet_objects::database::ObjectDatabase;
 
 let mut db = ObjectDatabase::new();
-db.add(Box::new(analog_input));
+db.add(Box::new(analog_input))?; // Err on instance 4194303, a duplicate name or a protected membership; same OID replaces
 
 let obj = db.get(&oid);                // Option<&dyn BACnetObject>
 let obj = db.get_mut(&oid);            // Option<&mut dyn BACnetObject>
@@ -4431,11 +5445,12 @@ read that fails logs a failure record carrying its error (OBJECT /
 UNKNOWN_OBJECT for a missing object) where it used to log a null value (#1183).
 Indexed reference execution is not added.
 
-`ObjectDatabase::selected_device` is the Device the database represents (the
-lowest instance when it holds several). `ObjectDatabase::local_device` returns
-a `LocalDevice`, whose `is_local` tells whether a reference's optional Device
-member keeps it inside this device: no member, or the selected Device when its
-instance isn't the wildcard. The Trend Log poller and the server's Event
+`ObjectDatabase::selected_device` is the lowest-instance Device the database
+holds. `ObjectDatabase::local_device` returns a `LocalDevice`, the Device the
+database speaks for: the identity's Device once a server or endpoint with an
+identity has started on it (#2227), otherwise the selected Device. Its
+`is_local` tells whether a reference's optional Device member keeps it inside
+this device: no member, or that Device. The Trend Log poller and the server's Event
 Enrollment evaluation (monitored, setpoint and fault references) both resolve
 references through it, so a FLOATING_LIMIT setpoint naming this device is read
 and reported like an unqualified one (#1184).
@@ -4446,30 +5461,41 @@ A BACnet device has one Device object (Clause 12.11), but a database may hold
 several. The database selects the lowest instance independently of insertion order
 (#1204). Server startup validates that selection against its explicit identity:
 
-- **This device's Device object** is `selected_device`: wildcard Device reads,
-  Who-Has answers, the identity in COV and event notifications,
-  the APDU_Timeout an Audit Log
-  sink uses on receipt, and the services the standalone PICS reports.
-- **Announcements and served identity fields** remain bound to the startup
-  `DeviceIdentity`. Who-Is and manual I-Am require that identifier to remain
-  present; later lower-instance insertion does not rebind announcements.
+- **`selected_device`, the lowest Device,** is the fallback target of a
+  wildcard Device read with no executor around it, and the Device whose
+  services the standalone PICS reports.
+- **Announcements, notifications and served identity fields** remain bound to
+  the startup `DeviceIdentity`. Who-Is, Who-Has and manual I-Am require that
+  Device to remain present. COV, COV-multiple, event and target Audit
+  notifications name it as their initiator even while it is missing, and an
+  event recipient naming it is served locally (#2217). An Audit Log sink takes
+  APDU_Timeout from it, and refuses a batch with DEVICE / OPERATIONAL_PROBLEM
+  while it is missing (#2228). Later lower-instance insertion rebinds none of
+  them.
 - **Device-qualified references** go through `local_device().is_local`: Trend
   Log polling, Event Enrollment references, Command action lists, the
   Schedule, Channel, Staging and Averaging reference rewrites, and an Audit
   Log's forwarding parent. A reference naming another Device in the same
-  database still points at another device.
-- **Audit and endpoint identity** need `local_device` to be a concrete built-in
-  Device: target Audit Reporters, the endpoint's source Audit Reporter and
-  endpoint Device writes. It names this device in audit records, owns the Audit
-  recipient, and is the only Device endpoint writes reach; a session identity
+  database still points at another device. The server binds `local_device`
+  to the identity's Device at start, so these, a local command's Value_Source
+  owner, a BUFFER_READY report's buffer reference, the live COV lists and an
+  Event Log's check that a received notification isn't its own all keep
+  naming that Device beside a lower one added later (#2227).
+- **Audit and endpoint identity** need a concrete built-in Device: the
+  identity's for target Audit Reporters, `local_device` for the endpoint's
+  source Audit Reporter and endpoint Device writes. It names this device in
+  audit records, owns the Audit recipient, and is the only Device endpoint
+  writes reach; a session identity
   must match it. While an Audit runtime is active the database refuses a new
   Device and keeps this one, so the choice holds for the runtime's life.
 - **Other Devices** take no part. Their recipient, APDU_Timeout and declared
   services are plain object data.
 
-When the only Device has the wildcard instance there is a selected Device but
-no concrete identity, so Audit, endpoint Device writes, local command sources
-and Audit Log forwarding refuse to start or stay unconfigured.
+No Device can have the wildcard instance: `ObjectDatabase::add` refuses
+instance 4194303 for every object (Clause 12.1.1, #2171), so a selected
+Device is always a concrete one. Without a Device, Audit, endpoint Device
+writes, local command sources and Audit Log forwarding refuse to start or
+stay unconfigured.
 
 ### Object Types (64)
 
@@ -4518,8 +5544,9 @@ the access-explicit Tags persistence constructors.
 `BACnetServer::set_present_value_local` supplies a logical application value to
 Analog/Binary/Multi-state Inputs, noncommandable Values, Loop (the control
 algorithm's output) and Life Safety Point and Zone, then runs the existing event
-and COV path after releasing the database lock. The corresponding low-level
-`set_present_value_internal` hook bypasses those server notifications. For the
+and COV path after releasing the database lock. The object's own
+`LocalInput` capability (`BACnetObject::local_input`, a
+`LocalInputValue::PresentValue`) bypasses those server notifications. For the
 Inputs, Values and Loop both deny updates while Out_Of_Service to preserve
 simulation ownership: this is local policy for Inputs and the object-clause rule
 for these Values and Loop, whose Present_Value peers may write only while
@@ -4546,12 +5573,14 @@ Loop's measured input has its own route,
 | `EventEnrollmentObject` | `::new(instance, name, event_type)` |
 
 A `NotificationClass` built with `with_persistence` keeps a written
-`Recipient_List` across a restart (Clause 12.21.8, #1315). The storage is an
+`Recipient_List` across a restart (Clause 12.21.8, #1315), and a written
+Description (#2364, see [Keeping a written
+Description](#keeping-a-written-description-2364)). The storage is an
 application-owned `NotificationClassPersistence` that loads and saves a
 `NotificationClassSnapshot`; `FileNotificationClassPersistence` keeps it in
 one file, replaced whole the same way as the forwarder's file (a format of
-its own, tagged `RBNNCL01`, with the same 64 KiB and 32-destination caps on
-load). A class built with `new` keeps the list in memory only.
+its own, tagged `RBNNCL01`, or `RBNNCL02` with a Description, with the same
+64 KiB and 32-destination caps on load). A class built with `new` keeps the list in memory only.
 
 Saves follow the forwarder's rules (see
 [Notification forwarding](#notification-forwarding)), and the two objects
@@ -4615,9 +5644,11 @@ inline calendar entry matching `today`, or a referenced Calendar that is TRUE),
 then today's weekly entry if not NULL, then Schedule_Default; outside the
 period it returns `None`. Time-values are typed (`BACnetTimeValue::value` is a
 primitive `PropertyValue`), so Present_Value and the target writes carry the
-scheduled value's own datatype. The public `BACnetObject::tick_schedule(today,
-time, calendar_active)` hook returns `Option<ScheduleWrite>` (value, priority,
-references, retry): a changed value, or any value on entering the
+scheduled value's own datatype. The public `ScheduleRunner::tick_schedule(today,
+time, calendar_active)` method returns `Option<ScheduleWrite>` (value, priority,
+references, retry, relinquish; built with `ScheduleWrite::new` and the
+`with_retry` and `with_relinquish` builders, since the struct is
+`#[non_exhaustive]`): a changed value, or any value on entering the
 Effective_Period (start-up included); with neither, the current value for the
 references that refused their last write, flagged `retry` (#1436). The server writes it to every reference at
 `Priority_For_Writing`, set with `set_priority_for_writing` (1 to 16, default
@@ -4646,7 +5677,7 @@ value of that datatype at its last write (#1086), or the reference itself: a
 missing object or property, or an array index the property can't take (#1433).
 The Schedule still writes its references. The server reports each write's
 per-target result through the public
-`BACnetObject::complete_schedule_write(write, outcomes)` hook, one
+`ScheduleRunner::complete_schedule_write(write, outcomes)` method, one
 `ScheduleTargetOutcome` (`Accepted`, `DatatypeRefused` for INVALID_DATA_TYPE or
 DATATYPE_NOT_SUPPORTED, `ReferenceRefused` for UNKNOWN_OBJECT,
 UNKNOWN_PROPERTY, PROPERTY_IS_NOT_AN_ARRAY or INVALID_ARRAY_INDEX, `Failed`
@@ -4658,7 +5689,7 @@ the refused references alone (#1436): the 60-second tick, or the pass any
 committed write to the Schedule runs. So an array grown to take the index gets
 the value and clears the fault within one tick. A target object created later
 doesn't wait (#1440): `ObjectDatabase::add` asks each Schedule through the
-public `BACnetObject::retry_refusals_naming(target)` hook whether it holds a
+public `ScheduleRunner::retry_refusals_naming(target)` method whether it holds a
 refusal naming the new object, and queues those that do; the server then
 writes that retry to the references naming the object alone and fans COV out,
 under the CreateObject's own guard or, after the application's own `add`, from
@@ -4686,14 +5717,28 @@ out of service at once), and relinquishes, with a NULL at the old priority,
 each slot the Schedule holds that the change leaves behind: a dropped
 reference, or every reference when the priority moves. A Schedule holds slots
 from a write of a non-NULL value until it leaves its Effective_Period, so one
-out of season clears nothing another Schedule may own.
+out of season clears nothing another Schedule may own. Removing a Schedule
+gives up the slots it holds the same way (#2256, #2264), through one path
+whether DeleteObject, the application's own `ObjectDatabase::remove`, or an
+`add` that replaces it took the object out: the database takes the public
+`ScheduleRunner::take_relinquish_writes()` NULLs as the object leaves and
+queues them, and the server writes them under the next guard that settles
+the queue (the request's for a DeleteObject; every Schedule pass settles it
+first), with the local Device as owner and the removed Schedule as
+initiating object, then fans COV out for the targets. A target that refuses
+one doesn't fail the delete. Each such NULL, and each one a change of
+references or priority owes, is a `relinquish` write: the server sends it
+only to a slot whose Value_Source still names the Schedule, so a writer that
+took the slot since keeps its command. A reference to another property than
+Present_Value, or a target without Value_Source_Array (a Channel), gets the
+NULL regardless; a calculated NULL is never checked.
 
 While Out_Of_Service is TRUE, Present_Value is writable (#1055) with any
 primitive value, NULL included (INVALID_DATA_TYPE otherwise, and
 WRITE_ACCESS_DENIED in service), and the tick leaves it alone. Every accepted
 write goes on to the references at `Priority_For_Writing`, a NULL
 relinquishing, in the pass the committed write triggers. The public
-`BACnetObject::take_owed_schedule_writes()` hook hands the pass what a Schedule
+`ScheduleRunner::take_owed_schedule_writes()` method hands the pass what a Schedule
 owes outside its calculation, once and before `tick_schedule`: the
 relinquishing NULLs a change of references or priority owes, then that
 written value. It needs no clock, so a value written on the object directly
@@ -4798,7 +5843,8 @@ Audit Log does. `bacnet_objects::log_persistence` holds the port:
 | Item | What it is |
 |------|------------|
 | `LogPersistence<R>` | `load(oid)` and `commit(&snapshot)` for one log; `R` is the log's record type (`BACnetLogRecord`, `BACnetEventLogRecord` or `BACnetLogMultipleRecord`) |
-| `LogSnapshot<R>` | identity and generation, Buffer_Size, Enable, Stop_When_Full, Total_Record_Count and the records oldest first, Last_Notify_Record, the Records_Since_Notification base and Notification_Threshold, Start_Time and Stop_Time, and on the trend logs a `LogAcquisitionSettings` (Logging_Type, Log_Interval, Align_Intervals, Interval_Offset) and Log_DeviceObjectProperty |
+| `LogSnapshot<R>` | identity and generation, Buffer_Size, Enable, Stop_When_Full, Total_Record_Count and the records oldest first, Last_Notify_Record, the Records_Since_Notification base and Notification_Threshold, Start_Time and Stop_Time, on the trend logs a `LogAcquisitionSettings` (Logging_Type, Log_Interval, Align_Intervals, Interval_Offset) and Log_DeviceObjectProperty, and `reporting`, the `LogReportingSettings` a write set (#1952) |
+| `LogReportingSettings` | one `Option` per reporting setting a write set: Notification_Class, Event_Enable, Notify_Type, Event_Detection_Enable, Event_Message_Texts_Config, Event_Algorithm_Inhibit_Ref and Event_Algorithm_Inhibit, plus Client_COV_Increment (`Some(None)` for NULL) and COV_Resubscription_Interval on a Trend Log |
 | `FileLogPersistence` | two-slot, versioned, checksummed files `<base>.slot0` and `<base>.slot1`, as `FileAuditLogPersistence` keeps them; implements the port for all three record types |
 | `LogCommitCadence` | `records` and `interval`; the default is 100 records or 60 seconds |
 
@@ -4831,9 +5877,10 @@ persistence)`.
   numbers, Total_Record_Count and the BUFFER_READY counts don't change.
 - **Size limit.** A slot holds at most 256 MiB, so `with_persistence` refuses
   with `Error::OutOfRange` a `buffer_size` whose full buffer of the family's
-  largest records couldn't fit: 828,302 records for a Trend Log, 178,437 for
-  an Event Log and 15,849 for a Trend Log Multiple (sized for 64 references
-  of 256-octet values). A record an application adds that is larger than the
+  largest records couldn't fit: 828,251 records for a Trend Log, 178,426 for
+  an Event Log and 15,848 for a Trend Log Multiple (sized for 64 references
+  of 256-octet values, beside the written reporting settings and a written
+  Description, #2364). A record an application adds that is larger than the
   stack's own can still make a commit fail; the log warns and retries.
 - **Checks.** `FileLogPersistence` checks each slot as it reads it, as
   `restore_log_buffer` checks its arguments plus the snapshot's own rules:
@@ -4856,8 +5903,29 @@ persistence)`.
 - **BUFFER_READY** carries on from the saved Last_Notify_Record and
   Notification_Threshold, so a report falls due once that many records have
   been collected since the last report before the restart, the
-  LOG_INTERRUPTED record included. Notification_Class and the other reporting
-  settings aren't saved: the application sets them on every start.
+  LOG_INTERRUPTED record included.
+- **Written reporting settings (#1952).** A write of Notification_Class,
+  Event_Enable, Notify_Type, Event_Detection_Enable,
+  Event_Message_Texts_Config, Event_Algorithm_Inhibit_Ref or
+  Event_Algorithm_Inhibit, and on a Trend Log of Client_COV_Increment or
+  COV_Resubscription_Interval (a Trend Log Multiple has neither, Table
+  12-35), commits a snapshot holding it before the log serves it, and is
+  refused with DEVICE / OPERATIONAL_PROBLEM, the old value kept, when that
+  commit fails. The server stages the commit, so it runs with the database
+  guard dropped, and the cadence's commits wait while it is staged; a write
+  nobody staged commits in place. Only the settings a write set are saved:
+  until then the setters govern each one. Once saved, a setting wins over
+  its setter (`set_notification_class`, `set_event_enable`,
+  `set_notify_type`, `set_client_cov_increment`,
+  `set_cov_resubscription_interval`), which checks its argument without
+  taking it, so an application that configures its logs at every start keeps
+  a peer's write. `written_reporting()` lists what is saved, and
+  `clear_written_reporting()` drops it all, committing before it returns, so
+  the setters apply again; call it before the log joins a database.
+  Snapshots are schema version 2; a version 1 file still loads, with nothing
+  written. Each Event_Message_Texts_Config string a log keeps is at most
+  16 KiB; a durable log refuses a longer one with RESOURCES /
+  NO_SPACE_TO_WRITE_PROPERTY, whatever its storage.
 - **Committing.** The log copies its state and queues it on its own writer
   thread (`bacnet_objects::durable`), so the copy is
   taken under the database guard and the file I/O runs outside it. It commits
@@ -4966,22 +6034,31 @@ request. `EventLogObject::add_record` takes one. The request, its
 are functions in `bacnet_encoding::constructed`: `encode_event_notification` /
 `decode_event_notification`, `encode_notification_parameters` /
 `decode_notification_parameters`, and `encode_bacnet_property_value` /
-`decode_bacnet_property_value`. `decode_event_notification_tolerant` reads a
+`decode_bacnet_property_value`. Every encoder that writes a property value
+(`encode_bacnet_property_value` and the ReadProperty-ACK, WriteProperty,
+ReadPropertyMultiple-ACK, WritePropertyMultiple, CreateObject and COV
+notification encoders) returns a `Result` and refuses a
+legacy-form Event_Parameters value that wouldn't decode back as itself
+(`check_property_value`, #2376). `decode_event_notification_tolerant` reads a
 request whose message text doesn't decode (a character set the stack doesn't
 support, for one) with no message text; the client uses it for received
 notifications and `decode_event_log_record` for a record's notification, which
 otherwise has to be a valid request. The request codec writes an
 ACK_NOTIFICATION without its ack-required, from-state and event values, so
-ReadRange serves such a record without them. A Trend Log record stays a `BACnetLogRecord`; its optional
+ReadRange serves such a record without them, and the decoders (strict,
+tolerant and the forwarder's) refuse an ACK_NOTIFICATION that carries any of
+them (#2247). A Trend Log record stays a `BACnetLogRecord`; its optional
 `status_flags` is a `StatusFlags`.
 
 A running server records its own event notifications in every Event Log. Each
 notification it builds for an event or acknowledgment transition, intrinsic or
 from an Event Enrollment, goes through `ObjectDatabase::log_event_notification`,
 which adds a notification record stamped with the Device clock's local date and
-time to each Event Log through `BACnetObject::add_event_log_record` (the
-built-in `EventLogObject` takes it like `add_record`; the trait default refuses
-with `OBJECT / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED`). The rules:
+time to each Event Log through the hidden `LogBuffer` capability that
+`BACnetObject::log_buffer_mut` lends (the built-in `EventLogObject` takes it
+like `add_record`; an Event Log that lends none, or takes no event-log
+records, is skipped as `OBJECT / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED`). The
+rules:
 
 - The record holds the notification as recipients get it, with Process
   Identifier 0 in place of a recipient's own.
@@ -5151,8 +6228,9 @@ Trend Log Multiple, Trend Log and Event Log objects list `Log_Buffer` in their
 Property_List, but ReadProperty and ReadPropertyMultiple answer it with
 `PROPERTY / READ_ACCESS_DENIED` (also inside RPM `ALL` and `REQUIRED`):
 Clauses 12.25.14, 12.27.13 and 12.30.19 make the buffer reachable only
-through ReadRange. ReadRange reads each object's records through
-`BACnetObject::log_buffer_internal`, a `LogBufferRecords` view, and returns
+through ReadRange. ReadRange reads each object's records through the
+hidden `LogBuffer` capability that `BACnetObject::log_buffer` lends, a
+`LogBufferRecords` view from `buffer_records()`, and returns
 each item as one record framed as its Clause 21 production:
 
 | Object | Record | Codec in `bacnet_encoding::constructed` |
@@ -5200,20 +6278,29 @@ Log record stays small enough for a ReadRange page on a 480-octet APDU. A
 value no record could carry is logged as `SERVICES / OTHER`. Records an
 application adds itself are not capped.
 
-The pre-1.0 `BACnetObject` contract has two fallible trend hooks:
-`add_trend_record` for Trend Log records and `add_trend_multiple_record` for
-Trend Log Multiple records. The void hook and `try_add_trend_record_internal`
-adapter have been replaced. Custom implementations return their insertion result
-directly; the default returns `OBJECT / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED`.
+An application adds a record to a built-in log with the log's own
+`add_record`. The trend poller adds records through the hidden `LogBuffer`
+capability (`BACnetObject::log_buffer_mut`, #2179): its fallible
+`add_trend_record` takes Trend Log records and `add_trend_multiple_record`
+Trend Log Multiple records. Each returns its insertion result directly; the
+default, and an object that lends no `LogBuffer`, answer
+`OBJECT / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED`.
 The server poller (`ObjectDatabase::poll_trend_logs`) samples both object types
 and retries failed insertions without advancing its last-log time. It also
 makes one acquisition for each Trigger of a TRIGGERED log (a Trend Log
 Multiple with no members records an empty set of values, and a Trend Log
 with no reference a PROPERTY / NO_PROPERTY_SPECIFIED failure, so Trigger
 never stays TRUE), waits for each clock-aligned boundary of an aligned POLLED
-log, and on every pass calls the hidden `refresh_log_window_internal` hook on
-each Trend Log, Trend Log Multiple and Event Log, so each records its window
-opening or closing. Wrappers forward that hook, as `SourceReporter` does.
+log, and on every pass calls `LogBuffer::refresh_window` on each Trend Log,
+Trend Log Multiple and Event Log, so each records its window opening or
+closing. Wrappers forward the `log_buffer` accessors, as `SourceReporter`
+does. Two answers come from the built-in objects only, never through the
+trait or an adapter: whether a COV Trend Log is collecting (its Enable and
+Start_Time / Stop_Time window) comes from `TrendLogObject`, and whether an
+Event Log takes received notifications from `EventLogObject`. A wrapper
+installed with `ObjectDatabase::with_object_adapter` isn't consulted, so a
+wrapped COV Trend Log keeps no Enable or window gate and no baseline restart,
+and a wrapped Event Log takes no received notifications.
 `TrendLogObject::set_logging_type` returns `Result`, as Trend Log
 Multiple's does. Only POLLED and TRIGGERED logs are polled. Complete log-family
 conformance is not claimed.
@@ -5221,9 +6308,15 @@ conformance is not claimed.
 #### Audit Reporter configuration and send delay
 
 Trusted local configuration through `dyn BACnetObject` uses one atomic
-`configure_audit_reporter_internal(level, operations, confirmed, selectors, priorities, maximum_send_delay)`
-contract. It replaces all six settings once; invalid or resource-denied changes
-leave every field unchanged. The final argument is `Option<AuditSendDelay>`:
+contract, `audit_reporter_mut()` and then
+`AuditReporterAuthority::configure(level, operations, confirmed, selectors,
+priorities, maximum_send_delay)` (the hidden
+`configure_audit_reporter_internal` hook before #2179). A wrapper around a
+Reporter lends the Reporter's own authority, so it can't intercept a
+configuration; the endpoint's source Reporter adapter marks the authority
+with its source owner, which refuses Monitored_Objects and a send delay
+while the owner is active. It replaces all six settings once; invalid or
+resource-denied changes leave every field unchanged. The final argument is `Option<AuditSendDelay>`:
 `None` omits both delay/control properties, while `Some(AuditSendDelay::new(0)?)`
 exposes the pair with immediate delivery. Positive values enable bounded target
 batching; see [delay controls and limits](delayed-target-audit.md). Built-in live
@@ -5245,6 +6338,68 @@ delay capability and preserving exactly-one source-role ownership. See
 | `ProgramObject` | `::new(instance, name)` |
 | `AveragingObject` | `::new(instance, name)` |
 | `StagingObject` | `::new(instance, name, StagingConfig { ... })` |
+
+The Timer is a countdown driven by the Clause 12.57 state machine (#2192).
+Present_Value is an Unsigned count of the milliseconds left while it runs, and
+zero otherwise. Writing a timeout within Min_Pres_Value..=Max_Pres_Value to
+Present_Value starts or restarts it, and zero expires it. Writing TRUE to
+Timer_Running starts it with Default_Timeout, and FALSE expires it. Writing
+IDLE to Timer_State clears it. Any other Timer_State, or a nonzero timeout
+outside the range, is VALUE_OUT_OF_RANGE and changes nothing. A new Timer
+accepts 1 to 4294967295 ms and defaults to 60000 ms; change them with
+`set_pres_value_range` and `set_default_timeout`. The countdown runs on the
+database's monotonic clock and holds while Out_Of_Service is TRUE, which also
+makes Reliability writable.
+
+`TimerObject::set_state_change(values, references, priority)` gives the Timer
+State_Change_Values, List_Of_Object_Property_References and
+Priority_For_Writing, which it then serves together (#2206). Each transition
+writes its element of the seven values (`BACnetTimerStateChangeValue`;
+`NoValue` writes nothing) to every reference at that priority. The bundled
+server makes those writes as it makes a Command's, after the guard that made
+the transition is released, including the writes an expiry on the operation
+task leaves. A newer transition supersedes a run still writing. The values and
+references take network writes; Reliability reads CONFIGURATION_ERROR while
+the non-NULL values differ in datatype, and otherwise reports the first failed
+write of the last run.
+
+`TimerObject::with_persistence(instance, name, persistence)` keeps the set a
+peer writes across a restart (#2243): a write to State_Change_Values or
+List_Of_Object_Property_References saves all three, Priority_For_Writing
+included, before the Timer serves them, and is refused with DEVICE /
+OPERATIONAL_PROBLEM, leaving the set as it was, when the save fails. A Timer
+rebuilt on the same storage serves the saved set, and `set_state_change`
+then checks its arguments without taking them (`state_change_saved` says
+so), so an application that sets its configuration at each start keeps a
+peer's write. A written Default_Timeout is kept the same way (#2312):
+`set_default_timeout` then checks and remembers its argument without serving
+it (`default_timeout_saved` says so). If the application later narrows the
+range with `set_pres_value_range` past a saved Default_Timeout, the saved
+value is dropped with a warning, the application's value applies, and storage
+is saved without it; the rest of what was saved still applies. A saved value
+past the range a new Timer takes (above `u32::MAX` milliseconds) is held aside
+at the build, unserved but still saved, until `set_pres_value_range` serves it
+or drops it; zero, which no range holds, is dropped at once.
+A written Description is kept the same way (#2364; see [Keeping a written
+Description](#keeping-a-written-description-2364)).
+`clear_written_config` drops everything saved (saving that, and returning
+storage's error if the save fails) so the setters apply again. The state
+machine is not kept: the Timer still starts IDLE. Storage is
+an `Arc<dyn WriteConfigPersistence>` (`bacnet_objects::write_config`), which a
+Channel uses too; `FileWriteConfigPersistence::new(path)` is the bundled
+backend, one file per object, replaced whole through a synchronized temporary
+file. A file cut short, holding a part of the wrong size or value, or saved
+for another object fails `with_persistence` with an error.
+
+Deleting a Timer releases nothing and makes no transition's writes (#2265):
+deletion isn't a transition. A running Timer deleted leaves its start writes
+in its targets' slots and never expires; clear it first (write Timer_State
+IDLE) to have RUNNING_TO_IDLE's writes made, a NULL there relinquishing. A run whose object is deleted stops: each local write checks the run's
+generation under the guard that commits it, so nothing more is written once
+the object is gone. A write to another device is checked once its route is
+known, before its invoke ID is leased, and before each retry; a request that
+already passed its last check is still sent if the delete lands in that gap,
+since no guard is held over a send.
 
 The Loop serves every required Table 12-20 row. Setpoint, the gain constants,
 Update_Interval and Action (DIRECT or REVERSE) take network writes.
@@ -5384,16 +6539,24 @@ fails with `Error::Encoding` before anything is written.
 Whatever commits a Present_Value write owns the run it starts and finishes it,
 so no path leaves a Command in process (#1178). Without a server,
 `tick_schedules` runs the lists its Schedule writes start before it returns,
-post delays included, making each command as the bare WriteProperty handler
-would with the Command as the initiating object; it has no network, so a
+post delays included, making each command through `bacnet-device-core`'s
+`write::write_property`, with the Command as the initiating object; it has no network, so a
 command naming another device fails. Dropping its future first ends each
-unfinished run as unsuccessful. The bare `handle_write_property` and
-`handle_write_property_multiple` handlers are synchronous and make no writes
-for a Command: the run a Present_Value write starts ends at once, with
+unfinished run as unsuccessful. `bacnet-device-core`'s `Responder::write`
+is synchronous and makes no writes for a Command, for a WriteProperty or a
+WritePropertyMultiple: the run a Present_Value write starts ends at once, with
 In_Process FALSE, All_Writes_Successful FALSE and every command's
 `write_successful` FALSE. The endpoint responder refuses a Command's
 Present_Value write with WRITE_ACCESS_DENIED, as it does every write other
 than the Device's Description and Audit recipient.
+
+Deleting a Command releases nothing (#2265): its writes are one-shot, and the
+values it made stay until another writer changes or relinquishes them. A run whose object is deleted stops: each local write checks the run's
+generation under the guard that commits it, so nothing more is written once
+the object is gone. A write to another device is checked once its route is
+known, before its invoke ID is leased, and before each retry; a request that
+already passed its last check is still sent if the delete lands in that gap,
+since no guard is held over a send.
 
 Load Control supports COV (Table 13-1). Its SubscribeCOV report carries
 Present_Value, Status_Flags, Requested_Shed_Level, Start_Time and
@@ -5411,7 +6574,9 @@ read, or a value of a datatype the object can't average counts as a missed
 attempt. References are always local: a written reference naming another
 device is refused (see below). The server's monotonic operation task does this through
 `ObjectDatabase::sample_due_averaging_objects`, which an application driving
-its own database can call as well.
+its own database can call as well. It asks each Averaging object for its
+due sample through the hidden `Timed::take_due_sample` (#2179), so an
+adapter that forwards `timed()` keeps a wrapped one sampled.
 
 The application feeds an object that has no reference. In a running server it
 passes each result to
@@ -5442,9 +6607,9 @@ Attempted_Samples fail with VALUE_OUT_OF_RANGE and change nothing.
 
 Each sample changes the statistics and counts together, then the server's COV
 path runs, as it does after a write. Averaging has no Table 13-1 row, so
-SubscribeCOV on it is refused (`supports_cov` is false), but it takes
-SubscribeCOVProperty and SubscribeCOVPropertyMultiple
-(`supports_subscribe_cov_property` is true): a numeric property is reported
+SubscribeCOV on it is refused (its `CovReporting` answers
+`supports_subscribe_cov()` with `false`), but it takes SubscribeCOVProperty and
+SubscribeCOVPropertyMultiple (it lends `cov()`): a numeric property is reported
 when it moves by the subscription's COV increment, or on any change if the
 subscription gives none, and the report carries no Status_Flags because the
 object has none. A move to or from the NaN or an infinity of an empty window is
@@ -5543,6 +6708,33 @@ notification carries Present_Value, Status_Flags and Present_Stage, and fires
 when Present_Value moves by the writable `COV_Increment` (default 0), when
 Status_Flags changes (including a target-plan completion that changes
 Reliability), or when Present_Stage changes.
+
+Removing a Staging object gives up the Present_Value slots its stage writes
+filled (#2265), as a Schedule's removal does, through the same path:
+DeleteObject, the application's own `ObjectDatabase::remove`, or an `add`
+that replaces it. The object records every target and priority its plans
+wrote, and the public `StagingSource::take_relinquish_writes()` hands the
+database one relinquish NULL per priority as it leaves. Each goes only to a
+slot whose Value_Source still names the Staging object, so a writer that took
+the slot keeps its command. A plan still being written stops at its next
+target.
+
+Changing Target_References or Priority_For_Writing gives up the slots the
+new configuration no longer writes (#2289), as a Schedule does: a dropped
+target's slot, or every slot at the old priority. A target that stays, even
+at another position in the array, keeps its command, and a write that changes
+nothing releases nothing. `StagingSource::take_owed_relinquishes()` hands
+those NULLs to the server, which writes them, under the same ownership check,
+in the guard of the object's next target write and before that write. A slot
+the object writes again before its NULL goes out is no longer owed, so a NULL
+never lands after the object's own later write. Out of service the targets
+are left alone (Clause 12.62.11): the NULLs wait for the return to service,
+or go out with the rest if the object is removed first. (A Schedule sends them
+out of service too.) An application that changes the properties directly on
+the object, rather than through the server's write paths, leaves both the
+NULLs and the new configuration's writes waiting for the next plan the server
+takes from it, such as on the next write through the server: unlike the
+Schedule's 60-second tick, nothing sweeps Staging objects periodically.
 
 #### Lighting & Color (5)
 
@@ -5805,9 +6997,9 @@ range. In_Progress never reads OTHER.
 Both objects model the device's start (#1526). A new object's In_Progress
 reads NOT_CONTROLLED: nothing has driven its output yet. As the server
 starts, before it shares the database, it calls `start_output` on each colour
-object in it. An application running one without a server, or adding one to
-a server already running, calls `start_output` itself; until then the object
-reads NOT_CONTROLLED. An in-process WARMSTART or COLDSTART should call it
+object in it (`ObjectDatabase::start_outputs`). An application running one
+without a server, or adding one to a server already running, calls
+`start_output` itself; until then the object reads NOT_CONTROLLED. An in-process WARMSTART or COLDSTART should call it
 again (see the `ReinitializeHandler` notes); it is safe to repeat.
 
 - A non-zero `Default_Color` or `Default_Color_Temperature` (clamped to the
@@ -5831,9 +7023,10 @@ object, keeps Present_Value in an `Arc<dyn ColorOutputPersistence>`
 Present_Value; `output_restored` says whether it did. The object saves each new
 Present_Value, whether a write, a command, a STOP or the start set it, on its
 own writer thread (see `bacnet_objects::durable`), so nothing touches storage
-under the database guard. As with the other durable objects, each colour
-object with storage keeps that thread, parked while idle, for as long as it
-lives: one thread per object, which matters for a device with many of them. Unlike a Notification Class's Recipient_List, a change doesn't wait
+under the database guard. As with the other durable objects, that thread
+ends once the object has saved nothing for a while and the next save starts
+another, so a device with many colour objects holds no thread for an idle
+one (#1956). Unlike a Notification Class's Recipient_List, a change doesn't wait
 for its save and isn't refused when the save fails: the value is a live
 output, and it keeps working while storage doesn't. The cost is that the
 stored value can lag the served one after a failed save, so a restart in
@@ -5845,11 +7038,24 @@ retried at once: the next change, `stop()` (which waits for the saves) or
 the object's drop tries again. `wait_for_output_saves` blocks until the queued
 ones have run. Tags storage
 (`with_tags_persistence`) and Present_Value storage combine.
+A `Default_Color` or `Default_Color_Temperature` a peer writes is kept with
+Present_Value (#1956), so a zero default written over the network keeps the
+last value at the next start. Unlike Present_Value, a default write saves
+before the object serves it and is refused with DEVICE / OPERATIONAL_PROBLEM,
+keeping the old default, when the save fails; a written default wins over
+the one `set_default_color` or `set_default_color_temperature` configures at
+the next start (`default_color_saved` and `default_color_temperature_saved`
+say so) until `clear_written_default` drops it. In Python,
+`clear_written_default=True` on `add_color` and `add_color_temperature` does
+the same before `default_color` applies. A `ColorOutputSnapshot` holds both, each an `Option`: a
+Present_Value once something drove the output, a default once a write set it.
 `FileColorOutputPersistence::new(path)` is the bundled backend: a tagged
-header with the object identifier, a kind octet and the value (two
-big-endian REALs, or a 32-bit kelvin), replaced whole through a synchronized
-temporary file. A file of the wrong size, kind or object, or holding a value
-out of range, fails `with_output_persistence` with an error.
+header with the object identifier, a kind octet, then Present_Value and the
+default, each behind a presence octet (two big-endian REALs, or a 32-bit
+kelvin), replaced whole through a synchronized temporary file. A file of the
+previous version, with Present_Value alone, still loads. A file of the wrong
+size, kind or object, or holding a value out of range, fails
+`with_output_persistence` with an error.
 
 The colour properties use their standard identifiers: `DEFAULT_COLOR` is
 4194330, `DEFAULT_COLOR_TEMPERATURE` 4194331 and `COLOR_COMMAND` 4194334
@@ -5870,6 +7076,18 @@ the member list, while a whole write of Execution_Delay must give exactly one
 delay per member (VALUE_OUT_OF_RANGE otherwise). A member naming the
 server's own Device is stored as the local reference it stands for; one
 naming another Device keeps it (#1264).
+
+`ChannelObject::with_persistence(instance, name, channel_number, persistence)`
+keeps what peers write to the members, Execution_Delay, Channel_Number,
+Control_Groups, Allow_Group_Delay_Inhibit and Description (#2364) across a
+restart (#2243), in the
+same `WriteConfigPersistence` storage a Timer uses. Each write saves before the
+Channel serves it, and is refused with DEVICE / OPERATIONAL_PROBLEM when the
+save fails. The members and their delays are kept together. A part a write
+saved wins over the configured one at the next start: its setter checks its
+argument without taking it, until `clear_written_config` drops every saved
+part. Parts nobody wrote take what the application configures, and
+Present_Value, Write_Status and Reliability start afresh.
 
 Present_Value takes any primitive value or one of the constructed
 alternatives: a lighting command framed in context tag 0, or, as Addendum
@@ -5945,6 +7163,17 @@ is dropped, during a remote request ends FAILED and frees its invoke ID.
 Without a server, `tick_schedules` has no network, so a remote member fails
 there.
 
+Deleting a Channel releases nothing (#2265): it holds no slot of its own,
+since each member's slot is at the priority its writer chose. While the
+Channel exists that writer relinquishes by writing NULL to it; once the
+Channel is deleted, the writer relinquishes each member's slot directly.
+A distribution whose Channel is deleted stops: each local write checks the run's
+generation under the guard that commits it, so nothing more is written once
+the object is gone. A write to another device is checked once its route is
+known, before its invoke ID is leased, and before each retry; a request that
+already passed its last check is still sent if the delete lands in that gap,
+since no guard is held over a send.
+
 Reliability reports how the last distribution ended (Clause 12.53.9):
 NO_FAULT_DETECTED after a SUCCESSFUL one, otherwise the kind of the first
 member failure to finish.
@@ -6009,8 +7238,8 @@ after the Channel took its value leaves the distribution running, as it does
 a Command's run (#1367). Without a server,
 `tick_schedules` runs a distribution its Schedule writes start before it
 returns, delays included, and ends it FAILED if its future is dropped first.
-The bare `handle_write_property` and `handle_write_property_multiple` handlers
-end it at once as FAILED, without writing the members. The endpoint responder
+`bacnet-device-core`'s `Responder::write` ends it at once as FAILED, without
+writing the members. The endpoint responder
 refuses a Channel's Present_Value write with WRITE_ACCESS_DENIED.
 
 A run that one Command's or Channel's write starts in another carries the
@@ -6025,6 +7254,15 @@ that started it fails with OBJECT / BUSY, so such a loop stops after one round.
 |------|-------------|
 | `LifeSafetyPointObject` | `::new(instance, name)` |
 | `LifeSafetyZoneObject` | `::new(instance, name)` |
+
+A Point's Maintenance_Required is a BACnetMaintenance (Table 12-18), served
+as an Enumerated and named by `bacnet_types::enums::Maintenance`. It starts
+as `NONE`; the application sets it with `set_maintenance_required`, and a
+client's write must be an Enumerated holding a standard value or one from the
+proprietary range 256..=65535. A reserved or larger number is
+VALUE_OUT_OF_RANGE, and a BOOLEAN, the datatype the Point used to serve, is
+INVALID_DATA_TYPE (#2252). A Zone's Maintenance_Required is a BOOLEAN
+(Table 12-19), which the Zone doesn't serve yet.
 
 #### Access Control (7)
 
@@ -6233,20 +7471,21 @@ count must be an Unsigned and a Reliability a BACnetReliability value.
 `AccessZoneObject::set_occupancy_count` reports the zone's own count;
 entering out of service puts the count and Reliability aside, the count the
 application reports meanwhile replaces the one put aside,
-`set_reliability_internal` is refused, and the return to service serves the
-zone's values again. A Credential Data
-Input's Present_Value and Reliability, the rows footnote 1 of Table 12-43
-marks, take WriteProperty and WritePropertyMultiple while Out_Of_Service is
-TRUE and refuse them in service with WRITE_ACCESS_DENIED. A Present_Value
+[`ReliabilityEval::set_reliability`](#capabilities) is refused, and the return
+to service serves the zone's values again. A Credential Data Input's
+Present_Value and Reliability, the rows footnote 1 of Table 12-43 marks, take
+WriteProperty and WritePropertyMultiple while Out_Of_Service is TRUE and
+refuse them in service with WRITE_ACCESS_DENIED. A Present_Value
 write must be one `BACnetAuthenticationFactor` (else INVALID_DATA_TYPE) whose
 format type and class match a declared Supported_Formats element and its
 class, or the UNDEFINED or ERROR factor with class 0 (else
 VALUE_OUT_OF_RANGE); it stamps Update_Time from the Device clock. A
 Reliability write must be a BACnetReliability value. Entering out of service
 puts the reader's Present_Value, Update_Time and Reliability aside,
-`set_present_value` updates the values put aside, `set_reliability_internal`
-is refused until the return to service, and the return to service serves the
-reader's values again.
+`set_present_value` updates the values put aside,
+[`ReliabilityEval::set_reliability`](#capabilities) is refused until the
+return to service, and the return to service serves the reader's values
+again.
 
 Without a usable Device clock a date-and-time stamp would be the unspecified
 one every time, so Access_Event_Time and Update_Time, the Table 13-1
@@ -6371,6 +7610,18 @@ evaluator doesn't judge accompaniment, the credential's status or
 validity window, or the other authorization checks; the documentation of
 `evaluate_access_rights` lists them.
 
+Two more pure helpers in the same module cover those stages, reading the
+database without writing it. `evaluate_accompaniment(db, request)` (#1571)
+judges an `AccompanimentRequest` with explicit timing and a bounded
+companion chain, and `evaluate_authorization(db, request)` (#1572) runs a
+whole `AuthorizationRequest` in the check order it carries, with operational
+evidence and companion prerequisites. Each returns ordered event intents and
+leaves publishing them, and any physical action, to the application. On a
+server, `BACnetServer::authorize_access_local(request, tag)` (#1569) runs
+`evaluate_authorization` and, for a grant or denial, records its events at the
+Access Point under the same database guard and publishes their COV states;
+see [Completed local access authorization](local-access-authorization.md).
+
 #### Transportation (3)
 
 | Type | Constructor |
@@ -6403,6 +7654,66 @@ their context-tagged Clause 21 forms, encoded with
 float `[0]` or integer `[1]` alternative, and Prescale's multiplier `[0]` and
 modulo divide `[1]` (#1487). Both are read-only.
 
+An Accumulator's Pulse_Rate is an Unsigned (Table 12-79): the input pulses
+counted over the last whole Limit_Monitoring_Interval (Clause 12.61.20). The
+application counts its meter's pulses and feeds them in with
+`BACnetServer::add_pulses_local(&oid, pulses)`, or, before the object is
+registered, `apply_local_input(LocalInputValue::Pulses(pulses))` on its
+`LocalInput` (#2259):
+
+- **Present_Value** steps by one count per pulse, or by Prescale's ratio when
+  the object has one, keeping the remainder between feeds (Clause 12.61.13),
+  and rolls over modulo Max_Pres_Value + 1 (Clause 12.61.4). A Prescale with a
+  modulo-divide of zero has no ratio and leaves Present_Value alone.
+- **Pulse_Rate** counts in a fixed window, in integer arithmetic only. Once
+  Limit_Monitoring_Interval is set (`set_limit_monitoring_interval`, or a
+  client's write), the object's `Timed` capability reports the end of the
+  window as its deadline and the server's monotonic task closes it there:
+  Pulse_Rate becomes the window's count, Pulse_Rate property subscribers are
+  notified, and the next window opens at that boundary. A pass that comes
+  late closes one window with every pulse counted and carries the part of an
+  interval left over, so the next deadline is always later than the pass. A
+  change of interval starts a new, empty window; rewriting the interval it
+  already has changes nothing, so a client that repeats the write doesn't
+  hold Pulse_Rate back. With an interval of zero,
+  the default, no window closes. An application that measures the rate
+  itself calls `set_pulse_rate` before registering the object.
+- **Out_Of_Service.** While it is TRUE (Clause 12.61.10), Present_Value
+  holds, dropping fed pulses rather than catching up on the return to
+  service, and Pulse_Rate keeps a client's written value, though the pulses
+  still fill the window, so the first window to close in service counts them.
+
+Present_Value is writable only while Out_Of_Service is TRUE (Table 12-79
+footnote 1, Clause 12.61.4; #2267). The write must be an Unsigned no larger
+than Max_Pres_Value: a larger one is VALUE_OUT_OF_RANGE, another datatype
+INVALID_DATA_TYPE, and any write in service WRITE_ACCESS_DENIED. A written
+value starts afresh, clearing Prescale's remainder, and once back in service
+fed pulses count on from it. Dependents see a written value as input
+(Clause 12.61.10): a Pulse Converter whose Input_Reference names the
+Present_Value counts an increase as its delta, and a decrease as a wrap
+through Max_Pres_Value (from 100 to 5 under 9999 counts 9905).
+
+Pulse_Rate is writable only while Out_Of_Service is TRUE (Clause 12.61.20);
+in service a write is WRITE_ACCESS_DENIED. A write must be an Unsigned; the
+REAL the object used to serve is INVALID_DATA_TYPE (#2251).
+
+Reliability is writable only while Out_Of_Service is TRUE too, so a client
+can simulate a fault (Clause 12.61.10; #2280): in service a write is
+WRITE_ACCESS_DENIED, and out of service it must be a BACnetReliability value.
+Status_Flags FAULT follows it. In service the application owns Reliability
+through [`ReliabilityEval::set_reliability`](#capabilities), which the
+Accumulator now lends and which is refused while Out_Of_Service is TRUE.
+Entering out of service sets the in-service value aside, and the return
+puts it back over whatever a client simulated.
+
+Max_Pres_Value never drops below Present_Value (#2280). A write below the
+current count is VALUE_OUT_OF_RANGE and changes nothing: clamping would
+invent a reading and a modulo reduction would lose the high part of a metered
+total. To shrink the range, a client sets Out_Of_Service, writes a
+Present_Value that fits and then lowers Max_Pres_Value.
+`AccumulatorObject::set_present_value` stores a value above Max_Pres_Value
+modulo Max_Pres_Value + 1, as fed pulses roll over.
+
 A Pulse Converter's Input_Reference, set with `set_input_reference`, reads and
 takes writes like the Loop's variable references: the context-tagged
 `BACnetObjectPropertyReference` in a `PropertyValue::ApplicationData`, with
@@ -6427,8 +7738,9 @@ that changes. While Out_Of_Service is TRUE, Reliability takes a client's
 value (Clause 12.23.10), and the return to service applies the latest
 verdict. A running server also counts from the property at least once a
 second (`ObjectDatabase::count_pulse_inputs`, on every wake of its monotonic
-operation task): each increase over the last reading goes into Count as
-`add_pulses` would, and the first reading after the reference is set or
+operation task; the built-in `PulseConverterObject` only, so a wrapped one
+is neither judged nor counted, #2179): each increase over the last reading
+goes into Count as `add_pulses` would, and the first reading after the reference is set or
 changed only sets the baseline, so re-pointing it at a larger value counts
 nothing. A reading below the last one counts the wrap when the source is an
 Accumulator's Present_Value, modulo its Max_Pres_Value + 1 (Clause 12.61.4);
@@ -6498,6 +7810,9 @@ exact admitted path so duplicate or leading-zero addresses are not normalized.
 Routes must be supplied explicitly; this slice does not discover router
 topology or choose a path automatically.
 
+The optional foreign-device BBMD target accepts an IPv4 address or host name,
+with an optional port, using upstream's `ForeignBbmd` validation and lookup.
+
 Health snapshots include attachment state, the actual local B/IP MAC, active
 operation counts, and managed foreign-device registration state. The event,
 discovery, cache, and COV counters are reserved and remain zero in this slice.
@@ -6513,6 +7828,226 @@ need those capabilities should continue using their lower-level crates until
 the corresponding runtime slices land.
 
 ---
+## bacnet-device-core
+
+A sans-IO request core over a borrowed `ObjectDatabase` (#2178): it takes a
+request APDU and writes the reply, with no I/O, clock, locks or async. It
+builds hosted (`std`, the default) and `no_std` with an allocator (`alloc`),
+on targets with atomic compare-and-swap, as `bacnet-objects` does. The
+[design note](design/device-core.md) has the whole plan.
+
+One feature, `structured-writes` (#2210), keeps the write path's own
+decoding of three structured datatypes: a BACnetEventParameter, and the
+elements of a BACnetPortPermission or BACnetStageLimitValue array. `std`
+turns it on; `alloc` alone leaves it off, and a write of one of those values
+is then refused with PROPERTY / WRITE_ACCESS_DENIED (an UNKNOWN_PROPERTY
+still wins for a property the object doesn't have). Any other write decodes
+as before, a single BACnetRecipient included. The decoding picks its arm
+from the datatype at run time, so with the feature every decoder those arms
+call links into an image whatever its objects serve; leaving it off saves
+20,368 / 20,412 / 24,184 octets of flash on the `firmware/link` objects
+image (thumbv7m / thumbv7em / riscv32imac). The metadata rows still call
+those properties writable, so an integrator's PICS for such a build lists
+them as read-only. A firmware that writes those datatypes asks for it:
+
+```toml
+bacnet-device-core = { version = "...", default-features = false, features = ["alloc", "structured-writes"] }
+```
+
+- `read`: `ReadScope` (the work limit, the registered Network_Port and the
+  Device the wildcard instance names), `ReadOverlay` (how a host serves an
+  object differently from the stored one; `NoOverlay` for none), and the
+  staged steps of ReadProperty and ReadPropertyMultiple: plan
+  (`plan_property`, `RpmPlan::new`), see which server-owned Device lists the
+  plan reads (`live_lists`), then read (`read_property_ack`,
+  `RpmPlan::read`). `ReadPropertyMultipleBudget` lives here, moved from
+  `bacnet_server::server`.
+- `write`: `write_property`, which runs a WriteProperty and says whether
+  it changed the object or was a NULL the property left as it was
+  (`Applied`), with an optional `WriteCommitObserver` that the host's audit
+  and change capture run in, synchronously under its database guard. An
+  observer must not await or take a lock that can wait on the database, an
+  async task or anything held across an await; a short leaf mutex taken
+  after the database is fine, and the server's take a few. The shared
+  steps every write path takes (`gate_and_decode_write`, whose index check
+  is `bacnet_objects::property_metadata::check_write_array_index`,
+  `decode_write_property_value`, `localize`,
+  `commit_attempt`, `check_executor_owned_write`); the NULL-relinquish rule
+  (`write::relinquish`); and the end of a Command's or Channel's run a host
+  can't make (`end_unmade`, `take_queued`, `Unfinished`).
+  `write_property_multiple` runs a WritePropertyMultiple attempt by attempt
+  in wire order, with an optional gate that decides each attempt and the same
+  observer, and returns a `WpmOutcome`: success, the Error naming the attempt
+  that failed (the attempts before it stay written; a syntax fault after one
+  succeeded is SERVICES / INVALID_TAG, not a Reject), or a Reject. Each names
+  the objects the attempts changed. `handle_write_property`,
+  `handle_read_property_multiple` and `handle_write_property_multiple` are
+  gone from `bacnet_server::handlers`.
+- `discovery`: `who_is` (the I-Am a Who-Is calls for, or none), `who_has`
+  (the I-Have, or none), `i_am` and `announcement_device`. Both answers name
+  the Device the `DeviceIdentity` names, and neither is sent while the
+  database lacks that Device, even if it holds another (#2186).
+- `cov` (#2303): the COV subscription table, `CovTable`, moved from
+  `bacnet-server` with its types (`CovRecipient`, `SubscriberEndpoint`,
+  `CovSubscriptionKey`, `MultipleContextKey`, `CovNotificationKind`,
+  `CovPolicy`, `CovCounters`, `CovSubscription`, `CovSubscriptionSnapshot`,
+  `CovSample`, `CovObservation`, `CovTimeRemaining`, `MultipleRefusal`).
+  `CovTable::subscribe_cov` and `subscribe_cov_property` run the two services
+  against a borrowed database. Every call that can expire something takes
+  `now`, a `bacnet_time::Instant` on one monotonic timeline. A confirmed
+  report's state is plain data: `begin_confirmed` returns a `Token`, the host
+  reports `delivered(token, Delivery)`, and a report no one settles ends at
+  its deadline (`FlightTiming`: the retry cycle plus one timeout). After each
+  change the host takes `take_fenced()`, a `Fenced` naming the tokens whose
+  worker should stop, the references removed or owed a fresh look and the
+  contexts refreshed, and `take_counts()`. The entries sit in one vector
+  sorted with the monitored object first. `evaluate` decides what a change
+  of one object reports to its ordinary and Single subscriptions: it
+  compares each with the observation its last delivered notification
+  established, skips a confirmed one whose report is out, encodes each
+  notification's parameters and spends the input's `EventBudget`. Every
+  report takes the host's lease first (for a confirmed one the server's
+  in-flight slot and invoke ID, for the `Reporter` room in its outbox), and
+  a confirmed one then begins its flight; every report comes back through
+  `delivered`, where `Delivery::Sent` commits an unconfirmed one and an Ack
+  commits what `begin_confirmed` kept and names the references owed a
+  fresh look. The values a notification carries are in `cov::prepare`,
+  `flags`, `reported`, `value_source` and `life_safety`, and the Device's
+  two subscription lists in `cov::active`, with `ActiveCovOverlay`, which
+  answers both from a `CovTable` through any read that takes a
+  `ReadOverlay`. `bacnet_server::cov` keeps `CovSubscriptionTable` with its
+  API, which runs on it, and the atomics and in-flight tracker.
+- `report` (#2303): `Reporter`, the `Responder` with COV reporting, for
+  firmware that owns its database. `handle(db, peer, request, now, out)`
+  answers SubscribeCOV and SubscribeCOVProperty and queues the first
+  notification, hands every other request to the `Responder`, reads the
+  Device's lists through the overlay, and queues what a write changes (a
+  Life Safety object from the values the write changed). `capture` and
+  `changed` do the same for the host's own changes. The outbox is one
+  buffer and one queue allocated at build (`OutboxLimits`: entries and
+  octets). A subscription holds one unconfirmed entry: a newer report
+  replaces it in its turn, so one that changes faster than the link sends
+  can't crowd out the others. A report the outbox has no room for leaves
+  its subscription owed, looked at again as room frees. A confirmed
+  report's answers are cut off at `FlightTiming::cutoff` from when the
+  table began it, however late `pop` sent it, as the server's worker's
+  are. `pop(bindings, ids, now, out)` appends the next
+  APDU and returns a `Notification` (token, `Destination`, `NotifyService`,
+  invoke ID, priority); a confirmed one takes an invoke ID from the host's
+  `InvokeIds`, which the device's own requests share. `reply(from, apdu,
+  ids, now)` matches a SimpleACK, Error, Reject or Abort by invoke ID and
+  peer; `next_deadline` and `on_deadline` run lifetimes, abandoned reports,
+  timeouts (resent with the same invoke ID while retries last, then failed)
+  and the looks owed. The host reports each send through `delivered`.
+  The `Responder` runs no DeleteObject, and `handle` rejects it as an
+  unrecognized service, so a host that serves it takes the request before
+  `handle` and lists the service in its own Protocol_Services_Supported.
+  Whenever the host deletes an object, at a request or on its own, it
+  calls `remove_for_object(object, ids)`: the object's subscriptions go, as
+  the server drops them at DeleteObject, with their queued and owed reports
+  and any confirmed notification still out, whose invoke ID goes back to
+  `ids`. `pop` hands out nothing more for the object; one it already
+  handed out is the host's to send. Until then an object created again
+  under its identifier would report to the old subscriptions.
+  `ReportConfig` holds the `CovPolicy`, the outbox and the confirmed
+  timing; `ReporterCounters` what it counted. Build the database with
+  `report::SERVICES`, which adds the two subscribe services to the
+  `Responder`'s. The COV-multiple services stay with `bacnet-server`
+  (#2320).
+- `clock` (#2321): the Device's clock, for firmware with none of its own.
+  `SyncedClock` holds a `bacnet_time::Instant`, the UTC date and time it
+  stood for and the `Zone` (UTC_Offset, minutes west, and
+  Daylight_Savings_Status, fixed at build as the server's `ClockConfig`
+  is); it allocates nothing and divides nothing in 64 bits. Until the first
+  `set` it is unsynchronized and counts from local midnight, 1990-01-01,
+  at the instant it was built, as a device with no time source does after a
+  restart. `set(Basis::Local, ..)`, a TimeSynchronization's, makes the
+  date and time given the local ones; `set(Basis::Utc, ..)`, a
+  UTCTimeSynchronization's, reads locally as less UTC_Offset, plus an hour
+  in daylight-saving time; a value that isn't a specific date and time is
+  refused and changes nothing. `frame(now)` is the Device's four clock
+  properties; `window(now)` is the local day and time recipient windows are
+  judged at, `None` until synchronized. `DeviceClock` pairs it with the
+  host's timer (`MonotonicNow`, on the timeline it passes as `now`) and
+  implements `ClockReader`; `lend` binds a copy to the database.
+  `destination_open(destination, window)` judges a Notification Class
+  destination's days and window by the server's test
+  (`bacnet_objects::notification_class::in_window`), and with no window
+  fails closed: only a destination open every day, all day
+  (`always_in_window`), is.
+- `reply`: `error_apdu`, the one map from an `Error` to its Reject or Error
+  PDU (never an Abort: a work or byte limit is the caller's Abort), and the
+  refusals a host sends for a service it doesn't run.
+- `responder`: `Responder`, for a host with nothing to await between the
+  steps. `Responder::classify` says from the header alone whether a request
+  reads or writes the database; `Responder::read` answers ReadProperty,
+  ReadPropertyMultiple, Who-Is and Who-Has through an overlay;
+  `Responder::write` answers WriteProperty and WritePropertyMultiple,
+  returning `Written`: the outcome and the objects the write changed, for the
+  host's post-write work; and `Responder::handle`, for
+  firmware that owns its database, does either, refuses every other
+  well-formed confirmed request, and drops an APDU that doesn't decode, as
+  the server does.
+  `bacnet_device_core::SERVICES` lists the services it runs, for the
+  Device's Protocol_Services_Supported. `Responder::with_clock(clock, db)`
+  gives it a `DeviceClock` and lends it to the database: `write` (and so
+  `handle`, which now takes the responder mutably) then runs each
+  TimeSynchronization and UTCTimeSynchronization the Device lists (add
+  `clock::SERVICES` to its identity's services), setting the clock and
+  lending it again, and `classify` calls both writes. A host filters the
+  requests it doesn't accept (source, rate) before handing them over.
+  `Responder::set_time` sets the clock from a board's real-time clock,
+  which counts as synchronized; a `Reporter` built on such a responder has
+  `Reporter::set_time` and `Reporter::clock` for the same, and its
+  `clock().window(now)` is what recipient windows are judged by, never
+  the database's clock frame, which reads a valid 1990 date before a
+  sync.
+
+`Responder::new` refuses an identity that claims segmentation support, since
+the core aborts every segmented request and every reply too long for one APDU,
+a `read_work` limit of zero, and an RPM budget with a zero limit. `Limits`
+holds the ReadProperty work limit and, set with `Limits::with_rpm`, the
+`ReadPropertyMultipleBudget`: an RPM past its result rows is aborted with
+OUT_OF_RESOURCES before any value is read, and one whose ACK passes its octet
+limit with BUFFER_OVERFLOW after the reads, as the server answers.
+
+`Inbound::with_source` names the requester, as a `CommandOrigin`
+(`bacnet_objects::command_source`): for a network requester,
+`CommandOrigin::Remote` with the address the request came from (network 0
+on the local network) and the Device bound to it, if the host knows one.
+`Responder::write` gives it to each write as the command origin, so a
+commandable Present_Value is commanded for that requester at the request's
+priority, as the server commands it (#2209). A request built with
+`Inbound::new` alone names no requester, and an object with a commandable
+Present_Value refuses its write with WRITE_ACCESS_DENIED. A write that
+starts a Command's or Channel's run ends that run at once, unmade, with none
+of its actions performed.
+
+```rust
+use bacnet_device_core::responder::{Inbound, Limits, Outcome, Responder};
+
+let mut responder = Responder::new(identity, Limits::default())?;
+// `request` is the received APDU as `Bytes`; `max_reply` is the smaller of
+// its Max-APDU-Length-Accepted and the route's limit.
+let mut out = bytes::BytesMut::new();
+// `requester` is the CommandOrigin of the address the request came from.
+let request = Inbound::new(request, max_reply).with_source(requester);
+let handled = responder.handle(&mut db, request, &mut out);
+match handled.outcome {
+    Outcome::Reply => send_to_requester(&out),
+    Outcome::Announce => broadcast(&out),
+    _ => {}
+}
+```
+
+`bacnet-server` runs its ReadProperty, ReadPropertyMultiple, ReadRange's
+Group reads, `read_local`, Who-Is and Who-Has on these functions, with its
+Device view as the overlay, and its WriteProperty, WritePropertyMultiple's
+attempts, CreateObject's initial values and its local writes on the write
+functions, with its audit and COV capture as the observer. The `objects`
+image of the [firmware link test](ci.md#firmware-link-test) links
+`Responder::handle` over a `bacnet-objects` database, writing a Binary Value,
+reading it back, and reading two Present_Values with ReadPropertyMultiple.
 
 ## bacnet-client
 
@@ -6548,8 +8083,9 @@ let client = BACnetClient::sc_builder()
     .await?;
 ```
 
-Use `bip_builder()` for B/IP, `sc_builder()` for BACnet/SC, or
-`generic_builder()` with a prebuilt transport.
+Use `bip_builder()` for B/IP, `bip6_builder()` for B/IPv6 (client `ipv6`
+feature), `sc_builder()` for BACnet/SC, or `generic_builder()` with a
+prebuilt transport.
 
 ### Choosing the client transport at runtime
 
@@ -6683,9 +8219,9 @@ connection are not public.
 
 ### Frame tap
 
-`frame_tap()` on `BipTransport`, `Bip6Transport`, `ScTransport` and
-`MstpTransport` (and `AnyTransport::frame_tap()`, `None` for Ethernet and
-loopback) returns the transport's `FrameTap` (#957). `subscribe()` gives a
+`frame_tap()` on `BipTransport`, `Bip6Transport`, `ScTransport`,
+`MstpTransport` and `EthernetTransport` (and `AnyTransport::frame_tap()`,
+`None` for loopback) returns the transport's `FrameTap` (#957, #1856). `subscribe()` gives a
 `FrameTapReceiver` of `TappedFrame { timestamp, direction, link, peer, bytes }`
 for every frame the transport sends, and every frame it receives (on MS/TP,
 every frame it hears on the line), control traffic included:
@@ -6701,13 +8237,20 @@ every frame it hears on the line), control traffic included:
   primary or failover. Direct connections are not tapped yet.
 - MS/TP: each whole frame, preamble to CRC, Token and Poll For Master too,
   found in what the line delivered: every frame on the bus, other stations'
-  traffic included. Frames are found from the octets alone, without the
-  master node's inter-octet timing, so a frame the node aborted for a gap
-  can still appear. `peer` is the source station of a received frame and the
-  destination of a sent one.
+  traffic included. Frames are timed as the master node times them: a frame
+  the node gives up, for a silence longer than T_frame_abort in the middle of
+  it or because it started to send, does not appear, and one it takes appears
+  once. `peer` is the source station of a received frame and the destination
+  of a sent one.
+- Ethernet (Linux): each whole 802.3 frame as the packet socket sends or reads
+  it, from the destination MAC to the padding (the network card adds and
+  strips the frame check sequence), XID and TEST commands and responses too.
+  A received frame appears if the transport takes it: one addressed to this
+  station or to the broadcast, and not from this station's own MAC. `peer` is
+  the source MAC of a received frame and the destination MAC of a sent one.
 
-The tap is in-process. On B/IP, B/IPv6 and BACnet/SC it shows only this
-node's own traffic, so it does not replace a wire capture. A BACnet/SC message
+The tap is in-process. On B/IP, B/IPv6, BACnet/SC and Ethernet it shows only
+this node's own traffic, so it does not replace a wire capture. A BACnet/SC message
 is taken in plaintext, before TLS encrypts it and after TLS decrypts it.
 
 Each receiver has a bounded queue (`DEFAULT_TAP_CAPACITY`, 1024 frames, or
@@ -6762,14 +8305,27 @@ use std::{net::Ipv4Addr, time::Duration};
 let client = BACnetClient::bip_builder()
     .port(0)
     .mode(BipMode::Foreign(ForeignDeviceConfig {
-        bbmd_ip: Ipv4Addr::new(192, 0, 2, 10),
-        bbmd_port: 47808,
+        bbmd: (Ipv4Addr::new(192, 0, 2, 10), 47808).into(),
         ttl: 60,
         renewal_interval: Some(Duration::from_secs(20)),
     }))
     .build().await?;
 let registration = client.foreign_registration()?;
 ```
+
+`ForeignDeviceConfig::bbmd` is a `ForeignBbmd`: an address, or a host name and
+port (#2308), which parses from `ip`, `host` or either with `:port`
+(`"bbmd.example:47808".parse()?`). A host name is looked up as one written to
+FD_BBMD_Address is: when the transport starts, and again alongside the
+registrations at most every 30 seconds, by the system's resolver or the one
+`BipTransport::set_bbmd_resolver` (or the builders' `bbmd_resolver`) gives. A name
+that doesn't resolve still starts the transport: its node waits for a BBMD
+(`bacnet-bip-core`'s waiting state), with no registration sent and broadcasts held
+and then refused, the failure counted in `bbmd_lookups`, `bbmd_lookup_failures` and
+`last_bbmd_lookup_failure`, `waiting_for_bbmd` reading true, and the name tried again
+every 30 seconds. The first
+address it resolves to that a start would accept is registered with at once;
+`foreign_device_config()` then reads that address.
 
 `renewal_interval: None` uses half the advertised TTL, including 500 ms for
 TTL 1; a shorter interval renews more often without changing the TTL the BBMD
@@ -7009,6 +8565,12 @@ client.write_property_multiple(&mac, specs).await?;
 
 ### COV Subscriptions
 
+The subscription types below live in `bacnet_device_core::cov` since #2303
+([bacnet-device-core](#bacnet-device-core)); `bacnet_server::cov` keeps the
+server's `CovSubscriptionTable`, `AtomicCovCounters` and the in-flight
+tracker, and `bacnet_server::server` no longer re-exports `CovPolicy` or
+`CovCounters`.
+
 Single-property `subscribe_cov_property` and `subscribe_cov_property_to_device`
 require a `std::num::NonZeroU32` lifetime in seconds; 28,800 seconds and the full
 positive `u32` range are accepted. Use their explicit `unsubscribe_...` methods
@@ -7027,11 +8589,21 @@ expiry cleanup or subscription changes. Public Rust/Python ordinary subscribe
 methods already supply the mode and retain their optional lifetime signatures.
 Python exposes ordinary COV and PropertyMultiple, not the single-property API.
 
+The managed helpers `manage_cov_subscription` and
+`manage_cov_property_subscription` (called on an `Arc<BACnetClient>`) send a
+finite subscription and renew it before it expires. They take a
+`bacnet_client::client::CovTarget` (#1790): `CovTarget::local(mac)`,
+`CovTarget::routed(router_mac, network, address)` or
+`CovTarget::of_device(&device)`, and match notifications by that source
+network and address. The helpers only renew: after
+`ManagedCOVSubscription::stop`, cancel at the same target with
+`unsubscribe_cov_target` or `unsubscribe_cov_property_target`.
+
 The full server owns the served Device execution profile. Every Device's
 `Protocol_Services_Supported` reports the fixed `EXECUTED_SERVICES`, with the
 existing clock-dependent time-service filter. Both `Active_COV_Subscriptions`
-and `Active_COV_Multiple_Subscriptions` are present: the selected lowest Device
-gets live lists and other Devices get empty lists. Its `Device_Address_Binding`
+and `Active_COV_Multiple_Subscriptions` are present: the identity's Device
+gets live lists and other Devices get empty lists (#2227). Its `Device_Address_Binding`
 lists the server's device bindings at the time of the read (#1369): each
 configured `DeviceBinding` and each device whose I-Am arrived in the last ten
 minutes (a targeted Who-Is's answer included), in instance order, with network
@@ -7054,12 +8626,15 @@ membership changes still do not rebind discovery identity.
 runtime service toggle. Raw built-in Device metadata and reads include property
 152 only for declared SubscribeCOV or SubscribeCOVProperty, and property 481
 only for declared SubscribeCOVPropertyMultiple; present standalone lists are empty.
-Direct database reads, context-free `handle_read_property`/`handle_read_property_multiple`
-and standalone `PicsGenerator` use raw object declarations. Use the full server's
+Direct database reads, `bacnet-device-core` reads with no overlay (`NoOverlay`,
+`Responder::handle`) and standalone `PicsGenerator` use raw object
+declarations. Use the full server's
 read and PICS methods for its execution view.
 
 PICS property rows aggregate all configured instances of each object type in
-ascending property-ID order, including single-instance output. A row or read/write
+ascending property-ID order, including single-instance output. A type
+CreateObject builds also has a row with no instance: see
+[CreateObject constructors](#createobject-constructors). A row or read/write
 flag means at least one instance supports it; actual access still depends on the
 concrete object. A property is optional only when all of its present metadata rows
 are optional; a required declaration wins, and absent rows do not vote. For example,
@@ -7484,7 +9059,7 @@ report is sent or a confirmed one acknowledged (#896).
 Applicable Status_Flags changes independently trigger ordinary and property COV.
 Property reports include the selected value and declared-present flags; explicit
 flags appear once and Multiple emits one companion per retained object. Effective
-`property_list()` declares presence. Present flags must be a one-byte BitString
+`property_metadata()` declares presence. Present flags must be a one-byte BitString
 with `unused_bits = 4` and zero unused low bits. Selected read/encoding/cap failure
 or declared-present flags failure skips the whole observation, including ordinary
 Present_Value: no partial flags-only report and no baseline advance. This transient
@@ -8352,17 +9927,31 @@ WriteProperty, WritePropertyMultiple, CreateObject, DeleteObject, AddListElement
 RemoveListElement, AtomicWriteFile, SubscribeCOV, SubscribeCOVProperty, and
 SubscribeCOVPropertyMultiple, plus inbound WriteGroup. **It allows by default**,
 unlike the Audit and LifeSafety methods, which deny by default. False or panic returns
-`SERVICES / SERVICE_REQUEST_DENIED` without the denied mutation. WPM authorizes
-each element in order and retains an authorized prefix on later denial or
-malformed input; other covered services authorize once after service decoding.
-A WPM element that an object saves before serving it (a forwarder or Notification
-Class list, an Access Rights rule array, Enable or Accompaniment, an Audit Log's
-Log_Enable or Buffer_Size) is decided before the server stages its save off the
-database lock (#1321): still once, and in wire order among those elements, so
-ahead of earlier elements no object saves first, and possibly for an element the
-request never reaches because an earlier one fails. Counters and audit records
-cover only the elements the handler reaches.
-Policies must be fast, nonblocking, and side-effect-free. Context addresses and
+`SERVICES / SERVICE_REQUEST_DENIED` without the denied mutation. Other covered
+services authorize once after service decoding. WPM elements are decided ahead,
+with no database guard held (#1321, #2032): the server keeps the elements that
+pass its pre-authorization checks, up to the first that fails them, asks the
+policy about each in wire order up to the first denial, then takes the write
+lock and applies the recorded decisions, retaining an allowed prefix on a later
+denial or failure. The policy can therefore be asked about an element the
+request never reaches because an earlier one fails as it is written; counters
+and audit records cover only the elements the handler reaches. An element whose
+object appeared between the passes, so the policy never saw it, is denied.
+Every decision for a received request, DeviceCommunicationControl,
+LifeSafetyOperation and AuditNotification included, runs on Tokio's blocking
+pool while the request waits (#2032), so a blocking policy delays only its own
+request and `stop()` doesn't wait for it; a call that never returns keeps its
+thread and keeps the process from exiting. A policy that never blocks can skip
+that trip: when its `decides_inline()` returns `true` (`FnPolicy::inline()` for
+closures), the server calls every method of it on the request task instead
+(#2049). Opt in only when no method blocks or awaits, takes a lock the request
+path may also hold, calls back into the server, or does I/O. Otherwise the call
+holds the request task and the runtime worker under it (on a current-thread
+runtime, every task), and `stop()`, which ends only after each inline call
+already running has returned, waits for it; one that never returns keeps
+`stop()` from ending. A Python `mutation_policy` callable always runs on the
+pool. Policies should still be fast,
+reentry-free and side-effect-free, and may be called concurrently. Context addresses and
 process IDs are claimed, not authenticated identities. DeviceCommunicationControl
 has its own method, `authorize_device_communication_control` (allow by default),
 asked after the DCC password, static `DccPolicy` and source restriction pass and
@@ -8405,6 +9994,16 @@ the endpoints' Device-write authorizer through their `device_write_policy`
 callable (#2033). See
 [Server authorization policy](mutation-policy.md).
 
+### Program_State from the application
+
+Program_State is read-only on the network (Clause 12.22.4), and
+`write_local` refuses it with `PROPERTY / WRITE_ACCESS_DENIED` as well. The
+application reports the state of the program a Program object stands for with
+`BACnetServer::set_program_state_local`, the object's `ProgramState` local
+input, or `ProgramObject::set_program_state` before the server holds it
+(#2258). It takes an Enumerated BACnetProgramState from 0 (IDLE) to 5
+(UNLOADING).
+
 ### Life Safety execution and COV
 
 Inbound LifeSafetyOperation is fail-closed unless the server's `ServerPolicy`
@@ -8423,14 +10022,15 @@ Trusted runtime logic can arm or rearm a Life Safety object through
 `BACnetServer::set_life_safety_operation_expected_local`, awaited inside a
 Tokio runtime like every local write; a caller dropped once the change is
 made still notifies Operation_Expected's subscribers (#1520). The lower-level
-`BACnetObject::set_life_safety_operation_expected_internal` channel also remains
-available to custom database owners. Protocol WriteProperty and
-WritePropertyMultiple cannot forge `Operation_Expected` or `Silenced`.
+`LifeSafety::set_life_safety_operation_expected` channel, lent by
+`BACnetObject::life_safety`, also remains available to custom database
+owners. Protocol WriteProperty and WritePropertyMultiple cannot forge
+`Operation_Expected` or `Silenced`.
 
-`BACnetObject::apply_life_safety_operation` returns
-`Result<LifeSafetyOperationOutcome, Error>`: an effect plus exact committed
-property changes in stable reporting order, with no duplicates. Custom objects
-own this projection. `AlreadyApplied` means no state changed and carries no
+`LifeSafety::apply_life_safety_operation`, lent by `BACnetObject::life_safety`,
+returns `Result<LifeSafetyOperationOutcome, Error>`: an effect plus exact
+committed property changes in stable reporting order, with no duplicates.
+Custom objects own this projection. `AlreadyApplied` means no state changed and carries no
 deltas; errors leave object state unchanged. The default hook explicitly returns
 `OBJECT / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED`.
 
@@ -8464,17 +10064,17 @@ service both are `PROPERTY / WRITE_ACCESS_DENIED` (#1108). Entering out of
 service sets the object's own `Tracking_Value` and `Reliability` aside and the
 return to service restores them. Meanwhile `set_tracking_value` and a reset
 commit's `tracking_value` replace the value set aside, not the simulated one,
-and `set_reliability_internal`, the in-service route for a fault the
-application detects, is refused. A simulated value notifies through the same
-COV path as any write, and Present_Value, `Silenced` and `Operation_Expected`
-don't follow it; a reset executor sees the simulated `Tracking_Value` in its
-context.
+and [`ReliabilityEval::set_reliability`](#capabilities), the in-service
+route for a fault the application detects, is refused. A simulated value
+notifies through the same COV path as any write, and Present_Value,
+`Silenced` and `Operation_Expected` don't follow it; a reset executor sees
+the simulated `Tracking_Value` in its context.
 
 Once the server holds a Point or Zone, the application reaches its
 Present_Value with `BACnetServer::set_present_value_local` and its
 Tracking_Value with `BACnetServer::set_tracking_value_local` (#1123), which go
-through the `BACnetObject::set_present_value_internal` and
-`set_tracking_value_internal` hooks. Both take an Enumerated `LifeSafetyState`,
+through the object's `LocalInput` as its `PresentValue` and `TrackingValue`
+inputs. Both take an Enumerated `LifeSafetyState`,
 standard or from 256 to 65535: another number fails with
 `PROPERTY / VALUE_OUT_OF_RANGE`, another datatype with
 `PROPERTY / INVALID_DATA_TYPE`, an unknown object with `OBJECT / UNKNOWN_OBJECT`
@@ -8526,7 +10126,20 @@ The server automatically dispatches:
 - ReadProperty, WriteProperty (mutation-gated)
 - ReadPropertyMultiple, WritePropertyMultiple (mutation-gated)
 - SubscribeCOV, SubscribeCOVProperty, SubscribeCOVPropertyMultiple (mutation-gated)
-- CreateObject, DeleteObject (mutation-gated)
+- CreateObject, DeleteObject (mutation-gated). The Device's
+  Protocol_Object_Types_Supported comes from
+  `bacnet_objects::device::SUPPORTED_OBJECT_TYPES`, every type the crate
+  builds, and CreateObject reads the same list. A request naming an
+  identifier already in use is OBJECT / OBJECT_IDENTIFIER_ALREADY_EXISTS
+  first, whatever its type. Then a type outside the list is OBJECT /
+  UNSUPPORTED_OBJECT_TYPE whatever the instance, and a listed type the server
+  doesn't create, or a listed type at instance 4194303, is OBJECT /
+  DYNAMIC_CREATION_NOT_SUPPORTED (Clause 15.3.1.3, #2171). The types it
+  creates are those of `bacnet_objects::creation`, each started with its
+  own constructor's defaults (#2172). DeleteObject
+  answers OBJECT / UNKNOWN_OBJECT for an absent object, then OBJECT /
+  OBJECT_DELETION_NOT_PERMITTED for a type it doesn't delete or an object
+  the database keeps ([Creation and deletion](#creation-and-deletion)).
 - DeviceCommunicationControl
 - ReinitializeDevice (restart, apply changes, or a Clause 19 backup or restore
   step): decoded and password-validated, then carried out by the
@@ -8596,12 +10209,90 @@ naming any network is sent routed, as it is written. The server has one port,
 so the local network is that port's; a multi-port device would need the
 network attached to each port (#863).
 
+### CreateObject constructors
+
+CreateObject builds the types of `bacnet_objects::creation` on its own. An
+application makes its own types creatable, or replaces a built-in type's
+constructor, by registering a constructor per type (#2173):
+`ServerBuilder::object_constructor(object_type, constructor)` (also on the
+B/IP and SC builders), or `ServerConfig::object_types`, an
+`ObjectTypeRegistry` whose `register` takes the same arguments. The
+constructor returns its concrete type, which implements
+`bacnet_objects::creation::Creatable`; that is where the type's
+creation-only properties come from (#2179). Every built-in type the table
+builds implements it already.
+
+```rust,ignore
+use bacnet_objects::creation::Creatable;
+
+// MyPump takes no property only at creation.
+impl Creatable for MyPump {}
+
+let server = BACnetServer::bip_builder()
+    .object_constructor(ObjectType::from_raw(600), |oid, name| {
+        Ok(MyPump::new(oid, name))
+    })?
+    .object_constructor(ObjectType::ANALOG_VALUE, |oid, name| {
+        let mut av =
+            AnalogValueObject::new(oid.instance_number(), name, EngineeringUnits::DEGREES_CELSIUS)?;
+        av.set_description("created by a client");
+        // Still takes Units only at creation, as the built-in type does.
+        Ok(av)
+    })?
+    .build()
+    .await?;
+```
+
+- **Which types.** A standard type the Device lists in
+  Protocol_Object_Types_Supported (`bacnet_objects::device::SUPPORTED_OBJECT_TYPES`)
+  other than Device and Network Port, which model the node itself, or a
+  proprietary type from 128 to 1023. Anything else, and a second
+  registration for the same type, is refused with `Error::Encoding` when it
+  is registered. A registered proprietary type passes CreateObject's type
+  check; Protocol_Object_Types_Supported, which lists standard types only,
+  doesn't change.
+- **The constructor** gets the identifier (the one the request names, or the
+  instance the server picked) and a default name, and returns the object. It
+  runs synchronously under the object database's write lock: keep it quick,
+  and don't block, await or take a lock. The registry is fixed once the
+  server starts.
+- **What follows** is the path a built-in type takes: the server policy
+  decides the request before the constructor runs, the initial values are
+  applied as WriteProperty applies them (creation-only properties through
+  the type's `Creatable::initialize_property`), a refusal names its initial value and drops the
+  object, and the creation is audited. The constructor doesn't see the
+  initial values, so it can't add optional rows on request as the built-in
+  table does (an Analog or Binary Value's audit policy rows): an initial
+  value for a property the object doesn't serve, such as Audit_Level, is
+  refused as a write to it would be. Build the rows the type should take.
+- **Refusals.** An object whose identifier isn't the one the constructor was
+  given is refused with `OBJECT / DYNAMIC_CREATION_NOT_SUPPORTED` and
+  nothing is added; so is a panic (with unwind builds) and any error other
+  than `Error::protocol`. An `Error::protocol(class, code)` goes back to the
+  client as is. A caught panic still runs the process's panic hook, which
+  prints to stderr by default (and can garble a terminal UI), so refuse
+  with an error, not a panic.
+- **Deletion.** `ObjectTypeRegistry::keep_from_deletion(object_type)` keeps
+  a type from DeleteObject, registered or not; every other type but Device
+  and Network Port is deleteable.
+- **PICS.** A registered type reports as createable from the registry.
+  With no instance in the database it is still listed, with no property
+  rows or creation-only list: the server never calls the constructor just
+  to describe the type. (An instance-less table type is described from
+  an object its built-in constructor makes, outside the database.) The
+  Python bindings can't register constructors.
+
 ### The ReinitializeDevice handler
 
 `ServerBuilder::on_reinitialize` (also on the B/IP and SC builders, or
 `ServerConfig::on_reinitialize`) installs a `ReinitializeHandler`. The server
 calls it with a `ReinitializeContext` and the object database once a request
 has decoded, passed `reinit_password` and named a state Clause 16.4 defines.
+A configured `reinit_password` or `dcc_password` holds 1 to 20 characters
+(`bacnet_services::device_mgmt::MAX_PASSWORD_CHARS`, counted in characters,
+not octets); an empty or longer one fails the build with `Error::Encoding`
+instead of refusing every request (#2060, #2094). Leave it unset for no
+password.
 The context carries the requested `state`, the immediate `source_mac`, the
 routed `source_network` when there is one, the transport `provenance` (with
 `direct_sc_identity()` for a verified direct BACnet/SC peer) and the
@@ -9015,6 +10706,34 @@ fixes them, and the warning logged with each skip gives the finer reason:
 
 ---
 
+## bacnet-ops and bacnet-mcp
+
+`bacnet-ops` (#2065) is the UI-free operations core the `bacnet` CLI, its
+terminal UI and its MCP server share: no terminal or MCP dependency, just a
+`BACnetClient` and plain data. Its modules cover the target grammar
+(`target`, `destination`), object, property and value parsing (`parse`),
+display text (`format`, `label`; `format::alarms` renders alarm and event
+summaries), request limits (`limits`: the global rate cap, the one request
+per device gate and per-caller accounts), frame decoding with no traffic
+(`decode`), B/IP BBMD table reads and checks (`bbmd`), the watch hub
+(`watch`), and the write-safety core the TUI and MCP share (`safety`: tiers,
+previews, the ledger and the audit log, #2068). `engine::Engine::new(client,
+limits)` wraps an `Arc<BACnetClient<T>>` and an `Arc<RequestLimits>`
+(`RequestLimits::new(per_second)`, 0 for no cap); its async reads take a
+device instance: `read`, `read_property`, `list_objects`, `describe_device`,
+`read_trend` (trend, event and audit log pages), `alarms`, `alarm_summary`
+and `enrollment_summary`.
+
+`bacnet-mcp` (#2066, experimental) is a Model Context Protocol server over
+that engine, run by `bacnet mcp serve --stdio` (the CLI's `mcp` feature).
+`McpServer::new(engine, policy, principal)` takes an
+`Option<Arc<Engine<T>>>` (`None` for passive mode, which sends nothing), a
+`Policy` it validates, and the caller's principal; `serve_stdio()` or
+`serve(reader, writer)` run it. Build the engine's limits from
+`Policy::request_limits()` so the policy's rates hold. It is read-only unless a
+profile opts into writes. The [MCP server guide](mcp.md) covers its tools
+and profiles, and [its design](design/mcp.md) the reasoning.
+
 ## Error Handling
 
 All async operations return `Result<T, bacnet_types::error::Error>`. Key variants:
@@ -9239,7 +10958,7 @@ The snapshot denies activation-dependent network writes, except a registered
 BBMD's two writable rows (see below), and derives its readonly MAC from
 configured IP/UDP. Reconstruct it to change configuration. It has no inert
 Command or obsolete port62 projection. Link_Speed is
-optional and zero means unknown. The former raw `new` constructor and configuration
+required, as Table 12-71 classes it, and zero means unknown (#2174). The former raw `new` constructor and configuration
 setters are removed. `new_non_bip` takes explicit Ethernet/VIRTUAL number, MAC and
 capacity and exposes common application rows only; it does not claim a complete
 SC or Ethernet profile. Both `DeviceIdentity` database builders use these same
@@ -9270,7 +10989,7 @@ A transport reports its registration capability through `TransportPort::bip_port
 - **BBMD** adds BBMD_Broadcast_Distribution_Table and BBMD_Foreign_Device_Table (BACnetLISTs of `BACnetBDTEntry` and `BACnetFDTEntry`) and BBMD_Accept_FD_Registrations. The object holds the transport's own BBMD state through the `bacnet_types::bip_port::BbmdTables` view and reads it on every property read, so a BDT change, a new or expired registration, or a policy change made through `BipTransport::bbmd_state()` shows on the next read. FDT entries carry each registrant's time to live and the seconds it has left, grace period included; an entry past its time no longer appears even before the purge task removes it. The BDT includes the BBMD's own row.
 - **NORMAL** has none of them: reading one answers UNKNOWN_PROPERTY.
 
-In BBMD mode BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations are writable (Clauses 12.56.34, 12.56.35, #1578), and the PICS draft lists them so. A written BDT is checked on its own against the transport's BDT policy at once, through `BbmdTables::check_value` (whose default checks it with `check_broadcast_distribution_table`; `BipTransport`'s view checks the rows itself and leaves the NAT rules for activation, below): a row with no host, a host name, an IPv6 host or no mask, or a table `BbmdState::set_bdt` would refuse, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. An accepted write waits: Changes_Pending reads TRUE and the property reads back the value written, while the BBMD keeps using the old one, so a Read-BDT still answers with the BDT in use (Clause 12.56.13, 12.56.34). For ACTIVATE_CHANGES or WARMSTART the server first checks, changing nothing, that the transport would still take the pending values (`ObjectDatabase::check_network_port_changes`), and refuses with PROPERTY / INVALID_CONFIGURATION_DATA (Clause 16.4.1.3.1) before the handler runs if not, so a handler never schedules a restart for a request that fails. Once the handler accepts, the server calls `ObjectDatabase::activate_network_port_changes` under the same database lock, which hands the values to the transport (`BbmdTables::activate`, all or none per port, not across ports) and clears Changes_Pending; a refusal then, which only a race with a change to the transport can cause, gets the same Error PDU, and the values stay pending. The rows take writes only on a server or endpoint with a ReinitializeDevice handler (`on_reinitialize`, `BipEndpointBuilder::reinitialize`), and only when the transport's view takes changes (`BbmdTables::can_change`, `ForeignRegistration::can_change`, true for `BipTransport`'s views): otherwise nothing could activate them, so a write answers WRITE_ACCESS_DENIED and the PICS lists them read-only. Turning registrations off keeps the foreign-device policy for when they are turned on again; with none kept, `ForeignDevicePolicy::default()` applies. **Security:** that default has no allowed-source list, so on a BBMD started without a policy, writing TRUE to BBMD_Accept_FD_Registrations lets any source register; start the BBMD with the policy you want, then switch it off, if it should come back restricted. With a persisted-BDT file (`set_bdt_persist_path`), an activated BDT is saved there, replacing the file whole through a temporary file and a rename, so a restart starts from it (#1826). The save runs on a thread of its own after the activation has released its locks, which a runtime shutdown doesn't cancel; a save older than one already written is skipped, so the file always ends with the newest table, and a save that never runs or panics counts as failed. A failed save is logged at warn and counted in `BipTransport::bdt_persist_failures`, and the BBMD keeps using the new BDT. In FOREIGN mode FD_BBMD_Address and FD_Subscription_Lifetime are writable the same way (Clauses 12.56.37, 12.56.38, #1825), and wait for the same activation. A written value is checked at once with the other one waiting, through `ForeignRegistration::check`: the BBMD must be an IPv4 host and a nonzero port that a start would accept (not the unspecified, a broadcast or a multicast address, nor the device's own address), and the time-to-live must be nonzero; anything else, a host name included, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. A client can't see `ForeignDeviceConfig::renewal_interval`, so a new lifetime cuts a configured interval to at most half of it rather than being refused. Only a running transport takes a change, since only its node knows the address it is bound to: while it is stopped the rows answer WRITE_ACCESS_DENIED, and values accepted while it ran, left pending across a stop, fail the check before the handler runs, so ACTIVATE_CHANGES answers PROPERTY / INVALID_CONFIGURATION_DATA. A lifetime over 65535 is out of range for its Unsigned16 type. On activation the running foreign device drops the attempt in flight and sends its next Register-Foreign-Device to the new BBMD with the new time-to-live at once; a lease the old BBMD granted no longer counts, so `bvlc_client_snapshot().foreign_registration` shows the device unregistered until the new BBMD answers, while a new time-to-live for the same BBMD keeps the lease it has. Broadcasts made after a move to another BBMD are held, as at start, until that BBMD answers the first registration (Annex J.4.5). A later restart uses the new values (`BipTransport::foreign_device_config`). With `BipTransport::set_release_previous_bbmd(true)` (off by default), a move to another BBMD also sends the old BBMD a Delete-Foreign-Device-Table-Entry for the device's own address, on the side, so its entry goes before its time-to-live and grace period run out (Annex J.2.9, J.5.2.3, #1852); a NAK or silence never fails the move and is counted in the snapshot's `previous_release_refused` and `previous_release_unanswered`. This stack's own BBMD refuses such a deletion unless its management access list names the device. The request names the device's own local address (`link().address`; on a wildcard bind, the default-route address): behind a NAT router, or on a multi-homed host whose registration left from another address, the old BBMD knows the device by another address and will usually refuse (counted), and in a rare case it could delete another device's entry registered from the same private address and port on its side. Those are further reasons the option is off by default. The other configuration rows stay read-only and answer WRITE_ACCESS_DENIED. A transport configured both as a BBMD and as a foreign device has no single mode, and starting with a port registered on it fails with an error that says so. After the owner stops, the port keeps reporting the last published mode, as it keeps the last published bind; a BBMD's rows then show the stopped transport's tables as they were left, until a new registration. On an IPv4 BBMD port the transport can run behind a NAT router, so the port also serves BACnet_IP_NAT_Traversal and BACnet_IP_Global_Address (Clauses 12.56.32, 12.56.33; Table 12-71 footnotes 9 and 10, #940): FALSE and the unset address (no host, port 0) until NAT is configured. Both are writable the same way, since this stack never discovers the global address, and the three NAT-related rows can be written in any order. A write is checked on its own (`BbmdTables::check_value`): a BDT against the row policy, a global address as an IPv4 unicast host and nonzero port (not the unspecified, broadcast, a multicast or a loopback address), or the unset sentinel; a host name, an IPv6 host or anything else answers PROPERTY / VALUE_OUT_OF_RANGE. The rules that tie them together are checked at ReinitializeDevice, before the handler runs (`BbmdTables::check`): behind NAT a BDT with rows must list the global address, every row must be two-hop, and NAT needs a global address; a set that breaks them answers PROPERTY / INVALID_CONFIGURATION_DATA and stays pending. So moving the global address while NAT is on takes a new address and a BDT that lists it, activated together (`Tables::set_nat_and_bdt` in the core). Turning NAT off drops the BDT row of the old global address, from a BDT written in the same activation too, and adds the local own row. The private ranges are configuration only. With a persisted-BDT file, an activation that changed BACnet_IP_NAT_Traversal or BACnet_IP_Global_Address saves the NAT setting (on or off, and the global address) with the BDT, and every later save carries it, as does every save after a start that loaded a file holding one; a restart loads the three together, and the saved setting wins over the configured one, as the saved BDT does, with a warning when the two differ. Until then a BDT-only activation saves the rows alone, so a NAT setting changed in the configuration still applies at the next start. A pending set that's invalid as a whole (NAT on with no global address, or with a BDT that doesn't list it or has a one-hop row) makes every ReinitializeDevice ACTIVATE_CHANGES and WARMSTART on the device answer PROPERTY / INVALID_CONFIGURATION_DATA until it's fixed, since the check covers all pending Network Port values. To clear it, write BACnet_IP_NAT_Traversal FALSE, or write back the BDT and global address the BBMD runs with (a Read-BDT still answers with the BDT in use), or a pair that fits together, then activate. A port whose transport can use B/IP multicast (an explicit interface, NORMAL or BBMD mode, not sharing its port by address, and a port for the group) also serves BACnet_IP_Multicast_Address, in whichever state, through the `bacnet_types::bip_port::IpMulticast` view in `BipPort::multicast` (Clause 12.56.26; Table 12-71 footnote 7, #941): the group as four octets, or 0.0.0.0 while multicast is off. So every NORMAL or BBMD B/IP port with an explicit interface now lists the row, multicast on or off. On a NORMAL port it is writable the same way, with a ReinitializeDevice handler: a written group must be four octets, class D outside 224.0.0.0/24, or 0.0.0.0, or it answers PROPERTY / VALUE_OUT_OF_RANGE; the written value reads back with Changes_Pending TRUE while the old group stays in use, and activation moves the running transport to it ([B/IP multicast](#bip-multicast-bip-m)). A listener that can't be bound or joined fails the activation with the old group still in use. **Deviation:** Clause 12.56.26 makes the property writable whenever it is present, but on a server or endpoint without a ReinitializeDevice handler nothing could activate a written group, so, as with the BBMD rows (#1578), the row is served read-only there (WRITE_ACCESS_DENIED, and the PICS lists it read-only) rather than left out. A group activated this way is kept by a later start, and across a new process with `BipTransport::set_multicast_persist_path` (#1954). Endpoint sessions publish it too. On a BBMD port the row is writable the same way, and a written group goes in with the BBMD rows in one activation, both or neither, since the BBMD's own BDT row depends on the group ([B/IP multicast](#bip-multicast-bip-m), J.8.3, #1963).
+In BBMD mode BBMD_Broadcast_Distribution_Table and BBMD_Accept_FD_Registrations are writable (Clauses 12.56.34, 12.56.35, #1578), and the PICS draft lists them so. A written BDT is checked on its own against the transport's BDT policy at once, through `BbmdTables::check_value` (whose default checks it with `check_broadcast_distribution_table`; `BipTransport`'s view checks the rows itself and leaves the NAT rules for activation, below): a row with no host, a host name, an IPv6 host or no mask, or a table `BbmdState::set_bdt` would refuse, answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. An accepted write waits: Changes_Pending reads TRUE and the property reads back the value written, while the BBMD keeps using the old one, so a Read-BDT still answers with the BDT in use (Clause 12.56.13, 12.56.34). For ACTIVATE_CHANGES or WARMSTART the server first checks, changing nothing, that the transport would still take the pending values (`ObjectDatabase::check_network_port_changes`), and refuses with PROPERTY / INVALID_CONFIGURATION_DATA (Clause 16.4.1.3.1) before the handler runs if not, so a handler never schedules a restart for a request that fails. Once the handler accepts, the server calls `ObjectDatabase::activate_network_port_changes` under the same database lock, which hands the values to the transport (`BbmdTables::activate`, all or none per port, not across ports) and clears Changes_Pending; a refusal then, which only a race with a change to the transport can cause, gets the same Error PDU, and the values stay pending. The rows take writes only on a server or endpoint with a ReinitializeDevice handler (`on_reinitialize`, `BipEndpointBuilder::reinitialize`), and only when the transport's view takes changes (`BbmdTables::can_change`, `ForeignRegistration::can_change`, true for `BipTransport`'s views): otherwise nothing could activate them, so a write answers WRITE_ACCESS_DENIED and the PICS lists them read-only. Turning registrations off keeps the foreign-device policy for when they are turned on again; with none kept, `ForeignDevicePolicy::default()` applies. **Security:** that default has no allowed-source list, so on a BBMD started without a policy, writing TRUE to BBMD_Accept_FD_Registrations lets any source register; start the BBMD with the policy you want, then switch it off, if it should come back restricted. With a persisted-BDT file (`set_bdt_persist_path`), an activated BDT is saved there, replacing the file whole through a temporary file and a rename, so a restart starts from it (#1826). The save runs on a thread of its own after the activation has released its locks, which a runtime shutdown doesn't cancel; a save older than one already written is skipped, so the file always ends with the newest table, and a save that never runs or panics counts as failed. A failed save is logged at warn and counted in `BipTransport::bdt_persist_failures`, and the BBMD keeps using the new BDT. In FOREIGN mode FD_BBMD_Address and FD_Subscription_Lifetime are writable the same way (Clauses 12.56.37, 12.56.38, #1825), and wait for the same activation. A written value is checked at once with the other one waiting, through `ForeignRegistration::check`: the BBMD must be an IPv4 host and a nonzero port that a start would accept (not the unspecified, a broadcast or a multicast address, nor the device's own address), and the time-to-live must be nonzero. The BBMD may instead be a host name in the RFC 1123 form with a nonzero port, checked for its form only. Anything else answers PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. A client can't see `ForeignDeviceConfig::renewal_interval`, so a new lifetime cuts a configured interval to at most half of it rather than being refused. Only a running transport takes a change, since only its node knows the address it is bound to: while it is stopped the rows answer WRITE_ACCESS_DENIED, and values accepted while it ran, left pending across a stop, fail the check before the handler runs, so ACTIVATE_CHANGES answers PROPERTY / INVALID_CONFIGURATION_DATA. A lifetime over 65535 is out of range for its Unsigned16 type. On activation the running foreign device drops the attempt in flight and sends its next Register-Foreign-Device to the new BBMD with the new time-to-live at once; a lease the old BBMD granted no longer counts, so `bvlc_client_snapshot().foreign_registration` shows the device unregistered until the new BBMD answers, while a new time-to-live for the same BBMD keeps the lease it has. Broadcasts made after a move to another BBMD are held, as at start, until that BBMD answers the first registration (Annex J.4.5). A later restart uses the new values (`BipTransport::foreign_device_config`). A host name is looked up at each activation (#1852), on the side, so the activation never waits for it: by the system's resolver on Tokio's blocking pool, or by the `bacnet_transport::bbmd_lookup::BbmdResolver` given to `BipTransport::set_bbmd_resolver` (or to the client and endpoint builders' `bbmd_resolver`, #2307). A resolver answers with addresses of either family, and B/IP takes the IPv4 ones. The device then moves to the first address it can register with, as it would for an address. Later lookups run alongside the registration attempts (the first after a start, renewals and retries), at most one every 30 seconds, so a 1-second lifetime drives one query every 30 seconds rather than two a second: the attempt still goes to the address in use, and a lookup that finds the BBMD elsewhere moves the device, which registers there at once. One resolver call runs at a time; a name activated while one runs is looked up when it ends. While the address in use is still among the answers the device stays put, so a name with several addresses doesn't move it. A lookup that fails, has no answer after 10 seconds, finds no IPv4 address, finds only addresses a start would refuse, or ends without an answer (a panicking resolver, a runtime shutting down) leaves the device registering with the address it had (before the first success, the BBMD it used before the name) and is logged and counted in the snapshot's `bbmd_lookups`, `bbmd_lookup_failures` and `last_bbmd_lookup_failure`. The row reads back the name throughout, and `foreign_device_config` the address in use. With `BipTransport::set_release_previous_bbmd(true)` (off by default; the client and endpoint builders' `release_previous_bbmd(true)`, #2307), a move to another BBMD, by activation or because the BBMD's host name now resolves elsewhere, also has the node engine send the old BBMD one Delete-Foreign-Device-Table-Entry for the device's own address, after the first registration with the new BBMD and given up after the old registration's response timeout (3 seconds, or its renewal interval when shorter), so its entry goes before its time-to-live and grace period run out (Annex J.2.9, J.5.2.3, #1852; `Foreign::release_previous` in `bacnet-bip-core`, #2307); a NAK or silence never fails the move and is counted in the snapshot's `previous_release_refused` and `previous_release_unanswered`. This stack's own BBMD refuses such a deletion unless its management access list names the device. The request names the device's own local address (`link().address`; on a wildcard bind, the default-route address): behind a NAT router, or on a multi-homed host whose registration left from another address, the old BBMD knows the device by another address and will usually refuse (counted), and in a rare case it could delete another device's entry registered from the same private address and port on its side. Those are further reasons the option is off by default. The other configuration rows stay read-only and answer WRITE_ACCESS_DENIED. A transport configured both as a BBMD and as a foreign device has no single mode, and starting with a port registered on it fails with an error that says so. After the owner stops, the port keeps reporting the last published mode, as it keeps the last published bind; a BBMD's rows then show the stopped transport's tables as they were left, until a new registration. On an IPv4 BBMD port the transport can run behind a NAT router, so the port also serves BACnet_IP_NAT_Traversal and BACnet_IP_Global_Address (Clauses 12.56.32, 12.56.33; Table 12-71 footnotes 9 and 10, #940): FALSE and the unset address (no host, port 0) until NAT is configured. Both are writable the same way, since this stack never discovers the global address, and the three NAT-related rows can be written in any order. A write is checked on its own (`BbmdTables::check_value`): a BDT against the row policy, a global address as an IPv4 unicast host and nonzero port (not the unspecified, broadcast, a multicast or a loopback address), or the unset sentinel; a host name, an IPv6 host or anything else answers PROPERTY / VALUE_OUT_OF_RANGE. The rules that tie them together are checked at ReinitializeDevice, before the handler runs (`BbmdTables::check`): behind NAT a BDT with rows must list the global address, every row must be two-hop, and NAT needs a global address; a set that breaks them answers PROPERTY / INVALID_CONFIGURATION_DATA and stays pending. So moving the global address while NAT is on takes a new address and a BDT that lists it, activated together (`Tables::set_nat_and_bdt` in the core). Turning NAT off drops the BDT row of the old global address, from a BDT written in the same activation too, and adds the local own row. The private ranges are configuration only. With a persisted-BDT file, an activation that changed BACnet_IP_NAT_Traversal or BACnet_IP_Global_Address saves the NAT setting (on or off, and the global address) with the BDT, and every later save carries it, as does every save after a start that loaded a file holding one; a restart loads the three together, and the saved setting wins over the configured one, as the saved BDT does, with a warning when the two differ. Until then a BDT-only activation saves the rows alone, so a NAT setting changed in the configuration still applies at the next start. A pending set that's invalid as a whole (NAT on with no global address, or with a BDT that doesn't list it or has a one-hop row) makes every ReinitializeDevice ACTIVATE_CHANGES and WARMSTART on the device answer PROPERTY / INVALID_CONFIGURATION_DATA until it's fixed, since the check covers all pending Network Port values. To clear it, write BACnet_IP_NAT_Traversal FALSE, or write back the BDT and global address the BBMD runs with (a Read-BDT still answers with the BDT in use), or a pair that fits together, then activate. A port whose transport can use B/IP multicast (an explicit interface, NORMAL or BBMD mode, not sharing its port by address, and a port for the group) also serves BACnet_IP_Multicast_Address, in whichever state, through the `bacnet_types::bip_port::IpMulticast` view in `BipPort::multicast` (Clause 12.56.26; Table 12-71 footnote 7, #941): the group as four octets, or 0.0.0.0 while multicast is off. So every NORMAL or BBMD B/IP port with an explicit interface now lists the row, multicast on or off. On a NORMAL port it is writable the same way, with a ReinitializeDevice handler: a written group must be four octets, class D outside 224.0.0.0/24, or 0.0.0.0, or it answers PROPERTY / VALUE_OUT_OF_RANGE; the written value reads back with Changes_Pending TRUE while the old group stays in use, and activation moves the running transport to it ([B/IP multicast](#bip-multicast-bip-m)). A listener that can't be bound or joined fails the activation with the old group still in use. **Deviation:** Clause 12.56.26 makes the property writable whenever it is present, but on a server or endpoint without a ReinitializeDevice handler nothing could activate a written group, so, as with the BBMD rows (#1578), the row is served read-only there (WRITE_ACCESS_DENIED, and the PICS lists it read-only) rather than left out. A group activated this way is kept by a later start, and across a new process with `BipTransport::set_multicast_persist_path` (#1954). Endpoint sessions publish it too. On a BBMD port the row is writable the same way, and a written group goes in with the BBMD rows in one activation, both or neither, since the BBMD's own BDT row depends on the group ([B/IP multicast](#bip-multicast-bip-m), J.8.3, #1963).
 
 ### Registered B/IPv6 Network Port
 
@@ -9305,8 +11024,16 @@ broadcasts and Address-Resolutions there, and trusts Forwarded-NPDUs from it onl
 later start uses it. A written value is checked at once: the BBMD must be a
 loopback, unique local or global unicast IPv6 host other than the device itself,
 with a nonzero port, and the time-to-live nonzero. The unspecified, multicast,
-link-local, IPv4-mapped and IPv4-compatible forms, IPv4 hosts and host names answer
-PROPERTY / VALUE_OUT_OF_RANGE. The socket stays bound to the address it started
+link-local, IPv4-mapped and IPv4-compatible forms and IPv4 hosts answer
+PROPERTY / VALUE_OUT_OF_RANGE. The BBMD may instead be a host name in the RFC 1123
+form with a nonzero port (#2308), checked for its form only and looked up on B/IP's
+policy (above): at each activation, on the side, and alongside the re-registrations,
+the first after a start included, at most once every 30 seconds, one resolver call
+at a time. The device moves to the first IPv6 answer a write of that address would
+pass, and re-registers there at once; it stays while the address in use is among the answers,
+and a failed lookup keeps the address it had, logged and counted in
+`Bip6Transport::bbmd_lookup_counters`. The system's resolver does the lookups unless
+`Bip6Transport::set_bbmd_resolver` gives another. The row reads back the name. The socket stays bound to the address it started
 with, so the new BBMD must also be one this host's routes reach from that address;
 a local probe checks it, sending nothing, and a BBMD reached only from another
 source is refused the same way. Only a running transport takes a change; while it
@@ -9471,6 +11198,14 @@ session.stop().await?;
 `ScEndpointBuilder` composes SC (`build_loopback_session` for unit
 validation; `build_hub_session` over a caller-dialed `TlsWebSocket`,
 `sc-tls` only, proven against the local constrained-TLS hub).
+`connect_hub_session(ScHubDialer::new(url, tls))` (`sc-tls`) dials the hub
+itself through the dialer `BACnetClient::sc_builder()` uses, so with
+`reconnect(...)` and `ScHubDialer::failover_url` the session redials a lost
+hub and moves between the primary and failover hubs as a client does (#1946).
+Every SC session's `sc_link()` hands out the transport's `ScLinkMonitor`:
+`connection_events()` (subscribe before `start()` to see the first
+connection) and `connection_status()`, the same stream and snapshot as
+`ScTransport::connection_events` and `connection_status`.
 `MstpEndpointBuilder` composes one serial owner (simulator evidence only —
 no bench or on-wire conformance; timing is RB-26). It runs standard frames
 and a 480-octet APDU bound by default; `extended_frames(true)` turns on
@@ -9486,7 +11221,7 @@ The port declares its own echo, as for a transport built by hand
 | `BACnetClient::bip_builder()...build().await` | `BipEndpointBuilder::new(iface, port, bcast).role(ClientOnly).build_session()?` then `start()` |
 | `BACnetServer::bip_builder()...build().await` | `BipEndpointBuilder::new(iface, port, bcast).role(ServerOnly).database(db).device(id).build_session()?` then `start()` |
 | Client + server on one device | One `...role(Both).database(db).device(id).build_session()?` (B/IP, SC, or MS/TP builder) |
-| `BACnetClient::sc_builder()...build().await` | `ScEndpointBuilder::new(vmac, uuid)...build_hub_session(ws)?` (dial first, then compose) |
+| `BACnetClient::sc_builder()...build().await` | `ScEndpointBuilder::new(vmac, uuid)...connect_hub_session(hubs).await?` (reconnect and failover as on the client), or `build_hub_session(ws)?` over a caller-dialed socket |
 | `BACnetServer::sc_builder()...build().await` | Same `ScEndpointBuilder` with `ServerOnly` + `database` + `device` |
 | `generic_builder().transport(mstp)...` | `MstpEndpointBuilder::new(serial, station)...build_session()?` (one serial owner) |
 
@@ -9605,6 +11340,14 @@ through it, the session's only Reporter, is a local choice. A panic or a returne
 `SERVICES / OTHER` and the session keeps serving. A close that wins while the
 request waits for the database refuses it before the handler runs.
 
+`EndpointSession::report_device_reset_local()` is the session's counterpart of
+`BACnetServer::report_device_reset_local()` (#1837): it records a reset the
+application makes for its own reasons as a DEVICE_RESET from this device, with
+no invoke ID, through the source Reporter and its Audit_Level and
+Auditable_Operations filters. Without a source Reporter it records nothing.
+It fails when the session is not running, and returns once the record is
+admitted, so call it before restarting.
+
 ### Direct endpoint WriteProperty and source WRITE reporting
 
 `ClientRoleHandle::write_property` accepts a direct B/IP IPv4 unicast MAC, a
@@ -9686,8 +11429,7 @@ After a complete validated RPM ACK, one distinct concrete Device object with at
 least one successful property establishes Target_Device for all records in that
 operation. Error-only Device results establish none; conflicting successful
 Device IDs retain Address attribution without rejecting the otherwise valid ACK.
-This is operation-local knowledge, with no discovery cache. Direct B/IP source
-limits and the absence of Python source Reporter configuration remain unchanged.
+This is operation-local knowledge, with no discovery cache.
 
 The initiating role supports `read_property`, `read_range`, `read_property_multiple`
 and direct B/IP `write_property`, plus explicit
@@ -9717,6 +11459,46 @@ selected Audit Reporter. Configure the Reporter's READ bit
 and audit level before startup; both `ClientOnly` and `Both` sessions support
 confirmed and unconfirmed notifications. `Both` additionally requires an explicit
 Device write authorizer. Startup itself emits nothing.
+
+Other links work the same way (#2357): B/IPv6, BACnet/SC, MS/TP and any other
+transport take Device bindings to a MAC on their own link, in its format, with
+`EndpointSession::with_source_audit_device_binding(device, mac)`, or the
+builders' `ScEndpointBuilder::source_audit_device_binding(device, vmac)` and
+`MstpEndpointBuilder::source_audit_device_binding(device, station)` (there is no
+B/IPv6 endpoint builder). A binding there must be a direct unicast MAC: as long
+as the node's own and not the node's own, not a group destination by the
+transport's rule, and not MS/TP's station 255, a six-octet all-ones broadcast
+(SC's broadcast VMAC) or a six-octet all-zero MAC (SC's reserved VMAC, no
+Ethernet station). `start` refuses another with SERVICES /
+SERVICE_REQUEST_DENIED, and B/IP bindings on another link, or these on B/IP, with
+an error. The node's own MAC is checked again once the link has started; B/IPv6,
+which learns its VMAC at start, checks it only then, so a binding to it starts
+and the Reporter reads CONFIGURATION_ERROR. An
+audited client operation on such a link must go to a direct unicast MAC by the
+same rule.
+
+A Device behind a router binds on any link, B/IP included (#2371), with
+`EndpointSession::with_source_audit_routed_device_binding(device, network, mac)`
+or each builder's `source_audit_routed_device_binding(device, network, mac)`.
+The network must be 1 to 65534 (0 names the local network and 65535 every
+network) and the MAC 1 to 18 octets; its length isn't checked against this
+link, since the remote network's link may differ. `start` and the builders
+refuse anything else with SERVICES / SERVICE_REQUEST_DENIED, and a Device bound
+twice, directly or routed. Records go with DNET/DADR through the router to that
+network. The session learns the router from traffic that comes back from the
+network (an answer it admits, or a request from a station there) and from an
+I-Am-Router-To-Network that lists it (Clause 6.5.3 leaves the method to the
+node). Until then, and after a delivery through the learned router is lost
+(no answer in time, or a failed send), a record goes with the link's broadcast
+MAC instead; a peer's Error, Reject or Abort keeps the router. A confirmed
+record's answer comes back naming the network and MAC, and a failure counts
+toward AUDITING_FAILURE and sets COMMUNICATION_FAILURE as a direct one does.
+Once the session's number is the binding's network, the binding is a direct
+one by the link's rule, and a record queued or in flight then goes, and is
+answered, as a direct one. An audited client operation routed to a station
+on another network (DNET 1 to 65534, a DADR of 1 to 18 octets, which the
+requester already requires) is audited too, and its record names the station
+by that network and MAC.
 
 ```rust
 use std::net::{Ipv4Addr, SocketAddrV4};

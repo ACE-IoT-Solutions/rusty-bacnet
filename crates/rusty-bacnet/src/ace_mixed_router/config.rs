@@ -149,10 +149,6 @@ impl PyRouterScPort {
                     "failover_hub must differ from primary_hub",
                 ));
             }
-            return Err(PyValueError::new_err(
-                "failover_hub is not supported by the upstream 0.13 Python router; \
-                 initial TLS failover cannot yet preserve hub identity",
-            ));
         }
         if local_vmac.len() != 6 {
             return Err(PyValueError::new_err("local_vmac must be exactly 6 bytes"));
@@ -295,7 +291,7 @@ fn validate_hub(value: &str, name: &str) -> PyResult<()> {
 fn validate_receive_limits(max_npdu_length: u16, max_bvlc_length: u16) -> PyResult<()> {
     if max_npdu_length != ROUTED_NPDU_LENGTH || max_bvlc_length != ROUTED_BVLC_LENGTH {
         return Err(PyValueError::new_err(format!(
-            "upstream 0.13 SC router ports use fixed receive limits of \
+            "SC router ports use fixed receive limits of \
              {ROUTED_NPDU_LENGTH} NPDU / {ROUTED_BVLC_LENGTH} BVLC"
         )));
     }

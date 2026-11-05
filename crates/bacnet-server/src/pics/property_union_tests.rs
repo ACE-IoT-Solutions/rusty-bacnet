@@ -17,7 +17,7 @@ fn file_pics(files: Vec<FileObject>) -> Pics {
     for file in files {
         db.add(Box::new(file)).unwrap();
     }
-    generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+    generate_pics(&db, &ServerConfig::default(), &PicsConfig::default()).instance_types_only(&db)
 }
 
 fn access(pics: &Pics, property: PropertyIdentifier) -> Option<PropertyAccess> {
@@ -232,26 +232,23 @@ fn pics_device_union_applies_execution_view_to_every_instance() {
                 "second"
             }
         }
-        fn property_list(&self) -> Cow<'static, [P]> {
-            Cow::Owned(vec![
-                P::PROTOCOL_SERVICES_SUPPORTED,
-                P::ACTIVE_COV_MULTIPLE_SUBSCRIPTIONS,
-                self.extra,
-            ])
-        }
         fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
             Cow::Owned(
-                self.property_list()
-                    .iter()
-                    .map(|p| {
-                        PropertyMetadata::new(
-                            *p,
-                            PropertyConformance::RequiredWrite,
-                            None,
-                            PropertyWriteCapability::Always,
-                        )
-                    })
-                    .collect(),
+                [
+                    P::PROTOCOL_SERVICES_SUPPORTED,
+                    P::ACTIVE_COV_MULTIPLE_SUBSCRIPTIONS,
+                    self.extra,
+                ]
+                .into_iter()
+                .map(|p| {
+                    PropertyMetadata::new(
+                        p,
+                        PropertyConformance::RequiredWrite,
+                        None,
+                        PropertyWriteCapability::Always,
+                    )
+                })
+                .collect(),
             )
         }
         fn read_property(&self, _: P, _: Option<u32>) -> Result<PropertyValue, Error> {
@@ -285,7 +282,10 @@ fn pics_device_union_applies_execution_view_to_every_instance() {
         .for_server()
         .generate();
     let property = |pics: &Pics, p| {
-        pics.supported_object_types[0]
+        pics.supported_object_types
+            .iter()
+            .find(|support| support.object_type == ObjectType::DEVICE)
+            .unwrap()
             .supported_properties
             .iter()
             .find(|row| row.property_id == p)

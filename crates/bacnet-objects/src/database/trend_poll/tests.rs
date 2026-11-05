@@ -1,6 +1,7 @@
 use super::*;
 use crate::analog::AnalogValueObject;
 use crate::clock::{ClockFrame, ClockReader};
+use crate::property_metadata::PropertyMetadata;
 use crate::trend::TrendLogObject;
 use bacnet_types::constructed::BACnetDeviceObjectPropertyReference;
 use bacnet_types::enums::EngineeringUnits;
@@ -82,7 +83,7 @@ fn fixture(
     let clock = Arc::new(WallClock(Mutex::new(Some(frame()))));
     let mut db = ObjectDatabase::new();
     let source = time.clone();
-    db.set_monotonic_clock_internal(Some(Arc::new(move || *source.lock().unwrap())));
+    db.set_monotonic_clock(Some(Arc::new(move || *source.lock().unwrap())));
     db.set_clock_reader(Some(clock.clone()));
     db.add(Box::new(
         AnalogValueObject::new(1, "AV", EngineeringUnits::NO_UNITS).unwrap(),
@@ -270,8 +271,8 @@ impl BACnetObject for ConfigurableTrend {
     fn object_name(&self) -> &str {
         self.inner.object_name()
     }
-    fn property_list(&self) -> std::borrow::Cow<'static, [P]> {
-        self.inner.property_list()
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        self.inner.property_metadata()
     }
     fn read_property(&self, property: P, index: Option<u32>) -> Result<PropertyValue, Error> {
         if property == P::LOG_DEVICE_OBJECT_PROPERTY {
@@ -293,14 +294,31 @@ impl BACnetObject for ConfigurableTrend {
     ) -> Result<(), Error> {
         self.inner.write_property(p, i, v, priority)
     }
-    fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
-        self.inner.bind_clock_internal(clock);
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        self.inner.timed()
+    }
+    fn log_buffer(&self) -> Option<&dyn crate::traits::LogBuffer> {
+        Some(self)
+    }
+    fn log_buffer_mut(&mut self) -> Option<&mut dyn crate::traits::LogBuffer> {
+        Some(self)
+    }
+}
+
+/// The trend insertion hook and the paged buffer, as before #2179; no
+/// identities and no window refresh, which keep their defaults.
+impl crate::traits::LogBuffer for ConfigurableTrend {
+    fn record_identities(&self) -> Vec<crate::log_buffer::LogRecordIdentity> {
+        Vec::new()
+    }
+    fn buffer_records(&self) -> Option<&dyn crate::log_buffer::LogBufferRecords> {
+        self.inner.log_buffer()?.buffer_records()
     }
     fn add_trend_record(&mut self, record: BACnetLogRecord) -> Result<(), Error> {
-        self.inner.add_trend_record(record)
-    }
-    fn log_buffer_internal(&self) -> Option<&dyn crate::log_buffer::LogBufferRecords> {
-        self.inner.log_buffer_internal()
+        self.inner
+            .log_buffer_mut()
+            .unwrap()
+            .add_trend_record(record)
     }
 }
 
@@ -412,7 +430,7 @@ fn idle_reconciliation_and_max_interval_failure_backoff_are_bounded() {
     *time.lock().unwrap() = Duration::from_millis(100);
     db.poll_trend_logs();
     assert_eq!(count(&db, oid), 1);
-    db.set_monotonic_clock_internal(Some(Arc::new(|| Duration::ZERO)));
+    db.set_monotonic_clock(Some(Arc::new(|| Duration::ZERO)));
     db.poll_trend_logs();
     assert_eq!(count(&db, oid), 2);
     db.remove(&oid).unwrap();
@@ -423,7 +441,12 @@ fn idle_reconciliation_and_max_interval_failure_backoff_are_bounded() {
 /// The datum of `oid`'s newest Log_Buffer record, decoded from the framed
 /// record ReadRange serves.
 fn last_datum(db: &ObjectDatabase, oid: ObjectIdentifier) -> LogDatum {
-    let records = db.get(&oid).unwrap().log_buffer_internal().unwrap();
+    let records = db
+        .get(&oid)
+        .unwrap()
+        .log_buffer()
+        .and_then(|log| log.buffer_records())
+        .unwrap();
     let index = records.record_count().checked_sub(1).expect("a record");
     let mut bytes = BytesMut::new();
     records.encode_record(index, &mut bytes);
@@ -502,6 +525,42 @@ fn a_reference_naming_this_device_logs_the_local_value() {
         let (mut db, oid) = qualified_fixture(local_devices, Some(100));
         db.poll_trend_logs();
         assert_eq!(last_datum(&db, oid), LogDatum::RealValue(42.5));
+    }
+}
+
+/// Bound to Device 100, as a server binds its identity's Device, the
+/// database keeps logging a reference naming it once a lower Device 50 is
+/// added, and treats one naming Device 50 as another device's (#2227).
+#[test]
+fn a_reference_naming_the_bound_device_stays_local_beside_a_lower_one() {
+    let lower = |db: &mut ObjectDatabase| {
+        db.add(Box::new(
+            crate::device::DeviceObject::new(crate::device::DeviceConfig {
+                identity: crate::DeviceIdentity::new(50, 0)
+                    .unwrap()
+                    .with_name("Device-50"),
+                ..Default::default()
+            })
+            .unwrap(),
+        ))
+        .unwrap();
+    };
+    let device_100 = ObjectIdentifier::new(ObjectType::DEVICE, 100).unwrap();
+    for (named, logged) in [
+        (100, LogDatum::RealValue(42.5)),
+        (
+            50,
+            failure(
+                ErrorClass::PROPERTY,
+                ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
+            ),
+        ),
+    ] {
+        let (mut db, oid) = qualified_fixture(&[100], Some(named));
+        db.bind_local_device_internal(Some(device_100));
+        lower(&mut db);
+        db.poll_trend_logs();
+        assert_eq!(last_datum(&db, oid), logged, "naming Device {named}");
     }
 }
 

@@ -1,4 +1,6 @@
 use super::super::*;
+use crate::property_metadata::is_writable_property;
+use crate::traits::EventReporting as _;
 use bacnet_types::enums::{EventState, EventType};
 
 fn write_enumerated(object: &mut BinaryOutputObject, property: PropertyIdentifier, value: u32) {
@@ -49,11 +51,14 @@ fn bo_feedback_value_round_trips_and_is_advertised_writable() {
             .unwrap(),
         PropertyValue::Enumerated(1)
     );
-    assert!(
-        bo.property_list()
-            .contains(&PropertyIdentifier::FEEDBACK_VALUE)
-    );
-    assert!(bo.is_writable_property(PropertyIdentifier::FEEDBACK_VALUE));
+    assert!(crate::property_metadata::has_property(
+        &bo.property_metadata(),
+        PropertyIdentifier::FEEDBACK_VALUE
+    ));
+    assert!(is_writable_property(
+        &bo,
+        PropertyIdentifier::FEEDBACK_VALUE
+    ));
     assert!(
         bo.write_property(
             PropertyIdentifier::FEEDBACK_VALUE,
@@ -179,6 +184,7 @@ fn bo_command_failure_uses_present_and_feedback_values() {
     );
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn bo_time_delay_gates_command_failure() {
     let mut bo = BinaryOutputObject::new(1, "BO-1").unwrap();
@@ -205,6 +211,7 @@ fn bo_time_delay_gates_command_failure() {
 /// pTimeDelayNormal (condition (b)). Both are commissioned as properties here
 /// — no direct field access — so the wiring from Time_Delay_Normal through
 /// the detector is exercised end to end at object level.
+#[cfg(feature = "event-reporting")]
 #[test]
 fn bo_time_delay_normal_selects_the_return_to_normal_delay() {
     let mut bo = BinaryOutputObject::new(1, "BO-1").unwrap();
@@ -337,11 +344,14 @@ fn bo_detection_enable_is_a_disabled_by_default_invariant() {
             .unwrap(),
         PropertyValue::Boolean(false)
     );
-    assert!(
-        bo.property_list()
-            .contains(&PropertyIdentifier::EVENT_DETECTION_ENABLE)
-    );
-    assert!(bo.is_writable_property(PropertyIdentifier::EVENT_DETECTION_ENABLE));
+    assert!(crate::property_metadata::has_property(
+        &bo.property_metadata(),
+        PropertyIdentifier::EVENT_DETECTION_ENABLE
+    ));
+    assert!(is_writable_property(
+        &bo,
+        PropertyIdentifier::EVENT_DETECTION_ENABLE
+    ));
 }
 
 #[test]
@@ -385,7 +395,10 @@ fn bo_generic_event_properties_round_trip_and_match_pics() {
         )
         .is_err()
     );
-    assert!(!bo.is_writable_property(PropertyIdentifier::ACKED_TRANSITIONS));
+    assert!(!is_writable_property(
+        &bo,
+        PropertyIdentifier::ACKED_TRANSITIONS
+    ));
 
     for property in [
         PropertyIdentifier::EVENT_ENABLE,
@@ -393,8 +406,11 @@ fn bo_generic_event_properties_round_trip_and_match_pics() {
         PropertyIdentifier::NOTIFY_TYPE,
         PropertyIdentifier::NOTIFICATION_CLASS,
     ] {
-        assert!(bo.property_list().contains(&property));
-        assert!(bo.is_writable_property(property));
+        assert!(crate::property_metadata::has_property(
+            &bo.property_metadata(),
+            property
+        ));
+        assert!(is_writable_property(&bo, property));
     }
     assert!(
         bo.write_property(
@@ -405,5 +421,5 @@ fn bo_generic_event_properties_round_trip_and_match_pics() {
         )
         .is_err()
     );
-    assert!(!bo.is_writable_property(PropertyIdentifier::EVENT_STATE));
+    assert!(!is_writable_property(&bo, PropertyIdentifier::EVENT_STATE));
 }

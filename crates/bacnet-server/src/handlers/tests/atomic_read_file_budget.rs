@@ -3,6 +3,7 @@ use crate::server::AtomicReadFileBudget;
 use bacnet_objects::file::{
     FileObject, FileRecordRead, FileStorage, FileStreamRead, FileWriteStart,
 };
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_services::file::{
     AtomicReadFileAck, AtomicReadFileRequest, FileAccessMethod, FileReadAckMethod,
 };
@@ -49,10 +50,10 @@ impl BACnetObject for Probe {
     ) -> Result<(), Error> {
         panic!("read-only test")
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
-    fn file_storage_internal(&self) -> Option<&dyn FileStorage> {
+    fn file_storage(&self) -> Option<&dyn FileStorage> {
         self.hook.then_some(self)
     }
 }

@@ -44,7 +44,7 @@ fn database() -> ObjectDatabase {
     db.add(Box::new(tl)).unwrap();
     db.add(Box::new(EventLogObject::new(1, "EL-1", 8).unwrap()))
         .unwrap();
-    db.set_monotonic_clock_internal(Some(Arc::new(|| std::time::Duration::ZERO)));
+    db.set_monotonic_clock(Some(Arc::new(|| std::time::Duration::ZERO)));
     db
 }
 
@@ -93,7 +93,12 @@ fn assert_refused(result: Result<(), Error>, class: ErrorClass, code: ErrorCode)
 /// Each record of `oid` as ReadRange serves it: its status, or `None` for
 /// an ordinary record.
 fn statuses(db: &ObjectDatabase, oid: ObjectIdentifier) -> Vec<Option<LogStatus>> {
-    let records = db.get(&oid).unwrap().log_buffer_internal().unwrap();
+    let records = db
+        .get(&oid)
+        .unwrap()
+        .log_buffer()
+        .and_then(|log| log.buffer_records())
+        .unwrap();
     (0..records.record_count())
         .map(|index| {
             let mut bytes = BytesMut::new();

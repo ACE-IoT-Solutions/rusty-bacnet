@@ -49,7 +49,7 @@ impl BACnetServer {
             .find(|object| object.object_identifier() == oid)
             .ok_or_else(|| missing_file(instance))?;
         let configuration = object
-            .file_configuration_internal()
+            .file_configuration()
             .ok_or_else(|| missing_configuration(instance))?;
         operation(configuration)
     }
@@ -70,7 +70,7 @@ impl BACnetServer {
             .find(|object| object.object_identifier() == oid)
             .ok_or_else(|| missing_file(instance))?;
         let configuration = object
-            .file_configuration_internal_mut()
+            .file_configuration_mut()
             .ok_or_else(|| missing_configuration(instance))?;
         operation(configuration)
     }
@@ -191,6 +191,7 @@ mod tests {
             port: 0,
             broadcast_address: "255.255.255.255".into(),
             share_port_by_address: false,
+            share_wildcard_port: false,
             bip_mode: Default::default(),
             bip6_foreign: None,
             multicast: None,
@@ -224,14 +225,15 @@ mod tests {
             reinit_password: None,
             reinitialize: None,
             request_admission_policy: server::RequestAdmissionPolicy::default(),
-            read_property_multiple_budget: server::ReadPropertyMultipleBudget::default(),
+            read_property_multiple_budget:
+                bacnet_device_core::read::ReadPropertyMultipleBudget::default(),
             get_alarm_summary_budget: server::GetAlarmSummaryBudget::default(),
             get_enrollment_summary_budget: server::GetEnrollmentSummaryBudget::default(),
             atomic_read_file_budget: server::AtomicReadFileBudget::default(),
             atomic_write_file_budget: server::AtomicWriteFileBudget::default(),
             read_range_budget: server::ReadRangeBudget::default(),
             get_event_information_budget: server::GetEventInformationBudget::default(),
-            cov_policy: server::CovPolicy::default(),
+            cov_policy: bacnet_device_core::cov::CovPolicy::default(),
             time_sync_policy: server::TimeSyncPolicy::default(),
             audit_notification_sink: None,
             audit_reporters: None,
@@ -290,8 +292,39 @@ mod tests {
             Err(Error::Encoding("not used by this test".into()))
         }
 
-        fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-            Cow::Borrowed(&[])
+        fn property_metadata(
+            &self,
+        ) -> Cow<'_, [bacnet_objects::property_metadata::PropertyMetadata]> {
+            use bacnet_objects::property_metadata::{
+                PropertyConformance as C, PropertyMetadata as M, PropertyWriteCapability as W,
+            };
+            const ROWS: &[M] = &[
+                M::new(
+                    PropertyIdentifier::OBJECT_IDENTIFIER,
+                    C::RequiredRead,
+                    None,
+                    W::ReadOnly,
+                ),
+                M::new(
+                    PropertyIdentifier::OBJECT_NAME,
+                    C::RequiredRead,
+                    None,
+                    W::ReadOnly,
+                ),
+                M::new(
+                    PropertyIdentifier::OBJECT_TYPE,
+                    C::RequiredRead,
+                    None,
+                    W::ReadOnly,
+                ),
+                M::new(
+                    PropertyIdentifier::PROPERTY_LIST,
+                    C::RequiredRead,
+                    None,
+                    W::ReadOnly,
+                ),
+            ];
+            Cow::Borrowed(ROWS)
         }
     }
 
@@ -318,7 +351,7 @@ mod tests {
         let guard = server.lock_pending().unwrap();
         assert_eq!(
             guard[0]
-                .file_configuration_internal()
+                .file_configuration()
                 .unwrap()
                 .stream_data()
                 .unwrap(),
@@ -326,7 +359,7 @@ mod tests {
         );
         assert_eq!(
             guard[2]
-                .file_configuration_internal()
+                .file_configuration()
                 .unwrap()
                 .stream_data()
                 .unwrap(),
@@ -418,7 +451,7 @@ mod tests {
         });
         assert_eq!(
             started.lock_pending().unwrap()[0]
-                .file_configuration_internal()
+                .file_configuration()
                 .unwrap()
                 .stream_data()
                 .unwrap(),

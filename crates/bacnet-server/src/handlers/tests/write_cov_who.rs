@@ -1,4 +1,6 @@
 use super::*;
+use bacnet_device_core::discovery::who_has;
+use bacnet_services::cov::SubscribeCOVRequest;
 use bacnet_services::who_is::DeviceInstanceRange;
 
 #[test]
@@ -93,7 +95,8 @@ fn subscribe_cov_property_handler_returns_initial_subscription() {
 
 #[test]
 fn subscribe_cov_update_existing_entry_allowed_at_capacity() {
-    use crate::cov::{AtomicCovCounters, CovPolicy};
+    use crate::cov::AtomicCovCounters;
+    use bacnet_device_core::cov::CovPolicy;
     let db = make_db_with_ai();
     let mac = vec![192, 168, 1, 1, 0xBA, 0xC0];
     let mut table = CovSubscriptionTable::with_policy(
@@ -449,10 +452,19 @@ fn subscribe_cov_cancellation() {
     assert!(table.is_empty());
 }
 
+/// Device 1, the identity's, and AI-1.
+fn who_has_fixture() -> (bacnet_objects::DeviceIdentity, ObjectDatabase) {
+    let identity = bacnet_objects::DeviceIdentity::new(1, 0x105).unwrap();
+    let ai = AnalogInputObject::new(1, "AI-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
+    let db =
+        bacnet_objects::device_identity::build_database_with_extra(&identity, vec![Box::new(ai)])
+            .unwrap();
+    (identity, db)
+}
+
 #[test]
 fn who_has_by_id_found() {
-    let db = make_db_with_ai();
-    let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, 1).unwrap();
+    let (identity, db) = who_has_fixture();
     let ai_oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
 
     let request = WhoHasRequest {
@@ -462,7 +474,7 @@ fn who_has_by_id_found() {
     let mut buf = BytesMut::new();
     request.encode(&mut buf).unwrap();
 
-    let result = handle_who_has(&db, &buf, device_oid).unwrap();
+    let result = who_has(&identity, &db, &buf).unwrap();
     assert!(result.is_some());
     let i_have = result.unwrap();
     assert_eq!(i_have.object_identifier, ai_oid);
@@ -471,8 +483,7 @@ fn who_has_by_id_found() {
 
 #[test]
 fn who_has_by_name_found() {
-    let db = make_db_with_ai();
-    let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, 1).unwrap();
+    let (identity, db) = who_has_fixture();
 
     let request = WhoHasRequest {
         range: None,
@@ -481,14 +492,13 @@ fn who_has_by_name_found() {
     let mut buf = BytesMut::new();
     request.encode(&mut buf).unwrap();
 
-    let result = handle_who_has(&db, &buf, device_oid).unwrap();
+    let result = who_has(&identity, &db, &buf).unwrap();
     assert!(result.is_some());
 }
 
 #[test]
 fn who_has_not_found() {
-    let db = make_db_with_ai();
-    let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, 1).unwrap();
+    let (identity, db) = who_has_fixture();
     let missing_oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 99).unwrap();
 
     let request = WhoHasRequest {
@@ -498,14 +508,13 @@ fn who_has_not_found() {
     let mut buf = BytesMut::new();
     request.encode(&mut buf).unwrap();
 
-    let result = handle_who_has(&db, &buf, device_oid).unwrap();
+    let result = who_has(&identity, &db, &buf).unwrap();
     assert!(result.is_none());
 }
 
 #[test]
 fn who_has_out_of_range() {
-    let db = make_db_with_ai();
-    let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, 1).unwrap();
+    let (identity, db) = who_has_fixture();
     let ai_oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
 
     let request = WhoHasRequest {
@@ -515,8 +524,23 @@ fn who_has_out_of_range() {
     let mut buf = BytesMut::new();
     request.encode(&mut buf).unwrap();
 
-    let result = handle_who_has(&db, &buf, device_oid).unwrap();
+    let result = who_has(&identity, &db, &buf).unwrap();
     assert!(result.is_none()); // device instance 1 not in [100, 200]
+}
+
+/// With the identity's Device gone, nothing is announced, though the
+/// object asked for is there (#2186).
+#[test]
+fn who_has_without_the_identity_device() {
+    let (identity, mut db) = who_has_fixture();
+    db.remove(&identity.device_oid()).unwrap();
+    let request = WhoHasRequest {
+        range: None,
+        object: WhoHasObject::Name("AI-1".into()),
+    };
+    let mut buf = BytesMut::new();
+    request.encode(&mut buf).unwrap();
+    assert!(who_has(&identity, &db, &buf).unwrap().is_none());
 }
 
 #[test]
@@ -571,7 +595,7 @@ fn delete_device_object_fails() {
 #[test]
 fn delete_network_port_object_fails() {
     // NetworkPort models a running node's port and is not deleteable at
-    // runtime, mirroring `NetworkPortObject::is_deleteable` so PICS and the
+    // runtime, by the type-level `creation::builtin_deleteable`, so PICS and the
     // runtime DeleteObject handler share one truth source.
     let mut db = ObjectDatabase::new();
     let np = bacnet_objects::network_port::NetworkPortObject::new_non_bip(

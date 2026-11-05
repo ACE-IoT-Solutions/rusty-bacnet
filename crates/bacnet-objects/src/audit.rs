@@ -18,8 +18,8 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 
 use crate::clock::ClockReader;
-use crate::common::read_property_list_property;
 use crate::property_metadata::PropertyMetadata;
+use crate::property_metadata::read_property_list;
 use crate::traits::BACnetObject;
 
 mod association;
@@ -34,7 +34,7 @@ mod forwarding;
 mod log_metadata;
 pub use forwarding::AuditLogForwarding;
 mod notification;
-mod persistence;
+pub(crate) mod persistence;
 mod receipt;
 mod reporter_change;
 mod reporter_delay;
@@ -490,6 +490,7 @@ impl BACnetObject for AuditLogObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         match property {
             p if p == PropertyIdentifier::OBJECT_IDENTIFIER => {
                 Ok(PropertyValue::ObjectIdentifier(self.oid))
@@ -553,7 +554,7 @@ impl BACnetObject for AuditLogObject {
                 Ok(PropertyValue::Enumerated(EventState::NORMAL.to_raw()))
             }
             p if p == PropertyIdentifier::PROPERTY_LIST => {
-                read_property_list_property(&self.property_list(), array_index)
+                read_property_list(&self.property_metadata(), array_index)
             }
             // ReadRange pages the ring through
             // `AuditLogStorage::retained_records`.
@@ -570,10 +571,11 @@ impl BACnetObject for AuditLogObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if property == PropertyIdentifier::LOG_ENABLE {
             if let PropertyValue::Boolean(v) = value {
                 if v == self.log_enable {
@@ -597,20 +599,14 @@ impl BACnetObject for AuditLogObject {
                 ErrorCode::WRITE_ACCESS_DENIED,
             ));
         }
-        if property == PropertyIdentifier::DESCRIPTION {
-            if let PropertyValue::CharacterString(s) = value {
-                self.description = s;
-                return Ok(());
-            }
-            return Err(Error::protocol(
-                ErrorClass::PROPERTY,
-                ErrorCode::INVALID_DATA_TYPE,
-            ));
+        if let Some(result) =
+            crate::common::write_description(&mut self.description, property, &value)
+        {
+            return result;
         }
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            _array_index,
         ))
     }
 
@@ -618,25 +614,34 @@ impl BACnetObject for AuditLogObject {
         log_metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(
-            log_metadata::for_object(self).as_ref(),
-        )
-    }
-
-    fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
-        self.clock = clock;
-    }
-
-    fn audit_log_storage_internal(&self) -> Option<&dyn AuditLogStorage> {
+    fn audit_log(&self) -> Option<&dyn crate::traits::AuditLog> {
         Some(self)
     }
 
-    fn audit_log_forwarding_internal(&self) -> Option<Arc<AuditLogForwarding>> {
+    fn audit_log_mut(&mut self) -> Option<&mut dyn crate::traits::AuditLog> {
+        Some(self)
+    }
+
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        Some(self)
+    }
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
+    }
+}
+
+impl crate::traits::AuditLog for AuditLogObject {
+    fn storage(&self) -> &dyn AuditLogStorage {
+        self
+    }
+
+    fn forwarding(&self) -> Option<Arc<AuditLogForwarding>> {
         self.forwarding.clone()
     }
 
-    fn set_audit_log_parent_internal(
+    fn set_parent(
         &mut self,
         parent: bacnet_types::constructed::BACnetDeviceObjectReference,
     ) -> Result<(), Error> {
@@ -644,17 +649,17 @@ impl BACnetObject for AuditLogObject {
         Ok(())
     }
 
-    fn audit_log_notification_sink_internal(
-        &mut self,
-    ) -> Option<&mut dyn AuditLogNotificationSink> {
+    fn notification_sink(&mut self) -> Option<&mut dyn AuditLogNotificationSink> {
         Some(self)
     }
+}
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
-        Some(self)
+impl crate::traits::Timed for AuditLogObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.clock = clocks.clock.clone();
     }
 
-    fn advance_monotonic_time_internal(&mut self, _now: core::time::Duration) -> bool {
+    fn advance_monotonic_time(&mut self, _now: core::time::Duration) -> bool {
         self.settle_finished();
         false
     }
@@ -704,7 +709,7 @@ impl AuditReporterObject {
     }
     /// Change Description through the installed target owner, if any.
     pub fn set_description(&mut self, desc: impl Into<String>) -> Result<(), Error> {
-        AuditReporterAuthority(self).write_description(
+        AuditReporterAuthority::new(self).write_description(
             PropertyValue::CharacterString(desc.into()),
             None,
             None,
@@ -752,7 +757,7 @@ impl AuditReporterObject {
     }
 }
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
 #[path = "audit/tests.rs"]
 mod tests;
 
@@ -760,7 +765,7 @@ mod tests;
 #[path = "audit/query_tests.rs"]
 mod query_tests;
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
 #[path = "audit/notification_tests.rs"]
 mod notification_tests;
 
@@ -768,10 +773,12 @@ mod notification_tests;
 #[path = "audit/receipt_tests.rs"]
 mod receipt_tests;
 
+// std: these load and save through the file backend.
 #[cfg(all(test, feature = "std"))]
 #[path = "audit/persistence_receipt_tests.rs"]
 mod persistence_receipt_tests;
 
+// std: these load and save through the file backend.
 #[cfg(all(test, feature = "std"))]
 #[path = "audit/persistence_schema_tests.rs"]
 mod persistence_schema_tests;
@@ -783,10 +790,10 @@ mod reporter_configuration;
 #[path = "audit/reporter_delay_tests.rs"]
 mod reporter_delay_tests;
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
 #[path = "audit/staging_tests.rs"]
 mod staging_tests;
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
 #[path = "audit/buffer_tests.rs"]
 mod buffer_tests;

@@ -1,5 +1,6 @@
 use super::*;
 use crate::property_metadata::PropertyWriteCapability;
+use crate::property_metadata::{is_array_property, is_list_property, is_writable_property};
 use crate::traits::BACnetObject;
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType};
 use bacnet_types::error::{Error, RemoteError};
@@ -19,8 +20,14 @@ fn assert_exact_sets(object: &dyn BACnetObject, all: &[P], required: &[P]) {
     let metadata = object.property_metadata();
     assert!(matches!(metadata, Cow::Borrowed(_)));
     assert_eq!(metadata.len(), all.len() + 1);
-    assert_eq!(object.property_list().as_ref(), all);
-    assert_eq!(object.required_properties().as_ref(), required);
+    assert_eq!(
+        crate::test_rows::listed(&object.property_metadata()),
+        crate::test_rows::listed_from(all)
+    );
+    assert_eq!(
+        crate::test_rows::required(&object.property_metadata()),
+        required
+    );
     assert_eq!(
         metadata
             .iter()
@@ -29,8 +36,9 @@ fn assert_exact_sets(object: &dyn BACnetObject, all: &[P], required: &[P]) {
             .len(),
         metadata.len()
     );
-    assert!(!object.is_createable());
-    assert!(object.is_deleteable());
+    assert!(crate::creation::builtin_deleteable(
+        object.object_identifier().object_type()
+    ));
     // Global_Identifier is the W row of Tables 12-38, 12-39 and 12-40.
     let required_write = matches!(
         object.object_identifier().object_type(),
@@ -56,7 +64,7 @@ fn assert_indexed_property_list(object: &dyn BACnetObject, all: &[P]) {
         .filter(|&&p| !matches!(p, P::OBJECT_IDENTIFIER | P::OBJECT_NAME | P::OBJECT_TYPE))
         .map(|p| PropertyValue::Enumerated(p.to_raw()))
         .collect();
-    assert!(object.is_array_property(P::PROPERTY_LIST));
+    assert!(is_array_property(object, P::PROPERTY_LIST));
     assert_eq!(
         object.read_property(P::PROPERTY_LIST, None).unwrap(),
         PropertyValue::List(wire.clone())
@@ -145,11 +153,11 @@ fn property_metadata_access_credential_exact_sets_readable_rows_and_indexed_list
     }
     // Table 12-40 types the two as BACnetARRAY[N]; Reason_For_Disable is
     // a BACnetLIST.
-    assert!(object.is_array_property(P::AUTHENTICATION_FACTORS));
-    assert!(object.is_array_property(P::ASSIGNED_ACCESS_RIGHTS));
-    assert!(!object.is_array_property(P::REASON_FOR_DISABLE));
-    assert!(object.is_list_property(P::REASON_FOR_DISABLE));
-    assert!(!object.is_array_property(P::CREDENTIAL_STATUS));
+    assert!(is_array_property(&object, P::AUTHENTICATION_FACTORS));
+    assert!(is_array_property(&object, P::ASSIGNED_ACCESS_RIGHTS));
+    assert!(!is_array_property(&object, P::REASON_FOR_DISABLE));
+    assert!(is_list_property(&object, P::REASON_FOR_DISABLE));
+    assert!(!is_array_property(&object, P::CREDENTIAL_STATUS));
 }
 
 #[test]
@@ -201,15 +209,15 @@ fn property_metadata_access_user_exact_sets_readable_rows_and_indexed_list() {
         object.read_property(P::GLOBAL_IDENTIFIER, None).unwrap(),
         PropertyValue::Unsigned(0)
     );
-    assert!(!object.is_array_property(P::GLOBAL_IDENTIFIER));
+    assert!(!is_array_property(&object, P::GLOBAL_IDENTIFIER));
     // The three BACnetLISTs start empty (#1394).
     for p in [P::CREDENTIALS, P::MEMBERS, P::MEMBER_OF] {
         assert_eq!(
             object.read_property(p, None).unwrap(),
             PropertyValue::List(vec![])
         );
-        assert!(!object.is_array_property(p));
-        assert!(object.is_list_property(p));
+        assert!(!is_array_property(&object, p));
+        assert!(is_list_property(&object, p));
     }
 }
 
@@ -256,10 +264,10 @@ fn property_metadata_access_rights_exact_sets_readable_rows_and_indexed_list() {
         object.read_property(P::LOG_ENABLE, None).unwrap(),
         PropertyValue::Boolean(true)
     );
-    assert!(!object.is_array_property(P::LOG_ENABLE));
+    assert!(!is_array_property(&object, P::LOG_ENABLE));
     // Both rule properties are arrays, empty until rules are set.
     for p in [P::POSITIVE_ACCESS_RULES, P::NEGATIVE_ACCESS_RULES] {
-        assert!(object.is_array_property(p));
+        assert!(is_array_property(&object, p));
         assert_eq!(
             object.read_property(p, None).unwrap(),
             PropertyValue::List(vec![])
@@ -326,9 +334,9 @@ fn property_metadata_credential_data_input_exact_sets_readable_rows_and_indexed_
         PropertyValue::List(vec![])
     );
     // Table 12-43 types both format rows as BACnetARRAY[N] (#1169).
-    assert!(object.is_array_property(P::SUPPORTED_FORMATS));
-    assert!(object.is_array_property(P::SUPPORTED_FORMAT_CLASSES));
-    assert!(!object.is_array_property(P::UPDATE_TIME));
+    assert!(is_array_property(&object, P::SUPPORTED_FORMATS));
+    assert!(is_array_property(&object, P::SUPPORTED_FORMAT_CLASSES));
+    assert!(!is_array_property(&object, P::UPDATE_TIME));
 }
 
 #[test]
@@ -398,7 +406,7 @@ fn property_metadata_access_identity_write_capabilities_match_dispatch() {
                 };
                 assert_eq!(row.write_capability, capability, "{p:?}");
                 assert_eq!(
-                    object.is_writable_property(p),
+                    is_writable_property(&*object, p),
                     capability.is_writable(),
                     "{p:?}"
                 );
@@ -414,7 +422,7 @@ fn property_metadata_access_identity_write_capabilities_match_dispatch() {
             }
             // Object_Name has no network write route: a rename falls
             // through to WRITE_ACCESS_DENIED even with a well-formed value.
-            assert!(!object.is_writable_property(P::OBJECT_NAME));
+            assert!(!is_writable_property(&*object, P::OBJECT_NAME));
             assert_error(
                 object
                     .write_property(
@@ -473,7 +481,7 @@ fn property_metadata_access_identity_writes_store_verbatim_and_deny() {
                 credential.write_property(p, None, value, None).unwrap_err(),
                 ErrorCode::WRITE_ACCESS_DENIED,
             );
-            assert!(!credential.is_writable_property(p));
+            assert!(!is_writable_property(&credential, p));
         }
         let mut user = AccessUserObject::new(1, "USER-1").unwrap();
         user.write_property(P::USER_TYPE, None, PropertyValue::Enumerated(2), None)
@@ -536,7 +544,7 @@ fn property_metadata_access_identity_writes_store_verbatim_and_deny() {
                 user.write_property(p, None, value, None).unwrap_err(),
                 ErrorCode::WRITE_ACCESS_DENIED,
             );
-            assert!(!user.is_writable_property(p));
+            assert!(!is_writable_property(&user, p));
         }
         let mut rights = AccessRightsObject::new(1, "AR-1").unwrap();
         rights
@@ -576,7 +584,7 @@ fn property_metadata_access_identity_writes_store_verbatim_and_deny() {
                 rights.write_property(p, None, value, None).unwrap_err(),
                 ErrorCode::WRITE_ACCESS_DENIED,
             );
-            assert!(!rights.is_writable_property(p));
+            assert!(!is_writable_property(&rights, p));
         }
         // CDI Present_Value and Reliability take writes only while
         // Out_Of_Service is TRUE (#1168): in service an Enumerated
@@ -590,7 +598,7 @@ fn property_metadata_access_identity_writes_store_verbatim_and_deny() {
             None,
         )
         .unwrap();
-        assert!(cdi.is_writable_property(P::PRESENT_VALUE));
+        assert!(is_writable_property(&cdi, P::PRESENT_VALUE));
         assert_error(
             cdi.write_property(P::PRESENT_VALUE, None, PropertyValue::Enumerated(1), None)
                 .unwrap_err(),
@@ -615,7 +623,7 @@ fn property_metadata_access_identity_writes_store_verbatim_and_deny() {
                 cdi.write_property(p, None, value, None).unwrap_err(),
                 ErrorCode::WRITE_ACCESS_DENIED,
             );
-            assert!(!cdi.is_writable_property(p));
+            assert!(!is_writable_property(&cdi, p));
         }
     }
 }
@@ -623,7 +631,7 @@ fn property_metadata_access_identity_writes_store_verbatim_and_deny() {
 #[test]
 fn property_metadata_access_identity_unserved_rows_stay_unknown() {
     fn assert_unserved(object: &mut dyn BACnetObject, p: P) {
-        assert!(!object.is_writable_property(p));
+        assert!(!is_writable_property(&*object, p));
         assert_error(
             object.read_property(p, None).unwrap_err(),
             ErrorCode::UNKNOWN_PROPERTY,

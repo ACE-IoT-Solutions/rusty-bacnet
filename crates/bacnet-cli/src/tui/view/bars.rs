@@ -15,6 +15,7 @@ use super::{Theme, WIDE_WIDTH, ellipsize, text_width};
 use crate::tui::app::command_bar;
 use crate::tui::app::watch::Screen;
 use crate::tui::app::{App, Link, Overlay};
+use crate::tui::message::McpListener;
 use crate::tui::safety::Level as Safety;
 
 /// Columns the status bar keeps for `? help` at its right.
@@ -30,7 +31,9 @@ const RESERVED: u8 = 8;
 /// and `? help`. `COV` and `FD` are the footprint: subscriptions held on
 /// devices, and the foreign-device registration with its state (shown only
 /// with one). An armed write session turns the bar red with its countdown;
-/// `ledger n` counts changes still in effect.
+/// `ledger n` counts changes still in effect; `MCP n`, agents attached to
+/// the profile's MCP listener while it listens (`MCP off` when it
+/// couldn't start), with `, n to confirm` while their writes wait here.
 pub(super) fn status_bar(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let level = app.level();
     let bar = match level {
@@ -121,6 +124,22 @@ fn status_parts(app: &App, theme: &Theme, bar: Style) -> Vec<Part> {
             5,
             vec![span(format!("FD {}", registration.label()), bar)],
         ));
+    }
+    // The MCP listener (#2185): agents attached, or off when it couldn't
+    // start.
+    // Its agents' write requests waiting here, if any.
+    let asking = app.safety.agents.held();
+    match app.mcp.as_ref().map(McpListener::agents) {
+        Some(Some(agents)) if asking > 0 => parts.push(Part::new(
+            7,
+            vec![span(format!("MCP {agents}, {asking} to confirm"), bar)],
+        )),
+        Some(Some(agents)) => parts.push(Part::new(
+            if agents > 0 { 5 } else { 3 },
+            vec![span(format!("MCP {agents}"), bar)],
+        )),
+        Some(None) => parts.push(Part::new(3, vec![span("MCP off", bar)])),
+        None => {}
     }
     if !app.safety.ledger.is_empty() {
         parts.push(Part::new(
@@ -297,6 +316,11 @@ fn screen_hints(app: &App, theme: &Theme, tab_focus: bool) -> Vec<Part> {
             parts.push(h(3, ":find", "NAME"));
             parts.push(h(8, "Esc", "back"));
         }
+        // Off B/IP no table is read (#2378): only the Networks tab works.
+        Screen::Network if app.transport != "BIP" => {
+            parts.push(h(5, "Tab", "networks"));
+            parts.push(h(8, "Esc", "back"));
+        }
         Screen::Network => {
             parts.push(h(6, "r", "read tables"));
             parts.push(h(4, "m", "survey BBMDs"));
@@ -364,6 +388,10 @@ fn screen_hints(app: &App, theme: &Theme, tab_focus: bool) -> Vec<Part> {
             parts.push(h(6, "/", "filter"));
             parts.push(h(3, "e", "export"));
             parts.push(h(2, "z", "clear"));
+            parts.push(h(8, "Esc", "back"));
+        }
+        Screen::Agents => {
+            parts.push(h(5, "j/k", "scroll"));
             parts.push(h(8, "Esc", "back"));
         }
         Screen::Watch => {

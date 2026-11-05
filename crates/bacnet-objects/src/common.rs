@@ -52,62 +52,16 @@ pub(crate) fn protocol_error(
 pub(crate) fn unhandled_write_error(
     metadata: &[crate::property_metadata::PropertyMetadata],
     property: bacnet_types::enums::PropertyIdentifier,
-    array_index: Option<u32>,
 ) -> bacnet_types::error::Error {
-    // Indexed fallback precedence is outside this unindexed correction.
-    if array_index.is_some()
-        || metadata
-            .iter()
-            .any(|row| row.property_identifier == property)
+    // Built-in objects run `check_write_array_index` first, so an index never
+    // decides the answer here.
+    if metadata
+        .iter()
+        .any(|row| row.property_identifier == property)
     {
         write_access_denied_error()
     } else {
         unknown_property_error()
-    }
-}
-
-/// Read the PROPERTY_LIST property for any object that implements property_list().
-/// Handles array_index variants: None = full list, Some(0) = length, Some(n) = nth element.
-/// Object_Name, Object_Type, Object_Identifier, and Property_List itself are excluded.
-pub fn read_property_list_property(
-    props: &[bacnet_types::enums::PropertyIdentifier],
-    array_index: Option<u32>,
-) -> Result<bacnet_types::primitives::PropertyValue, bacnet_types::error::Error> {
-    use bacnet_types::enums::PropertyIdentifier;
-
-    // Filter out the four excluded properties
-    let filtered: Vec<_> = props
-        .iter()
-        .copied()
-        .filter(|p| {
-            *p != PropertyIdentifier::OBJECT_IDENTIFIER
-                && *p != PropertyIdentifier::OBJECT_NAME
-                && *p != PropertyIdentifier::OBJECT_TYPE
-                && *p != PropertyIdentifier::PROPERTY_LIST
-        })
-        .collect();
-
-    match array_index {
-        None => {
-            let elements = filtered
-                .iter()
-                .map(|p| bacnet_types::primitives::PropertyValue::Enumerated(p.to_raw()))
-                .collect();
-            Ok(bacnet_types::primitives::PropertyValue::List(elements))
-        }
-        Some(0) => Ok(bacnet_types::primitives::PropertyValue::Unsigned(
-            filtered.len() as u64,
-        )),
-        Some(idx) => {
-            let i = (idx - 1) as usize;
-            if i < filtered.len() {
-                Ok(bacnet_types::primitives::PropertyValue::Enumerated(
-                    filtered[i].to_raw(),
-                ))
-            } else {
-                Err(invalid_array_index_error())
-            }
-        }
     }
 }
 
@@ -130,9 +84,8 @@ macro_rules! read_identity_properties {
                 bacnet_types::primitives::PropertyValue::CharacterString($self.description.clone()),
             )),
             p if p == bacnet_types::enums::PropertyIdentifier::PROPERTY_LIST => {
-                let props = $self.property_list();
-                Some($crate::common::read_property_list_property(
-                    &props,
+                Some($crate::property_metadata::read_property_list(
+                    &$crate::traits::BACnetObject::property_metadata($self),
                     $array_index,
                 ))
             }
@@ -320,6 +273,21 @@ pub(crate) fn write_description(
     }
 }
 
+/// Set `name` from a whole Object_Name CreateObject initial value, on an
+/// object whose name WriteProperty can't change (#2208): checked as
+/// [`write_object_name`] checks a write.
+pub(crate) fn initialize_object_name(
+    name: &mut String,
+    value: &bacnet_types::primitives::PropertyValue,
+) -> Result<(), bacnet_types::error::Error> {
+    write_object_name(
+        name,
+        bacnet_types::enums::PropertyIdentifier::OBJECT_NAME,
+        value,
+    )
+    .expect("the Object_Name arm answers Object_Name")
+}
+
 /// Write the OBJECT_NAME property.
 ///
 /// Validates type and non-empty. Uniqueness must be checked by the caller
@@ -354,15 +322,6 @@ pub(crate) fn write_access_denied_error() -> bacnet_types::error::Error {
     )
 }
 
-/// Return the optional-functionality-not-supported protocol error.
-#[inline]
-pub(crate) fn optional_functionality_not_supported_error() -> bacnet_types::error::Error {
-    protocol_error(
-        bacnet_types::enums::ErrorClass::OBJECT,
-        bacnet_types::enums::ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
-    )
-}
-
 /// Return the invalid-data-type protocol error.
 #[inline]
 pub(crate) fn invalid_data_type_error() -> bacnet_types::error::Error {
@@ -385,7 +344,9 @@ mod command_write;
 mod encoded_elements;
 mod list_element;
 pub(crate) use command_write::decode_command_write;
-pub(crate) use encoded_elements::{chunks, decode_element, decode_elements, decode_single_element};
+pub(crate) use encoded_elements::{
+    chunks, decode_element, decode_elements, decode_single_element, framed_octets,
+};
 #[cfg(test)]
 pub(crate) use list_element::assert_list_element_refused;
 pub(crate) use list_element::at_list_element;
@@ -478,7 +439,7 @@ pub(crate) fn read_array(
 ///
 /// Clause 15.5.1.3 / 15.9.1.3: the request named an array index for a
 /// property that isn't a BACnetARRAY. The RP/RPM/WP/WPM service handlers
-/// gate on [`crate::traits::BACnetObject::is_array_property`]; object arms
+/// gate on [`crate::property_metadata::is_array_property`]; object arms
 /// mirror the classification for direct (non-service) calls.
 #[inline]
 pub(crate) fn property_is_not_an_array_error() -> bacnet_types::error::Error {
@@ -782,7 +743,7 @@ macro_rules! write_generic_event_properties {
                 // AcknowledgeAlarm or a local means — never by property write.
                 //
                 // This denial predates the generic/analog split and must survive it. The
-                // service path (`BACnetObject::acknowledge_alarm`) deliberately ORs the
+                // service path (`EventReporting::acknowledge_alarm`) deliberately ORs the
                 // acknowledged bit in; a property write would assign, so it could both
                 // fabricate an acknowledgment and erase one. GetAlarmSummary and
                 // GetEventInformation read this field straight off the object, so an

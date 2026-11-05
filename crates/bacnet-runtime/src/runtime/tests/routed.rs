@@ -76,7 +76,7 @@ async fn routed_read_preserves_dnet_dadr_and_outcome_path() {
             property_value: vec![0x44, 0x41, 0x20, 0, 0],
         };
         let mut service_ack = BytesMut::new();
-        ack.encode(&mut service_ack);
+        ack.encode(&mut service_ack).unwrap();
         send_routed_reply(
             &peer,
             frame.source_mac.as_slice(),

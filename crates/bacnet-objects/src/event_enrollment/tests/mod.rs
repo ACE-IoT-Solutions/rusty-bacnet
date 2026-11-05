@@ -1,3 +1,4 @@
+mod acknowledge;
 mod alert;
 mod atomic_commit;
 mod detection_enable;
@@ -12,3 +13,4 @@ mod reporting_options;
 mod status_flags;
 mod time_delay_normal;
 mod timestamps;
+mod writable_rows;

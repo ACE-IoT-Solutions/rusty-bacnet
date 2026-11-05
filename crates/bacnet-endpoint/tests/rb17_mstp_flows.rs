@@ -3,8 +3,9 @@
 //! Split from `rb17_mstp_proof.rs` (file-size gate). Same harness
 //! (`support/rb17_harness.rs`: session-under-test + raw-frame peer over
 //! [`LoopbackSerial::pair`](bacnet_transport::mstp::LoopbackSerial), both
-//! execution modes, standard and extended frames, deterministic, no
-//! sleeps), proving: dropped reply sender releases without late bytes;
+//! execution modes, standard and extended frames; no fixed sleeps, only
+//! `Harness::peer_deliver`'s 1 ms counter poll; Tokio variants on paused
+//! time, #2269), proving: dropped reply sender releases without late bytes;
 //! token/PFM traffic during application work preserves postponed
 //! ownership; queue/admission bounds release (MAC `WouldBlock`,
 //! egress-full, layer full-drop); cancellation and stop with an outstanding
@@ -14,10 +15,13 @@
 //! Evidence level: simulator (LoopbackSerial), NOT physical bench or
 //! on-wire conformance; timing qualification is RB-26, routing is RB-25.
 
+#[path = "support/eventually.rs"]
+mod eventually;
 #[path = "support/mstp_wire.rs"]
 mod mstp_wire;
 #[path = "support/rb17_harness.rs"]
 mod rb17_harness;
+use eventually::eventually;
 
 use std::sync::Arc;
 
@@ -46,7 +50,7 @@ async fn dropped_sender_impl(mode: MstpExecutionMode, frames: Frames) {
     // released without bytes, yet the MAC still answers ReplyPostponed.
     let mut h = Harness::new(mode, SessionRole::ClientOnly, frames).await;
     assert!(h.session.server().is_none());
-    h.peer_send(&data_expecting(1, 44)).await;
+    h.peer_deliver(&data_expecting(1, 44)).await;
     let postponed = h
         .wait_for("ReplyPostponed", |f| {
             f.frame_type == FrameType::REPLY_POSTPONED && f.destination == PEER_MAC
@@ -81,24 +85,24 @@ async fn dropped_sender_impl(mode: MstpExecutionMode, frames: Frames) {
     h.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_dropped_sender_releases_tokio() {
     dropped_sender_impl(MstpExecutionMode::Tokio, Frames::Standard).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_dropped_sender_releases_dedicated() {
-    dropped_sender_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
+    dropped_sender_impl(dedicated(), Frames::Standard).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_dropped_sender_releases_extended_tokio() {
     dropped_sender_impl(MstpExecutionMode::Tokio, Frames::Extended).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_dropped_sender_releases_extended_dedicated() {
-    dropped_sender_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
+    dropped_sender_impl(dedicated(), Frames::Extended).await;
 }
 
 async fn token_during_work_impl(mode: MstpExecutionMode, frames: Frames) {
@@ -108,7 +112,7 @@ async fn token_during_work_impl(mode: MstpExecutionMode, frames: Frames) {
         .expect("server role")
         .suspend_next_reply()
         .expect("arm suspension");
-    h.peer_send(&data_expecting(1, 55)).await;
+    h.peer_deliver(&data_expecting(1, 55)).await;
     // Token + PFM arrive while the application works (order vs dispatch is
     // deliberately uncontrolled). Neither may break the pending reply
     // ownership: ReplyPostponed still goes to the requester. The core keeps
@@ -133,7 +137,8 @@ async fn token_during_work_impl(mode: MstpExecutionMode, frames: Frames) {
     }
     assert!(
         postponed,
-        "MAC must release ReplyPostponed during application work"
+        "MAC must release ReplyPostponed during application work; {}",
+        h.link_report()
     );
     // Ownership preserved: the token opportunity delivers the postponed
     // response to the original requester (possibly already observed above).
@@ -152,24 +157,24 @@ async fn token_during_work_impl(mode: MstpExecutionMode, frames: Frames) {
     h.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_token_pfm_during_work_tokio() {
     token_during_work_impl(MstpExecutionMode::Tokio, Frames::Standard).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_token_pfm_during_work_dedicated() {
-    token_during_work_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
+    token_during_work_impl(dedicated(), Frames::Standard).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_token_pfm_during_work_extended_tokio() {
     token_during_work_impl(MstpExecutionMode::Tokio, Frames::Extended).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_token_pfm_during_work_extended_dedicated() {
-    token_during_work_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
+    token_during_work_impl(dedicated(), Frames::Extended).await;
 }
 
 /// Serializes direction-blind sends: every send blocks forever, so the
@@ -297,14 +302,12 @@ async fn mstp_queue_and_admission_bounds_release() {
     // Prove the session task consumed the first command and stalled inside
     // the network send (event-driven, no sleep): only then is the race below
     // independent of task scheduling.
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while !send_started.load(std::sync::atomic::Ordering::Acquire) {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "session task never consumed the first egress command"
-        );
-        tokio::task::yield_now().await;
-    }
+    eventually(
+        WAIT,
+        "session task never consumed the first egress command",
+        async || send_started.load(std::sync::atomic::Ordering::Acquire),
+    )
+    .await;
     // Two more sends race for the single free slot while the task is proven
     // stalled: exactly one buffers, the other is Full immediately (no
     // consumer progress is possible until stop). The Full one resolves
@@ -312,14 +315,10 @@ async fn mstp_queue_and_admission_bounds_release() {
     // first finished handle is the Full proof, deterministically.
     let s2 = tokio::spawn(send_one(egress.clone()));
     let s3 = tokio::spawn(send_one(egress));
-    let race_deadline = tokio::time::Instant::now() + WAIT;
-    while !(s2.is_finished() || s3.is_finished()) {
-        assert!(
-            tokio::time::Instant::now() < race_deadline,
-            "egress race never settled"
-        );
-        tokio::task::yield_now().await;
-    }
+    eventually(WAIT, "egress race never settled", async || {
+        s2.is_finished() || s3.is_finished()
+    })
+    .await;
     ingress.stop().await.expect("ingress must stop");
     let mut full = 0;
     let mut shutdown = 0;
@@ -395,44 +394,37 @@ async fn cancel_impl(mode: MstpExecutionMode, frames: Frames) {
     });
     // The lease is held from reserve (before any token): poll to 1, cancel,
     // then prove the exact lease is released.
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while h.session.active_leases() != 1 {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "outbound lease never held"
-        );
-        tokio::task::yield_now().await;
-    }
+    eventually(WAIT, "outbound lease never held", async || {
+        h.session.active_leases() == 1
+    })
+    .await;
     pending.abort();
     let _ = pending.await;
-    while h.session.active_leases() != 0 {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "cancelled request stranded its lease"
-        );
-        tokio::task::yield_now().await;
-    }
+    eventually(WAIT, "cancelled request stranded its lease", async || {
+        h.session.active_leases() == 0
+    })
+    .await;
     h.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_cancel_releases_lease_tokio() {
     cancel_impl(MstpExecutionMode::Tokio, Frames::Standard).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_cancel_releases_lease_dedicated() {
-    cancel_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
+    cancel_impl(dedicated(), Frames::Standard).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_cancel_releases_lease_extended_tokio() {
     cancel_impl(MstpExecutionMode::Tokio, Frames::Extended).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_cancel_releases_lease_extended_dedicated() {
-    cancel_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
+    cancel_impl(dedicated(), Frames::Extended).await;
 }
 
 async fn stop_outstanding_impl(mode: MstpExecutionMode, frames: Frames) {
@@ -448,14 +440,10 @@ async fn stop_outstanding_impl(mode: MstpExecutionMode, frames: Frames) {
             )
             .await
     });
-    let deadline = tokio::time::Instant::now() + WAIT;
-    while h.session.active_leases() != 1 {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "outbound lease never held"
-        );
-        tokio::task::yield_now().await;
-    }
+    eventually(WAIT, "outbound lease never held", async || {
+        h.session.active_leases() == 1
+    })
+    .await;
     // Stop seals admission and releases the exact lease; the waiter observes
     // shutdown, never a hang or a success.
     h.session
@@ -474,24 +462,24 @@ async fn stop_outstanding_impl(mode: MstpExecutionMode, frames: Frames) {
     h.drain.abort();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_stop_with_outstanding_tokio() {
     stop_outstanding_impl(MstpExecutionMode::Tokio, Frames::Standard).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_stop_with_outstanding_dedicated() {
-    stop_outstanding_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
+    stop_outstanding_impl(dedicated(), Frames::Standard).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_stop_with_outstanding_extended_tokio() {
     stop_outstanding_impl(MstpExecutionMode::Tokio, Frames::Extended).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_stop_with_outstanding_extended_dedicated() {
-    stop_outstanding_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
+    stop_outstanding_impl(dedicated(), Frames::Extended).await;
 }
 
 #[tokio::test]
@@ -557,7 +545,7 @@ async fn nonrouting_impl(mode: MstpExecutionMode, frames: Frames) {
         },
     )
     .unwrap();
-    h.peer_send(&MstpFrame {
+    h.peer_deliver(&MstpFrame {
         frame_type: FrameType::BACNET_DATA_EXPECTING_REPLY,
         destination: SESSION_MAC,
         source: PEER_MAC,
@@ -570,7 +558,7 @@ async fn nonrouting_impl(mode: MstpExecutionMode, frames: Frames) {
     .await;
     // A valid local request on the same link is still served; the routed
     // invoke ID must never draw an application reply.
-    h.peer_send(&data_expecting(1, 66)).await;
+    h.peer_deliver(&data_expecting(1, 66)).await;
     let mut routed_answered = false;
     let reply = h
         .wait_for("local ComplexAck", |f| {
@@ -593,22 +581,22 @@ async fn nonrouting_impl(mode: MstpExecutionMode, frames: Frames) {
     h.shutdown().await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_nonrouting_standard_only_tokio() {
     nonrouting_impl(MstpExecutionMode::Tokio, Frames::Standard).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_nonrouting_standard_only_dedicated() {
-    nonrouting_impl(MstpExecutionMode::dedicated_thread(), Frames::Standard).await;
+    nonrouting_impl(dedicated(), Frames::Standard).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_nonrouting_extended_tokio() {
     nonrouting_impl(MstpExecutionMode::Tokio, Frames::Extended).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn mstp_nonrouting_extended_dedicated() {
-    nonrouting_impl(MstpExecutionMode::dedicated_thread(), Frames::Extended).await;
+    nonrouting_impl(dedicated(), Frames::Extended).await;
 }

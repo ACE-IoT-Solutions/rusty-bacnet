@@ -1,17 +1,26 @@
+use crate::property_metadata::PropertyMetadata;
 use std::borrow::Cow;
 
 use super::*;
+#[cfg(feature = "event-reporting")]
 use crate::access_control::{AccessDoorObject, AccessZoneObject};
+#[cfg(feature = "event-reporting")]
 use crate::analog::{AnalogInputObject, AnalogOutputObject, AnalogValueObject};
+#[cfg(feature = "event-reporting")]
 use crate::binary::{BinaryInputObject, BinaryOutputObject, BinaryValueObject};
+#[cfg(feature = "event-reporting")]
 use crate::event::{EventStateChange, EventTransition, EventTransitionCommit};
+#[cfg(feature = "event-reporting")]
 use crate::multistate::{MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject};
-use bacnet_types::enums::{
-    EngineeringUnits, ErrorClass, ErrorCode, EventState, ObjectType, PropertyIdentifier,
-};
+#[cfg(feature = "event-reporting")]
+use bacnet_types::enums::{EngineeringUnits, EventState};
+use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
 use bacnet_types::error::{Error, RemoteError};
-use bacnet_types::primitives::{BACnetTimeStamp, PropertyValue};
+#[cfg(feature = "event-reporting")]
+use bacnet_types::primitives::BACnetTimeStamp;
+use bacnet_types::primitives::PropertyValue;
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn all_eleven_builtin_intrinsic_families_implement_atomic_commit() {
     let mut objects: Vec<Box<dyn BACnetObject>> = vec![
@@ -29,8 +38,20 @@ fn all_eleven_builtin_intrinsic_families_implement_atomic_commit() {
     ];
 
     for object in &mut objects {
+        // Binary and Multi-state Output start with detection off, which
+        // refuses this commit (#2271).
         object
-            .commit_event_transition_internal(EventTransitionCommit {
+            .write_property(
+                PropertyIdentifier::EVENT_DETECTION_ENABLE,
+                None,
+                PropertyValue::Boolean(true),
+                None,
+            )
+            .unwrap();
+        object
+            .event_reporting_mut()
+            .unwrap()
+            .commit_event_transition(EventTransitionCommit {
                 change: EventStateChange {
                     from: EventState::NORMAL,
                     to: EventState::OFFNORMAL,
@@ -140,8 +161,8 @@ impl BACnetObject for TestObject {
         ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[PropertyIdentifier::OBJECT_NAME])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 }
 

@@ -8,6 +8,7 @@ pub(super) struct MixedSession {
     announce_interval: Option<Duration>,
     running: Option<RunningRouter>,
     last_health: Arc<StdMutex<Vec<PyRouterPortHealth>>>,
+    pub(super) last_counters: Arc<StdMutex<Vec<PyRouterPortCounters>>>,
     last_routes: Arc<StdMutex<Vec<PyRouterRouteEntry>>>,
     #[cfg(test)]
     pub(super) test_start: Option<
@@ -20,6 +21,7 @@ impl MixedSession {
         configured: Vec<PyRouterPortConfig>,
         announce_interval: Option<Duration>,
         last_health: Arc<StdMutex<Vec<PyRouterPortHealth>>>,
+        last_counters: Arc<StdMutex<Vec<PyRouterPortCounters>>>,
         last_routes: Arc<StdMutex<Vec<PyRouterRouteEntry>>>,
     ) -> Self {
         Self {
@@ -27,6 +29,7 @@ impl MixedSession {
             announce_interval,
             running: None,
             last_health,
+            last_counters,
             last_routes,
             #[cfg(test)]
             test_start: None,
@@ -100,7 +103,9 @@ impl Session for MixedSession {
         let mut router = active.router.lock().await;
         let routes = route_snapshot(&router);
         let outcome = router.stop().await;
+        let counters = counter_snapshot(&router, &active.health);
         *self.last_health.lock().unwrap_or_else(|e| e.into_inner()) = health;
+        *self.last_counters.lock().unwrap_or_else(|e| e.into_inner()) = counters;
         *self.last_routes.lock().unwrap_or_else(|e| e.into_inner()) = routes;
         outcome
     }

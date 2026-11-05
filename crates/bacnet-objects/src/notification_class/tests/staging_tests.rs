@@ -5,11 +5,16 @@
 use super::super::*;
 use super::make_dest_device;
 use super::persistence_tests::{assert_refused, framed, write};
-use super::storage::{MemoryPersistence, WAIT, block_on, persistent};
-use crate::durable::{DurableWrites, STAGED_WRITE_LIFETIME, SaveWait, StageStep};
+#[cfg(feature = "std")]
+use super::storage::WAIT;
+use super::storage::{MemoryPersistence, block_on, persistent};
+#[cfg(feature = "std")]
+use crate::durable::STAGED_WRITE_LIFETIME;
+use crate::durable::{DurableWrites, SaveWait, StageStep};
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+#[cfg(feature = "std")]
 use std::time::{Duration, Instant};
 
 fn staged(step: StageStep) -> SaveWait {
@@ -19,6 +24,8 @@ fn staged(step: StageStep) -> SaveWait {
     }
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 fn busy(step: StageStep) -> SaveWait {
     match step {
         StageStep::Busy(wait) => wait,
@@ -34,6 +41,8 @@ fn stage_saved(nc: &mut NotificationClass, list: &[BACnetDestination]) -> SaveWa
     wait
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_staged_write_saves_while_the_class_serves_the_old_list() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -87,6 +96,8 @@ fn a_staged_write_whose_save_fails_is_refused_and_the_old_list_stays() {
     assert_eq!(storage.saves(), 1);
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_second_write_waits_until_the_first_has_landed() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -145,7 +156,8 @@ fn a_dropped_staged_write_leaves_configured_destinations_unsaved() {
     assert_eq!(
         storage.snapshot(),
         Some(NotificationClassSnapshot {
-            recipient_list: None
+            recipient_list: None,
+            description: None,
         })
     );
     drop(nc);
@@ -174,6 +186,8 @@ fn a_write_nobody_staged_supersedes_a_staged_one() {
     assert_eq!(storage.saved(), Some(staged_list.to_vec()));
 }
 
+// std: judges the staged lifetime on the wall clock.
+#[cfg(feature = "std")]
 #[test]
 fn a_forgotten_staged_write_is_dropped_by_the_next_write_that_stages() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -212,6 +226,8 @@ fn a_forgotten_staged_write_is_dropped_by_the_next_write_that_stages() {
     assert_eq!(storage.saves(), 4);
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn an_operation_task_call_drops_a_forgotten_staged_write_once_its_lifetime_is_over() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -222,20 +238,20 @@ fn an_operation_task_call_drops_a_forgotten_staged_write_once_its_lifetime_is_ov
     let held = storage.hold();
     let wait = staged(nc.stage_write(P::RECIPIENT_LIST, None, &framed(&[make_dest_device(9)])));
     held.started.recv_timeout(WAIT).unwrap();
-    assert!(!nc.advance_monotonic_time_internal(Duration::ZERO));
-    nc.advance_monotonic_time_internal(Duration::from_secs(3600));
+    nc.expire_staged(Duration::ZERO);
+    nc.expire_staged(Duration::from_secs(3600));
     drop(held.go);
     block_on(&wait);
     // Its request never comes back. The first call that finds the save
     // finished starts the count on the operation task's clock; storage keeps
     // the list nobody served until a lifetime has passed.
     let start = Duration::from_secs(3601);
-    nc.advance_monotonic_time_internal(start);
-    nc.advance_monotonic_time_internal(start + STAGED_WRITE_LIFETIME - Duration::from_millis(1));
+    nc.expire_staged(start);
+    nc.expire_staged(start + STAGED_WRITE_LIFETIME - Duration::from_millis(1));
     nc.wait_for_saves();
     assert_eq!(storage.saved(), Some(vec![make_dest_device(9)]));
     // The call a lifetime later drops it and puts storage back.
-    nc.advance_monotonic_time_internal(start + STAGED_WRITE_LIFETIME);
+    nc.expire_staged(start + STAGED_WRITE_LIFETIME);
     nc.wait_for_saves();
     assert_eq!(storage.saved(), Some(served.to_vec()));
     assert_eq!(nc.recipient_list(), served);
@@ -251,10 +267,11 @@ fn staging_skips_writes_the_class_does_not_save_or_will_refuse() {
     let mut nc = persistent(&storage);
     let list = framed(&[make_dest_device(7)]);
     let skipped = |step| matches!(step, StageStep::Skip);
+    // A NULL Description changes nothing (#2364).
     assert!(skipped(nc.stage_write(
         P::DESCRIPTION,
         None,
-        &PropertyValue::CharacterString("alarms".into())
+        &PropertyValue::Null
     )));
     assert!(skipped(nc.stage_write(P::RECIPIENT_LIST, Some(1), &list)));
     // A malformed list is refused by the write itself.
@@ -305,7 +322,8 @@ fn a_class_dropped_with_a_staged_write_and_no_written_list_saves_none() {
     assert_eq!(
         storage.snapshot(),
         Some(NotificationClassSnapshot {
-            recipient_list: None
+            recipient_list: None,
+            description: None,
         })
     );
     assert!(!persistent(&storage).recipient_list_saved());
@@ -342,6 +360,8 @@ fn a_class_dropped_with_a_staged_write_whose_save_failed_leaves_storage_alone() 
     assert_eq!(persistent(&storage).recipient_list(), served);
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_class_dropped_while_its_staged_save_runs_puts_storage_back_after_it() {
     let storage = Arc::new(MemoryPersistence::default());

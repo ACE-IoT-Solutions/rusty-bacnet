@@ -53,6 +53,7 @@ impl TransportPort for IngressTransport {
 
                 response: None,
                 reject_origin: None,
+                count_forward: false,
             })
             .map_err(|_| Error::Encoding("test wire queue unavailable".into()))
     }
@@ -68,6 +69,7 @@ impl TransportPort for IngressTransport {
                 data_attributes: data_attributes.to_vec(),
 
                 reject_origin: None,
+                count_forward: false,
             })
             .map_err(|_| Error::Encoding("test wire queue unavailable".into()))
     }

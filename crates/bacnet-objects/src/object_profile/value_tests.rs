@@ -10,6 +10,7 @@ use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
 use crate::traits::BACnetObject;
 use bacnet_types::enums::{EngineeringUnits, ObjectType};
 use std::sync::Arc;
+#[cfg(feature = "durable-writes")]
 use std::time::Duration;
 
 const KINDS: [ObjectType; 3] = [
@@ -96,11 +97,17 @@ fn all_nine_modes_and_eight_masks_preserve_unrelated_metadata_and_source_ownersh
                     );
                     assert_eq!(object.read_property(P::PRESENT_VALUE, None).unwrap(), pv);
                     assert_eq!(
-                        object.property_list().contains(&P::PRIORITY_ARRAY),
+                        crate::property_metadata::has_property(
+                            &object.property_metadata(),
+                            P::PRIORITY_ARRAY
+                        ),
                         access == Access::Commandable
                     );
                     assert_eq!(
-                        object.property_list().contains(&P::VALUE_SOURCE),
+                        crate::property_metadata::has_property(
+                            &object.property_metadata(),
+                            P::VALUE_SOURCE
+                        ),
                         access == Access::Commandable || tracked
                     );
                     let expected: Vec<_> = ROWS
@@ -117,8 +124,7 @@ fn all_nine_modes_and_eight_masks_preserve_unrelated_metadata_and_source_ownersh
                         expected
                     );
                     assert_eq!(
-                        object
-                            .property_list()
+                        crate::test_rows::listed(&object.property_metadata())
                             .iter()
                             .filter(|p| ROWS.contains(p))
                             .copied()
@@ -169,16 +175,14 @@ fn all_nine_modes_and_eight_masks_preserve_unrelated_metadata_and_source_ownersh
                     // A source-mode reconfiguration cannot add or remove profile rows.
                     object.track(!tracked);
                     assert_eq!(
-                        object
-                            .property_list()
+                        crate::test_rows::listed(&object.property_metadata())
                             .iter()
                             .filter(|p| ROWS.contains(p))
                             .copied()
                             .collect::<Vec<_>>(),
                         expected
                     );
-                    assert!(!object.advance_monotonic_time_internal(Duration::from_secs(20)));
-                    assert!(object.cov_snapshot_internal().is_none());
+                    assert!(object.timed().is_none());
                 }
             }
         }
@@ -206,7 +210,7 @@ fn invalid_provision_preserves_profile_and_memory_only_writes_remain_local() {
                 assert!(object.provision(invalid).is_err());
                 assert_eq!(ROWS.map(|p| object.read_property(p, None).unwrap()), before);
             }
-            assert!(object.durable_writes_internal().is_none());
+            assert!(object.durable_writes().is_none());
             object
                 .write_property(P::TAGS, Some(0), PropertyValue::Unsigned(0), None)
                 .unwrap();
@@ -240,7 +244,10 @@ fn saved_overrides_require_provisioning_in_every_value_mode() {
                     object.read_property(P::TAGS, None),
                     ErrorCode::UNKNOWN_PROPERTY,
                 );
-                assert!(!object.property_list().contains(&P::TAGS));
+                assert!(!crate::property_metadata::has_property(
+                    &object.property_metadata(),
+                    P::TAGS
+                ));
                 object.provision(optional(7)).unwrap();
                 let count = saved
                     .as_ref()
@@ -323,6 +330,7 @@ fn invalid_and_oversized_tags_never_attempt_a_save_in_any_value_mode() {
     }
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn each_value_monotonic_hook_expires_unclaimed_stages_without_output_change() {
     for kind in KINDS {
@@ -333,14 +341,20 @@ fn each_value_monotonic_hook_expires_unclaimed_stages_without_output_change() {
             object.provision(optional(7)).unwrap();
             let wait = staged(
                 object
-                    .durable_writes_internal()
+                    .durable_writes()
                     .unwrap()
                     .stage_writes(&[whole("never-served")]),
             );
             wait.block();
             assert_eq!(store.saved(), Some(snapshot("never-served")));
-            assert!(!object.advance_monotonic_time_internal(Duration::ZERO));
-            assert!(!object.advance_monotonic_time_internal(Duration::from_secs(11)));
+            object
+                .durable_writes()
+                .unwrap()
+                .expire_staged(Duration::ZERO);
+            object
+                .durable_writes()
+                .unwrap()
+                .expire_staged(Duration::from_secs(11));
             object.wait();
             assert_eq!(store.saved(), Some(snapshot("saved")));
             assert_eq!(store.attempts(), 2);

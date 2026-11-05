@@ -15,6 +15,7 @@ use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::event::{EventStateChange, EventTransition};
 use bacnet_objects::notification_class::{MAX_RECIPIENT_LIST_DESTINATIONS, NotificationClass};
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::constructed::{BACnetAddress, BACnetDestination, BACnetRecipient};
 use bacnet_types::enums::{EngineeringUnits, EventState, EventType};
@@ -215,6 +216,7 @@ pub(super) async fn distribute_counted_through(
             suppressions: &suppressions,
             retry_timeout_ms: 1000,
             local_apdu_capacity: 1476,
+            device: crate::server::event_delivery::fixture_device(&db).await,
         },
         &oid,
         (
@@ -334,8 +336,8 @@ impl BACnetObject for TestNotificationClass {
         ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[
             PropertyIdentifier::NOTIFICATION_CLASS,
             PropertyIdentifier::RECIPIENT_LIST,
         ])

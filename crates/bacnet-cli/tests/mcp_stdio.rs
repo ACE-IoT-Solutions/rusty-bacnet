@@ -176,6 +176,24 @@ fn an_unauthorized_profile_or_extra_flags_are_refused() {
         Some(config.path()),
     );
     assert!(stderr.contains("transport flags"), "{stderr}");
+    // A profile that isn't there says where it was looked for and what
+    // to run: an agent host's settings named it (#2304).
+    let stderr = refused(
+        &["mcp", "serve", "--stdio", "--profile", "other"],
+        Some(config.path()),
+    );
+    assert!(
+        stderr.contains("no profile named other")
+            && stderr.contains("profiles")
+            && stderr.contains("bacnet mcp authorize --profile other"),
+        "{stderr}"
+    );
+    // The same for a passive server, which reads the profile's policy.
+    let stderr = refused(
+        &["mcp", "serve", "--stdio", "--passive", "--profile", "other"],
+        Some(config.path()),
+    );
+    assert!(stderr.contains("no profile named other"), "{stderr}");
     // A bare consent time authorizes nothing.
     let bare = store(&format!("{PROFILE}authorized_at_unix = 1\n"));
     let stderr = refused(
@@ -228,10 +246,77 @@ fn an_authorized_profile_serves_live() {
     let tools: Value = serde_json::from_str(lines[1].trim_end_matches('\r')).unwrap();
     assert_eq!(
         tools["result"]["tools"].as_array().unwrap().len(),
-        10,
+        11,
         "{tools}"
     );
     let call: Value = serde_json::from_str(lines[2].trim_end_matches('\r')).unwrap();
     assert_eq!(call["result"]["isError"], json!(false), "{call}");
     assert!(stderr.contains("read call"), "{stderr}");
+}
+
+/// The release's MCP bundles are smoke-tested with an authorized profile
+/// kept beside the packer, since a host can't run `bacnet mcp authorize`
+/// (#2304). It must still be authorized, and its server must list exactly
+/// the read tools the bundle's manifest names.
+#[test]
+fn the_bundle_smoke_profile_serves_the_manifests_tools() {
+    let release = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/release/mcpb");
+    let profile = std::fs::read_to_string(release.join("smoke-profile.toml")).unwrap();
+    let manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(release.join("manifest.json")).unwrap())
+            .unwrap();
+    let config = store(&profile);
+    let (lines, _) = session(
+        &["mcp", "serve", "--stdio", "--profile", "site"],
+        Some(config.path()),
+        &requests(),
+    );
+    assert_json_rpc_only(&lines);
+    let hello: Value = serde_json::from_str(lines[0].trim_end_matches('\r')).unwrap();
+    let title = hello["result"]["serverInfo"]["title"].as_str().unwrap();
+    assert!(title.contains("read-only"), "{hello}");
+    let tools: Value = serde_json::from_str(lines[1].trim_end_matches('\r')).unwrap();
+    let mut served: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    let mut listed: Vec<&str> = manifest["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    served.sort_unstable();
+    listed.sort_unstable();
+    assert_eq!(served, listed);
+}
+
+/// A refusal reads as plain text on stderr, as an agent host's log shows
+/// it: no Debug quotes around the message and no doubled backslashes in a
+/// Windows path, and the exit code is 1 (#2325).
+#[test]
+fn a_refusal_prints_plain_text_and_exits_1() {
+    let config = store(PROFILE);
+    let output = bacnet(Some(config.path()))
+        .args(["mcp", "serve", "--stdio", "--profile", "other"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(lines.len(), 1, "{stderr}");
+    let line = lines[0].trim_end_matches('\r');
+    assert!(
+        line.starts_with("Error: no profile named other in "),
+        "{line}"
+    );
+    assert!(!line.ends_with('"'), "{line}");
+    assert!(!line.contains("\\\\") && !line.contains("\\\""), "{line}");
+    // The store's path as the OS spells it, separators unescaped.
+    let profiles = config.path().join("profiles");
+    assert!(line.contains(&*profiles.to_string_lossy()), "{line}");
 }

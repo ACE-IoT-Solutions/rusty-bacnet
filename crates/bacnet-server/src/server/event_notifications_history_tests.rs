@@ -8,6 +8,7 @@ use crate::server::event_timestamp::SampledEventClock;
 use bacnet_objects::event::{
     EventStateChange, EventTransitionCommit, EventTransitionCommitError, TransitionOutcome,
 };
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_services::alarm_event::NotificationParameters;
 use bacnet_types::enums::{EventState, EventType};
@@ -120,11 +121,8 @@ impl BACnetObject for AtomicHistoryObject {
         ))
     }
 
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        std::borrow::Cow::Borrowed(&[
-            PropertyIdentifier::OBJECT_IDENTIFIER,
-            PropertyIdentifier::OBJECT_NAME,
-            PropertyIdentifier::OBJECT_TYPE,
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[
             PropertyIdentifier::NOTIFICATION_CLASS,
             PropertyIdentifier::NOTIFY_TYPE,
             PropertyIdentifier::EVENT_TIME_STAMPS,
@@ -138,7 +136,16 @@ impl BACnetObject for AtomicHistoryObject {
         ])
     }
 
-    fn commit_event_transition_internal(
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::EventReporting for AtomicHistoryObject {
+    fn commit_event_transition(
         &mut self,
         _commit: EventTransitionCommit,
     ) -> Result<(), EventTransitionCommitError> {
@@ -229,6 +236,7 @@ async fn commit_and_capture_history_notification(
                 suppressions: &Default::default(),
                 retry_timeout_ms: 1000,
                 local_apdu_capacity: 1476,
+                device: crate::server::event_delivery::fixture_device(&db).await,
             },
             &oid,
             committed,

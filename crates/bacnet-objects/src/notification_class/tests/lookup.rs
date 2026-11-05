@@ -1,5 +1,6 @@
 use super::super::*;
 use super::{make_dest_device, make_time};
+use crate::property_metadata::PropertyMetadata;
 use std::borrow::Cow;
 
 enum RecipientListBehavior {
@@ -65,8 +66,8 @@ impl BACnetObject for LookupTestNotificationClass {
         ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[
             PropertyIdentifier::NOTIFICATION_CLASS,
             PropertyIdentifier::RECIPIENT_LIST,
         ])

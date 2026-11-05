@@ -4,6 +4,7 @@ use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::event::{EventStateChange, EventTransition, EventTransitionCommit};
 use bacnet_objects::traits::BACnetObject;
+use bacnet_objects::traits::EventReporting as _;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::bitstring::{EventTransitionBits, LimitEnable};
 use bacnet_types::enums::{EngineeringUnits, EventState, ObjectType, PropertyIdentifier};
@@ -34,7 +35,7 @@ pub(super) fn database() -> ObjectDatabase {
     // The running detector sees the same high-limit condition as the committed history.
     alarm.set_present_value(81.0);
     alarm
-        .commit_event_transition_internal(EventTransitionCommit {
+        .commit_event_transition(EventTransitionCommit {
             change: EventStateChange {
                 from: EventState::NORMAL,
                 to: EventState::HIGH_LIMIT,
@@ -153,7 +154,7 @@ pub(super) async fn object_lifecycle<T: TransportPort + 'static>(
             source_port,
         )
         .await,
-        "OBJECT_IDENTIFIER_ALREADY_EXISTS",
+        "object-identifier-already-exists",
     );
     assert_eq!(object_values(&*server.database().read().await), expected);
     assert_eq!(server.database().read().await.len(), before + 1);
@@ -166,7 +167,7 @@ pub(super) async fn object_lifecycle<T: TransportPort + 'static>(
             source_port,
         )
         .await,
-        "OBJECT_DELETION_NOT_PERMITTED",
+        "object-deletion-not-permitted",
     );
     assert_eq!(object_values(&*server.database().read().await), expected);
     assert_eq!(server.database().read().await.len(), before + 1);
@@ -191,7 +192,7 @@ pub(super) async fn object_lifecycle<T: TransportPort + 'static>(
             source_port,
         )
         .await,
-        "UNKNOWN_OBJECT",
+        "unknown-object",
     );
     assert_eq!(server.database().read().await.len(), before);
     assert!(
@@ -238,8 +239,8 @@ async fn acknowledge<T: TransportPort + 'static>(
         EventTransitionBits::TO_FAULT | EventTransitionBits::TO_NORMAL
     );
     for (state, timestamp, error) in [
-        ("4", "sequence:42", "INVALID_EVENT_STATE"),
-        ("3", "sequence:41", "INVALID_TIME_STAMP"),
+        ("4", "sequence:42", "invalid-event-state"),
+        ("3", "sequence:41", "invalid-time-stamp"),
     ] {
         failure(
             &invoke(

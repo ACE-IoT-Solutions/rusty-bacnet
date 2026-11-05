@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::fmt;
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::Ipv4Addr;
+
+use bacnet_transport::bip::ForeignBbmd;
 use std::time::Duration;
 
 use crate::error::RuntimeError;
@@ -62,7 +64,7 @@ pub struct BipConfig {
     pub port: u16,
     /// Optional directed broadcast address override.
     pub broadcast: Option<String>,
-    /// Optional BBMD address for foreign-device registration.
+    /// Optional BBMD IPv4 address or host name for foreign-device registration.
     pub bbmd_address: Option<String>,
     /// Foreign-device registration lifetime in seconds.
     pub foreign_device_ttl: Option<u16>,
@@ -265,15 +267,10 @@ fn validate_bip(id: AttachmentId, config: &BipConfig) -> Result<(), RuntimeError
     match (&config.bbmd_address, config.foreign_device_ttl) {
         (None, None) => Ok(()),
         (Some(address), Some(ttl)) => {
-            let address = address.parse::<SocketAddrV4>().map_err(|error| {
+            address.parse::<ForeignBbmd>().map_err(|error| {
                 RuntimeError::attachment_config(id, format!("invalid BBMD address: {error}"))
             })?;
-            if address.port() == 0 {
-                return Err(RuntimeError::attachment_config(
-                    id,
-                    "BBMD port must be non-zero",
-                ));
-            }
+            // ForeignBbmd checks the host and port, including port zero.
             if ttl == 0 {
                 return Err(RuntimeError::attachment_config(
                     id,

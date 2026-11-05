@@ -122,13 +122,14 @@ fn rpm_audit_log_metadata_does_not_enable_create_object() {
             object_specifier,
             list_of_initial_values: vec![],
         }
-        .encode(&mut request);
+        .encode(&mut request)
+        .unwrap();
         let mut response = BytesMut::new();
         let result = handle_create_object(&mut db, &request, &mut response);
         assert!(
             matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
             if class == ErrorClass::OBJECT
-                && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE)
+                && code == ErrorCode::DYNAMIC_CREATION_NOT_SUPPORTED)
         );
         assert!(response.is_empty());
         assert!(db.is_empty());

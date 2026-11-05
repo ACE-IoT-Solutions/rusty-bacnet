@@ -41,7 +41,7 @@ const PUMP_LIMIT: Duration = Duration::from_secs(45);
 
 /// A BBMD on loopback whose own device is `instance`; it takes foreign
 /// devices when `accept` is set.
-async fn bbmd_server(instance: u32, accept: bool) -> BACnetServer<BipTransport> {
+pub(super) async fn bbmd_server(instance: u32, accept: bool) -> BACnetServer<BipTransport> {
     let identity = DeviceIdentity::new(instance, 0).unwrap();
     let mut db = ObjectDatabase::new();
     let device = DeviceObject::new(DeviceConfig {
@@ -65,7 +65,7 @@ async fn bbmd_server(instance: u32, accept: bool) -> BACnetServer<BipTransport> 
         .unwrap()
 }
 
-fn server_address(server: &BACnetServer<BipTransport>) -> SocketAddrV4 {
+pub(super) fn server_address(server: &BACnetServer<BipTransport>) -> SocketAddrV4 {
     address_of(server.local_mac()).unwrap()
 }
 
@@ -101,7 +101,7 @@ pub(super) fn plan(bbmd: Option<SocketAddrV4>) -> ConnectPlan {
     profile.bip_mut().interface = Ipv4Addr::LOCALHOST;
     profile.bip_mut().port = 0;
     profile.bip_mut().broadcast = Ipv4Addr::LOCALHOST;
-    profile.bip_mut().bbmd = bbmd;
+    profile.bip_mut().bbmd = bbmd.map(Into::into);
     profile.bip_mut().ttl = 60;
     ConnectPlan {
         kind: TransportKind::Bip,
@@ -189,7 +189,7 @@ impl Net {
     }
 }
 
-fn local(app: &App) -> SocketAddrV4 {
+pub(super) fn local(app: &App) -> SocketAddrV4 {
     let Link::Up { local } = &app.link else {
         panic!("not connected");
     };
@@ -312,14 +312,16 @@ async fn registration_counts_down_renews_in_time_and_finds_our_fdt_entry() {
     let bbmd = server_address(&server);
     let mut net = Net::start(plan(Some(bbmd))).await;
     net.press(KeyCode::Char('4')).await;
-    let foreign = net.app.network.foreign.unwrap();
-    assert_eq!((foreign.bbmd, foreign.ttl), (bbmd, 60));
+    let foreign = net.app.network.foreign.clone().unwrap();
+    assert_eq!((foreign.bbmd, foreign.ttl), (Some(bbmd), 60));
     assert_eq!(foreign.renewal, Duration::from_secs(30));
 
     // Accepted: the FDT is read once, and our entry is the one marked.
     net.pump_until("our FDT entry", |app| app.network.own.is_some())
         .await;
     let own = net.app.network.own.unwrap();
+    assert!(!own.translated);
+    let own = own.index;
     let fdt = net
         .app
         .network

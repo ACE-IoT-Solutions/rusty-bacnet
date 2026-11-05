@@ -1,27 +1,41 @@
 //! The snapshot codec and the two-slot file store (#1541), and helpers the
 //! reopen and cadence tests share.
 
+#[cfg(feature = "std")]
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bacnet_types::constructed::{
-    BACnetDeviceObjectPropertyReference, BACnetEventLogRecord, BACnetLogMultipleRecord,
-    BACnetLogRecord, EventLogDatum, LogData, LogDatum, LogValue,
+    BACnetDeviceObjectPropertyReference, BACnetEventLogRecord, BACnetLogRecord, EventLogDatum,
+    LogDatum,
 };
-use bacnet_types::enums::{LoggingType, ObjectType, PropertyIdentifier};
+#[cfg(feature = "std")]
+use bacnet_types::constructed::{BACnetLogMultipleRecord, LogData, LogValue};
+#[cfg(feature = "std")]
+use bacnet_types::enums::LoggingType;
+use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
 
 use super::*;
-use crate::clock::{ClockFrame, ClockReader, UNSPECIFIED_DATETIME};
+#[cfg(feature = "std")]
+use crate::clock::UNSPECIFIED_DATETIME;
+use crate::clock::{ClockFrame, ClockReader};
+#[cfg(feature = "std")]
 use crate::durable::crc32;
 
+// std: the file backend.
+#[cfg(feature = "std")]
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A fresh base path in its own temporary directory, removed on drop.
+// std: the file backend.
+#[cfg(feature = "std")]
 pub(super) struct TempBase(PathBuf);
 
+// std: the file backend.
+#[cfg(feature = "std")]
 impl TempBase {
     pub(super) fn new(label: &str) -> Self {
         let serial = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -38,6 +52,8 @@ impl TempBase {
     }
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 impl Drop for TempBase {
     fn drop(&mut self) {
         if let Some(parent) = self.0.parent() {
@@ -142,6 +158,8 @@ pub(super) fn event_record(hour: u8) -> BACnetEventLogRecord {
     }
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 pub(super) fn multiple_record(hour: u8) -> BACnetLogMultipleRecord {
     BACnetLogMultipleRecord {
         date: DATE,
@@ -162,6 +180,8 @@ pub(super) fn reference(instance: u32) -> BACnetDeviceObjectPropertyReference {
     }
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 fn trend_snapshot(generation: u64) -> LogSnapshot<BACnetLogRecord> {
     LogSnapshot {
         object_identifier: ObjectIdentifier::new(ObjectType::TREND_LOG, 3).unwrap(),
@@ -183,9 +203,12 @@ fn trend_snapshot(generation: u64) -> LogSnapshot<BACnetLogRecord> {
             interval_offset: 20,
         }),
         log_device_object_property: vec![reference(1)],
+        reporting: LogReportingSettings::default(),
     }
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 fn event_snapshot(generation: u64) -> LogSnapshot<BACnetEventLogRecord> {
     LogSnapshot {
         object_identifier: ObjectIdentifier::new(ObjectType::EVENT_LOG, 3).unwrap(),
@@ -202,9 +225,12 @@ fn event_snapshot(generation: u64) -> LogSnapshot<BACnetEventLogRecord> {
         stop_time: (DATE, at(23)),
         acquisition: None,
         log_device_object_property: Vec::new(),
+        reporting: LogReportingSettings::default(),
     }
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 fn multiple_snapshot(generation: u64) -> LogSnapshot<BACnetLogMultipleRecord> {
     LogSnapshot {
         object_identifier: ObjectIdentifier::new(ObjectType::TREND_LOG_MULTIPLE, 3).unwrap(),
@@ -227,9 +253,12 @@ fn multiple_snapshot(generation: u64) -> LogSnapshot<BACnetLogMultipleRecord> {
             interval_offset: 0,
         }),
         log_device_object_property: vec![reference(1), reference(2)],
+        reporting: LogReportingSettings::default(),
     }
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 fn round_trip<R>(snapshot: impl Fn(u64) -> LogSnapshot<R>)
 where
     R: std::fmt::Debug + PartialEq,
@@ -248,6 +277,8 @@ where
     assert!(slot0.exists() && slot1.exists());
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn each_family_round_trips_through_the_file_store() {
     round_trip(trend_snapshot);
@@ -256,12 +287,16 @@ fn each_family_round_trips_through_the_file_store() {
 }
 
 /// Flip one payload octet and fix nothing else, so the checksum fails.
+// std: the file backend.
+#[cfg(feature = "std")]
 fn damage(path: &Path) {
     let mut data = std::fs::read(path).unwrap();
     data[30] ^= 0x55;
     std::fs::write(path, data).unwrap();
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn a_damaged_newer_slot_falls_back_to_the_older_one() {
     let base = TempBase::new("fallback");
@@ -283,12 +318,16 @@ fn a_damaged_newer_slot_falls_back_to_the_older_one() {
 }
 
 /// Rewrite a slot's checksum after editing it, so only the edit is wrong.
+// std: the file backend.
+#[cfg(feature = "std")]
 fn reseal(data: &mut [u8]) {
     let at = data.len() - 4;
     let checksum = crc32(&data[..at]);
     data[at..].copy_from_slice(&checksum.to_be_bytes());
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn a_slot_that_decodes_but_does_not_hold_together_falls_back() {
     let base = TempBase::new("invalid");
@@ -306,6 +345,8 @@ fn a_slot_that_decodes_but_does_not_hold_together_falls_back() {
     assert_eq!(store.load(oid).unwrap(), Some(trend_snapshot(1)));
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn another_objects_or_an_unknown_schemas_slot_is_refused_without_falling_back() {
     let base = TempBase::new("refused");
@@ -334,6 +375,8 @@ fn another_objects_or_an_unknown_schemas_slot_is_refused_without_falling_back() 
     );
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn slots_disagreeing_at_one_generation_are_refused() {
     let base = TempBase::new("diverge");
@@ -354,6 +397,8 @@ fn slots_disagreeing_at_one_generation_are_refused() {
     );
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn snapshots_that_do_not_hold_together_are_never_written() {
     let base = TempBase::new("refuse-commit");
@@ -399,6 +444,8 @@ fn snapshots_that_do_not_hold_together_are_never_written() {
     assert!(store.slot_paths().iter().all(|path| !path.exists()));
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn an_empty_base_path_is_refused() {
     assert!(matches!(
@@ -414,6 +461,8 @@ fn the_default_cadence_is_one_hundred_records_or_a_minute() {
     assert_eq!(cadence.interval, std::time::Duration::from_secs(60));
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn a_crafted_record_count_is_refused_before_anything_is_reserved() {
     let base = TempBase::new("crafted-count");
@@ -436,4 +485,40 @@ fn a_crafted_record_count_is_refused_before_anything_is_reserved() {
         matches!(&error, Error::Encoding(message) if message.contains("count is too large")),
         "{error:?}"
     );
+}
+
+/// Storage that notes the thread each commit runs on.
+// std: the final commit runs on a writer thread.
+#[cfg(feature = "std")]
+struct ThreadNoting(Mutex<Vec<std::thread::ThreadId>>);
+
+// std: the final commit runs on a writer thread.
+#[cfg(feature = "std")]
+impl LogPersistence<BACnetLogRecord> for ThreadNoting {
+    fn load(
+        &self,
+        _expected: ObjectIdentifier,
+    ) -> Result<Option<LogSnapshot<BACnetLogRecord>>, Error> {
+        Ok(None)
+    }
+
+    fn commit(&self, _snapshot: &LogSnapshot<BACnetLogRecord>) -> Result<(), Error> {
+        self.0.lock().unwrap().push(std::thread::current().id());
+        Ok(())
+    }
+}
+
+/// A fresh log dropped before any save still makes its final commit on a
+/// writer thread for an application's storage: `commit` runs there, never on
+/// the dropping thread, which may be an async runtime's (#2233).
+// std: the final commit runs on a writer thread.
+#[cfg(feature = "std")]
+#[test]
+fn a_dropped_logs_final_commit_runs_off_the_dropping_thread() {
+    let storage = Arc::new(ThreadNoting(Mutex::new(Vec::new())));
+    let log = crate::trend::TrendLogObject::with_persistence(1, "TL", 8, storage.clone()).unwrap();
+    drop(log);
+    let threads = storage.0.lock().unwrap().clone();
+    assert_eq!(threads.len(), 1, "one final commit");
+    assert_ne!(threads[0], std::thread::current().id());
 }

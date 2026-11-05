@@ -21,11 +21,13 @@ pub mod calendar;
 #[cfg(feature = "alloc")]
 pub mod constructed;
 pub mod data_link;
+pub mod datatype;
 pub mod enums;
 pub mod error;
 pub mod map_hash;
 pub mod network_number;
 pub mod primitives;
+pub mod text;
 
 /// BACnet MAC address — stack-allocated for typical sizes (≤6 bytes).
 ///

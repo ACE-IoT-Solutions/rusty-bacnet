@@ -6,6 +6,7 @@ use crate::clock::{ClockFrame, ClockReader};
 use crate::device::{DeviceConfig, DeviceObject};
 use crate::event_enrollment::EventEnrollmentObject;
 use crate::event_log::EventLogObject;
+use crate::property_metadata::PropertyMetadata;
 use crate::traits::BACnetObject;
 use bacnet_types::bitstring::LogStatus;
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, NotificationParameters};
@@ -349,8 +350,20 @@ impl BACnetObject for Refusing {
     ) -> Result<(), Error> {
         Err(crate::common::unknown_property_error())
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
+    }
+    fn log_buffer(&self) -> Option<&dyn crate::traits::LogBuffer> {
+        Some(self)
+    }
+    fn log_buffer_mut(&mut self) -> Option<&mut dyn crate::traits::LogBuffer> {
+        Some(self)
+    }
+}
+
+impl crate::traits::LogBuffer for Refusing {
+    fn record_identities(&self) -> Vec<crate::log_buffer::LogRecordIdentity> {
+        Vec::new()
     }
     fn add_event_log_record(&mut self, _: BACnetEventLogRecord) -> Result<(), Error> {
         self.0.fetch_add(1, Ordering::Relaxed);
@@ -469,4 +482,34 @@ fn received_reports_on_event_log_buffers_and_this_devices_own_go_in_no_log() {
             notification_record(trend_report)
         ]
     );
+}
+
+/// A notification this device built names the Device its server is bound to,
+/// so it goes in no log when it comes back, even beside a lower Device the
+/// application added once the server ran (#2227).
+#[test]
+fn this_devices_own_notification_beside_a_lower_device_goes_in_no_log() {
+    let mut db = database(&[], 8);
+    received_log(&mut db, 1, true);
+    let device = |instance: u32| {
+        DeviceObject::new(DeviceConfig {
+            identity: crate::DeviceIdentity::new(instance, 0)
+                .unwrap()
+                .with_name(format!("Device-{instance}")),
+            ..DeviceConfig::default()
+        })
+        .unwrap()
+    };
+    db.add(Box::new(device(7))).unwrap();
+    db.bind_local_device_internal(Some(ObjectIdentifier::new(ObjectType::DEVICE, 7).unwrap()));
+    db.add(Box::new(device(5))).unwrap();
+    let from = |instance| EventNotificationRequest {
+        initiating_device_identifier: ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap(),
+        ..received()
+    };
+    assert!(!db.takes_received_event_notification(&from(7)));
+    db.log_received_event_notification(&from(7));
+    assert!(records(&mut db, log_oid(1)).is_empty());
+    // The lower Device isn't the one this device speaks for.
+    assert!(db.takes_received_event_notification(&from(5)));
 }

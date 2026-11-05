@@ -30,10 +30,28 @@
 //!
 //! A NULL relinquishes the Schedule's slot in a commandable target. On a
 //! target property that isn't commandable and has no NULL in its datatype,
-//! it is the no-op WriteProperty would make of it (`handlers::relinquish`,
+//! it is the no-op WriteProperty would make of it (`bacnet_device_core::write::relinquish`,
 //! #1416): the property keeps its value and the target counts as having
 //! taken the write. Every target here is local; a Schedule's references
 //! name objects of its own device only.
+//!
+//! A Schedule removed from the database gives up every slot it still holds
+//! through the same target writes (#2256, #2264). The database queues the
+//! NULLs as the object leaves, whether DeleteObject or the application's
+//! own `ObjectDatabase::remove` took it out, and the server writes them
+//! under the guard that takes the queue (`relinquish_for_removed`): the
+//! request's for a DeleteObject, the next one the Schedule task gets for an
+//! application's removal, or the first after start for one before it.
+//!
+//! A NULL that gives up a held slot (`ScheduleWrite::relinquish`) goes only
+//! to a slot whose Value_Source still names the Schedule (#2264): one a
+//! client, the application or another Schedule wrote since keeps that
+//! writer's command. The check reads the target's Value_Source_Array at the
+//! write's priority. A reference to a property other than Present_Value,
+//! or a target that doesn't serve that element (a Channel, an object with
+//! no source tracking), can't tell who holds the slot, so it gets the NULL,
+//! as it did before the check. A calculated NULL, a time or default whose
+//! value is NULL, is not checked: it goes to every reference.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -41,9 +59,12 @@ use std::sync::Arc;
 use crate::committed_cov::{BackgroundCommit, CommittedCov};
 use crate::cov::CovSubscriptionTable;
 use bacnet_objects::clock::ClockFrame;
+use bacnet_objects::command_source::CommandOrigin;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::schedule::{ScheduleTargetOutcome, ScheduleWrite};
+use bacnet_objects::traits::BACnetObject;
 use bacnet_types::calendar::SpecificDate;
+use bacnet_types::constructed::BACnetValueSource;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, Time};
 use tokio::sync::RwLock;
@@ -63,13 +84,18 @@ pub(crate) fn schedule_instant(frame: ClockFrame) -> Option<(SpecificDate, Time)
 ///
 /// A running server evaluates schedules itself every 60 seconds and fans COV
 /// out for the objects they write; this entry point evaluates without COV.
+/// It first does the work changes of membership queued (the NULLs a removed
+/// Schedule owes, retries to created objects), also without COV, so those
+/// land before any Schedule re-added under a removed one's identifier
+/// writes (#2264).
 ///
 /// A write to a Command object's Present_Value starts its list, and one to a
 /// Channel object's Present_Value starts passing the value to its members.
 /// This call runs either before returning, post delays and Execution_Delay
-/// included: each write is made as the bare WriteProperty handler would make
-/// it, with the Command or Channel as the initiating object, and a write that
-/// reaches another Command or Channel starts that run too (#1178, #1151). A
+/// included: each write is made through bacnet-device-core's
+/// `write::write_property`, with the Command or Channel as the initiating
+/// object, and a write that reaches another Command or Channel starts that
+/// run too (#1178, #1151). A
 /// run that would start an object already above it is ended as failed rather
 /// than started. Dropping the future first ends each unfinished run as
 /// unsuccessful, so no Command is left in process and no Channel IN_PROGRESS.
@@ -77,7 +103,7 @@ pub async fn tick_schedules(db: &Arc<RwLock<ObjectDatabase>>) {
     let runs = {
         let mut db_w = db.write().await;
         let schedules = db_w.find_by_type(ObjectType::SCHEDULE);
-        let commit = evaluate(&mut db_w, schedules);
+        let commit = pass(&mut db_w, schedules);
         commit.take_command_runs(db, &mut db_w)
     };
     crate::command_lists::run_unattached(db, runs).await;
@@ -92,7 +118,7 @@ pub(crate) async fn tick_schedules_committed(
 ) -> CommittedCov {
     let mut db_w = db.write().await;
     let schedules = db_w.find_by_type(ObjectType::SCHEDULE);
-    let commit = evaluate(&mut db_w, schedules);
+    let commit = pass(&mut db_w, schedules);
     commit.finish(db, &mut db_w, cov_table).await
 }
 
@@ -118,7 +144,7 @@ pub(crate) async fn reevaluate_written(
     if schedules.is_empty() {
         return CommittedCov::default();
     }
-    let commit = evaluate(db_w, schedules);
+    let commit = pass(db_w, schedules);
     commit.finish(db, db_w, cov_table).await
 }
 
@@ -126,11 +152,11 @@ pub(crate) async fn reevaluate_written(
 /// to the database (#1440): each `(schedule, object)` pair is a Schedule
 /// that held a refusal naming the object when it was added
 /// (`ObjectDatabase::take_membership_work_internal`). The write each
-/// Schedule builds now ([`BACnetObject::retry_refusals_naming`]) goes to
+/// Schedule builds now ([`ScheduleRunner::retry_refusals_naming`]) goes to
 /// those references only, as a pass's retry would, and `commit` collects the
 /// objects it changed for COV.
 ///
-/// [`BACnetObject::retry_refusals_naming`]: bacnet_objects::traits::BACnetObject::retry_refusals_naming
+/// [`ScheduleRunner::retry_refusals_naming`]: bacnet_objects::traits::ScheduleRunner::retry_refusals_naming
 pub(crate) fn retry_for_created(
     db_w: &mut ObjectDatabase,
     commit: &mut BackgroundCommit,
@@ -138,8 +164,9 @@ pub(crate) fn retry_for_created(
 ) {
     for &(schedule, created) in retries {
         let Some(write) = db_w
-            .get(&schedule)
-            .and_then(|object| object.retry_refusals_naming(created))
+            .get_mut(&schedule)
+            .and_then(|object| object.schedule_runner())
+            .and_then(|runner| runner.retry_refusals_naming(created))
         else {
             continue;
         };
@@ -152,6 +179,63 @@ pub(crate) fn retry_for_created(
     }
 }
 
+/// Write, under `db_w`, the NULLs Schedules (and Staging objects, #2265)
+/// removed from the database owe their targets (#2256, #2264): each
+/// `(schedule, write)` pair is a relinquish the database queued as the
+/// object left
+/// (`ObjectDatabase::take_membership_work_internal`). They carry the origin
+/// the Schedule's own writes did, the local Device with the Schedule as the
+/// initiating object, built without the Schedule in the database
+/// ([`removed_origin`]). A target that refuses one is logged as a pass's
+/// failure is, and the others are still written; `commit` collects the
+/// objects they changed for COV.
+pub(crate) fn relinquish_for_removed(
+    db_w: &mut ObjectDatabase,
+    commit: &mut BackgroundCommit,
+    relinquishes: &[(ObjectIdentifier, ScheduleWrite)],
+) {
+    for (schedule, write) in relinquishes {
+        debug!(
+            source = %schedule,
+            refs = write.references.len(),
+            "Removed Schedule or Staging object relinquishing the slots it held"
+        );
+        let origin = removed_origin(db_w, *schedule);
+        write_targets(db_w, commit, *schedule, origin.as_ref(), write);
+    }
+}
+
+/// Write, under `db_w`, the NULLs the Staging object `source` owes the slots
+/// a change of its targets or priority left behind (#2289,
+/// [`StagingSource::take_owed_relinquishes`]), with the origin its own
+/// writes carry. Returns whether it owed any.
+///
+/// [`StagingSource::take_owed_relinquishes`]: bacnet_objects::traits::StagingSource::take_owed_relinquishes
+pub(crate) fn relinquish_owed_by_staging(
+    db_w: &mut ObjectDatabase,
+    commit: &mut BackgroundCommit,
+    source: ObjectIdentifier,
+) -> bool {
+    let Some(writes) = db_w
+        .get_mut(&source)
+        .and_then(|object| object.staging_source())
+        .map(|staging| staging.take_owed_relinquishes())
+        .filter(|writes| !writes.is_empty())
+    else {
+        return false;
+    };
+    let origin = command_origin(db_w, source);
+    for write in &writes {
+        debug!(
+            source = %source,
+            refs = write.references.len(),
+            "Staging object relinquishing the slots a change of its targets left"
+        );
+        write_targets(db_w, commit, source, origin.as_ref(), write);
+    }
+    true
+}
+
 /// Whether each Calendar is TRUE on `today`, resolved once per pass so every
 /// Schedule that references one sees the same answer.
 fn calendar_states(db: &ObjectDatabase, today: SpecificDate) -> HashMap<ObjectIdentifier, bool> {
@@ -161,19 +245,37 @@ fn calendar_states(db: &ObjectDatabase, today: SpecificDate) -> HashMap<ObjectId
             let calendar = db.get(&oid)?;
             // A Calendar that does not evaluate a date list itself reports
             // its state through Present_Value.
-            let active = calendar.calendar_state_internal(today).unwrap_or_else(|| {
-                matches!(
+            let active = match calendar.calendar_state() {
+                Some(state) => state.state_on(today),
+                None => matches!(
                     calendar.read_property(PropertyIdentifier::PRESENT_VALUE, None),
                     Ok(PropertyValue::Boolean(true))
-                )
-            });
+                ),
+            };
             Some((oid, active))
         })
         .collect()
 }
 
-fn evaluate(db_w: &mut ObjectDatabase, schedules: Vec<ObjectIdentifier>) -> BackgroundCommit {
+/// The Schedule pass for `schedules` under `db_w`: first the work the
+/// membership queue holds (`crate::membership::drain`), so a removed
+/// Schedule's NULLs land before a Schedule re-added under its identifier
+/// writes (#2264), then [`evaluate`]. Kept out of the async callers so their
+/// futures hold only the commit it returns.
+fn pass(db_w: &mut ObjectDatabase, schedules: Vec<ObjectIdentifier>) -> BackgroundCommit {
     let mut commit = BackgroundCommit::new();
+    crate::membership::drain(db_w, &mut commit);
+    evaluate(db_w, &mut commit, schedules);
+    commit
+}
+
+/// Run the pass for `schedules` under `db_w`, collecting what it changed in
+/// `commit`.
+fn evaluate(
+    db_w: &mut ObjectDatabase,
+    commit: &mut BackgroundCommit,
+    schedules: Vec<ObjectIdentifier>,
+) {
     let instant = db_w.clock_frame().and_then(schedule_instant);
     if instant.is_none() {
         debug!("Skipping the Schedule calculation without a valid Device clock");
@@ -185,12 +287,15 @@ fn evaluate(db_w: &mut ObjectDatabase, schedules: Vec<ObjectIdentifier>) -> Back
 
     let mut writes = Vec::new();
     for oid in schedules {
-        let Some(obj) = db_w.get_mut(&oid) else {
+        let Some(runner) = db_w
+            .get_mut(&oid)
+            .and_then(|object| object.schedule_runner())
+        else {
             continue;
         };
         // Owed writes go first, so a calculated value written in the same
         // pass, after a return to service, lands last.
-        for write in obj.take_owed_schedule_writes() {
+        for write in runner.take_owed_schedule_writes() {
             debug!(
                 schedule = %oid,
                 refs = write.references.len(),
@@ -201,7 +306,7 @@ fn evaluate(db_w: &mut ObjectDatabase, schedules: Vec<ObjectIdentifier>) -> Back
         let Some((today, now)) = instant else {
             continue;
         };
-        if let Some(write) = obj.tick_schedule(today, now, &calendar_active) {
+        if let Some(write) = runner.tick_schedule(today, now, &calendar_active) {
             if write.retry {
                 debug!(
                     schedule = %oid,
@@ -220,9 +325,8 @@ fn evaluate(db_w: &mut ObjectDatabase, schedules: Vec<ObjectIdentifier>) -> Back
     }
 
     for (initiator, write) in writes {
-        deliver(db_w, &mut commit, initiator, &write);
+        deliver(db_w, commit, initiator, &write);
     }
-    commit
 }
 
 /// Write one Schedule write to each of its targets, then report how each took
@@ -233,10 +337,84 @@ fn deliver(
     initiator: ObjectIdentifier,
     write: &ScheduleWrite,
 ) {
-    let origin =
-        crate::command_source::resolve_local(db_w, crate::LocalCommandSource::Object(initiator))
-            .ok();
-    let null = crate::handlers::relinquish::is_null_value(&write.value);
+    let origin = command_origin(db_w, initiator);
+    let outcomes = write_targets(db_w, commit, initiator, origin.as_ref(), write);
+    let reliability_changed = db_w
+        .get_mut(&initiator)
+        .and_then(|schedule| schedule.schedule_runner())
+        .is_some_and(|runner| runner.complete_schedule_write(write, &outcomes));
+    if reliability_changed {
+        commit.changed(initiator);
+    }
+}
+
+/// The origin a Schedule's writes carry: the local Device, with the Schedule
+/// as the initiating object, while both are in the database.
+fn command_origin(db: &ObjectDatabase, schedule: ObjectIdentifier) -> Option<CommandOrigin> {
+    crate::command_source::resolve_local(db, crate::LocalCommandSource::Object(schedule)).ok()
+}
+
+/// [`command_origin`] for a Schedule already out of the database: the local
+/// Device, while its object is here, with `schedule` as the initiating
+/// object, the origin its writes carried while it was in.
+fn removed_origin(db: &ObjectDatabase, schedule: ObjectIdentifier) -> Option<CommandOrigin> {
+    match crate::command_source::resolve_local(db, crate::LocalCommandSource::ServerDevice) {
+        Ok(CommandOrigin::Local { owner_device, .. }) => Some(CommandOrigin::Local {
+            owner_device,
+            initiating_object: Some(schedule),
+        }),
+        _ => None,
+    }
+}
+
+/// Whether the slot at `priority` of `reference` on `target` may still be
+/// `schedule`'s (#2264): `false` only when the target's Value_Source_Array
+/// element for that priority names another writer, or none. A reference to
+/// a property other than Present_Value, or a target that doesn't serve the
+/// element, can't tell, and counts as the Schedule's.
+fn still_held(
+    target: &dyn BACnetObject,
+    reference: &bacnet_types::constructed::BACnetObjectPropertyReference,
+    priority: u8,
+    schedule: ObjectIdentifier,
+    local_device: Option<ObjectIdentifier>,
+) -> bool {
+    if reference.property_identifier != PropertyIdentifier::PRESENT_VALUE.to_raw()
+        || reference.property_array_index.is_some()
+    {
+        return true;
+    }
+    let Ok(PropertyValue::ApplicationData(bytes)) = target.read_property(
+        PropertyIdentifier::VALUE_SOURCE_ARRAY,
+        Some(u32::from(priority)),
+    ) else {
+        return true;
+    };
+    let Ok((source, _)) = bacnet_encoding::constructed::decode_value_source(&bytes, 0) else {
+        return true;
+    };
+    match source {
+        BACnetValueSource::Object(source) => {
+            source.object_identifier == schedule
+                && source
+                    .device_identifier
+                    .is_none_or(|device| Some(device) == local_device)
+        }
+        _ => false,
+    }
+}
+
+/// Write `write` to each of its targets under `db_w`, collecting the changed
+/// ones in `commit`, and return how each took it.
+fn write_targets(
+    db_w: &mut ObjectDatabase,
+    commit: &mut BackgroundCommit,
+    schedule: ObjectIdentifier,
+    origin: Option<&CommandOrigin>,
+    write: &ScheduleWrite,
+) -> Vec<ScheduleTargetOutcome> {
+    let null = bacnet_device_core::write::relinquish::is_null_value(&write.value);
+    let local_device = db_w.local_device().identifier();
     // Clause 12.24.4: a failed member does not stop the others.
     let mut outcomes = Vec::with_capacity(write.references.len());
     for reference in &write.references {
@@ -249,11 +427,31 @@ fn deliver(
             outcomes.push(ScheduleTargetOutcome::ReferenceRefused);
             continue;
         };
+        // A slot another writer took since is theirs now: the relinquish
+        // leaves it, and the target counts as having taken it (#2264).
+        if write.relinquish
+            && !still_held(
+                &*target_obj,
+                reference,
+                write.priority,
+                schedule,
+                local_device,
+            )
+        {
+            debug!(
+                schedule = %schedule,
+                target = %target_oid,
+                priority = write.priority,
+                "Schedule relinquish skipped: another writer holds the slot"
+            );
+            outcomes.push(ScheduleTargetOutcome::Accepted);
+            continue;
+        }
         // WriteProperty's index gate comes first (#1426), so an index on a
         // property that isn't an array fails the target without the object
         // seeing the value, a NULL included. Its refusals, like the object's
         // UNKNOWN_PROPERTY or INVALID_ARRAY_INDEX, fault the Schedule (#1433).
-        let result = crate::handlers::check_write_array_index(
+        let result = bacnet_objects::property_metadata::check_write_array_index(
             &*target_obj,
             property,
             reference.property_array_index,
@@ -265,7 +463,7 @@ fn deliver(
                 reference.property_array_index,
                 write.value.clone(),
                 Some(write.priority),
-                origin.as_ref(),
+                origin,
             )
         });
         let outcome = ScheduleTargetOutcome::of(&result);
@@ -273,10 +471,10 @@ fn deliver(
             Ok(()) => commit.changed(target_oid),
             // A NULL on a target property that isn't commandable and can't
             // hold one leaves it as it is, and the target took the write
-            // (`handlers::relinquish`); nothing changed, so no COV follows.
+            // (`bacnet_device_core::write::relinquish`); nothing changed, so no COV follows.
             Err(error)
                 if null
-                    && crate::handlers::relinquish::leaves_unchanged(
+                    && bacnet_device_core::write::relinquish::leaves_unchanged(
                         &*target_obj,
                         property,
                         reference.property_array_index,
@@ -304,21 +502,20 @@ fn deliver(
                     "Schedule retry still refused by controlled property"
                 )
             }
+            // The source may be a removed Staging object's relinquish too
+            // (#2265), so the log names it.
             Err(e) => warn!(
+                source = %schedule,
+                source_type = ?schedule.object_type(),
                 target = %target_oid,
                 property = prop_id,
                 error = %e,
-                "Schedule failed to write to controlled property"
+                "Schedule or Staging object failed to write to controlled property"
             ),
         }
         outcomes.push(outcome);
     }
-    let reliability_changed = db_w
-        .get_mut(&initiator)
-        .is_some_and(|schedule| schedule.complete_schedule_write(write, &outcomes));
-    if reliability_changed {
-        commit.changed(initiator);
-    }
+    outcomes
 }
 
 #[cfg(test)]

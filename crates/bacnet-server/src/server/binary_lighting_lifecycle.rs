@@ -7,10 +7,12 @@ use tokio::time::{Instant, MissedTickBehavior};
 ///
 /// It is generic over objects: each wake first takes the Averaging samples
 /// that are due (#1144) and counts each Pulse Converter's input from the
-/// property its Input_Reference names (#1341), then asks every object to
-/// expire what is due (`advance_monotonic_time_internal`) and to report its
-/// next deadline, and fans COV out for each object that changed once the
-/// database guard is dropped. Binary Lighting Output egress, Lighting Output
+/// property its Input_Reference names (#1341), then asks every object with
+/// staged writes to drop the ones that waited too long
+/// (`DurableWrites::expire_staged`) and every timed object to expire what is
+/// due (`Timed::advance_monotonic_time`) and to report its next deadline, and
+/// fans COV out for each object that changed once the database guard is
+/// dropped. Binary Lighting Output egress, Lighting Output
 /// fades, ramps and egress (#1384), Color and Color Temperature fades and
 /// ramps (#1474), Access Door pulse relock (#1073), Averaging sampling and
 /// Pulse Converter counting all run on it; the name predates the others.
@@ -21,6 +23,10 @@ use tokio::time::{Instant, MissedTickBehavior};
 /// database guard, in the server's lock order, and lets the table go before
 /// any object runs.
 ///
+/// A Timer that expires in the pass leaves the writes its transition makes
+/// (#2206). They are taken under the pass's guard, as a write's runs are,
+/// and started through `runner` once the guard is dropped.
+///
 /// It wakes once a second, at the earliest deadline it gathered, and when an
 /// object arms a deadline in a write (`MonotonicClocks::deadline_armed`), so
 /// one sooner than the next routine pass, such as a short fade's end, is
@@ -28,6 +34,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 pub(super) fn spawn_binary_lighting_operation_task<T: TransportPort + 'static>(
     fanout: CovFanout<T>,
     monotonic: super::lifecycle::MonotonicClocks,
+    runner: super::command_runs::CommandRunner<T>,
 ) -> JoinHandle<()> {
     let owner = fanout.notification_transactions.audit_owner_lease();
     let monotonic_origin = monotonic.origin;
@@ -51,7 +58,7 @@ pub(super) fn spawn_binary_lighting_operation_task<T: TransportPort + 'static>(
             }
             let now = Instant::now().saturating_duration_since(monotonic_origin);
 
-            let (changed, sampled) = {
+            let (changed, sampled, runs) = {
                 let mut database = fanout.db.write().await;
                 // Sampling first steps each due schedule, so the deadlines
                 // gathered below are the next ones. The samples fan out as a
@@ -69,15 +76,25 @@ pub(super) fn spawn_binary_lighting_operation_task<T: TransportPort + 'static>(
                     .await
                     .finest_increments(PropertyIdentifier::TRACKING_VALUE);
                 let mut changed = Vec::new();
+                let mut advanced = Vec::new();
                 next_deadline = None;
                 database.for_each_object_mut(|oid, object| {
-                    object.set_tracking_cov_increment_internal(finest.get(&oid).copied());
-                    if object.advance_monotonic_time_internal(now)
-                        && let Some(snapshot) = object.cov_snapshot_internal()
-                    {
-                        changed.push((oid, snapshot));
+                    if let Some(timed) = object.timed() {
+                        timed.set_tracking_cov_increment(finest.get(&oid).copied());
                     }
-                    if let Some(deadline) = object.next_monotonic_deadline_internal() {
+                    if let Some(durable) = object.durable_writes() {
+                        durable.expire_staged(now);
+                    }
+                    let Some(timed) = object.timed() else {
+                        return;
+                    };
+                    if timed.advance_monotonic_time(now) {
+                        advanced.push(oid);
+                        if let Some(snapshot) = timed.cov_snapshot() {
+                            changed.push((oid, snapshot));
+                        }
+                    }
+                    if let Some(deadline) = timed.next_monotonic_deadline() {
                         next_deadline =
                             Some(next_deadline.map_or(deadline, |next| next.min(deadline)));
                     }
@@ -99,12 +116,15 @@ pub(super) fn spawn_binary_lighting_operation_task<T: TransportPort + 'static>(
                         capture.run(&database);
                     }
                 }
+                let runs =
+                    crate::command_lists::TakenRuns::take(&fanout.db, &mut database, &advanced);
                 let sampled = sampled
                     .finish(&fanout.db, &mut database, &fanout.cov_table)
                     .await;
-                (changed, sampled)
+                (changed, sampled, runs)
             };
 
+            runner.start(runs);
             fanout.fire(&sampled).await;
             for (oid, snapshot) in changed {
                 BACnetServer::<T>::fire_cov_notifications_from_snapshot(

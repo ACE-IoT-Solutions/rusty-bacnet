@@ -3,6 +3,8 @@
 
 use super::*;
 use crate::clock::{ClockFrame, ClockReader};
+use crate::property_metadata::is_array_property;
+use crate::traits::Timed;
 use bacnet_types::calendar::SpecificDate;
 use bacnet_types::constructed::{BACnetCalendarEntry, BACnetDateRange, BACnetWeekNDay};
 use bacnet_types::error::RemoteError;
@@ -141,7 +143,10 @@ fn calendar_present_value_follows_the_clock_date() {
     // No clock: no local date, so no entry can match.
     assert_eq!(present_value(&cal), PropertyValue::Boolean(false));
     let clock = DateClock::new(Some(ymd(2026, 12, 24)));
-    cal.bind_clock_internal(Some(clock.clone()));
+    cal.bind_clocks(&crate::traits::Clocks {
+        clock: Some(clock.clone()),
+        ..crate::traits::Clocks::default()
+    });
     assert_eq!(present_value(&cal), PropertyValue::Boolean(false));
     // The date changes: the next read sees it, with no tick in between.
     clock.set(Some(ymd(2026, 12, 25)));
@@ -169,7 +174,10 @@ fn calendar_present_value_follows_the_clock_date() {
     }
     // Unbinding the clock leaves the calendar without a date.
     clock.set(Some(ymd(2026, 12, 25)));
-    cal.bind_clock_internal(None);
+    cal.bind_clocks(&crate::traits::Clocks {
+        clock: None,
+        ..crate::traits::Clocks::default()
+    });
     assert_eq!(present_value(&cal), PropertyValue::Boolean(false));
 }
 
@@ -177,7 +185,10 @@ fn calendar_present_value_follows_the_clock_date() {
 fn calendar_present_value_follows_date_list_writes() {
     let clock = DateClock::new(Some(ymd(2026, 9, 14)));
     let mut cal = CalendarObject::new(1, "CAL-1").unwrap();
-    cal.bind_clock_internal(Some(clock));
+    cal.bind_clocks(&crate::traits::Clocks {
+        clock: Some(clock),
+        ..crate::traits::Clocks::default()
+    });
     assert_eq!(present_value(&cal), PropertyValue::Boolean(false));
     // Each choice in turn makes Monday 14 September 2026 a calendar day.
     for (entry, wire) in entries_and_wire() {
@@ -208,7 +219,7 @@ fn calendar_present_value_follows_date_list_writes() {
 }
 
 #[test]
-fn calendar_state_hook_answers_for_any_day() {
+fn calendar_state_answers_for_any_day() {
     let cal = configured();
     // The configured entries: 14 September 2026, the same day as a range,
     // and every Monday.
@@ -218,7 +229,8 @@ fn calendar_state_hook_answers_for_any_day() {
         (SpecificDate::new(2026, 9, 15).unwrap(), false),
     ] {
         assert_eq!(cal.is_active_on(day), expected, "{day:?}");
-        assert_eq!(cal.calendar_state_internal(day), Some(expected), "{day:?}");
+        let state = cal.calendar_state().map(|state| state.state_on(day));
+        assert_eq!(state, Some(expected), "{day:?}");
     }
 }
 
@@ -237,8 +249,11 @@ fn calendar_write_present_value_denied() {
 #[test]
 fn calendar_property_list_contains_date_list() {
     let cal = CalendarObject::new(1, "CAL-1").unwrap();
-    assert!(cal.property_list().contains(&DATE_LIST));
-    assert!(!cal.is_array_property(DATE_LIST));
+    assert!(crate::property_metadata::has_property(
+        &cal.property_metadata(),
+        DATE_LIST
+    ));
+    assert!(!is_array_property(&cal, DATE_LIST));
 }
 
 #[test]
@@ -255,9 +270,18 @@ fn calendar_date_list_empty_by_default() {
 fn calendar_date_list_reads_each_entry_under_its_choice_tag() {
     // #996: entries used to read as an application Date or Octet String.
     let mut cal = configured();
-    // Direct reads ignore the index; the service handlers reject list indexing.
-    for index in [None, Some(0), Some(1), Some(u32::MAX)] {
-        assert_eq!(cal.read_property(DATE_LIST, index).unwrap(), wire_list());
+    assert_eq!(cal.read_property(DATE_LIST, None).unwrap(), wire_list());
+    // A list takes no index, on a direct read as on the wire (#2274).
+    for index in [0, 1, u32::MAX] {
+        let refused = cal.read_property(DATE_LIST, Some(index));
+        assert!(
+            matches!(
+                refused,
+                Err(Error::Remote(RemoteError::Error { class, code }))
+                    if class == ErrorClass::PROPERTY && code == ErrorCode::PROPERTY_IS_NOT_AN_ARRAY
+            ),
+            "[{index}]: {refused:?}"
+        );
     }
     let entries: Vec<_> = entries_and_wire().into_iter().map(|(e, _)| e).collect();
     assert_eq!(cal.date_list(), entries.as_slice());

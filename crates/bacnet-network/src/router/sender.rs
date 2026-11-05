@@ -50,6 +50,7 @@ async fn run_loop<T: TransportPort>(
                 data_attributes,
                 reject_origin,
                 response,
+                count_forward,
             } => {
                 let done = match response {
                     Some(response) => match response.start() {
@@ -62,8 +63,13 @@ async fn run_loop<T: TransportPort>(
                     .send_unicast_with_data_attributes(&npdu, &mac, &data_attributes)
                     .await;
                 if let Err(error) = &result {
+                    if count_forward && let Some(counter) = shared.port_counter(port) {
+                        counter.state.send_error();
+                    }
                     refused(&shared, &outputs, error, reject_origin, &data_attributes);
                     warnings.unicast_failed(error);
+                } else if count_forward && let Some(counter) = shared.port_counter(port) {
+                    counter.state.forwarded_unicast();
                 }
                 if let Some(done) = done {
                     let _ = done.send(result);
@@ -73,13 +79,19 @@ async fn run_loop<T: TransportPort>(
                 npdu,
                 data_attributes,
                 reject_origin,
+                count_forward,
             } => {
                 if let Err(error) = transport
                     .send_broadcast_with_data_attributes(&npdu, &data_attributes)
                     .await
                 {
+                    if count_forward && let Some(counter) = shared.port_counter(port) {
+                        counter.state.send_error();
+                    }
                     refused(&shared, &outputs, &error, reject_origin, &data_attributes);
                     warnings.broadcast_failed(&error);
+                } else if count_forward && let Some(counter) = shared.port_counter(port) {
+                    counter.state.forwarded_broadcast();
                 }
             }
         }

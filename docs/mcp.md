@@ -1,8 +1,11 @@
 # MCP server (`bacnet-mcp`, `bacnet mcp serve`)
 
-A read-only [Model Context Protocol](https://modelcontextprotocol.io) server
-for BACnet sites: phase 1 (#2066, the tools) and phase 2 (#2067, resources
-and subscriptions) of the MCP epic (#2064). The design, with
+A [Model Context Protocol](https://modelcontextprotocol.io) server for
+BACnet sites, read-only unless a profile offers writes: phase 1 (#2066, the
+tools), phase 2 (#2067, resources and subscriptions) and phase 3 (#2068,
+writes) of the MCP epic (#2064), and most of phase 4 (#2185, #2201,
+[attached to the TUI](#attached-to-the-tui), with writes the TUI
+approves). The design, with
 the later phases, is [design/mcp.md](design/mcp.md); the user guide is the
 website's [AI agents](https://jscott3201.github.io/rusty-bacnet/guides/ai-agents/)
 page. Experimental in 0.15.
@@ -15,8 +18,11 @@ page. Experimental in 0.15.
 | Engine extensions | `bacnet-ops` | `RequestLimits::with_network_rates`, `turn_on` and `slot`; per-caller `Account` and `TokenBucket` through `limits::charged`; `Engine::who_is`, `discover_routers`, `devices`, `device`, `address_style`; `read_trend` charged per request; `alarm_summary` and `enrollment_summary` |
 | Decoder | `bacnet-ops::decode` | The capture screen's frame summary and field tree, moved from the CLI for `bacnet_decode`: any tapped link (B/IP, B/IPv6, BACnet/SC, MS/TP), or a bare NPDU or APDU; a field quoting a character string is marked as device text |
 | Watch hub | `bacnet-ops::watch` | `Hub`: one managed COV subscription or poller per point, shared by every listener, holding the latest values (phase 2); `Engine::device_events` |
-| `bacnet mcp` | `crates/bacnet-cli/src/mcp.rs` | `serve --stdio [--profile NAME] [--passive]` and `authorize --profile NAME`, behind the CLI feature `mcp` (which brings `tui`, for the profiles). Classified `Read` in `bacnet_ops::class`. |
-| `[mcp]` profile table | `crates/bacnet-cli/src/tui/profile/mcp.rs` | networks, devices, slow and fast networks, broad discovery, rates and caps |
+| `bacnet mcp` | `crates/bacnet-cli/src/mcp.rs` | `serve --stdio [--profile NAME] [--passive]`, `connect [--profile NAME]` (#2185) and `authorize --profile NAME`, behind the CLI feature `mcp` (which brings `tui`, for the profiles; the release binaries include it from 0.15.0, and a source build enables it with `--features mcp`). Classified `Read` in `bacnet_ops::class`. |
+| `[mcp]` profile table | `crates/bacnet-cli/src/tui/profile/mcp.rs` | networks, devices, slow and fast networks, broad discovery, rates and caps; `mcp_writes`, `mcp_arm` and `[mcp.plan]` (#2068) |
+| Write safety core | `bacnet-ops::safety` | The TUI's plan, ledger, audit log and workspace lock, and the engine half of a write (`desk`: pre-image reads, the stale check, the ledger and audit around each send, revert), shared by the TUI and MCP (#2068) |
+| Writes | `crates/bacnet-mcp/src/writes/`, `tools/write.rs`, `tools/revert.rs` | The write session, the approvers (`ClientElicitation`, `PlanApprover`, `Deny`), the sealed confirmation state, and the two write tools |
+| Attached mode | `crates/bacnet-mcp/src/attach/`, `crates/bacnet-cli/src/tui/attach.rs` | The TUI's local socket or, on Windows, named pipe (`attach::Listener`), the peer checks, and `bacnet mcp connect`'s bridge (`attach::bridge`) (#2185, #2201) |
 
 The SDK is `rmcp` 3.5.1 (pinned, server role, stdio only). It answers both
 the 2026-07-28 request form (`server/discover`, version and capabilities in
@@ -24,8 +30,10 @@ each request's `_meta`) and the older `initialize` handshake.
 
 ## Tools
 
-All are read-only (`readOnlyHint: true`, `destructiveHint: false`), with
-input and output schemas and structured content plus a text rendering.
+The read tools are read-only (`readOnlyHint: true`, `destructiveHint:
+false`); the two [write tools](#writes) are listed only when the profile
+offers writes. All have input and output schemas and structured content
+plus a text rendering.
 
 | Tool | Notes |
 |---|---|
@@ -37,6 +45,7 @@ input and output schemas and structured content plus a text rendering.
 | `bacnet_network_map` | Networks in `[mcp] networks`, each with its routers (from the last Who-Is-Router-To-Network and from the routed devices' router addresses), its speed and rate under the policy, and its devices in reach; and the routers with the networks each reaches. `send: true` broadcasts a Who-Is-Router-To-Network: it needs `broad_discovery`, goes at most once a minute (checked and claimed under one lock), takes the local network's slot and is charged. The wait for answers ends with the call's budget, counted after the wait for the rate slot. A query cancelled while it waits (for the slot or for answers) keeps its claim on the minute but records no routers; at most 256 routers are kept, replaced by each finished query (one asking about a single network merges into them, the routers just heard first). `bbmd: true` adds the BBMD tables and a consistency verdict (see [BBMD tables](#bbmd-tables)). No network-layer writes, table writes or registrations. |
 | `bacnet_read_trend` | A Trend Log or Trend Log Multiple through `Engine::read_trend`, each request charged. From the oldest record or after `from`, up to `to`; at most `max_records` (500 by default, 2,000 at most, and about 60 kB of structured content) a call, then a cursor holding the log's next sequence number (a log that has more but gives no sequence number to resume from returns `truncated` without a cursor, and says why under `stopped`). `from` after `to` is a JSON-RPC -32602.
  Records: time, sequence number, `values` as `Datum`s (a failure as its error), status flags named, `flagged` when a status flag is set or the record is a log status change. A summary of the records read comes with every call: count, flagged, log status and time-change counts, first and last time, and per column (a member of a Trend Log Multiple) count, min, max and mean of numbers, counts of booleans and enumerations by value, failures. Once the device has answered the first page, a call reads the log's Log_DeviceObjectProperty once (one more charged request, through `Engine::log_columns`, so a silent device still costs one timeout) and names each column's enumerations and bit strings by the property it samples, in `values` and in the state counts (#2091); when that read fails or names nothing, values keep their numbers. State keys are therefore names when the reference names them and numbers otherwise, and can differ between calls on the same log if the reference read fails on one of them. A column that samples a binary or multi-state object's state (its Present_Value and the like) counts its samples as states, keyed `active`/`inactive` or by state number, never as numbers to average; when the reference read fails, the call doesn't know the column holds states, so a multi-state column falls back to `numeric` and `numeric` versus `states` can also differ between calls. The call then reads that object's Active_Text and Inactive_Text, or State_Text: one more charged request an object, once a call, for at most 8 objects on the log's own device, and skipped once the call's budget is spent (#2122). The texts are device strings, so they never become keys or join a value: the column's `state_texts` maps each state key it counted to its text, as the device sent it, in an untrusted envelope (cleaned and capped there, with `truncated` set when cut) (source `device N multi-state-value:1 state-text`, `active-text` or `inactive-text`), and is null when no key has one (a refused read, an empty text, a state past the end of State_Text). `summary: true` reads up to 20,000 records and returns only the summary. `pages`, `more_items` (answers cut short by the device) and `gaps` report how the reading went. |
+| `bacnet_read_log_records` | An Event Log or Audit Log (#2103), read and paged as `bacnet_read_trend` reads a trend log: the same `from`, `to`, `max_records`, `summary` and cursor arguments, the same limits and budget, each request charged, and the same `pages`, `more_items`, `gaps`, `done` and `stopped`. A sibling tool rather than more of the trend tool: these records are notifications, not samples, so they have no columns to name or average. Records: time, sequence number (an Audit Log counts in 64 bits), `kind` and `flagged` (a log status change, an event into a state other than normal, or a failed operation). An event notification (`notification`) comes through `bacnet_ops::format::log_records`: the initiating device and event object, timestamp, class, priority, event type, notify type and states named (an ack-notification has no `from_state` or `ack_required`), and its event values through the shared notification renderer (#2073). An audit notification (`audit`) names the operation and the target property, gives the source and target devices and objects, decodes the values written and held as the target property's, and names a failure's error class and code. The message and the comments are device text, in untrusted envelopes (source `device N event-log:1 log-buffer`). The summary counts records by kind, then for an Event Log the notifications by the state entered (`by_to_state`), event type and notify type, and for an Audit Log the operations by name (`by_operation`) and how many failed. Any other object is refused (`invalid-argument` on `object`). |
 | `bacnet_alarms` | GetEventInformation through `bacnet_ops::format::alarms` (#2077): objects, states, transitions, notify types, timestamps and priorities named; paged over the device's answers (`more_events`) up to `max` (100) a call, the cursor holding the last object; once the call's budget is spent no further answer is asked for, and what was read comes back with `more_events` and a cursor (`format::alarms::read_event_information_until`).  `summaries: true` adds GetAlarmSummary and GetEnrollmentSummary on the first page; a device refusing one reports it under `summary_errors`. When the events spent the call's budget, neither is sent, and each shows under `summary_errors` as `{"skipped": "budget"}`. Every datum is passed through the envelope check. |
 | `bacnet_watch` | Points on the watch hub, and what changed since the last call (see [the tool-only fallback](#the-tool-only-fallback)). `idempotentHint: false`. Not listed in passive mode. |
 | `bacnet_decode` | Hex (separators and `0x` ignored, at most 6,144 octets, room for the largest BACnet/SC message the stack accepts) as `bip`, `bip6`, `mstp`, `sc`, `npdu`, `apdu` or `auto` (by the first octets; SC must be named). Returns a one-line `text`, the decoder's `summary` and the field `tree` (labels with `[start, end)` octet ranges, at most 600 fields). A label quoting a character string is an envelope with source `decoded frame`; other labels are cleaned, and a long one (an unknown tag's octets) is cut at 512 characters with `truncated: true`. No traffic: listed in passive mode too. |
@@ -61,9 +70,9 @@ under its own account and budget, and a cancelled read sends nothing more.
 | `bacnet://device/{instance}/object/{type}:{n}` | the point facts (`bacnet_read`'s `preset: "point"` properties); `source` `read` when read just now, `cov` or `poll` when watched, with `state` (`starting`, `live`, `failed`, `unreachable`, `stopped`), `note` (why it is polled or not live), `seq`, `age_ms` and `updates` (notifications, coalesced, polls, renewals) | a watch on the hub |
 | `.../property/{prop}` | one property (`name` or `name[index]`; `[`, `]` and `:` may be percent-encoded) | a property watch (SubscribeCOVProperty) |
 | `bacnet://alarms` | each device in reach: its first page of GetEventInformation, as far as the read's budget goes (`unread` past it, `errors` per device) | a poll every 60 s; an update when the events change |
-| `bacnet://device/{instance}/alarms` | one device's first page of events | the same, for one device |
-| `bacnet://session` | level, limits, the request meter, the principal's watches and the hub's footprint (points, subscribed, polled, requests, lagged notifications, lifetime) | honoured; no updates until writes arrive (phase 3) |
-| `bacnet://ledger` | this principal's ledger entries in effect: none | honoured; no updates until phase 3 |
+| `bacnet://device/{instance}/alarms` | one device's first page of events | the same, for one device. A session's per-device alarm URIs, on listen streams and legacy subscriptions alike, count against its 64-URI bound (the acknowledgment leaves out the rest), so the poll reads at most that many devices |
+| `bacnet://session` | level (`read-only`, `write-session` while a session or plan grant is in force, `write-session (expired)`), `writes` (`not offered`, or the mode, arming and what the client may confirm), `expires` (seconds left in an armed session), `grants` (a plan grant: in force, used, budget, expiry; `used` is null and `count_unavailable` says why when the plan's write count can't be trusted, so its writes are refused), limits, the request meter (`requests_last_10_s`, and of those `agents_requests_last_10_s`, every MCP caller's), the principal's watches and the hub's footprint (points, subscribed, polled, requests, lagged notifications, lifetime); on a session attached to the TUI, `tui.armed`, read-only: whether the TUI's write session is armed, so a write could be confirmed there now | an update when this server arms a session, a write spends a plan grant's budget, or the armed session or the plan grant runs out (announced when it ends, with no request needed) (#2160) |
+| `bacnet://ledger` | this principal's ledger entries in effect (`ledger_id`, target, value written, what undoes it, state, time), read from the profile workspace's `ledger.json`; empty without writes | an update when one of this server's writes is recorded as `sending`, and again when it settles (two updates, folded into one when they come close together); when a revert settles; and when it settles an entry left `sending` as unknown. A write the device refused announces its `sending` row and then the row's removal, so the ledger ends as it was. The TUI's own changes to the shared ledger aren't announced (#2160) |
 
 A watched point is read from the hub, which sends nothing. An unwatched one
 is read once. Each device's alarms are read at most once a minute, whoever
@@ -104,7 +113,7 @@ advertises `resources.subscribe` for every version.
   `process-cap`, `passive` or `shutting-down` (the session is ending);
   nothing is sent. Subscribing twice to one
   URI is one subscription, and a session holds at most 64 URIs (twice the
-  point cap). `resources/unsubscribe` drops the subscription and its watch
+  point cap), its listen streams' per-device alarm URIs included (#2150). `resources/unsubscribe` drops the subscription and its watch
   at once; the last watch on a point cancels its BACnet subscription. When
   the session ends (the host closes stdin, or a signal) every legacy
   subscription goes with it. The session resource counts them under
@@ -122,7 +131,14 @@ advertises `resources.subscribe` for every version.
 - **Caps.** 32 points per principal (`Caps::watches`; the same point on
   two streams, or a stream and `bacnet_watch`, counts once) and 256 per
   process (`Caps::process_watches`, the hub's cap, which counts points
-  still cancelling).
+  still cancelling). Per-device alarm URIs (`bacnet://device/{n}/alarms`)
+  count, one a stream each, against the session's 64-URI bound shared with
+  legacy subscriptions; past it they're left out of the acknowledgment,
+  and the 60-second alarm poll reads only the devices accepted (#2150).
+  A session runs at most 4 listen streams at once: a fifth's
+  acknowledgment accepts nothing, and its `subscriptions/listen` then ends
+  in a JSON-RPC -32602 whose `data` is `refused` with reason `stream-cap`, and it keeps
+  no watch. Cancelling a stream makes room.
 - **The watch hub** (`bacnet_ops::watch`). One BACnet subscription or poller
   per point however many listeners. SubscribeCOV for an object,
   SubscribeCOVProperty for a property, unconfirmed, with a 300 s lifetime
@@ -246,6 +262,127 @@ J.2.3 and J.2.7), and returns them under `bbmd` with a verdict.
   rows, the survey and the consistency matrix are `bacnet_ops::bbmd`'s,
   shared with the TUI's Network screen.
 
+## Writes
+
+Phase 3 (#2068). Off by default: with the `[mcp]` table's `mcp_writes =
+"never"` (or none) `tools/list` has no write tool, whatever else the
+profile allows. `mcp_writes = "elicit"` lists `bacnet_write` and
+`bacnet_revert` (`readOnlyHint: false`, `destructiveHint: true`) and needs
+the profile's workspace, which holds the ledger and audit log the TUI uses.
+Writes go through `bacnet_ops::safety`: the TUI's planner, tiers, ledger
+(entries marked `front_end: mcp` with the principal) and audit log.
+
+- **`bacnet_write`**: `device`, `writes` (1 to 20: `object`, `property`
+  with an optional `[index]` (`present-value` when left out), `value`,
+  `priority`), `batch`
+  (WritePropertyMultiple; several writes need it) and `reason`. Targets are
+  numeric (`ao:1`, never a name); a value is a number, a boolean, `null`
+  (relinquish), a typed `{"value": n}` or the CLI value grammar, checked
+  before anything is sent. A Priority_Array element is never written
+  (`read-only-property`: command or relinquish the slot through
+  `present-value` at that priority), and a write to Relinquish_Default is
+  T3 over MCP, so only a plan grant can approve it. The result names each write's `outcome` (the
+  TUI's outcome JSON), `applied` (true, false, or null when unknown) and
+  `ledger_id`, with a `revert` hint; when a write isn't acknowledged it is
+  an error result (`error`: `timeout` with `applied: "unknown"`, `bacnet`,
+  `failed` or `refused`) holding the same rows.
+- **Approval.** The first call reads the targets (the TUI's pre-read) and
+  previews the change. A blocked change (priority 6, which MCP never
+  allows) is refused (`priority-6`). A plan grant in force approves the
+  writes it covers at once, under the workspace's lock; one it doesn't
+  cover is refused (`outside-plan`). Otherwise the client may approve T1
+  only (priority 9 to 16, or a property that isn't commandable): T2 and T3
+  are refused (`needs-verified-approver`). A T1 write returns
+  `input_required` (multi round-trip requests, 2026-07-28) with a form
+  elicitation `confirm` (the canonical targets, the value now and after,
+  the Present_Value change and the planner's notes; device text cleaned and
+  labelled) and a sealed `requestState`. An older-revision session that
+  declared form elicitation (or the capability without a mode, as
+  2025-11-25 and earlier clients do) is asked by the server instead, with
+  an `elicitation/create` request carrying the same form (#2158): the
+  call waits for the answer, holding no lock, until 5 s before the sealed
+  state would expire (115 s), then goes on as the retry would. Accepting
+  sends the write (`confirmed_via: "server-elicitation"`); declining or
+  cancelling is recorded as `declined`, nothing sent. No answer in time,
+  an error answer, the call cancelled or the server shutting down is
+  refused (`confirmation-expired`, the audit saying which), nothing sent,
+  and the request is cancelled at the client. One such request waits at a
+  time: meanwhile another write from that client that no plan grant
+  covers is refused (`confirmation-pending`) before anything is read,
+  unasked and with nothing sent. A client that
+  declared neither, or URL elicitation only, is refused
+  (`elicitation-unsupported`).
+- **Arming.** A write needs an armed session or a plan grant in force, as
+  in the TUI. With `mcp_arm = "elicit"` the confirmation of a write while
+  unarmed arms a 15-minute session too (audited `arm`); with `never` (the
+  default) only a plan grant arms MCP writes (`not-armed`). Never
+  `dangerous`.
+- **The retry** carries the form's answer and the state. The state is
+  XChaCha20-Poly1305 under a key drawn per process, with the principal and
+  the tool as associated data, and holds a digest of the arguments, a
+  digest of the preview, a nonce and a 120 s expiry (the process's own
+  clock). A forged or changed state, or another caller's
+  (`confirmation-invalid`), an expired one (`confirmation-expired`), one
+  used before (`confirmation-replayed`; a state opens once even when the
+  retry is then refused) and different arguments (`confirmation-mismatch`)
+  are refused and audited, with nothing sent. A declined or cancelled form
+  is audited `declined`. The confirmed write runs on a task of its own: it
+  takes the workspace's lock (refused `workspace-locked`, naming the
+  holder, when the TUI has it), reads the targets again, refuses a preview
+  that changed (`stale`, audited as a stale decline), records each write as
+  `sending` in the ledger and the audit log, sends, and settles; a timeout
+  leaves the entry `unknown`. The lock is released after. A planned write
+  and a revert run on such a task too. Once a write is handed to its task
+  the call never answers that nothing was sent: a cancel only stops the
+  waiting, and a call past its budget answers `error: "pending"` with the
+  `ledger_ids` recorded so far, `bacnet://ledger` to follow and no retry
+  hint: `applied: "unknown"` once an entry is recorded, `sent: false`
+  before. The tasks are tracked: a shutdown waits for them, at most one
+  call's budget plus its 15 s grace (45 s by default), so their outcomes
+  reach the ledger and the audit log. Whoever takes the workspace's lock
+  settles every entry left `sending` as `unknown` (audited), whatever run
+  wrote it: a writer in flight, in any process, holds that lock until it
+  has settled (the TUI for its whole session, MCP for each write), so such
+  an entry has no writer left. A task that panics is settled that way at
+  once.
+- **`bacnet_revert`**: `entries` (ledger ids) or `all`, this principal's
+  MCP entries only (`not-yours` for another's), on devices the policy
+  reaches; no prompt and no armed session, as in the TUI. Latest write
+  first, through the desk; the result names each entry's outcome and how
+  many are `left`.
+- **Plan grants** (`[mcp.plan]`: `devices`, `properties` (`present-value`
+  by default), `priority_min` and `priority_max` (8 and 16 by default),
+  `max_writes` (1 to 10,000), `hours` (1 to 8), `reason`) run from
+  `bacnet mcp authorize` (never from a later time than now, so a
+  hand-edited time can't lengthen one; the server refuses a plan running
+  more than 8 hours from start), which spells out what the plan lets
+  through without a prompt and warns when its range includes priorities
+  1, 2 or 5. The budget is counted in the profile workspace beside the
+  ledger (`plan-budget.json`, #2159), for that authorization, so a
+  restart doesn't reset it and authorizing again starts it at zero. Each
+  write the plan covers is counted, under the workspace's lock, before it
+  is sent; a count that is missing, unreadable, corrupt, left by another
+  authorization, or can't be saved refuses the plan's writes
+  (`plan-budget-unavailable`, nothing sent) until `bacnet mcp authorize`
+  runs again; the server logs a warning at its start when it finds no
+  count to trust, and `bacnet://session` shows why. While a server runs,
+  the count it has seen is a floor, so a count file put back from a
+  backup can't hand writes out again. A plan that ends between a call's
+  check and its write is refused (`plan-spent`). `bacnet mcp
+  serve` warns when writes are offered with `mcp_arm = "never"` and no
+  plan, since every write is then refused (`not-armed`).
+  Offering writes, letting the client arm, or adding or changing a plan
+  clears the authorization (dropping a plan doesn't).
+- **Audit.** Every MCP record has `front_end: "mcp"`, `principal`,
+  `client` (`claimed_name`, a claim), `tool`, `args_digest` and
+  `request_id`, and a write `confirmed_via` (`elicitation`,
+  `server-elicitation` or `plan`) and
+  `approved_by` (`client` or `plan`, with the plan's reason and count).
+  Refusals and declines are recorded without the lock: the audit log is
+  append-only.
+- Not offered: DeviceCommunicationControl, ReinitializeDevice, and every
+  service the design excludes.
+
 ## Passive mode and resources
 
 `--passive` lists only `bacnet://session` and `bacnet://ledger` and no
@@ -294,16 +431,58 @@ Nothing that needs traffic is offered.
   show), a digest of the other arguments, an expiry (10 minutes) and the
   position.
 
+## Profile keys
+
+Every key of a profile's `[mcp]` table is optional; an unknown key fails the
+profile's load. The defaults are `DEFAULT_RATES` and `DEFAULT_CAPS` in
+`crates/bacnet-cli/src/tui/profile/mcp.rs`, which a test holds equal to
+`bacnet_mcp::policy::{Rates, Caps}`. The limits are `Policy::validate`'s: a
+value outside them stops the server from starting. Rates are requests a
+second.
+
+| Key | Meaning | Default | Limits |
+|---|---|---|---|
+| `networks` | Networks the tools may reach; 0 is the local one | all | not 65535 |
+| `devices` | Device instances it may reach, each `"low-high"` or `"N"` | all | 0 to 4194303, low no higher than high |
+| `slow_networks` | Networks held to `slow_rate`, such as a slow MS/TP trunk behind a router | none | not also in `fast_networks` |
+| `fast_networks` | Networks held to `fast_rate` | none | not also in `slow_networks` |
+| `broad_discovery` | A global, unbounded or wide Who-Is (and `bacnet_network_map`'s `send`), one a minute | `false` | |
+| `max_rate` | Across all networks | 20 | 1 to 1000 |
+| `network_rate` | To any one network | 20 | 1 to 1000 |
+| `slow_rate` | To a network in `slow_networks` | 2 | 1 to 1000 |
+| `fast_rate` | To a network in `fast_networks` | 5 | 1 to 1000 |
+| `principal_rate` | For the agent | 5 | 1 to 1000 |
+| `principal_burst` | Requests the agent may send at once | 20 | 1 to 1000 |
+| `max_values` | Property values one read returns | 100 | 1 to 1000 |
+| `page_devices` | Devices on a discovery page | 200 | 1 to 2000 |
+| `page_objects` | Objects on an object-list page | 200 | 1 to 2000 |
+| `max_text` | Characters kept of a device-supplied string | 256 | 16 to 4096 |
+| `call_budget_s` | Seconds a call may wait on the limits and the network | 30 | 1 to 600 |
+| `mcp_writes` | `"elicit"` offers `bacnet_write` and `bacnet_revert` ([Writes](#writes)), on stdio and through the TUI ([Attached to the TUI](#attached-to-the-tui)) | `"never"` | `"never"` or `"elicit"`; `"elicit"` needs the profile's workspace |
+| `mcp_arm` | `"elicit"` lets the client's confirmation arm a write session | `"never"` | `"elicit"` needs `mcp_writes = "elicit"` |
+| `tui_listener` | Whether `bacnet tui` listens for agents on its local socket while the profile is open ([Attached to the TUI](#attached-to-the-tui)) | `true` once MCP is authorized | `true` or `false`; never listens without the authorization |
+| `[mcp.plan]` | Writes approved in advance ([Writes](#writes)): `devices` and `max_writes` (1 to 10,000) and `hours` (1 to 8) are required; `properties` defaults to `["present-value"]`, `priority_min` to 8 and `priority_max` to 16 (both 1 to 16); `reason` is optional | none | needs `mcp_writes = "elicit"` |
+
+`bacnet mcp authorize` writes `authorized_at_unix`, `[mcp.authorized]` and
+`authorized_transport`; don't edit them by hand ([Operation](#operation)).
+A change that raises a rate or a cap, adds a network or device, enables
+broad discovery, writes or arming, changes a plan in any way, takes a
+network out of `slow_networks` or `fast_networks`, or turns `tui_listener`
+back on clears that consent.
+
 ## Limits
 
 Every request goes through `RequestLimits`: the caller's token first (5 a
 second, burst 20), then the device's gate (one outstanding request), then
 its network's rate (20, or 2 for `slow_networks` and 5 for
 `fast_networks`; a router doesn't say what link it reaches), then the
-global rate (20). Each tool call runs on its own task under an `Account`
-that counts its requests and waits. A call that pages stops at its budget
-(30 s) and returns a cursor; one still waiting `budget + 15 s` later
-returns `refused: rate-limited` if it sent nothing, else `timeout`.
+global rate (20). A request books its slots and token as it starts
+waiting; one cancelled before it goes, whichever of those it is waiting
+for, gives them back, so later requests don't wait behind it. Each tool
+call runs on its own task under an `Account` that counts its requests and
+waits. A call that pages stops at its budget (30 s) and returns a cursor;
+one still waiting `budget + 15 s` later returns `refused: rate-limited` if
+it sent nothing, else `timeout`.
 
 ## Operation
 
@@ -330,18 +509,265 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   resources.
 - SIGINT or SIGTERM (Ctrl-C on Windows) shuts the server down gracefully:
   listen streams complete and COV subscriptions are cancelled.
+- A request whose handler panics (a bug) is answered with an internal
+  error, and `serve` then exits with an error naming the panic, rather
+  than serve on with whatever state the panic left (#2203).
+
+## Attached to the TUI
+
+Phase 4 (#2185; the Windows named pipe, #2201). While
+`bacnet tui` has a profile open, agents can attach to it instead of
+starting their own client: `bacnet mcp connect --profile NAME` passes its
+stdin and stdout to a local socket (on Windows, a named pipe) in the TUI's
+process, byte for byte, and the agent host
+launches it as it launches `bacnet mcp serve`. Without `--profile`, it
+attaches to the only profile a TUI is listening on (one whose listener
+holds its lock, below), and asks for a name when there are several. With no TUI listening it exits non-zero, saying so on
+stderr; when the TUI ends the session it exits cleanly.
+
+- **When it listens.** Opening a profile that is authorized for MCP
+  (`bacnet mcp authorize`) starts the listener, unless its `[mcp]` table
+  sets `tui_listener = false`; a profile authorized before this release
+  starts one too after the upgrade, for your own user, and the log pane
+  says so. Its agents write only if the table already set `mcp_writes =
+  "elicit"`, and then only what you confirm in the TUI with its write
+  session armed. An unauthorized profile, a passive session, an
+  MS/TP monitor, or a command line whose transport flags change the
+  authorized transport gets none, and the log pane says why whenever the
+  profile asked for one. The status bar shows `MCP n`, the agents
+  attached, while it listens, and `MCP off` when a listener the profile
+  asked for couldn't start.
+- **One client.** Each connection gets its own MCP session, as a stdio
+  server does, under the profile's `[mcp]` reach and caps, as the TUI's
+  OS user. Its reads go through the TUI's engine: the same client,
+  transport and UDP port, the same device gates, and the watch list's
+  rate meter counts them. The agents are one principal, so their sessions
+  share one `principal_rate` budget, one watch hub (256 points between
+  them, as for one stdio server), one per-principal point cap, and the
+  once-a-minute limits on broad Who-Is, router queries and BBMD surveys;
+  the hub's subscriptions use
+  subscriber process identifiers of their own, so an agent leaving a
+  point the watch list also watches never cancels the TUI's subscription.
+- **Limits while an agent is attached.** With no agent attached the TUI
+  keeps to its own `--max-rate`. From the first agent's connection until
+  the last one leaves, the table's rates join it: the global cap is the
+  lower of the TUI's and `max_rate`, and `network_rate`, `slow_networks`
+  and `fast_networks` pace every request to those networks, the TUI's own
+  included. The log pane notes each switch.
+- **Writes, approved in the TUI.** Read-only unless the table sets
+  `mcp_writes = "elicit"`; then the socket (or pipe) lists `bacnet_write`
+  and `bacnet_revert`, and the person at the TUI approves every write, at
+  every tier, as they would their own. The client's confirmation,
+  `mcp_arm` and a `[mcp.plan]` play no part here (a plan grant still
+  works on stdio).
+  - A write's first call reads the targets and previews the change at its
+    tier over MCP (a Relinquish_Default write is T3; priority 6 is
+    refused). The call then waits, outside its `call_budget_s`, for the
+    TUI's answer.
+  - The request opens the TUI's preview dialog under an "agent request"
+    banner naming the agent (its connection number, and the name its
+    client claims). The dialog is the TUI's own: a key within 300 ms of it
+    opening is ignored, T1 takes Enter, T2 `y` and T3 the device instance
+    typed out, and after 120 s it is declined.
+  - The TUI's write session must be armed (`W`), and its profile mustn't
+    set `writes = "never"`; otherwise the request is refused at once
+    (`not-armed`, `write-not-granted`), unshown.
+  - Requests queue one at a time, oldest first, with no "approve all". The
+    banner and the status bar (`MCP n, m to confirm`) show the queue. It
+    holds 4, the one on screen included; one more is refused
+    (`approval-queue-full`). A request waits behind another dialog the
+    person has open.
+  - Disarming the TUI (`W`, or the write session running out) refuses
+    every request it holds at once, the one on screen included, with
+    `not-armed` and nothing sent, rather than leaving them to be refused
+    when confirmed.
+  - **Host timeouts.** Agent hosts often end a tool call after about 60 s,
+    while the dialog waits up to 120 s, and a request queued behind
+    others waits longer. A request answered after the host gave up is
+    still sent if confirmed, but the agent never hears the result; it can
+    read `bacnet://ledger`. Raise the host's tool timeout where it has
+    one, and answer requests promptly; the agent pane shows each one's
+    age.
+  - Confirmed, the write runs on the TUI's own write session: the targets
+    are read again (a preview that changed is refused `stale`), the
+    ledger records it as the agent's (`front_end: mcp` with the
+    principal, so `bacnet_revert` can undo it, and the TUI's `R` too),
+    then it is sent and audited with `confirmed_via: "tui"` and
+    `approved_by` the TUI's OS user. The call returns the outcome as on
+    stdio, and the TUI flashes it.
+  - Declined, timed out, the TUI quitting or its session ending, the call
+    returns `declined`, with nothing sent, and the agent's session audits
+    it (`event: "declined"`, `asked_via: "tui"`). Device text and values in
+    the dialog are shown cleaned of control and invisible characters and
+    cut to 80 characters, and the client's claimed name loses any quotes. An agent that cancels
+    its call (`withdrawn`) or disconnects has its request taken off the
+    queue, or its dialog closed. However the TUI or the agent ends, no
+    call waits longer than the queue's full turn (490 s).
+  - `bacnet_revert` is confirmed in the same dialog (the banner says it
+    reverts): it shows the writes that put the pre-images back, each at
+    the tier of the write it undoes (T1 at least; undoing a
+    Relinquish_Default write is T3, as the write was), and the TUI's write
+    session must be armed, checked again just before anything is sent
+    (`tui-refused` otherwise). The desk sends exactly what was confirmed:
+    it rebuilds the revert from the ledger as it is then, and refuses it
+    as `stale` when that differs (an entry id another write has taken
+    since, or a later write to the slot merged into the entry), with the
+    device checks run again. Its scope is every MCP entry of the TUI's
+    OS user, the principal: every agent's, through the TUI or on stdio,
+    not only this agent's. The dialog confirms one device, so the
+    entries named (or all of them) must be on one device
+    (`several-devices` otherwise).
+  - A key pressed within 300 ms of the dialog's first frame is dropped,
+    digits typed toward a T3 confirmation included, measured on the wall
+    clock from that frame. A request that arrives while a filter is being
+    typed waits until the filter is done, so the dialog never takes its
+    keys.
+  - `no-approver`: the TUI's session ended (or wasn't connected) before
+    the change went, so nothing was sent. A dropped job whose write had
+    reached the ledger answers `pending` with `applied: "unknown"`
+    instead.
+- **The agent pane.** Screen 8 (`8`, listed on the top line while the
+  listener runs) shows the attached agents' tool calls, newest first:
+  the time (UTC), the agent (its connection number and the name its
+  client claims), the tool, a short summary of the target, the outcome
+  (`ok`, `refused:` and the reason, `declined` or `withdrawn`, `stale`,
+  or `error:` and its kind) and the cost: the requests charged to the
+  call, the re-read before a write and the writes sent included, and how
+  long it took. It keeps the latest 500 calls; older ones are dropped,
+  and the heading counts them. Above the calls it lists the write
+  requests waiting for you, each with its age, the one on screen with
+  the seconds left before it is declined, and a warning once a request
+  is older than a host's usual 60 s. The heading gives the agents' share
+  of the request meter, and the watch list's meter adds the same share
+  (`agents n/s`): a request counts as an agent's when it is charged to an
+  agent's call or to the agents' watch hub, so the pane and the meter
+  agree. The sessions record each call on the listener's threads; on each
+  tick of its loop the TUI copies the list if it changed, skipping the
+  tick rather than waiting when a session holds it. Scrolled down, the
+  pane keeps the same calls in view as new ones arrive.
+- **The socket (Unix).** `mcp.sock` in the profile's workspace. The workspace
+  must be a directory of yours, not a symbolic link; one with a looser
+  mode than 0700 is narrowed to 0700 when the listener starts, and the
+  log pane says so (new workspaces are made 0700). The socket is made
+  0600, and every connection's peer credentials (`SO_PEERCRED`, or
+  `getpeereid` on macOS and the BSDs) must name the TUI's own user before
+  any MCP message is read. A refused connection is closed and audited. A
+  TUI running as the overflow uid (65534), which peers in other user
+  namespaces report, doesn't listen. A socket path longer than the OS
+  takes (103 bytes on macOS and the BSDs, 107 on Linux) is refused before
+  binding: use a shorter profile name or point `BACNET_CONFIG_DIR`
+  somewhere shorter. At most 8 agents attach at once, and a connection
+  that sends no MCP message within 30 seconds is closed (once open, a
+  session may sit idle). `bacnet mcp connect` probes the lock with a
+  shared lock, and a starting listener retries for a moment, so a probe
+  never keeps a TUI from listening.
+- **The named pipe (Windows).** `\\.\pipe\rusty-bacnet-mcp-` and a hash
+  of a salt, a nonce of the TUI's run and the workspace's canonical
+  path, so each profile has its own and `connect` finds it with no
+  setting (#2219, #2237). Pipe names are one namespace for every user of
+  the machine, so the salt keeps another user from working the name out
+  in advance from the path. Neither hides the name while the TUI
+  listens, since any local user can list the pipes then; but each time
+  the TUI starts listening it picks a new nonce, so a name seen during
+  one run is useless for the next: a pipe someone makes under it while
+  the TUI is closed doesn't stop the TUI listening again, under another
+  name. While the TUI listens, its first instance holds the name and
+  nobody else may add one (see below). The nonce is 32 random bytes in
+  `mcp-pipe.nonce` in the workspace. The TUI writes it after taking the
+  workspace's lock and claiming the pipe's name: to a new file owned by
+  its user and open to nobody else from creation, synced, then renamed
+  over the last run's, so a reader finds one whole file or the other.
+  A rename that fails for a moment (a reader holding the old file, say)
+  is tried twice more; one that keeps failing leaves the TUI not
+  listening, with an error that says to try again. It removes the file
+  first thing as it stops; one left by a TUI that crashed names a pipe
+  nobody holds, and `connect`, which reads the nonce on every connect,
+  says that no TUI is listening, as it does with no nonce file. Should
+  someone who saw a crashed TUI's name make a pipe under it, `connect`
+  refuses it with the message naming its owner or user, and passes it
+  nothing; that is safe. The salt stays, though the nonce alone would
+  hide the name: it costs one read, and keeps the name unknown to others
+  should a nonce ever be reused. The salt is 32 random bytes in
+  `mcp-pipe.salt` in the workspace, made by
+  the first TUI to listen there and owned by its user. Two TUIs starting
+  at once agree on one salt: each writes its own under a temporary name
+  and links it into place, and the one that finds a salt there already
+  takes it. The TUI refuses a workspace that is a junction or symbolic
+  link, that isn't owned by its user, SYSTEM or the Administrators
+  group, or that lets anyone else list or change it (the error shows an
+  `icacls` command to fix it). The TUI and `connect` both refuse a salt
+  file that isn't a plain file, isn't owned by the user, grants anyone
+  but the user, SYSTEM and the Administrators group access, or doesn't
+  hold exactly 32 bytes, and `connect` refuses a nonce file by the
+  same rules. The salt is never made anew while one is
+  there, since a running TUI's pipe name depends on it: remove a refused
+  one with no TUI open on the profile. With no salt file, `connect` says
+  that no TUI has listened on the profile.
+  The pipe's security descriptor is owned by the TUI's user and grants
+  access to that user's SID alone, with no entry for Everyone,
+  Authenticated Users, anonymous logons, SYSTEM or Administrators (the
+  agents are your own processes, and SYSTEM and administrators can take
+  any object over through their privileges anyway, so an entry for them
+  would only widen access). Its medium mandatory label keeps a process
+  of lower integrity, such as a sandboxed one of the same user, from
+  opening it to read or write. There is no entry denying network logons:
+  remote clients are refused anyway, and a local session that holds the
+  network logon SID (an SSH session, say) would be shut out of its own
+  TUI. Every instance refuses remote clients. The first instance claims
+  the name, so a pipe of that name made by anyone else (another user's
+  process, say) is refused rather than joined, and
+  the next instance is made before a connected client is handed to its
+  session, so the name never goes free while the TUI listens. Before any
+  MCP message is read, the client's process (`GetNamedPipeClientProcessId`)
+  must run as the TUI's user, by its token's user SID; one that doesn't,
+  or whose user can't be found, is closed and audited. `bacnet mcp
+  connect` checks the listener's process the same way
+  (`GetNamedPipeServerProcessId`), and that the pipe itself is owned by
+  the same user, before it passes any byte on, so an impostor pipe gets
+  nothing, and it lets the listener identify it but
+  never act as it. A pipe has no half-close, so on Windows `connect`
+  ends its connection as soon as the host closes stdin. The limits on
+  agents and on the handshake are those of the socket.
+- **The lock.** A listener holds an exclusive lock on `mcp.lock` in the
+  workspace for its whole life, taken before it touches the socket path
+  or makes the pipe.
+  A second TUI on the same profile finds it held and doesn't listen; the
+  first keeps serving. On Unix, holding the lock, any socket at the path
+  is one a crashed TUI left, and it is removed; a symbolic link or any other file
+  there is neither followed nor removed.
+- **Audit.** Each connection's open (`mcp-connect`), close
+  (`mcp-disconnect`) and each refused peer (`mcp-refused`, with the peer's
+  uid, or on Windows its SID, its pid and why) go to the workspace's
+  `audit.jsonl`, with `via` set to `local-socket` or `named-pipe`, and
+  `front_end: "mcp"` and the principal. At most 10 refusals a minute are
+  recorded; the number left out goes with the next refusal record
+  (`refusals_not_recorded_before`) and in one record at shutdown.
+- **A bug in a session.** The agents' sessions, and every task their
+  requests start, run on threads of the listener's own (named
+  `bacnet-mcp-agent-N`). A panic there is logged and leaves the screen
+  alone; that agent's session ends, with its `mcp-disconnect` record
+  giving the panic, while the TUI and the other agents carry on. A
+  request whose handler panics answers with an internal error first; on
+  stdio, `bacnet mcp serve` exits the same way (see Operation).
+- **Ending.** Closing the profile or the TUI stops the listener: each
+  agent's listen streams complete, its connection closes, the shared
+  watch hub cancels its COV subscriptions, the sessions' threads stop,
+  the socket file (or every pipe instance) is removed and the lock
+  released. On Windows the run's nonce is withdrawn first, so a
+  `connect` during the shutdown already hears that no TUI is listening.
 
 ## Tests
 
 - `crates/bacnet-mcp/src/tests/`: the stdio protocol over a pipe against
   an in-process lab (handshake, tool list, survey, errors, cursors, the
-  2026-07-28 request form), no write tool in any configuration, passive
+  2026-07-28 request form), no write tool unless the profile offers writes, passive
   mode, 500 reads within the global cap, one request outstanding per slow
   device, a slow network held to 2 a second, the injection fixture, the
   policy's reach, broad discovery (wide ranges, ranges outside the policy,
   parallel calls), network numbers, network-paced Who-Is, cancellation, a
   long indexed Object_List across calls, and output schemas (success and
-  error results of all ten tools, nested values included).
+  error results of all eleven read tools, nested values included; the
+  write tools' in `writes.rs` and `plan.rs`).
 - `crates/bacnet-mcp/src/tests/bbmd.rs`: real BBMDs on loopback. A survey
   from the registration's BBMD reports a missing peer entry, a refused
   read, a silent address (one timeout) and a foreign device near expiry,
@@ -356,6 +782,10 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   passive mode; trend paging across ReadRange answers cut short and across
   calls, the summary against a brute-force computation (acceptance 7), time
   windows, states, a spent budget resuming without loss, and cancellation.
+  `logs.rs` (#2103): an Event Log and an Audit Log paged across ReadRange
+  answers cut short and across calls, every record once and in order; the
+  per-type summaries against brute-force counts; the message and comments
+  of a hostile record enveloped; other objects refused; a time window.
   `limits.rs`: a device silent mid-list or while naming, a list cut by the
   budget, alarms stopped by the budget, the router wait ending with the
   budget, a cancelled router query, and a backwards trend window.
@@ -406,4 +836,87 @@ returns `refused: rate-limited` if it sent nothing, else `timeout`.
   charged per request, Who-Is through the engine, and the decoder's tests
   (moved from the CLI).
 - `crates/bacnet-cli`: the `[mcp]` table, authorization and its
-  revocation, and the stdio hygiene test against the real binary.
+  revocation, the write policy and plan grant from the table, and the stdio
+  hygiene test against the real binary. The TUI lists an MCP entry from the
+  shared ledger marked `[mcp: user]` (`tui/tests/writes_app.rs`).
+- `crates/bacnet-mcp/src/tests/writes.rs` and `plan.rs` (#2068): the write
+  tools absent with `never` and listed with `elicit`; a T1 write previewed,
+  confirmed, sent, ledgered, audited and reverted; T2, T3 and priority 6
+  refused; tampered, expired, replayed, mismatched and declined
+  confirmations sending nothing; a stale preview; a timeout leaving an
+  `unknown` entry; no arming, an unsupported client and the TUI's lock
+  refused; 50 plan-grant writes without a prompt, each audited as approved
+  by the plan, and writes outside it refused. `writes/seal.rs`: a state
+  bound to its principal and tool, opened once, within its lifetime.
+- `crates/bacnet-mcp/src/tests/attach.rs` (#2185; Unix, and on Windows
+  the reads, the read-only list and the shutdown): an agent
+  through the bridge reads the lab on the shared engine, which its rate
+  meter shows, with no write tool though the policy offers writes; a peer
+  of another uid (named by a stand-in for the kernel's credentials, since a
+  test can't connect as another user) closed before any MCP traffic and
+  audited with its uid and pid; a loose workspace narrowed to 0700, a
+  symbolic link or a file refused; a second listener refused by the lock
+  while the first keeps serving, a stale socket cleared, and a symbolic
+  link or file at the socket's path left alone; `bacnet_revert` refused
+  like `bacnet_write`; shutdown completing a listen stream, cancelling its
+  COV subscription, ending the bridge and removing the socket.
+  `tests/attach_more.rs`: the `[mcp]` limits only while an agent is
+  attached; four flooding agents held to one budget while the TUI's reads
+  finish; the TUI keeping its COV notifications when an agent leaves the
+  same point; the bridge refusing a listener of another user with nothing
+  written and unreadable credentials refused and audited (both Unix); an
+  idle connection closed after 30 s. `tests/attach_shared.rs`: a second session's broad
+  Who-Is within the minute refused and the watch cap counting both
+  sessions' points; shutdown not waiting out a silent handshake; an agent
+  keeping a shared point's COV updates when the other leaves; an open
+  session idle past 30 s kept; a ninth agent refused (`too-many-agents`)
+  until a seat is free. `attach_more.rs`, `attach_shared.rs` and
+  `attach_runtime.rs` run on Windows too. `attach/guard_tests.rs` (Unix):
+  ownership, narrowing on one handle, the re-check after bind, the
+  post-bind socket check and the path length. `attach/lock.rs`: the lock,
+  a probe's shared lock refusing neither another probe nor, once
+  released, a starting listener.
+  `tests/attach_pipe.rs` (#2201, Windows): a client named as another user
+  (by a stand-in for its token, since a test can't run as another user)
+  or with no user found closed unanswered and audited with its SID and
+  pid; the bridge refusing a pipe served by another user, or one owned
+  by another user, writing it nothing; a second listener refused by the
+  lock, and a listener starting again at once after the first stops;
+  the listener's first and
+  later instances owned by and granting only the test's user, with the
+  medium label; the pipe named from the salt and the run's nonce, both
+  owned by and open to the test's user alone, a new name each run, the
+  nonce withdrawn at shutdown, a crashed TUI's nonce leading to "no TUI
+  is listening", a pipe made under a name seen during an earlier run not
+  keeping the next run from listening, `connect` reaching the new name,
+  and a workspace everyone may list refused.
+  `attach/salt_tests.rs` (every platform): the name needing both the salt
+  and the workspace, the salt made once, racing makers agreeing on one,
+  and a corrupt, linked, non-file or readable-by-others salt file refused
+  and left alone, and on Unix the owner and mode rule on made-up owners;
+  on Windows, the workspace check. `attach/nonce_tests.rs` (every
+  platform): two runs naming the pipe differently, the nonce published
+  private, replaced whole and withdrawn, a failing rename retried a few
+  times, stale temporary files swept, and a corrupt, linked, non-file or
+  readable-by-others nonce file refused. `attach/win32_tests.rs`
+  (Windows): the owners and entries the salt file and the workspace
+  accept, each forbidden right refused, and a workspace junction
+  refused. `attach/pipe_tests.rs`: every instance's refusal of remote
+  clients and the first's claim on the name, a name already held under
+  a chosen nonce refused with no nonce published, and the kernel's copy of
+  the descriptor and label.
+  `fence_tests.rs`: unsafe code only in `attach/win32.rs`.
+  `crates/bacnet-cli/src/tui/tests/mcp_attach.rs`:
+  an agent on an open session's socket reading through its client, on the
+  watch list's meter, `MCP n` and `MCP off` on the bar, the watch list's
+  first SubscribeCOV keeping the first subscriber process identifier, and
+  quitting ending it; `mcp_agent_pane.rs`: the agent pane's frames at
+  120x40 and 80x24 (empty, with calls, with a waiting request's age, with
+  dropped calls counted), an agent's read, confirmed write, declined write
+  and unarmed refusal shown with their outcome and cost, the meter's
+  agents' share matching the pane, disarming refusing the queue at once,
+  and `bacnet://session` following the TUI's arming; `board.rs` in
+  `bacnet-mcp`: the ring dropping its oldest, never waited on, and the
+  outcome and target summaries;
+  `crates/bacnet-cli/tests/mcp_connect.rs`: `bacnet mcp connect` against a
+  listener, stdout JSON-RPC only, and the refusal with nothing listening.

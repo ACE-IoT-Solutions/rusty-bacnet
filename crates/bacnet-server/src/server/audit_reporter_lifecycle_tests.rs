@@ -24,7 +24,8 @@ fn create(specifier: ObjectSpecifier, values: Vec<BACnetPropertyValue>) -> Bytes
         object_specifier: specifier,
         list_of_initial_values: values,
     }
-    .encode(&mut bytes);
+    .encode(&mut bytes)
+    .unwrap();
     bytes.freeze()
 }
 
@@ -270,10 +271,10 @@ async fn audit_reporter_lifecycle_execution_errors_preserve_results_and_create_r
         (
             ConfirmedServiceChoice::CREATE_OBJECT,
             AuditOperation::CREATE,
-            create(ObjectSpecifier::Type(ObjectType::ANALOG_VALUE), vec![]),
-            oid(ObjectType::ANALOG_VALUE, 1),
+            create(ObjectSpecifier::Type(ObjectType::ACCESS_POINT), vec![]),
+            oid(ObjectType::ACCESS_POINT, 1),
             ErrorClass::OBJECT,
-            ErrorCode::UNSUPPORTED_OBJECT_TYPE,
+            ErrorCode::DYNAMIC_CREATION_NOT_SUPPORTED,
         ),
         (
             ConfirmedServiceChoice::CREATE_OBJECT,
@@ -320,8 +321,10 @@ async fn audit_reporter_lifecycle_execution_errors_preserve_results_and_create_r
             AuditOperation::DELETE,
             delete(oid(ObjectType::NETWORK_PORT, 1)),
             oid(ObjectType::NETWORK_PORT, 1),
+            // No such port: an absent object is unknown, whatever its type
+            // (#2171).
             ErrorClass::OBJECT,
-            ErrorCode::OBJECT_DELETION_NOT_PERMITTED,
+            ErrorCode::UNKNOWN_OBJECT,
         ),
     ];
     for (index, (service, operation, request, target, class, code)) in cases.into_iter().enumerate()

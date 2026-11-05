@@ -32,9 +32,7 @@ impl<T: TransportPort + 'static> WriteAudit<'_, T> {
                 | Error::Remote(RemoteError::Reject { .. })
                 | Error::Remote(RemoteError::Abort { .. }),
             ) => return None,
-            Err(error) => Some(super::super::requests::confirmed_response::error_fields(
-                error,
-            )),
+            Err(error) => Some(bacnet_device_core::reply::error_fields(error)),
         };
         self.read_target_intent(db, target, property, result)
     }
@@ -48,20 +46,19 @@ impl<T: TransportPort + 'static> WriteAudit<'_, T> {
     ) -> Option<ReadAuditIntent> {
         let selected_reporter = self.select(Some(target), target.object_type())?;
         let reporter = &selected_reporter.configuration;
-        let device = db.local_device().identifier();
-        let route = device
-            .and_then(|device| recipient(db, device))
+        let device = crate::local_device::initiating_device(&self.config.device);
+        let route = recipient(db, device)
             .and_then(|value| self.transactions.audit_routes.get()?.resolve(&value));
         let status = Arc::clone(&selected_reporter.status);
-        status.set_configured(device.is_some() && route.is_some());
-        let device = device?;
+        status.set_configured(route.is_some());
         // Reuse the existing local property classification: Present_Value is
         // operational, other properties configuration, proprietary levels ALL.
         // The mandatory Reporter WRITE bypass does not apply to READ. Target
         // selection still uses the existing Reporter/Monitored_Objects rules.
         let policy = db
             .get(&target)
-            .map(|object| object.audit_object_policy_internal())
+            .and_then(|object| object.audit_policy())
+            .map(|policy| policy.object_policy())
             .unwrap_or_default()
             .effective_internal(reporter);
         if !policy.reports(AuditOperation::READ, property.map(|(id, _)| id), None)

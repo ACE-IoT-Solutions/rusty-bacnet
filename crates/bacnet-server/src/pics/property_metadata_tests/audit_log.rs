@@ -40,10 +40,13 @@ fn pics_audit_log_property_metadata_is_exact() {
         (P::PROPERTY_LIST, false, false),
     ];
     let object = AuditLogObject::new(7, "AL-7", 4, Arc::new(MemoryPersistence::default())).unwrap();
-    let required = object.required_properties();
+    let required: Vec<_> =
+        bacnet_objects::property_metadata::required_properties(&object.property_metadata())
+            .collect();
     let mut db = ObjectDatabase::new();
     db.add(Box::new(object)).unwrap();
-    let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+    let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+        .instance_types_only(&db);
     assert_eq!(pics.supported_object_types.len(), 1);
     let support = &pics.supported_object_types[0];
     assert_eq!(support.object_type, ObjectType::AUDIT_LOG);
@@ -78,7 +81,8 @@ fn pics_audit_log_forwarding_metadata_is_optional_and_read_only() {
     ));
     let mut db = ObjectDatabase::new();
     db.add(Box::new(object)).unwrap();
-    let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+    let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+        .instance_types_only(&db);
     for p in [
         P::MEMBER_OF,
         P::DELETE_ON_FORWARD,

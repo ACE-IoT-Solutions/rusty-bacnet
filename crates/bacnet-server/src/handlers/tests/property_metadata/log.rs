@@ -135,9 +135,11 @@ fn expected_rows(kind: ObjectType, triggered: bool) -> Vec<(P, bool, bool)> {
             (P::LOG_DEVICE_OBJECT_PROPERTY, false, true),
         ]);
         // The window, clock alignment and Trigger, all writable (#1235,
-        // #1353, #1354).
+        // #1353, #1354). Clock-aligned logging requires the alignment pair
+        // (Table 12-29 footnote 5, Table 12-35 footnote 3, #2174).
         rows.extend([P::START_TIME, P::STOP_TIME].map(|p| (p, !trend, true)));
-        rows.extend([P::ALIGN_INTERVALS, P::INTERVAL_OFFSET, P::TRIGGER].map(|p| (p, true, true)));
+        rows.extend([P::ALIGN_INTERVALS, P::INTERVAL_OFFSET].map(|p| (p, false, true)));
+        rows.push((P::TRIGGER, true, true));
         if trend {
             // A Trend Log's two COV rows, optional and writable (#1480).
             rows.extend(
@@ -197,11 +199,16 @@ fn rpm_metadata_log_selectors_pics_rows_and_budgets_are_exact() {
                     &db,
                     &crate::server::ServerConfig::default(),
                     &crate::pics::PicsConfig::default(),
-                );
+                )
+                .instance_types_only(&db);
                 assert_eq!(pics.supported_object_types.len(), 1);
                 let support = &pics.supported_object_types[0];
                 assert_eq!(support.object_type, oid.object_type());
-                assert!(!support.createable);
+                // Of the logs, only the Trend Log is createable (#2208).
+                assert_eq!(
+                    support.createable,
+                    oid.object_type() == ObjectType::TREND_LOG
+                );
                 assert!(support.deleteable);
                 let rows: Vec<_> = support
                     .supported_properties
@@ -248,8 +255,9 @@ fn request(oid: ObjectIdentifier, references: &[(P, Option<u32>)]) -> BytesMut {
 }
 
 fn assert_budget_parity(db: &ObjectDatabase, request: &[u8], legacy: &[u8], count: usize) {
-    use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
-    use crate::server::ReadPropertyMultipleBudget;
+    use crate::handlers::rpm_budget::handle_rpm_budgeted;
+    use bacnet_device_core::read::ReadFailure;
+    use bacnet_device_core::read::ReadPropertyMultipleBudget;
     let budget = ReadPropertyMultipleBudget {
         max_result_elements: count,
         max_service_ack_bytes: legacy.len(),
@@ -395,7 +403,10 @@ fn rpm_and_rp_refuse_log_buffer_while_read_range_serves_framed_records() {
         // log-disabled and buffer-purged, bits 0 and 1, are the top two bits.
         let status = [0x1e, 0x0a, 5, 0xc0, 0x1f];
         let expected = [&timestamp[..], first, &timestamp, &status].concat();
-        let identities = object.log_record_identities_internal().unwrap();
+        let identities = object
+            .log_buffer()
+            .map(|log| log.record_identities())
+            .unwrap();
         assert_eq!(
             identities
                 .iter()

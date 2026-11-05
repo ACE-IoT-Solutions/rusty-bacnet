@@ -145,11 +145,9 @@ fn expected_lists(kind: ObjectType) -> (Vec<P>, Vec<P>, Vec<P>) {
     // Default_Fade_Time, Default_Ramp_Rate and Default_Step_Increment follow
     // Relinquish_Default on Lighting Output only; the value-source rows
     // (#1866) end both projections.
-    // COV_Increment is the last optional row on Lighting Output.
-    let mut optional = vec![P::DESCRIPTION, P::RELIABILITY];
-    if kind == ObjectType::LIGHTING_OUTPUT {
-        optional.push(P::COV_INCREMENT);
-    }
+    // Lighting Output's COV_Increment is required of it, since it reports
+    // COV (Table 12-64 footnote 3, #2193).
+    let optional = vec![P::DESCRIPTION, P::RELIABILITY];
     let required: Vec<_> = all
         .iter()
         .copied()
@@ -203,13 +201,14 @@ fn rpm_lighting_metadata_does_not_enable_create_object() {
                 object_specifier,
                 list_of_initial_values: vec![],
             }
-            .encode(&mut request);
+            .encode(&mut request)
+            .unwrap();
             let mut response = BytesMut::new();
             let result = handle_create_object(&mut db, &request, &mut response);
             assert!(
                 matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
                 if class == ErrorClass::OBJECT
-                    && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE)
+                    && code == ErrorCode::DYNAMIC_CREATION_NOT_SUPPORTED)
             );
             assert!(response.is_empty());
             assert!(db.is_empty());

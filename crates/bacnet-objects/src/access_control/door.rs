@@ -99,9 +99,13 @@ pub struct AccessDoorObject {
     /// relinquished.
     pulse_deadlines: [Option<Duration>; 16],
     monotonic_clock: Option<Arc<MonotonicClock>>,
-    /// Elapsed time for a door with no bound clock, advanced by
-    /// `advance_time_internal`.
+    /// Elapsed time for a door with no bound clock, advanced by the
+    /// test-only `advance_time`.
     logical_now: Duration,
+    /// The reporting settings a write set, kept in storage once the door
+    /// opts in (#2331).
+    #[cfg(feature = "event-reporting")]
+    reporting_store: crate::write_config::reporting::ReportingStore,
 }
 
 impl AccessDoorObject {
@@ -128,6 +132,8 @@ impl AccessDoorObject {
             pulse_deadlines: [None; 16],
             monotonic_clock: None,
             logical_now: Duration::ZERO,
+            #[cfg(feature = "event-reporting")]
+            reporting_store: Default::default(),
         })
     }
 
@@ -447,6 +453,8 @@ fn checked_tenths(value: PropertyValue) -> Result<u32, Error> {
     common::u64_to_u32(raw)
 }
 
+crate::event::state_reporting::keep_change_of_state_reporting!(AccessDoorObject);
+
 impl BACnetObject for AccessDoorObject {
     fn object_identifier(&self) -> ObjectIdentifier {
         self.oid
@@ -461,6 +469,7 @@ impl BACnetObject for AccessDoorObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = common::read_identity_properties!(self, property, array_index) {
             return result;
         }
@@ -540,6 +549,8 @@ impl BACnetObject for AccessDoorObject {
         value: PropertyValue,
         priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        crate::write_config::reporting::admit(self, property, array_index, &value)?;
         // The door's entry edge is always seen (it starts in service and only
         // this write moves Out_Of_Service), so there is no fallback state.
         if let Some(result) = common::write_out_of_service_with_restore(
@@ -615,66 +626,86 @@ impl BACnetObject for AccessDoorObject {
             _ => Err(crate::common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                array_index,
             )),
         }
+    }
+
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.durable_capability()
     }
 
     fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
         super::metadata_topology::for_access_door_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
+    crate::traits::lend_cov_reporting!();
+
+    crate::traits::lend_event_reporting!();
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
     }
 
-    fn supports_cov(&self) -> bool {
-        true
+    fn local_input(&mut self) -> Option<&mut dyn crate::traits::LocalInput> {
+        Some(self)
     }
+}
 
-    crate::event::impl_change_of_state_reporting!(
-        reporting,
-        Self::watched_alarm_state,
-        Self::served_reliability
-    );
+impl crate::traits::CovReporting for AccessDoorObject {}
 
-    fn advance_time_internal(&mut self, elapsed: Duration) -> bool {
-        self.logical_now = self.logical_now.saturating_add(elapsed);
-        self.expire_pulses(self.logical_now)
-    }
+crate::event::impl_change_of_state_reporting!(
+    AccessDoorObject,
+    reporting,
+    Self::watched_alarm_state,
+    Self::served_reliability
+);
 
-    fn bind_monotonic_clock_internal(&mut self, clock: Option<Arc<MonotonicClock>>) {
-        self.monotonic_clock = clock;
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: Duration) -> bool {
-        self.expire_pulses(now)
-    }
-
-    fn next_monotonic_deadline_internal(&self) -> Option<Duration> {
-        self.pulse_deadlines.iter().flatten().min().copied()
-    }
-
-    fn cov_snapshot_internal(&self) -> Option<Box<dyn BACnetObject>> {
-        Some(Box::new(self.clone()))
-    }
-
-    /// Take what the door's hardware reports (#1132): Door_Status,
-    /// Lock_Status and Door_Alarm_State, each one given, together. A value
-    /// outside its production, or an alarm state the door's lists don't
-    /// admit, is VALUE_OUT_OF_RANGE and changes nothing. Stored as the
-    /// setters store the device's values: while Out_Of_Service is TRUE the
-    /// report replaces the values put aside, and a client's simulated ones
-    /// stay served until the return to service. Any other record is
-    /// OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
-    fn report_access_input_internal(&mut self, input: AccessControlInput) -> Result<(), Error> {
-        let AccessControlInput::DoorState(report) = input else {
-            return Err(common::optional_functionality_not_supported_error());
+/// Take what the door's hardware reports (#1132): Door_Status,
+/// Lock_Status and Door_Alarm_State, each one given, together. A value
+/// outside its production, or an alarm state the door's lists don't
+/// admit, is VALUE_OUT_OF_RANGE and changes nothing. Stored as the
+/// setters store the device's values: while Out_Of_Service is TRUE the
+/// report replaces the values put aside, and a client's simulated ones
+/// stay served until the return to service. Any other record is
+/// OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
+impl crate::traits::LocalInput for AccessDoorObject {
+    fn apply_local_input(&mut self, input: crate::traits::LocalInputValue) -> Result<(), Error> {
+        let crate::traits::LocalInputValue::AccessControl(AccessControlInput::DoorState(report)) =
+            input
+        else {
+            return Err(crate::traits::not_supported());
         };
         let (lists, alarm_values) = (&self.alarm_lists, self.reporting.alarm_values());
         // The device's own state: put aside out of service, else served.
         let device = self.device_state.as_mut().unwrap_or(&mut self.state);
         device.report(report, |state| lists.admits(alarm_values, state))
+    }
+}
+
+impl crate::traits::Timed for AccessDoorObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.monotonic_clock = clocks.monotonic.clone();
+    }
+
+    fn advance_monotonic_time(&mut self, now: Duration) -> bool {
+        self.expire_pulses(now)
+    }
+
+    fn next_monotonic_deadline(&self) -> Option<Duration> {
+        self.pulse_deadlines.iter().flatten().min().copied()
+    }
+
+    fn cov_snapshot(&self) -> Option<Box<dyn BACnetObject>> {
+        Some(Box::new(self.clone()))
+    }
+}
+
+#[cfg(test)]
+impl AccessDoorObject {
+    pub(crate) fn advance_time(&mut self, elapsed: Duration) -> bool {
+        self.logical_now = self.logical_now.saturating_add(elapsed);
+        self.expire_pulses(self.logical_now)
     }
 }
 

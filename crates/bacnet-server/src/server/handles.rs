@@ -38,15 +38,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// Read one local property through the server's ReadProperty evaluator.
     ///
     /// Device wildcard reads target the configured identity; removal returns
-    /// UNKNOWN_OBJECT even if another Device is present. The database's lowest
-    /// Device instance still owns the live COV lists, independent of insertion
-    /// order; other Device objects receive empty lists. Every served Device uses
+    /// UNKNOWN_OBJECT even if another Device is present. The identity's Device
+    /// owns the live COV lists, even beside a lower-instance Device added later
+    /// (#2227); other Device objects receive empty lists. Every served Device uses
     /// the executor's services, COV presence and property definitions, even after
     /// public profile mutation, replacement or custom object installation.
     ///
     /// This is the live local read boundary: it applies the same Device
     /// wildcard resolution, `UNKNOWN_OBJECT` and `PROPERTY_IS_NOT_AN_ARRAY`
-    /// checks, and value source as network ReadProperty. The selected Device's
+    /// checks, and value source as network ReadProperty. The identity Device's
     /// `Active_COV_Subscriptions` (ordinary and single-property subscriptions)
     /// and `Active_COV_Multiple_Subscriptions` (SubscribeCOVPropertyMultiple
     /// contexts) are projected from the COV subscription table at one sampled
@@ -55,7 +55,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// (`PropertyValue::ApplicationData`). After [`stop`](Self::stop) the
     /// server services no subscriptions, so both properties read as empty lists.
     ///
-    /// The selected Device's `Device_Address_Binding` lists the server's device
+    /// The identity Device's `Device_Address_Binding` lists the server's device
     /// bindings at the time of the read (#1369): each configured
     /// [`DeviceBinding`] and each device whose I-Am was heard in the last ten
     /// minutes, in Device instance order, as a `PropertyValue::List` whose
@@ -65,7 +65,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     ///
     /// A Group's `Present_Value` is rebuilt from its members, whose rows count
     /// against the ReadPropertyMultiple work limit
-    /// ([`ReadPropertyMultipleBudget::max_result_elements`](crate::server::ReadPropertyMultipleBudget))
+    /// ([`ReadPropertyMultipleBudget::max_result_elements`](bacnet_device_core::read::ReadPropertyMultipleBudget))
     /// as for network ReadProperty; past it the read fails with
     /// [`Error::abort`] carrying OUT_OF_RESOURCES.
     pub async fn read_local(
@@ -79,32 +79,44 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             &db,
             crate::device_view::DeviceExecution::FullServer,
         )
-        .with_identity(Some(&self.config.device))
-        .with_work_limit(
-            self.config
+        .with_identity(Some(&self.config.device));
+        // The local read resolves the Network_Port wildcard to the registered
+        // port, but plans a Group's members without it.
+        let scope = bacnet_device_core::read::ReadScope {
+            work_limit: self
+                .config
                 .read_property_multiple_budget
                 .max_result_elements,
-        );
-        let lookup_oid = handlers::resolve_read_target(
+            registered_port: None,
+            device: view.device_oid(),
+        };
+        let lookup_oid = bacnet_device_core::read::resolve_target(
             &db,
+            &bacnet_device_core::read::ReadScope {
+                registered_port: self.config.registered_network_port,
+                ..scope
+            },
             oid,
-            self.config.registered_network_port,
-            view.device_oid(),
         );
-        let plan =
-            handlers::plan_read_property(&db, Some(&view), lookup_oid, property, array_index)
-                .map_err(|failure| match failure {
-                    handlers::ReadFailure::Service(error) => error,
-                    handlers::ReadFailure::Work | handlers::ReadFailure::Bytes => {
-                        Error::abort(AbortReason::OUT_OF_RESOURCES)
-                    }
-                })?;
+        let plan = bacnet_device_core::read::plan_property(
+            &db,
+            &scope,
+            Some(&view),
+            lookup_oid,
+            property,
+            array_index,
+        )
+        .map_err(|failure| match failure {
+            bacnet_device_core::read::ReadFailure::Service(error) => error,
+            // Work, and any other limit the core reports.
+            _ => Error::abort(AbortReason::OUT_OF_RESOURCES),
+        })?;
         use super::requests::confirmed_response::{active_cov_snapshot, address_bindings};
-        let live = match plan.live_cov(&db) {
+        let live = match plan.live_lists(&db) {
             Some(selection) if self.dispatch_task.is_none() => {
                 let bindings = address_bindings(&self.device_bindings, selection).await;
                 Some(
-                    crate::cov::active::LiveDeviceCov::stopped(selection)
+                    bacnet_device_core::cov::active::LiveDeviceCov::stopped(selection)
                         .with_address_bindings(selection, bindings),
                 )
             }
@@ -118,7 +130,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             None => None,
         };
         let view = view.with_live(live.as_ref());
-        handlers::read_property_value(&db, Some(&view), plan)
+        bacnet_device_core::read::read_value(&db, Some(&view), plan)
     }
 
     /// Write one local property from its encoded value: the octets a network
@@ -154,7 +166,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 ErrorClass::OBJECT,
                 ErrorCode::UNKNOWN_OBJECT,
             ))?;
-            handlers::gate_and_decode_write(object, property, array_index, value)?
+            bacnet_device_core::write::gate_and_decode_write(object, property, array_index, value)?
         };
         self.write_local(oid, property, array_index, value, priority, source)
             .await

@@ -9,6 +9,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aead"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1973cfbc1a2daf9cf550e74e1f088c28e7f7d8c1e1418fb6c9dc5184b7e84c99"
+dependencies = [
+ "crypto-common 0.2.2",
+ "inout",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -276,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-bip-codec"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bytes",
  "heapless",
@@ -285,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-bip-core"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-bip-codec",
  "bacnet-npdu",
@@ -295,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-cli"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-bip-core",
  "bacnet-client",
@@ -343,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-client"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-encoding",
  "bacnet-endpoint-core",
@@ -363,21 +373,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "bacnet-device-core"
+version = "0.15.0"
+dependencies = [
+ "bacnet-encoding",
+ "bacnet-objects",
+ "bacnet-services",
+ "bacnet-time",
+ "bacnet-types",
+ "bytes",
+]
+
+[[package]]
 name = "bacnet-encoding"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-npdu",
  "bacnet-types",
  "bytes",
  "heapless",
+ "proptest",
  "tracing",
 ]
 
 [[package]]
 name = "bacnet-endpoint"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-client",
+ "bacnet-device-core",
  "bacnet-encoding",
  "bacnet-endpoint-core",
  "bacnet-network",
@@ -400,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-endpoint-core"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-encoding",
  "bacnet-network",
@@ -413,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-integration-tests"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-bip-codec",
  "bacnet-client",
@@ -438,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-mcp"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-client",
  "bacnet-encoding",
@@ -449,21 +473,26 @@ dependencies = [
  "bacnet-transport",
  "bacnet-types",
  "bytes",
+ "chacha20poly1305",
  "futures-util",
  "getrandom 0.3.4",
  "hmac",
+ "libc",
+ "nix 0.31.3",
  "rmcp",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "bacnet-mstp-codec"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bytes",
  "heapless",
@@ -472,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-mstp-core"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-mstp-codec",
  "bacnet-npdu",
@@ -482,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-mstp-sim"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-mstp-codec",
  "bacnet-mstp-core",
@@ -494,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-network"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-encoding",
  "bacnet-npdu",
@@ -509,14 +538,14 @@ dependencies = [
 
 [[package]]
 name = "bacnet-npdu"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "bacnet-objects"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-encoding",
  "bacnet-types",
@@ -524,13 +553,14 @@ dependencies = [
  "hashbrown 0.17.1",
  "libc",
  "libm",
+ "proptest",
  "spinning_top",
  "tracing",
 ]
 
 [[package]]
 name = "bacnet-ops"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-client",
  "bacnet-encoding",
@@ -542,15 +572,17 @@ dependencies = [
  "bacnet-types",
  "bytes",
  "futures-util",
+ "libc",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "bacnet-router-core"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-bip-core",
  "bacnet-encoding",
@@ -565,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-runtime"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-bip-codec",
  "bacnet-client",
@@ -582,15 +614,17 @@ dependencies = [
 
 [[package]]
 name = "bacnet-server"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-client",
+ "bacnet-device-core",
  "bacnet-encoding",
  "bacnet-endpoint-core",
  "bacnet-network",
  "bacnet-npdu",
  "bacnet-objects",
  "bacnet-services",
+ "bacnet-time",
  "bacnet-transport",
  "bacnet-types",
  "bytes",
@@ -603,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-services"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-encoding",
  "bacnet-types",
@@ -619,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-transport"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "aws-lc-rs",
  "bacnet-bip-codec",
@@ -650,7 +684,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-types"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-npdu",
  "bitflags 2.13.1",
@@ -844,8 +878,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
+ "cipher",
  "cpufeatures 0.3.0",
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "chacha20poly1305"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b89e1c441e926b9c82a8d023f6e1b7ae0adcfaa7d621814e4d60789bac751cb"
+dependencies = [
+ "aead",
+ "chacha20",
+ "cipher",
+ "poly1305",
 ]
 
 [[package]]
@@ -885,6 +932,17 @@ checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
 dependencies = [
  "ciborium-io",
  "half",
+]
+
+[[package]]
+name = "cipher"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8cf2a2c93cd704877c0858356ed03480ff301ee950b43f1cbe4573b088bfa6c"
+dependencies = [
+ "block-buffer 0.12.1",
+ "crypto-common 0.2.2",
+ "inout",
 ]
 
 [[package]]
@@ -1505,16 +1563,19 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "firmware-link"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-bip-codec",
  "bacnet-bip-core",
+ "bacnet-device-core",
  "bacnet-encoding",
  "bacnet-mstp-codec",
  "bacnet-mstp-core",
  "bacnet-npdu",
+ "bacnet-objects",
  "bacnet-router-core",
  "bacnet-services",
+ "bacnet-time",
  "bacnet-types",
  "bytes",
  "cortex-m-rt",
@@ -1988,6 +2049,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inout"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b5cf4372d022092674a83b8febf5865f7a573cc0c5baec5e49c879b6a20978f"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
 name = "insta"
 version = "1.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2340,7 +2410,7 @@ dependencies = [
 
 [[package]]
 name = "nostd-harness"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bytes",
  "portable-atomic",
@@ -2678,6 +2748,16 @@ dependencies = [
  "bytes",
  "clap",
  "tokio",
+]
+
+[[package]]
+name = "poly1305"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e2d0073b297041425c7c3df6eb4792d598a15323fe63346852b092eca02904c"
+dependencies = [
+ "cpufeatures 0.3.0",
+ "universal-hash",
 ]
 
 [[package]]
@@ -3255,9 +3335,10 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty-bacnet"
-version = "0.14.0"
+version = "0.15.0"
 dependencies = [
  "bacnet-client",
+ "bacnet-device-core",
  "bacnet-encoding",
  "bacnet-endpoint",
  "bacnet-network",
@@ -3649,7 +3730,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -3811,6 +3892,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",
@@ -4081,6 +4163,16 @@ name = "unicode-width"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+
+[[package]]
+name = "universal-hash"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4987bdc12753382e0bec4a65c50738ffaabc998b9cdd1f952fb5f39b0048a96"
+dependencies = [
+ "crypto-common 0.2.2",
+ "ctutils",
+]
 
 [[package]]
 name = "untrusted"

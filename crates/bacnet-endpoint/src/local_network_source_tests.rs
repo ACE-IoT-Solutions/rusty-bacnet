@@ -70,7 +70,9 @@ fn unstarted_source(
         .unwrap();
     let mut reporter = AuditReporterObject::new(1, "Source").unwrap();
     reporter
-        .configure_audit_reporter_internal(
+        .audit_reporter_mut()
+        .expect("an Audit Reporter")
+        .configure(
             AuditLevel::AUDIT_ALL,
             AuditOperationFlags::from_bits(1).unwrap(),
             false,
@@ -140,7 +142,7 @@ async fn audited_read(
     audit
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_records_for_an_address_on_this_network_go_without_a_dnet() {
     for role in [SessionRole::ClientOnly, SessionRole::Both] {
         let mut endpoint = source(role, true).await;
@@ -160,8 +162,8 @@ async fn source_records_for_an_address_on_this_network_go_without_a_dnet() {
     }
 }
 
-#[tokio::test]
-async fn source_routes_refuse_another_network_and_an_unknown_number() {
+#[tokio::test(start_paused = true)]
+async fn source_routes_refuse_an_address_on_another_network_but_audit_a_routed_read() {
     for role in [SessionRole::ClientOnly, SessionRole::Both] {
         for learned in [true, false] {
             let mut endpoint = source(role, learned).await;
@@ -178,12 +180,19 @@ async fn source_routes_refuse_another_network_and_an_unknown_number() {
                 bounded(change).await.is_err(),
                 "{role:?}, learned {learned}"
             );
-            // An audited read routed there is not a direct one, so it is
-            // refused before any send.
+            // An audited read routed there goes through the router (#2371),
+            // and its record names the station by that network.
             let read = endpoint.read(routed_read(network));
-            assert!(bounded(read).await.unwrap().is_err());
-            // Nothing went out: the next frame is a direct read's request,
-            // and its record still goes to the bound Device.
+            let (route, request) = endpoint.request().await;
+            assert_eq!(route, routed(mac(ROUTER), network));
+            endpoint
+                .deliver_apdu(ack(&request, 5), mac(ROUTER), peer_on(network))
+                .await;
+            assert!(bounded(read).await.unwrap().is_ok());
+            let audit = record(endpoint.next().await, SINK);
+            assert_eq!(audit.target_device, address(network, PEER));
+            // The change sent nothing: the next frame is a direct read's
+            // request, and its record still goes to the bound Device.
             let direct = EndpointApduDestination::Direct {
                 destination_mac: mac(PEER),
             };

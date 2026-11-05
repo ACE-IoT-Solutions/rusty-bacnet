@@ -13,7 +13,9 @@
 //! - `load`: a 1,000 events/s burst, and the render-time budget.
 //! - `event_loop`: the `select!` loop on a `TestBackend` with scripted input.
 //! - `network`: the Network screen against real B/IP transports and BBMDs
-//!   on loopback; `network_frames`: its frames from synthetic events.
+//!   on loopback; `network_frames`: its frames from synthetic events;
+//!   `network_nat`: our FDT entry behind a NAT router; `network_bip6`: a
+//!   B/IPv6 foreign device's registration on it and the status bar.
 //! - `discovery`: the `:find` panel and the Networks tab, from synthetic
 //!   events and against a real BBMD and `BACnetRouter`.
 //! - `sc_profiles`: profiles created through the screen and reloaded, the
@@ -73,6 +75,16 @@ mod inprocess;
 #[path = "../../../tests/support/lab.rs"]
 mod lab;
 mod load;
+#[cfg(feature = "mcp")]
+mod mcp_agent_pane;
+#[cfg(feature = "mcp")]
+mod mcp_approve;
+#[cfg(feature = "mcp")]
+mod mcp_approve_keys;
+#[cfg(feature = "mcp")]
+mod mcp_approve_revert;
+#[cfg(feature = "mcp")]
+mod mcp_attach;
 mod mstp_join_audit;
 mod mstp_layout;
 mod mstp_monitor;
@@ -92,7 +104,10 @@ mod names_cache;
 mod names_filter;
 mod names_site;
 mod network;
+mod network_bip6;
 mod network_frames;
+mod network_names;
+mod network_nat;
 mod network_notes;
 mod passive_discovery;
 mod passive_lifecycle;
@@ -240,8 +255,11 @@ pub(super) fn type_text(app: &mut App, text: &str) {
     }
 }
 
-/// Move the app's clock to `now` with no other change.
+/// Move the app's clock to `now` with no other change. A frame is drawn
+/// first, as the UI loop draws between ticks, so a dialog on screen has
+/// been seen (its key guard runs from then).
 pub(super) fn tick(app: &mut App, now: Instant) {
+    render(app, 120, 40);
     let dropped = app.dropped;
     let log_generation = app.log.generation();
     update(

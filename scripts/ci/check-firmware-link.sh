@@ -9,7 +9,11 @@
 # MS/TP device answering Who-Is and ReadProperty through the
 # allocation-free profile of bacnet-encoding and bacnet-services) have no
 # global allocator; apdu (bacnet-encoding and bacnet-services, no_std with alloc)
-# has one, over a fixed arena.
+# objects (bacnet-device-core's Responder over a bacnet-objects database,
+# #2178) and reporting (that database with the core's COV Reporter, #2303) have
+# one, over a fixed arena. objects and reporting need atomic
+# compare-and-swap, so they build for thumbv7m, thumbv7em and riscv32imac
+# only, and riscv32imac builds those two only (`builds_on` below).
 #
 #   check-firmware-link.sh [<triple>...]             check the default targets
 #                                                    below, or these
@@ -26,8 +30,10 @@
 # firmware/link/tests, and scripts/emu/emulate-firmware.sh runs them under
 # QEMU by hand.
 #
-# The crate's `alloc` feature, on by default, links alloc into its lib, so
-# the other images build with --no-default-features and apdu with it on. Per
+# The crate's `alloc`, `objects` and `reporting` features, on by default,
+# link alloc into its lib, so the other images build with
+# --no-default-features, apdu with `alloc` alone, objects with `objects` and
+# reporting with `reporting`. Per
 # target: clippy on the images' code, which a host build compiles out, once
 # per feature set; the builds, with the root Cargo.toml's `firmware` profile
 # (size-optimized, LTO, panic=abort); then, per image,
@@ -40,12 +46,38 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
-default_targets=(thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf thumbv7em-none-eabihf)
-images=(mstp mstp-extended bip node bbmd router device apdu)
-# One cargo run per feature set, as its arguments: every image but apdu
-# without the crate's default `alloc` feature, which would link alloc into
-# them, then the apdu image with it.
-builds=("--no-default-features" "--lib --bin apdu")
+default_targets=(thumbv7m-none-eabi thumbv6m-none-eabi riscv32imc-unknown-none-elf thumbv7em-none-eabihf riscv32imac-unknown-none-elf)
+images=(mstp mstp-extended bip node bbmd router device apdu objects reporting)
+# One cargo run per feature set, as its arguments: every image but apdu,
+# objects and reporting without the crate's default features, which would
+# link alloc into them, then the apdu image with `alloc`, the objects image
+# with `objects` and the reporting image with `reporting`.
+builds=(
+  "--no-default-features"
+  "--no-default-features --features alloc --lib --bin apdu"
+  "--no-default-features --features objects --lib --bin objects"
+  "--no-default-features --features reporting --lib --bin reporting"
+)
+# The image a build in `builds` makes, or `mstp` for the build that makes
+# all the images without an allocator.
+build_image() {
+  case $1 in
+    *"--bin apdu"*) echo apdu ;;
+    *"--bin objects"*) echo objects ;;
+    *"--bin reporting"*) echo reporting ;;
+    *) echo mstp ;;
+  esac
+}
+# Whether <image> builds for <triple>. objects and reporting need atomic
+# compare-and-swap (bacnet-objects shares state through alloc::sync::Arc),
+# which ARMv6-M and RV32IMC lack; riscv32imac is in the list for those two
+# alone. A case statement, since the script stays bash 3.2 compatible.
+builds_on() {
+  case $1 in
+    objects|reporting) case $2 in thumbv7m-*|thumbv7em-*|riscv32imac-*) return 0 ;; *) return 1 ;; esac ;;
+    *) case $2 in riscv32imac-*) return 1 ;; *) return 0 ;; esac ;;
+  esac
+}
 budget=firmware/link/size-budget.toml
 
 suggest=false
@@ -69,6 +101,7 @@ target_dir=$(cargo metadata --format-version 1 --no-deps --locked \
 status=0
 for triple in "${targets[@]}"; do
   for build in "${builds[@]}"; do
+    builds_on "$(build_image "$build")" "$triple" || continue
     read -ra args <<<"$build"
     if "$suggest"; then
       cargo build -q -p firmware-link --locked --target "$triple" --profile firmware "${args[@]}"
@@ -79,6 +112,7 @@ for triple in "${targets[@]}"; do
     fi
   done
   for image in "${images[@]}"; do
+    builds_on "$image" "$triple" || continue
     elf=$target_dir/$triple/firmware/$image
     if "$suggest"; then
       python3 scripts/ci/firmware_size.py --suggest "$elf" "$triple.$image"

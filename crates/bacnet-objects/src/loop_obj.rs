@@ -19,7 +19,8 @@ use bacnet_types::enums::{
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
 
-use crate::common::{self, read_property_list_property};
+use crate::common;
+use crate::property_metadata::read_property_list;
 use crate::reference::{self, ReferenceFrame};
 use crate::traits::BACnetObject;
 
@@ -232,6 +233,7 @@ impl BACnetObject for LoopObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         match property {
             p if p == PropertyIdentifier::OBJECT_IDENTIFIER => {
                 Ok(PropertyValue::ObjectIdentifier(self.oid))
@@ -325,7 +327,7 @@ impl BACnetObject for LoopObject {
                 reference::setpoint_reference_value(self.setpoint_reference.as_ref()),
             ),
             p if p == PropertyIdentifier::PROPERTY_LIST => {
-                read_property_list_property(&self.property_list(), array_index)
+                read_property_list(&self.property_metadata(), array_index)
             }
             _ => Err(Error::protocol(
                 ErrorClass::PROPERTY,
@@ -337,14 +339,15 @@ impl BACnetObject for LoopObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         // Clause 12.17.9 decouples Present_Value from the algorithm while
         // Out_Of_Service is TRUE and Table 12-20 footnote 7 makes it writable
         // then, for simulation and testing. In service the algorithm owns it;
-        // the application route is `set_present_value_internal`.
+        // the application route is its `LocalInput`.
         if property == PropertyIdentifier::PRESENT_VALUE {
             if !self.out_of_service {
                 return Err(common::write_access_denied_error());
@@ -362,6 +365,9 @@ impl BACnetObject for LoopObject {
         }
         if let Some(result) = common::write_cov_increment(&mut self.cov_increment, property, &value)
         {
+            return result;
+        }
+        if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
         match property {
@@ -403,7 +409,7 @@ impl BACnetObject for LoopObject {
             // Reliability when present and capable of values beyond
             // NO_FAULT_DETECTED. In service the property is owned
             // by the algorithm, so a network write is refused here; the internal
-            // evaluator route is `set_reliability_internal` with the complementary
+            // evaluator route is `ReliabilityEval::set_reliability` with the complementary
             // guard, and Out_Of_Service saves/restores the evaluated value (handled
             // above the match).
             p if p == PropertyIdentifier::RELIABILITY => {
@@ -416,16 +422,6 @@ impl BACnetObject for LoopObject {
                         return Err(common::value_out_of_range_error());
                     }
                     self.reliability = v;
-                    return Ok(());
-                }
-                Err(Error::protocol(
-                    ErrorClass::PROPERTY,
-                    ErrorCode::INVALID_DATA_TYPE,
-                ))
-            }
-            p if p == PropertyIdentifier::DESCRIPTION => {
-                if let PropertyValue::CharacterString(s) = value {
-                    self.description = s;
                     return Ok(());
                 }
                 Err(Error::protocol(
@@ -457,7 +453,6 @@ impl BACnetObject for LoopObject {
             _ => Err(crate::common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                _array_index,
             )),
         }
     }
@@ -466,38 +461,23 @@ impl BACnetObject for LoopObject {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
+    crate::traits::lend_cov_reporting!();
 
-    fn supports_cov(&self) -> bool {
-        true
-    }
+    crate::traits::lend_reliability_eval!();
 
+    fn local_input(&mut self) -> Option<&mut dyn crate::traits::LocalInput> {
+        Some(self)
+    }
+}
+
+impl crate::traits::CovReporting for LoopObject {
     fn cov_increment(&self) -> Option<f64> {
         Some(f64::from(self.cov_increment))
     }
+}
 
-    fn set_present_value_internal(&mut self, value: PropertyValue) -> Result<(), Error> {
-        // The complement of the network route: while Out_Of_Service is TRUE
-        // a client's simulated output must not be overwritten by the algorithm.
-        if self.out_of_service {
-            return Err(common::write_access_denied_error());
-        }
-        self.apply_present_value(value)
-    }
-
-    fn set_controlled_variable_value_internal(
-        &mut self,
-        value: PropertyValue,
-    ) -> Result<(), Error> {
-        // Out_Of_Service decouples only Present_Value and Reliability from the
-        // algorithm (Clause 12.17.9), so the measurement keeps flowing while a
-        // client simulates the output.
-        write_finite_real(&mut self.controlled_variable_value, value)
-    }
-
-    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
+impl crate::traits::ReliabilityEval for LoopObject {
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
         // While Out_Of_Service is TRUE the client owns the simulated value;
         // an internal write would clobber the simulation (Clause 12.17
         // Out_Of_Service paragraph separates Reliability from algorithm output),
@@ -510,6 +490,30 @@ impl BACnetObject for LoopObject {
         }
         self.reliability = reliability;
         Ok(())
+    }
+}
+
+/// The control algorithm's output and its measured
+/// Controlled_Variable_Value, both supplied by the application.
+impl crate::traits::LocalInput for LoopObject {
+    fn apply_local_input(&mut self, input: crate::traits::LocalInputValue) -> Result<(), Error> {
+        match input {
+            crate::traits::LocalInputValue::PresentValue { value, .. } => {
+                // The complement of the network route: while Out_Of_Service is TRUE
+                // a client's simulated output must not be overwritten by the algorithm.
+                if self.out_of_service {
+                    return Err(common::write_access_denied_error());
+                }
+                self.apply_present_value(value)
+            }
+            crate::traits::LocalInputValue::ControlledVariableValue(value) => {
+                // Out_Of_Service decouples only Present_Value and Reliability from the
+                // algorithm (Clause 12.17.9), so the measurement keeps flowing while a
+                // client simulates the output.
+                write_finite_real(&mut self.controlled_variable_value, value)
+            }
+            _ => Err(crate::traits::not_supported()),
+        }
     }
 }
 

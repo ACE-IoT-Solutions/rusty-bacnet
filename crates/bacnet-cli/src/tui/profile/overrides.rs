@@ -3,6 +3,9 @@
 use super::sc::{DeviceUuid, Vmac};
 use super::{Profile, Transport};
 use crate::args::Cli;
+use bacnet_transport::bip::ForeignBbmd;
+
+use crate::foreign::ForeignBbmdArg;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 
@@ -32,12 +35,15 @@ struct BipOverrides {
     interface: Option<Ipv4Addr>,
     port: Option<u16>,
     broadcast: Option<Ipv4Addr>,
-    bbmd: Option<SocketAddrV4>,
+    bbmd: Option<ForeignBbmd>,
     ttl: Option<u16>,
     renewal_secs: Option<u64>,
+    nat_global_address: Option<SocketAddrV4>,
     multicast: Option<Ipv4Addr>,
     multicast_ttl: Option<u8>,
     multicast_port: Option<u16>,
+    /// `--share-port` turns sharing on; there is no flag to turn it off.
+    share_port: bool,
 }
 
 /// Flags that only an SC profile takes. `--sc` itself only says which
@@ -89,12 +95,19 @@ impl Overrides {
                 interface: cli.interface.filter(|_| has("interface")),
                 port: has("port").then_some(cli.port),
                 broadcast: has("broadcast").then_some(cli.broadcast),
-                bbmd: cli.foreign_bbmd.filter(|_| has("foreign_bbmd")),
+                bbmd: cli
+                    .foreign_bbmd
+                    .as_ref()
+                    .filter(|_| has("foreign_bbmd"))
+                    .map(ForeignBbmdArg::bip)
+                    .transpose()?,
                 ttl: has("ttl").then_some(cli.ttl),
                 renewal_secs: cli.renewal.filter(|_| has("renewal")),
+                nat_global_address: cli.nat_global_address.filter(|_| has("nat_global_address")),
                 multicast: cli.bip_multicast.filter(|_| has("bip_multicast")),
                 multicast_ttl: has("bip_multicast_ttl").then_some(cli.bip_multicast_ttl),
                 multicast_port: cli.bip_multicast_port.filter(|_| has("bip_multicast_port")),
+                share_port: has("share_port") && cli.share_port,
             },
             sc: ScOverrides {
                 sc: has("sc") && cli.sc,
@@ -158,12 +171,15 @@ impl Overrides {
                 set(&mut b.broadcast, o.broadcast);
                 set(&mut b.timeout_ms, self.timeout_ms);
                 set(&mut b.min_interval_ms, self.min_interval_ms);
-                if let Some(v) = o.bbmd {
-                    b.bbmd = Some(v);
+                if let Some(v) = &o.bbmd {
+                    b.bbmd = Some(v.clone());
                 }
                 set(&mut b.ttl, o.ttl);
                 if let Some(v) = o.renewal_secs {
                     b.renewal_secs = Some(v);
+                }
+                if let Some(v) = o.nat_global_address {
+                    b.nat_global_address = Some(v);
                 }
                 if let Some(v) = o.multicast {
                     b.multicast = Some(v);
@@ -171,6 +187,9 @@ impl Overrides {
                 set(&mut b.multicast_ttl, o.multicast_ttl);
                 if let Some(v) = o.multicast_port {
                     b.multicast_port = Some(v);
+                }
+                if o.share_port {
+                    b.share_port = true;
                 }
             }
             Transport::Sc => {
@@ -226,12 +245,14 @@ pub(crate) fn has_transport_flags(cli: &Cli) -> bool {
             id.as_str(),
             "interface"
                 | "port"
+                | "share_port"
                 | "broadcast"
                 | "timeout"
                 | "min_interval_ms"
                 | "foreign_bbmd"
                 | "ttl"
                 | "renewal"
+                | "nat_global_address"
                 | "bip_multicast"
                 | "bip_multicast_ttl"
                 | "bip_multicast_port"

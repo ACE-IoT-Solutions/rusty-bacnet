@@ -52,6 +52,7 @@ fn destination(instance: u32) -> BACnetDestination {
 fn snapshot(list: &[BACnetDestination]) -> NotificationClassSnapshot {
     NotificationClassSnapshot {
         recipient_list: Some(list.to_vec()),
+        description: None,
     }
 }
 
@@ -173,7 +174,7 @@ async fn stage_held_save(db: &RwLock<ObjectDatabase>, storage: &Storage) -> std_
         .write()
         .await
         .get_mut(&oid(ObjectType::NOTIFICATION_CLASS, 1))
-        .and_then(|class| class.durable_writes_internal())
+        .and_then(|class| class.durable_writes())
         .expect("the class saves")
         .stage_writes(&[PendingWrite {
             property: PropertyIdentifier::RECIPIENT_LIST,

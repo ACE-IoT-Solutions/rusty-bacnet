@@ -49,7 +49,7 @@
 //! sends nothing. The server doesn't wait for a pass when the object a
 //! refused member names is added to the database (#1440): it offers the
 //! value to the members naming that object at once
-//! ([`retry_refusals_naming`](crate::traits::BACnetObject::retry_refusals_naming)).
+//! ([`retry_refusals_naming`](crate::traits::ScheduleRunner::retry_refusals_naming)).
 //! An array grown to take the index still waits for the pass. Datatype refusals are retried as well as reference refusals:
 //! both answer the one question of 12.24.13, and a datatype refusal can pass
 //! without the Schedule changing too, when the application puts an object that
@@ -63,7 +63,7 @@
 //! CONFIGURATION_ERROR the same way.
 //!
 //! The evaluation owns only the fault it raised. A Reliability applied through
-//! `set_reliability_internal` stays until that caller changes it, and while
+//! `ReliabilityEval::set_reliability` stays until that caller changes it, and while
 //! Out_Of_Service is TRUE the client's simulated value is left alone; the
 //! return to service restores the saved value and evaluates again. Refusals
 //! reported meanwhile are kept for that evaluation.
@@ -157,6 +157,7 @@ impl ScheduleObject {
             priority: self.priority_for_writing,
             references: self.refusing_references.clone(),
             retry: true,
+            relinquish: false,
         })
     }
 

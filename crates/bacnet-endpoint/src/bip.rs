@@ -39,6 +39,9 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use bacnet_objects::database::ObjectDatabase;
+use std::sync::Arc;
+
+use bacnet_transport::bbmd_lookup::BbmdResolver;
 use bacnet_transport::bip::{BipMode, BipMulticast, BipTransport};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
@@ -55,6 +58,7 @@ pub struct BipEndpointBuilder {
     port: u16,
     broadcast_address: Ipv4Addr,
     share_port_by_address: bool,
+    share_wildcard_port: bool,
     role: SessionRole,
     session: SessionConfig,
     database: Option<ObjectDatabase>,
@@ -64,8 +68,11 @@ pub struct BipEndpointBuilder {
     reinitialize: Option<bacnet_server::server::ReinitializeHandler>,
     reinit_password: Option<String>,
     source_audit_bindings: Vec<(ObjectIdentifier, SocketAddrV4)>,
+    source_audit_routed: crate::session::RoutedBindings,
     mode: BipMode,
     multicast: Option<BipMulticast>,
+    release_previous_bbmd: bool,
+    bbmd_resolver: Option<Arc<dyn BbmdResolver>>,
 }
 
 impl BipEndpointBuilder {
@@ -81,6 +88,7 @@ impl BipEndpointBuilder {
             port,
             broadcast_address,
             share_port_by_address: false,
+            share_wildcard_port: false,
             role: SessionRole::Both,
             session: SessionConfig::default(),
             database: None,
@@ -90,8 +98,11 @@ impl BipEndpointBuilder {
             reinitialize: None,
             reinit_password: None,
             source_audit_bindings: Vec::new(),
+            source_audit_routed: Vec::new(),
             mode: BipMode::Normal,
             multicast: None,
+            release_previous_bbmd: false,
+            bbmd_resolver: None,
         }
     }
 
@@ -103,6 +114,17 @@ impl BipEndpointBuilder {
     /// for what changes.
     pub fn share_port_by_address(mut self, enabled: bool) -> Self {
         self.share_port_by_address = enabled;
+        self
+    }
+
+    /// Shares an explicitly requested port with other sockets on this host
+    /// that bind it the same way (#2366). Off by default: the transport
+    /// claims the port, and starting fails when another socket holds it.
+    /// With sharing on, unicast to the port reaches only one of the sockets
+    /// on it. See
+    /// [`BipTransport::set_share_wildcard_port`](bacnet_transport::bip::BipTransport::set_share_wildcard_port).
+    pub fn share_wildcard_port(mut self, enabled: bool) -> Self {
+        self.share_wildcard_port = enabled;
         self
     }
 
@@ -230,6 +252,23 @@ impl BipEndpointBuilder {
         self
     }
 
+    /// Bind a Device behind a router, on `network` at `mac` there, for
+    /// source Audit delivery to that Device (#2371); see
+    /// [`EndpointSession::with_source_audit_routed_device_binding`]. Every
+    /// build refuses network 0 or 65535, an empty MAC or one past 18 octets,
+    /// and a repeated or non-Device identifier. Route data only: provision
+    /// the recipient on the Device itself.
+    /// `build_transport` refuses these too.
+    pub fn source_audit_routed_device_binding(
+        mut self,
+        device: ObjectIdentifier,
+        network: u16,
+        mac: bacnet_types::MacAddr,
+    ) -> Self {
+        self.source_audit_routed.push((device, network, mac));
+        self
+    }
+
     /// Sets the B/IP mode: a normal node (the default), a foreign device or
     /// a BBMD (#938). See [`BipMode`]. With a `0.0.0.0` interface, a BBMD's
     /// own B/IP address comes from its BDT, as described at
@@ -248,6 +287,26 @@ impl BipEndpointBuilder {
     /// (#941).
     pub fn multicast(mut self, multicast: Option<BipMulticast>) -> Self {
         self.multicast = multicast;
+        self
+    }
+
+    /// In [`BipMode::Foreign`], after a move to another BBMD (a Network
+    /// Port activation, or the BBMD's host name resolving elsewhere), ask
+    /// the BBMD left behind to delete this device's entry rather than let
+    /// it lapse (#2307). Off by default; see
+    /// [`BipTransport::set_release_previous_bbmd`] for why, and for the
+    /// counts [`EndpointSession::foreign_registration`] then shows. Ignored,
+    /// with a warning, in the other modes.
+    pub fn release_previous_bbmd(mut self, release: bool) -> Self {
+        self.release_previous_bbmd = release;
+        self
+    }
+
+    /// Look up a BBMD named by host name with `resolver` instead of the
+    /// system's resolver (#1852, #2307). See
+    /// [`BipTransport::set_bbmd_resolver`].
+    pub fn bbmd_resolver(mut self, resolver: Arc<dyn BbmdResolver>) -> Self {
+        self.bbmd_resolver = Some(resolver);
         self
     }
 
@@ -274,14 +333,21 @@ impl BipEndpointBuilder {
                 "ReinitializeDevice and its password require build_session()".into(),
             ));
         }
-        if !self.source_audit_bindings.is_empty() {
+        if !self.source_audit_bindings.is_empty() || !self.source_audit_routed.is_empty() {
             return Err(Error::Encoding(
                 "source Audit route data requires build_session()".into(),
             ));
         }
         let mut transport = BipTransport::new(self.interface, self.port, self.broadcast_address);
         transport.set_share_port_by_address(self.share_port_by_address);
+        transport.set_share_wildcard_port(self.share_wildcard_port);
         transport.set_mode(self.mode);
+        if self.release_previous_bbmd {
+            transport.set_release_previous_bbmd(true);
+        }
+        if let Some(resolver) = self.bbmd_resolver {
+            transport.set_bbmd_resolver(resolver);
+        }
         transport.set_multicast(self.multicast)?;
         Ok(transport)
     }
@@ -292,24 +358,57 @@ impl BipEndpointBuilder {
     /// socket after `start()`); no second hidden socket is created here or
     /// in [`EndpointSession`]. Bind-count proofs use a counting test double
     /// plus real-socket corroboration (single nonzero local MAC/port).
-    pub fn build_session(mut self) -> Result<EndpointSession<BipTransport>, Error> {
+    pub fn build_session(self) -> Result<EndpointSession<BipTransport>, Error> {
+        let mut bip_status = None;
+        let mut endpoint = self.compose(|builder| {
+            let transport = builder.build_transport()?;
+            bip_status = Some(transport.bvlc_client_status());
+            Ok(transport)
+        })?;
+        endpoint.bip_status = bip_status;
+        Ok(endpoint)
+    }
+
+    /// Builds the session [`build_session`](Self::build_session) would, over
+    /// `transport` instead of a B/IP socket. It still validates the B/IP
+    /// socket controls (interface, port, mode, multicast) by building the
+    /// B/IP transport, then drops that unstarted transport. Tests run it on
+    /// an in-memory link under paused time (#2298).
+    #[cfg(test)]
+    pub(crate) fn build_session_over<T: bacnet_transport::port::TransportPort + 'static>(
+        self,
+        transport: T,
+    ) -> Result<EndpointSession<T>, Error> {
+        self.compose(|builder| {
+            builder.build_transport()?;
+            Ok(transport)
+        })
+    }
+
+    /// Validates the session-owned configuration (source Audit routes
+    /// included) and takes it out of the builder, then hands the rest of the
+    /// builder to `transport` and composes the session over the transport it
+    /// returns.
+    fn compose<T: bacnet_transport::port::TransportPort + 'static>(
+        mut self,
+        transport: impl FnOnce(Self) -> Result<T, Error>,
+    ) -> Result<EndpointSession<T>, Error> {
         let device_write_authorizer = self.device_write_authorizer.take();
         let reinitialize = self.reinitialize.take();
         let reinit_password = self.reinit_password.take();
         let bindings = std::mem::take(&mut self.source_audit_bindings);
+        let routed = std::mem::take(&mut self.source_audit_routed);
         crate::source_audit::recipient::SourceRoutes::new(
             &bindings,
             SocketAddrV4::new(self.broadcast_address, self.port),
-        )?;
+        )?
+        .bind_routed(&routed)?;
         let role = self.role;
         let session = self.session.clone();
         let database = self.database.take();
         let identity = self.identity.take();
         let registered_network_port = self.registered_network_port.take();
-        let transport = self.build_transport()?;
-        let bip_status = transport.bvlc_client_status();
-        let mut endpoint = EndpointSession::new(transport, role, session)?;
-        endpoint.bip_status = Some(bip_status);
+        let mut endpoint = EndpointSession::new(transport(self)?, role, session)?;
         if let Some(db) = database {
             endpoint = endpoint.with_database(db);
         }
@@ -325,6 +424,7 @@ impl BipEndpointBuilder {
         endpoint.reinitialize = reinitialize;
         endpoint.reinit_password = reinit_password;
         endpoint.source_audit_bindings = bindings;
+        endpoint.source_audit_routed_bindings = routed;
         Ok(endpoint)
     }
 }
@@ -348,6 +448,33 @@ mod share_port_tests {
         };
         assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
     }
+
+    /// The builder hands `share_wildcard_port` to its transport (#2366): on
+    /// a port another socket holds, a claiming transport's error names the
+    /// opt-in, and a sharing one's says the holder doesn't share. Windows
+    /// decides a sharing bind beside a socket that set no options by the two
+    /// sockets' accounts (Microsoft's SO_REUSEADDR table), so only the
+    /// claiming case runs there.
+    #[tokio::test]
+    async fn the_builder_hands_its_wildcard_sharing_choice_to_the_transport() {
+        let holder = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let port = holder.local_addr().unwrap().port();
+        for (share, says) in [(false, "share_wildcard_port"), (true, "refuses sharing")] {
+            if share && cfg!(windows) {
+                continue;
+            }
+            let mut endpoint =
+                BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, port, Ipv4Addr::BROADCAST)
+                    .role(SessionRole::ClientOnly)
+                    .share_wildcard_port(share)
+                    .build_session()
+                    .unwrap();
+            let Err(Error::Transport(refused)) = endpoint.start().await else {
+                panic!("start must fail on a held port (share: {share})");
+            };
+            assert!(refused.to_string().contains(says), "{refused}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -368,8 +495,7 @@ mod mode_tests {
         let mut endpoint = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
             .role(SessionRole::ClientOnly)
             .mode(BipMode::Foreign(ForeignDeviceConfig {
-                bbmd_ip: Ipv4Addr::LOCALHOST,
-                bbmd_port: bbmd.local_addr().unwrap().port(),
+                bbmd: (Ipv4Addr::LOCALHOST, bbmd.local_addr().unwrap().port()).into(),
                 renewal_interval: None,
                 ttl: 60,
             }))
@@ -401,6 +527,65 @@ mod mode_tests {
         endpoint.stop().await.unwrap();
         let registration = endpoint.foreign_registration().unwrap();
         assert_eq!((registration.refused, registration.last_outcome), (1, None));
+    }
+
+    /// A resolver that answers every name with loopback.
+    struct Loopback;
+
+    impl BbmdResolver for Loopback {
+        fn resolve(&self, _host: &str) -> bacnet_transport::bbmd_lookup::BbmdLookup {
+            Box::pin(async { Ok(vec![Ipv4Addr::LOCALHOST.into()]) })
+        }
+    }
+
+    /// The builder hands its transport the BBMD resolver and the release of
+    /// the BBMD a move leaves (#2307): a host name activated on the port
+    /// moves the device to the BBMD the resolver names, and the BBMD it left
+    /// is asked to delete its entry.
+    #[tokio::test]
+    async fn the_builder_hands_the_transport_its_resolver_and_release() {
+        use bacnet_transport::port::TransportPort;
+        use bacnet_types::bip_port::{BipPortMode, ForeignDeviceChanges};
+        use bacnet_types::constructed::{BACnetHostAddress, BACnetHostNPort};
+        let socket = || tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0));
+        let (old, new) = (socket().await.unwrap(), socket().await.unwrap());
+        let mut transport = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
+            .mode(BipMode::Foreign(ForeignDeviceConfig {
+                bbmd: (Ipv4Addr::LOCALHOST, old.local_addr().unwrap().port()).into(),
+                renewal_interval: None,
+                ttl: 60,
+            }))
+            .release_previous_bbmd(true)
+            .bbmd_resolver(Arc::new(Loopback))
+            .build_transport()
+            .unwrap();
+        let _rx = transport.start().await.unwrap();
+        let mut packet = [0; 64];
+        let wait = Duration::from_secs(5);
+        let mut next = async |peer: &tokio::net::UdpSocket| {
+            let (len, _) = tokio::time::timeout(wait, peer.recv_from(&mut packet))
+                .await
+                .expect("a datagram")
+                .unwrap();
+            packet[..len].to_vec()
+        };
+        assert_eq!(next(&old).await, [0x81, 5, 0, 6, 0, 60]);
+        let Some(BipPortMode::Foreign { registration }) =
+            transport.bip_port().map(|port| port.mode)
+        else {
+            panic!("a foreign device's port");
+        };
+        let mut changes = ForeignDeviceChanges::default();
+        changes.bbmd = Some(BACnetHostNPort {
+            host: BACnetHostAddress::Name("bbmd.test".into()),
+            port: new.local_addr().unwrap().port(),
+        });
+        registration.activate(&changes).unwrap();
+        assert_eq!(next(&new).await, [0x81, 5, 0, 6, 0, 60]);
+        let mut release = vec![0x81, 0x08, 0, 10];
+        release.extend_from_slice(transport.local_mac());
+        assert_eq!(next(&old).await, release);
+        transport.stop().await.unwrap();
     }
 
     /// Only a session the B/IP builder built has a registration to report.

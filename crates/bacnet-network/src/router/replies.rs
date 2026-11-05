@@ -132,6 +132,7 @@ impl RouterResponse {
                             lifetime: self.inner.lifetime.clone(),
                             on_issuance: Box::new(on_issuance),
                         }),
+                        count_forward: false,
                     },
                 )
                 .map_err(|_| unavailable())?;

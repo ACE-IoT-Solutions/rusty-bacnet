@@ -34,6 +34,10 @@ class RouterPortConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(configured.reconnect_forever)
         self.assertEqual(configured.max_npdu_length, 1497)
         self.assertEqual(configured.max_bvlc_length, 5705)
+        self.assertEqual(
+            RouterScPort(**(valid | {"failover_hub": "wss://failover.local:47808"})).failover_hub,
+            "wss://failover.local:47808",
+        )
         with self.assertRaises(AttributeError):
             configured.network_number = 201
         for change in (
@@ -51,7 +55,7 @@ class RouterPortConfigTests(unittest.IsolatedAsyncioTestCase):
             {"reconnect_initial_delay_ms": 20, "reconnect_max_delay_ms": 10},
             {"reconnect_max_delay_ms": 86_400_001},
             {"reconnect_max_retries": 0},
-            {"failover_hub": "wss://failover.local:47808"},
+            {"failover_hub": valid["primary_hub"]},
             {"max_npdu_length": 1496},
             {"max_bvlc_length": 5704},
         ):

@@ -146,6 +146,7 @@ impl<T: TransportPort + 'static> UnconfirmedServices<T> {
             suppressions: &self.event_suppressions,
             retry_timeout_ms: self.config.cov_retry_timeout_ms,
             local_apdu_capacity: u32::from(self.config.device.max_apdu_length()),
+            device: crate::local_device::initiating_device(&self.config.device),
         }
     }
 }
@@ -172,6 +173,7 @@ impl<T: TransportPort + 'static> RequestServices<T> {
             suppressions: &self.event_suppressions,
             retry_timeout_ms: self.config.cov_retry_timeout_ms,
             local_apdu_capacity: u32::from(self.config.device.max_apdu_length()),
+            device: crate::local_device::initiating_device(&self.config.device),
         }
     }
 
@@ -192,10 +194,13 @@ impl<T: TransportPort + 'static> RequestServices<T> {
         network: Arc<NetworkLayer<T>>,
         config: impl Into<Arc<ServerConfig>>,
     ) -> Self {
+        let config = config.into();
         Self {
             db: Arc::new(RwLock::new(ObjectDatabase::new())),
             network,
-            cov_table: Arc::new(RwLock::new(CovSubscriptionTable::new())),
+            cov_table: Arc::new(RwLock::new(
+                CovSubscriptionTable::new().with_flight_timing(config.cov_flight_timing()),
+            )),
             seg_ack_senders: Arc::new(segmented_send::SegmentedSendRegistry::default()),
             seg_send_permits: Arc::new(Semaphore::new(MAX_SEG_SENDERS)),
             cov_in_flight: Arc::new(Semaphore::new(1)),
@@ -210,7 +215,7 @@ impl<T: TransportPort + 'static> RequestServices<T> {
             received_event_log: Arc::default(),
             mutation_decisions: Arc::new(crate::mutation::MutationDecisions::default()),
             warnings: Arc::default(),
-            config: config.into(),
+            config,
         }
     }
 }
@@ -241,10 +246,11 @@ impl<T: TransportPort + 'static> UnconfirmedServices<T> {
         network: Arc<NetworkLayer<T>>,
         config: impl Into<Arc<ServerConfig>>,
     ) -> Self {
+        let config: Arc<ServerConfig> = config.into();
         Self {
             db: Arc::new(RwLock::new(ObjectDatabase::new())),
             network,
-            config: config.into(),
+            config: Arc::clone(&config),
             clock: None,
             comm_state: Arc::default(),
             device_bindings: Arc::new(RwLock::new(DeviceBindingTable::new())),
@@ -255,7 +261,9 @@ impl<T: TransportPort + 'static> UnconfirmedServices<T> {
             learned_routers: Arc::new(Mutex::new(LearnedRouterCache::new())),
             event_suppressions: Arc::default(),
             received_event_log: Arc::default(),
-            cov_table: Arc::new(RwLock::new(CovSubscriptionTable::new())),
+            cov_table: Arc::new(RwLock::new(
+                CovSubscriptionTable::new().with_flight_timing(config.cov_flight_timing()),
+            )),
             cov_in_flight: Arc::new(Semaphore::new(1)),
             tasks: Arc::new(request_tasks::RequestTasks::default()).spawner(),
             warnings: Arc::default(),

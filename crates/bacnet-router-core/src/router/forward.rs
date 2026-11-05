@@ -78,6 +78,12 @@ impl<
         // router doesn't have; the hosted router drops its traffic too.
         let Some(egress) = self.ports[..self.port_count].get(usize::from(route.port().0)) else {
             bump(&mut self.counters.unknown_port);
+            host.observe(Event::NoRoute {
+                port: at.port,
+                network: npdu
+                    .destination
+                    .map_or(0, |destination| destination.network),
+            });
             return Received::Discarded(Discard::UnknownPort);
         };
         let limits = egress.max_npdu;

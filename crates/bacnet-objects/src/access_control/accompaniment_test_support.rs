@@ -1,6 +1,7 @@
 //! Independent fixtures for the local accompaniment contract.
 use super::*;
 use crate::database::ObjectDatabase;
+use crate::property_metadata::PropertyMetadata;
 use bacnet_types::constructed::{BACnetAccessRule, BACnetAssignedAccessRights};
 use bacnet_types::enums::{AuthorizationExemption, ErrorClass, ErrorCode};
 use std::time::Duration;
@@ -229,13 +230,18 @@ impl BACnetObject for Overridden {
     ) -> Result<(), Error> {
         panic!("pure evaluator attempted a write")
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        let mut properties = self.inner.property_list().into_owned();
-        properties.retain(|property| *property != self.property);
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        let mut rows = self.inner.property_metadata().into_owned();
+        rows.retain(|row| row.property_identifier != self.property);
         if self.advertised {
-            properties.push(self.property);
+            rows.push(PropertyMetadata::new(
+                self.property,
+                crate::property_metadata::PropertyConformance::Optional,
+                None,
+                crate::property_metadata::PropertyWriteCapability::ReadOnly,
+            ));
         }
-        Cow::Owned(properties)
+        Cow::Owned(rows)
     }
 }
 pub(super) fn override_read(

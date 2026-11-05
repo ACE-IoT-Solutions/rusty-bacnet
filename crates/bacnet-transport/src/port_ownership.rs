@@ -1,8 +1,9 @@
 //! Keeping an unshared UDP port to its socket, as far as each OS allows.
 //!
 //! A B/IP or B/IPv6 socket on an ephemeral port binds the wildcard address
-//! without SO_REUSEADDR (#892). How private that leaves the port depends on
-//! the OS:
+//! without SO_REUSEADDR (#892), and so by default does a B/IP socket on a
+//! requested port (#2366). How private that leaves the port depends on the
+//! OS:
 //!
 //! - Linux refuses any other bind to the port, whatever options it sets.
 //! - Windows lets another socket bind a more specific address on the same port
@@ -51,27 +52,12 @@ pub(crate) fn claim_exclusive(_socket: &socket2::Socket) -> io::Result<()> {
     Ok(())
 }
 
-/// Whether a bind failed because another socket holds the port. Tests whose
-/// configuration must name a port before the transport binds it probe for a
-/// free one, and another process can take it in between (#1032); this is the
-/// failure they retry on. An explicit B/IP or B/IPv6 port sets SO_REUSEADDR,
-/// and Windows refuses that bind with `WSAEACCES` rather than
-/// `WSAEADDRINUSE` when the holder did not share the port. Only an OS error
-/// counts, so a transport's own `AddrInUse` (a VMAC collision) does not.
-///
-/// On macOS a holder bound to a specific address does not fail the wildcard
-/// bind at all; as the module docs say, nothing there reports that case.
+/// The lost-port check and the run count, from the workspace's one rerun
+/// helper (`port_retry`, #2225), for tests that must name a port before the
+/// transport binds it and so can lose it to another process (#1032). That
+/// file says what counts as lost, including the macOS case nothing reports.
 #[cfg(test)]
-pub(crate) fn lost_to_another_socket(err: &io::Error) -> bool {
-    err.raw_os_error().is_some()
-        && (err.kind() == io::ErrorKind::AddrInUse
-            || (cfg!(windows) && err.kind() == io::ErrorKind::PermissionDenied))
-}
-
-/// How many times a test that can lose its port to another socket runs, each
-/// time on a fresh port.
-#[cfg(test)]
-pub(crate) const ATTEMPTS: usize = 8;
+pub(crate) use crate::port_retry::{ATTEMPTS, lost_to_another_socket};
 
 /// Whether `err`, from run `attempt` of such a test, is a bind that another
 /// socket beat to the port, so the test may go again on a fresh one (#1032,
@@ -208,6 +194,31 @@ mod tests {
         // An AddrInUse the transport made up, not the OS, is never a lost port.
         let made_up = std::io::Error::from(std::io::ErrorKind::AddrInUse);
         assert!(!super::lost_port(1, &made_up));
+        // A bind error wrapped with the OS error as its source is still a
+        // lost port (#2231); one wrapped as a message only, whatever it says,
+        // is not.
+        let wrapped = std::io::Error::new(err.kind(), Wrapped(err));
+        assert!(super::lost_port(1, &wrapped));
+        let flat = std::io::Error::new(wrapped.kind(), wrapped.to_string());
+        assert!(!super::lost_port(1, &flat));
+        let collision = std::io::Error::new(std::io::ErrorKind::AddrInUse, "VMAC collision");
+        assert!(!super::lost_port(1, &collision));
+    }
+
+    /// An error that wraps an OS error as its source.
+    #[derive(Debug)]
+    struct Wrapped(std::io::Error);
+
+    impl std::fmt::Display for Wrapped {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "could not bind a listener ({})", self.0)
+        }
+    }
+
+    impl std::error::Error for Wrapped {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
     }
 }
 

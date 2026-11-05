@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
-use tokio::sync::{Mutex, broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 #[cfg(test)]
@@ -36,6 +36,7 @@ use bacnet_network::layer::NetworkLayer;
 use bacnet_npdu::NetworkPriority;
 use bacnet_services::cov::COVNotificationRequest;
 use bacnet_transport::any::AnyTransport;
+use bacnet_transport::bbmd_lookup::BbmdResolver;
 use bacnet_transport::bip::{BipMode, BipMulticast, BipTransport};
 #[cfg(feature = "ipv6")]
 use bacnet_transport::bip6::{Bip6ForeignDeviceConfig, Bip6Transport};
@@ -50,6 +51,7 @@ use crate::discovery::{DeviceTable, DeviceUpsertResult, DiscoveredDevice, Routed
 use crate::segmentation::{
     SegmentReceiver, SegmentedPduType, duplicate_in_window, max_segment_payload, split_payload,
 };
+use crate::sync_mutex::SyncMutex;
 use crate::tsm::{
     ProgressReceiver, RequestTimerExpiration, SegmentAckPhase, SegmentTimerExpiration,
     SegmentedResponseAdmission, TransactionOwner, TransactionProgress, Tsm, TsmConfig, TsmResponse,
@@ -114,6 +116,12 @@ pub struct ClientConfig {
     /// `BipTransport::set_share_port_by_address` for what changes. Only the
     /// B/IP builder reads it; a transport passed to `start` has its own.
     pub share_port_by_address: bool,
+    /// B/IP only: share an explicitly requested port with other sockets on
+    /// this host, as before #2366. Off by default: the transport claims the
+    /// port, so a second bind of it fails. See
+    /// `BipTransport::set_share_wildcard_port` for what sharing costs. Only
+    /// the B/IP builder reads it; a transport passed to `start` has its own.
+    pub share_wildcard_port: bool,
     /// APDU timeout in milliseconds.
     pub apdu_timeout_ms: u64,
     /// Number of APDU retries.
@@ -170,6 +178,7 @@ impl Default for ClientConfig {
             port: 0xBAC0,
             broadcast_address: Ipv4Addr::BROADCAST,
             share_port_by_address: false,
+            share_wildcard_port: false,
             apdu_timeout_ms: 6000,
             apdu_retries: 3,
             max_apdu_length: 1476,
@@ -291,6 +300,10 @@ pub struct BipClientBuilder {
     options: ClientOptions,
     mode: BipMode,
     multicast: Option<BipMulticast>,
+    /// See [`Self::release_previous_bbmd`].
+    release_previous_bbmd: bool,
+    /// See [`Self::bbmd_resolver`].
+    bbmd_resolver: Option<Arc<dyn BbmdResolver>>,
 }
 
 impl BipClientBuilder {
@@ -336,7 +349,7 @@ impl BipClientBuilder {
     /// let mut client = BACnetClient::bip_builder()
     ///     .port(0)
     ///     .mode(BipMode::Foreign(ForeignDeviceConfig {
-    ///         bbmd_ip: Ipv4Addr::new(192, 0, 2, 10), bbmd_port: 47808,
+    ///         bbmd: (Ipv4Addr::new(192, 0, 2, 10), 47808).into(),
     ///         ttl: 60, renewal_interval: Some(Duration::from_secs(20)),
     ///     }))
     ///     .build().await?;
@@ -376,6 +389,16 @@ impl BipClientBuilder {
     /// See [`BipTransport::set_share_port_by_address`] for what changes.
     pub fn share_port_by_address(mut self, enabled: bool) -> Self {
         self.config.share_port_by_address = enabled;
+        self
+    }
+
+    /// Share an explicitly requested port with other sockets on this host
+    /// that bind it the same way (#2366). Off by default: the transport
+    /// claims the port, and `build` fails when another socket holds it. With
+    /// sharing on, unicast to the port reaches only one of the sockets on
+    /// it. See [`BipTransport::set_share_wildcard_port`].
+    pub fn share_wildcard_port(mut self, enabled: bool) -> Self {
+        self.config.share_wildcard_port = enabled;
         self
     }
 
@@ -558,8 +581,8 @@ struct SegmentAckRoute {
 pub struct BACnetClient<T: TransportPort = AnyTransport> {
     config: ClientConfig,
     network: Arc<NetworkLayer<T>>,
-    tsm: Arc<Mutex<Tsm>>,
-    device_table: Arc<Mutex<DeviceTable>>,
+    tsm: Arc<SyncMutex<Tsm>>,
+    device_table: Arc<SyncMutex<DeviceTable>>,
     cov_tx: broadcast::Sender<ReceivedCOVNotification>,
     event_tx: broadcast::Sender<ReceivedEventNotification>,
     device_tx: broadcast::Sender<DeviceEvent>,
@@ -573,7 +596,7 @@ pub struct BACnetClient<T: TransportPort = AnyTransport> {
     /// Dispatch may hold [`Self::tsm`] while acquiring this lock so phase
     /// validation and delivery cannot race terminal completion. No path may
     /// acquire the locks in the opposite order.
-    seg_ack_senders: Arc<Mutex<HashMap<SegAckKey, SegmentAckRoute>>>,
+    seg_ack_senders: Arc<SyncMutex<HashMap<SegAckKey, SegmentAckRoute>>>,
     cleanup_tx: mpsc::UnboundedSender<TransactionCleanup>,
     #[cfg(test)]
     segmented_post_wait_cleanup: Arc<SegmentedPostWaitCleanupHook>,
@@ -600,6 +623,8 @@ impl BACnetClient<BipTransport> {
             options: ClientOptions::default(),
             mode: BipMode::Normal,
             multicast: None,
+            release_previous_bbmd: false,
+            bbmd_resolver: None,
         }
     }
 }
@@ -784,11 +809,13 @@ impl ScClientBuilder {
         }
     }
 
-    fn sc_transport<W: bacnet_transport::sc::WebSocketPort>(
+    /// This node's own settings on a transport the hub dialer made, or on
+    /// one over a test socket.
+    fn sc_settings<W: bacnet_transport::sc::WebSocketPort>(
         &self,
-        ws: W,
+        transport: bacnet_transport::sc::ScTransport<W>,
     ) -> bacnet_transport::sc::ScTransport<W> {
-        bacnet_transport::sc::ScTransport::new(ws, self.vmac)
+        transport
             .with_device_uuid(self.device_uuid)
             .with_npdu_per_origin_limit(self.npdu_admission_policy.per_origin_limit)
             .with_control_rate_limit(self.npdu_admission_policy.control_rate)
@@ -805,7 +832,7 @@ impl ScClientBuilder {
         ws: W,
     ) -> Result<BACnetClient<bacnet_transport::sc::ScTransport<W>>, Error> {
         self.validate()?;
-        let transport = self.sc_transport(ws);
+        let transport = self.sc_settings(bacnet_transport::sc::ScTransport::new(ws, self.vmac));
         BACnetClient::start_with_options(self.config, transport, self.options).await
     }
 }

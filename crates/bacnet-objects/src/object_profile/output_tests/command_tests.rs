@@ -3,7 +3,9 @@ use crate::command_source::CommandOrigin;
 use bacnet_encoding::constructed::decode_value_source;
 use bacnet_encoding::primitives::decode_timestamp_choice;
 use bacnet_types::constructed::{BACnetDeviceObjectReference, BACnetValueSource};
-use bacnet_types::enums::{EngineeringUnits, EventState, EventType, Reliability};
+use bacnet_types::enums::EngineeringUnits;
+#[cfg(feature = "event-reporting")]
+use bacnet_types::enums::{EventState, EventType, Reliability};
 use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier};
 
 fn origin(device: u32) -> CommandOrigin {
@@ -52,7 +54,7 @@ pub(super) fn state(object: &dyn ProfileOutput) -> Vec<(P, PropertyValue)> {
         P::ACKED_TRANSITIONS,
     ]
     .into_iter()
-    .filter(|p| object.property_list().contains(p))
+    .filter(|p| crate::property_metadata::has_property(&object.property_metadata(), *p))
     .map(|p| (p, object.read_property(p, None).unwrap()))
     .collect()
 }
@@ -201,6 +203,7 @@ fn tags_do_not_steal_priorities_source_correction_or_command_time() {
     }
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn profile_writes_preserve_command_failure_and_out_of_range_transitions() {
     for kind in KINDS {
@@ -263,7 +266,11 @@ fn profile_writes_preserve_command_failure_and_out_of_range_transitions() {
             EventType::COMMAND_FAILURE
         };
         for output in [&mut profiled, &mut control] {
-            let proposal = output.evaluate_intrinsic_reporting().unwrap();
+            let proposal = output
+                .event_reporting_mut()
+                .expect("lends event reporting")
+                .evaluate_intrinsic_reporting()
+                .unwrap();
             assert_eq!(proposal.change.to, target);
             assert_eq!(proposal.event_type, algorithm);
             crate::event::commit_test_proposal(output.as_mut(), proposal);
@@ -286,7 +293,11 @@ fn profile_writes_preserve_command_failure_and_out_of_range_transitions() {
                     .write_property(P::FEEDBACK_VALUE, None, values(kind)[0].clone(), None)
                     .unwrap();
             }
-            let proposal = output.evaluate_intrinsic_reporting().unwrap();
+            let proposal = output
+                .event_reporting_mut()
+                .expect("lends event reporting")
+                .evaluate_intrinsic_reporting()
+                .unwrap();
             assert_eq!(proposal.change.from, target);
             assert_eq!(proposal.change.to, EventState::NORMAL);
             crate::event::commit_test_proposal(output.as_mut(), proposal);

@@ -18,10 +18,10 @@ The PICS below comes from `BACnetServer::generate_pics` on a full server built f
 - **Objects:** one of each type that `bacnet_objects::catalogue::representatives()` constructs, each instance 1 with the catalogue's placeholder names and units. The catalogue's Device is replaced by Device 1 with vendor identifier 0, a placeholder.
 - **Data links:** BACnet/IP and BACnet/SC, as declared in its `PicsConfig`. The generator doesn't detect data links; the server that produced this page ran on BACnet/IP on loopback.
 - **Network layer:** router, BBMD and foreign-device registration off.
-- **Device fields:** the Device's vendor name and model name are placeholders, and its firmware and application versions name v0.14.0, the release this site describes. The PICS takes these, and the protocol version and revision, from that Device object.
+- **Device fields:** the Device's vendor name and model name are placeholders, and its firmware and application versions name v0.15.0, the release this site describes. The PICS takes these, and the protocol version and revision, from that Device object.
 - **Declared fields:** the device profile is left unclaimed.
 
-The file is generated on the `dev` branch, like the [capability tables](/rusty-bacnet/project/conformance/), so it can include object types or services merged after v0.14.0. [Generate a PICS for your device](/rusty-bacnet/integrate/pics/) explains each section and what you fill in yourself.
+The file is generated on the `dev` branch, like the [capability tables](/rusty-bacnet/project/conformance/), so it can include object types or services merged after v0.15.0. [Generate a PICS for your device](/rusty-bacnet/integrate/pics/) explains each section and what you fill in yourself.
 
 <!-- generated:start by crates/bacnet-integration-tests/sample_pics.rs: the PICS generator's output -->
 
@@ -36,8 +36,8 @@ The file is generated on the `dev` branch, like the [capability tables](/rusty-b
 | Vendor ID | 0 |
 | Vendor Name | Placeholder (reference configuration) |
 | Model Name | Rusty BACnet catalogue reference |
-| Firmware Revision | 0.14.0 |
-| Application Software Version | 0.14.0 |
+| Firmware Revision | 0.15.0 |
+| Application Software Version | 0.15.0 |
 | Protocol Version | 1 |
 | Protocol Revision | 22 |
 
@@ -59,7 +59,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 |----------|--------|
 | ACKED_TRANSITIONS | R |
 | NOTIFICATION_CLASS | RW |
-| COV_INCREMENT | RWO |
+| COV_INCREMENT | RW |
 | DEADBAND | RW |
 | DESCRIPTION | RWO |
 | EVENT_ENABLE | RW |
@@ -97,7 +97,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 |----------|--------|
 | ACKED_TRANSITIONS | R |
 | NOTIFICATION_CLASS | RW |
-| COV_INCREMENT | RWO |
+| COV_INCREMENT | RW |
 | DEADBAND | RW |
 | DESCRIPTION | RWO |
 | EVENT_ENABLE | RW |
@@ -133,14 +133,15 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### ANALOG_VALUE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
+- Whole value set only by CreateObject: UNITS
 
 | Property | Access |
 |----------|--------|
 | ACKED_TRANSITIONS | R |
 | NOTIFICATION_CLASS | RW |
-| COV_INCREMENT | RWO |
+| COV_INCREMENT | RW |
 | DEADBAND | RW |
 | DESCRIPTION | RWO |
 | EVENT_ENABLE | RW |
@@ -292,8 +293,9 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### CALENDAR
 
-- Createable: false
+- Createable: true
 - Deleteable: true
+- Whole value set only by CreateObject: OBJECT_NAME
 
 | Property | Access |
 |----------|--------|
@@ -364,8 +366,9 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### EVENT_ENROLLMENT
 
-- Createable: false
+- Createable: true
 - Deleteable: true
+- Whole value set only by CreateObject: OBJECT_PROPERTY_REFERENCE
 
 | Property | Access |
 |----------|--------|
@@ -439,7 +442,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | CONTROLLED_VARIABLE_REFERENCE | RW |
 | CONTROLLED_VARIABLE_UNITS | R |
 | CONTROLLED_VARIABLE_VALUE | R |
-| COV_INCREMENT | RWO |
+| COV_INCREMENT | RW |
 | DERIVATIVE_CONSTANT | RWO |
 | DERIVATIVE_CONSTANT_UNITS | RO |
 | DESCRIPTION | RWO |
@@ -539,8 +542,9 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### NOTIFICATION_CLASS
 
-- Createable: false
+- Createable: true
 - Deleteable: true
+- Whole value set only by CreateObject: OBJECT_NAME, PRIORITY, ACK_REQUIRED
 
 | Property | Access |
 |----------|--------|
@@ -570,7 +574,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | OBJECT_TYPE | R |
 | OUT_OF_SERVICE | RW |
 | PROGRAM_CHANGE | RW |
-| PROGRAM_STATE | RW |
+| PROGRAM_STATE | R |
 | REASON_FOR_HALT | RO |
 | RELIABILITY | RO |
 | STATUS_FLAGS | R |
@@ -578,8 +582,9 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### SCHEDULE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
+- Whole value set only by CreateObject: OBJECT_NAME
 
 | Property | Access |
 |----------|--------|
@@ -663,8 +668,9 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### TREND_LOG
 
-- Createable: false
+- Createable: true
 - Deleteable: true
+- Whole value set only by CreateObject: OBJECT_NAME, BUFFER_SIZE
 
 | Property | Access |
 |----------|--------|
@@ -695,8 +701,8 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | STOP_WHEN_FULL | RW |
 | TOTAL_RECORD_COUNT | R |
 | LAST_NOTIFY_RECORD | R |
-| ALIGN_INTERVALS | RWO |
-| INTERVAL_OFFSET | RWO |
+| ALIGN_INTERVALS | RW |
+| INTERVAL_OFFSET | RW |
 | LOGGING_TYPE | RW |
 | TRIGGER | RWO |
 | EVENT_MESSAGE_TEXTS | RO |
@@ -771,8 +777,8 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | OBJECT_NAME | R |
 | OBJECT_TYPE | R |
 | OUT_OF_SERVICE | RW |
-| PRESENT_VALUE | R |
-| RELIABILITY | RO |
+| PRESENT_VALUE | RW |
+| RELIABILITY | RWO |
 | STATUS_FLAGS | R |
 | UNITS | R |
 | LIMIT_MONITORING_INTERVAL | RWO |
@@ -789,7 +795,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 | Property | Access |
 |----------|--------|
-| COV_INCREMENT | RWO |
+| COV_INCREMENT | RW |
 | DESCRIPTION | RWO |
 | EVENT_STATE | R |
 | OBJECT_IDENTIFIER | R |
@@ -804,7 +810,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | COUNT | R |
 | COUNT_BEFORE_CHANGE | R |
 | COUNT_CHANGE_TIME | R |
-| COV_PERIOD | RO |
+| COV_PERIOD | R |
 | INPUT_REFERENCE | RWO |
 | SCALE_FACTOR | RW |
 | UPDATE_TIME | R |
@@ -900,8 +906,8 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | STOP_WHEN_FULL | RW |
 | TOTAL_RECORD_COUNT | R |
 | LAST_NOTIFY_RECORD | R |
-| ALIGN_INTERVALS | RWO |
-| INTERVAL_OFFSET | RWO |
+| ALIGN_INTERVALS | RW |
+| INTERVAL_OFFSET | RW |
 | LOGGING_TYPE | RW |
 | TRIGGER | RWO |
 | EVENT_MESSAGE_TEXTS | RO |
@@ -935,8 +941,9 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### STRUCTURED_VIEW
 
-- Createable: false
+- Createable: true
 - Deleteable: true
+- Whole value set only by CreateObject: OBJECT_NAME, NODE_TYPE, NODE_SUBTYPE, SUBORDINATE_LIST, SUBORDINATE_ANNOTATIONS
 
 | Property | Access |
 |----------|--------|
@@ -1003,19 +1010,23 @@ Property rows aggregate configured instances: a row or access flag means at leas
 |----------|--------|
 | DESCRIPTION | RWO |
 | EVENT_STATE | RO |
+| MAX_PRES_VALUE | R |
+| MIN_PRES_VALUE | R |
 | OBJECT_IDENTIFIER | R |
 | OBJECT_NAME | R |
 | OBJECT_TYPE | R |
 | OUT_OF_SERVICE | RWO |
 | PRESENT_VALUE | RW |
-| RELIABILITY | R |
+| RELIABILITY | RWO |
 | STATUS_FLAGS | R |
-| UPDATE_TIME | R |
-| EXPIRATION_TIME | R |
+| UPDATE_TIME | RO |
+| EXPIRATION_TIME | RO |
 | PROPERTY_LIST | R |
-| INITIAL_TIMEOUT | RWO |
-| TIMER_RUNNING | R |
-| TIMER_STATE | R |
+| DEFAULT_TIMEOUT | RWO |
+| INITIAL_TIMEOUT | RO |
+| LAST_STATE_CHANGE | RO |
+| TIMER_RUNNING | RW |
+| TIMER_STATE | RW |
 
 #### ACCESS_CREDENTIAL
 
@@ -1168,7 +1179,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### BITSTRING_VALUE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
 
 | Property | Access |
@@ -1188,7 +1199,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### CHARACTERSTRING_VALUE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
 
 | Property | Access |
@@ -1208,7 +1219,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### DATEPATTERN_VALUE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
 
 | Property | Access |
@@ -1228,7 +1239,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### DATE_VALUE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
 
 | Property | Access |
@@ -1248,7 +1259,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### DATETIMEPATTERN_VALUE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
 
 | Property | Access |
@@ -1268,7 +1279,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### DATETIME_VALUE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
 
 | Property | Access |
@@ -1288,12 +1299,13 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### INTEGER_VALUE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
+- Whole value set only by CreateObject: UNITS
 
 | Property | Access |
 |----------|--------|
-| COV_INCREMENT | RWO |
+| COV_INCREMENT | RW |
 | DESCRIPTION | RWO |
 | OBJECT_IDENTIFIER | R |
 | OBJECT_NAME | RW |
@@ -1310,12 +1322,13 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### LARGE_ANALOG_VALUE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
+- Whole value set only by CreateObject: UNITS
 
 | Property | Access |
 |----------|--------|
-| COV_INCREMENT | RWO |
+| COV_INCREMENT | RW |
 | DESCRIPTION | RWO |
 | OBJECT_IDENTIFIER | R |
 | OBJECT_NAME | RW |
@@ -1332,7 +1345,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### OCTETSTRING_VALUE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
 
 | Property | Access |
@@ -1352,12 +1365,13 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### POSITIVE_INTEGER_VALUE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
+- Whole value set only by CreateObject: UNITS
 
 | Property | Access |
 |----------|--------|
-| COV_INCREMENT | RWO |
+| COV_INCREMENT | RW |
 | DESCRIPTION | RWO |
 | OBJECT_IDENTIFIER | R |
 | OBJECT_NAME | RW |
@@ -1374,7 +1388,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### TIMEPATTERN_VALUE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
 
 | Property | Access |
@@ -1394,7 +1408,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 #### TIME_VALUE
 
-- Createable: false
+- Createable: true
 - Deleteable: true
 
 | Property | Access |
@@ -1488,7 +1502,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 | Property | Access |
 |----------|--------|
-| COV_INCREMENT | RWO |
+| COV_INCREMENT | RW |
 | DESCRIPTION | RWO |
 | OBJECT_IDENTIFIER | R |
 | OBJECT_NAME | R |
@@ -1558,7 +1572,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | PROPERTY_LIST | R |
 | APDU_LENGTH | R |
 | CHANGES_PENDING | R |
-| LINK_SPEED | RO |
+| LINK_SPEED | R |
 | MAC_ADDRESS | R |
 | NETWORK_NUMBER | R |
 | NETWORK_NUMBER_QUALITY | R |
@@ -1656,7 +1670,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 
 | Property | Access |
 |----------|--------|
-| COV_INCREMENT | RWO |
+| COV_INCREMENT | RW |
 | DESCRIPTION | RWO |
 | EVENT_STATE | R |
 | MAX_PRES_VALUE | R |

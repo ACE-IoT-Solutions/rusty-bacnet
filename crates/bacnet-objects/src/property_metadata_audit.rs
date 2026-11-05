@@ -1,16 +1,17 @@
 //! Workspace-wide property-metadata exactness audit: issue #261 close-out.
 //!
-//! This test proves that no supported object type uses the trait fallback
-//! paths in `traits.rs` (empty `property_metadata` default, the universal-4
-//! `required_properties` default, the heuristic `is_writable_property`
-//! default). Every supported `ObjectType` gets one representative, and each
-//! representative must expose non-empty canonical metadata from which the
-//! GENERATED comparison surfaces (`required_properties`, `property_list`,
-//! `is_writable_property`) are exactly derived. Any fallback regression or
-//! required/optional drift fails this test.
+//! `property_metadata` is a required trait method (#2181), so every object
+//! supplies rows; this audit checks the built-in rows are complete and
+//! coherent. Every supported `ObjectType` gets one representative, and each
+//! representative must expose non-empty canonical metadata from which
+//! `is_writable_property` is exactly derived, and every row must read; the
+//! `property_list` submodule checks the served Property_List against the
+//! rows (#2197).
+//! Any missing, duplicated or unreadable row, or required/optional drift,
+//! fails this test. `property_metadata_tests` checks the other direction:
+//! no representative serves a property without a row.
 //!
-//! Deliberately out of scope (kept, not removed):
-//! - The fallback defaults themselves stay for downstream custom objects.
+//! Deliberately out of scope:
 //! - `NETWORK_SECURITY` (38) is deprecated (Clause 24 deleted) with no impl.
 //! - `WRITE_GROUP` is a service family, not an object type, so it is not an
 //!   `ObjectType` member at all.
@@ -37,6 +38,7 @@
 //! PICS/RPM-REQUIRED output and needs an owner compatibility decision first;
 //! do not "fix" a pin failure by editing the pins.
 
+use crate::property_metadata::is_writable_property;
 use std::collections::HashSet;
 
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
@@ -47,9 +49,7 @@ use bacnet_types::primitives::PropertyValue;
 use crate::catalogue::{representatives as supported_representatives, staging_config};
 use crate::file::FileObject;
 use crate::network_port::NetworkPortObject;
-use crate::property_metadata::{
-    PropertyConformance, PropertyPresenceCondition, required_properties_from_metadata,
-};
+use crate::property_metadata::{PropertyConformance, PropertyPresenceCondition};
 use crate::staging::StagingObject;
 use crate::traits::BACnetObject;
 
@@ -94,7 +94,7 @@ fn audit_every_supported_type_derives_from_canonical_metadata() {
         let object_type = object.object_identifier().object_type();
         let metadata = object.property_metadata();
 
-        // No supported type may use the empty-metadata fallback.
+        // Every supported type has rows.
         assert!(
             !metadata.is_empty(),
             "{object_type:?} must return non-empty canonical metadata"
@@ -105,52 +105,21 @@ fn audit_every_supported_type_derives_from_canonical_metadata() {
                 .any(|row| row.property_identifier == PropertyIdentifier::PROPERTY_LIST),
             "{object_type:?} metadata must contain PROPERTY_LIST"
         );
+        // The served-without-a-row sweep in `property_metadata_tests` tries
+        // every identifier a built-in row uses.
+        for row in metadata.iter() {
+            assert!(
+                crate::property_metadata_tests::is_swept(row.property_identifier),
+                "{object_type:?} row {:?} is outside the served-without-a-row sweep",
+                row.property_identifier
+            );
+        }
         let unique: HashSet<_> = metadata.iter().map(|row| row.property_identifier).collect();
         assert_eq!(
             unique.len(),
             metadata.len(),
             "{object_type:?} metadata identifiers must be unique"
         );
-
-        // GENERATED comparison surface: required set derives from R/W rows.
-        assert_eq!(
-            object.required_properties().as_ref(),
-            required_properties_from_metadata(metadata.as_ref()).as_ref(),
-            "{object_type:?} required_properties must equal the metadata derivation"
-        );
-
-        // GENERATED comparison surface: legacy list is metadata minus PL.
-        //
-        // One documented exception: Device preserves its legacy projection,
-        // which includes PROPERTY_LIST itself (`device/mod.rs`
-        // `property_list`). The deviation is contained: PICS (`pics/mod.rs`)
-        // and both RPM paths (`handlers/read_property.rs`,
-        // `handlers/rpm_budget.rs`) expand migrated objects from metadata
-        // directly, so the legacy list only serves direct `property_list()`
-        // callers. Pin the deviation exactly here; canonicalizing it is a
-        // production behavior change for a separate slice, not this audit.
-        if object_type == ObjectType::DEVICE {
-            let expected_with_pl: Vec<_> =
-                metadata.iter().map(|row| row.property_identifier).collect();
-            assert_eq!(
-                object.property_list().as_ref(),
-                expected_with_pl.as_slice(),
-                "{object_type:?} property_list must keep its pinned legacy projection"
-            );
-        } else {
-            let expected_list: Vec<_> = metadata
-                .iter()
-                .filter_map(|row| {
-                    (row.property_identifier != PropertyIdentifier::PROPERTY_LIST)
-                        .then_some(row.property_identifier)
-                })
-                .collect();
-            assert_eq!(
-                object.property_list().as_ref(),
-                expected_list.as_slice(),
-                "{object_type:?} property_list must equal metadata minus PROPERTY_LIST"
-            );
-        }
 
         // Every advertised row reads, and writability never drifts from dispatch.
         for row in metadata.iter() {
@@ -163,7 +132,7 @@ fn audit_every_supported_type_derives_from_canonical_metadata() {
                 row.property_identifier
             );
             assert_eq!(
-                object.is_writable_property(row.property_identifier),
+                is_writable_property(&**object, row.property_identifier),
                 row.write_capability.is_writable(),
                 "{object_type:?} is_writable must match {:?} write capability",
                 row.property_identifier
@@ -240,3 +209,9 @@ fn audit_event_time_stamps_classification_matches_clause_12() {
 mod unknown_writes;
 
 mod collection_classification;
+
+mod cov_reporting;
+
+mod property_list;
+
+mod value_type_equivalence;

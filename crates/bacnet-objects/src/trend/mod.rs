@@ -14,20 +14,20 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, StatusFlags, Time};
 
 use crate::clock::ClockReader;
-use crate::common::{self, read_property_list_property};
-use crate::log_buffer::{
-    LogBufferRecords, LogRecordBuffer, LogRecordIdentity, log_buffer_read_denied,
-};
+use crate::common;
+use crate::log_buffer::{LogRecordBuffer, log_buffer_read_denied};
 use crate::log_lifecycle::LogLifecycle;
 use crate::log_persistence::store::{DurableLog, LogStore};
 use crate::log_reporting::{BufferReadyReporting, impl_buffer_ready_reporting};
 use crate::log_window::LogWindow;
+use crate::property_metadata::read_property_list;
 use crate::traits::BACnetObject;
 use acquisition::{Acquisition, Rules};
-use cov_settings::CovSettings;
+pub(crate) use cov_settings::CovSettings;
 
 mod acquisition;
 mod cov_settings;
+mod creation_only;
 mod durable;
 mod metadata;
 mod multiple;
@@ -36,6 +36,7 @@ mod references;
 
 pub use acquisition::DEFAULT_LOG_INTERVAL;
 pub use cov_settings::DEFAULT_COV_RESUBSCRIPTION_INTERVAL;
+pub use creation_only::{CREATED_BUFFER_SIZE, MAX_CREATED_BUFFER_SIZE};
 pub use multiple::TrendLogMultipleObject;
 pub use references::MAX_LOG_DEVICE_OBJECT_PROPERTIES;
 
@@ -107,6 +108,15 @@ impl TrendLogObject {
         self.acquisition.acquired();
         self.commit_if_counted();
         Ok(())
+    }
+
+    /// Whether the log keeps the ordinary records it is given now: Enable is
+    /// TRUE and its Start_Time / Stop_Time window admitted the local time at
+    /// the last look. A Trend Log logging by COV starts over from the
+    /// current value when collection resumes, so the trend poller asks this
+    /// before each look (#1480).
+    pub(crate) fn collecting(&self) -> bool {
+        self.log_enable && self.window.is_open()
     }
 
     /// Get the current buffer contents.
@@ -193,9 +203,12 @@ impl TrendLogObject {
         self.log_buffer.clear();
     }
 
-    /// Set the description string.
+    /// Set the description string. On a log with storage, a Description a
+    /// write saved wins until `clear_written_reporting` (#2364).
     pub fn set_description(&mut self, desc: impl Into<String>) {
-        self.description = desc.into();
+        if !self.kept_over_setter(PropertyIdentifier::DESCRIPTION) {
+            self.description = desc.into();
+        }
     }
 
     /// Set Log_DeviceObjectProperty, the property the log samples, as local
@@ -268,17 +281,31 @@ impl TrendLogObject {
     /// value's changes to (Clause 12.25.11). `None`, NULL, uses the
     /// referenced property's own criteria: the object's COV_Increment for a
     /// numeric Present_Value, any change otherwise. An increment that is
-    /// negative or not finite is PROPERTY / VALUE_OUT_OF_RANGE.
+    /// negative or not finite is PROPERTY / VALUE_OUT_OF_RANGE. On a log
+    /// with storage, a value a write set wins: the argument is checked but
+    /// not taken (see [`clear_written_reporting`](Self::clear_written_reporting)).
     pub fn set_client_cov_increment(&mut self, increment: Option<f32>) -> Result<(), Error> {
-        self.cov.set_client_cov_increment(increment)
+        let mut cov = self.cov;
+        cov.set_client_cov_increment(increment)?;
+        if !self.kept_over_setter(PropertyIdentifier::CLIENT_COV_INCREMENT) {
+            self.cov = cov;
+        }
+        Ok(())
     }
 
     /// Set COV_Resubscription_Interval in seconds (Clause 12.25.10); zero is
     /// PROPERTY / VALUE_OUT_OF_RANGE. It is stored and served, but unused
     /// until the log subscribes to another device's property, which it
-    /// doesn't yet: COV logging follows this device's properties only.
+    /// doesn't yet: COV logging follows this device's properties only. A
+    /// value a write set wins as for
+    /// [`set_client_cov_increment`](Self::set_client_cov_increment).
     pub fn set_cov_resubscription_interval(&mut self, seconds: u32) -> Result<(), Error> {
-        self.cov.set_resubscription_interval(seconds)
+        let mut cov = self.cov;
+        cov.set_resubscription_interval(seconds)?;
+        if !self.kept_over_setter(PropertyIdentifier::COV_RESUBSCRIPTION_INTERVAL) {
+            self.cov = cov;
+        }
+        Ok(())
     }
 
     /// Set Start_Time, the local date and time from which records are kept,
@@ -328,20 +355,29 @@ impl TrendLogObject {
     }
 
     /// Set Notification_Class: the number of the Notification Class whose
-    /// recipients get the log's reports (0 by default).
+    /// recipients get the log's reports (0 by default). On a log with
+    /// storage, a value a write set wins (see
+    /// [`clear_written_reporting`](Self::clear_written_reporting)), as it
+    /// does for the next two setters.
     pub fn set_notification_class(&mut self, class: u32) {
-        self.reporting.set_notification_class(class);
+        if !self.kept_over_setter(PropertyIdentifier::NOTIFICATION_CLASS) {
+            self.reporting.set_notification_class(class);
+        }
     }
 
     /// Set Event_Enable; a report goes out only while its TO_NORMAL flag is
     /// set, as it is by default.
     pub fn set_event_enable(&mut self, enable: EventTransitionBits) {
-        self.reporting.set_event_enable(enable);
+        if !self.kept_over_setter(PropertyIdentifier::EVENT_ENABLE) {
+            self.reporting.set_event_enable(enable);
+        }
     }
 
     /// Set Notify_Type, sent with each report (EVENT by default).
     pub fn set_notify_type(&mut self, notify_type: NotifyType) {
-        self.reporting.set_notify_type(notify_type);
+        if !self.kept_over_setter(PropertyIdentifier::NOTIFY_TYPE) {
+            self.reporting.set_notify_type(notify_type);
+        }
     }
 
     fn lifecycle(&mut self) -> LogLifecycle<'_, BACnetLogRecord> {
@@ -370,6 +406,7 @@ impl BACnetObject for TrendLogObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // Logging_Type, Log_Interval, Align_Intervals, Interval_Offset and
         // Trigger, then Start_Time and Stop_Time.
         if let Some(value) = self
@@ -423,7 +460,7 @@ impl BACnetObject for TrendLogObject {
             p if p == PropertyIdentifier::RELIABILITY => {
                 Ok(PropertyValue::Enumerated(self.reliability.to_raw()))
             }
-            // ReadRange pages it through `log_buffer_internal`.
+            // ReadRange pages it through `LogBuffer::buffer_records`.
             p if p == PropertyIdentifier::LOG_BUFFER => Err(log_buffer_read_denied()),
             // The Clause 21 encoding; while no reference is set, the empty
             // element a Trend Log Multiple grows by (#1417).
@@ -434,7 +471,7 @@ impl BACnetObject for TrendLogObject {
                 ))
             }
             p if p == PropertyIdentifier::PROPERTY_LIST => {
-                read_property_list_property(&self.property_list(), array_index)
+                read_property_list(&self.property_metadata(), array_index)
             }
             _ => Err(Error::protocol(
                 ErrorClass::PROPERTY,
@@ -450,6 +487,13 @@ impl BACnetObject for TrendLogObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        // A reporting setting a durable log keeps saves first (#1952).
+        if let Some(result) =
+            crate::log_persistence::store::staging::write(self, property, array_index, &value)
+        {
+            return result;
+        }
         if property == PropertyIdentifier::LOG_ENABLE {
             if let PropertyValue::Boolean(v) = value {
                 return self.lifecycle().write_enable(v);
@@ -517,7 +561,6 @@ impl BACnetObject for TrendLogObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
@@ -525,48 +568,45 @@ impl BACnetObject for TrendLogObject {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
-
-    fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
-        self.clock = clock;
-        self.settle_interruption(None);
-    }
-
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
         self.store.is_some().then_some(self as _)
     }
 
-    fn advance_monotonic_time_internal(&mut self, now: core::time::Duration) -> bool {
+    crate::traits::lend_log_buffer!();
+
+    crate::traits::lend_event_reporting!();
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
+    }
+}
+
+impl crate::creation::Creatable for TrendLogObject {
+    const CREATION_ONLY_PROPERTIES: &'static [PropertyIdentifier] = creation_only::CREATION_ONLY;
+
+    fn initialize_property(
+        &mut self,
+        property: PropertyIdentifier,
+        value: PropertyValue,
+    ) -> Result<(), Error> {
+        creation_only::initialize(self, property, value)
+    }
+}
+
+impl_buffer_ready_reporting!(TrendLogObject, reporting, log_buffer);
+crate::traits::impl_log_buffer!(TrendLogObject, add_trend_record, BACnetLogRecord);
+
+impl crate::traits::Timed for TrendLogObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.clock = clocks.clock.clone();
+        self.settle_interruption(None);
+    }
+
+    fn advance_monotonic_time(&mut self, now: core::time::Duration) -> bool {
         self.commit_if_interval(now);
         false
     }
-
-    fn log_record_identities_internal(&self) -> Option<Vec<LogRecordIdentity>> {
-        Some(self.log_buffer.identities())
-    }
-
-    fn log_buffer_internal(&self) -> Option<&dyn LogBufferRecords> {
-        Some(&self.log_buffer)
-    }
-
-    fn add_trend_record(&mut self, record: BACnetLogRecord) -> Result<(), Error> {
-        self.add_record(record)
-    }
-
-    fn refresh_log_window_internal(&mut self) -> bool {
-        self.settle_interruption(None);
-        let recorded = self.lifecycle().refresh_window();
-        self.commit_if_counted();
-        recorded
-    }
-
-    fn log_collecting_internal(&self) -> bool {
-        self.log_enable && self.window.is_open()
-    }
-
-    impl_buffer_ready_reporting!(reporting, log_buffer);
 }
 
 #[cfg(test)]

@@ -46,8 +46,8 @@
 //! TRUE a client may write Tracking_Value and Reliability instead (#1108); see
 //! `out_of_service.rs` for how the simulated values interact with the rest of
 //! the object. Once a server holds the object, the application reaches
-//! Present_Value and Tracking_Value through `set_present_value_internal` and
-//! `set_tracking_value_internal` (#1123); `application.rs` records how that
+//! Present_Value and Tracking_Value through the object's `LocalInput`
+//! (#1123); `application.rs` records how that
 //! route meets latching, Silenced, the reset executor and Out_Of_Service.
 //!
 //! Accepted_Modes (Clauses 12.15.13 and 12.16.13) is the configured set of
@@ -62,7 +62,7 @@ use alloc::borrow::Cow;
 use bacnet_types::constructed::BACnetDeviceObjectReference;
 use bacnet_types::enums::{
     ErrorClass, ErrorCode, EventState, LifeSafetyMode, LifeSafetyOperation, LifeSafetyState,
-    ObjectType, PropertyIdentifier, Reliability, SilencedState,
+    Maintenance, ObjectType, PropertyIdentifier, Reliability, SilencedState,
 };
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue, StatusFlags};
@@ -85,13 +85,32 @@ pub use reset::{
     LifeSafetyZoneResetExecutor,
 };
 
-/// Whether a state is one BACnetLifeSafetyState defines or one from the
-/// proprietary range 256..=65535 (Clause 21).
+/// Whether `value` (raw `raw`) is one of the enumeration's `named` values or
+/// from the proprietary range 256..=65535, which BACnetLifeSafetyState and
+/// BACnetMaintenance share (Clause 21).
+fn named_or_proprietary<T: PartialEq>(value: T, raw: u32, named: &[(&str, T)]) -> bool {
+    named.iter().any(|(_, standard)| *standard == value) || (256..=65_535).contains(&raw)
+}
+
+/// Whether a state is one BACnetLifeSafetyState defines or a proprietary one.
 fn valid_life_safety_state(state: LifeSafetyState) -> bool {
-    LifeSafetyState::ALL_NAMED
-        .iter()
-        .any(|&(_, named)| named == state)
-        || (256..=65_535).contains(&state.to_raw())
+    named_or_proprietary(state, state.to_raw(), LifeSafetyState::ALL_NAMED)
+}
+
+/// Decode a client's write of a Point's Maintenance_Required: an Enumerated
+/// holding a standard BACnetMaintenance or one from the proprietary range
+/// 256..=65535 (Clause 21). A reserved or larger number is VALUE_OUT_OF_RANGE
+/// and any other datatype, the BOOLEAN the Point once served among them,
+/// INVALID_DATA_TYPE.
+fn maintenance(value: &PropertyValue) -> Result<Maintenance, Error> {
+    let PropertyValue::Enumerated(raw) = value else {
+        return Err(common::invalid_data_type_error());
+    };
+    let maintenance = Maintenance::from_raw(*raw);
+    if !named_or_proprietary(maintenance, *raw, Maintenance::ALL_NAMED) {
+        return Err(common::value_out_of_range_error());
+    }
+    Ok(maintenance)
 }
 
 fn life_safety_error(code: ErrorCode) -> Error {
@@ -142,7 +161,7 @@ fn apply_silenced_operation(
 
 /// Properties a Point or Zone offers for property COV, in the order an
 /// operation outcome reports their deltas.
-const COV_PROPERTIES: [PropertyIdentifier; 5] = [
+pub const COV_PROPERTIES: [PropertyIdentifier; 5] = [
     PropertyIdentifier::PRESENT_VALUE,
     PropertyIdentifier::TRACKING_VALUE,
     PropertyIdentifier::SILENCED,
@@ -226,7 +245,7 @@ fn operation_outcome(
 /// Represents a single life-safety sensor or detector (e.g. smoke detector,
 /// pull station). Present_Value is an enumerated LifeSafetyState, set by the
 /// application via [`set_present_value`](Self::set_present_value), or through
-/// [`BACnetObject::set_present_value_internal`] once a server holds the point.
+/// its [`LocalInput`](crate::traits::LocalInput) once a server holds the point.
 pub struct LifeSafetyPointObject {
     oid: ObjectIdentifier,
     name: String,
@@ -247,8 +266,9 @@ pub struct LifeSafetyPointObject {
     member_of: Vec<BACnetDeviceObjectReference>,
     /// Raw sensor reading.
     direct_reading: f32,
-    /// Whether maintenance is required.
-    maintenance_required: bool,
+    /// Maintenance_Required: the kind of maintenance the point needs
+    /// (Clause 12.15.25), a BACnetMaintenance.
+    maintenance_required: Maintenance,
     /// Event_State.
     event_state: EventState,
     status_flags: StatusFlags,
@@ -282,7 +302,7 @@ impl LifeSafetyPointObject {
             tracking_value: LifeSafetyState::QUIET,
             member_of: Vec::new(),
             direct_reading: 0.0,
-            maintenance_required: false,
+            maintenance_required: Maintenance::NONE,
             event_state: EventState::NORMAL,
             status_flags: StatusFlags::empty(),
             out_of_service: false,
@@ -362,6 +382,13 @@ impl LifeSafetyPointObject {
         self.description = desc.into();
     }
 
+    /// Set Maintenance_Required, the kind of maintenance the point needs,
+    /// which the standard leaves to local logic (Clause 12.15.25). It starts
+    /// as `Maintenance::NONE`. Unlike a network write, this takes any value.
+    pub fn set_maintenance_required(&mut self, maintenance: Maintenance) {
+        self.maintenance_required = maintenance;
+    }
+
     /// Add a zone to Member_Of: a Life Safety Zone, in this device (an
     /// `ObjectIdentifier` converts) or in the device the reference names.
     ///
@@ -390,6 +417,7 @@ impl BACnetObject for LifeSafetyPointObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = read_common_properties!(self, property, array_index) {
             return result;
         }
@@ -417,9 +445,9 @@ impl BACnetObject for LifeSafetyPointObject {
             p if p == PropertyIdentifier::DIRECT_READING => {
                 Ok(PropertyValue::Real(self.direct_reading))
             }
-            p if p == PropertyIdentifier::MAINTENANCE_REQUIRED => {
-                Ok(PropertyValue::Boolean(self.maintenance_required))
-            }
+            p if p == PropertyIdentifier::MAINTENANCE_REQUIRED => Ok(PropertyValue::Enumerated(
+                self.maintenance_required.to_raw(),
+            )),
             p if p == PropertyIdentifier::EVENT_STATE => {
                 Ok(PropertyValue::Enumerated(self.event_state.to_raw()))
             }
@@ -430,10 +458,11 @@ impl BACnetObject for LifeSafetyPointObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         // Present value is read-only via protocol
         if property == PropertyIdentifier::PRESENT_VALUE {
             return Err(common::write_access_denied_error());
@@ -455,11 +484,8 @@ impl BACnetObject for LifeSafetyPointObject {
             return Err(common::invalid_data_type_error());
         }
         if property == PropertyIdentifier::MAINTENANCE_REQUIRED {
-            if let PropertyValue::Boolean(v) = value {
-                self.maintenance_required = v;
-                return Ok(());
-            }
-            return Err(common::invalid_data_type_error());
+            self.maintenance_required = maintenance(&value)?;
+            return Ok(());
         }
         if let Some(result) = self.simulation().write(property, &value) {
             return result;
@@ -470,7 +496,6 @@ impl BACnetObject for LifeSafetyPointObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            _array_index,
         ))
     }
 
@@ -478,18 +503,51 @@ impl BACnetObject for LifeSafetyPointObject {
         metadata::for_point(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
+    crate::traits::lend_cov_reporting!();
+
+    crate::traits::lend_reliability_eval!();
+
+    fn local_input(&mut self) -> Option<&mut dyn crate::traits::LocalInput> {
+        Some(self)
     }
 
-    fn supports_cov(&self) -> bool {
-        true
+    fn life_safety(&mut self) -> Option<&mut dyn crate::traits::LifeSafety> {
+        Some(self)
     }
+}
 
+impl crate::traits::CovReporting for LifeSafetyPointObject {
     fn supports_cov_property(&self, property: PropertyIdentifier) -> bool {
         COV_PROPERTIES.contains(&property)
     }
+}
 
+impl crate::traits::ReliabilityEval for LifeSafetyPointObject {
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
+        self.simulation().set_reliability(reliability)
+    }
+}
+
+/// The Present_Value and Tracking_Value the application supplies, a
+/// BACnetLifeSafetyState each.
+impl crate::traits::LocalInput for LifeSafetyPointObject {
+    fn apply_local_input(&mut self, input: crate::traits::LocalInputValue) -> Result<(), Error> {
+        match input {
+            crate::traits::LocalInputValue::PresentValue { value, .. } => {
+                self.present_value = application::life_safety_state(&value)?;
+                Ok(())
+            }
+            crate::traits::LocalInputValue::TrackingValue(value) => {
+                let state = application::life_safety_state(&value)?;
+                self.set_tracking_value(state);
+                Ok(())
+            }
+            _ => Err(crate::traits::not_supported()),
+        }
+    }
+}
+
+impl crate::traits::LifeSafety for LifeSafetyPointObject {
     fn apply_life_safety_operation(
         &mut self,
         operation: LifeSafetyOperation,
@@ -510,26 +568,11 @@ impl BACnetObject for LifeSafetyPointObject {
         Ok(operation_outcome(self, before, effect))
     }
 
-    fn set_life_safety_operation_expected_internal(
+    fn set_life_safety_operation_expected(
         &mut self,
         operation: LifeSafetyOperation,
     ) -> Result<(), Error> {
         self.set_operation_expected(operation);
-        Ok(())
-    }
-
-    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
-        self.simulation().set_reliability(reliability)
-    }
-
-    fn set_present_value_internal(&mut self, value: PropertyValue) -> Result<(), Error> {
-        self.present_value = application::life_safety_state(&value)?;
-        Ok(())
-    }
-
-    fn set_tracking_value_internal(&mut self, value: PropertyValue) -> Result<(), Error> {
-        let state = application::life_safety_state(&value)?;
-        self.set_tracking_value(state);
         Ok(())
     }
 }
@@ -544,7 +587,7 @@ impl BACnetObject for LifeSafetyPointObject {
 /// Present_Value is an enumerated LifeSafetyState, set by the application
 /// (typically the worst-case state among zone members) via
 /// [`set_present_value`](Self::set_present_value), or through
-/// [`BACnetObject::set_present_value_internal`] once a server holds the zone.
+/// its [`LocalInput`](crate::traits::LocalInput) once a server holds the zone.
 pub struct LifeSafetyZoneObject {
     oid: ObjectIdentifier,
     name: String,
@@ -714,6 +757,7 @@ impl BACnetObject for LifeSafetyZoneObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = read_common_properties!(self, property, array_index) {
             return result;
         }
@@ -749,10 +793,11 @@ impl BACnetObject for LifeSafetyZoneObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         // Present value is read-only via protocol
         if property == PropertyIdentifier::PRESENT_VALUE {
             return Err(common::write_access_denied_error());
@@ -774,7 +819,6 @@ impl BACnetObject for LifeSafetyZoneObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            _array_index,
         ))
     }
 
@@ -782,18 +826,51 @@ impl BACnetObject for LifeSafetyZoneObject {
         metadata::for_zone(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
+    crate::traits::lend_cov_reporting!();
+
+    crate::traits::lend_reliability_eval!();
+
+    fn local_input(&mut self) -> Option<&mut dyn crate::traits::LocalInput> {
+        Some(self)
     }
 
-    fn supports_cov(&self) -> bool {
-        true
+    fn life_safety(&mut self) -> Option<&mut dyn crate::traits::LifeSafety> {
+        Some(self)
     }
+}
 
+impl crate::traits::CovReporting for LifeSafetyZoneObject {
     fn supports_cov_property(&self, property: PropertyIdentifier) -> bool {
         COV_PROPERTIES.contains(&property)
     }
+}
 
+impl crate::traits::ReliabilityEval for LifeSafetyZoneObject {
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
+        self.simulation().set_reliability(reliability)
+    }
+}
+
+/// The Present_Value and Tracking_Value the application supplies, a
+/// BACnetLifeSafetyState each.
+impl crate::traits::LocalInput for LifeSafetyZoneObject {
+    fn apply_local_input(&mut self, input: crate::traits::LocalInputValue) -> Result<(), Error> {
+        match input {
+            crate::traits::LocalInputValue::PresentValue { value, .. } => {
+                self.present_value = application::life_safety_state(&value)?;
+                Ok(())
+            }
+            crate::traits::LocalInputValue::TrackingValue(value) => {
+                let state = application::life_safety_state(&value)?;
+                self.set_tracking_value(state);
+                Ok(())
+            }
+            _ => Err(crate::traits::not_supported()),
+        }
+    }
+}
+
+impl crate::traits::LifeSafety for LifeSafetyZoneObject {
     fn apply_life_safety_operation(
         &mut self,
         operation: LifeSafetyOperation,
@@ -814,26 +891,11 @@ impl BACnetObject for LifeSafetyZoneObject {
         Ok(operation_outcome(self, before, effect))
     }
 
-    fn set_life_safety_operation_expected_internal(
+    fn set_life_safety_operation_expected(
         &mut self,
         operation: LifeSafetyOperation,
     ) -> Result<(), Error> {
         self.set_operation_expected(operation);
-        Ok(())
-    }
-
-    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
-        self.simulation().set_reliability(reliability)
-    }
-
-    fn set_present_value_internal(&mut self, value: PropertyValue) -> Result<(), Error> {
-        self.present_value = application::life_safety_state(&value)?;
-        Ok(())
-    }
-
-    fn set_tracking_value_internal(&mut self, value: PropertyValue) -> Result<(), Error> {
-        let state = application::life_safety_state(&value)?;
-        self.set_tracking_value(state);
         Ok(())
     }
 }
@@ -862,3 +924,6 @@ mod application_tests;
 
 #[cfg(test)]
 mod membership_tests;
+
+#[cfg(test)]
+mod maintenance_tests;

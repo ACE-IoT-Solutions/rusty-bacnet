@@ -1,3 +1,4 @@
+use crate::property_metadata::{is_array_property, is_writable_property};
 use bacnet_types::bitstring::{AuditOperationFlags, BACnetPriorityFilter};
 use bacnet_types::constructed::BACnetObjectSelector as Selector;
 use bacnet_types::enums::{
@@ -29,18 +30,11 @@ fn assert_write_access_denied(error: Error) {
 fn audit_reporter_configuration_hook_is_opt_in_and_atomic() {
     let operations = AuditOperationFlags::from_bits((1 << 1) | (1 << 63)).unwrap();
     let mut other = crate::binary::BinaryValueObject::new(1, "Other").unwrap();
-    assert!(other.audit_reporter_internal().is_none());
-    assert!(matches!(
-        other.configure_audit_reporter_internal(
-            AuditLevel::AUDIT_ALL, operations, true, None, BACnetPriorityFilter::all(),
-         None,),
-        Err(Error::Remote(RemoteError::Error { class, code }))
-            if class == ErrorClass::OBJECT
-                && code == ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED
-    ));
+    assert!(other.audit_reporter().is_none());
+    assert!(other.audit_reporter_mut().is_none());
 
     let mut object: Box<dyn BACnetObject> = Box::new(AuditReporterObject::new(1, "AR").unwrap());
-    let reporter = object.audit_reporter_internal().unwrap();
+    let reporter = object.audit_reporter().unwrap();
     assert!(
         reporter
             .configuration_internal()
@@ -59,7 +53,9 @@ fn audit_reporter_configuration_hook_is_opt_in_and_atomic() {
     ];
     let priorities = BACnetPriorityFilter::from_bits(1 << 7);
     object
-        .configure_audit_reporter_internal(
+        .audit_reporter_mut()
+        .expect("an Audit Reporter")
+        .configure(
             AuditLevel::AUDIT_ALL,
             operations,
             true,
@@ -82,7 +78,9 @@ fn audit_reporter_configuration_hook_is_opt_in_and_atomic() {
         .collect();
     assert!(
         object
-            .configure_audit_reporter_internal(
+            .audit_reporter_mut()
+            .expect("an Audit Reporter")
+            .configure(
                 AuditLevel::DEFAULT,
                 AuditOperationFlags::empty(),
                 false,
@@ -95,7 +93,7 @@ fn audit_reporter_configuration_hook_is_opt_in_and_atomic() {
     for (&property, expected) in properties.iter().zip(before) {
         assert_eq!(object.read_property(property, None).unwrap(), expected);
     }
-    let reporter = object.audit_reporter_internal().unwrap();
+    let reporter = object.audit_reporter().unwrap();
     assert_eq!(
         reporter.configuration_internal().auditable_operations,
         operations
@@ -113,7 +111,9 @@ fn audit_reporter_configuration_hook_is_opt_in_and_atomic() {
     assert!(reporter.reports_write_internal(PropertyIdentifier::PRESENT_VALUE, Some(8)));
     assert!(!reporter.reports_write_internal(PropertyIdentifier::PRESENT_VALUE, Some(16)));
     object
-        .configure_audit_reporter_internal(
+        .audit_reporter_mut()
+        .expect("an Audit Reporter")
+        .configure(
             AuditLevel::NONE,
             AuditOperationFlags::empty(),
             false,
@@ -122,7 +122,7 @@ fn audit_reporter_configuration_hook_is_opt_in_and_atomic() {
             None,
         )
         .unwrap();
-    let reporter = object.audit_reporter_internal().unwrap();
+    let reporter = object.audit_reporter().unwrap();
     assert_eq!(
         reporter.configuration_internal().audit_level,
         AuditLevel::NONE
@@ -177,7 +177,10 @@ fn audit_reporter_auditing_failure_filter_invalidates_pending_epoch() {
 #[test]
 fn audit_reporter_monitored_objects_is_an_optional_array_even_when_absent() {
     let reporter = AuditReporterObject::new(1, "AR").unwrap();
-    assert!(reporter.is_array_property(PropertyIdentifier::MONITORED_OBJECTS));
+    assert!(is_array_property(
+        &reporter,
+        PropertyIdentifier::MONITORED_OBJECTS
+    ));
     for index in [None, Some(0), Some(1)] {
         assert!(matches!(
             reporter.read_property(PropertyIdentifier::MONITORED_OBJECTS, index),
@@ -186,17 +189,16 @@ fn audit_reporter_monitored_objects_is_an_optional_array_even_when_absent() {
                     && code == ErrorCode::UNKNOWN_PROPERTY
         ));
     }
-    assert!(
-        !reporter
-            .property_list()
-            .contains(&PropertyIdentifier::MONITORED_OBJECTS)
-    );
+    assert!(!crate::property_metadata::has_property(
+        &reporter.property_metadata(),
+        PropertyIdentifier::MONITORED_OBJECTS
+    ));
 }
 
 #[test]
 fn audit_reporter_monitored_objects_local_configuration_and_removal_are_truthful() {
     let mut reporter = AuditReporterObject::new(1, "AR").unwrap();
-    let required = reporter.required_properties().into_owned();
+    let required = crate::test_rows::required(&reporter.property_metadata());
     let original = reporter.property_metadata().into_owned();
     let selected = ObjectIdentifier::new(ObjectType::BINARY_VALUE, 42).unwrap();
     let other = ObjectIdentifier::new(ObjectType::BINARY_VALUE, 43).unwrap();
@@ -238,7 +240,10 @@ fn audit_reporter_monitored_objects_local_configuration_and_removal_are_truthful
             Err(Error::Remote(RemoteError::Error { class, code })) if class == ErrorClass::PROPERTY && code == ErrorCode::INVALID_ARRAY_INDEX)
         );
     }
-    assert_eq!(reporter.required_properties().as_ref(), required);
+    assert_eq!(
+        crate::test_rows::required(&reporter.property_metadata()),
+        required
+    );
     assert!(
         reporter
             .property_metadata()
@@ -276,11 +281,10 @@ fn audit_reporter_monitored_objects_local_configuration_and_removal_are_truthful
         reporter.set_monitored_objects(Some(selection)).unwrap();
         assert!(!reporter.monitors_object_internal(selected));
         assert!(!reporter.monitors_object_internal(input));
-        assert!(
-            reporter
-                .property_list()
-                .contains(&PropertyIdentifier::MONITORED_OBJECTS)
-        );
+        assert!(crate::property_metadata::has_property(
+            &reporter.property_metadata(),
+            PropertyIdentifier::MONITORED_OBJECTS
+        ));
         assert!(!reporter.monitors_object_internal(reporter.object_identifier()));
     }
     reporter.set_monitored_objects(None).unwrap();
@@ -419,7 +423,7 @@ fn audit_reporter_canonical_metadata_and_required_projection_are_complete() {
     );
     assert!(metadata.iter().all(|row| row.presence_condition.is_none()));
 
-    let required = reporter.required_properties();
+    let required = crate::test_rows::required(&reporter.property_metadata());
     assert_eq!(
         required.as_ref(),
         [
@@ -457,7 +461,10 @@ fn audit_reporter_property_list_preserves_bacnet_array_projection() {
         PropertyIdentifier::AUDIT_PRIORITY_FILTER,
         PropertyIdentifier::ISSUE_CONFIRMED_NOTIFICATIONS,
     ];
-    assert_eq!(reporter.property_list().as_ref(), supported);
+    assert_eq!(
+        crate::test_rows::listed(&reporter.property_metadata()),
+        crate::test_rows::listed_from(&supported)
+    );
 
     let projected = supported
         .into_iter()
@@ -622,21 +629,28 @@ fn audit_reporter_network_writes_to_new_properties_are_denied_without_mutation()
             .unwrap_err();
         assert_write_access_denied(error);
         assert_eq!(read(&reporter, property), before);
-        assert!(!reporter.is_writable_property(property));
+        assert!(!is_writable_property(&reporter, property));
     }
 }
 
 #[test]
 fn audit_reporter_description_write_and_metadata_remain_compatible() {
     let mut reporter = AuditReporterObject::new(1, "AR-1").unwrap();
-    assert!(reporter.is_writable_property(PropertyIdentifier::DESCRIPTION));
-    for property in reporter.property_list().iter().copied() {
+    assert!(is_writable_property(
+        &reporter,
+        PropertyIdentifier::DESCRIPTION
+    ));
+    let rows = reporter.property_metadata().into_owned();
+    for property in rows.iter().map(|row| row.property_identifier) {
         assert_eq!(
-            reporter.is_writable_property(property),
+            is_writable_property(&reporter, property),
             property == PropertyIdentifier::DESCRIPTION
         );
     }
-    assert!(!reporter.is_writable_property(PropertyIdentifier::PROPERTY_LIST));
+    assert!(!is_writable_property(
+        &reporter,
+        PropertyIdentifier::PROPERTY_LIST
+    ));
 
     reporter
         .write_property(

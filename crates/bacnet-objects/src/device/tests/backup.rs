@@ -1,4 +1,5 @@
 use super::*;
+use crate::property_metadata::is_array_property;
 use bacnet_types::error::RemoteError;
 use bacnet_types::primitives::BACnetTimeStamp;
 
@@ -59,7 +60,10 @@ fn a_device_without_backup_has_no_backup_properties() {
     let mut device = make_device();
 
     for property in BACKUP_PROPERTIES {
-        assert!(!device.property_list().contains(&property), "{property:?}");
+        assert!(
+            !crate::property_metadata::has_property(&device.property_metadata(), property),
+            "{property:?}"
+        );
         assert_property_error(
             device.read_property(property, None),
             ErrorCode::UNKNOWN_PROPERTY,
@@ -76,7 +80,10 @@ fn a_backup_device_serves_the_backup_properties() {
     let device = backup_device();
 
     for property in BACKUP_PROPERTIES {
-        assert!(device.property_list().contains(&property), "{property:?}");
+        assert!(
+            crate::property_metadata::has_property(&device.property_metadata(), property),
+            "{property:?}"
+        );
     }
     assert_eq!(
         device
@@ -125,7 +132,10 @@ fn configuration_files_reads_as_an_array() {
         PropertyValue::ObjectIdentifier(file(2))
     );
     assert_property_error(read(Some(3)), ErrorCode::INVALID_ARRAY_INDEX);
-    assert!(device.is_array_property(PropertyIdentifier::CONFIGURATION_FILES));
+    assert!(is_array_property(
+        &device,
+        PropertyIdentifier::CONFIGURATION_FILES
+    ));
 }
 
 #[test]

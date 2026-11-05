@@ -57,6 +57,8 @@ mod read_access;
 pub use read_access::{PropertyReference, ReadAccessSpecification};
 mod staging;
 pub use staging::BACnetStageLimitValue;
+mod timer;
+pub use timer::BACnetTimerStateChangeValue;
 
 // ---------------------------------------------------------------------------
 // BACnetDateRange (Clause 21 -- used by CalendarEntry and BACnetSpecialEvent)
@@ -335,13 +337,24 @@ pub fn device_identifier_is_device(device: Option<ObjectIdentifier>) -> bool {
 // ---------------------------------------------------------------------------
 
 /// A BACnet network address: network number (0 = local) plus MAC address.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct BACnetAddress {
     /// Network number (0 = local network, 1-65534 = remote, 65535 = broadcast).
     pub network_number: u16,
     /// MAC-layer address (variable length, at most [`Self::MAX_MAC_LEN`] on the
     /// wire; empty = broadcast).
     pub mac_address: MacAddr,
+}
+
+// By hand: a derived clone copies the MAC a byte at a time, and every
+// command written over the network clones its writer's address (#2342).
+impl Clone for BACnetAddress {
+    fn clone(&self) -> Self {
+        Self {
+            network_number: self.network_number,
+            mac_address: MacAddr::from_slice(&self.mac_address),
+        }
+    }
 }
 
 impl BACnetAddress {

@@ -119,11 +119,18 @@ mod tests {
                 let unique: HashSet<_> =
                     metadata.iter().map(|row| row.property_identifier).collect();
                 assert_eq!(unique.len(), metadata.len());
-                assert_eq!(object.property_list().as_ref(), all);
-                assert_eq!(object.required_properties().as_ref(), required);
-                assert!(!object.is_createable());
-                assert!(object.is_deleteable());
-                assert!(!object.supports_cov());
+                assert_eq!(
+                    crate::test_rows::listed(&object.property_metadata()),
+                    crate::test_rows::listed_from(&all)
+                );
+                assert_eq!(
+                    crate::test_rows::required(&object.property_metadata()),
+                    required
+                );
+                assert!(crate::creation::builtin_deleteable(
+                    object.object_identifier().object_type()
+                ));
+                assert!(!object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
                 for row in metadata.iter() {
                     let p = row.property_identifier;
                     assert_eq!(row.presence_condition, None);
@@ -193,7 +200,11 @@ mod tests {
                         if writable { Always } else { ReadOnly },
                         "{p:?}"
                     );
-                    assert_eq!(object.is_writable_property(p), writable, "{p:?}");
+                    assert_eq!(
+                        crate::property_metadata::is_writable_property(&object, p),
+                        writable,
+                        "{p:?}"
+                    );
                     let value = if matches!(p, P::FILE_SIZE | P::RECORD_COUNT) {
                         PropertyValue::Unsigned(2)
                     } else {
@@ -217,10 +228,10 @@ mod tests {
                     P::RELIABILITY,
                     P::OUT_OF_SERVICE,
                 ] {
-                    if object.property_list().contains(&p) {
+                    if crate::property_metadata::has_property(&object.property_metadata(), p) {
                         continue;
                     }
-                    assert!(!object.is_writable_property(p));
+                    assert!(!crate::property_metadata::is_writable_property(&object, p));
                     assert_error(
                         object.read_property(p, None).unwrap_err(),
                         ErrorCode::UNKNOWN_PROPERTY,
@@ -236,3 +247,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "metadata_rows_tests.rs"]
+mod rows_tests;

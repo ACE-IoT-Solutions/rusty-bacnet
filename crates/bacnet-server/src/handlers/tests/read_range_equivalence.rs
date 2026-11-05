@@ -7,6 +7,7 @@
 //! timestamps, a clock set back and timestamps that aren't actual moments,
 //! both must give the same bytes or the same error for every request. An
 //! Audit Log ring whose numbers skip falls back to the search.
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_types::error::RemoteError;
 use std::collections::VecDeque;
 use std::ops::Range;
@@ -109,21 +110,34 @@ fn empty_log(family: LogFamily, capacity: u32, total: u32) -> Box<dyn BACnetObje
 
 fn add(object: &mut dyn BACnetObject, family: LogFamily, (date, time): (Date, Time)) {
     match family {
-        LogFamily::Trend => object.add_trend_record(BACnetLogRecord {
-            date,
-            time,
-            ..record(1)
-        }),
-        LogFamily::Event => object.add_event_log_record(BACnetEventLogRecord {
-            date,
-            time,
-            ..event_record(1)
-        }),
-        LogFamily::TrendMultiple => object.add_trend_multiple_record(BACnetLogMultipleRecord {
-            date,
-            time,
-            ..multiple_record(1)
-        }),
+        LogFamily::Trend => object
+            .log_buffer_mut()
+            .unwrap()
+            .add_trend_record(BACnetLogRecord {
+                date,
+                time,
+                ..record(1)
+            }),
+        LogFamily::Event => {
+            object
+                .log_buffer_mut()
+                .unwrap()
+                .add_event_log_record(BACnetEventLogRecord {
+                    date,
+                    time,
+                    ..event_record(1)
+                })
+        }
+        LogFamily::TrendMultiple => {
+            object
+                .log_buffer_mut()
+                .unwrap()
+                .add_trend_multiple_record(BACnetLogMultipleRecord {
+                    date,
+                    time,
+                    ..multiple_record(1)
+                })
+        }
     }
     .unwrap();
 }
@@ -147,7 +161,9 @@ fn random_log(rng: &mut Rng, family: LogFamily) -> Box<dyn BACnetObject> {
         };
         if rng.below(40) == 0 {
             let at = stamp(rng, clock);
-            object.bind_clock_internal(Some(Arc::new(Clock(at))));
+            object.timed().unwrap().bind_clocks(
+                &bacnet_objects::traits::Clocks::default().with_clock(Some(Arc::new(Clock(at)))),
+            );
             // A purge needs a clock that reads an actual moment.
             let _ = object.write_property(
                 PropertyIdentifier::RECORD_COUNT,
@@ -167,7 +183,8 @@ fn random_log(rng: &mut Rng, family: LogFamily) -> Box<dyn BACnetObject> {
 /// Total_Record_Count once per newer record.
 fn stepped_identities(object: &dyn BACnetObject) -> Vec<Identity> {
     let timestamps: Vec<_> = object
-        .log_record_identities_internal()
+        .log_buffer()
+        .map(|log| log.record_identities())
         .unwrap()
         .iter()
         .map(|identity| (identity.date(), identity.time()))
@@ -226,10 +243,10 @@ fn civil(date: Date, time: Time) -> Option<(u16, u8, u8, u8, u8, u8, u8)> {
 
 /// Append item `index` of `object`'s Log_Buffer to `buf`.
 fn encode_item(object: &dyn BACnetObject, index: usize, buf: &mut BytesMut) {
-    match object.log_buffer_internal() {
+    match object.log_buffer().and_then(|log| log.buffer_records()) {
         Some(records) => records.encode_record(index, buf),
         None => {
-            let ring = object.audit_log_storage_internal().unwrap();
+            let ring = object.audit_log().map(|log| log.storage()).unwrap();
             encode_audit_log_record(&ring.retained_records()[index].record, buf).unwrap();
         }
     }
@@ -449,7 +466,10 @@ fn sequence_and_time_reads_match_the_walk_over_random_logs() {
         for seed in 0..64 {
             let mut rng = Rng(seed);
             let object = random_log(&mut rng, family);
-            let records = object.log_buffer_internal().unwrap();
+            let records = object
+                .log_buffer()
+                .and_then(|log| log.buffer_records())
+                .unwrap();
             orders.push((records.record_count() > 1, records.timestamp_order()));
             let identities = stepped_identities(object.as_ref());
             if identities.windows(2).any(|pair| pair[1].0 < pair[0].0) {
@@ -530,12 +550,22 @@ impl BACnetObject for OddAuditRing {
         unreachable!("ReadRange is read-only")
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[PropertyIdentifier::LOG_BUFFER])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[PropertyIdentifier::LOG_BUFFER])
     }
 
-    fn audit_log_storage_internal(&self) -> Option<&dyn AuditLogStorage> {
+    fn audit_log(&self) -> Option<&dyn bacnet_objects::traits::AuditLog> {
         Some(self)
+    }
+
+    fn audit_log_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::AuditLog> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::AuditLog for OddAuditRing {
+    fn storage(&self) -> &dyn AuditLogStorage {
+        self
     }
 }
 

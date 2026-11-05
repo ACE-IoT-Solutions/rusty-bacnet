@@ -142,7 +142,7 @@ pub(super) fn assert_rpm_selector_bytes(
     handle_read_property_multiple(db, &encode_request(expected), &mut explicit_ack).unwrap();
     assert_eq!(legacy, explicit_ack);
     let mut bounded = BytesMut::new();
-    let budget = crate::server::ReadPropertyMultipleBudget {
+    let budget = bacnet_device_core::read::ReadPropertyMultipleBudget {
         max_result_elements: expected.len()
             + group_member_rows(db, oid, expected.iter().map(|&p| (p, None))),
         max_service_ack_bytes: legacy.len(),
@@ -156,12 +156,12 @@ pub(super) fn assert_rpm_selector_bytes(
             db,
             &request_bytes,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
                 max_result_elements: budget.max_result_elements - 1,
                 ..budget
             }
         ),
-        Err(super::super::ReadFailure::Work)
+        Err(bacnet_device_core::read::ReadFailure::Work)
     ));
     assert_eq!(&prefix[..], b"prefix");
     assert!(matches!(
@@ -169,12 +169,12 @@ pub(super) fn assert_rpm_selector_bytes(
             db,
             &request_bytes,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
                 max_service_ack_bytes: legacy.len() - 1,
                 ..budget
             }
         ),
-        Err(super::super::ReadFailure::Bytes)
+        Err(bacnet_device_core::read::ReadFailure::Bytes)
     ));
     assert_eq!(&prefix[..], b"prefix");
 }
@@ -376,9 +376,10 @@ fn rpm_metadata_analog_required_optional_and_budgeted_bytes_agree() {
         P::ACKED_TRANSITIONS,
         P::EVENT_TIME_STAMPS,
     ];
+    // COV_Increment isn't here: these objects report COV, which makes it
+    // required (Tables 12-2 and 12-4 footnote 2, 12-3 footnote 1, #2193).
     let optional = vec![
         P::DESCRIPTION,
-        P::COV_INCREMENT,
         P::TIME_DELAY_NORMAL,
         P::RELIABILITY,
         P::RELIABILITY_EVALUATION_INHIBIT,
@@ -414,6 +415,7 @@ fn rpm_metadata_analog_required_optional_and_budgeted_bytes_agree() {
             let kind = oid.object_type();
             let mut requires = required.clone();
             requires.extend(intrinsic);
+            requires.push(P::COV_INCREMENT);
             let mut expected_optional = optional.clone();
             let commandable = [
                 P::PRIORITY_ARRAY,
@@ -437,14 +439,15 @@ fn rpm_metadata_analog_required_optional_and_budgeted_bytes_agree() {
             if configuration & 4 != 0 {
                 expected_optional.push(P::MAX_PRES_VALUE);
             }
-            let all = object.property_list().into_owned();
+            let metadata = object.property_metadata().into_owned();
+            let ids = metadata.iter().map(|row| row.property_identifier);
+            let all: Vec<_> = ids.filter(|&p| p != P::PROPERTY_LIST).collect();
             // RPM lists the required rows in metadata order.
             let expected_required: Vec<_> = all
                 .iter()
                 .copied()
                 .filter(|p| requires.contains(p))
                 .collect();
-            let metadata = object.property_metadata().into_owned();
             let mut db = ObjectDatabase::new();
             db.add(object).unwrap();
 

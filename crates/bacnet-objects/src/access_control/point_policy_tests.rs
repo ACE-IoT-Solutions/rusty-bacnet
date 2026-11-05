@@ -4,6 +4,7 @@
 //! policy to zero and Reliability to CONFIGURATION_ERROR, and Reliability
 //! takes simulated writes while out of service (Clause 12.31.8).
 
+use crate::property_metadata::{is_array_property, is_writable_property};
 use bacnet_encoding::constructed::encode_authentication_policy;
 use bacnet_types::constructed::{BACnetAuthenticationPolicy, BACnetAuthenticationPolicyEntry};
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
@@ -86,9 +87,12 @@ fn fault(point: &AccessPointObject) -> bool {
 fn access_point_serves_the_policy_arrays_once_the_application_sets_them() {
     let mut point = AccessPointObject::new(1, "AP-1").unwrap();
     for property in [LIST, NAMES] {
-        assert!(!point.property_list().contains(&property));
+        assert!(!crate::property_metadata::has_property(
+            &point.property_metadata(),
+            property
+        ));
         assert!(point.read_property(property, None).is_err());
-        assert!(point.is_array_property(property));
+        assert!(is_array_property(&point, property));
     }
     let policies = card_and_pin();
     point.set_authentication_policies(policies.clone()).unwrap();
@@ -124,11 +128,14 @@ fn access_point_serves_the_policy_arrays_once_the_application_sets_them() {
         PropertyValue::CharacterString("card".into())
     );
     // Optional rows before Property_List, read-only over the network.
-    let list = point.property_list();
+    let list = crate::test_rows::listed(&point.property_metadata());
     assert_eq!(&list[list.len() - 2..], &[LIST, NAMES]);
     for property in [LIST, NAMES] {
-        assert!(!point.required_properties().contains(&property));
-        assert!(!point.is_writable_property(property));
+        assert!(
+            !crate::property_metadata::required_properties(&point.property_metadata())
+                .any(|required| required == property)
+        );
+        assert!(!is_writable_property(&point, property));
     }
     // The first policy is valid and in effect.
     assert_eq!(read(&point, POLICY), PropertyValue::Unsigned(1));
@@ -390,7 +397,10 @@ fn access_point_caps_the_policy_count_while_it_serves_the_arrays() {
         point.set_authentication_policies(names(MAX_AUTHENTICATION_POLICIES + 1)),
         ErrorCode::VALUE_OUT_OF_RANGE,
     );
-    assert!(!point.property_list().contains(&LIST));
+    assert!(!crate::property_metadata::has_property(
+        &point.property_metadata(),
+        LIST
+    ));
     point
         .set_authentication_policies(names(MAX_AUTHENTICATION_POLICIES))
         .unwrap();

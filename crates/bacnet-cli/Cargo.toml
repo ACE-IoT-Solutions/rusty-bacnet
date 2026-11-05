@@ -73,7 +73,7 @@ unicode-segmentation = { version = "1.13", optional = true }
 tempfile = "3"
 # The decode tests' frame builders (`bacnet_ops::decode::testing`).
 bacnet-ops = { workspace = true, features = ["test-support"] }
-bacnet-objects.workspace = true
+bacnet-objects = { workspace = true, features = ["std"] }
 bacnet-server.workspace = true
 rcgen.workspace = true
 futures-util.workspace = true
@@ -117,9 +117,9 @@ sc-tls = [
     "dep:time",
 ]
 pcap = ["dep:pcap", "dep:ctrlc", "dep:libc"]
-# `bacnet mcp serve --stdio`: a read-only MCP server for AI agent hosts
-# (#2066), off by default. It reads TUI profiles (their [mcp] table), so it
-# brings the TUI along.
+# `bacnet mcp serve --stdio`: an MCP server for AI agent hosts (#2066),
+# read-only unless a profile opts in to writes (#2068), off by default. It
+# reads TUI profiles (their [mcp] table), so it brings the TUI along.
 mcp = ["tui", "dep:bacnet-mcp"]
 # MS/TP over a serial port (`--mstp`, `mstp-ports`). Released in the Linux
 # CLI; built and tested on macOS and Windows as experimental (#969).

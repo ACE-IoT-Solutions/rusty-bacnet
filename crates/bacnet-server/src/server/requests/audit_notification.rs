@@ -64,6 +64,7 @@ pub(super) async fn receive_confirmed_audit_notification(
     )?;
     store_staged(
         db,
+        crate::local_device::initiating_device(&config.device),
         sink,
         &request,
         Some(receipt),
@@ -78,6 +79,7 @@ pub(super) async fn receive_confirmed_audit_notification(
 /// commit is durable. Returns the outcome and the post-commit forwarding.
 async fn store_staged(
     db: &Arc<RwLock<ObjectDatabase>>,
+    device: ObjectIdentifier,
     sink: ObjectIdentifier,
     request: &bacnet_services::audit::AuditNotificationRequest,
     receipt: Option<bacnet_objects::audit::CompletedAuditReceipt>,
@@ -94,7 +96,13 @@ async fn store_staged(
     loop {
         let staged = {
             let mut db = db.write().await;
-            match handlers::stage_audit_notification(&mut db, sink, request, receipt.clone())? {
+            match handlers::stage_audit_notification(
+                &mut db,
+                device,
+                sink,
+                request,
+                receipt.clone(),
+            )? {
                 AuditBatchStage::Done(outcome, changed) => {
                     let forward = ForwardBatch::after_commit(&db, sink, changed, payload.clone());
                     return Ok((outcome, forward));
@@ -151,7 +159,8 @@ pub(super) async fn receive_unconfirmed_audit_notification(
     if !allowed {
         return Err(request_denied());
     }
-    let (_, forward) = store_staged(db, sink, &request, None, service_request).await?;
+    let device = crate::local_device::initiating_device(&config.device);
+    let (_, forward) = store_staged(db, device, sink, &request, None, service_request).await?;
     Ok(forward)
 }
 
@@ -194,12 +203,17 @@ pub(in crate::server) fn fail_closed_authorize(authorize: impl FnOnce() -> bool)
 /// [`ask_mutation_policy`] does for mutations
 /// (#2032): the request task awaits the answer, so a policy that blocks holds
 /// no runtime worker and `stop()` can still abort the request. A panic, or a
-/// call that never reports back, denies.
+/// call that never reports back, denies. A policy that
+/// [`decides_inline`](crate::ServerPolicy::decides_inline) is asked on the
+/// request task instead, with no trip (#2049).
 pub(in crate::server) async fn ask_policy<C: Send + 'static>(
     policy: &Arc<dyn crate::ServerPolicy>,
     context: C,
     ask: fn(&dyn crate::ServerPolicy, &C) -> bool,
 ) -> bool {
+    if policy.decides_inline() {
+        return fail_closed_authorize(|| ask(&**policy, &context));
+    }
     let policy = Arc::clone(policy);
     tokio::task::spawn_blocking(move || fail_closed_authorize(|| ask(&*policy, &context)))
         .await

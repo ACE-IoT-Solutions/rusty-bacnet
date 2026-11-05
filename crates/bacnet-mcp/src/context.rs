@@ -11,7 +11,7 @@ use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_ops::engine::Engine;
 use bacnet_ops::limits::{Account, TokenBucket};
 use bacnet_ops::target::{self, Target};
-use bacnet_ops::watch::Hub;
+use bacnet_ops::watch::{Hub, Point};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::primitives::ObjectIdentifier;
 use serde::Deserialize;
@@ -37,8 +37,8 @@ pub(crate) struct Ctx<T: TransportPort + 'static> {
     pub(crate) cursors: Cursors,
     /// The principal's token bucket.
     pub(crate) bucket: Arc<TokenBucket>,
-    /// When the last broad Who-Is went.
-    pub(crate) broad: Mutex<Option<Instant>>,
+    /// When the principal's last broad Who-Is went.
+    pub(crate) broad: Arc<Mutex<Option<Instant>>>,
     /// Object lists read, by device, for paging without reading again.
     pub(crate) lists: Mutex<HashMap<u32, CachedList>>,
     /// One lock a device, held while its list is read, so two calls on one
@@ -51,13 +51,19 @@ pub(crate) struct Ctx<T: TransportPort + 'static> {
     /// device, so its later pages don't read them again.
     pub(crate) names: Mutex<HashMap<u32, CachedNames>>,
     /// What Who-Is-Router-To-Network queries found, and when the last one
-    /// went; at most one goes a minute.
-    pub(crate) routers: Mutex<Routers>,
+    /// went; at most one goes a minute for the principal.
+    pub(crate) routers: Arc<Mutex<Routers>>,
     /// When the last BBMD survey of `bacnet_network_map` began; at most
-    /// one goes a minute.
-    pub(crate) bbmd_asked: Mutex<Option<Instant>>,
+    /// one goes a minute for the principal.
+    pub(crate) bbmd_asked: Arc<Mutex<Option<Instant>>>,
     /// The watch hub; `None` in passive mode.
     pub(crate) hub: Option<Hub<T>>,
+    /// Whether the session shuts the hub down when it ends: not when the
+    /// TUI's listener shares it among its sessions (#2185).
+    pub(crate) owns_hub: bool,
+    /// How long the client has to open the session, for the TUI's
+    /// listener; `None` on stdio.
+    pub(crate) initialize: Option<Duration>,
     /// What the principal watches, and the subscriptions waiting for their
     /// streams.
     pub(crate) subs: Arc<Subs>,
@@ -73,6 +79,49 @@ pub(crate) struct Ctx<T: TransportPort + 'static> {
     pub(crate) described: Cache,
     /// Alarm pages served to the alarm resources.
     pub(crate) alarms: Cache,
+    /// The write session, the plan grant's budget and the confirmation
+    /// sealer (#2068).
+    pub(crate) writes: crate::writes::Writes,
+    /// Writes and reverts handed to tasks of their own, which a shutdown
+    /// waits for.
+    pub(crate) handoffs: tokio_util::task::TaskTracker,
+    /// A request's panic, which ends the session (#2203).
+    pub(crate) panics: crate::contain::Panics,
+    /// On a session attached to the TUI that offers writes, the TUI's
+    /// approval queue and the desk it lends (#2185).
+    pub(crate) attached: Option<crate::tools::write_attached::Attached<T>>,
+    /// On a session attached to the TUI, where its calls go for the agent
+    /// pane and where the TUI's armed state is read (#2185).
+    pub(crate) pane: Option<crate::board::Pane>,
+}
+
+/// The points a principal watches, each with the number of its sessions
+/// holding it: a stdio server's one session, or all of a listener's (#2185).
+pub(crate) type Points = Arc<Mutex<HashMap<Point, usize>>>;
+
+/// One session fewer holding `point` among the principal's `points`.
+pub(crate) fn let_go(points: &Points, point: &Point) {
+    let mut points = points.lock().unwrap_or_else(PoisonError::into_inner);
+    if points.get_mut(point).is_some_and(|n| {
+        *n = n.saturating_sub(1);
+        *n == 0
+    }) {
+        points.remove(point);
+    }
+}
+
+/// What a principal's sessions share beyond the hub and the bucket: the
+/// minute gates on broadcasts and surveys, and the points its cap counts.
+/// A stdio server has its own; a listener's sessions share one (#2185).
+#[derive(Default, Clone)]
+pub(crate) struct Gates {
+    /// When the last broad Who-Is went.
+    pub(crate) broad: Arc<Mutex<Option<Instant>>>,
+    /// Router queries' findings and the last one's claim.
+    pub(crate) routers: Arc<Mutex<Routers>>,
+    /// When the last BBMD survey began.
+    pub(crate) bbmd_asked: Arc<Mutex<Option<Instant>>>,
+    pub(crate) points: Points,
 }
 
 /// Counts a listen stream while it lives.
@@ -399,10 +448,18 @@ impl<T: TransportPort + 'static> Ctx<T> {
         }
     }
 
-    /// Count a listen stream until the guard drops.
-    pub(crate) fn listening(&self) -> Listening<'_> {
-        self.listening.send_modify(|n| *n += 1);
-        Listening(&self.listening)
+    /// Count a listen stream until the guard drops, unless `max` run
+    /// already.
+    pub(crate) fn listening(&self, max: usize) -> Option<Listening<'_>> {
+        let mut taken = false;
+        self.listening.send_if_modified(|n| {
+            taken = *n < max;
+            if taken {
+                *n += 1;
+            }
+            taken
+        });
+        taken.then(|| Listening(&self.listening))
     }
 
     /// Refuse a network the policy leaves out.
@@ -426,6 +483,12 @@ impl<T: TransportPort + 'static> Ctx<T> {
             ));
         }
         Ok(())
+    }
+
+    /// A new account for one call: its requests take the principal's
+    /// tokens, and the request-rate meter counts them as an agent's.
+    pub(crate) fn account(&self) -> Arc<Account> {
+        Arc::new(Account::agent(Some(Arc::clone(&self.bucket))))
     }
 
     /// Record a finished call in the read log, as a summary line.

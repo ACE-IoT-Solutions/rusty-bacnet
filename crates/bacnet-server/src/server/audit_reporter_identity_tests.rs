@@ -22,13 +22,13 @@ fn device(instance: u32) -> Box<DeviceObject> {
 
 #[tokio::test]
 async fn audit_reporter_identity_startup_requires_a_concrete_local_device() {
-    for devices in [&[][..], &[ObjectIdentifier::MAX_INSTANCE][..]] {
-        assert!(
-            try_server(reporter(), devices, Some(recipient()), bindings())
-                .await
-                .is_err()
-        );
-    }
+    // No database holds a Device at the wildcard instance (#2171), so the
+    // only database without a concrete Device is one without a Device.
+    assert!(
+        try_server(reporter(), &[], Some(recipient()), bindings())
+            .await
+            .is_err()
+    );
     assert!(
         try_server(reporter(), &[10], None, bindings())
             .await
@@ -53,9 +53,10 @@ async fn audit_reporter_identity_startup_requires_a_concrete_local_device() {
     fixture.server.stop().await.unwrap();
 }
 
-/// With several Devices the lowest is this device, whichever was added first
-/// (#1204). Records name it, and the runtime keeps it the lowest: a new Device
-/// is refused and it can't be removed.
+/// With several Devices the identity's is this device, whichever was added
+/// first; startup requires it to be the lowest (#1204). Records name it (#2217),
+/// and the runtime keeps it the lowest: a new Device is refused and it can't be
+/// removed.
 #[tokio::test]
 async fn audit_reporter_identity_is_the_lowest_of_several_devices() {
     let lowest = oid(ObjectType::DEVICE, 100);
@@ -148,12 +149,12 @@ async fn audit_reporter_identity_drop_releases_membership_after_task_frames_end(
             .unwrap()
             .is_some()
     );
-    assert!(
-        !db.get(&oid(ObjectType::DEVICE, 10))
+    assert!(!bacnet_objects::property_metadata::has_property(
+        &db.get(&oid(ObjectType::DEVICE, 10))
             .unwrap()
-            .property_list()
-            .contains(&PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT)
-    );
+            .property_metadata(),
+        PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT
+    ));
 }
 
 #[tokio::test]

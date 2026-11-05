@@ -113,7 +113,8 @@ pub(super) async fn replace<T: TransportPort + 'static>(
     // refused requester never spends it. ENABLE never checks the budget. A
     // successful charge precedes every cancellable await.
     // The policy is asked on Tokio's blocking pool (#2032), so a policy that
-    // blocks can't hold up stop(); nothing has changed before that await.
+    // blocks can't hold up stop(), unless it declared itself inline (#2049);
+    // nothing has changed before that await.
     let source_refused = config
         .dcc_source_restriction
         .as_ref()
@@ -249,13 +250,7 @@ impl<T: TransportPort + 'static> DccAudit<T> {
     /// Report a timed disable running out: DEVICE_ENABLE_COMM, with this
     /// device as its source and no invoke ID, since no request caused it.
     fn record_expiry(&self, db: &mut ObjectDatabase) {
-        if let Some(mut audit) = super::audit_reporter::WriteAudit::local(
-            &self.config,
-            &self.network,
-            &self.transactions,
-            db,
-        ) {
-            audit.device_operation(db, AuditOperation::DEVICE_ENABLE_COMM);
-        }
+        super::audit_reporter::WriteAudit::local(&self.config, &self.network, &self.transactions)
+            .device_operation(db, AuditOperation::DEVICE_ENABLE_COMM);
     }
 }

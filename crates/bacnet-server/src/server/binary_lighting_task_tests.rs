@@ -4,6 +4,7 @@ use crate::server::test_transport::{SendLog, TestTransport};
 use bacnet_encoding::{apdu::decode_apdu, npdu::decode_npdu};
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::lighting::BinaryLightingOutputObject;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 
 async fn start_server(
@@ -265,8 +266,9 @@ async fn terminal_cov_snapshot_survives_a_later_command_before_delivery() {
                             monitored_object_identifier: oid,
                             issue_confirmed_notifications: false,
                             // A Multiple context always has a finite lifetime.
-                            expires_at: (kind == CovNotificationKind::Multiple)
-                                .then(|| runtime_clock::now() + Duration::from_secs(3600)),
+                            expires_at: (kind == CovNotificationKind::Multiple).then(|| {
+                                runtime_clock::core_now() + bacnet_time::Duration::from_secs(3600)
+                            }),
                             last_notified_observation: None,
                             monitored_property: property,
                             monitored_property_array_index: None,
@@ -292,9 +294,9 @@ async fn terminal_cov_snapshot_survives_a_later_command_before_delivery() {
                     &crate::command_source::test_origin(),
                 )
                 .unwrap();
-            let deadline = object.next_monotonic_deadline_internal().unwrap();
-            assert!(object.advance_monotonic_time_internal(deadline));
-            object.cov_snapshot_internal().unwrap()
+            let deadline = object.timed().unwrap().next_monotonic_deadline().unwrap();
+            assert!(object.timed().unwrap().advance_monotonic_time(deadline));
+            object.timed().unwrap().cov_snapshot().unwrap()
         };
         {
             let mut db = server.db.write().await;
@@ -413,7 +415,10 @@ async fn a_snapshot_report_times_a_timestamped_field_only_with_its_own_value() {
                         subscriber_process_identifier: 33,
                         monitored_object_identifier: oid,
                         issue_confirmed_notifications: false,
-                        expires_at: Some(runtime_clock::now() + Duration::from_secs(3600)),
+                        expires_at: Some(
+                            crate::runtime_clock::core_now()
+                                + bacnet_time::Duration::from_secs(3600),
+                        ),
                         last_notified_observation: None,
                         monitored_property: Some(property),
                         monitored_property_array_index: None,
@@ -485,7 +490,7 @@ async fn a_snapshot_report_times_a_timestamped_field_only_with_its_own_value() {
                     &crate::command_source::test_origin(),
                 )
                 .unwrap();
-            object.cov_snapshot_internal().unwrap()
+            object.timed().unwrap().cov_snapshot().unwrap()
         }
     };
 
@@ -557,10 +562,16 @@ impl BACnetObject for StuckDeadline {
             ErrorCode::WRITE_ACCESS_DENIED,
         ))
     }
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        std::borrow::Cow::Borrowed(&[])
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
-    fn next_monotonic_deadline_internal(&self) -> Option<Duration> {
+    fn timed(&mut self) -> Option<&mut dyn bacnet_objects::traits::Timed> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::Timed for StuckDeadline {
+    fn next_monotonic_deadline(&self) -> Option<Duration> {
         Some(Duration::ZERO)
     }
 }

@@ -1,7 +1,11 @@
 use super::*;
+use bacnet_device_core::read::NoOverlay;
 
-#[path = "rpm_optional_fallback.rs"]
-mod optional_fallback;
+#[path = "rpm_optional_rows.rs"]
+mod optional_rows;
+use bacnet_objects::property_metadata::{
+    Datatype, PropertyConformance, PropertyMetadata, PropertyWriteCapability, ValueType,
+};
 use bacnet_types::constructed::ReadAccessSpecification;
 use std::borrow::Cow;
 use std::sync::{
@@ -22,29 +26,36 @@ impl BACnetObject for Counting {
     fn object_name(&self) -> &str {
         "counting"
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        if self.empty {
-            Cow::Borrowed(&[])
-        } else {
-            Cow::Borrowed(&[
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        const ROWS: &[PropertyMetadata] = &[
+            PropertyMetadata::new(
                 PropertyIdentifier::PRESENT_VALUE,
+                PropertyConformance::RequiredRead,
+                None,
+                PropertyWriteCapability::ReadOnly,
+            ),
+            PropertyMetadata::new(
                 PropertyIdentifier::OBJECT_NAME,
+                PropertyConformance::RequiredRead,
+                None,
+                PropertyWriteCapability::ReadOnly,
+            ),
+            PropertyMetadata::new(
                 PropertyIdentifier::DESCRIPTION,
-            ])
-        }
-    }
-    fn required_properties(&self) -> Cow<'static, [PropertyIdentifier]> {
+                PropertyConformance::Optional,
+                None,
+                PropertyWriteCapability::ReadOnly,
+            ),
+        ];
+        // `empty` serves no row at all, and `array` makes every row an array.
         if self.empty {
             Cow::Borrowed(&[])
+        } else if self.array {
+            let array = ValueType::array(Datatype::Unsigned);
+            Cow::Owned(ROWS.iter().map(|row| row.with_value_type(array)).collect())
         } else {
-            Cow::Borrowed(&[
-                PropertyIdentifier::PRESENT_VALUE,
-                PropertyIdentifier::OBJECT_NAME,
-            ])
+            Cow::Borrowed(ROWS)
         }
-    }
-    fn is_array_property(&self, _: PropertyIdentifier) -> bool {
-        self.array
     }
     fn read_property(
         &self,
@@ -154,7 +165,13 @@ fn rpm_wildcards_duplicates_unknown_and_index_count_results() {
         ]);
         let decoded = ReadPropertyMultipleRequest::decode(&data).unwrap();
         assert!(matches!(
-            plan(&db, &decoded, count * 2, None),
+            RpmPlan::new(
+                &db,
+                &ReadScope::UNLIMITED,
+                None::<&NoOverlay>,
+                &decoded,
+                count * 2
+            ),
             Err(ReadFailure::Work)
         ));
         assert!(matches!(
@@ -162,13 +179,16 @@ fn rpm_wildcards_duplicates_unknown_and_index_count_results() {
             Err(ReadFailure::Work)
         ));
         assert_eq!(reads.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            plan(&db, &decoded, count * 2 + 1, None)
-                .unwrap()
-                .iter()
-                .map(|p| p.properties.len())
-                .sum::<usize>(),
-            count * 2 + 1
+        // A limit of one row fewer fails: the plan holds exactly this many.
+        assert!(
+            RpmPlan::new(
+                &db,
+                &ReadScope::UNLIMITED,
+                None::<&NoOverlay>,
+                &decoded,
+                count * 2 + 1
+            )
+            .is_ok()
         );
     }
     let data = request(vec![spec(
@@ -190,7 +210,7 @@ fn rpm_wildcards_duplicates_unknown_and_index_count_results() {
 }
 
 #[test]
-fn rpm_bytes_exact_wrappers_errors_index_atomic_and_legacy_parity() {
+fn rpm_bytes_exact_wrappers_errors_index_atomic_and_unlimited_parity() {
     let (db, _) = fixture(false, false);
     let data = request(vec![
         spec(
@@ -205,17 +225,17 @@ fn rpm_bytes_exact_wrappers_errors_index_atomic_and_legacy_parity() {
         ),
         spec(99, vec![reference(PropertyIdentifier::ALL)]),
     ]);
-    let mut legacy = BytesMut::new();
-    handle_read_property_multiple(&db, &data, &mut legacy).unwrap();
-    for cap in [legacy.len() - 1, legacy.len(), legacy.len() + 1] {
+    let mut unlimited = BytesMut::new();
+    handle_read_property_multiple(&db, &data, &mut unlimited).unwrap();
+    for cap in [unlimited.len() - 1, unlimited.len(), unlimited.len() + 1] {
         let mut out = BytesMut::from(&b"prefix"[..]);
         let result = handle_rpm_budgeted(&db, &data, &mut out, budget(5, cap));
-        if cap < legacy.len() {
+        if cap < unlimited.len() {
             assert!(matches!(result, Err(ReadFailure::Bytes)));
             assert_eq!(&out[..], b"prefix");
         } else {
             result.unwrap();
-            assert_eq!(&out[6..], &legacy[..]);
+            assert_eq!(&out[6..], &unlimited[..]);
         }
     }
 }
@@ -264,27 +284,6 @@ fn rpm_empty_expansions_still_charge_object_wrappers() {
 }
 
 #[test]
-fn rpm_scratch_growth_never_exceeds_cap_even_on_overflow() {
-    let mut scratch = Scratch {
-        bytes: BytesMut::new(),
-        limit: 4,
-    };
-    scratch.append(&[1, 2], 2).unwrap();
-    assert_eq!(scratch.bytes.len(), 2);
-    assert!(matches!(
-        scratch.append(&[3, 4, 5], 0),
-        Err(ReadFailure::Bytes)
-    ));
-    assert_eq!(scratch.bytes.len(), 2);
-    assert!(matches!(
-        scratch.append(&[], usize::MAX),
-        Err(ReadFailure::Bytes)
-    ));
-    scratch.append(&[3, 4], 0).unwrap();
-    assert_eq!(scratch.bytes.len(), 4);
-}
-
-#[test]
 fn rpm_decode_failure_keeps_priority_and_caller_prefix() {
     let (db, reads) = fixture(false, false);
     let mut out = BytesMut::from(&b"prefix"[..]);
@@ -316,7 +315,7 @@ fn rpm_success_independent_scalar_golden() {
 }
 
 #[test]
-fn rpm_migrated_metadata_device_wildcard_and_index_legacy_parity() {
+fn rpm_migrated_metadata_device_wildcard_and_index_unlimited_parity() {
     use bacnet_objects::device::{DeviceConfig, DeviceObject};
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
@@ -344,9 +343,9 @@ fn rpm_migrated_metadata_device_wildcard_and_index_legacy_parity() {
                 },
             ],
         }]);
-        let mut legacy = BytesMut::new();
-        handle_read_property_multiple(&db, &data, &mut legacy).unwrap();
-        let ack = ReadPropertyMultipleACK::decode(&legacy).unwrap();
+        let mut unlimited = BytesMut::new();
+        handle_read_property_multiple(&db, &data, &mut unlimited).unwrap();
+        let ack = ReadPropertyMultipleACK::decode(&unlimited).unwrap();
         let count = ack.list_of_read_access_results[0].list_of_results.len();
         assert_eq!(
             ack.list_of_read_access_results[0].object_identifier,
@@ -354,12 +353,12 @@ fn rpm_migrated_metadata_device_wildcard_and_index_legacy_parity() {
         );
         for work in [count - 1, count, count + 1] {
             let mut out = BytesMut::new();
-            let result = handle_rpm_budgeted(&db, &data, &mut out, budget(work, legacy.len()));
+            let result = handle_rpm_budgeted(&db, &data, &mut out, budget(work, unlimited.len()));
             if work < count {
                 assert!(matches!(result, Err(ReadFailure::Work)));
             } else {
                 result.unwrap();
-                assert_eq!(out, legacy);
+                assert_eq!(out, unlimited);
             }
         }
     }
@@ -369,7 +368,7 @@ fn rpm_migrated_metadata_device_wildcard_and_index_legacy_parity() {
 fn rpm_device_result_identity_errors_and_exact_byte_budget() {
     use bacnet_encoding::primitives::decode_application_value;
     use bacnet_objects::device::{DeviceConfig, DeviceObject};
-    for instance in [123, ObjectIdentifier::MAX_INSTANCE] {
+    for instance in [123, ObjectIdentifier::MAX_ADDRESSABLE_INSTANCE] {
         let selected = ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap();
         let wildcard =
             ObjectIdentifier::new(ObjectType::DEVICE, ObjectIdentifier::MAX_INSTANCE).unwrap();
@@ -400,9 +399,9 @@ fn rpm_device_result_identity_errors_and_exact_byte_budget() {
                 })
                 .collect(),
         );
-        let mut legacy = BytesMut::new();
-        handle_read_property_multiple(&db, &data, &mut legacy).unwrap();
-        let ack = ReadPropertyMultipleACK::decode(&legacy).unwrap();
+        let mut unlimited = BytesMut::new();
+        handle_read_property_multiple(&db, &data, &mut unlimited).unwrap();
+        let ack = ReadPropertyMultipleACK::decode(&unlimited).unwrap();
         assert_eq!(ack.list_of_read_access_results.len(), 2);
         for result in ack.list_of_read_access_results {
             assert_eq!(result.object_identifier, selected);
@@ -429,10 +428,10 @@ fn rpm_device_result_identity_errors_and_exact_byte_budget() {
                 Some((ErrorClass::PROPERTY, ErrorCode::PROPERTY_IS_NOT_AN_ARRAY))
             );
         }
-        for cap in [legacy.len() - 1, legacy.len(), legacy.len() + 1] {
+        for cap in [unlimited.len() - 1, unlimited.len(), unlimited.len() + 1] {
             let mut bounded = BytesMut::from(&b"prefix"[..]);
             let result = handle_rpm_budgeted(&db, &data, &mut bounded, budget(8, cap));
-            if cap < legacy.len() {
+            if cap < unlimited.len() {
                 assert!(matches!(result, Err(ReadFailure::Bytes)));
                 assert_eq!(
                     &bounded[..],
@@ -441,7 +440,7 @@ fn rpm_device_result_identity_errors_and_exact_byte_budget() {
                 );
             } else {
                 result.unwrap();
-                assert_eq!(&bounded[6..], &legacy[..]);
+                assert_eq!(&bounded[6..], &unlimited[..]);
             }
         }
     }
@@ -470,11 +469,11 @@ fn rpm_unresolved_device_and_network_port_wildcards_keep_requested_identity() {
             })
             .collect(),
     );
-    let mut legacy = BytesMut::new();
-    handle_read_property_multiple(&db, &data, &mut legacy).unwrap();
+    let mut unlimited = BytesMut::new();
+    handle_read_property_multiple(&db, &data, &mut unlimited).unwrap();
     let mut bounded = BytesMut::new();
-    handle_rpm_budgeted(&db, &data, &mut bounded, budget(6, legacy.len())).unwrap();
-    assert_eq!(bounded, legacy);
+    handle_rpm_budgeted(&db, &data, &mut bounded, budget(6, unlimited.len())).unwrap();
+    assert_eq!(bounded, unlimited);
     let ack = ReadPropertyMultipleACK::decode(&bounded).unwrap();
     assert_eq!(ack.list_of_read_access_results.len(), requested.len());
     for (result, expected) in ack.list_of_read_access_results.iter().zip(requested) {

@@ -1,6 +1,7 @@
 use std::num::NonZeroUsize;
 
 use super::super::*;
+use crate::types::PyTarget;
 
 #[pymethods]
 impl BACnetClient {
@@ -17,7 +18,7 @@ impl BACnetClient {
     fn read_property<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         object_id: PyObjectIdentifier,
         property_id: PyPropertyIdentifier,
         array_index: Option<u32>,
@@ -28,12 +29,15 @@ impl BACnetClient {
         let pid = property_id.to_rust();
 
         crate::py_async::future_into_py(py, async move {
-            let mac = peers.parse(&address)?;
+            let (mac, routing) = address.into_parts(peers)?;
             let c = started(&inner).await?;
-            let ack = c
-                .read_property(&mac, oid, pid, array_index)
-                .await
-                .map_err(to_py_err)?;
+            let ack = if let Some((dnet, dadr)) = routing {
+                c.read_property_routed(&mac, dnet, &dadr, oid, pid, array_index)
+                    .await
+            } else {
+                c.read_property(&mac, oid, pid, array_index).await
+            }
+            .map_err(to_py_err)?;
 
             let value = decode_read_ack(&ack).map_err(to_py_err)?;
 
@@ -54,7 +58,7 @@ impl BACnetClient {
     fn write_property<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         object_id: PyObjectIdentifier,
         property_id: PyPropertyIdentifier,
         value: PyPropertyValue,
@@ -70,15 +74,29 @@ impl BACnetClient {
         let prop_value = value.inner;
 
         let future = async move {
-            let mac = peers.parse(&address)?;
+            let (mac, routing) = address.into_parts(peers)?;
             let c = started(&inner).await?;
             // Encode PropertyValue to application-tagged bytes
             let mut value_buf = BytesMut::new();
             encode_property_value(&mut value_buf, &prop_value).map_err(to_py_err)?;
 
-            c.write_property(&mac, oid, pid, array_index, value_buf.to_vec(), priority)
+            if let Some((dnet, dadr)) = routing {
+                c.write_property_routed(
+                    &mac,
+                    dnet,
+                    &dadr,
+                    oid,
+                    pid,
+                    array_index,
+                    value_buf.to_vec(),
+                    priority,
+                )
                 .await
-                .map_err(to_py_err)?;
+            } else {
+                c.write_property(&mac, oid, pid, array_index, value_buf.to_vec(), priority)
+                    .await
+            }
+            .map_err(to_py_err)?;
 
             Ok(())
         };
@@ -142,7 +160,7 @@ impl BACnetClient {
     fn read_property_multiple<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         specs: Vec<PyReadAccessSpec>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
@@ -150,12 +168,15 @@ impl BACnetClient {
         let rust_specs = py_to_rpm_specs(specs);
 
         crate::py_async::future_into_py(py, async move {
-            let mac = peers.parse(&address)?;
+            let (mac, routing) = address.into_parts(peers)?;
             let c = started(&inner).await?;
-            let ack = c
-                .read_property_multiple(&mac, rust_specs)
-                .await
-                .map_err(to_py_err)?;
+            let ack = if let Some((dnet, dadr)) = routing {
+                c.read_property_multiple_routed(&mac, dnet, &dadr, rust_specs)
+                    .await
+            } else {
+                c.read_property_multiple(&mac, rust_specs).await
+            }
+            .map_err(to_py_err)?;
             crate::py_async::attach(|py| rpm_ack_to_py(py, ack))
         })
     }
@@ -165,7 +186,7 @@ impl BACnetClient {
     fn write_property_multiple<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         specs: Vec<PyWriteAccessSpec>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
@@ -173,11 +194,15 @@ impl BACnetClient {
         let rust_specs = py_to_wpm_specs(specs)?;
 
         let future = async move {
-            let mac = peers.parse(&address)?;
+            let (mac, routing) = address.into_parts(peers)?;
             let c = started(&inner).await?;
-            c.write_property_multiple(&mac, rust_specs)
-                .await
-                .map_err(to_py_err)?;
+            if let Some((dnet, dadr)) = routing {
+                c.write_property_multiple_routed(&mac, dnet, &dadr, rust_specs)
+                    .await
+            } else {
+                c.write_property_multiple(&mac, rust_specs).await
+            }
+            .map_err(to_py_err)?;
             Ok(())
         };
         crate::py_async::future_into_py(py, crate::unit_result(future))

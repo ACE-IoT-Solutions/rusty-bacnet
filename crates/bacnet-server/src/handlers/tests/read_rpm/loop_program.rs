@@ -8,7 +8,7 @@ fn rpm_loop_program_metadata_selectors_preserve_bytes_and_budgets() {
     use bacnet_types::enums::EngineeringUnits;
     use bacnet_types::primitives::PropertyValue;
 
-    // Independent fixtures (Loop in Table 12-20 order, Program in its legacy
+    // Independent fixtures (Loop in Table 12-20 order, Program in its unlimited
     // order): classification must not be inferred from the metadata being
     // exercised. Property_List is read explicitly.
     let loop_all = [
@@ -49,8 +49,9 @@ fn rpm_loop_program_metadata_selectors_preserve_bytes_and_budgets() {
         P::INTEGRAL_CONSTANT_UNITS,
         P::DERIVATIVE_CONSTANT,
         P::DERIVATIVE_CONSTANT_UNITS,
-        P::COV_INCREMENT,
     ];
+    // COV_Increment is required of a Loop that reports COV (Table 12-20
+    // footnote 4, #2193).
     let program_all = [
         P::OBJECT_IDENTIFIER,
         P::OBJECT_NAME,

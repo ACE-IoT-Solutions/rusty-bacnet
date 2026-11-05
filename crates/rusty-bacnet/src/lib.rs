@@ -27,6 +27,7 @@ mod object_audit_policy;
 mod object_options;
 mod py_async;
 mod read_range;
+mod registration_dicts;
 mod reinitialize;
 mod router;
 mod sc_events;
@@ -78,6 +79,7 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ace_mixed_router::PyRouterBipPort>()?;
     m.add_class::<ace_mixed_router::PyRouterScPort>()?;
     m.add_class::<ace_mixed_router::PyRouterPortHealth>()?;
+    m.add_class::<ace_mixed_router::PyRouterPortCounters>()?;
     m.add_class::<ace_mixed_router::PyRouterRouteEntry>()?;
     m.add_class::<ace_mixed_router::PyAceMixedRouter>()?;
     router::register(m)?;

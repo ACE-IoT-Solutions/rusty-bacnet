@@ -6,12 +6,12 @@ description: "Every bacnet command and option with its defaults, generated from 
 The `bacnet` executable (Cargo package `bacnet-cli`) runs one command and exits, or opens the terminal UI. The command and option lists below are generated from the definitions `bacnet --help` prints. Use `bacnet <command> --help` for the binary you actually have.
 
 :::note[On `dev` after the release]
-This page is generated from the `dev` branch and tracks the next release, so it can list commands and options merged after v0.14.0 that the released `bacnet` doesn't have. The [v0.14.0 release notes](https://github.com/jscott3201/rusty-bacnet/releases/tag/v0.14.0) and the [changes waiting for the next release](https://github.com/jscott3201/rusty-bacnet/tree/dev/changelog.d) say what changed.
+This page is generated from the `dev` branch and tracks the next release, so it can list commands and options merged after v0.15.0 that the released `bacnet` doesn't have. The [v0.15.0 release notes](https://github.com/jscott3201/rusty-bacnet/releases/tag/v0.15.0) and the [changes waiting for the next release](https://github.com/jscott3201/rusty-bacnet/tree/dev/changelog.d) say what changed.
 :::
 
 ## Features and release executables
 
-Some commands and options need a Cargo feature; their entries below say which. The macOS and Windows release executables carry the terminal UI (`tui`) and BACnet/SC (`sc-tls`); the Linux ones add MS/TP (`serial`) and packet capture (`pcap`). No release executable carries `mcp`, the [MCP server for AI agent hosts](/rusty-bacnet/guides/ai-agents/). A source build turns on `tui` by default and the others with `cargo install bacnet-cli --features ...`. A command whose feature is missing still parses, then exits with an error that names the feature.
+Some commands and options need a Cargo feature; their entries below say which. The macOS and Windows release executables carry the terminal UI (`tui`) and BACnet/SC (`sc-tls`); the Linux ones add MS/TP (`serial`) and packet capture (`pcap`). Every release executable also carries `mcp`, the [MCP server for AI agent hosts](/rusty-bacnet/guides/ai-agents/); a source build enables it with `--features mcp`. A source build turns on `tui` by default and the others with `cargo install bacnet-cli --features ...`. A command whose feature is missing still parses, then exits with an error that names the feature.
 
 ## Exit status
 
@@ -29,7 +29,7 @@ Examples use `ai:1` for analog input 1, `av:1` for analog value 1, and `pv` for 
 
 Do not use an object-name string where an object identifier is required. Do not assume a BACnet device instance is an IP address or that a discovered downstream device can be addressed by a router's IP alone.
 
-A new one-shot process has its own lifecycle and keeps no discovered devices, so give it an address, a `bip6:` or `mstp:` target, or a routed `DNET:instance` or `DNET:0xMAC` target. For a routed target the CLI asks that network for the device with a Who-Is and sends the request through the router that answers. `read`, `readm`, `read-range`, `alarms`, `file-read`, `file-write`, `write`, `writem`, `subscribe`, `control`, `reinit`, `time-sync`, `create-object`, `delete-object` and `ack-alarm` take routed targets; the BBMD commands `bdt`, `fdt`, `register` and `unregister` address local B/IP peers and refuse them.
+A new one-shot process has its own lifecycle and keeps no discovered devices, so give it an address, a `bip6:` or `mstp:` target, or a routed `DNET:instance` or `DNET:0xMAC` target. For a routed target the CLI asks that network for the device with a Who-Is and sends the request through the router that answers. `read`, `readm`, `read-range`, `alarms`, `alarm-summary`, `enrollment-summary`, `file-read`, `file-write`, `write`, `writem`, `subscribe`, `control`, `reinit`, `time-sync`, `create-object`, `delete-object` and `ack-alarm` take routed targets; the BBMD commands `bdt`, `fdt`, `register` and `unregister` address local B/IP peers and refuse them.
 
 ## Session behavior
 
@@ -43,7 +43,7 @@ Use `--json` explicitly in automation. Preserve protocol errors and nonzero proc
 
 ## Sources
 
-The [CLI guide](https://github.com/jscott3201/rusty-bacnet/blob/v0.14.0/docs/CLI.md) covers target syntax, transports and session details at length. `crates/bacnet-cli/src/args.rs` defines the commands and options below; the test in `crates/bacnet-cli/src/args/reference.rs` writes this part of the page from them, so edit the definitions, not the page.
+The [CLI guide](https://github.com/jscott3201/rusty-bacnet/blob/v0.15.0/docs/CLI.md) covers target syntax, transports and session details at length. `crates/bacnet-cli/src/args.rs` defines the commands and options below; the test in `crates/bacnet-cli/src/args/reference.rs` writes this part of the page from them, so edit the definitions, not the page.
 
 <!-- generated:start by crates/bacnet-cli/src/args/reference.rs (node website/scripts/reference-cli.mjs); do not edit below this line -->
 
@@ -105,8 +105,9 @@ These options go before or after the command. Each command also takes `-h` or `-
 |---|---|---|
 | [`sc-check`](#bacnet-sc-check) | — | Inspect local SC credential files offline; no hub or transport identity is needed. Needs the `sc-tls` feature. |
 | [`tui`](#bacnet-tui) | — | Open the full-screen terminal UI (read-only until W arms writes). Needs the `tui` feature. |
-| [`mcp`](#bacnet-mcp) | — | Serve a read-only MCP server to an AI agent host (needs the `mcp` feature). |
+| [`mcp`](#bacnet-mcp) | — | Serve an MCP server to an AI agent host (needs the `mcp` feature). |
 | [`mcp serve`](#bacnet-mcp-serve) | — | Serve MCP on stdin and stdout until the agent host closes them. Stdout carries only JSON-RPC; logs go to stderr. Needs the `mcp` feature. |
+| [`mcp connect`](#bacnet-mcp-connect) | — | Bridge stdin and stdout to the MCP socket (a named pipe on Windows) of a TUI that has the profile open, so an agent shares its client. Its writes, if the profile offers them, wait for confirmation there. Needs the `mcp` feature. |
 | [`mcp authorize`](#bacnet-mcp-authorize) | — | Record, after showing what an agent may reach, that you authorize the MCP server on a profile. Needs a terminal. Needs the `mcp` feature. |
 | [`discover`](#bacnet-discover) | `whois` | Discover BACnet devices (WhoIs). |
 | [`find`](#bacnet-find) | `whohas` | Find objects by name (WhoHas). |
@@ -179,7 +180,7 @@ Options:
 
 ### bacnet mcp
 
-Serve a read-only MCP server to an AI agent host (needs the `mcp` feature).
+Serve an MCP server to an AI agent host (needs the `mcp` feature).
 
 `bacnet mcp serve --stdio --profile NAME` is what an agent host's configuration launches; `bacnet mcp authorize --profile NAME`, run once in a terminal, records the person's consent first.
 
@@ -202,6 +203,20 @@ Options:
 - `--stdio`: Serve on stdin and stdout, the transport an agent host launches. Required.
 - `--profile <NAME>`: Named profile to connect with; its mcp table limits what the agent may reach. Needed unless --passive; no transport flags with it.
 - `--passive`: Build no client and send nothing: only the tools that need no network are offered.
+
+### bacnet mcp connect
+
+Bridge stdin and stdout to the MCP socket (a named pipe on Windows) of a TUI that has the profile open, so an agent shares its client. Its writes, if the profile offers them, wait for confirmation there.
+
+Needs the `mcp` feature.
+
+```text
+Usage: bacnet mcp connect [OPTIONS]
+```
+
+Options:
+
+- `--profile <NAME>`: The profile the TUI has open; needed when more than one TUI is listening.
 
 ### bacnet mcp authorize
 

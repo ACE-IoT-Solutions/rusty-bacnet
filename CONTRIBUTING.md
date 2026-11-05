@@ -21,7 +21,7 @@ Issues, pull requests and CI all live on
 ## Build and test
 
 `rust-toolchain.toml` pins the Rust release, which rustup selects in the
-checkout; the development workspace requires Rust 1.95. The MSRV increases
+checkout; the workspace requires Rust 1.95. The MSRV increases
 only in minor releases, to a stable release at least about six months old. Tests run with
 [cargo-nextest](https://nexte.st) 0.9.145 or later, which skips doctests, so
 run `cargo test --doc` as well. The block below picks the features CI uses on
@@ -34,7 +34,7 @@ the Python bindings also need `python3-venv` for maturin's venv and
 ```bash
 case "$(uname -s)" in
   Linux)  FEATURES=$(sed -n 's/^  LINUX_FEATURES: //p' .github/workflows/ci.yml) ;;  # every optional feature
-  Darwin) FEATURES=$(sed -n 's/^features=//p' scripts/ci/local-macos.sh) ;;          # all but serial and ethernet
+  Darwin) FEATURES=$(sed -n 's/^features=//p' scripts/ci/local-macos.sh) ;;          # all but serial-gpio and ethernet
   *)      FEATURES=$(sed -n 's/^features=//p' scripts/ci/local-macos.sh | sed 's#,bacnet-cli/pcap##') ;;  # Windows (Git Bash)
 esac
 

@@ -51,10 +51,10 @@ impl DeviceIdentity {
     /// `services = [READ_PROPERTY]` (narrow endpoint reality, no superset),
     /// no ports, zero UUID (B/IP-only may keep zeros; SC dial requires
     /// [`with_device_uuid`](Self::with_device_uuid)). Returns
-    /// [`Error::Encoding`] for an
-    /// out-of-range Device instance.
+    /// [`Error::Range`] for an instance past 4194303, or for 4194303 itself,
+    /// which no object may have (Clause 12.1.1, #2171).
     pub fn new(instance: u32, vendor_id: u16) -> Result<Self, Error> {
-        ObjectIdentifier::new(ObjectType::DEVICE, instance)?;
+        ObjectIdentifier::new_addressable(ObjectType::DEVICE, instance)?;
         Ok(Self {
             instance,
             vendor_id,
@@ -64,7 +64,7 @@ impl DeviceIdentity {
             services: vec![ServiceSupported::READ_PROPERTY],
             network_ports: Vec::new(),
             device_uuid: [0; 16],
-            name: format!("device-{instance}"),
+            name: numbered_name("device-", instance),
         })
     }
 
@@ -327,7 +327,7 @@ impl DeviceIdentity {
 
     /// Check the pure Device declaration. Executors also validate deadlines.
     pub fn validate(&self) -> Result<(), Error> {
-        ObjectIdentifier::new(ObjectType::DEVICE, self.instance)?;
+        ObjectIdentifier::new_addressable(ObjectType::DEVICE, self.instance)?;
         if self.max_apdu_length < 50 {
             return Err(Error::Encoding(
                 "Device max-APDU must be at least 50".into(),
@@ -411,7 +411,7 @@ impl DeviceIdentity {
 
     /// Device object identifier derived from the instance.
     pub fn device_oid(&self) -> ObjectIdentifier {
-        ObjectIdentifier::new(ObjectType::DEVICE, self.instance)
+        ObjectIdentifier::new_addressable(ObjectType::DEVICE, self.instance)
             .expect("identity instance was validated at construction")
     }
 
@@ -492,6 +492,16 @@ pub fn build_database_with_extra(
     for obj in &extra {
         oids.push(obj.object_identifier());
     }
+    // The database replaces an object added under an identifier it already
+    // holds, which would drop the Device or a declared port and leave the
+    // identifier listed twice. Refuse before anything is added (#2250).
+    let mut seen = crate::collections::HashSet::with_capacity(oids.len());
+    if !oids.iter().all(|oid| seen.insert(*oid)) {
+        return Err(Error::protocol(
+            bacnet_types::enums::ErrorClass::OBJECT,
+            bacnet_types::enums::ErrorCode::OBJECT_IDENTIFIER_ALREADY_EXISTS,
+        ));
+    }
     device.set_object_list(oids);
 
     let mut db = ObjectDatabase::new();
@@ -505,6 +515,30 @@ pub fn build_database_with_extra(
     Ok(db)
 }
 
+/// `<prefix><instance>`, the default Object_Name of the Device
+/// ([`DeviceIdentity::new`], `device-`) and of a declared Network Port
+/// (`port-`), with the decimal digits written by hand: `format!` would link
+/// `core::fmt` into every no_std image that builds a Device database (#2187).
+fn numbered_name(prefix: &str, instance: u32) -> String {
+    // u32::MAX has ten digits.
+    let mut digits = [0u8; 10];
+    let mut start = digits.len();
+    let mut rest = instance;
+    loop {
+        start -= 1;
+        // `rest % 10` is below ten, so the cast keeps it whole.
+        digits[start] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    let mut name = String::with_capacity(prefix.len() + digits.len() - start);
+    name.push_str(prefix);
+    name.extend(digits[start..].iter().copied().map(char::from));
+    name
+}
+
 impl Default for DeviceIdentity {
     fn default() -> Self {
         Self::new(1, 0)
@@ -512,3 +546,12 @@ impl Default for DeviceIdentity {
             .with_name("BACnet Device")
     }
 }
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod identity_tests;
+
+#[cfg(test)]
+mod network_port_tests;

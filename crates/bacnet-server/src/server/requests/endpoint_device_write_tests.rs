@@ -2,6 +2,7 @@ use super::*;
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_endpoint_core::endpoint_ingress::EndpointIngress;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportProvenance;
@@ -242,8 +243,11 @@ impl BACnetObject for TrapObject {
     fn object_name(&self) -> &str {
         "write trap"
     }
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        std::borrow::Cow::Borrowed(&[PropertyIdentifier::DESCRIPTION])
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::rows(
+            &[PropertyIdentifier::DESCRIPTION],
+            &[PropertyIdentifier::DESCRIPTION],
+        )
     }
     fn read_property(&self, _: PropertyIdentifier, _: Option<u32>) -> Result<PropertyValue, Error> {
         Ok(PropertyValue::CharacterString("trap".into()))

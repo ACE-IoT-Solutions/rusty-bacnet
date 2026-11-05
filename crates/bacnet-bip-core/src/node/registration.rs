@@ -17,6 +17,8 @@
 //! arrival, so the local view never outlasts the BBMD's entry, on the
 //! assumption [`Lease`] states.
 
+use core::net::SocketAddrV4;
+
 use bacnet_bip_codec::BvlcResultCode;
 use bacnet_time::{Duration, Instant};
 
@@ -100,6 +102,19 @@ pub enum RegistrationEvent {
     Unanswered,
     /// The lease ended with nothing newer proven.
     Lapsed,
+    /// The release of a BBMD a move left
+    /// ([`Foreign::release_previous`](super::Foreign::release_previous))
+    /// ended: `Accepted` when it deleted the entry, `Refused` for its NAK,
+    /// and `TimedOut`, `LocalError` or `Cancelled` (dropped unsent) when
+    /// the device can't tell. Best effort: reported when the event list has
+    /// room, and never in place of a registration event; the counters
+    /// always count it.
+    PreviousRelease {
+        /// The BBMD the device left.
+        bbmd: SocketAddrV4,
+        /// What came of the release.
+        outcome: AttemptOutcome,
+    },
 }
 
 /// A foreign device's registration as the node sees it at one instant.
@@ -218,6 +233,9 @@ pub(crate) struct Lifecycle {
     timeout: Duration,
     retry: Retry,
     hold_limit: u16,
+    /// The BBMD isn't known yet: no attempt is due, and broadcasts are
+    /// held, or refused once the hold is full, even with no hold at all.
+    waiting: bool,
     lease: Option<Lease>,
     /// The lease's end was reported.
     lapsed: bool,
@@ -234,7 +252,8 @@ pub(crate) struct Lifecycle {
 }
 
 impl Lifecycle {
-    /// The lifecycle of `foreign`, its first attempt due at `now`.
+    /// The lifecycle of `foreign`, its first attempt due at `now`, or, with
+    /// no BBMD known yet, waiting for one.
     pub(crate) fn new(foreign: &Foreign, now: Instant) -> Self {
         Self {
             ttl: foreign.ttl_duration(),
@@ -242,6 +261,7 @@ impl Lifecycle {
             timeout: foreign.effective_response_timeout(),
             retry: foreign.retry,
             hold_limit: foreign.hold,
+            waiting: foreign.bbmd.is_none(),
             lease: None,
             lapsed: false,
             unanswered_since: None,
@@ -250,7 +270,7 @@ impl Lifecycle {
             last_start: None,
             last_outcome: None,
             failures: 0,
-            next: Some(now),
+            next: foreign.bbmd.map(|_| now),
             first_resolved: false,
             held: 0,
         }
@@ -268,7 +288,8 @@ impl Lifecycle {
     /// yet, and would refuse to distribute them (Annex J.4.5). A hold
     /// smaller than the broadcasts already held drops none of them: they
     /// stay held and go out together when the next attempt resolves, and
-    /// further broadcasts are refused as a full hold until then.
+    /// further broadcasts are refused as a full hold until then. With no
+    /// BBMD known, the lifecycle waits for one, with no attempt due.
     pub(crate) fn retarget(&mut self, foreign: &Foreign, now: Instant, same_bbmd: bool) {
         self.ttl = foreign.ttl_duration();
         self.renewal = foreign.effective_renewal();
@@ -286,7 +307,8 @@ impl Lifecycle {
         self.attempt = None;
         self.last_start = None;
         self.failures = 0;
-        self.next = Some(now);
+        self.waiting = foreign.bbmd.is_none();
+        self.next = foreign.bbmd.map(|_| now);
     }
 
     /// How long after its request a success, or a copy of it, may still
@@ -415,6 +437,27 @@ impl Lifecycle {
         wait.min(self.renewal)
     }
 
+    /// A release of the BBMD the device registers with was answered at
+    /// `now`: a move back to it may have found the release in the way (a
+    /// success can't tell the two apart), so with no live lease the next
+    /// attempt is due at once rather than after a retry's wait. While an
+    /// attempt is in flight `next` is `None`, so nothing changes.
+    pub(crate) fn due_now(&mut self, now: Instant) {
+        let live = self.lease.is_some_and(|lease| lease.is_live_at(now));
+        if !live && self.next.is_some_and(|next| next > now) {
+            self.next = Some(now);
+        }
+    }
+
+    /// No attempt before `at`: a release of this BBMD went unanswered, and
+    /// its answer may still arrive until then, which an attempt in flight
+    /// would take for its own. While one is in flight nothing changes.
+    pub(crate) fn not_before(&mut self, at: Instant) {
+        if self.next.is_some_and(|next| next < at) {
+            self.next = Some(at);
+        }
+    }
+
     /// The BBMD refused a broadcast as from an unregistered device (Annex
     /// J.4.5): register again soon, but no sooner than one response
     /// timeout after the last attempt started. Nothing changes while an
@@ -433,7 +476,7 @@ impl Lifecycle {
 
     /// Whether to send, hold or refuse a broadcast at `now`.
     pub(crate) fn admit_broadcast(&mut self, now: Instant) -> BroadcastDecision {
-        if !self.first_resolved && self.hold_limit > 0 {
+        if !self.first_resolved && (self.hold_limit > 0 || self.waiting) {
             if self.held >= self.hold_limit {
                 return BroadcastDecision::Full;
             }

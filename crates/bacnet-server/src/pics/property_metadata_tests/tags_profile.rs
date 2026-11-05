@@ -42,7 +42,7 @@ fn pics(provisioned: bool) -> Pics {
     for object in objects {
         db.add(object).unwrap();
     }
-    generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+    generate_pics(&db, &ServerConfig::default(), &PicsConfig::default()).instance_types_only(&db)
 }
 
 #[test]
@@ -123,7 +123,13 @@ fn saved_tags_do_not_provision_rows_and_each_profile_row_remains_independent() {
             build!(BinaryLightingOutputObject),
         ] {
             for (bit, property) in [(1, P::TAGS), (2, P::PROFILE_LOCATION), (4, P::PROFILE_NAME)] {
-                assert_eq!(object.property_list().contains(&property), mask & bit != 0);
+                assert_eq!(
+                    bacnet_objects::property_metadata::has_property(
+                        &object.property_metadata(),
+                        property
+                    ),
+                    mask & bit != 0
+                );
                 let read = object.read_property(property, None);
                 if mask & bit == 0 {
                     assert!(
@@ -145,7 +151,8 @@ fn saved_tags_do_not_provision_rows_and_each_profile_row_remains_independent() {
             }
             db.add(object).unwrap();
         }
-        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+            .instance_types_only(&db);
         for support in &pics.supported_object_types {
             for (bit, property) in [(1, P::TAGS), (2, P::PROFILE_LOCATION), (4, P::PROFILE_NAME)] {
                 let row = support
@@ -212,7 +219,13 @@ fn value_profile_masks_and_saved_empty_are_independent_of_present_value_mode() {
                 for (bit, property) in
                     [(1, P::TAGS), (2, P::PROFILE_LOCATION), (4, P::PROFILE_NAME)]
                 {
-                    assert_eq!(object.property_list().contains(&property), mask & bit != 0);
+                    assert_eq!(
+                        bacnet_objects::property_metadata::has_property(
+                            &object.property_metadata(),
+                            property
+                        ),
+                        mask & bit != 0
+                    );
                     let read = object.read_property(property, None);
                     if mask & bit == 0 {
                         assert!(
@@ -224,7 +237,8 @@ fn value_profile_masks_and_saved_empty_are_independent_of_present_value_mode() {
                 }
                 db.add(object).unwrap();
             }
-            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+                .instance_types_only(&db);
             assert_eq!(pics.supported_object_types.len(), 3);
             for support in &pics.supported_object_types {
                 for (bit, property) in
@@ -299,7 +313,13 @@ fn input_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                 for (bit, property) in
                     [(1, P::TAGS), (2, P::PROFILE_LOCATION), (4, P::PROFILE_NAME)]
                 {
-                    assert_eq!(object.property_list().contains(&property), mask & bit != 0);
+                    assert_eq!(
+                        bacnet_objects::property_metadata::has_property(
+                            &object.property_metadata(),
+                            property
+                        ),
+                        mask & bit != 0
+                    );
                     let read = object.read_property(property, None);
                     if mask & bit == 0 {
                         assert!(
@@ -311,7 +331,8 @@ fn input_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                 }
                 db.add(object).unwrap();
             }
-            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+                .instance_types_only(&db);
             assert_eq!(pics.supported_object_types.len(), 3);
             for support in &pics.supported_object_types {
                 for (bit, property) in
@@ -386,7 +407,13 @@ fn output_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                 for (bit, property) in
                     [(1, P::TAGS), (2, P::PROFILE_LOCATION), (4, P::PROFILE_NAME)]
                 {
-                    assert_eq!(object.property_list().contains(&property), mask & bit != 0);
+                    assert_eq!(
+                        bacnet_objects::property_metadata::has_property(
+                            &object.property_metadata(),
+                            property
+                        ),
+                        mask & bit != 0
+                    );
                     let read = object.read_property(property, None);
                     if mask & bit == 0 {
                         assert!(
@@ -398,7 +425,8 @@ fn output_profile_masks_and_saved_empty_are_independent_of_out_of_service() {
                 }
                 db.add(object).unwrap();
             }
-            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+                .instance_types_only(&db);
             assert_eq!(pics.supported_object_types.len(), 3);
             for support in &pics.supported_object_types {
                 for (bit, property) in
@@ -443,7 +471,8 @@ fn device_profile_masks_and_saved_empty_retain_optional_pics_rows() {
         }
         let mut db = ObjectDatabase::new();
         db.add(Box::new(object)).unwrap();
-        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+            .instance_types_only(&db);
         let device = pics
             .supported_object_types
             .iter()

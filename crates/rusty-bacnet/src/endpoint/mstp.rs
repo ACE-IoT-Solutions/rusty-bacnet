@@ -14,8 +14,7 @@ use pyo3::types::PyDict;
 
 use crate::endpoint::common::{
     PendingObject, build_database, build_identity, build_pending_boxes, lifecycle_error,
-    make_analog_input, make_analog_value, make_binary_input, make_binary_value, parse_device_uuid,
-    parse_read_work_limit, parse_segmentation, parse_services, pending_group,
+    parse_device_uuid, parse_read_work_limit, parse_segmentation, parse_services, pending_group,
 };
 use crate::endpoint::lifecycle::Lifecycle;
 use crate::endpoint::roles::{PyEndpointClient, PyEndpointServer};
@@ -92,6 +91,8 @@ struct MstpEndpointConfig {
     reinitialize: crate::reinitialize::EndpointReinitialize,
     /// The `device_write_policy` callable, if any (#2033).
     device_writes: crate::mutation_policy::DeviceWritePolicy,
+    /// The source Audit Reporter keywords, if any (#2357).
+    source_audit: Option<super::source_audit::SourceAuditKeywords>,
 }
 
 #[cfg(test)]
@@ -145,7 +146,10 @@ impl MstpEndpointConfig {
         let config = self;
         let serial = config.open_serial()?;
         let boxes = build_pending_boxes(&objects)?;
-        let db = build_database(&config.identity, boxes)?;
+        let mut db = build_database(&config.identity, boxes)?;
+        if let Some(source) = &config.source_audit {
+            source.provision(&config.identity, &mut db)?;
+        }
         let session = link_builder(serial, &config.link())
             .role(SessionRole::Both)
             .queue_capacity(config.queue_capacity)
@@ -156,6 +160,10 @@ impl MstpEndpointConfig {
             .device(config.identity.clone())
             .build_session()
             .map_err(to_py_err)?;
+        let session = match &config.source_audit {
+            Some(source) => source.select(session),
+            None => session,
+        };
         let session = config.device_writes.install(session);
         Ok(config.reinitialize.install(session))
     }
@@ -183,6 +191,8 @@ impl PyMstpEndpoint {
         })
     }
 }
+
+super::builders::endpoint_builders!(PyMstpEndpoint);
 
 #[pymethods]
 impl PyMstpEndpoint {
@@ -230,6 +240,12 @@ impl PyMstpEndpoint {
     ///         `MutationContext` and returns a bool, with the fail-closed
     ///         rules of `BACnetServer`'s `mutation_policy` callable. Without
     ///         it the endpoint executes no WriteProperty.
+    ///     source_audit_reporter / audit_recipient / audit_device_bindings:
+    ///         Keyword-only, as on `BipEndpoint` (#2348, #2357), each binding
+    ///         address a station in decimal digits (`"2"`), as
+    ///         `local_address()` gives it, or a routed `"network:0xMAC"`
+    ///         (#2371). An address `audit_recipient` takes
+    ///         another station: never 255 or this endpoint's own.
     #[new]
     #[pyo3(signature = (
         device_instance,
@@ -259,7 +275,10 @@ impl PyMstpEndpoint {
         on_reinitialize=None,
         after_reinitialize=None,
         reinit_password=None,
-        device_write_policy=None
+        device_write_policy=None,
+        source_audit_reporter=None,
+        audit_recipient=None,
+        audit_device_bindings=None
     ))]
     fn new(
         device_instance: u32,
@@ -289,6 +308,9 @@ impl PyMstpEndpoint {
         after_reinitialize: Option<&Bound<'_, PyAny>>,
         reinit_password: Option<String>,
         device_write_policy: Option<&Bound<'_, PyAny>>,
+        source_audit_reporter: Option<crate::types::PyObjectIdentifier>,
+        audit_recipient: Option<&Bound<'_, PyAny>>,
+        audit_device_bindings: Option<Vec<(crate::types::PyObjectIdentifier, String)>>,
     ) -> PyResult<Self> {
         let reinitialize = crate::reinitialize::EndpointReinitialize::parse(
             on_reinitialize,
@@ -349,6 +371,14 @@ impl PyMstpEndpoint {
             &service_list,
             uuid,
         )?;
+        let source_audit = super::source_audit::SourceAuditKeywords::parse(
+            source_audit_reporter,
+            audit_recipient,
+            audit_device_bindings,
+            device_instance,
+            super::source_audit::AuditLink::Mstp(mstp_mac),
+            device_writes.enabled(),
+        )?;
         Ok(Self {
             lifecycle: Lifecycle::new(),
             config: MstpEndpointConfig {
@@ -370,6 +400,7 @@ impl PyMstpEndpoint {
                 min_request_interval_ms,
                 reinitialize,
                 device_writes,
+                source_audit,
             },
         })
     }
@@ -379,82 +410,6 @@ impl PyMstpEndpoint {
     #[doc(hidden)]
     fn _pending_registration_count(&self) -> PyResult<usize> {
         Ok(self.lifecycle.pending_count())
-    }
-
-    /// Add an Analog Input object (before start).
-    #[pyo3(signature = (instance, name, units=62, present_value=0.0))]
-    fn add_analog_input(
-        &self,
-        instance: u32,
-        name: &str,
-        units: u32,
-        present_value: f32,
-    ) -> PyResult<()> {
-        make_analog_input(instance, name, units, present_value)?;
-        self.push_pending(PendingObject::AnalogInput {
-            instance,
-            name: name.to_string(),
-            units,
-            present_value,
-        })
-    }
-
-    /// Add an Analog Value object (before start).
-    #[pyo3(signature = (instance, name, units=62, *, audit_level=None, auditable_operations=None, audit_priority_filter=None))]
-    fn add_analog_value(
-        &self,
-        instance: u32,
-        name: &str,
-        units: u32,
-        audit_level: Option<&str>,
-        auditable_operations: Option<&Bound<'_, PyAny>>,
-        audit_priority_filter: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<()> {
-        let audit_policy = crate::object_audit_policy::parse(
-            audit_level,
-            auditable_operations,
-            audit_priority_filter,
-        )?;
-        make_analog_value(instance, name, units, audit_policy)?;
-        self.push_pending(PendingObject::AnalogValue {
-            instance,
-            audit_policy,
-            name: name.to_string(),
-            units,
-        })
-    }
-
-    /// Add a Binary Input object (before start).
-    #[pyo3(signature = (instance, name))]
-    fn add_binary_input(&self, instance: u32, name: &str) -> PyResult<()> {
-        make_binary_input(instance, name)?;
-        self.push_pending(PendingObject::BinaryInput {
-            instance,
-            name: name.to_string(),
-        })
-    }
-
-    /// Add a Binary Value object (before start).
-    #[pyo3(signature = (instance, name, *, audit_level=None, auditable_operations=None, audit_priority_filter=None))]
-    fn add_binary_value(
-        &self,
-        instance: u32,
-        name: &str,
-        audit_level: Option<&str>,
-        auditable_operations: Option<&Bound<'_, PyAny>>,
-        audit_priority_filter: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<()> {
-        let audit_policy = crate::object_audit_policy::parse(
-            audit_level,
-            auditable_operations,
-            audit_priority_filter,
-        )?;
-        make_binary_value(instance, name, audit_policy)?;
-        self.push_pending(PendingObject::BinaryValue {
-            instance,
-            audit_policy,
-            name: name.to_string(),
-        })
     }
 
     /// Add a Group object (before start); its Present_Value is rebuilt from

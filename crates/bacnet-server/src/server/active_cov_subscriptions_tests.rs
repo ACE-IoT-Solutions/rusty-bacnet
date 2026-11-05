@@ -17,6 +17,7 @@ mod command_source;
 mod device_execution;
 mod device_selection;
 mod group_present_value;
+mod initiating_device;
 mod multiple_route;
 mod priority_array_writes;
 mod read_range;
@@ -218,7 +219,9 @@ async fn active_cov_wire_expiry_delete_object_and_peer_cleanup_remove_entries() 
             subscriber_process_identifier: 34,
             monitored_object_identifier: av(1),
             issue_confirmed_notifications: false,
-            expires_at: Some(runtime_clock::now() + Duration::from_millis(300)),
+            expires_at: Some(
+                crate::runtime_clock::core_now() + bacnet_time::Duration::from_millis(300),
+            ),
             last_notified_observation: None,
             monitored_property: None,
             monitored_property_array_index: None,
@@ -470,16 +473,15 @@ async fn active_cov_read_only_list_scope_local_read_and_stop() {
         .await
         .add(Box::new(DeviceObject::new(config).unwrap()))
         .unwrap();
-    let selected = handlers::resolve_read_target(
+    let selected = bacnet_device_core::read::resolve_target(
         &*wire.server.database().read().await,
+        &bacnet_device_core::read::ReadScope::UNLIMITED,
         &wildcard(),
-        None,
-        None,
     );
     assert_eq!(
         selected,
         device(),
-        "lowest Device instance owns the live lists"
+        "the identity's Device (here the lowest) owns the live lists"
     );
     let (live_device, standalone) = (device(), other);
     assert_eq!(wire.read(live_device, ACTIVE, None).await.unwrap(), live);

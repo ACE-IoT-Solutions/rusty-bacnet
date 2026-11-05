@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::mutation::{
     DeviceWriteAuthorizer, MutationAuthorizationContext, MutationTarget, MutationTrust,
 };
+use bacnet_device_core::reply;
 use bacnet_encoding::apdu::{decode_apdu, encode_apdu};
 use bacnet_endpoint_core::endpoint_ingress::{EndpointApduDestination, EndpointEgress};
 use bacnet_network::layer::ReceivedApdu;
@@ -31,15 +32,22 @@ fn device_write_target<'a>(
     let object = db
         .get_mut(&write.object_identifier)
         .ok_or_else(|| property_error(ErrorClass::OBJECT, ErrorCode::UNKNOWN_OBJECT))?;
-    if !object.property_list().contains(&write.property_identifier) {
+    // Presence follows the metadata rows, Property_List among them.
+    let present = object
+        .property_metadata()
+        .iter()
+        .any(|row| row.property_identifier == write.property_identifier);
+    if !present {
         return Err(property_error(
             ErrorClass::PROPERTY,
             ErrorCode::UNKNOWN_PROPERTY,
         ));
     }
+    // A session takes `selected` from its database's local Device, which
+    // must match its identity, and neither takes the wildcard instance
+    // (#2171), so the wildcard check this replaced could never fire.
     if write.object_identifier != selected
         || selected.object_type() != ObjectType::DEVICE
-        || selected.instance_number() == ObjectIdentifier::MAX_INSTANCE
         || !matches!(
             write.property_identifier,
             PropertyIdentifier::DESCRIPTION | PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT
@@ -103,7 +111,7 @@ impl EndpointResponder {
             reinitialize: None,
             reinitialize_audit: None,
             registered_port: None,
-            read_work_limit: crate::server::ReadPropertyMultipleBudget::default()
+            read_work_limit: bacnet_device_core::read::ReadPropertyMultipleBudget::default()
                 .max_result_elements,
         }
     }
@@ -205,10 +213,13 @@ impl EndpointResponder {
         }
         // Description and Audit_Notification_Recipient, the only targets
         // `device_write_target` admits, are single values.
-        let value = handlers::decode_write_property_value(
+        let value = bacnet_device_core::write::decode_write_property_value(
             write.property_identifier,
+            bacnet_objects::property_metadata::standard_value_type(
+                ObjectType::DEVICE,
+                write.property_identifier,
+            ),
             None,
-            false,
             &write.property_value,
         )?;
         if write.property_identifier == PropertyIdentifier::DESCRIPTION
@@ -307,12 +318,8 @@ impl EndpointResponder {
             .as_ref()
             .filter(|_| request.service_choice == ConfirmedServiceChoice::REINITIALIZE_DEVICE);
         let mut after_reply = reinitialize::AfterReply::default();
-        let mut response = if request.segmented {
-            Apdu::Abort(AbortPdu {
-                sent_by_server: true,
-                invoke_id,
-                abort_reason: AbortReason::SEGMENTATION_NOT_SUPPORTED,
-            })
+        let response = if request.segmented {
+            reply::refuse_segmented(invoke_id)
         } else if request.service_choice == ConfirmedServiceChoice::READ_PROPERTY {
             confirmed_response::read_property_response(
                 self.db(),
@@ -360,17 +367,10 @@ impl EndpointResponder {
                     invoke_id,
                     service_choice: request.service_choice,
                 }),
-                Err(error) => confirmed_response::error_apdu_from_error(
-                    invoke_id,
-                    request.service_choice,
-                    &error,
-                ),
+                Err(error) => reply::error_apdu(invoke_id, request.service_choice, &error),
             }
         } else {
-            Apdu::Reject(RejectPdu {
-                invoke_id,
-                reject_reason: RejectReason::UNRECOGNIZED_SERVICE,
-            })
+            reply::unrecognized_service(invoke_id)
         };
 
         // Sizing uses the saved link limits after application execution. Invalid
@@ -378,17 +378,9 @@ impl EndpointResponder {
         let max_apdu = response_route
             .max_apdu_length(request.max_apdu_length, received.source_network.as_ref())
             .unwrap_or(request.max_apdu_length);
+        let response = reply::fit(response, max_apdu);
         let mut encoded = BytesMut::new();
         encode_apdu(&mut encoded, &response)?;
-        if matches!(response, Apdu::ComplexAck(_)) && encoded.len() > usize::from(max_apdu) {
-            response = Apdu::Abort(AbortPdu {
-                sent_by_server: true,
-                invoke_id,
-                abort_reason: AbortReason::SEGMENTATION_NOT_SUPPORTED,
-            });
-            encoded.clear();
-            encode_apdu(&mut encoded, &response)?;
-        }
 
         if !response_route.requires_direct_response()
             && let Some(reply_tx) = received.reply_tx.take()

@@ -1,18 +1,35 @@
 //! The server driven over a pipe, as an agent host drives it on stdio,
 //! against an in-process lab device on a loopback link.
 
+#[cfg(any(unix, windows))]
+mod attach;
+#[cfg(any(unix, windows))]
+mod attach_more;
+#[cfg(windows)]
+mod attach_pipe;
+#[cfg(any(unix, windows))]
+mod attach_runtime;
+#[cfg(any(unix, windows))]
+mod attach_shared;
 mod bbmd;
+mod budget;
+mod confirm;
 mod discovery;
+mod handoff;
 mod legacy;
 mod limits;
 mod listen;
+mod logs;
+mod notify;
 mod paging;
+mod plan;
 mod protocol;
 mod resources;
 mod safety;
 mod schema;
 mod site;
 mod trends;
+mod writes;
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -130,6 +147,8 @@ impl TransportPort for Recording {
         self.inner.stop().await
     }
     async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
+        #[cfg(any(unix, windows))]
+        attach_runtime::panic_if_armed();
         self.sent
             .lock()
             .unwrap()
@@ -215,6 +234,8 @@ pub(crate) struct Lab {
     client: Arc<BACnetClient<Recording>>,
     serving: JoinHandle<()>,
     mute: Arc<Mutex<Option<usize>>>,
+    /// The engine's request limits, to hold a device's gate from a test.
+    pub(crate) limits: Arc<bacnet_ops::limits::RequestLimits>,
     /// A handle on the server, for calling its handler directly.
     pub(crate) mcp: McpServer<Recording>,
     /// Shuts the server down gracefully when sent; `None` once it has.
@@ -344,10 +365,8 @@ impl Lab {
                 .await
                 .unwrap();
         }
-        let engine = Arc::new(Engine::new(
-            Arc::clone(&client),
-            Arc::new(policy.request_limits()),
-        ));
+        let limits = Arc::new(policy.request_limits());
+        let engine = Arc::new(Engine::new(Arc::clone(&client), Arc::clone(&limits)));
         let mcp = McpServer::new(Some(engine), policy, "tester").unwrap();
         let (agent, serving, shutdown) = Agent::connect_until(mcp.clone());
         Self {
@@ -358,6 +377,7 @@ impl Lab {
             client,
             serving,
             mute,
+            limits,
             mcp,
             shutdown: Some(shutdown),
         }
@@ -468,14 +488,23 @@ impl Agent {
                 .await
                 .unwrap();
         });
-        let (read, write) = tokio::io::split(agent);
-        let agent = Self {
+        (Self::over(agent), serving, shutdown)
+    }
+
+    /// The agent on its end of `pipe`, whatever serves the other end.
+    pub(crate) fn over(pipe: DuplexStream) -> Self {
+        let (read, write) = tokio::io::split(pipe);
+        Self {
             write,
             lines: BufReader::new(read).lines(),
             next_id: 1,
             backlog: VecDeque::new(),
-        };
-        (agent, serving, shutdown)
+        }
+    }
+
+    /// Close the server's input, as an agent host closing stdin does.
+    pub(crate) async fn close(&mut self) {
+        self.write.shutdown().await.unwrap();
     }
 
     /// Send one message.
@@ -646,4 +675,13 @@ impl Agent {
             .cloned()
             .unwrap_or_else(|| panic!("{tool} failed: {reply}"))
     }
+}
+
+/// A URI the subscribe handler panics on in tests, standing in for a bug
+/// an agent's request reaches (#2203).
+pub(crate) const PANIC_URI: &str = "bacnet://test/panic";
+
+/// Panic when asked for [`PANIC_URI`].
+pub(crate) fn panic_on(uri: &str) {
+    assert_ne!(uri, PANIC_URI, "an injected bug, reached by an agent");
 }

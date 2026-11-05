@@ -3,6 +3,7 @@
 //! caps, access-method refusal, and the `BACnetObject` storage hooks.
 
 use super::*;
+use crate::property_metadata::PropertyMetadata;
 use bacnet_types::enums::ErrorCode;
 use bacnet_types::error::RemoteError;
 
@@ -431,11 +432,10 @@ fn storage_default_methods_are_file_access_denied() {
 fn payload_setters_follow_the_access_method() {
     let mut file = stream_file();
     file.set_records(vec![vec![1, 2, 3], vec![4, 5]]);
-    assert!(
-        !file
-            .property_list()
-            .contains(&PropertyIdentifier::RECORD_COUNT)
-    );
+    assert!(!crate::property_metadata::has_property(
+        &file.property_metadata(),
+        PropertyIdentifier::RECORD_COUNT
+    ));
     assert!(
         file.read_property(PropertyIdentifier::RECORD_COUNT, None)
             .is_err()
@@ -513,28 +513,27 @@ impl BACnetObject for NoStorageFile {
         Err(common::write_access_denied_error())
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 }
 
 #[test]
 fn storage_hooks_default_to_none_and_file_object_opts_in() {
     let mut none = NoStorageFile;
-    assert!(none.file_configuration_internal().is_none());
-    assert!(none.file_configuration_internal_mut().is_none());
-    assert!(none.file_storage_internal().is_none());
-    assert!(none.file_storage_internal_mut().is_none());
+    assert!(none.file_configuration().is_none());
+    assert!(none.file_configuration_mut().is_none());
+    assert!(none.file_storage().is_none());
+    assert!(none.file_storage_mut().is_none());
     let mut file = stream_file();
-    assert!(file.file_configuration_internal().is_some());
-    assert!(file.file_configuration_internal_mut().is_some());
-    assert!(file.file_storage_internal().is_some());
-    assert!(file.file_storage_internal_mut().is_some());
+    assert!(file.file_configuration().is_some());
+    assert!(file.file_configuration_mut().is_some());
+    assert!(file.file_storage().is_some());
+    assert!(file.file_storage_mut().is_some());
     // 65 was the fabricated "File Data" property the old handler read (it
     // is Max_Pres_Value); Table 12-16 defines no such property.
     assert!(
-        !file
-            .property_list()
+        !crate::test_rows::listed(&file.property_metadata())
             .iter()
             .any(|p| *p == PropertyIdentifier::from_raw(65))
     );
@@ -549,7 +548,7 @@ fn configuration_capability_enforces_shape_and_routes_payload_metadata() {
     file.set_archive(true);
 
     {
-        let configuration = file.file_configuration_internal_mut().unwrap();
+        let configuration = file.file_configuration_mut().unwrap();
         configuration.set_stream_data(vec![1, 2, 3]).unwrap();
         assert_eq!(configuration.stream_data().unwrap(), &[1, 2, 3]);
     }
@@ -562,20 +561,20 @@ fn configuration_capability_enforces_shape_and_routes_payload_metadata() {
     file.set_archive(true);
     let expected = stream_state(&file);
     let err = file
-        .file_configuration_internal_mut()
+        .file_configuration_mut()
         .unwrap()
         .set_record_data(vec![vec![9]])
         .unwrap_err();
     assert_eq!(protocol_pair(err), invalid_method_pair());
     assert_eq!(stream_state(&file), expected);
 
-    file.file_configuration_internal_mut()
+    file.file_configuration_mut()
         .unwrap()
         .set_access_method(FileAccessMethod::RECORD_ACCESS);
     file.set_modification_date(retained.0, retained.1);
     file.set_archive(true);
     {
-        let configuration = file.file_configuration_internal_mut().unwrap();
+        let configuration = file.file_configuration_mut().unwrap();
         configuration
             .set_record_data(vec![vec![0xAA], vec![0xBB, 0xCC]])
             .unwrap();
@@ -597,7 +596,7 @@ fn configuration_capability_enforces_shape_and_routes_payload_metadata() {
     file.set_archive(true);
     let expected = record_state(&file);
     let err = file
-        .file_configuration_internal_mut()
+        .file_configuration_mut()
         .unwrap()
         .set_stream_data(vec![7, 8])
         .unwrap_err();
@@ -609,7 +608,7 @@ fn configuration_capability_enforces_shape_and_routes_payload_metadata() {
 fn configuration_capability_caps_are_effective_growth_limits_not_preload_limits() {
     let mut stream = stream_file();
     {
-        let configuration = stream.file_configuration_internal_mut().unwrap();
+        let configuration = stream.file_configuration_mut().unwrap();
         assert_eq!(configuration.set_max_file_size(u64::MAX), i32::MAX as u64);
         assert_eq!(configuration.set_max_file_size(4), 4);
     }
@@ -626,7 +625,7 @@ fn configuration_capability_caps_are_effective_growth_limits_not_preload_limits(
 
     let mut record = record_file();
     {
-        let configuration = record.file_configuration_internal_mut().unwrap();
+        let configuration = record.file_configuration_mut().unwrap();
         assert_eq!(
             configuration.set_max_record_count(u64::MAX),
             DEFAULT_MAX_RECORD_COUNT

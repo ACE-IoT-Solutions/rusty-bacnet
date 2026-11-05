@@ -476,6 +476,22 @@ in [section 10.1](#101-repeated-comparison-for-1979) replace the earlier causal
 claim; B/IPv6 and BACnet/SC failure categories were not remeasured. Peak resident
 memory in this historical B/IP run was 49 megabytes.
 
+Those failures are the server's admission policy at work, not a fault. By
+default the server handles at most 60 ordinary confirmed requests at once
+and refuses the rest at once with an Abort, so with one request outstanding
+per client, refusals start at about 60 clients, a little below it at times
+because a request keeps its slot until its reply has been sent. Above the
+limit, how many are refused depends on scheduling and varies widely between
+runs; with the limit raised to leave room for 100 clients, almost none
+were. A few refusals at start-up find all 8 Abort workers busy and are
+dropped silently, which costs each such client one 5-second request timeout
+before its retry succeeds.
+[Section 10.5](#105-the-1979-shifts-explained-by-counts) sums this up,
+[perf-s2](benchmarks/results/perf-s2/README.md) has the counts of Aborts
+per 100,000 requests from 50 to 100 clients, and
+[request admission](docs/request-admission.md#under-load) says how to size
+the limit.
+
 ### 6.2 Object database size
 
 `stress-test objects`: one client, 5 seconds of ReadProperty of random
@@ -1154,6 +1170,304 @@ ReadProperty instruction counts in the measured Linux environment, but did not
 meet its fixed native latency acceptance criteria. The candidate was rejected
 and production source restored. The report retains every observation, the rejected
 patch and data-reconstruction tools; it does not qualify a production speedup.
+
+### 10.4 Counting harness
+
+Wall-clock comparisons of small changes stalled on run-to-run spread (sections
+10.1 and 10.3), so changes aimed at
+[#1978](https://github.com/jscott3201/rusty-bacnet/issues/1978) and
+[#1979](https://github.com/jscott3201/rusty-bacnet/issues/1979) are judged on
+counts instead: callgrind's instruction reads and the allocator's calls.
+Counts move far less than timings, but not never: timer and clock work
+follows wall time, which machine load stretches, so only values from one
+interleaved matrix compare.
+
+- **What it runs.** `benchmarks/counts/` is a package of its own, with its own
+  `Cargo.lock`, so two commits build with the same third-party versions. Its
+  `counts` binary runs a ReadProperty (`rp`), a WriteProperty (`wp`) or a
+  ten-object ReadPropertyMultiple (`rpm`) round trip over B/IP loopback,
+  client and server in one process, on Tokio's current-thread runtime (`ct`)
+  or its multi-thread runtime with two workers (`mt`). Its `codec-counts`
+  binary loops the seven `encoding` suite workloads. Both check the values
+  they read, write or encode before and after the counted loop. The client
+  API takes the written value and the ReadPropertyMultiple specifications by
+  value, so their clones count as part of each request.
+- **Built like the release.** The harness builds with whole-program LTO and
+  one codegen unit, as the published CLI and wheels do (the `dist`
+  profile), with line tables for attribution. Under the default release
+  profile, a change that only moved the compiler's inlining across codegen
+  units showed as +120 to +170 instructions per request; built this way it
+  doesn't (#2314).
+- **Fixed allocator settings.** Every counted run sets `GLIBC_TUNABLES`: a
+  per-thread cache of 32 chunks per size and fixed mmap, trim and top-pad
+  thresholds. This is a measurement setting only: the shipped binaries use
+  glibc's defaults. With those defaults, which free chunk a request found
+  depended on how the tasks interleaved, and the ReadPropertyMultiple
+  counts of one binary spread over hundreds of instructions; with these
+  settings they spread over tens, and ReadProperty's count is unchanged.
+- **Older figures don't compare.** Counts from before
+  [perf-s0b](benchmarks/results/perf-s0b/README.md) used the default release
+  profile and glibc's default allocator settings, so they aren't comparable
+  with later ones: ReadProperty on the current-thread runtime is 39,864.6
+  instructions per request in perf-s0 and 33,827.3 in perf-s0b, mostly
+  from the build. Compare only counts taken with the same harness and
+  settings, ideally in one matrix.
+- **Per request.** Each run happens twice, with 1,000 and with 10,000 requests
+  after 200 warm-up requests (100,000 and 1,000,000 iterations for the codec
+  workloads). The difference in instructions divided by the difference in
+  length is the cost of one request, without setup, checks or shutdown. The
+  harness's own counting allocator (about 42 instructions per allocation) is
+  subtracted; the tables show the figure with it too. Allocations per
+  request are the counted loop's allocator calls and requested bytes divided
+  by its length.
+- **Builds and order.** Each commit is exported into its own tree, built in a
+  fresh Docker volume at the same paths with `--locked`. A comparison builds
+  the baseline twice (A and A') and the candidate once (B), and runs them in
+  the order A B A' A' B A, three times, so each build gets six values per
+  workload and runtime. Every run first checks its binary's SHA-256.
+- **Noise floor.** The range of the twelve A and A' values per workload and
+  runtime, from the same matrix as the verdict. Two clean builds of one
+  commit give byte-identical binaries. A noise run (`--noise`) measures only
+  this.
+- **Gates.** A comparison is accepted only when it covers `rp`, `wp` and
+  `rpm` on both runtimes and every row passes. The aimed workload (`rp`
+  unless `--aim` names others) must fall by at least 100 instructions per
+  request and by more than three noise floors, with all six A and B pairs
+  lower; an aimed codec workload has the same rule without the
+  100-instruction minimum. Every other row may not rise by more than its
+  noise floor, and no row's allocation calls may rise by more than 0.01 per
+  request. Requested bytes are reported, not gated. Wire bytes must stay
+  identical; the existing test suites check that. The script exits non-zero
+  when a comparison isn't accepted.
+- **No-regression check.** A change that isn't an optimization, such as a
+  refactor or a feature, runs with `--aim none` (the workflow's `aim`
+  input). It is accepted when no row rises by more than its noise floor and
+  no row adds allocation calls; each row reports its change in floors.
+- **When a comparison fails.** Compare per-function call counts first:
+  `perf_counts.py attribute <run directory> --workload rp --runtime ct`
+  lists the calls per request that changed, then the instructions. The
+  workflow writes the same for each round trip to `attribution.md` when it
+  fails. Unchanged calls with changed instructions point at code
+  generation, such as a function the compiler stopped inlining, rather
+  than at more work per request.
+- **Where.** On Apple silicon, in local Docker; on GitHub, the manual
+  `Perf counts` workflow (`.github/workflows/perf-counts.yml`, run from the
+  Actions tab with a baseline ref, a candidate ref and the workloads) on an
+  arm64 runner. It isn't part of the CI OK or Native OK checks. The image is
+  `scripts/perf/Dockerfile`, with its apt packages from a dated Ubuntu
+  snapshot.
+
+```bash
+# A comparison: baseline built twice, candidate once, one matrix
+python3 scripts/perf/perf_counts.py run --baseline dev --candidate my-branch --out /tmp/compare
+# The noise floor of one commit alone
+python3 scripts/perf/perf_counts.py run --noise dev --workloads all --out /tmp/noise
+# The analysis script's tests
+python3 -m unittest discover -s scripts/perf
+```
+
+`--callers` adds one pair of profile runs per round trip with callgrind's
+`--separate-callers`, and splits the Tokio semaphore's cost (#1978 item 2a)
+by caller: the client's locks, the server's locks (item 2b) and bounded
+channels' permit returns, in `callers.md`. A channel receive inlined into
+its caller, like the network layer's APDU receiver, leaves no channel frame,
+so that receiver counts as the channel. For quick local iteration only, `--noise-floors /tmp/noise/summary.json`
+skips the A' build and takes the floors from an earlier noise run on the
+same machine; each row of the table names its floor's source. Each run
+writes `summary.md` (the verdict table), per-function and per-line
+instruction slopes under `profiles/`, and the #1978 items' share in
+`items.md`. The first baseline and noise floors on dev are in
+[benchmarks/results/perf-s0](benchmarks/results/perf-s0/README.md); the
+current ones, built like the release with the fixed allocator settings, in
+[benchmarks/results/perf-s0b](benchmarks/results/perf-s0b/README.md).
+
+### 10.5 The #1979 shifts, explained by counts
+
+The counting harness settled the questions sections 10.1 and 10.2 left
+open ([perf-s1](benchmarks/results/perf-s1/README.md),
+[perf-s2](benchmarks/results/perf-s2/README.md)).
+
+- **Built like the release, dev's codecs run fewer instructions than
+  v0.13.0's.** A whole ReadProperty request costs 1,412 instructions
+  instead of 1,838, and decoding a 100-byte NPDU 172 instead of 219.
+- **The timed encode rise is a build-profile effect.** The Criterion suite
+  builds without link-time optimization. Built that way, the whole request
+  costs 222 more instructions on dev, 257 of them from #1780's encoders:
+  without link-time optimization, their writes through a stack buffer are
+  separate function calls.
+- **Instruction counts don't explain the timed decode rise.** Built as the
+  suite times it, dev's NPDU decode runs 3 fewer instructions: #1788's
+  decoding through the borrowed view added 51 and #1821's removal of a
+  buffer clone took 55. Why the same count runs slower is not established:
+  no cache or branch simulation ran, #1997's explanation (copies of the
+  decoded header through the stack) is untested here, and the two atomic
+  operations #1821 removed would on their own predict a faster decode.
+- **Each change is tied to a merge.** Counts at each merge between the two
+  releases add up to both differences, as any such sweep must; the larger
+  steps are also traced to the functions they changed.
+- **The 100-client Aborts are the admission policy.** The server runs at
+  most 60 ordinary confirmed requests at once (64 less a reserve of 4) and
+  refuses the rest with an Abort, so refusals start at about 60 clients.
+  With room for 100, almost none were refused. A request keeps its slot
+  until its reply is sent, so a client can briefly hold two, and refusals
+  can start just below the limit.
+
+### 10.6 Request-path copies (#1978 items 1 and 7)
+
+Two changes on the B/IP request path, each counted against its own
+baseline with the harness above
+([benchmarks/results/perf-s3](benchmarks/results/perf-s3/README.md)):
+
+- **MAC address copies.** Cloning a MAC address copied it one byte at a
+  time, eight times per ReadProperty round trip. The client, the
+  transaction coordinator and the server now copy the bytes at once or
+  borrow them. That saves about 515 instructions per request on
+  ReadProperty, WriteProperty and ten-object ReadPropertyMultiple, on both
+  runtimes, with every pair lower and allocations unchanged. This is the
+  section 10.3 candidate again, now judged on counts rather than wall-clock
+  time.
+- **Response route.** The server built each request's response route twice;
+  it now builds it once. That saves about 80 instructions per ReadProperty
+  and WriteProperty request, under the 100-instruction bar for an
+  optimization, and adds nothing anywhere. It is kept as a simplification
+  of the receive loop.
+
+### 10.7 WriteProperty address copies (#2342)
+
+After S3 (section 10.6), WriteProperty still copied the writer's address
+one byte at a time, four times per request, while the commanded object
+tracked its Value_Source. `BACnetAddress` now copies its MAC at once, and a
+command no longer copies the published source just to compare it
+([benchmarks/results/perf-wp-clones](benchmarks/results/perf-wp-clones/README.md)).
+WriteProperty falls by about 500 instructions per request on both runtimes,
+with every pair lower and allocations unchanged, and its profile has no
+byte-by-byte address copies left. ReadProperty and ReadPropertyMultiple are
+not higher.
+
+### 10.8 Locks and clocks (#1978 items 2a and 6)
+
+Two more request-path changes, each counted against its own baseline
+([benchmarks/results/perf-s4](benchmarks/results/perf-s4/README.md)):
+
+- **Client locks.** The client's transaction, device and SegmentACK route
+  tables were Tokio mutexes, four semaphore acquires and releases per
+  ReadProperty round trip. No lock of theirs is held across an await, so
+  they are now blocking mutexes. That saves about 845 instructions per
+  ReadProperty and WriteProperty request and 495 to 660 per
+  ReadPropertyMultiple, on both runtimes, with every ReadProperty pair
+  lower and allocations unchanged.
+- **Clock reads.** The server's receive loop read the clock twice per APDU
+  to expire segmented requests, even with none open. It now reads it only
+  while one is. That saves about 240 to 280 instructions per ReadProperty
+  and WriteProperty request, and 270 per ReadPropertyMultiple on the
+  current-thread runtime; on the multi-thread runtime ReadPropertyMultiple
+  moved +65.6, inside its floor of 1,192.4. It changes no timeout.
+
+The manual Perf counts workflow then compared dev with the two changes
+together (GitHub run 41643594249): ReadProperty fell by 1,117.1
+instructions per request on the current-thread runtime and 1,111.0 on the
+multi-thread one, WriteProperty by 1,109.9 and 1,089.4, and
+ReadPropertyMultiple by 921.1 and 1,162.5, with every pair lower and
+allocations unchanged.
+
+### 10.9 Allocations on the request path (#1978 items 3, 5 and 4)
+
+Three changes aimed at allocations, each counted against its own baseline
+on dev after section 10.8's changes
+([benchmarks/results/perf-s5](benchmarks/results/perf-s5/README.md)):
+
+- **The ReadProperty value.** A ReadProperty reply encoded the value into
+  a buffer of its own and copied it twice on the way into the reply. It
+  is now encoded straight into the reply, with the same bytes. That saves
+  about 460 to 475 instructions and two allocator calls per ReadProperty
+  request (22 to 20), on both runtimes, with every pair lower.
+  WriteProperty and ReadPropertyMultiple don't take this path and are not
+  higher.
+- **The B/IP send buffer.** Each B/IP unicast copied the network-layer
+  message into a new buffer behind its four-octet header. The socket now
+  sends the header and the message as one datagram without the copy (a
+  vectored send), with the same bytes on the wire. That saves about 420
+  instructions per ReadProperty request on both runtimes, and 422 per
+  WriteProperty request on the current-thread runtime and 479 on the
+  multi-thread one, with every pair of both lower, and two allocator calls
+  per round trip (one per send). Ten-object ReadPropertyMultiple fell by
+  444 on the current-thread runtime; its multi-thread figure, 611, is
+  only 1.2 times its floor of 530, with 5 of 6 pairs lower, so it is no
+  measured saving. Callgrind counts only the program's own instructions,
+  so the kernel's side of the vectored send isn't in these figures.
+- **Not accepted: one box per request handler.** Every confirmed service
+  but ReadProperty boxed its handler a second time. Removing that box saved
+  one allocator call and about 270 to 310 instructions per WriteProperty
+  request, but on the multi-thread runtime only 1.6 times the run-to-run
+  floor, where the rule asks for more than 3. ReadProperty did not rise.
+  The change was dropped.
+
+The manual Perf counts workflow then compared dev with the two accepted
+changes together (GitHub run 41890882196): ReadProperty fell by 883.5
+instructions per request on the current-thread runtime and 907.2 on the
+multi-thread one, and WriteProperty by 420.8 and 452.8, with every pair
+lower; ReadProperty makes four allocator calls fewer (22 to 18) and
+WriteProperty two (27 to 25). ReadPropertyMultiple fell by 274.2 and
+499.2, inside or close to its floors of 873.0 and 350.6, with two
+allocator calls fewer (141 to 139).
+
+### 10.10 The B/IP receive clock read (#2373)
+
+The B/IP transport read the clock for every datagram it received, only to
+pass the time to the B/IP core's management rate-limit check, which used
+it for nothing. The core's receive no longer takes the time, so an
+ordinary datagram costs no clock read
+([benchmarks/results/perf-2373](benchmarks/results/perf-2373/README.md)).
+Counted against dev after section 10.9's changes:
+
+- **Two clock reads per round trip.** On both runtimes, every round trip
+  makes exactly two clock reads fewer, one per received datagram, and no
+  other call count changes. Allocations are unchanged.
+- **About 240 instructions per request.** ReadProperty falls by 242.9
+  instructions per request on the current-thread runtime and 253.7 on the
+  multi-thread one, and WriteProperty by 240.1 and 239.9, with every pair
+  lower. Ten-object ReadPropertyMultiple falls by 241.9 on the
+  current-thread runtime; its multi-thread figure, 154.8, is inside its
+  floor of 985.4. That is about 120 instructions per received datagram.
+- **Short of the rule on one row, locally.** On the multi-thread runtime,
+  ReadProperty's 253.7 is 2.5 times its floor of 101.5, where the rule
+  asks for more than 3. One baseline run, the first, sets that floor; the
+  other eleven baseline values lie within 42.6 instructions per request.
+
+The manual Perf counts workflow then compared dev with the change (GitHub
+run 41923877549): ReadProperty fell by 240.2 instructions per request on
+the current-thread runtime and 230.8 on the multi-thread one, 18.7 and 5.5
+times its floors, and WriteProperty by 243.1 and 281.2, with every pair
+lower; the change was accepted. Ten-object ReadPropertyMultiple fell by
+242.7 and 154.4, the latter inside its floor of 480.5. Allocations are
+unchanged.
+
+### 10.11 A cheap policy's trip to the blocking pool (#2049)
+
+Since #2032 the server asks every `ServerPolicy` decision on Tokio's
+blocking pool, so that a policy that blocks can't hold a runtime worker or
+`stop()`. A policy that only compares a field pays for that trip on every
+mutating request; one that declares `decides_inline` is now called on the
+request task instead. A WriteProperty round trip with such a policy,
+counted the harness's way from one build
+([benchmarks/results/perf-2049](benchmarks/results/perf-2049/README.md)):
+
+- **The trip costs about 4,000 to 4,800 instructions per request.** Asked
+  on the pool, the policy costs 3,952.3 instructions per request more than
+  asked inline on the current-thread runtime and 4,840.5 more on the
+  multi-thread one, every pair of runs at least 12 times its range apart,
+  plus one allocator call (the blocking task) and 256 bytes.
+- **Most of its cost is waiting.** Callgrind doesn't see the kernel's side
+  of the two thread wake-ups. In wall time, on the same laptop under other
+  builds, the pool added about 12 microseconds to a 5.8-microsecond round
+  trip on the current-thread runtime and about 21 to a 17-microsecond one
+  on the multi-thread runtime; inline, the policy added about 0.1.
+- **What's left inline is shared work.** Inline, the policy still costs
+  about 1,760 to 1,795 instructions and four allocator calls per request
+  over no policy: decoding the request for it, building its context and
+  carrying its decision. A server without a policy doesn't reach the new
+  branch, and its count is within 0.15% of the official WriteProperty
+  count after section 10.10.
 
 ## 11. How to reproduce
 

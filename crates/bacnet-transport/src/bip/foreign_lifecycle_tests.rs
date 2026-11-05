@@ -6,8 +6,7 @@ async fn peer_and_transport() -> (UdpSocket, BipTransport) {
     let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     transport.register_as_foreign_device(ForeignDeviceConfig {
-        bbmd_ip: Ipv4Addr::LOCALHOST,
-        bbmd_port: peer.local_addr().unwrap().port(),
+        bbmd: (Ipv4Addr::LOCALHOST, peer.local_addr().unwrap().port()).into(),
         ttl: 2,
         renewal_interval: Some(PERIOD),
     });
@@ -53,8 +52,7 @@ async fn foreign_mode_validation_precedes_interface_or_socket_io() {
         // A nonlocal interface would yield a transport error if validation ran late.
         let mut transport = BipTransport::new(Ipv4Addr::new(192, 0, 2, 1), 0, Ipv4Addr::BROADCAST);
         transport.register_as_foreign_device(ForeignDeviceConfig {
-            bbmd_ip: Ipv4Addr::LOCALHOST,
-            bbmd_port: 47808,
+            bbmd: (Ipv4Addr::LOCALHOST, 47808).into(),
             ttl,
             renewal_interval: interval,
         });
@@ -200,8 +198,7 @@ async fn foreign_mode_refuses_manual_requests_that_could_change_its_registration
 #[tokio::test]
 async fn foreign_mode_refuses_a_bbmd_no_device_could_register_with() {
     let foreign = |bbmd_ip, bbmd_port| ForeignDeviceConfig {
-        bbmd_ip,
-        bbmd_port,
+        bbmd: (bbmd_ip, bbmd_port).into(),
         ttl: 60,
         renewal_interval: None,
     };
@@ -226,16 +223,32 @@ async fn foreign_mode_refuses_a_bbmd_no_device_could_register_with() {
         assert!(!transport.bvlc_client_snapshot().running);
     }
 
-    let own = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let own_port = own.local_addr().unwrap().port();
-    drop(own);
-    let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, own_port, Ipv4Addr::BROADCAST);
-    transport.register_as_foreign_device(foreign(Ipv4Addr::LOCALHOST, own_port));
-    refused(transport.start().await.unwrap_err());
-    assert!(transport.socket.is_none());
-    assert!(!transport.bvlc_client_snapshot().running);
-    // Nothing it bound stays: the port is free again.
-    drop(std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, own_port)).unwrap());
+    // The own-address case names the port before the start binds it, so the
+    // port comes from a probe, and the closing probe binds it again. Another
+    // process can take it in either gap (#1032, #2216), so a lost port goes
+    // again on a fresh one.
+    use crate::port_ownership::{ATTEMPTS, lost_port};
+    for attempt in 1..=ATTEMPTS {
+        let own_port = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, own_port, Ipv4Addr::BROADCAST);
+        transport.register_as_foreign_device(foreign(Ipv4Addr::LOCALHOST, own_port));
+        match transport.start().await {
+            Err(Error::Transport(ref e)) if lost_port(attempt, e) => continue,
+            started => refused(started.unwrap_err()),
+        }
+        assert!(transport.socket.is_none());
+        assert!(!transport.bvlc_client_snapshot().running);
+        // Nothing it bound stays: the port is free again.
+        match std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, own_port)) {
+            Ok(_) => return,
+            Err(ref e) if lost_port(attempt, e) => {}
+            Err(e) => panic!("the refused start kept {own_port}: {e}"),
+        }
+    }
 }
 
 #[tokio::test]
@@ -410,8 +423,7 @@ async fn check_tiny_interval_pacing(busy: bool, local_error: bool) {
     let port = socket.local_addr().unwrap().port();
     let socket = Arc::new(BipSocket::recording(socket, sink.clone()));
     let config = ForeignDeviceConfig {
-        bbmd_ip: Ipv4Addr::LOCALHOST,
-        bbmd_port: 47808,
+        bbmd: (Ipv4Addr::LOCALHOST, 47808).into(),
         ttl: 2,
         renewal_interval: Some(Duration::from_nanos(1)),
     };

@@ -27,6 +27,7 @@ mod event_parameter_more;
 mod fault_parameter;
 mod landing_call_status;
 mod landing_door_status;
+mod legacy_event_parameters;
 mod lift_car_call_list;
 mod lighting_command;
 mod log_multiple_record;
@@ -44,6 +45,7 @@ mod schedule;
 mod shed_level;
 mod staging;
 mod tagged;
+mod timer_state_change;
 mod value_source;
 
 /// Cut `wire`, a complete encoding `decode` accepts, inside the contents of

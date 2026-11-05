@@ -1,6 +1,24 @@
 use super::super::*;
 use bacnet_transport::port::TransportPort;
 
+/// The ValueError for an object the database refuses: a duplicate name, or
+/// another refusal such as the reserved instance 4194303 (#2171).
+fn refused_object(error: bacnet_types::error::Error) -> PyErr {
+    use bacnet_types::enums::{ErrorClass, ErrorCode};
+    use bacnet_types::error::{Error, RemoteError};
+    let duplicate = matches!(
+        &error,
+        Error::Remote(RemoteError::Error { class, code })
+            if *class == ErrorClass::PROPERTY && *code == ErrorCode::DUPLICATE_NAME
+    );
+    let what = if duplicate {
+        "duplicate object name"
+    } else {
+        "object refused"
+    };
+    PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("{what}: {error}"))
+}
+
 #[pymethods]
 impl BACnetServer {
     /// Start the server. It will begin responding to BACnet requests.
@@ -30,7 +48,11 @@ impl BACnetServer {
             self.validate_audit_recipient_input(recipient)?;
         }
         for object in pending.iter() {
-            if object.audit_log_forwarding_internal().is_some() {
+            if object
+                .audit_log()
+                .and_then(|log| log.forwarding())
+                .is_some()
+            {
                 audit_configuration::pending_audit_log_index(&pending, object.object_identifier())?;
             }
         }
@@ -88,6 +110,7 @@ impl BACnetServer {
         let port = self.port;
         let broadcast_str = self.broadcast_address.clone();
         let share_port_by_address = self.share_port_by_address;
+        let share_wildcard_port = self.share_wildcard_port;
         let bip_mode = self.bip_mode.clone();
         let bip6_foreign = self.bip6_foreign.clone();
         let multicast = self.multicast;
@@ -148,6 +171,7 @@ impl BACnetServer {
                         .map_err(|e| PyRuntimeError::new_err(format!("invalid broadcast: {e}")))?;
                     let mut bip = BipTransport::new(interface, port, broadcast);
                     bip.set_share_port_by_address(share_port_by_address);
+                    bip.set_share_wildcard_port(share_wildcard_port);
                     bip.set_mode(bip_mode);
                     bip.set_multicast(multicast)
                         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
@@ -223,19 +247,11 @@ impl BACnetServer {
             // Move pending objects into the database
             for obj in objects {
                 object_list.push(obj.object_identifier());
-                db.add(obj).map_err(|e| {
-                    PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                        "duplicate object name: {e}"
-                    ))
-                })?;
+                db.add(obj).map_err(refused_object)?;
             }
 
             device.set_object_list(object_list);
-            db.add(Box::new(device)).map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                    "duplicate object name: {e}"
-                ))
-            })?;
+            db.add(Box::new(device)).map_err(refused_object)?;
 
             let transport = match (prepared_transport, router) {
                 (Some(transport), _) => transport,
@@ -289,28 +305,14 @@ impl BACnetServer {
                 .cov_policy(cov_policy)
                 .time_sync_policy(time_sync_policy)
                 .transport(transport);
-            // One policy holds every decision Python configures: installing
-            // a second would replace the first.
-            let mut policy = None;
             if let Some(sink) = audit_notification_sink {
                 builder = builder.audit_notification_sink(sink.object_id);
-                if sink.allow_all {
-                    policy = Some(
-                        bacnet_server::FnPolicy::new()
-                            .audit_notification(|_| true)
-                            .unconfirmed_audit_notification(|_| true),
-                    );
-                }
-                // deny_all deliberately retains the Rust fail-closed defaults.
             }
-            if let Some(callback) = mutation_callback {
-                policy = Some(
-                    policy
-                        .unwrap_or_default()
-                        .mutation(move |context| callback.decide(context)),
-                );
-            }
-            if let Some(policy) = policy {
+            // deny_all deliberately retains the Rust fail-closed defaults.
+            let audit_allow_all = audit_notification_sink.is_some_and(|sink| sink.allow_all);
+            if let Some(policy) =
+                crate::mutation_policy::server_policy(audit_allow_all, mutation_callback)
+            {
                 builder = builder.policy(policy);
             }
             if let Some(pw) = dcc_password {
@@ -538,12 +540,13 @@ impl BACnetServer {
         crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
-    /// Update Present_Value for an application-owned Input, Loop or Life
-    /// Safety object.
+    /// Update Present_Value for an application-owned Input, noncommandable
+    /// Value, Loop or Life Safety object.
     ///
     /// This is the narrow application route for finite Analog Input and Loop
     /// REAL values, logical Binary Input Enumerated 0/1 values, in-range
-    /// Multi-state Input Unsigned values and Life Safety Point and Zone
+    /// Multi-state Input Unsigned values, the same for noncommandable Analog,
+    /// Binary and Multi-state Values, and Life Safety Point and Zone
     /// Enumerated BACnetLifeSafetyState values. The object implementation owns
     /// validation and Out_Of_Service simulation exclusivity.
     #[pyo3(signature = (object_id, value))]

@@ -4,11 +4,15 @@
 //! simulated values, the event algorithm, Masked_Alarm_Values and the return
 //! to service all show through.
 
+#[cfg(feature = "event-reporting")]
+use crate::traits::EventReporting as _;
+use crate::traits::Timed;
 use std::time::Duration;
 
 use bacnet_types::enums::PropertyIdentifier as P;
 
 use super::*;
+#[cfg(feature = "event-reporting")]
 use crate::event::commit_test_proposal;
 
 const SECURED: DoorSecuredStatus = DoorSecuredStatus::SECURED;
@@ -50,6 +54,7 @@ fn set_out_of_service(door: &mut AccessDoorObject, out_of_service: bool) {
     .unwrap();
 }
 
+#[cfg(feature = "event-reporting")]
 fn status_flags(bits: StatusFlags) -> PropertyValue {
     PropertyValue::BitString {
         unused_bits: 4,
@@ -133,6 +138,7 @@ fn access_door_secured_status_follows_door_and_lock_status() {
     assert_eq!(secured(&door), SECURED);
 }
 
+#[cfg(feature = "event-reporting")]
 /// Move the door to `state`, then let its event algorithm (Time_Delay 0)
 /// commit whatever transition that proposes.
 fn report(door: &mut AccessDoorObject, state: DoorAlarmState) {
@@ -141,6 +147,7 @@ fn report(door: &mut AccessDoorObject, state: DoorAlarmState) {
     commit_test_proposal(door, outcome);
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn access_door_secured_status_follows_the_in_alarm_flag() {
     let mut door = door();
@@ -238,13 +245,13 @@ fn access_door_secured_status_follows_a_pulse_and_its_relock() {
     ] {
         command(&mut door, Some(value), 8);
         assert_eq!(secured(&door), UNSECURED, "{value:?}");
-        assert!(!door.advance_time_internal(Duration::from_millis((tenths - 1) * 100)));
+        assert!(!door.advance_time(Duration::from_millis((tenths - 1) * 100)));
         assert_eq!(secured(&door), UNSECURED, "{value:?} one tenth short");
         // The relock relinquishes the slot and the door reads secure again,
         // in a COV snapshot as well.
-        assert!(door.advance_time_internal(Duration::from_millis(100)));
+        assert!(door.advance_time(Duration::from_millis(100)));
         assert_eq!(secured(&door), SECURED, "{value:?} relocked");
-        let snapshot = door.cov_snapshot_internal().unwrap();
+        let snapshot = door.cov_snapshot().unwrap();
         assert_eq!(
             snapshot.read_property(P::SECURED_STATUS, None).unwrap(),
             PropertyValue::Enumerated(SECURED.to_raw())

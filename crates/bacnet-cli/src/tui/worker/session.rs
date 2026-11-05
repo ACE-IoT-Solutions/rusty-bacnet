@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bacnet_client::client::BACnetClient;
+use bacnet_ops::engine::Engine;
 use bacnet_ops::limits::RequestLimits;
 use bacnet_ops::target::AddressStyle;
 use bacnet_services::who_is::WhoIsRequest;
@@ -94,6 +95,9 @@ pub(crate) struct SessionOptions {
     pub(crate) safety: SafetyOptions,
     /// The MS/TP monitor's plan and where serial ports are opened.
     pub(crate) mstp: crate::tui::monitor::MstpOptions,
+    /// The profile's MCP listener, when it has one (#2185).
+    #[cfg(feature = "mcp")]
+    pub(crate) attach: Option<crate::tui::attach::Plan>,
 }
 
 /// Capacity of the session's queue to the watch worker: a burst of adds
@@ -153,11 +157,11 @@ async fn connect(
                 finish_build(Box::pin(transport::build_bip_client(&args)), &sink).await
             {
                 if let Some(foreign) = &args.foreign_device {
-                    let bbmd = std::net::SocketAddrV4::new(foreign.bbmd_ip, foreign.bbmd_port);
+                    let named = &foreign.bbmd;
                     let outcome = tokio::select! {
                         biased;
                         () = sink.cancelled() => None,
-                        result = crate::foreign::await_registration(&client, bbmd) => Some(result),
+                        result = crate::foreign::await_registration(&client, named) => Some(result),
                     };
                     let Some(outcome) = outcome else {
                         if let Err(error) = client.stop().await {
@@ -166,20 +170,29 @@ async fn connect(
                         return Ok(());
                     };
                     match outcome {
-                        Ok(()) => tracing::info!(
+                        Ok(bbmd) => tracing::info!(
                             "BBMD {bbmd} accepted the foreign-device registration; it renews automatically"
                         ),
                         Err(error) => tracing::warn!("{error}; retrying in the background"),
                     }
+                    // The address in use: a host name's once it resolved
+                    // (#2308). Until then the Network screen waits for it,
+                    // and the network worker reports it when it comes.
+                    let in_use = client
+                        .transport()
+                        .foreign_device_config()
+                        .and_then(|config| config.bbmd.address());
                     // Accepted or retrying, the BBMD may hold an FDT entry
                     // for us until its TTL runs out: part of the footprint.
                     let renewal = foreign
                         .renewal_interval
                         .unwrap_or(Duration::from_secs(u64::from(foreign.ttl)) / 2);
                     let foreign = Foreign {
-                        bbmd,
+                        configured: named.clone(),
+                        bbmd: in_use,
                         ttl: foreign.ttl,
                         renewal,
+                        nat_global: args.nat_global_address,
                     };
                     sink.deliver(WorkerEvent::ForeignDevice(foreign)).await;
                 }
@@ -187,9 +200,32 @@ async fn connect(
             }
         }
         TransportKind::Bip6 => {
-            if let Some(client) =
+            if let Some(mut client) =
                 finish_build(Box::pin(transport::build_bip6_client(&args)), &sink).await
             {
+                // The BBMD's host name, if it has one, and its answer to the
+                // first registration, before the session starts (#2365,
+                // #2388): logged either way, and tried again in the
+                // background.
+                if let Some(foreign) = &args.bip6_foreign_device {
+                    let outcome = tokio::select! {
+                        biased;
+                        () = sink.cancelled() => None,
+                        result = crate::foreign::await_bip6_registration(&client, &foreign.bbmd) => Some(result),
+                    };
+                    match outcome {
+                        None => {
+                            if let Err(error) = client.stop().await {
+                                tracing::warn!("client stop: {error}");
+                            }
+                            return Ok(());
+                        }
+                        Some(Ok(bbmd)) => tracing::info!(
+                            "BBMD {bbmd} accepted the foreign-device registration; it renews automatically"
+                        ),
+                        Some(Err(error)) => tracing::warn!("{error}; retrying in the background"),
+                    }
+                }
                 Box::pin(serve(client, style, sink, commands, options)).await;
             }
         }
@@ -405,11 +441,17 @@ async fn serve_with<T: TransportPort + 'static>(
         let (browse, browse_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (watch, watch_rx) = mpsc::channel(WATCH_CHANNEL_CAPACITY);
         let (safety, safety_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
+        // The desk the write worker lends attached agents (#2185).
+        let (lend, lent) = lent_desk();
         let (network, network_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (discovery, discovery_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (capture, capture_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         // Dropped with the session loop, which ends the SC worker.
         let (sc_stop, sc_stop_rx) = mpsc::channel::<()>(1);
+        // Likewise for the MCP listener, which ends its agents' sessions.
+        let (attach_stop, attach_stop_rx) = mpsc::channel::<()>(1);
+        // The watch list and attached agents read through one engine.
+        let engine = Arc::new(Engine::new(Arc::clone(&client), Arc::clone(&rate)));
         let quiet = options.safety.passive;
         // The browser and the watch list run beside this loop under
         // `join!`, so their jobs keep being polled while an arm here awaits;
@@ -422,6 +464,7 @@ async fn serve_with<T: TransportPort + 'static>(
             let discovery = discovery;
             let capture = capture;
             let _sc_stop = sc_stop;
+            let _attach_stop = attach_stop;
             let mut feed = DeviceFeed::new(style);
             let mut listening: Option<(OpId, Instant)> = None;
             let mut resolving: Option<Resolving<'_>> = None;
@@ -548,11 +591,12 @@ async fn serve_with<T: TransportPort + 'static>(
                 }
             }
         };
+        let watch_hub = super::watch::hub(&engine, &options.watch);
         tokio::join!(
             Box::pin(session),
             Box::pin(super::browse::run(&client, &sink, browse_rx, &rate)),
             Box::pin(super::watch::run(
-                &client,
+                watch_hub,
                 &sink,
                 watch_rx,
                 &rate,
@@ -561,7 +605,7 @@ async fn serve_with<T: TransportPort + 'static>(
             Box::pin(super::write::run(
                 &client,
                 &sink,
-                safety_rx,
+                (safety_rx, lent),
                 &rate,
                 &options.safety,
                 &local
@@ -571,10 +615,56 @@ async fn serve_with<T: TransportPort + 'static>(
             Box::pin(super::sc::run(&client, &sink, sc_stop_rx, sc_events)),
             Box::pin(crate::tui::capture::worker::run(
                 &*client, &sink, capture_rx, style
-            ))
+            )),
+            Box::pin(attached(&engine, &sink, &options, (attach_stop_rx, lend)))
         );
     }
     stop_shared(client).await;
+}
+
+/// The write worker's desk, lent to attached agents: the listener's end
+/// and the worker's.
+#[cfg(feature = "mcp")]
+type Lend<T> = (
+    mpsc::Sender<bacnet_mcp::attach::DeskJob<T>>,
+    Option<mpsc::Receiver<bacnet_mcp::attach::DeskJob<T>>>,
+);
+
+#[cfg(feature = "mcp")]
+fn lent_desk<T: TransportPort + 'static>() -> Lend<T> {
+    // One job a seat: each agent waits for its own.
+    let (lend, lent) = mpsc::channel(bacnet_mcp::attach::MAX_AGENTS);
+    (lend, Some(lent))
+}
+
+/// No desk to lend without the `mcp` feature.
+#[cfg(not(feature = "mcp"))]
+fn lent_desk() -> ((), Option<mpsc::Receiver<std::convert::Infallible>>) {
+    ((), None)
+}
+
+/// The MCP listener, while the session runs.
+#[cfg(feature = "mcp")]
+async fn attached<T: TransportPort + 'static>(
+    engine: &Arc<Engine<T>>,
+    sink: &EventSink,
+    options: &SessionOptions,
+    (stop, desk): (
+        mpsc::Receiver<()>,
+        mpsc::Sender<bacnet_mcp::attach::DeskJob<T>>,
+    ),
+) {
+    crate::tui::attach::run(engine, options.attach.as_ref(), sink, stop, desk).await;
+}
+
+/// No MCP listener without the `mcp` feature.
+#[cfg(not(feature = "mcp"))]
+async fn attached<T: TransportPort + 'static>(
+    _engine: &Arc<Engine<T>>,
+    _sink: &EventSink,
+    _options: &SessionOptions,
+    _: (mpsc::Receiver<()>, ()),
+) {
 }
 
 /// How long [`stop_shared`] waits quietly for the renewal tasks to let go

@@ -50,7 +50,9 @@ async fn mandatory_policy_send_capacity_denial_is_atomic() {
     assert_eq!(
         db.get(&target)
             .unwrap()
-            .audit_object_policy_internal()
+            .audit_policy()
+            .map(|policy| policy.object_policy())
+            .unwrap_or_default()
             .level,
         Some(AuditLevel::NONE)
     );
@@ -88,7 +90,9 @@ async fn assert_unchanged(f: &Fixture, kind: ObjectType, before: ObjectAuditPoli
     assert_eq!(
         db.get(&oid(kind, 11))
             .unwrap()
-            .audit_object_policy_internal(),
+            .audit_policy()
+            .map(|policy| policy.object_policy())
+            .unwrap_or_default(),
         before
     );
     assert_eq!(db.reserve_event_sequence_number().number(), sequence);
@@ -248,10 +252,8 @@ async fn mandatory_policy_no_runtime_refuses_without_consuming_sequence() {
                     &f.server.config,
                     f.server.test_network(),
                     &f.server.notification_transactions,
-                    &db,
-                )
-                .unwrap();
-                crate::handlers::handle_write_property_observed(
+                );
+                bacnet_device_core::write::write_property(
                     &mut db,
                     &wp(
                         oid(ObjectType::ANALOG_VALUE, 11),
@@ -500,7 +502,7 @@ async fn mandatory_policy_wpm_denial_keeps_prefix_and_exact_coordinate_then_retr
 
 #[tokio::test(start_paused = true)]
 async fn mandatory_policy_stop_between_capture_and_commit_denies_without_assignment() {
-    use crate::handlers::{WriteCommitObserver, WriteTarget};
+    use bacnet_device_core::write::{WriteCommitObserver, WriteTarget};
     let mut f = server(reporter()).await;
     install(&f, policy()).await;
     let database = Arc::clone(&f.server.db);
@@ -519,9 +521,7 @@ async fn mandatory_policy_stop_between_capture_and_commit_denies_without_assignm
         &f.server.config,
         f.server.test_network(),
         &f.server.notification_transactions,
-        &db,
-    )
-    .unwrap();
+    );
     audit.before(&db, target);
     // This is the exact precommit boundary; no arbitrary callback is inserted
     // inside the assignment/admission critical section to manufacture the race.
@@ -532,7 +532,11 @@ async fn mandatory_policy_stop_between_capture_and_commit_denies_without_assignm
         &Error::protocol(ErrorClass::SERVICES, ErrorCode::SERVICE_REQUEST_DENIED),
     );
     assert_eq!(
-        db.get(&target.oid).unwrap().audit_object_policy_internal(),
+        db.get(&target.oid)
+            .unwrap()
+            .audit_policy()
+            .map(|policy| policy.object_policy())
+            .unwrap_or_default(),
         policy()
     );
     assert_eq!(db.reserve_event_sequence_number().number(), 0);
@@ -579,7 +583,9 @@ async fn mandatory_policy_admitted_worker_is_joined_after_cancelled_stop() {
     assert_eq!(
         db.get(&oid(ObjectType::BINARY_VALUE, 11))
             .unwrap()
-            .audit_object_policy_internal()
+            .audit_policy()
+            .map(|policy| policy.object_policy())
+            .unwrap_or_default()
             .level,
         Some(AuditLevel::AUDIT_CONFIG)
     );

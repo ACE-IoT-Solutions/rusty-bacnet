@@ -8,8 +8,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use bacnet_transport::port::{DirectScIdentity, TransportProvenance};
 use bacnet_types::enums::{AuditOperation, ReinitializedState};
 
-use super::requests::confirmed_response::error_apdu_from_error;
 use super::*;
+use bacnet_device_core::reply::error_apdu;
 
 /// Carries out a ReinitializeDevice request (Clause 16.4) on a full server or
 /// an endpoint session.
@@ -67,8 +67,9 @@ use super::*;
 /// - **Colour outputs on an in-process restart.** A server start drives each
 ///   Color and Color Temperature output to its default (#1526). An
 ///   application that carries WARMSTART or COLDSTART out in process, without
-///   building a new server, should do the same: call `start_output` on each
-///   colour object, which is safe to call again (a zero default then keeps
+///   building a new server, should do the same: call
+///   `ObjectDatabase::start_outputs` (`Timed::start_output` on each timed
+///   object), which is safe to call again (a zero default then keeps
 ///   the current value). It is a raw database edit, so it sends no COV
 ///   notification of its own.
 /// - **Audited once accepted.** With Audit Reporters configured, an accepted
@@ -387,7 +388,7 @@ pub(in crate::server) async fn response(
             (ack, hooks)
         }
         Err(error) => (
-            error_apdu_from_error(request.invoke_id, request.service_choice, &error),
+            error_apdu(request.invoke_id, request.service_choice, &error),
             AfterReply::default(),
         ),
     }
@@ -551,14 +552,12 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     pub async fn report_device_reset_local(&self) -> Result<(), Error> {
         let network = self.active_network()?;
         let mut db = self.db.write().await;
-        if let Some(mut audit) = super::audit_reporter::WriteAudit::local(
+        super::audit_reporter::WriteAudit::local(
             &self.config,
             network,
             &self.notification_transactions,
-            &db,
-        ) {
-            audit.device_operation(&mut db, AuditOperation::DEVICE_RESET);
-        }
+        )
+        .device_operation(&mut db, AuditOperation::DEVICE_RESET);
         Ok(())
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::enums::{
     ErrorClass, ErrorCode, LifeSafetyMode, LifeSafetyOperation, LifeSafetyState, ObjectType,
     SilencedState,
@@ -6,7 +7,7 @@ use bacnet_types::enums::{
 use bacnet_types::error::RemoteError;
 
 use crate::database::ObjectDatabase;
-use crate::traits::LifeSafetyOperationEffect;
+use crate::traits::{LifeSafety, LifeSafetyOperationEffect};
 
 fn read_enumerated(object: &dyn BACnetObject, property: PropertyIdentifier) -> u32 {
     match object.read_property(property, None).unwrap() {
@@ -308,7 +309,7 @@ fn point_silenced_and_operation_expected_are_network_read_only() {
             .write_property(property, None, PropertyValue::Enumerated(3), None)
             .unwrap_err();
         assert_protocol_error(error, ErrorClass::PROPERTY, ErrorCode::WRITE_ACCESS_DENIED);
-        assert!(!point.is_writable_property(property));
+        assert!(!is_writable_property(&point, property));
     }
 }
 
@@ -320,21 +321,22 @@ fn point_can_be_rearmed_through_the_local_trait_channel() {
         .unwrap();
 
     let object = db.get_mut(&oid).unwrap();
-    object
-        .set_life_safety_operation_expected_internal(LifeSafetyOperation::SILENCE)
+    let life_safety = object.life_safety().unwrap();
+    life_safety
+        .set_life_safety_operation_expected(LifeSafetyOperation::SILENCE)
         .unwrap();
     assert_eq!(
-        object
+        life_safety
             .apply_life_safety_operation(LifeSafetyOperation::SILENCE)
             .unwrap()
             .effect,
         LifeSafetyOperationEffect::Applied
     );
-    object
-        .set_life_safety_operation_expected_internal(LifeSafetyOperation::UNSILENCE)
+    life_safety
+        .set_life_safety_operation_expected(LifeSafetyOperation::UNSILENCE)
         .unwrap();
     assert_eq!(
-        object
+        life_safety
             .apply_life_safety_operation(LifeSafetyOperation::UNSILENCE)
             .unwrap()
             .effect,
@@ -379,7 +381,8 @@ fn point_read_maintenance_required() {
     let val = pt
         .read_property(PropertyIdentifier::MAINTENANCE_REQUIRED, None)
         .unwrap();
-    assert_eq!(val, PropertyValue::Boolean(false));
+    // BACnetMaintenance NONE (#2252).
+    assert_eq!(val, PropertyValue::Enumerated(0));
 }
 
 #[test]
@@ -436,7 +439,7 @@ fn point_read_object_type() {
 #[test]
 fn point_property_list() {
     let pt = LifeSafetyPointObject::new(1, "LSP-1").unwrap();
-    let props = pt.property_list();
+    let props = crate::test_rows::listed(&pt.property_metadata());
     assert!(props.contains(&PropertyIdentifier::PRESENT_VALUE));
     assert!(props.contains(&PropertyIdentifier::MODE));
     assert!(props.contains(&PropertyIdentifier::SILENCED));
@@ -454,6 +457,7 @@ fn point_property_list() {
 #[test]
 fn life_safety_property_cov_capabilities_are_explicit() {
     let point = LifeSafetyPointObject::new(1, "LSP-1").unwrap();
+    let point_cov = point.cov().unwrap();
     for property in [
         PropertyIdentifier::PRESENT_VALUE,
         PropertyIdentifier::STATUS_FLAGS,
@@ -461,11 +465,12 @@ fn life_safety_property_cov_capabilities_are_explicit() {
         PropertyIdentifier::SILENCED,
         PropertyIdentifier::OPERATION_EXPECTED,
     ] {
-        assert!(point.supports_cov_property(property));
+        assert!(point_cov.supports_cov_property(property));
     }
-    assert!(!point.supports_cov_property(PropertyIdentifier::MODE));
+    assert!(!point_cov.supports_cov_property(PropertyIdentifier::MODE));
 
     let zone = LifeSafetyZoneObject::new(1, "LSZ-1").unwrap();
+    let zone_cov = zone.cov().unwrap();
     for property in [
         PropertyIdentifier::PRESENT_VALUE,
         PropertyIdentifier::STATUS_FLAGS,
@@ -473,10 +478,10 @@ fn life_safety_property_cov_capabilities_are_explicit() {
         PropertyIdentifier::SILENCED,
         PropertyIdentifier::OPERATION_EXPECTED,
     ] {
-        assert!(zone.supports_cov_property(property));
+        assert!(zone_cov.supports_cov_property(property));
     }
-    assert!(!zone.supports_cov_property(PropertyIdentifier::MODE));
-    assert!(!zone.supports_cov_property(PropertyIdentifier::ACCEPTED_MODES));
+    assert!(!zone_cov.supports_cov_property(PropertyIdentifier::MODE));
+    assert!(!zone_cov.supports_cov_property(PropertyIdentifier::ACCEPTED_MODES));
 }
 
 #[test]
@@ -659,7 +664,7 @@ fn zone_read_object_type() {
 #[test]
 fn zone_property_list() {
     let z = LifeSafetyZoneObject::new(1, "LSZ-1").unwrap();
-    let props = z.property_list();
+    let props = crate::test_rows::listed(&z.property_metadata());
     assert!(props.contains(&PropertyIdentifier::PRESENT_VALUE));
     assert!(props.contains(&PropertyIdentifier::MODE));
     assert!(props.contains(&PropertyIdentifier::SILENCED));
@@ -733,30 +738,33 @@ fn life_safety_property_metadata_drives_required_sets() {
     let point = LifeSafetyPointObject::new(1, "LSP-1").unwrap();
     assert!(matches!(point.property_metadata(), Cow::Borrowed(_)));
     assert_eq!(point.property_metadata().len(), 18);
-    assert_eq!(point.required_properties().len(), 14);
-    assert!(
-        point
-            .required_properties()
-            .contains(&PropertyIdentifier::PROPERTY_LIST)
+    assert_eq!(
+        crate::test_rows::required(&point.property_metadata()).len(),
+        14
     );
     assert!(
-        !point
-            .property_list()
-            .contains(&PropertyIdentifier::PROPERTY_LIST)
+        crate::property_metadata::required_properties(&point.property_metadata())
+            .any(|required| required == PropertyIdentifier::PROPERTY_LIST)
     );
-    assert!(!point.is_createable());
+    // The row stays; only the served list leaves it out.
+    assert!(crate::property_metadata::has_property(
+        &point.property_metadata(),
+        PropertyIdentifier::PROPERTY_LIST
+    ));
     let zone = LifeSafetyZoneObject::new(1, "LSZ-1").unwrap();
     assert!(matches!(zone.property_metadata(), Cow::Borrowed(_)));
     assert_eq!(zone.property_metadata().len(), 17);
-    assert_eq!(zone.required_properties().len(), 15);
-    assert!(
-        zone.required_properties()
-            .contains(&PropertyIdentifier::PROPERTY_LIST)
+    assert_eq!(
+        crate::test_rows::required(&zone.property_metadata()).len(),
+        15
     );
     assert!(
-        !zone
-            .property_list()
-            .contains(&PropertyIdentifier::PROPERTY_LIST)
+        crate::property_metadata::required_properties(&zone.property_metadata())
+            .any(|required| required == PropertyIdentifier::PROPERTY_LIST)
     );
-    assert!(!zone.is_createable());
+    // The row stays; only the served list leaves it out.
+    assert!(crate::property_metadata::has_property(
+        &zone.property_metadata(),
+        PropertyIdentifier::PROPERTY_LIST
+    ));
 }

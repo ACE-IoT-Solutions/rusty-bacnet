@@ -10,13 +10,21 @@
 //! both caps leave room: [`Caps::watches`](crate::policy::Caps::watches)
 //! points per principal (the same point on two streams counts once) and
 //! the watch hub's cap for the process. The leases wait for the stream's
-//! `listen` call ([`Subs::claim`]), matched by their URI list: two streams
-//! asking for the same URIs hold the same points, so either may take
-//! either's leases. A reservation no stream claims within
-//! [`UNCLAIMED`] (the acknowledgment couldn't be sent) is dropped.
+//! `listen` call ([`Subs::claim`]), matched by the [`Ticket`] of the request
+//! that made them and their URI list, so a stream refused at its start
+//! frees its own reservation, never another's with the same URIs (#2157).
+//! A reservation no stream claims within [`UNCLAIMED`] (the acknowledgment
+//! couldn't be sent) is dropped.
+//!
+//! A session runs at most [`MAX_STREAMS`] streams at once; one more is
+//! refused when its `listen` call begins. A stream's per-device alarm URIs
+//! count with the session's legacy URIs against one bound
+//! ([`crate::legacy::max_uris`]), held until the stream (or its unclaimed
+//! reservation) goes, so the 60-second alarm poll has bounded work.
 //!
 //! The listen loop waits on a [`Follow`]: the leases' signals, the
-//! discovery table's events and an alarm tick. Its arms send notifications
+//! session's and the ledger's (#2160), the discovery table's events and an
+//! alarm tick. Its arms send notifications
 //! and refresh alarms; the futures it leaves pending meanwhile wait on
 //! watch and broadcast channels only, never a lock (#1498). Legacy
 //! subscriptions ([`crate::legacy`]) follow theirs the same way, and their
@@ -26,19 +34,22 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
-use bacnet_client::client::{DeviceEvent, DeviceEventKind};
-use bacnet_ops::engine::Engine;
 use bacnet_ops::watch::{Changes, Lease, Point, WatchError};
 use bacnet_transport::port::TransportPort;
-use futures_util::stream::{FuturesUnordered, StreamExt};
 use rmcp::ErrorData;
 use rmcp::service::SubscriptionContext;
-use tokio::sync::broadcast::{self, error::RecvError};
 use tokio::sync::watch;
-use tokio::time::{Instant, Interval};
+use tokio::time::Instant;
 
-use crate::context::Ctx;
+use crate::context::{Ctx, Listening, Points};
+use crate::errors::ToolError;
+use crate::follow::{Follow, Wake};
 use crate::resources::uri::{self, Uri};
+use crate::writes::notify::Signal;
+
+/// The legacy subscriptions as [`Follow::set`] and [`Follow::adopt`] take
+/// them.
+pub(crate) type LegacySnapshot = (Vec<(String, Option<Changes>)>, Vec<(String, Signal)>);
 
 /// Why a watch is refused once the session has ended or the hub stopped.
 pub(crate) const SHUTTING_DOWN: &str = "shutting-down";
@@ -49,8 +60,13 @@ const UNCLAIMED: Duration = Duration::from_secs(30);
 /// Reservations waiting at once; past it the oldest is dropped.
 const MAX_PENDING: usize = 16;
 
-/// The fastest the device list is announced as changed.
-const DEVICES_EVERY: Duration = Duration::from_secs(1);
+/// The most listen streams one session runs at once. Every stream
+/// following a point is told of each of its changes, and each one polls
+/// its alarm URIs, so the streams multiply that work; a host needs one
+/// stream, and four leave room for one split by topic (points, the device
+/// list, alarms, the session) while keeping the multiple small, like the
+/// other per-session bounds here ([`MAX_PENDING`], [`MAX_DEVICE_PAGES`]).
+pub(crate) const MAX_STREAMS: usize = 4;
 
 /// The most device-list pages (`bacnet://devices` and its `after` pages,
 /// counted by spelling) one listen stream follows. Each followed page is
@@ -77,10 +93,15 @@ pub(crate) struct Subs {
     legacy_changed: watch::Sender<u64>,
 }
 
-impl Default for Subs {
-    fn default() -> Self {
+impl Subs {
+    /// A session's subscriptions, counted in its principal's `points`.
+    pub(crate) fn new(points: Points) -> Self {
+        let state = SubsState {
+            principal: points,
+            ..SubsState::default()
+        };
         Self {
-            state: Mutex::default(),
+            state: Mutex::new(state),
             legacy_changed: watch::Sender::new(0),
         }
     }
@@ -98,9 +119,18 @@ struct SubsState {
     /// The session's legacy `resources/subscribe` URIs, each point URI
     /// with its hold.
     legacy: HashMap<String, Option<Hold>>,
+    /// The session and ledger signals of legacy subscriptions, taken when
+    /// they were made and not yet followed.
+    legacy_signals: Vec<(String, Signal)>,
+    /// Per-device alarm URIs held by listen streams and their waiting
+    /// reservations, one a stream each: they count with the legacy URIs
+    /// against the session's URI bound ([`Subs::uris`]).
+    alarm_uris: usize,
     /// Set when the session ends ([`Subs::clear`]): nothing new is
     /// watched after it.
     closed: bool,
+    /// The principal's points, which its cap counts (locked after this).
+    principal: Points,
 }
 
 /// One legacy subscription's watch on a point: counted against the
@@ -122,21 +152,72 @@ impl Drop for Hold {
 
 struct Pending {
     at: Instant,
+    ticket: Ticket,
     uris: Vec<String>,
     claim: Claim,
 }
 
+/// Which `subscriptions/listen` request a reservation is for. The SDK asks
+/// for the accepted filter and then runs the stream within the one task it
+/// spawned for the request, and the filter hook isn't told the request's
+/// id, so the task's id names the request at both ends. Tokio only
+/// promises an id unique among running tasks; a reservation outlives its
+/// task only when its stream never began, and the sweep drops it. Calls
+/// made outside any task (`None`) share one ticket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Ticket(Option<tokio::task::Id>);
+
+impl Ticket {
+    /// The ticket of the request this task handles.
+    pub(crate) fn current() -> Self {
+        Self(tokio::task::try_id())
+    }
+}
+
 /// The points one stream holds, counted against the principal's cap
-/// until it is dropped, and their leases until the stream takes them.
+/// until it is dropped, and their leases until the stream takes them;
+/// likewise its per-device alarm URIs, counted against the session's URI
+/// bound.
 pub(crate) struct Claim {
     subs: Arc<Subs>,
     points: Vec<Point>,
     leases: Vec<(String, Lease)>,
+    alarms: usize,
+    /// The session and ledger signals, taken before the acknowledgment.
+    signals: Vec<(String, Signal)>,
+}
+
+impl Claim {
+    /// The lease set aside for `uri`, for a test.
+    #[cfg(test)]
+    pub(crate) fn lease(&self, uri: &str) -> Option<&Lease> {
+        self.leases
+            .iter()
+            .find(|(held, _)| held == uri)
+            .map(|(_, lease)| lease)
+    }
 }
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        self.subs.release(&self.points);
+        let mut state = self.subs.lock();
+        state.release(&self.points);
+        state.alarm_uris = state.alarm_uris.saturating_sub(self.alarms);
+    }
+}
+
+impl SubsState {
+    /// One holder fewer on each of `points`.
+    fn release(&mut self, points: &[Point]) {
+        for point in points {
+            if let Some(count) = self.held.get_mut(point) {
+                *count -= 1;
+                if *count == 0 {
+                    self.held.remove(point);
+                    crate::context::let_go(&self.principal, point);
+                }
+            }
+        }
     }
 }
 
@@ -145,21 +226,18 @@ impl Subs {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Points the principal watches now.
+    /// Points the principal watches now, in all its sessions.
     pub(crate) fn held(&self) -> usize {
-        self.lock().held.len()
+        let state = self.lock();
+        let points = state
+            .principal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        points.len()
     }
 
     fn release(&self, points: &[Point]) {
-        let mut state = self.lock();
-        for point in points {
-            if let Some(count) = state.held.get_mut(point) {
-                *count -= 1;
-                if *count == 0 {
-                    state.held.remove(point);
-                }
-            }
-        }
+        self.lock().release(points);
     }
 
     /// A lease on `point` for a new holder, if the principal's cap and the
@@ -174,13 +252,19 @@ impl Subs {
         if state.closed {
             return Err(SHUTTING_DOWN);
         }
-        if !state.held.contains_key(&point) && state.held.len() >= ctx.policy.caps.watches {
+        let new = !state.held.contains_key(&point);
+        let principal = Arc::clone(&state.principal);
+        let mut points = principal.lock().unwrap_or_else(PoisonError::into_inner);
+        if new && !points.contains_key(&point) && points.len() >= ctx.policy.caps.watches {
             return Err("principal-cap");
         }
         let lease = hub.watch(point).map_err(|e| match e {
             WatchError::Shut => SHUTTING_DOWN,
             WatchError::Full { .. } => "process-cap",
         })?;
+        if new {
+            *points.entry(point).or_default() += 1;
+        }
         *state.held.entry(point).or_default() += 1;
         Ok(lease)
     }
@@ -210,7 +294,7 @@ impl Subs {
     pub(crate) fn legacy_add(
         &self,
         uri: &str,
-        hold: Option<Hold>,
+        (hold, signal): (Option<Hold>, Option<Signal>),
         max: usize,
     ) -> Result<(), &'static str> {
         let mut state = self.lock();
@@ -218,10 +302,13 @@ impl Subs {
             Err(SHUTTING_DOWN)
         } else if state.legacy.contains_key(uri) {
             Ok(false)
-        } else if state.legacy.len() >= max {
+        } else if state.legacy.len() + state.alarm_uris >= max {
             Err("principal-cap")
         } else {
             state.legacy.insert(uri.to_string(), hold);
+            state
+                .legacy_signals
+                .extend(signal.map(|s| (uri.to_string(), s)));
             Ok(true)
         };
         drop(state);
@@ -235,7 +322,11 @@ impl Subs {
 
     /// Drop the legacy subscription `uri`, if the session has it.
     pub(crate) fn legacy_remove(&self, uri: &str) {
-        let removed = self.lock().legacy.remove(uri);
+        let removed = {
+            let mut state = self.lock();
+            state.legacy_signals.retain(|(held, _)| held != uri);
+            state.legacy.remove(uri)
+        };
         if removed.is_some() {
             // The guard is gone: the hold's release takes the lock.
             drop(removed);
@@ -243,18 +334,47 @@ impl Subs {
         }
     }
 
-    /// The legacy URIs, each point URI with its change signal.
-    pub(crate) fn legacy_snapshot(&self) -> Vec<(String, Option<Changes>)> {
-        self.lock()
+    /// The legacy URIs, each point URI with its change signal, and, taken
+    /// at the same time, the session and ledger signals of those not yet
+    /// followed ([`Follow::adopt`]).
+    pub(crate) fn legacy_snapshot(&self) -> LegacySnapshot {
+        let mut state = self.lock();
+        let uris = state
             .legacy
             .iter()
             .map(|(uri, hold)| (uri.clone(), hold.as_ref().map(|h| h.lease.changes())))
-            .collect()
+            .collect();
+        (uris, std::mem::take(&mut state.legacy_signals))
+    }
+
+    /// Session and ledger signals of legacy subscriptions not yet
+    /// followed, for a test.
+    #[cfg(test)]
+    pub(crate) fn legacy_signal_count(&self) -> usize {
+        self.lock().legacy_signals.len()
     }
 
     /// Legacy URIs the session holds.
     pub(crate) fn legacy_count(&self) -> usize {
         self.lock().legacy.len()
+    }
+
+    /// URIs counted against the session's bound: the legacy ones and the
+    /// listen streams' per-device alarm URIs.
+    pub(crate) fn uris(&self) -> usize {
+        let state = self.lock();
+        state.legacy.len() + state.alarm_uris
+    }
+
+    /// Count one more per-device alarm URI for a listen stream, if the
+    /// session's URI bound `max` leaves room.
+    fn take_alarm_uri(&self, max: usize) -> bool {
+        let mut state = self.lock();
+        let room = !state.closed && state.legacy.len() + state.alarm_uris < max;
+        if room {
+            state.alarm_uris += 1;
+        }
+        room
     }
 
     /// Wakes when the legacy subscriptions change.
@@ -312,18 +432,27 @@ impl Subs {
     }
 
     /// The URIs of `requested` this server honours, distinct and in order,
-    /// with the leases they need taken and set aside for the stream.
+    /// with the leases they need taken and set aside for the stream of
+    /// `ticket`.
     pub(crate) fn reserve<T: TransportPort + 'static>(
         self: &Arc<Self>,
         ctx: &Ctx<T>,
+        ticket: Ticket,
         requested: &[String],
     ) -> Vec<String> {
         self.prune();
+        if *ctx.listening.borrow() >= MAX_STREAMS {
+            // The stream will be refused ([`run`]): take nothing for it.
+            return Vec::new();
+        }
+        let max_uris = crate::legacy::max_uris(ctx);
         let mut accepted = Vec::new();
         let mut claim = Claim {
             subs: Arc::clone(self),
             points: Vec::new(),
             leases: Vec::new(),
+            alarms: 0,
+            signals: Vec::new(),
         };
         let mut seen = HashSet::new();
         let mut pages = 0;
@@ -347,8 +476,20 @@ impl Subs {
                     }
                 }
                 Ok(Uri::Alarms) => ctx.hub.is_some(),
-                Ok(Uri::DeviceAlarms(device)) => ctx.hub.is_some() && ctx.reach_known(device),
-                Ok(Uri::Session | Uri::Ledger) => true,
+                Ok(Uri::DeviceAlarms(device)) => {
+                    let taken = ctx.hub.is_some()
+                        && ctx.reach_known(device)
+                        && self.take_alarm_uri(max_uris);
+                    claim.alarms += usize::from(taken);
+                    taken
+                }
+                Ok(found @ (Uri::Session | Uri::Ledger)) => {
+                    // Taken before the acknowledgment, so no change after
+                    // it is missed.
+                    let signal = ctx.writes.signals.of(found);
+                    claim.signals.extend(signal.map(|s| (text.clone(), s)));
+                    true
+                }
                 // A device summary has no updates; a device-list page past
                 // the cap or on a passive server isn't honoured; anything
                 // else isn't ours.
@@ -374,6 +515,7 @@ impl Subs {
             }
             state.pending.push(Pending {
                 at: Instant::now(),
+                ticket,
                 uris: accepted.clone(),
                 claim,
             });
@@ -384,11 +526,21 @@ impl Subs {
         accepted
     }
 
-    /// The leases reserved for a stream acknowledged with `uris`.
-    pub(crate) fn claim(&self, uris: &[String]) -> Option<Claim> {
+    /// The leases reserved for the stream of `ticket`, acknowledged with
+    /// `uris`.
+    pub(crate) fn claim(&self, ticket: Ticket, uris: &[String]) -> Option<Claim> {
         let mut state = self.lock();
-        let at = state.pending.iter().position(|p| p.uris == uris)?;
+        let at = state
+            .pending
+            .iter()
+            .position(|p| p.ticket == ticket && p.uris == uris)?;
         Some(state.pending.remove(at).claim)
+    }
+
+    /// The tickets of the reservations waiting, oldest first, for a test.
+    #[cfg(test)]
+    pub(crate) fn pending_tickets(&self) -> Vec<Ticket> {
+        self.lock().pending.iter().map(|p| p.ticket).collect()
     }
 
     /// Drop reservations no stream claimed in time.
@@ -411,6 +563,7 @@ impl Subs {
         let (pending, legacy, tool) = {
             let mut state = self.lock();
             state.closed = true;
+            state.legacy_signals.clear();
             (
                 std::mem::take(&mut state.pending),
                 std::mem::take(&mut state.legacy),
@@ -442,160 +595,31 @@ fn accepted(context: &SubscriptionContext) -> Vec<String> {
         .collect()
 }
 
-/// What one subscriber follows: its points' change signals, the
-/// discovery table's events and the alarm tick. A listen stream's set is
-/// fixed; a legacy session's follows its subscribes and unsubscribes
-/// ([`Follow::set`]). [`Follow::next`] waits on watch and broadcast
-/// channels and timers only, never a lock (#1498), and is cancel safe.
-pub(crate) struct Follow {
-    points: Vec<(String, Changes)>,
-    devices: Option<broadcast::Receiver<DeviceEvent>>,
-    devices_due: Option<Instant>,
-    devices_last: Option<Instant>,
-    device_uris: Vec<String>,
-    alarm_uris: Vec<String>,
-    alarms: Interval,
-}
-
-/// Why [`Follow::next`] woke.
-pub(crate) enum Wake {
-    /// This resource changed.
-    Updated(String),
-    /// A device arrived or was lost: every device-list page followed
-    /// ([`Follow::device_uris`]) changed, since each one counts `total`.
-    Devices,
-    /// The alarm resources are due for a poll.
-    Alarms,
-}
-
-impl Follow {
-    pub(crate) fn new() -> Self {
-        let mut alarms = tokio::time::interval_at(Instant::now() + ALARMS_EVERY, ALARMS_EVERY);
-        alarms.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        Self {
-            points: Vec::new(),
-            devices: None,
-            devices_due: None,
-            devices_last: None,
-            device_uris: Vec::new(),
-            alarm_uris: Vec::new(),
-            alarms,
-        }
-    }
-
-    /// Follow `uris`, each point URI with its change signal. A point
-    /// already followed on the same watch keeps the signal it had, so
-    /// nothing is announced twice.
-    /// `engine` gives the discovery table's events, when the device list
-    /// is followed.
-    pub(crate) fn set<T: TransportPort + 'static>(
-        &mut self,
-        engine: Option<&Engine<T>>,
-        uris: Vec<(String, Option<Changes>)>,
-    ) {
-        let mut kept: HashMap<String, Changes> =
-            std::mem::take(&mut self.points).into_iter().collect();
-        self.device_uris.clear();
-        self.alarm_uris.clear();
-        for (name, changes) in uris {
-            if let Some(changes) = changes {
-                // The old signal only while it is the same watch: a URI
-                // unsubscribed and subscribed again between two calls has a
-                // new one, and the old one never fires again.
-                let changes = match kept.remove(&name) {
-                    Some(old) if old.same(&changes) => old,
-                    _ => changes,
-                };
-                self.points.push((name, changes));
-            } else {
-                match uri::parse(&name) {
-                    Ok(Uri::Devices | Uri::DevicesAfter(_)) => self.device_uris.push(name),
-                    Ok(Uri::Alarms | Uri::DeviceAlarms(_)) => self.alarm_uris.push(name),
-                    _ => {}
-                }
-            }
-        }
-        if self.device_uris.is_empty() {
-            self.devices = None;
-            self.devices_due = None;
-        } else if self.devices.is_none() {
-            self.devices = engine.map(Engine::device_events);
-        }
-    }
-
-    /// The signal followed for `name`, for tests.
-    #[cfg(test)]
-    pub(crate) fn signal(&self, name: &str) -> Option<&Changes> {
-        self.points
-            .iter()
-            .find(|(followed, _)| followed == name)
-            .map(|(_, changes)| changes)
-    }
-
-    /// Whether nothing followed can change.
-    pub(crate) fn quiet(&self) -> bool {
-        self.points.is_empty() && self.devices.is_none() && self.alarm_uris.is_empty()
-    }
-
-    /// The device-list pages followed, the first and any later ones.
-    pub(crate) fn device_uris(&self) -> &[String] {
-        &self.device_uris
-    }
-
-    /// The alarm resources followed.
-    pub(crate) fn alarm_uris(&self) -> &[String] {
-        &self.alarm_uris
-    }
-
-    /// The next change to announce, or the alarm tick; pending while
-    /// nothing followed can change.
-    pub(crate) async fn next(&mut self) -> Wake {
-        loop {
-            tokio::select! {
-                biased;
-                at = point_change(&mut self.points), if !self.points.is_empty() => {
-                    return Wake::Updated(self.points[at].0.clone());
-                }
-                change = device_change(&mut self.devices), if self.devices.is_some() => {
-                    match change {
-                        None => self.devices = None,
-                        Some(true) if self.devices_due.is_none() => {
-                            let earliest = self
-                                .devices_last
-                                .map_or_else(Instant::now, |at| at + DEVICES_EVERY);
-                            self.devices_due = Some(earliest.max(Instant::now()));
-                        }
-                        Some(_) => {}
-                    }
-                }
-                () = tokio::time::sleep_until(self.devices_due.unwrap_or_else(Instant::now)),
-                    if self.devices_due.is_some() => {
-                    self.devices_due = None;
-                    self.devices_last = Some(Instant::now());
-                    return Wake::Devices;
-                }
-                _ = self.alarms.tick(), if !self.alarm_uris.is_empty() => return Wake::Alarms,
-                else => std::future::pending::<()>().await,
-            }
-        }
-    }
-}
-
-/// The index of the next point to change. Each signal's wait is cancel
-/// safe, so the ones not first lose nothing.
-async fn point_change(points: &mut [(String, Changes)]) -> usize {
-    let mut waiting: FuturesUnordered<_> = points
-        .iter_mut()
-        .enumerate()
-        .map(|(at, (_, changes))| async move {
-            changes.changed().await;
-            at
-        })
-        .collect();
-    match waiting.next().await {
-        Some(at) => at,
-        None => std::future::pending().await,
-    }
+/// The stream of `ticket`, acknowledged with `uris`, beginning: counted
+/// among the session's streams, with what [`Subs::reserve`] set aside for
+/// it. Past [`MAX_STREAMS`] it is refused, and anything set aside for it
+/// goes now, not at the sweep, so its watches and alarm URIs free their
+/// room at once.
+pub(crate) fn open<'a, T: TransportPort + 'static>(
+    ctx: &'a Ctx<T>,
+    ticket: Ticket,
+    uris: &[String],
+) -> Result<(Listening<'a>, Option<Claim>), ErrorData> {
+    let Some(listening) = ctx.listening(MAX_STREAMS) else {
+        drop(ctx.subs.claim(ticket, uris));
+        let error = ToolError::refused(
+            "stream-cap",
+            format!(
+                "this session runs {MAX_STREAMS} listen streams, as many as it may; \
+                 cancel one first"
+            ),
+        );
+        return Err(ErrorData::invalid_params(
+            error.summary(),
+            Some(error.json()),
+        ));
+    };
+    Ok((listening, ctx.subs.claim(ticket, uris)))
 }
 
 /// Serve one stream until the client cancels it or the server closes.
@@ -604,20 +628,24 @@ pub(crate) async fn run<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
     context: SubscriptionContext,
 ) -> Result<(), ErrorData> {
-    let _listening = ctx.listening();
     let uris = accepted(&context);
-    // Held to the end: its leases keep the points watched.
-    let claim = ctx.subs.claim(&uris);
+    // Both held to the end: the stream's count, and the claim, whose
+    // leases keep the points watched.
+    let (_listening, mut claim) = open(ctx, Ticket::current(), &uris)?;
     if claim.is_none() && !uris.is_empty() {
         // Only when the reservation was dropped before the stream began.
         tracing::warn!(
             "a listen stream found no watches set aside for it; its points won't update"
         );
     }
-    let leases = claim.as_ref().map_or(&[][..], |c| &c.leases[..]);
     let mut follow = Follow::new();
+    if let Some(claim) = claim.as_mut() {
+        follow.adopt(std::mem::take(&mut claim.signals));
+    }
+    let leases = claim.as_ref().map_or(&[][..], |c| &c.leases[..]);
     follow.set(
         ctx.engine.as_deref(),
+        &ctx.writes.signals,
         uris.iter()
             .map(|name| {
                 let changes = leases
@@ -664,16 +692,5 @@ pub(crate) async fn run<T: TransportPort + 'static>(
                 }
             }
         }
-    }
-}
-
-/// Whether the discovery table's next event is an arrival or a loss (a
-/// lost receiver position counts, since one may have been missed); `None`
-/// once the channel is closed.
-async fn device_change(events: &mut Option<broadcast::Receiver<DeviceEvent>>) -> Option<bool> {
-    match events.as_mut()?.recv().await {
-        Ok(event) => Some(!matches!(event.kind, DeviceEventKind::Updated)),
-        Err(RecvError::Lagged(_)) => Some(true),
-        Err(RecvError::Closed) => None,
     }
 }

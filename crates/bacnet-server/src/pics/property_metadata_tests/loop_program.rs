@@ -37,7 +37,8 @@ fn pics_loop_program_notification_class_property_metadata_is_exact() {
         (P::DERIVATIVE_CONSTANT, true, true),
         (P::DERIVATIVE_CONSTANT_UNITS, true, false),
         (P::PRIORITY_FOR_WRITING, false, false),
-        (P::COV_INCREMENT, true, true),
+        // Table 12-20 footnote 4 (#2193).
+        (P::COV_INCREMENT, false, true),
         (P::PROPERTY_LIST, false, false),
     ];
     let program_rows = [
@@ -45,7 +46,7 @@ fn pics_loop_program_notification_class_property_metadata_is_exact() {
         (P::OBJECT_NAME, false, false),
         (P::DESCRIPTION, true, true),
         (P::OBJECT_TYPE, false, false),
-        (P::PROGRAM_STATE, false, true),
+        (P::PROGRAM_STATE, false, false),
         (P::PROGRAM_CHANGE, false, true),
         (P::REASON_FOR_HALT, true, false),
         (P::STATUS_FLAGS, false, false),
@@ -86,14 +87,17 @@ fn pics_loop_program_notification_class_property_metadata_is_exact() {
                     )
                     .unwrap();
             }
-            let required = object.required_properties();
+            let required: Vec<_> =
+                bacnet_objects::property_metadata::required_properties(&object.property_metadata())
+                    .collect();
             let mut db = ObjectDatabase::new();
             db.add(object).unwrap();
-            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+                .instance_types_only(&db);
             assert_eq!(pics.supported_object_types.len(), 1);
             let support = &pics.supported_object_types[0];
             assert_eq!(support.object_type, kind);
-            assert!(!support.createable);
+            assert_eq!(support.createable, kind == ObjectType::NOTIFICATION_CLASS);
             assert!(support.deleteable);
             let rows: Vec<_> = support
                 .supported_properties

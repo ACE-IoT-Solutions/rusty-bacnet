@@ -3,6 +3,7 @@
 //! newer slot falls back to the older one, and BUFFER_READY carries on from
 //! the saved Last_Notify_Record.
 
+use crate::traits::Timed;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -60,9 +61,18 @@ pub(super) fn open(
 
 pub(super) fn add(log: &mut dyn BACnetObject, hour: u8) {
     match log.object_identifier().object_type() {
-        ObjectType::TREND_LOG => log.add_trend_record(trend_record(hour)),
-        ObjectType::EVENT_LOG => log.add_event_log_record(event_record(hour)),
-        _ => log.add_trend_multiple_record(multiple_record(hour)),
+        ObjectType::TREND_LOG => log
+            .log_buffer_mut()
+            .unwrap()
+            .add_trend_record(trend_record(hour)),
+        ObjectType::EVENT_LOG => log
+            .log_buffer_mut()
+            .unwrap()
+            .add_event_log_record(event_record(hour)),
+        _ => log
+            .log_buffer_mut()
+            .unwrap()
+            .add_trend_multiple_record(multiple_record(hour)),
     }
     .unwrap();
 }
@@ -127,7 +137,10 @@ fn settings(log: &dyn BACnetObject) -> Vec<Option<PropertyValue>> {
 
 /// Every resident record as ReadRange serves it, with its sequence number.
 pub(super) fn served(log: &dyn BACnetObject) -> Vec<(u64, Vec<u8>)> {
-    let buffer = log.log_buffer_internal().unwrap();
+    let buffer = log
+        .log_buffer()
+        .and_then(|log| log.buffer_records())
+        .unwrap();
     (0..buffer.record_count())
         .map(|index| {
             let mut bytes = BytesMut::new();
@@ -171,7 +184,10 @@ fn a_reopened_log_serves_its_buffer_and_settings_plus_one_interruption() {
         let base = TempBase::new("reopen");
         let (mut log, reopened) = open(kind, base.path(), 4).unwrap();
         assert!(!reopened, "{kind:?}");
-        log.bind_clock_internal(Some(HandClock::at(8)));
+        log.timed().unwrap().bind_clocks(&crate::traits::Clocks {
+            clock: Some(HandClock::at(8)),
+            ..crate::traits::Clocks::default()
+        });
         configure(log.as_mut());
         for hour in 2..8 {
             add(log.as_mut(), hour);
@@ -192,15 +208,21 @@ fn a_reopened_log_serves_its_buffer_and_settings_plus_one_interruption() {
 
         // Joining a database with a clock appends LOG_INTERRUPTED, numbered
         // one past the saved count.
-        log.bind_clock_internal(Some(HandClock::at(12)));
+        log.timed().unwrap().bind_clocks(&crate::traits::Clocks {
+            clock: Some(HandClock::at(12)),
+            ..crate::traits::Clocks::default()
+        });
         let mut expected = before.0.clone();
         expected.remove(0);
         expected.push((before.1 + 1, interrupted(12)));
         assert_eq!(served(log.as_ref()), expected, "{kind:?}");
         assert_eq!(total(log.as_ref()), before.1 + 1, "{kind:?}");
         // Only once.
-        log.bind_clock_internal(Some(HandClock::at(13)));
-        log.refresh_log_window_internal();
+        log.timed().unwrap().bind_clocks(&crate::traits::Clocks {
+            clock: Some(HandClock::at(13)),
+            ..crate::traits::Clocks::default()
+        });
+        log.log_buffer_mut().unwrap().refresh_window();
         assert_eq!(total(log.as_ref()), before.1 + 1, "{kind:?}");
     }
 }
@@ -214,7 +236,10 @@ fn without_a_clock_the_first_record_lends_the_interruption_its_timestamp() {
         drop(log);
 
         let (mut log, _) = open(kind, base.path(), 4).unwrap();
-        log.bind_clock_internal(Some(Arc::new(HandClock(std::sync::Mutex::new(None)))));
+        log.timed().unwrap().bind_clocks(&crate::traits::Clocks {
+            clock: Some(Arc::new(HandClock(std::sync::Mutex::new(None)))),
+            ..crate::traits::Clocks::default()
+        });
         assert_eq!(total(log.as_ref()), 1, "{kind:?}");
         add(log.as_mut(), 9);
         let records = served(log.as_ref());
@@ -233,7 +258,10 @@ fn an_interruption_the_application_records_takes_the_owed_ones_place() {
     drop(log);
     let mut log = TrendLogObject::with_persistence(1, "TL-1", 4, file()).unwrap();
     log.record_interruption(DATE, at(5)).unwrap();
-    log.bind_clock_internal(Some(HandClock::at(6)));
+    log.bind_clocks(&crate::traits::Clocks {
+        clock: Some(HandClock::at(6)),
+        ..crate::traits::Clocks::default()
+    });
     assert_eq!(log.total_record_count(), 2);
 }
 
@@ -281,7 +309,7 @@ trait SettleForTest {
 
 impl SettleForTest for Box<dyn BACnetObject> {
     fn settle_forgotten_writes_for_test(&mut self) {
-        self.durable_writes_internal()
+        self.durable_writes()
             .and_then(|writes| writes.settle_forgotten_writes())
             .expect("a durable log saves")
             .block();
@@ -300,7 +328,10 @@ fn buffer_ready_resumes_from_the_saved_last_notify_record() {
     for kind in KINDS {
         let base = TempBase::new("buffer-ready");
         let (mut log, _) = open(kind, base.path(), 10).unwrap();
-        log.bind_clock_internal(Some(HandClock::at(8)));
+        log.timed().unwrap().bind_clocks(&crate::traits::Clocks {
+            clock: Some(HandClock::at(8)),
+            ..crate::traits::Clocks::default()
+        });
         write(
             log.as_mut(),
             P::NOTIFICATION_THRESHOLD,
@@ -309,7 +340,11 @@ fn buffer_ready_resumes_from_the_saved_last_notify_record() {
         for hour in 1..4 {
             add(log.as_mut(), hour);
         }
-        let outcome = log.tick_intrinsic_reporting().expect("a report is due");
+        let outcome = log
+            .event_reporting_mut()
+            .expect("lends event reporting")
+            .tick_intrinsic_reporting()
+            .expect("a report is due");
         commit_test_proposal(log.as_mut(), outcome);
         add(log.as_mut(), 4);
         assert_eq!(unsigned(log.as_ref(), P::LAST_NOTIFY_RECORD), 3, "{kind:?}");
@@ -323,18 +358,29 @@ fn buffer_ready_resumes_from_the_saved_last_notify_record() {
             P::NOTIFICATION_THRESHOLD,
             PropertyValue::Unsigned(3),
         );
-        log.bind_clock_internal(Some(HandClock::at(9)));
+        log.timed().unwrap().bind_clocks(&crate::traits::Clocks {
+            clock: Some(HandClock::at(9)),
+            ..crate::traits::Clocks::default()
+        });
         // The saved Last_Notify_Record, and LOG_INTERRUPTED counted after it.
         assert_eq!(unsigned(log.as_ref(), P::LAST_NOTIFY_RECORD), 3, "{kind:?}");
         assert_eq!(unsigned(log.as_ref(), P::RECORDS_SINCE_NOTIFICATION), 2);
-        assert_eq!(log.tick_intrinsic_reporting(), None, "{kind:?}");
+        assert_eq!(
+            log.event_reporting_mut()
+                .expect("lends event reporting")
+                .tick_intrinsic_reporting(),
+            None,
+            "{kind:?}"
+        );
         add(log.as_mut(), 10);
         let outcome = log
+            .event_reporting_mut()
+            .expect("lends event reporting")
             .tick_intrinsic_reporting()
             .expect("the third record since");
         commit_test_proposal(log.as_mut(), outcome);
         assert_eq!(
-            log.buffer_ready_report_internal(),
+            log.event_reporting().unwrap().buffer_ready_report(),
             Some(crate::log_reporting::BufferReadyReport {
                 previous_notification: 3,
                 current_notification: 6,

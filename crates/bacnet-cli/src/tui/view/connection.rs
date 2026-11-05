@@ -259,13 +259,20 @@ fn bip_lines<'a>(profile: &Profile, lines: &mut Vec<Line<'a>>, theme: &Theme) {
         "APDU timeout: {} ms   Pacing: {} ms",
         b.timeout_ms, b.min_interval_ms
     )));
-    if let Some(bbmd) = b.bbmd {
+    if b.share_port {
+        // Shown only when set, as `--share-port` (#2366).
+        lines.push(Line::raw("Port: shared with other programs (share_port)"));
+    }
+    if let Some(bbmd) = &b.bbmd {
         lines.push(Line::raw(format!("BBMD: {bbmd}   TTL: {} s", b.ttl)));
         lines.push(Line::raw(format!(
             "Renewal: {}",
             b.renewal_secs
                 .map_or_else(|| "half TTL".into(), |n| format!("{n} s"))
         )));
+        if let Some(global) = b.nat_global_address {
+            lines.push(Line::raw(format!("NAT global address: {global}")));
+        }
         lines.push(Line::styled(
             "Local connection does not prove BBMD acceptance; see L log.",
             theme.dim(),

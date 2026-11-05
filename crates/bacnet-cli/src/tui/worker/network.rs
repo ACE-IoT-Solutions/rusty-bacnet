@@ -1,5 +1,6 @@
 //! The Network screen's worker (#966): polls the foreign-device
-//! registration once a second and reads BBMD tables when asked.
+//! registration once a second, B/IP's or B/IPv6's (#2378), and reads BBMD
+//! tables when asked (B/IP only).
 //!
 //! It runs beside the session loop under `join!`, so a survey waiting on a
 //! silent BBMD holds up nothing else. Requests run one at a time, in order;
@@ -19,10 +20,11 @@ use std::time::Duration;
 use bacnet_client::client::BACnetClient;
 use bacnet_ops::bbmd::{Here, Probe, Unfollowed};
 use bacnet_transport::bip::BipTransport;
+use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::port::TransportPort;
 use tokio::sync::mpsc;
 
-use super::EventSink;
+use super::{EventSink, Offer};
 use crate::tui::message::WorkerEvent;
 use crate::tui::network::{
     BdtRow, FdtRow, NetworkCommand, NetworkEvent, address_of, mac, probe_error, read_error,
@@ -44,6 +46,11 @@ fn as_bip<T: TransportPort + 'static>(transport: &T) -> Option<&BipTransport> {
     (transport as &dyn Any).downcast_ref()
 }
 
+/// The B/IPv6 transport, when the client has one.
+fn as_bip6<T: TransportPort + 'static>(transport: &T) -> Option<&Bip6Transport> {
+    (transport as &dyn Any).downcast_ref()
+}
+
 /// The running request's event. Never ready while there is none.
 async fn finished<F: Future<Output = NetworkEvent> + Unpin>(job: &mut Option<F>) -> NetworkEvent {
     match job {
@@ -59,6 +66,7 @@ pub(crate) async fn run<T: TransportPort + 'static>(
     mut commands: mpsc::Receiver<NetworkCommand>,
 ) {
     let bip = as_bip(client.transport());
+    let bip6 = as_bip6(client.transport());
     let local =
         address_of(client.local_mac()).unwrap_or(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
     let mut status = tokio::time::interval(STATUS_EVERY);
@@ -67,6 +75,8 @@ pub(crate) async fn run<T: TransportPort + 'static>(
     let mut running: Option<NetworkCommand> = None;
     let mut job = None;
     let mut registered = false;
+    // The registration's BBMD address last reported (#2308).
+    let mut in_use = None;
     loop {
         if job.is_none()
             && let (Some(bip), Some(next)) = (bip, queue.pop_front())
@@ -80,7 +90,7 @@ pub(crate) async fn run<T: TransportPort + 'static>(
             command = commands.recv() => match command {
                 None => break,
                 Some(command) if bip.is_none() => {
-                    let reason = "the Network screen needs BACnet/IP".to_string();
+                    let reason = "BBMD tables are read on BACnet/IP only".to_string();
                     sink.deliver(WorkerEvent::Network(NetworkEvent::Refused { command, reason })).await;
                 }
                 Some(command) if running == Some(command) || queue.contains(&command) => {}
@@ -95,9 +105,22 @@ pub(crate) async fn run<T: TransportPort + 'static>(
                 running = None;
                 sink.deliver(WorkerEvent::Network(event)).await;
             }
-            _ = status.tick(), if bip.is_some() => {
+            _ = status.tick(), if bip.is_some() || bip6.is_some() => {
+                // A B/IPv6 foreign device's status (#2378); it reads no tables.
+                if let Some(status) = bip6.and_then(Bip6Transport::foreign_status) {
+                    sink.offer(WorkerEvent::Network(NetworkEvent::Bip6Registration(status)));
+                }
                 let Some(bip) = bip else { continue };
                 let snapshot = bip.bvlc_client_snapshot().foreign_registration;
+                // A BBMD named by host name: the address it stands for now,
+                // which a later lookup may find, or move (#2308).
+                let config = bip.foreign_device_config();
+                if let Some(bbmd) = config.as_ref().and_then(|config| config.bbmd.address())
+                    && in_use != Some(bbmd)
+                    && matches!(sink.offer(WorkerEvent::Network(NetworkEvent::Bbmd(bbmd))), Offer::Sent)
+                {
+                    in_use = Some(bbmd);
+                }
                 if let Some(bbmd) = snapshot.last_bbmd {
                     // Newly registered: read the FDT to see the entry the
                     // BBMD recorded for us.
@@ -106,6 +129,10 @@ pub(crate) async fn run<T: TransportPort + 'static>(
                         queue.push_back(tables);
                     }
                     registered = snapshot.registered;
+                }
+                // A device waiting for its BBMD's name has made no attempt
+                // yet, and its status still shows.
+                if snapshot.last_bbmd.is_some() || config.is_some() {
                     sink.offer(WorkerEvent::Network(NetworkEvent::Registration(snapshot)));
                 }
             }

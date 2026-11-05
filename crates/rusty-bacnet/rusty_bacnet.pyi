@@ -2687,11 +2687,17 @@ class ForeignDevice:
     ``BACnetClient``, ``BACnetServer`` and ``BipEndpoint`` (B/IP), and of
     ``BACnetClient`` and ``BACnetServer`` with ``transport="ipv6"`` (#1941).
 
-    ``bbmd`` names a B/IP BBMD as ``"ip"`` or ``"ip:port"``, or a B/IPv6 one
-    as ``"ip"``, ``"[ip]"`` or ``"[ip]:port"`` (port 47808 by default; an
-    IPv6 port needs the brackets, since ``"2001:db8::10:4780"`` is read as a
-    bare address); the owner's transport must match, else its constructor
-    raises ValueError. A B/IPv6
+    ``bbmd`` names a B/IP BBMD as ``"ip"``, ``"host"`` or either with
+    ``":port"``, or a B/IPv6 one as ``"ip"``, ``"[ip]"`` or ``"[ip]:port"``
+    (port 47808 by default; an IPv6 port needs the brackets, since
+    ``"2001:db8::10:4780"`` is read as a bare address); the owner's
+    transport must match, else its constructor raises ValueError. A host
+    name (#2308) serves either transport (B/IPv6 since #2365): it is looked
+    up when the owner starts and again alongside its registrations; one
+    that doesn't resolve still starts the owner, whose registration waits,
+    tried again every 30 seconds. A B/IPv6 owner bound to ``::`` picks its
+    source address from the route to the BBMD, so its start fails instead;
+    give it an interface to start and wait. A B/IPv6
     BBMD must be a unicast host: an unspecified, multicast, link-local,
     IPv4-mapped or IPv4-compatible address, a zone index or port 0 raises
     ValueError saying which. ``ttl`` is how many seconds the BBMD keeps the
@@ -2705,9 +2711,10 @@ class ForeignDevice:
 
     The owner registers at start and renews on its own. Its broadcasts go
     through the BBMD; on B/IP the first few wait for the first registration
-    to be answered, and ``foreign_registration()`` reports how it goes (B/IP
-    only). A B/IPv6 client needs ``ipv6_device_instance``: a B/IPv6 foreign
-    device uses its instance's VMAC.
+    to be answered, and ``foreign_registration()`` reports how it goes. A
+    B/IPv6 client needs ``ipv6_device_instance``: a B/IPv6 foreign device
+    uses its instance's VMAC. While a B/IPv6 one waits for its BBMD's name,
+    its broadcasts raise BacnetError.
     """
 
     def __init__(self, bbmd: str, ttl: int = 300, renewal: Optional[float] = None) -> None: ...
@@ -2799,9 +2806,10 @@ class Multicast:
     broadcasts to its BDT and foreign devices and theirs to the group, and
     its own BDT row must have the mask 255.255.255.255, or start raises. A
     registered Network Port serves the group as BACnet_IP_Multicast_Address
-    (0.0.0.0 when off), writable when the server answers ReinitializeDevice
-    and isn't a BBMD; a group changed that way lasts until the process
-    exits, and isn't saved. Two ``Multicast`` values with the same settings
+    (0.0.0.0 when off), writable when the server answers ReinitializeDevice;
+    on a BBMD a written group is activated together with the BDT written
+    beside it, both or neither (#1963). A group changed that way lasts until
+    the process exits, and isn't saved. Two ``Multicast`` values with the same settings
     compare and hash equal. Invalid values raise ValueError, or
     OverflowError for an integer out of range. Windows multicast is
     untested.
@@ -2829,7 +2837,16 @@ class ForeignRegistrationStatus(TypedDict):
     refused or timed-out renewal. The totals
     survive it: ``lapses`` counts leases that ran out with no newer success,
     and ``renewal_hints`` the BBMD's Distribute-Broadcast-To-Network NAKs,
-    each of which brings the next attempt forward."""
+    each of which brings the next attempt forward. A BBMD named by host name
+    (#2308) counts its lookups in ``bbmd_lookups``, the failed ones in
+    ``bbmd_lookup_failures``, and names why the newest failed in
+    ``last_bbmd_lookup_failure`` (``"not_resolved"``, ``"timed_out"`` after
+    10 seconds, ``"no_ipv4_address"``, ``"unusable_address"``,
+    ``"abandoned"``, or ``"other"`` for a failure this version doesn't
+    name), None once one succeeds and cleared when the owner
+    stops. ``waiting_for_bbmd`` is true while that name hasn't resolved yet:
+    no attempt is due, and it is tried again 30 seconds after each
+    failure."""
     registered: bool
     lease_remaining: Optional[float]
     next_attempt_in: Optional[float]
@@ -2841,6 +2858,60 @@ class ForeignRegistrationStatus(TypedDict):
     refused: int
     lapses: int
     renewal_hints: int
+    bbmd_lookups: int
+    bbmd_lookup_failures: int
+    last_bbmd_lookup_failure: Optional[Literal[
+        "not_resolved", "timed_out", "no_ipv4_address", "unusable_address", "abandoned",
+        "other"]]
+    waiting_for_bbmd: bool
+
+
+class Bip6ForeignRegistrationStatus(TypedDict):
+    """A B/IPv6 foreign device's registration, as ``foreign_registration()``
+    reports it on a ``transport="ipv6"`` owner (#2365). ``bbmd`` is the
+    address in use, ``"[ip]:port"``, or
+    None while a host name hasn't resolved yet, when ``waiting_for_bbmd`` is
+    true. ``bbmd_name`` is the host name the BBMD is known by,
+    ``"host:port"`` (configured, or written to FD_BBMD_Address), or None for
+    a BBMD known by address; a waiting device waits for it. While waiting,
+    nothing is registered, broadcasts are refused (counted in
+    ``broadcasts_refused``), and the name is tried again 30 seconds after
+    each failure. ``bbmd_lookups``, ``bbmd_lookup_failures`` and
+    ``last_bbmd_lookup_failure`` are as in ``ForeignRegistrationStatus``,
+    with ``"no_ipv6_address"`` for a name with no IPv6 address. The
+    ``previous_release*`` totals count the deletions asked of BBMDs the
+    device moved away from, by ``release_previous_bbmd``: released,
+    refused, or unanswered. ``registrations_sent`` counts the
+    Register-Foreign-Device messages sent. The BBMD's answer to the latest
+    one (#2388) reads as on B/IP: ``last_outcome`` is ``"accepted"`` or
+    ``"refused"``, with ``last_result`` the BVLC result code (0x0090 for a
+    refusal), or ``"timed_out"`` when its renewal went first, the BBMD
+    silent, or an activation's registration did after 3 s of silence, with
+    ``last_result`` None; both are None before the BBMD's first answer, and
+    clear when the BBMD changes, while waiting, and when the owner stops.
+    ``last_outcome_age`` is how many seconds ago that outcome came,
+    ``unanswered`` how many registrations in a row the BBMD left unanswered,
+    and ``refused`` counts its refusals. The totals survive a stop; outside
+    ``foreign_device=`` they are 0."""
+    bbmd: Optional[str]
+    bbmd_name: Optional[str]
+    waiting_for_bbmd: bool
+    bbmd_lookups: int
+    bbmd_lookup_failures: int
+    last_bbmd_lookup_failure: Optional[Literal[
+        "not_resolved", "timed_out", "no_ipv6_address", "unusable_address", "abandoned",
+        "other"]]
+    previous_releases: int
+    previous_released: int
+    previous_release_refused: int
+    previous_release_unanswered: int
+    broadcasts_refused: int
+    registrations_sent: int
+    last_outcome: Optional[Literal["accepted", "refused", "timed_out"]]
+    last_result: Optional[int]
+    last_outcome_age: Optional[float]
+    refused: int
+    unanswered: int
 
 
 class FdtEntry(TypedDict):
@@ -3132,6 +3203,18 @@ class RouterPortHealth:
     attempt: int
     since: Optional[float]
 
+class RouterPortCounters:
+    config_index: int
+    network_number: int
+    transport_kind: str
+    identity: str
+    forwarded_unicast: int
+    forwarded_broadcast: int
+    send_errors: int
+    output_full_drops: int
+    no_route_drops: int
+    shutdown_drops: int
+
 class RouterRouteEntry:
     network_number: int
     port_index: int
@@ -3155,6 +3238,7 @@ class AceMixedRouter:
     async def stop(self) -> None: ...
     async def local_address(self) -> str: ...
     async def port_health(self) -> list[RouterPortHealth]: ...
+    async def port_counters(self) -> list[RouterPortCounters]: ...
     async def routing_table(self) -> list[RouterRouteEntry]: ...
 class ScEvent:
     """One SC hub-connector event (#1829), frozen. Fields that don't apply
@@ -3268,6 +3352,33 @@ class ScEventIterator:
         connector, or dropped on the way to a read, as when its event loop closed first."""
         ...
 
+class DirectTarget:
+    """A direct BACnet/IP target with an explicitly preserved UDP port."""
+
+    def __init__(self, address: str) -> None: ...
+    @property
+    def address(self) -> str: ...
+    @property
+    def mac(self) -> bytes: ...
+
+
+class RoutedTarget:
+    """A routed target with an explicit next-hop router, DNET, and DADR."""
+
+    def __init__(self, router: str, network: int, address: bytes) -> None: ...
+    @property
+    def router(self) -> str: ...
+    @property
+    def router_mac(self) -> bytes: ...
+    @property
+    def network(self) -> int: ...
+    @property
+    def address(self) -> bytes: ...
+
+
+Target = Union[str, DirectTarget, RoutedTarget]
+
+
 class BACnetClient:
     """Async BACnet client for reading/writing properties on remote devices.
 
@@ -3353,6 +3464,7 @@ class BACnetClient:
         mstp_reply_timeout_ms: Optional[int] = None,
         sc_device_uuid: Optional[bytes | bytearray] = None,
         share_port_by_address: bool = False,
+        share_wildcard_port: bool = False,
         min_request_interval_ms: int = 0,
         ipv6_device_instance: Optional[int] = None,
         bbmd: Optional[Bbmd] = None,
@@ -3449,6 +3561,14 @@ class BACnetClient:
         nonzero port; broadcasts and unicast are still handled in the order
         they arrived.
 
+        ``share_wildcard_port`` (B/IP only, default False): share an
+        explicitly requested port with other sockets on this host that bind
+        it the same way. By default the client claims its port, so a second
+        bind of it fails, and ``start()`` raises when another socket holds
+        it. With sharing, broadcasts reach every socket on the port, but
+        each unicast reaches only one of them; prefer
+        ``share_port_by_address`` or separate ports.
+
         ``min_request_interval_ms`` (default 0, no pacing; at most
         3,600,000, else ValueError) paces the confirmed requests to each
         destination: each waits until that long after the latest one sent to
@@ -3475,7 +3595,7 @@ class BACnetClient:
 
     def read_property(
         self,
-        address: str,
+        address: Target,
         object_id: ObjectIdentifier,
         property_id: PropertyIdentifier,
         array_index: Optional[int] = None,
@@ -3491,7 +3611,7 @@ class BACnetClient:
 
     def write_property(
         self,
-        address: str,
+        address: Target,
         object_id: ObjectIdentifier,
         property_id: PropertyIdentifier,
         value: PropertyValue,
@@ -3507,7 +3627,7 @@ class BACnetClient:
 
     def read_property_multiple(
         self,
-        address: str,
+        address: Target,
         specs: list[
             tuple[ObjectIdentifier, list[tuple[PropertyIdentifier, Optional[int]]]]
         ],
@@ -3522,7 +3642,7 @@ class BACnetClient:
 
     def write_property_multiple(
         self,
-        address: str,
+        address: Target,
         specs: list[
             tuple[
                 ObjectIdentifier,
@@ -3870,7 +3990,7 @@ class BACnetClient:
 
     def subscribe_cov(
         self,
-        address: str,
+        address: Target,
         subscriber_process_identifier: int,
         monitored_object_identifier: ObjectIdentifier,
         confirmed: bool,
@@ -3885,7 +4005,7 @@ class BACnetClient:
 
     def unsubscribe_cov(
         self,
-        address: str,
+        address: Target,
         subscriber_process_identifier: int,
         monitored_object_identifier: ObjectIdentifier,
     ) -> Awaitable[None]:
@@ -4483,11 +4603,14 @@ class BACnetClient:
         stopped or non-SC client."""
         ...
 
-    def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]:
+    def foreign_registration(
+        self,
+    ) -> Awaitable[Union[ForeignRegistrationStatus, Bip6ForeignRegistrationStatus]]:
         """How the foreign-device registration is going (#938), a refusal
         included. Sends nothing. Outside ``foreign_device=`` only manual
-        registrations show. RuntimeError before start and after stop; a
-        non-B/IP client raises BacnetError."""
+        registrations show. A ``transport="ipv6"`` client returns a
+        ``Bip6ForeignRegistrationStatus`` (#2365). RuntimeError before start
+        and after stop; a client on another transport raises BacnetError."""
         ...
 
     def stop(self) -> Awaitable[None]:
@@ -4794,6 +4917,10 @@ class BACnetServer:
     waits, and the 4*Tseg receive inactivity timer. A separate 16-second
     no-progress resource limit aborts abandoned request transfers with OTHER.
 
+    ``device_instance`` takes 0 to 4194302. Instance 4194303 is reserved, as
+    no object may have it, so it, or anything larger, raises ValueError at
+    construction (#2171).
+
     Usage::
 
         server = BACnetServer(device_instance=1234, device_name="My Device")
@@ -4863,6 +4990,7 @@ class BACnetServer:
         cov_policy: CovPolicy | None = None,
         time_sync_policy: TimeSyncPolicy | None = None,
         share_port_by_address: bool = False,
+        share_wildcard_port: bool = False,
         segmentation_supported: Segmentation = Segmentation.NONE,
         apdu_segment_timeout_ms: int = 5000,
         bbmd: Optional[Bbmd] = None,
@@ -4925,6 +5053,14 @@ class BACnetServer:
         can share the port. Needs an explicit interface and a nonzero port;
         broadcasts and unicast are still handled in the order they arrived.
 
+        ``share_wildcard_port`` (B/IP only, default False): share an
+        explicitly requested port with other sockets on this host that bind
+        it the same way. By default the server claims its port, so a second
+        bind of it fails, and ``start()`` raises when another socket holds
+        it. With sharing, broadcasts reach every socket on the port, but
+        each unicast reaches only one of them; prefer
+        ``share_port_by_address`` or separate ports.
+
         ``bbmd`` / ``foreign_device`` (at most one, else ValueError): run
         the device as a BBMD (B/IP only), or register it with a BBMD on
         another subnet as a foreign device (#938). ``foreign_device`` also
@@ -4975,7 +5111,7 @@ class BACnetServer:
         ...
 
     # --- Analog objects ---
-    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
         """``tags``, ``profile_location`` and ``profile_name`` provision the
         optional Tags, Profile_Location and Profile_Name rows; each is served
         only when given. Tags takes writes over the network, the other two
@@ -4983,12 +5119,25 @@ class BACnetServer:
         primitive, a location whose URI scheme isn't http, https or bacnet,
         or a profile name without its vendor-number prefix (``"555-room"``)
         raises BacnetProtocolError, and wrong shapes TypeError or
-        ValueError."""
+        ValueError.
+
+        ``storage_path`` (a ``str``) keeps the reporting settings a peer
+        writes (Notification_Class, Event_Enable, Notify_Type,
+        Event_Detection_Enable, Event_Message_Texts_Config and the
+        Event_Algorithm_Inhibit pair) and a written Description in that
+        file: such a write is saved before it is answered, refused when it
+        can't be, and served again after a restart; a Description past
+        16 KiB is refused with NO_SPACE_TO_WRITE_PROPERTY.
+        ``clear_written_reporting=True`` drops what was saved first,
+        Description included, so the object starts from its defaults. A file that
+        doesn't load raises BacnetError. Every analog, binary and multi-state
+        builder takes both, as do ``add_access_door``, ``add_access_zone``,
+        ``add_event_enrollment`` and ``add_alert_enrollment``."""
         ...
-    def add_analog_output(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_analog_output(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
         """Profile keywords as on ``add_analog_input``."""
         ...
-    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
         """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
 
         ``present_value_access`` is ``"commandable"`` (writes go through
@@ -5002,25 +5151,25 @@ class BACnetServer:
         ...
 
     # --- Binary objects ---
-    def add_binary_input(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_binary_input(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
         """Profile keywords as on ``add_analog_input``."""
         ...
-    def add_binary_output(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_binary_output(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
         """Profile keywords as on ``add_analog_input``."""
         ...
-    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
         """Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
         Access, Value_Source and profile keywords as on ``add_analog_value``."""
         ...
 
     # --- Multi-state objects ---
-    def add_multistate_input(self, instance: int, name: str, number_of_states: int, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_multistate_input(self, instance: int, name: str, number_of_states: int, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
         """Profile keywords as on ``add_analog_input``."""
         ...
-    def add_multistate_output(self, instance: int, name: str, number_of_states: int, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_multistate_output(self, instance: int, name: str, number_of_states: int, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
         """Profile keywords as on ``add_analog_input``."""
         ...
-    def add_multistate_value(self, instance: int, name: str, number_of_states: int, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_multistate_value(self, instance: int, name: str, number_of_states: int, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
         """Access, Value_Source and profile keywords as on ``add_analog_value``."""
         ...
 
@@ -5071,10 +5220,11 @@ class BACnetServer:
         recipients: Optional[list[Destination]] = None,
     ) -> None:
         """Add a Notification Class (Clause 12.21). With ``storage_path``, a
-        Recipient_List a client writes is kept in that file across restarts; a
-        write whose list cannot be saved is refused with DEVICE /
-        OPERATIONAL_PROBLEM and the old list stays. Without it the list lives in
-        memory only.
+        Recipient_List or Description a client writes is kept in that file
+        across restarts; a write that cannot be saved is refused with DEVICE /
+        OPERATIONAL_PROBLEM and the old value stays, and a Description past
+        16 KiB is refused with RESOURCES / NO_SPACE_TO_WRITE_PROPERTY. Without
+        it they live in memory only.
 
         ``storage_path`` is a ``str``; a ``pathlib.Path`` raises TypeError, as
         for ``add_notification_forwarder``. Give each class a file of its own:
@@ -5104,8 +5254,10 @@ class BACnetServer:
         """Add a Notification Forwarder (Clause 12.51) that sends the event
         notifications this server receives on to its Recipient_List and
         Subscribed_Recipients. ``process_identifier_filter=None`` forwards every
-        process identifier. With ``storage_path``, Recipient_List and
-        Subscribed_Recipients are kept in that file across restarts.
+        process identifier. With ``storage_path``, Recipient_List,
+        Subscribed_Recipients and a Description a client writes are kept in
+        that file across restarts; a Description past 16 KiB is refused with
+        RESOURCES / NO_SPACE_TO_WRITE_PROPERTY.
 
         ``recipients`` seeds Recipient_List in order; more than 32 destinations,
         or an address MAC past 18 octets, raises BacnetProtocolError, as a
@@ -5132,6 +5284,7 @@ class BACnetServer:
         align_intervals: bool | None = None,
         interval_offset: int | None = None,
         storage_path: Optional[str] = None,
+        clear_written_reporting: bool = False,
         total_record_count: int = 0,
     ) -> None:
         """Add a Trend Log (Clause 12.25) that the server polls, triggers or
@@ -5175,9 +5328,13 @@ class BACnetServer:
         OverflowError.
 
         ``storage_path`` keeps the log in files, as on
-        ``add_trend_log_multiple``. ``client_cov_increment`` and
-        ``cov_resubscription_interval`` aren't saved: they apply on every
-        start, reopened or not.
+        ``add_trend_log_multiple``. A Client_COV_Increment or
+        COV_Resubscription_Interval written over the network, or with
+        ``write_property_local``, is saved too, and refused when it can't be;
+        once saved it wins over ``client_cov_increment`` and
+        ``cov_resubscription_interval`` at every later start.
+        ``clear_written_reporting=True`` drops the saved writes first, so
+        the keywords apply again. Unwritten, they apply on every start.
         """
         ...
     def add_trend_log_multiple(
@@ -5200,6 +5357,7 @@ class BACnetServer:
         align_intervals: bool | None = None,
         interval_offset: int | None = None,
         storage_path: Optional[str] = None,
+        clear_written_reporting: bool = False,
         total_record_count: int = 0,
     ) -> None:
         """Add a Trend Log Multiple (Clause 12.30) that the server polls or
@@ -5245,12 +5403,16 @@ class BACnetServer:
         about a minute of records; a failed commit is retried. A log reopened
         from those files serves its saved records, Total_Record_Count,
         BUFFER_READY counts and Notification_Threshold, Enable,
-        Stop_When_Full and every setting a peer can write, and appends one
+        Stop_When_Full and every setting a peer can write, Notification_Class,
+        the other reporting settings and Description among them
+        (``clear_written_reporting=True`` drops those first, as on
+        ``add_trend_log``; a Description past 16 KiB is refused with
+        RESOURCES / NO_SPACE_TO_WRITE_PROPERTY), and appends one
         LOG_INTERRUPTED record to mark the restart (none when it reopens full
         and stopped); the saved state wins over the keyword arguments.
         ``buffer_size`` wins over the saved Buffer_Size: a smaller one keeps
-        the newest records. A durable Trend Log Multiple holds at most 15849
-        records (178437 for an Event Log, 828302 for a Trend Log); a larger
+        the newest records. A durable Trend Log Multiple holds at most 15848
+        records (178426 for an Event Log, 828251 for a Trend Log); a larger
         ``buffer_size``, or a file pair that can't be read or holds another
         object's state, raises BacnetError. To tell whether a log will
         reopen, check whether either slot file exists before the call. The
@@ -5265,6 +5427,7 @@ class BACnetServer:
         log_received_notifications: bool = False,
         *,
         storage_path: Optional[str] = None,
+        clear_written_reporting: bool = False,
         total_record_count: int = 0,
     ) -> None:
         """Register an Event Log of ``buffer_size`` records before start().
@@ -5285,7 +5448,10 @@ class BACnetServer:
         ``add_trend_log``; BUFFER_READY counts from the seeded value.
 
         ``storage_path`` keeps the log in files, as on
-        ``add_trend_log_multiple``. ``log_received_notifications`` isn't
+        ``add_trend_log_multiple``, Notification_Class, the other reporting
+        settings and Description a write set included; such a write is
+        refused when it can't be saved, and ``clear_written_reporting=True``
+        drops them first, as on ``add_trend_log``. ``log_received_notifications`` isn't
         saved and applies on every start.
         """
         ...
@@ -5414,7 +5580,47 @@ class BACnetServer:
         VALUE_OUT_OF_RANGE.
         """
         ...
-    def add_timer(self, instance: int, name: str) -> None: ...
+    def add_timer(
+        self,
+        instance: int,
+        name: str,
+        *,
+        state_change_values: Optional[list[Optional[PropertyValue]]] = None,
+        references: Optional[
+            list[
+                tuple[ObjectIdentifier, PropertyIdentifier]
+                | tuple[ObjectIdentifier, PropertyIdentifier, Optional[int]]
+                | DeviceObjectPropertyReference
+            ]
+        ] = None,
+        priority_for_writing: Optional[int] = None,
+        storage_path: Optional[str] = None,
+        clear_written_config: bool = False,
+    ) -> None:
+        """Add a Timer object.
+
+        With ``state_change_values`` or ``references`` the Timer serves
+        State_Change_Values, List_Of_Object_Property_References and
+        Priority_For_Writing, and each transition writes its entry of
+        ``state_change_values`` to every reference at
+        ``priority_for_writing`` (16 when omitted). The seven entries run from
+        IDLE_TO_RUNNING to EXPIRED_TO_RUNNING; ``None`` writes nothing and a
+        NULL relinquishes. References take the ``add_channel`` members shape.
+        A wrong entry count, or ``priority_for_writing`` without either of
+        the other two, raises ValueError, a non-primitive entry TypeError,
+        and a priority outside 1..=16 BacnetProtocolError with
+        VALUE_OUT_OF_RANGE.
+
+        With ``storage_path`` the Timer keeps in that file what a peer writes
+        to State_Change_Values, List_Of_Object_Property_References (with
+        Priority_For_Writing), Default_Timeout and Description, and a saved
+        write wins over the keywords at the next start; such a write is refused when it can't
+        be saved, and a Description past 16 KiB is refused with RESOURCES /
+        NO_SPACE_TO_WRITE_PROPERTY. ``clear_written_config=True`` drops what
+        was saved first, so the keywords apply again. A file that doesn't
+        load raises BacnetError.
+        """
+        ...
     def add_load_control(self, instance: int, name: str) -> None: ...
     def add_program(self, instance: int, name: str) -> None: ...
 
@@ -5496,6 +5702,7 @@ class BACnetServer:
         present_value: Optional[tuple[float, float]] = None,
         default_color: Optional[tuple[float, float]] = None,
         storage_path: Optional[str] = None,
+        clear_written_default: bool = False,
         value_source_tracking: bool = False,
         tags: Optional[list[NameValue]] = None,
         profile_location: Optional[str] = None,
@@ -5514,7 +5721,11 @@ class BACnetServer:
         ``storage_path`` (the file the object keeps Present_Value in); with
         nothing stored it keeps ``present_value``, and with neither,
         In_Progress reads NOT_CONTROLLED until a write drives the output.
-        A file that doesn't load raises BacnetError."""
+        The file keeps a Default_Color written over the network too, which
+        wins over ``default_color`` at the next start; such a write is
+        refused when it can't be saved. ``clear_written_default=True`` drops
+        a saved one first, so ``default_color`` applies again. A file that
+        doesn't load raises BacnetError."""
         ...
     def add_color_temperature(
         self,
@@ -5526,6 +5737,7 @@ class BACnetServer:
         max_pres_value: Optional[int] = None,
         default_color_temperature: Optional[int] = None,
         storage_path: Optional[str] = None,
+        clear_written_default: bool = False,
         value_source_tracking: bool = False,
         tags: Optional[list[NameValue]] = None,
         profile_location: Optional[str] = None,
@@ -5538,9 +5750,9 @@ class BACnetServer:
         clamped to them. A value out of range raises BacnetProtocolError.
         ``value_source_tracking`` is as on ``add_color``.
         ``default_color_temperature`` (4000 unless given, clamped to the
-        limits) and ``storage_path`` work as ``default_color`` and
-        ``storage_path`` on ``add_color``, with 0 keeping the temperature
-        from before the restart."""
+        limits), ``storage_path`` and ``clear_written_default`` work as on
+        ``add_color``, with 0 keeping the temperature from before the
+        restart."""
         ...
     def add_channel(
         self,
@@ -5558,6 +5770,8 @@ class BACnetServer:
         control_groups: Optional[list[int]] = None,
         *,
         allow_group_delay_inhibit: bool = False,
+        storage_path: Optional[str] = None,
+        clear_written_config: bool = False,
     ) -> None:
         """Add a Channel; a write of its Present_Value is passed on to ``members``.
 
@@ -5582,6 +5796,15 @@ class BACnetServer:
         raises BacnetProtocolError with VALUE_OUT_OF_RANGE; more than
         1024 members or 64 groups, NO_SPACE_TO_WRITE_PROPERTY. Nothing is
         registered after any of them.
+
+        With ``storage_path`` the Channel keeps in that file what a peer
+        writes to its members, Execution_Delay, Channel_Number,
+        Control_Groups, Allow_Group_Delay_Inhibit and Description, and each
+        saved write wins over its argument at the next start; such a write is refused
+        when it can't be saved, and a Description past 16 KiB is refused with
+        RESOURCES / NO_SPACE_TO_WRITE_PROPERTY. ``clear_written_config=True``
+        drops what was saved first, so the arguments apply again. A file
+        that doesn't load raises BacnetError.
         """
         ...
 
@@ -5640,6 +5863,8 @@ class BACnetServer:
         alarm_values: Optional[list[int]] = None,
         fault_values: Optional[list[int]] = None,
         masked_alarm_values: Optional[list[int]] = None,
+        storage_path: Optional[str] = None,
+        clear_written_reporting: bool = False,
     ) -> None:
         """Add an Access Door object to the server (before starting).
 
@@ -5659,6 +5884,10 @@ class BACnetServer:
         Time_Delay, and a fault value makes Reliability MULTI_STATE_FAULT. Any
         other number, NORMAL (0) included, raises BacnetProtocolError with
         VALUE_OUT_OF_RANGE, and nothing is registered.
+
+        ``storage_path`` and ``clear_written_reporting`` keep the reporting
+        settings and Description a peer writes in that file, as on
+        ``add_analog_input``.
         """
         ...
     def add_access_credential(
@@ -5798,10 +6027,12 @@ class BACnetServer:
         type raises BacnetProtocolError with VALUE_OUT_OF_RANGE. A read
         gives the reference back in the form the keyword takes.
 
-        With ``storage_path``, a rule array, Enable or Accompaniment that a
-        client writes is kept in that file across restarts, and wins over the
-        keyword given for it at the next start, which is then checked but not
-        applied; a saved Accompaniment is served even without the keyword.
+        With ``storage_path``, a rule array, Enable, Accompaniment or
+        Description that a client writes is kept in that file across
+        restarts, and wins over the keyword given for it at the next start,
+        which is then checked but not applied; a saved Accompaniment is
+        served even without the keyword. A Description past 16 KiB is
+        refused with RESOURCES / NO_SPACE_TO_WRITE_PROPERTY.
         To lift a saved requirement, write the no-accompaniment reference
         (instance 4194303), which keeps the row; to drop the row, remove the
         storage file, which also drops the saved rules and Enable. A
@@ -5857,6 +6088,8 @@ class BACnetServer:
             list[ObjectIdentifier | tuple[ObjectIdentifier, ObjectIdentifier]]
         ] = None,
         alarm_values: Optional[list[int]] = None,
+        storage_path: Optional[str] = None,
+        clear_written_reporting: bool = False,
     ) -> None:
         """Add an Access Zone object to the server (before starting).
 
@@ -5876,6 +6109,10 @@ class BACnetServer:
         included, raises BacnetProtocolError with VALUE_OUT_OF_RANGE and
         ``first_failed_element_number`` naming it, from 1, and nothing is
         registered. Left out, the list starts empty.
+
+        ``storage_path`` and ``clear_written_reporting`` keep the reporting
+        settings and Description a peer writes in that file, as on
+        ``add_analog_input``.
         """
         ...
     def add_credential_data_input(
@@ -5904,10 +6141,29 @@ class BACnetServer:
         """
         ...
     def add_alert_enrollment(
-        self, instance: int, name: str, initial_source: ObjectIdentifier
-    ) -> None: ...
+        self,
+        instance: int,
+        name: str,
+        initial_source: ObjectIdentifier,
+        *,
+        storage_path: Optional[str] = None,
+        clear_written_reporting: bool = False,
+    ) -> None:
+        """Add an Alert Enrollment to the server (before starting).
+
+        ``storage_path`` and ``clear_written_reporting`` keep the reporting
+        settings and Description a peer writes in that file, as on
+        ``add_analog_input``.
+        """
+        ...
     def add_event_enrollment(
-        self, instance: int, name: str, event_type: EventType = ...
+        self,
+        instance: int,
+        name: str,
+        event_type: EventType = ...,
+        *,
+        storage_path: Optional[str] = None,
+        clear_written_reporting: bool = False,
     ) -> None:
         """Add an Event Enrollment (Clause 12.12) to the server (before starting).
 
@@ -5923,6 +6179,10 @@ class BACnetServer:
         Fault_Parameters reads as the context-tagged ``none`` choice while no
         fault algorithm is set, and writing that clears it; a null written to
         it succeeds and changes nothing.
+
+        ``storage_path`` and ``clear_written_reporting`` keep the reporting
+        settings and Description a peer writes in that file, as on
+        ``add_analog_input``.
         """
         ...
 
@@ -6091,7 +6351,13 @@ class BACnetServer:
 
     # --- Server lifecycle ---
     def start(self) -> Awaitable[None]:
-        """Start the server and begin accepting BACnet requests."""
+        """Start the server and begin accepting BACnet requests.
+
+        An added object the database won't take raises ValueError: "duplicate
+        object name: ..." for a name another object holds, or "object
+        refused: ..." for any other reason, an instance of 4194303 among them
+        (#2171).
+        """
         ...
 
     def stop(self) -> Awaitable[None]:
@@ -6123,7 +6389,9 @@ class BACnetServer:
         """
         ...
 
-    def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]:
+    def foreign_registration(
+        self,
+    ) -> Awaitable[Union[ForeignRegistrationStatus, Bip6ForeignRegistrationStatus]]:
         """How the foreign-device registration is going (#938), as for
         ``BACnetClient``. RuntimeError before start and after stop."""
         ...
@@ -6200,7 +6468,10 @@ class BACnetServer:
 
         Accepted values are a finite REAL for Analog Input and for a Loop's
         control output, logical Enumerated 0/1 (INACTIVE/ACTIVE) for Binary Input,
-        and Unsigned 1..=Number_Of_States for Multi-state Input. Binary values are
+        and Unsigned 1..=Number_Of_States for Multi-state Input. A noncommandable
+        Analog, Binary or Multi-state Value takes the same datatype as its Input
+        counterpart; a commandable one raises OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED
+        (use ``write_property_local`` with a priority). Binary values are
         BACnet logical values after Polarity, not raw hardware/interface levels.
         An object with Out_Of_Service set rejects this update to preserve
         network simulation ownership. A Life Safety Point or Zone takes an
@@ -6314,6 +6585,23 @@ class BACnetServer:
         """
         ...
 
+    def set_program_state_local(
+        self,
+        object_id: ObjectIdentifier,
+        value: PropertyValue,
+    ) -> Awaitable[None]:
+        """Report a Program's Program_State, the state of the process the application runs.
+
+        Program_State is read-only on the network, and `write_property_local`
+        refuses it with WRITE_ACCESS_DENIED too, so this is the application's
+        route; a client asks for a change through Program_Change. The value
+        is an Enumerated BACnetProgramState from 0 (IDLE) to 5 (UNLOADING): a
+        larger number raises VALUE_OUT_OF_RANGE and another datatype
+        INVALID_DATA_TYPE. An unknown object raises UNKNOWN_OBJECT and any
+        object other than a Program OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
+        """
+        ...
+
     def report_device_reset_local(self) -> Awaitable[None]:
         """Record a reset the application makes for its own reasons: a
         DEVICE_RESET Audit record from this device, with no invoke ID
@@ -6381,6 +6669,35 @@ class BACnetServer:
         on one of them is notified when it changes (by the subscription's COV
         increment, if it gave one); SubscribeCOV on an Averaging object is
         refused.
+        """
+        ...
+
+    def add_pulses_local(
+        self,
+        object_id: ObjectIdentifier,
+        pulses: int,
+    ) -> Awaitable[None]:
+        """Feed an Accumulator the input pulses its meter produced since the
+        last call, counted by the application.
+
+        In service the pulses step Present_Value, through Prescale's ratio
+        when the object has one, rolling over modulo Max_Pres_Value + 1. They
+        also count toward Pulse_Rate: once Limit_Monitoring_Interval is set
+        (``write_property_local`` or a client's write), the server closes a
+        window at the end of each interval and Pulse_Rate becomes that
+        window's count, which a SubscribeCOVProperty on it is notified of.
+        While Out_Of_Service is set Present_Value holds and Pulse_Rate keeps
+        a client's value: the pulses still fill the rate window, but
+        Present_Value drops them rather than catching up later. Present_Value
+        takes a write only then, an Unsigned up to Max_Pres_Value, and once
+        back in service the pulses count on from the written value.
+        Reliability takes a write only then too, to simulate a fault: one
+        that isn't an Enumerated raises INVALID_DATA_TYPE, and the return to
+        service puts back the Reliability held before.
+        ``pulses`` is an unsigned 64-bit count; a negative or larger int
+        raises OverflowError. An unknown object raises
+        UNKNOWN_OBJECT and any object other than an Accumulator
+        OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
         """
         ...
 
@@ -6903,6 +7220,10 @@ class BipEndpoint:
     cancellation can race publication, so always await close for cleanup.
     Setup errors are delivered by awaiting start/context entry. BIPv6/Ethernet
     have no endpoint owner.
+
+    ``device_instance`` takes 0 to 4194302. Instance 4194303 is reserved, as
+    no object may have it, so it, or anything larger, raises ValueError at
+    construction (#2171).
     """
 
     # network_port_instance declares a snapshot; registered_network_port explicitly
@@ -6932,6 +7253,7 @@ class BipEndpoint:
         *,
         read_work_limit: int = 256,
         share_port_by_address: bool = False,
+        share_wildcard_port: bool = False,
         min_request_interval_ms: int = 0,
         bbmd: Optional[Bbmd] = None,
         foreign_device: Optional[ForeignDevice] = None,
@@ -6940,8 +7262,26 @@ class BipEndpoint:
         after_reinitialize: Optional[AfterReinitialize] = None,
         reinit_password: Optional[str] = None,
         device_write_policy: Optional[MutationHandler] = None,
+        source_audit_reporter: Optional[ObjectIdentifier] = None,
+        audit_recipient: Optional[AuditRecipientInput] = None,
+        audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str]]] = None,
     ) -> None:
-        """``on_reinitialize`` / ``after_reinitialize``: execute
+        """``source_audit_reporter`` / ``audit_recipient`` /
+        ``audit_device_bindings`` (#2348): the Audit Reporter, added with
+        ``add_audit_reporter``, through which the session reports the
+        ReinitializeDevice resets, backups and restores it carries out,
+        ``report_device_reset_local()`` calls and the client role's reads,
+        each filtered by the Reporter's level and operations. It needs
+        ``device_write_policy`` and ``audit_recipient`` (the Device's Audit
+        recipient); the bindings are ``(Device identifier, "ipv4:port")``
+        routes to recipient Devices, or ``"network:0xMAC"`` for one behind a
+        router on that network (#2371; network 1 to 65534, MAC 1 to 18
+        octets). A Reporter identifier of another type and
+        the other shapes construction can check raise ValueError; a Reporter
+        that wasn't added raises BacnetError at start. ``ScEndpoint`` and
+        ``MstpEndpoint`` take them too, each binding address in its link's
+        format (#2357) or the routed form.
+        ``on_reinitialize`` / ``after_reinitialize``: execute
         ReinitializeDevice, as ``BACnetServer``'s keywords do (#1566);
         ``reinit_password`` (needs ``on_reinitialize``, else ValueError; 1 to
         20 characters, else ValueError) is the password a request must
@@ -6965,6 +7305,11 @@ class BipEndpoint:
         itself, so endpoints on other addresses of this host can share the
         port. Needs an explicit interface and a nonzero port; broadcasts and
         unicast are still handled in the order they arrived.
+        ``share_wildcard_port`` (default False): share an explicitly
+        requested port with other sockets on this host that bind it the
+        same way. By default the endpoint claims its port, and ``start()``
+        raises when another socket holds it; with sharing, each unicast
+        reaches only one of the sockets on the port.
         ``min_request_interval_ms`` (default 0, no pacing; at most 3,600,000,
         else ValueError) paces the client role's confirmed requests to each
         destination exactly as ``BACnetClient``'s keyword does (#1542). A
@@ -6972,13 +7317,31 @@ class BipEndpoint:
         unconfirmed requests aren't paced."""
         ...
 
-    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0) -> None: ...
-    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
-        """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL."""
+    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Profile keywords as on ``BACnetServer.add_analog_input``: each
+        provisions its optional row, served only when given."""
         ...
-    def add_binary_input(self, instance: int, name: str) -> None: ...
-    def add_binary_value(self, instance: int, name: str, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
-        """Optional BV Audit rows: None is absent; priority 'inherit' is present NULL."""
+    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
+        Access, Value_Source and profile keywords as on
+        ``BACnetServer.add_analog_value``; tracking on a commandable object
+        raises ValueError."""
+        ...
+    def add_binary_input(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Profile keywords as on ``add_analog_input``."""
+        ...
+    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
+        Access, Value_Source and profile keywords as on ``add_analog_value``."""
+        ...
+    def add_audit_reporter(self, instance: int, name: str, *, audit_level: Literal["none", "audit_config", "audit_all"], auditable_operations: int, issue_confirmed_notifications: bool = False) -> None:
+        """Add an Audit Reporter for ``source_audit_reporter`` to select
+        (#2348). ``audit_level`` and ``auditable_operations`` (bit n for
+        AuditOperation n) are required, as on
+        ``BACnetServer.configure_audit_reporters``, and filter what the
+        session reports. Peers can't change them through an endpoint. A
+        Reporter that ``source_audit_reporter`` doesn't select records
+        nothing."""
         ...
     def add_group(
         self,
@@ -7039,6 +7402,17 @@ class BipEndpoint:
         """Broadcast one I-Am consistent with the composed identity."""
         ...
 
+    def report_device_reset_local(self) -> Awaitable[None]:
+        """Record a reset the application makes for its own reasons: a
+        DEVICE_RESET Audit record from this device, with no invoke ID, through
+        the session's source Reporter when it has one, as
+        ``BACnetServer.report_device_reset_local`` does (#1837): with
+        ``source_audit_reporter`` set, a DEVICE_RESET naming this device as
+        source and target, filtered by that Reporter's level and operations;
+        without one, nothing. A peer's accepted restart is recorded already.
+        RuntimeError when the endpoint is not running."""
+        ...
+
     @property
     def device_instance(self) -> int: ...
     @property
@@ -7049,6 +7423,8 @@ class ScEndpoint:
 
     ``sc_device_uuid`` is the single durable lifetime identity for both the
     hub dial and DEVICE_UUID. Lifecycle mirrors ``BipEndpoint``.
+    ``device_instance`` takes 0 to 4194302, as there: 4194303 or more raises
+    ValueError at construction (#2171).
     """
 
     def __init__(
@@ -7077,19 +7453,61 @@ class ScEndpoint:
         after_reinitialize: Optional[AfterReinitialize] = None,
         reinit_password: Optional[str] = None,
         device_write_policy: Optional[MutationHandler] = None,
+        source_audit_reporter: Optional[ObjectIdentifier] = None,
+        audit_recipient: Optional[AuditRecipientInput] = None,
+        audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str]]] = None,
+        reconnect: Optional[ScReconnect] = None,
+        sc_failover_hub: str | None = None,
+        sc_connect_timeout_ms: int | None = None,
     ) -> None:
         """``read_work_limit``, ``min_request_interval_ms``,
         ``on_reinitialize``, ``after_reinitialize``, ``reinit_password`` and
-        ``device_write_policy`` are as for ``BipEndpoint``."""
+        ``device_write_policy`` are as for ``BipEndpoint``.
+
+        ``source_audit_reporter`` / ``audit_recipient`` /
+        ``audit_device_bindings``: as on ``BipEndpoint`` (#2357), each
+        binding address a VMAC as ``local_address()`` gives it
+        (``"xx:xx:xx:xx:xx:xx"``) or as twelve hex digits, or a routed
+        ``"network:0xMAC"``. An address
+        ``audit_recipient`` takes another node's VMAC: never the broadcast
+        or all-zero VMAC or this endpoint's own.
+
+        ``reconnect``, ``sc_failover_hub`` and ``sc_connect_timeout_ms``: as
+        on ``BACnetClient`` (#1946). ``reconnect`` (an ``ScReconnect``)
+        redials a lost hub; ``sc_failover_hub`` (needs ``reconnect``, else
+        ValueError) is a second hub's ``wss://`` URL, dialled with the same
+        TLS settings when the primary can't be reached, and the endpoint
+        keeps trying the primary and returns to it. ``sc_connect_timeout_ms``
+        (at least 1, default 10000) bounds each hub dial and Connect-Request.
+        Follow the link with ``connection_events()`` and
+        ``connection_status()``."""
         ...
 
-    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0) -> None: ...
-    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
-        """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL."""
+    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Profile keywords as on ``BACnetServer.add_analog_input``: each
+        provisions its optional row, served only when given."""
         ...
-    def add_binary_input(self, instance: int, name: str) -> None: ...
-    def add_binary_value(self, instance: int, name: str, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
-        """Optional BV Audit rows: None is absent; priority 'inherit' is present NULL."""
+    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
+        Access, Value_Source and profile keywords as on
+        ``BACnetServer.add_analog_value``; tracking on a commandable object
+        raises ValueError."""
+        ...
+    def add_binary_input(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Profile keywords as on ``add_analog_input``."""
+        ...
+    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
+        Access, Value_Source and profile keywords as on ``add_analog_value``."""
+        ...
+    def add_audit_reporter(self, instance: int, name: str, *, audit_level: Literal["none", "audit_config", "audit_all"], auditable_operations: int, issue_confirmed_notifications: bool = False) -> None:
+        """Add an Audit Reporter for ``source_audit_reporter`` to select
+        (#2348). ``audit_level`` and ``auditable_operations`` (bit n for
+        AuditOperation n) are required, as on
+        ``BACnetServer.configure_audit_reporters``, and filter what the
+        session reports. Peers can't change them through an endpoint. A
+        Reporter that ``source_audit_reporter`` doesn't select records
+        nothing."""
         ...
     def add_group(
         self,
@@ -7145,6 +7563,33 @@ class ScEndpoint:
         """Broadcast one I-Am via the hub relay."""
         ...
 
+    def connection_events(self) -> Awaitable[ScEventIterator]:
+        """Subscribe to the SC hub-connector events (#1946), as
+        ``BACnetClient.connection_events()`` does. The first call after a
+        start gets the events since the session was built, starting with
+        the first ``connected`` (#1908); a later call gets the events from
+        that call on. A slow reader never holds up the connector: see
+        ``ScEventIterator.missed``. Iteration ends when the endpoint closes.
+        RuntimeError before start or after close."""
+        ...
+
+    def connection_status(self) -> Awaitable[ScLinkStatus]:
+        """Snapshot the SC hub link without I/O (#1946), as
+        ``BACnetClient.connection_status()`` does. RuntimeError before start
+        or after close."""
+        ...
+
+    def report_device_reset_local(self) -> Awaitable[None]:
+        """Record a reset the application makes for its own reasons: a
+        DEVICE_RESET Audit record from this device, with no invoke ID, through
+        the session's source Reporter when it has one, as
+        ``BACnetServer.report_device_reset_local`` does (#1837): with
+        ``source_audit_reporter`` set (#2357), a DEVICE_RESET naming this
+        device as source and target, filtered by that Reporter's level and
+        operations; without one, nothing. A peer's accepted restart is
+        recorded already. RuntimeError when the endpoint is not running."""
+        ...
+
     @property
     def device_instance(self) -> int: ...
     @property
@@ -7155,6 +7600,8 @@ class MstpEndpoint:
 
     Opens a real serial device via ``TokioSerialPort`` like the current
     wrappers. Lifecycle mirrors ``BipEndpoint``.
+    ``device_instance`` takes 0 to 4194302, as there: 4194303 or more raises
+    ValueError at construction (#2171).
     """
 
     def __init__(
@@ -7187,6 +7634,9 @@ class MstpEndpoint:
         after_reinitialize: Optional[AfterReinitialize] = None,
         reinit_password: Optional[str] = None,
         device_write_policy: Optional[MutationHandler] = None,
+        source_audit_reporter: Optional[ObjectIdentifier] = None,
+        audit_recipient: Optional[AuditRecipientInput] = None,
+        audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str]]] = None,
     ) -> None:
         """``read_work_limit``, ``min_request_interval_ms``,
         ``on_reinitialize``, ``after_reinitialize``, ``reinit_password`` and
@@ -7210,16 +7660,40 @@ class MstpEndpoint:
         ``mstp_transmit_latency_pad_ms``, ``mstp_usage_timeout_ms`` and
         ``mstp_reply_timeout_ms`` are as for ``BACnetClient``, but a value
         out of range raises ValueError here.
-        """
+
+        ``source_audit_reporter`` / ``audit_recipient`` /
+        ``audit_device_bindings``: as on ``BipEndpoint`` (#2357), each
+        binding address a station in decimal digits, as ``local_address()``
+        gives it (``"2"``), or a routed ``"network:0xMAC"``. An address
+        ``audit_recipient`` takes another station: never 255 or this
+        endpoint's own."""
         ...
 
-    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0) -> None: ...
-    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
-        """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL."""
+    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Profile keywords as on ``BACnetServer.add_analog_input``: each
+        provisions its optional row, served only when given."""
         ...
-    def add_binary_input(self, instance: int, name: str) -> None: ...
-    def add_binary_value(self, instance: int, name: str, *, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None) -> None:
-        """Optional BV Audit rows: None is absent; priority 'inherit' is present NULL."""
+    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
+        Access, Value_Source and profile keywords as on
+        ``BACnetServer.add_analog_value``; tracking on a commandable object
+        raises ValueError."""
+        ...
+    def add_binary_input(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Profile keywords as on ``add_analog_input``."""
+        ...
+    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+        """Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
+        Access, Value_Source and profile keywords as on ``add_analog_value``."""
+        ...
+    def add_audit_reporter(self, instance: int, name: str, *, audit_level: Literal["none", "audit_config", "audit_all"], auditable_operations: int, issue_confirmed_notifications: bool = False) -> None:
+        """Add an Audit Reporter for ``source_audit_reporter`` to select
+        (#2348). ``audit_level`` and ``auditable_operations`` (bit n for
+        AuditOperation n) are required, as on
+        ``BACnetServer.configure_audit_reporters``, and filter what the
+        session reports. Peers can't change them through an endpoint. A
+        Reporter that ``source_audit_reporter`` doesn't select records
+        nothing."""
         ...
     def add_group(
         self,
@@ -7273,6 +7747,17 @@ class MstpEndpoint:
 
     def broadcast_i_am(self) -> Awaitable[None]:
         """Broadcast one I-Am (MS/TP local broadcast)."""
+        ...
+
+    def report_device_reset_local(self) -> Awaitable[None]:
+        """Record a reset the application makes for its own reasons: a
+        DEVICE_RESET Audit record from this device, with no invoke ID, through
+        the session's source Reporter when it has one, as
+        ``BACnetServer.report_device_reset_local`` does (#1837): with
+        ``source_audit_reporter`` set (#2357), a DEVICE_RESET naming this
+        device as source and target, filtered by that Reporter's level and
+        operations; without one, nothing. A peer's accepted restart is
+        recorded already. RuntimeError when the endpoint is not running."""
         ...
 
     @property

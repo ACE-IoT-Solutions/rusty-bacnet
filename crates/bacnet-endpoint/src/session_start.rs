@@ -18,16 +18,35 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         .then(|| NotificationTransactions::with_coordinator(Arc::clone(&self.coordinator)));
         let notifications = self.notifications.clone();
         let (source_audit, source_recipient) = if let Some(selected) = self.source_audit_reporter {
-            let broadcast = receivers.bip_broadcast_endpoint.ok_or_else(|| {
-                Error::Encoding("source Audit lost its B/IP capability at startup".into())
-            })?;
+            use crate::source_audit::recipient::SourceLink;
             let mut routes = source_routes.take().expect("preflight routes");
-            routes.finalize(broadcast, egress.local_network_number().clone());
+            // The started link's facts: B/IP's bound broadcast endpoint, or
+            // any other link's own MAC, with the egress's group rule (#2357).
+            let (link, broadcast) = match receivers.bip_broadcast_endpoint {
+                Some(broadcast) => (SourceLink::Bip(broadcast), *broadcast.ip()),
+                None if routes.is_bip() => {
+                    return Err(Error::Encoding(
+                        "source Audit lost its B/IP capability at startup".into(),
+                    ));
+                }
+                None => {
+                    let groups = egress.clone();
+                    let groups = bacnet_transport::port::GroupDestinations::new(move |mac| {
+                        groups.is_group_destination(mac)
+                    });
+                    let link = SourceLink::Other {
+                        local: receivers.local_mac.clone(),
+                        groups,
+                    };
+                    (link, std::net::Ipv4Addr::UNSPECIFIED)
+                }
+            };
+            routes.finalize(link, egress.local_network_number().clone());
             let (source, recipient) = crate::source_audit::SourceAudit::new(
                 Arc::clone(self.database.as_ref().expect("validated source database")),
                 selected,
                 routes,
-                *broadcast.ip(),
+                broadcast,
                 egress.clone(),
                 notifications.as_ref().expect("source worker owner"),
                 self.client_config.max_apdu_length,
@@ -86,7 +105,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                         responder = responder.with_reinitialize_audit(Arc::new(
                             move |db, operation, requester| {
                                 if let Some(source) = source.upgrade() {
-                                    source.device_operation(db, operation, requester);
+                                    source.device_operation(db, operation, Some(requester));
                                 }
                             },
                         ));
@@ -103,8 +122,15 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 (None, None)
             };
 
+        // Routed source Audit bindings' routers, which traffic and router
+        // announcements teach (#2371).
+        let source_routers = source_recipient
+            .as_ref()
+            .map(|runtime| Arc::clone(runtime.routes.routers()))
+            .filter(|routers| !routers.is_empty());
         self.network_number_task = receivers.network_controls.map(|mut controls| {
             let egress = egress.clone();
+            let routers = source_routers.clone();
             let registration_lease = self.registered_port_lease.upgrade();
             // The owner copies its state into the layer's number slot after
             // each control, where the requester and source routes read it
@@ -129,6 +155,9 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             tokio::spawn(async move {
                 let _registration_lease = registration_lease;
                 while let Some(control) = controls.recv().await {
+                    if let Some(routers) = &routers {
+                        routers.observe_control(&control);
+                    }
                     let before = egress.local_network_number().get();
                     let reply = owner.handle(control).await;
                     let source = source.as_ref().and_then(std::sync::Weak::upgrade);
@@ -165,6 +194,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             coordinator: Arc::clone(&self.coordinator),
             shared: Arc::clone(&self.shared),
             local_network: egress.local_network_number().clone(),
+            source_routers,
         };
         let audit_lease = source_recipient
             .as_ref()

@@ -1,7 +1,10 @@
 use super::*;
 use bacnet_encoding::constructed::encode_event_notification_subscription_list;
+use bacnet_objects::property_metadata::{
+    PropertyConformance, PropertyMetadata, PropertyWriteCapability,
+};
 use bacnet_objects::subscribed_recipients::SubscribedRecipients;
-use bacnet_objects::traits::MonotonicClock;
+use bacnet_objects::traits::{Clocks, Timed};
 use bacnet_types::constructed::{
     BACnetEventNotificationSubscription, BACnetRecipient, PropertyReference,
     ReadAccessSpecification,
@@ -66,24 +69,55 @@ impl BACnetObject for Forwarder {
         }
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[
-            PropertyIdentifier::OBJECT_IDENTIFIER,
-            PropertyIdentifier::OBJECT_NAME,
-            PropertyIdentifier::OBJECT_TYPE,
-            SUBSCRIBED_RECIPIENTS,
-        ])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        const fn row(
+            property: PropertyIdentifier,
+            write: PropertyWriteCapability,
+        ) -> PropertyMetadata {
+            let conformance = match write {
+                PropertyWriteCapability::ReadOnly => PropertyConformance::RequiredRead,
+                _ => PropertyConformance::RequiredWrite,
+            };
+            PropertyMetadata::new(property, conformance, None, write)
+        }
+        const ROWS: &[PropertyMetadata] = &[
+            row(
+                PropertyIdentifier::OBJECT_IDENTIFIER,
+                PropertyWriteCapability::ReadOnly,
+            ),
+            row(
+                PropertyIdentifier::OBJECT_NAME,
+                PropertyWriteCapability::ReadOnly,
+            ),
+            row(
+                PropertyIdentifier::OBJECT_TYPE,
+                PropertyWriteCapability::ReadOnly,
+            ),
+            row(SUBSCRIBED_RECIPIENTS, PropertyWriteCapability::Always),
+            row(
+                PropertyIdentifier::PROPERTY_LIST,
+                PropertyWriteCapability::ReadOnly,
+            ),
+        ];
+        Cow::Borrowed(ROWS)
     }
 
-    fn bind_monotonic_clock_internal(&mut self, clock: Option<Arc<MonotonicClock>>) {
-        self.subscribed_recipients.bind_monotonic_clock(clock);
+    fn timed(&mut self) -> Option<&mut dyn Timed> {
+        Some(self)
+    }
+}
+
+impl Timed for Forwarder {
+    fn bind_clocks(&mut self, clocks: &Clocks) {
+        self.subscribed_recipients
+            .bind_monotonic_clock(clocks.monotonic.clone());
     }
 
-    fn advance_monotonic_time_internal(&mut self, now: Duration) -> bool {
+    fn advance_monotonic_time(&mut self, now: Duration) -> bool {
         self.subscribed_recipients.advance_to(now)
     }
 
-    fn next_monotonic_deadline_internal(&self) -> Option<Duration> {
+    fn next_monotonic_deadline(&self) -> Option<Duration> {
         self.subscribed_recipients.next_deadline()
     }
 }

@@ -1,7 +1,8 @@
 //! Running Command lists and Channel distributions without a server, for
 //! [`tick_schedules`](crate::schedule::tick_schedules) (#1178, #1151).
 //!
-//! Each write is made as the bare WriteProperty handler would make a request
+//! Each write is made through
+//! [`bacnet_device_core::write::write_property`], as a WriteProperty request
 //! carrying it, with the Command or Channel as the initiating object. There
 //! is no network here, so a command or Channel member naming another device
 //! fails unsent, which a Channel reports as PROCESS_ERROR. There is no
@@ -25,8 +26,9 @@ use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use tokio::sync::{RwLock, mpsc};
 
-use super::{RunHost, TakenRuns, Unfinished, end_when_free, execute};
+use super::{RunHost, TakenRuns, end_when_free, execute};
 use crate::server::RemoteRequestError;
+use bacnet_device_core::write::Unfinished;
 
 /// Run `runs`, and any runs their writes start, to their ends.
 ///
@@ -97,12 +99,17 @@ impl RunHost for Unattached<'_> {
         let request = request(command)?;
         let runs = {
             let mut db = self.db.write().await;
+            // Under the write's own guard: a run whose object was deleted
+            // meanwhile writes nothing (#2265).
+            if !super::is_current(&db, run) {
+                return Err(super::stale_run());
+            }
             let origin = crate::command_source::resolve_local(
                 &db,
                 crate::LocalCommandSource::Object(run.source),
             )
             .ok();
-            let (target, _) = crate::handlers::handle_write_property_observed(
+            let (target, _) = bacnet_device_core::write::write_property(
                 &mut db,
                 &request,
                 None,
@@ -125,6 +132,7 @@ impl RunHost for Unattached<'_> {
 
     async fn write_remote(
         &self,
+        _run: &CommandRun,
         _device: ObjectIdentifier,
         _command: &BACnetActionCommand,
     ) -> Result<(), RemoteRequestError> {

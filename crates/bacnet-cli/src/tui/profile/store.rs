@@ -1,8 +1,7 @@
 //! Small atomic file store. No directory is created while browsing profiles.
 
 use super::Profile;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -90,6 +89,15 @@ impl Store {
         names.sort();
         Ok(names)
     }
+    /// Whether profile `name` has a file, its name checked first.
+    #[cfg_attr(not(feature = "mcp"), allow(dead_code))]
+    pub(crate) fn exists(&self, name: &str) -> Result<bool, String> {
+        match fs::metadata(self.path(name)?) {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(format!("cannot inspect profile {name}: {e}")),
+        }
+    }
     pub(crate) fn load(&self, name: &str) -> Result<Profile, String> {
         let path = self.path(name)?;
         if fs::metadata(&path)
@@ -108,7 +116,10 @@ impl Store {
         Ok(profile)
     }
     /// Save a complete synced temporary file, then atomically publish it.
-    /// A new profile uses a hard link so concurrent creation never overwrites.
+    /// A new profile uses a hard link so concurrent creation never
+    /// overwrites; creating it again with the same text, as a retry does,
+    /// finds it saved. When only the directory sync fails, the error says
+    /// the new file is in place.
     pub(crate) fn save(&self, name: &str, profile: &Profile, create: bool) -> Result<(), String> {
         let path = self.path(name)?;
         profile.validate()?;
@@ -122,50 +133,100 @@ impl Store {
             std::process::id(),
             NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
         ));
-        publish(&temp, &path, &text, create).map_err(|e| format!("cannot save profile {name}: {e}"))
+        match publish(&temp, &path, &text, create) {
+            Ok(()) => Ok(()),
+            // An earlier save of this very profile went in place, and only
+            // its directory sync failed: it is there already, and saved
+            // once its directory syncs.
+            Err(e)
+                if create
+                    && e.kind() == std::io::ErrorKind::AlreadyExists
+                    && fs::read_to_string(&path).is_ok_and(|saved| saved == text) =>
+            {
+                sync_parent(&path).map_err(|e| {
+                    format!(
+                        "profile {name}: the file is in place, but its directory could not be \
+                         synced, so it may not survive a power loss: {e}"
+                    )
+                })
+            }
+            Err(e) if in_place(&e) => Err(format!("profile {name}: {e}")),
+            Err(e) => Err(format!("cannot save profile {name}: {e}")),
+        }
     }
-    pub(crate) fn workspace(&self, name: &str) -> Result<PathBuf, String> {
+    /// Where the profile's workspace is, without creating it.
+    pub(crate) fn workspace_path(&self, name: &str) -> Result<PathBuf, String> {
         validate_name(name)?;
-        let path = self.root.join("workspaces").join(name);
-        fs::create_dir_all(&path).map_err(|e| format!("cannot create profile workspace: {e}"))?;
+        Ok(self.root.join("workspaces").join(name))
+    }
+
+    /// The profile's workspace, created if missing. On Unix a new one is
+    /// mode 0700, as the TUI's MCP socket needs (#2185); an existing one
+    /// keeps its mode.
+    pub(crate) fn workspace(&self, name: &str) -> Result<PathBuf, String> {
+        let path = self.workspace_path(name)?;
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+            .create(&path)
+            .map_err(|e| format!("cannot create profile workspace: {e}"))?;
         Ok(path)
     }
 }
 
-/// Cleanup only files this attempt created. A stale temporary name or another
-/// writer's collision must survive an unsuccessful create_new. The session
-/// ledger is saved the same way.
-pub(crate) fn publish(temp: &Path, path: &Path, text: &str, create: bool) -> std::io::Result<()> {
-    let mut created = false;
-    let result = (|| -> std::io::Result<()> {
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(temp)?;
-        created = true;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        if create {
-            fs::hard_link(temp, path)?;
-        } else {
-            fs::rename(temp, path)?;
-        }
-        Ok(())
-    })();
-    if created {
-        let _ = fs::remove_file(temp);
-    }
-    result
+/// The atomic publish profiles and the session ledger share; it lives
+/// beside the ledger in `bacnet_ops::safety::file`.
+pub(crate) use bacnet_ops::safety::file::{in_place, publish};
+
+/// [`bacnet_ops::safety::file::sync_parent`], counted for the tests.
+fn sync_parent(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    tests::count_sync();
+    bacnet_ops::safety::file::sync_parent(path)
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
+    use std::cell::Cell;
+
     use super::*;
+
+    thread_local! {
+        /// Directory syncs the store asked for on this thread after
+        /// finding a file in place.
+        static SYNCS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Fail the directory syncs that follow on this thread, the publish's
+    /// own included, or stop.
+    pub(in crate::tui::profile) fn fail_syncs(fail: bool) {
+        bacnet_ops::safety::file::testing::fail_directory_syncs(fail);
+    }
+
+    pub(super) fn count_sync() {
+        SYNCS.with(|n| n.set(n.get() + 1));
+    }
+
+    /// A retried creation that finds its file in place still syncs the
+    /// directory, and reports that sync's failure, file in place.
+    #[test]
+    fn a_retried_creation_syncs_its_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path().to_path_buf());
+        let profile = Profile::default();
+        store.save("site", &profile, true).unwrap();
+        let before = SYNCS.with(Cell::get);
+        store.save("site", &profile, true).unwrap();
+        assert_eq!(SYNCS.with(Cell::get), before + 1, "the retry synced");
+        fail_syncs(true);
+        let failed = store.save("site", &profile, true);
+        fail_syncs(false);
+        let error = failed.unwrap_err();
+        assert!(error.contains("in place"), "{error}");
+        assert_eq!(store.load("site").unwrap(), profile);
+    }
 
     #[test]
     fn failed_temporary_creation_preserves_both_prior_profile_and_unowned_file() {

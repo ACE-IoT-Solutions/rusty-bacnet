@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_device_core::read::{ReadFailure, ReadPropertyMultipleBudget};
 use bacnet_types::error::RemoteError;
 
 mod access_identity;
@@ -357,9 +358,14 @@ fn rpm_handler_all_properties_expanded() {
     let result = &ack.list_of_read_access_results[0];
     assert_eq!(result.object_identifier, oid);
 
-    // AnalogInputObject.property_list() returns multiple properties
+    // ALL reads every metadata row but Property_List, in row order.
     let obj = db.get(&oid).unwrap();
-    let expected_props = obj.property_list();
+    let expected_props: Vec<_> = obj
+        .property_metadata()
+        .iter()
+        .map(|row| row.property_identifier)
+        .filter(|&p| p != PropertyIdentifier::PROPERTY_LIST)
+        .collect();
     assert!(
         expected_props.len() > 2,
         "sanity: AI should have many properties"
@@ -484,10 +490,6 @@ fn rpm_handler_required_vs_optional() {
     ))
     .unwrap();
     let oid = ObjectIdentifier::new(ObjectType::DATE_VALUE, 1).unwrap();
-    assert!(
-        !db.get(&oid).unwrap().property_metadata().is_empty(),
-        "Date Value routes RPM selectors through canonical metadata"
-    );
 
     // Metadata routing fixtures mirror the Time Value precedent: REQUIRED
     // carries the RequiredRead rows (Property_List excluded from the wire
@@ -623,9 +625,9 @@ fn rpm_multistate_indexed_state_text_and_list_gating_preserve_bytes() {
         };
         let mut bytes = BytesMut::new();
         request.encode(&mut bytes).unwrap();
-        let mut legacy = BytesMut::new();
-        handle_read_property_multiple(&db, &bytes, &mut legacy).unwrap();
-        let ack = ReadPropertyMultipleACK::decode(&legacy).unwrap();
+        let mut unlimited = BytesMut::new();
+        handle_read_property_multiple(&db, &bytes, &mut unlimited).unwrap();
+        let ack = ReadPropertyMultipleACK::decode(&unlimited).unwrap();
         let results = &ack.list_of_read_access_results[0].list_of_results;
         assert_eq!(results.len(), references.len());
         for (result, (p, i)) in results.iter().zip(references) {
@@ -656,25 +658,25 @@ fn rpm_multistate_indexed_state_text_and_list_gating_preserve_bytes() {
                 assert!(result.property_value.is_none());
             }
         }
-        let budget = crate::server::ReadPropertyMultipleBudget {
+        let budget = ReadPropertyMultipleBudget {
             max_result_elements: references.len(),
-            max_service_ack_bytes: legacy.len(),
+            max_service_ack_bytes: unlimited.len(),
         };
         let mut bounded = BytesMut::new();
         super::super::rpm_budget::handle_rpm_budgeted(&db, &bytes, &mut bounded, budget).unwrap();
-        assert_eq!(bounded, legacy);
+        assert_eq!(bounded, unlimited);
         let mut prefix = BytesMut::from(&b"prefix"[..]);
         assert!(matches!(
             super::super::rpm_budget::handle_rpm_budgeted(
                 &db,
                 &bytes,
                 &mut prefix,
-                crate::server::ReadPropertyMultipleBudget {
-                    max_service_ack_bytes: legacy.len() - 1,
+                ReadPropertyMultipleBudget {
+                    max_service_ack_bytes: unlimited.len() - 1,
                     ..budget
                 }
             ),
-            Err(super::super::ReadFailure::Bytes)
+            Err(ReadFailure::Bytes)
         ));
         assert_eq!(&prefix[..], b"prefix");
     }

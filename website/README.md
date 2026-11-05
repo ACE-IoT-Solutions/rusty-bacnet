@@ -9,10 +9,10 @@ and documentation work (`development/`), and discovery, subscription and write
 guides (`guides/`). [Engineering
 docs](../docs/README.md) remain the contract authority.
 
-This content refresh is local-only. A successful build or browser check does not
-publish it or establish that a hosted site contains these changes. Historical
-publication machinery below is reference material; invoking it requires separate
-explicit authority.
+The site is published to GitHub Pages by a manual dispatch of `docs-pages.yml`
+from a reviewed `dev` commit. A successful local build or browser check does not
+publish anything or show that the hosted site contains a change; publishing
+requires separate explicit authority.
 
 ## Local build and validation
 
@@ -67,6 +67,20 @@ Use a fresh output/report directory for each run when preserving failures.
 Screenshots are real production pages, not visual baselines to auto-approve.
 Automated axe and browser tests do not establish full accessibility conformance;
 screen-reader and physical-device checks remain separate lanes.
+
+## Sample checks
+
+Every fenced block and `<Code>` component on the pages, and every fenced block
+in the repository's README, has an entry in `tests/python/site_samples.py`
+saying how CI checks it. `tests/SAMPLES.md` lists them with counts by language
+and status, and is generated from that table: run
+`python tests/python/site_samples.py` after changing an entry. The Python tests
+(`tests/python/`, run in CI's Python bindings job) run the CLI and Python
+samples against loopback servers, parse the rest with the CLI and the Python
+module, and run the embedded examples with `cargo`; `npm test` checks every
+displayed `bacnet` command against the CLI's argument definitions without a
+build. The TUI's profile tables and command-bar lines are parsed by the CLI's
+own code in `crates/bacnet-cli/src/tui/site_samples_tests.rs`.
 
 ## Tutorial validation
 
@@ -141,7 +155,8 @@ python3 website/scripts/tui-screenshots/capture.py           # build, then every
 python3 website/scripts/tui-screenshots/capture.py --reuse --only watch-list,overview-help
 ```
 
-The script builds `bacnet` (with `sc-tls` and `serial`) and the loopback lab
+The script builds `bacnet` with the macOS release executable's features
+(`sc-tls` and `mcp`; `serial` too with `--mstp-port`) and the loopback lab
 in `scripts/tui-screenshots/lab/`, a standalone crate outside the workspace
 that uses the workspace crates by path. It starts the lab (a BBMD, a router,
 three B/IP devices and a BACnet/SC hub, all on 127.0.0.1) and runs the TUI in
@@ -165,18 +180,17 @@ the Screen Recording permission if macOS asks.
   another). Shots are scaled to at most 1440 pixels wide (`--width`).
 - **Checking the driving logic** without a Terminal window:
   `capture.py --reuse --tmux-only DIR` writes each shot's text to `DIR/NAME.txt`
-  and leaves the PNGs alone.
+  and leaves the images alone.
 
-Rerun it after a TUI change that the pages show, and review the new PNGs before
+Rerun it after a TUI change that the pages show, and review the new WebP images before
 committing them. A new shot needs an entry in `SHOTS` in `capture.py`, a step
 in one of its scenarios, and a page that uses it.
 
-**Known gap (#2110):** the scenarios match `dev`'s TUI again, and a full run
-takes every shot in the manifest. The committed images still date from before
-many TUI changes; they are retaken from the 0.15.0 release build, so the site
-shows what users install. When a wait times out, the script names the
-scenario, the text it waited for and the last shot taken, then prints the
-pane.
+The committed images were all taken in one run from the 0.15.0 release tree
+(#2110), with Terminal in full screen, so every shot is cropped to the pane
+and none shows window chrome. Take a refresh in one run too, so the set
+keeps one look. When a wait times out, the script names the scenario, the
+text it waited for and the last shot taken, then prints the pane.
 
 ## Retained CI and publication reference
 
@@ -252,8 +266,6 @@ Actions artifacts retained for seven days, with hidden files excluded.
 5. Verify the **returned deployment URL** in a browser: homepage, direct nested
    route/reload, native search, theme/tabs, assets, raw Markdown, example download,
    original SVGs, sitemap/canonical URLs and 404 recovery under `/rusty-bacnet/`.
-   Only after deployment and live checks may a **separate** follow-up add public
-   repository README/package links or replace the unpublished status above.
 
 Future deployments remain manual with the same sequence and reviewed SHA.
 PR runs may cancel older checks for that PR, never a publication. Manual publish
@@ -291,8 +303,7 @@ artifact or fetch a mutable branch in the deployment job.
   dependency trees, screenshots and browser reports untracked.
 - The docs workflow is approved for CI and manual publication only. Pages
   settings and actual publication remain owner-operated; the workflow's presence
-  does not mean this site is live. Repository README/package public links remain
-  deferred until verified deployment. Do not introduce a support-status database.
+  does not mean a given change is live. Do not introduce a support-status database.
 
 ## Content organization
 
@@ -303,11 +314,11 @@ artifact or fetch a mutable branch in the deployment job.
   and the llms index read. To move to another release, change it and run
   `npm test`: `tests/unit/release.test.mjs` names every page, the lab script,
   the sidebar label and the home banner that still carry another version
-  (the upgrade guide from it, `project/upgrading/v0-14.md`, and the lab's
+  (the upgrade guide from it, `project/upgrading/v0-15.md`, and the lab's
   recorded evidence may name the previous one). It also checks the installation page's asset list against
   `.github/workflows/release.yml`.
-- `tui/`: the terminal UI on the `dev` branch, which ships after the release in
-  `src/lib/site.mjs`. Its screenshots come from `scripts/tui-screenshots/`
+- `tui/`: the terminal UI as it is on `dev`. It shipped in the release in
+  `src/lib/site.mjs`; later changes land in the next release. Its screenshots come from `scripts/tui-screenshots/`
   (see "TUI screenshots" above).
 - `reference/` and `project/`: reference entry points, support scope, and the
   upgrade hub (`project/upgrading`) with one guide per release under it.

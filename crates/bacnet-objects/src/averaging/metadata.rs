@@ -10,15 +10,15 @@ use crate::property_metadata::{
 };
 
 // Canonical effective rows for Averaging (type 18, Clause 12.5 Table 12-5).
-// Order preserves the legacy projection, with the window rows after
-// Object_Property_Reference as in the table; PROPERTY_LIST is appended so the
-// projection helper omits it while required_properties keeps it. Only
+// Order preserves the earlier row order, with the window rows after
+// Object_Property_Reference as in the table; PROPERTY_LIST is appended
+// last. Only
 // implemented rows are described: table rows the object does not serve
 // (timestamps, Variance_Value, audit, tags, profile rows) stay absent until
 // dispatch exists. Attempted_Samples, Window_Interval and Window_Samples carry
 // the table W code and Object_Property_Reference the R code; all four take
-// network writes, each of which resets the sample window, so they are
-// RequiredWrite/Always. Table 12-5 has no Present_Value, Status_Flags,
+// network writes, each of which resets the sample window, which their Always
+// capability says (#2174). Table 12-5 has no Present_Value, Status_Flags,
 // Out_Of_Service, Reliability or Event_State, so there are no such rows
 // (#1064 removed the rows the 0.1.0 import carried).
 const BASE: &[PropertyMetadata] = &[
@@ -31,7 +31,7 @@ const BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::AVERAGE_VALUE, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::ATTEMPTED_SAMPLES, RequiredWrite, None, Always),
     PropertyMetadata::new(P::VALID_SAMPLES, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::OBJECT_PROPERTY_REFERENCE, RequiredWrite, None, Always),
+    PropertyMetadata::new(P::OBJECT_PROPERTY_REFERENCE, RequiredRead, None, Always),
     PropertyMetadata::new(P::WINDOW_INTERVAL, RequiredWrite, None, Always),
     PropertyMetadata::new(P::WINDOW_SAMPLES, RequiredWrite, None, Always),
     PropertyMetadata::new(P::PROPERTY_LIST, RequiredRead, None, ReadOnly),
@@ -103,8 +103,14 @@ mod tests {
         let metadata = object.property_metadata();
         assert!(matches!(metadata, Cow::Borrowed(_)));
         assert_eq!(metadata.len(), 13);
-        assert_eq!(object.property_list().as_ref(), all);
-        assert_eq!(object.required_properties().as_ref(), required);
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(&all)
+        );
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            required
+        );
         assert_eq!(
             metadata
                 .iter()
@@ -113,15 +119,17 @@ mod tests {
                 .len(),
             metadata.len()
         );
-        assert!(!object.is_createable());
-        assert!(object.is_deleteable());
-        assert!(!object.supports_cov());
+        assert!(crate::creation::builtin_deleteable(
+            object.object_identifier().object_type()
+        ));
+        assert!(!object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
         for row in metadata.iter() {
             assert_eq!(row.presence_condition, None);
             let p = row.property_identifier;
             let expected = if p == P::DESCRIPTION {
                 Optional
-            } else if WRITABLE.contains(&p) {
+            } else if WRITABLE.contains(&p) && p != P::OBJECT_PROPERTY_REFERENCE {
+                // Table 12-5 codes Object_Property_Reference R (#2174).
                 RequiredWrite
             } else {
                 assert!(required.contains(&p), "{p:?}");
@@ -150,7 +158,10 @@ mod tests {
             .map(|p| PropertyValue::Enumerated(p.to_raw()))
             .collect();
         assert_eq!(wire.len(), 9);
-        assert!(object.is_array_property(P::PROPERTY_LIST));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::PROPERTY_LIST
+        ));
         assert_eq!(
             object.read_property(P::PROPERTY_LIST, None).unwrap(),
             PropertyValue::List(wire.clone())
@@ -190,7 +201,7 @@ mod tests {
             };
             assert_eq!(row.write_capability, capability, "{p:?}");
             assert_eq!(
-                object.is_writable_property(p),
+                crate::property_metadata::is_writable_property(&object, p),
                 capability.is_writable(),
                 "{p:?}"
             );
@@ -204,7 +215,10 @@ mod tests {
         }
         // OBJECT_NAME has no network write route: a rename falls through
         // to WRITE_ACCESS_DENIED even with a well-formed value.
-        assert!(!object.is_writable_property(P::OBJECT_NAME));
+        assert!(!crate::property_metadata::is_writable_property(
+            &object,
+            P::OBJECT_NAME
+        ));
         assert_error(
             object
                 .write_property(
@@ -235,7 +249,7 @@ mod tests {
                 object.write_property(p, None, value, None).unwrap_err(),
                 ErrorCode::WRITE_ACCESS_DENIED,
             );
-            assert!(!object.is_writable_property(p));
+            assert!(!crate::property_metadata::is_writable_property(&object, p));
         }
         // Description rejects a mistyped value without changing state.
         assert_error(
@@ -257,7 +271,7 @@ mod tests {
             P::VARIANCE_VALUE,
             P::ALL,
         ] {
-            assert!(!object.is_writable_property(p));
+            assert!(!crate::property_metadata::is_writable_property(&object, p));
             assert_error(
                 object.read_property(p, None).unwrap_err(),
                 ErrorCode::UNKNOWN_PROPERTY,

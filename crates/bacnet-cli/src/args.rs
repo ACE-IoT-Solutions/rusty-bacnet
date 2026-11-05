@@ -9,6 +9,7 @@ use std::{
     path::PathBuf,
 };
 
+use crate::foreign::ForeignBbmdArg;
 use bacnet_types::primitives::BACnetTimeStamp;
 use clap::builder::{OsStringValueParser, TypedValueParser};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -56,6 +57,14 @@ pub(crate) struct Cli {
     #[arg(short, long, default_value_t = 0xBAC0, global = true)]
     pub(crate) port: u16,
 
+    /// Share --port with other programs on this host that bind it the same
+    /// way. Without it the CLI claims the port and fails at once when
+    /// another program holds it. With it, each unicast to the port reaches
+    /// only one of the programs on it, so replies can go astray. BACnet/IP
+    /// only.
+    #[arg(long, global = true)]
+    pub(crate) share_port: bool,
+
     /// Broadcast address for WhoIs.
     #[arg(short, long, default_value = "255.255.255.255", global = true)]
     pub(crate) broadcast: Ipv4Addr,
@@ -77,12 +86,18 @@ pub(crate) struct Cli {
     )]
     pub(crate) min_interval_ms: u64,
 
-    /// Run as a foreign device registered with this BBMD (IP or IP:port), so
-    /// broadcasts such as discover reach its network. A one-shot command
-    /// waits for the registration first; it is renewed while the CLI runs.
-    /// BACnet/IP only.
-    #[arg(long, global = true, value_name = "ADDR", value_parser = crate::foreign::parse_bbmd_arg)]
-    pub(crate) foreign_bbmd: Option<SocketAddrV4>,
+    /// Run as a foreign device registered with this BBMD (IP, host name, or
+    /// either with :port), so broadcasts such as discover reach its network.
+    /// A host name is looked up at start: until it first resolves, again 30
+    /// s after each failure, and from then on alongside the registrations,
+    /// at most every 30 s. A one-shot command waits for the registration
+    /// first, and fails when the name doesn't resolve; it is renewed while
+    /// the CLI runs.
+    /// With --ipv6: an IPv6 address (ip, or ip in brackets with :port) or a host name,
+    /// and --device-instance; a host name with --ipv6 and no
+    /// --ipv6-interface must resolve at start.
+    #[arg(long, global = true, value_name = "ADDR", value_parser = crate::foreign::parse_foreign_bbmd_cli_arg)]
+    pub(crate) foreign_bbmd: Option<ForeignBbmdArg>,
 
     /// Time-to-live in seconds of a foreign-device registration: with
     /// --foreign-bbmd, register and discover --bbmd.
@@ -94,6 +109,13 @@ pub(crate) struct Cli {
     /// BBMD's replies use stays open.
     #[arg(long, global = true, value_name = "SECS")]
     pub(crate) renewal: Option<u64>,
+
+    /// Our address and port as the --foreign-bbmd BBMD sees them, when a
+    /// NAT router translates the registration (IPv4 ip:port). The TUI's
+    /// Network screen uses it to find our FDT entry; it changes nothing
+    /// sent.
+    #[arg(long, global = true, value_name = "IP:PORT", value_parser = crate::foreign::parse_nat_global_arg)]
+    pub(crate) nat_global_address: Option<SocketAddrV4>,
 
     /// Join this IPv4 multicast group (class D) as a B/IP-M node (Annex
     /// J.8): broadcasts such as discover go to the group, and only the
@@ -325,7 +347,7 @@ pub(crate) enum Command {
         capture_device: Option<String>,
     },
 
-    /// Serve a read-only MCP server to an AI agent host (needs the `mcp`
+    /// Serve an MCP server to an AI agent host (needs the `mcp`
     /// feature).
     ///
     /// `bacnet mcp serve --stdio --profile NAME` is what an agent host's
@@ -702,7 +724,7 @@ pub(crate) fn capture_sources(matches: &clap::ArgMatches) -> Result<Vec<String>,
         .is_some_and(|tui| tui.get_one::<String>("profile").is_some());
     if matches.get_one::<u64>("renewal").is_some()
         && matches
-            .get_one::<std::net::SocketAddrV4>("foreign_bbmd")
+            .get_one::<crate::foreign::ForeignBbmdArg>("foreign_bbmd")
             .is_none()
         && !named_profile
     {
@@ -712,6 +734,19 @@ pub(crate) fn capture_sources(matches: &clap::ArgMatches) -> Result<Vec<String>,
         ));
     }
     crate::mstp::check_matches(matches)?;
+    if matches
+        .get_one::<std::net::SocketAddrV4>("nat_global_address")
+        .is_some()
+        && matches
+            .get_one::<crate::foreign::ForeignBbmdArg>("foreign_bbmd")
+            .is_none()
+        && !named_profile
+    {
+        return Err(clap::Error::raw(
+            clap::error::ErrorKind::MissingRequiredArgument,
+            "--nat-global-address requires --foreign-bbmd (or a named TUI profile containing a BBMD)",
+        ));
+    }
     Ok(explicit)
 }
 

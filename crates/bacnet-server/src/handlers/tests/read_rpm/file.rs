@@ -37,9 +37,9 @@ fn rpm_file_indexed_property_list_and_scalar_gates_preserve_bytes() {
         };
         let mut bytes = BytesMut::new();
         request.encode(&mut bytes).unwrap();
-        let mut legacy = BytesMut::new();
-        handle_read_property_multiple(&db, &bytes, &mut legacy).unwrap();
-        let ack = ReadPropertyMultipleACK::decode(&legacy).unwrap();
+        let mut unlimited = BytesMut::new();
+        handle_read_property_multiple(&db, &bytes, &mut unlimited).unwrap();
+        let ack = ReadPropertyMultipleACK::decode(&unlimited).unwrap();
         let results = &ack.list_of_read_access_results[0].list_of_results;
         assert_eq!(results.len(), references.len());
         for (result, (p, index)) in results.iter().zip(references) {
@@ -84,21 +84,21 @@ fn rpm_file_indexed_property_list_and_scalar_gates_preserve_bytes() {
                 }
             }
         }
-        let budget = crate::server::ReadPropertyMultipleBudget {
+        let budget = bacnet_device_core::read::ReadPropertyMultipleBudget {
             max_result_elements: references.len(),
-            max_service_ack_bytes: legacy.len(),
+            max_service_ack_bytes: unlimited.len(),
         };
         let mut bounded = BytesMut::new();
         crate::handlers::rpm_budget::handle_rpm_budgeted(&db, &bytes, &mut bounded, budget)
             .unwrap();
-        assert_eq!(bounded, legacy);
+        assert_eq!(bounded, unlimited);
         for too_small in [
-            crate::server::ReadPropertyMultipleBudget {
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
                 max_result_elements: references.len() - 1,
                 ..budget
             },
-            crate::server::ReadPropertyMultipleBudget {
-                max_service_ack_bytes: legacy.len() - 1,
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
+                max_service_ack_bytes: unlimited.len() - 1,
                 ..budget
             },
         ] {
@@ -110,9 +110,15 @@ fn rpm_file_indexed_property_list_and_scalar_gates_preserve_bytes() {
                 too_small,
             );
             if too_small.max_result_elements < references.len() {
-                assert!(matches!(failure, Err(crate::handlers::ReadFailure::Work)));
+                assert!(matches!(
+                    failure,
+                    Err(bacnet_device_core::read::ReadFailure::Work)
+                ));
             } else {
-                assert!(matches!(failure, Err(crate::handlers::ReadFailure::Bytes)));
+                assert!(matches!(
+                    failure,
+                    Err(bacnet_device_core::read::ReadFailure::Bytes)
+                ));
             }
             assert_eq!(&prefix[..], b"prefix");
         }

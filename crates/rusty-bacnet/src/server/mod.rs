@@ -62,6 +62,9 @@ use crate::types::{PyEventType, PyObjectIdentifier, PyPropertyIdentifier, PyProp
 
 mod audit_configuration;
 use audit_configuration::AuditNotificationSink;
+pub(crate) use audit_configuration::{
+    reporter_audit_level, reporter_auditable_operations, validate_audit_recipient,
+};
 
 /// Async BACnet server that hosts objects and responds to requests.
 ///
@@ -105,6 +108,8 @@ pub struct BACnetServer {
     broadcast_address: String,
     /// See `BipTransport::set_share_port_by_address` (#1538).
     share_port_by_address: bool,
+    /// See `BipTransport::set_share_wildcard_port` (#2366).
+    share_wildcard_port: bool,
     /// The B/IP mode `bbmd=` or `foreign_device=` asked for (#938).
     bip_mode: bacnet_transport::bip::BipMode,
     /// The B/IPv6 foreign-device registration `foreign_device=` asked for
@@ -139,14 +144,14 @@ pub struct BACnetServer {
     /// The `on_reinitialize` and `after_reinitialize` callables (#1566).
     reinitialize: Option<Arc<crate::reinitialize::PyReinitialize>>,
     request_admission_policy: server::RequestAdmissionPolicy,
-    read_property_multiple_budget: server::ReadPropertyMultipleBudget,
+    read_property_multiple_budget: bacnet_device_core::read::ReadPropertyMultipleBudget,
     get_alarm_summary_budget: server::GetAlarmSummaryBudget,
     get_enrollment_summary_budget: server::GetEnrollmentSummaryBudget,
     atomic_read_file_budget: server::AtomicReadFileBudget,
     atomic_write_file_budget: server::AtomicWriteFileBudget,
     read_range_budget: server::ReadRangeBudget,
     get_event_information_budget: server::GetEventInformationBudget,
-    cov_policy: server::CovPolicy,
+    cov_policy: bacnet_device_core::cov::CovPolicy,
     time_sync_policy: server::TimeSyncPolicy,
     audit_notification_sink: Option<AuditNotificationSink>,
     audit_reporters: Option<server::AuditReportersConfig>,
@@ -221,6 +226,7 @@ mod server_methods {
     mod access_credential_methods;
     mod access_input_methods;
     mod access_rights_methods;
+    mod accumulator_methods;
     mod audit_log_methods;
     mod averaging_methods;
     mod channel_methods;
@@ -239,6 +245,7 @@ mod server_methods {
     mod network_port;
     mod notification_forwarder;
     mod policy_dict;
+    mod program_methods;
     mod registration;
     mod request_admission;
     mod sc_npdu;

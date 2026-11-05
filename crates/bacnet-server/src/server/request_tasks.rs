@@ -1,6 +1,6 @@
 use super::request_admission::{Admission, Class, Rejection};
 use super::{RequestAdmissionCounters, RequestAdmissionPolicy};
-use crate::command_lists::Unfinished;
+use bacnet_device_core::write::Unfinished;
 use bacnet_types::primitives::ObjectIdentifier;
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
@@ -150,6 +150,10 @@ impl RequestTasks {
 
     pub(super) fn counters(&self) -> RequestAdmissionCounters {
         self.1.snapshot()
+    }
+
+    pub(super) fn confirmed_peak_active(&self) -> usize {
+        self.1.confirmed_peak_active()
     }
 
     /// Acquire and register synchronously with close; construct the future only

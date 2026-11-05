@@ -1,5 +1,6 @@
 //! Failure and cancellation exercise the mixed session's actual native owner.
 use super::*;
+use crate::router::lifecycle::Session;
 use bacnet_network::router::{RouterOptions, StartedRouter};
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
 use bacnet_types::error::Error;
@@ -78,6 +79,7 @@ fn session(ports: Vec<TestPort>) -> MixedSession {
     let mut session = MixedSession::new(
         Vec::new(),
         None,
+        Arc::new(StdMutex::new(Vec::new())),
         Arc::new(StdMutex::new(Vec::new())),
         Arc::new(StdMutex::new(Vec::new())),
     );
@@ -218,6 +220,26 @@ async fn unpublished_start_result_retains_cleanup_authority() {
     assert!(owner.inspect(|_| ()).await.is_none());
 }
 
+#[tokio::test]
+async fn port_counter_snapshots_keep_configured_order_after_stop() {
+    let mut session = session(vec![TestPort::default(), TestPort::default()]);
+    let retained = Arc::clone(&session.last_counters);
+    session.start().await.unwrap();
+    let router = session.active().router.lock().await;
+    let live = counter_snapshot(&router, &session.active().health);
+    drop(router);
+    assert_eq!(live.len(), 2);
+    assert_eq!((live[0].config_index, live[0].network_number), (0, 1));
+    assert_eq!((live[1].config_index, live[1].network_number), (1, 2));
+    assert_eq!(live[0].forwarded_unicast, 0);
+    assert_eq!(live[1].send_errors, 0);
+    session.stop().await.unwrap();
+    let stopped = retained.lock().unwrap();
+    assert_eq!(stopped.len(), 2);
+    assert_eq!((stopped[0].config_index, stopped[0].network_number), (0, 1));
+    assert_eq!((stopped[1].config_index, stopped[1].network_number), (1, 2));
+}
+
 #[tokio::test(start_paused = true)]
 async fn sc_recovery_before_monitor_first_poll_is_announced() {
     recovery_reannouncement(false).await;
@@ -250,6 +272,8 @@ async fn recovery_reannouncement(before_spawn: bool) {
             HealthSource::Sc {
                 identity: "test".into(),
                 state,
+                monitor: None,
+                projection: Arc::new(StdMutex::new(ScHealthProjection::default())),
             },
         )],
         None,

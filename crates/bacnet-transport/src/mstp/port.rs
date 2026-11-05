@@ -162,6 +162,9 @@ impl<S: SerialPort> MstpTransport<S> {
 
     fn abort_task_and_release_state(&mut self) {
         if let Some(task) = self.task.take() {
+            if let Some(runtime) = &self.dedicated_runtime {
+                runtime.hold_until_node_dropped();
+            }
             task.abort();
         }
         self.dedicated_runtime.take();
@@ -235,7 +238,7 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
 
         // The thread and its settings come first: if they fail, the serial
         // port stays here for another try.
-        let (dedicated_runtime, status) = match &self.execution_mode {
+        let (mut dedicated_runtime, status) = match &self.execution_mode {
             MstpExecutionMode::Tokio => (None, MstpExecutionStatus::default()),
             MstpExecutionMode::DedicatedThread(thread) => {
                 let (runtime, status) = DedicatedRuntime::new(thread.clone()).await?;
@@ -257,8 +260,8 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
             transmit_pad: self.config.transmit_latency_pad,
             tap: self.frame_tap.clone(),
         };
-        let task = match &dedicated_runtime {
-            Some(runtime) => runtime.handle.spawn(task.run()),
+        let task = match &mut dedicated_runtime {
+            Some(runtime) => runtime.spawn(task.run()),
             None => tokio::spawn(task.run()),
         };
         self.dedicated_runtime = dedicated_runtime;
@@ -274,6 +277,14 @@ impl<S: SerialPort> TransportPort for MstpTransport<S> {
 
     async fn stop(&mut self) -> Result<(), Error> {
         if let Some(task) = self.task.take() {
+            // The node ends on its own thread; test time waits for it.
+            let _held = self
+                .dedicated_runtime
+                .as_ref()
+                .map(DedicatedRuntime::hold_time);
+            if let Some(runtime) = &self.dedicated_runtime {
+                runtime.hold_until_node_dropped();
+            }
             task.abort();
             let _ = task.await;
         }

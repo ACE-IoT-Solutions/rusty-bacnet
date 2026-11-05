@@ -95,7 +95,10 @@ fn write_from(
 fn untracked_noncommandable_values_have_no_value_source() {
     for access in [PresentValueAccess::Writable, PresentValueAccess::ReadOnly] {
         for (mut object, _) in values(access, false) {
-            assert!(!object.property_list().contains(&P::VALUE_SOURCE));
+            assert!(!crate::property_metadata::has_property(
+                &object.property_metadata(),
+                P::VALUE_SOURCE
+            ));
             assert_code(
                 object.read_property(P::VALUE_SOURCE, None),
                 ErrorCode::UNKNOWN_PROPERTY,
@@ -120,13 +123,19 @@ fn tracked_noncommandable_values_list_a_required_value_source() {
     for access in [PresentValueAccess::Writable, PresentValueAccess::ReadOnly] {
         let untracked: Vec<_> = values(access, false)
             .into_iter()
-            .map(|(object, _)| object.property_list().into_owned())
+            .map(|(object, _)| crate::test_rows::listed(&object.property_metadata()))
             .collect();
         for ((object, _), mut expected) in values(access, true).into_iter().zip(untracked) {
             // Where a commandable object lists it: last, before Property_List.
             expected.push(P::VALUE_SOURCE);
-            assert_eq!(object.property_list().as_ref(), expected);
-            assert!(object.required_properties().contains(&P::VALUE_SOURCE));
+            assert_eq!(
+                crate::test_rows::listed(&object.property_metadata()),
+                crate::test_rows::listed_from(&expected)
+            );
+            assert!(
+                crate::property_metadata::required_properties(&object.property_metadata())
+                    .any(|required| required == P::VALUE_SOURCE)
+            );
             let metadata = object.property_metadata();
             let row = metadata
                 .iter()
@@ -343,7 +352,12 @@ fn application_updates_name_the_device_or_nobody() {
     for (mut object, value) in values(PresentValueAccess::ReadOnly, true) {
         let object = object.as_mut();
         object
-            .set_present_value_from_internal(value.clone(), &local(9, None))
+            .local_input()
+            .unwrap()
+            .apply_local_input(crate::traits::LocalInputValue::present_value_from(
+                value.clone(),
+                local(9, None).clone(),
+            ))
             .unwrap();
         assert_eq!(
             object.read_property(P::VALUE_SOURCE, None).unwrap(),
@@ -353,9 +367,18 @@ fn application_updates_name_the_device_or_nobody() {
         write_from(object, P::VALUE_SOURCE, none(), &local(9, None)).unwrap();
         // Without a Device, no source is known and nobody may correct.
         object
-            .set_present_value_from_internal(value.clone(), &local(9, None))
+            .local_input()
+            .unwrap()
+            .apply_local_input(crate::traits::LocalInputValue::present_value_from(
+                value.clone(),
+                local(9, None).clone(),
+            ))
             .unwrap();
-        object.set_present_value_internal(value.clone()).unwrap();
+        object
+            .local_input()
+            .unwrap()
+            .apply_local_input(crate::traits::LocalInputValue::present_value(value.clone()))
+            .unwrap();
         assert_eq!(object.read_property(P::VALUE_SOURCE, None).unwrap(), none());
         assert_code(
             write_from(object, P::VALUE_SOURCE, none(), &local(9, None)),
@@ -366,7 +389,9 @@ fn application_updates_name_the_device_or_nobody() {
             .write_property(P::OUT_OF_SERVICE, None, PropertyValue::Boolean(true), None)
             .unwrap();
         assert_code(
-            object.set_present_value_from_internal(value, &local(9, None)),
+            object.local_input().unwrap().apply_local_input(
+                crate::traits::LocalInputValue::present_value_from(value, local(9, None).clone()),
+            ),
             ErrorCode::WRITE_ACCESS_DENIED,
         );
         assert_eq!(object.read_property(P::VALUE_SOURCE, None).unwrap(), none());

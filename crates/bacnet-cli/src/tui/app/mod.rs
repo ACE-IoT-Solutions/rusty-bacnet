@@ -5,6 +5,8 @@
 //! [`Action::Tick`], so the whole state machine is testable without a
 //! terminal or a transport.
 
+pub(crate) mod agent_pane;
+pub(crate) mod agents;
 pub(crate) mod browser;
 pub(crate) mod capture;
 pub(crate) mod command_bar;
@@ -349,6 +351,8 @@ pub(crate) struct App {
     pub(crate) now: Instant,
     /// Worker events dropped because the UI fell behind.
     pub(crate) dropped: u64,
+    /// The session's MCP listener, when the profile has one (#2185).
+    pub(crate) mcp: Option<crate::tui::message::McpListener>,
     /// Recent log lines.
     pub(crate) log: LogRing,
     log_generation: u64,
@@ -410,6 +414,7 @@ impl App {
             epoch: config.now,
             now: config.now,
             dropped: 0,
+            mcp: None,
             log,
             log_generation,
             quit: false,
@@ -502,7 +507,7 @@ impl App {
         // Ages and countdowns change once a second.
         let ticking = !self.devices.is_empty()
             || !self.watch.rows().is_empty()
-            || matches!(self.screen, Screen::Network | Screen::Sc);
+            || matches!(self.screen, Screen::Network | Screen::Sc | Screen::Agents);
         if second(now) != second(self.now) && (ticking || self.op_running()) {
             self.dirty = true;
         }
@@ -668,6 +673,7 @@ impl App {
     }
 
     fn reset_session(&mut self) {
+        self.mcp = None;
         if let Some(monitor) = self.monitor.as_deref_mut() {
             monitor.live = false;
             monitor.wizard = None;
@@ -768,6 +774,7 @@ pub(crate) fn update(app: &mut App, action: Action) -> Vec<Command> {
     }
     let before = app.notice_context();
     apply(app, action, &mut out);
+    app.agents_follow_arm();
     app.drop_stale_notice(&before);
     out
 }
@@ -842,6 +849,7 @@ fn apply(app: &mut App, action: Action, out: &mut Vec<Command>) {
         Action::Move(movement) => match app.screen {
             Screen::Watch => app.watch.move_selection(movement),
             Screen::Capture => app.capture_key(capture::CaptureKey::Move(movement), out),
+            Screen::Agents => app.safety.agents.pane.scroll(movement),
             _ => match app.shown_browser_mut() {
                 Some(browser) => browser.move_selection(movement),
                 None => app.devices.move_selection(movement, &app.names),
@@ -873,6 +881,7 @@ fn apply(app: &mut App, action: Action, out: &mut Vec<Command>) {
         Action::Picker(key) => app.picker_key(key, out),
         Action::ShowScreen(Screen::Capture) => app.show_capture(out),
         Action::ShowScreen(Screen::Browse) => app.show_browser(),
+        Action::ShowScreen(Screen::Agents) => app.show_agents(),
         Action::ShowScreen(screen) => app.screen = screen,
         Action::AddWatch => app.watch_selected(out),
         Action::RemoveWatch => app.unwatch_selected(out),

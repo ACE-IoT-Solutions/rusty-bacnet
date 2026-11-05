@@ -106,8 +106,9 @@ fn routed_wait() -> Duration {
         .map_or(ROUTED_DISCOVERY_WAIT, Duration::from_millis)
 }
 
-/// Resolve a target string for a command with a routed client call: read,
-/// readm, write and subscribe also take `dnet:instance` and `dnet:0xMAC`.
+/// Resolve a device command's target string: besides an address or a
+/// discovered instance, it takes `dnet:instance` and `dnet:0xMAC` for a
+/// device behind a router.
 async fn resolve_destination<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     target_str: &str,
@@ -486,7 +487,10 @@ type CliResult = Result<(), Box<dyn std::error::Error>>;
 // subcommand's arguments inline). So the command line is parsed on a thread of
 // its own (#953). A read or a discover then needs about 240 KiB of the main
 // thread's stack in a debug build, where it needed 860 KiB before.
-fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
+//
+// A fatal error is printed here, with Display (`report`), and exits 1 as an
+// `Err` from `main` would; std's own report would use Debug (#2325).
+fn main() -> std::process::ExitCode {
     let cli = parse_on_large_stack(|| {
         let mut matches = Cli::command().get_matches();
         // Capture provenance before FromArgMatches removes argument values.
@@ -503,13 +507,34 @@ fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
         }
         cli
     });
-    dispatch(cli, &mut guard::Stdin, |cli| {
+    let result = dispatch(cli, &mut guard::Stdin, |cli| {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .expect("Failed building the Runtime")
             .block_on(boxed_cli_main(cli))
+    });
+    result.unwrap_or_else(|error| {
+        let _ = report(&*error, &mut std::io::stderr().lock());
+        std::process::ExitCode::FAILURE
     })
+}
+
+/// Write a fatal error as `Error: ` and its Display text, then each source
+/// whose text the line doesn't already hold, after `: `. Most errors here
+/// put their source in their own message, and that isn't repeated.
+fn report(error: &dyn std::error::Error, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+    let mut line = format!("Error: {error}");
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if !line.contains(&text) {
+            line.push_str(": ");
+            line.push_str(&text);
+        }
+        source = cause.source();
+    }
+    writeln!(out, "{line}")
 }
 
 /// The network path owns runtime/tracing/transport initialization. Keeping it
@@ -670,22 +695,39 @@ async fn cli_main(cli: Cli) -> CliResult {
             std::process::exit(1);
         }
     } else if args.ipv6 {
-        let client = transport::build_bip6_client(&args).await?;
+        let mut client = transport::build_bip6_client(&args).await?;
+        // Broadcasts reach the remote network once the BBMD has taken the
+        // registration (#2365, #2388).
+        if let Some(foreign) = &args.bip6_foreign_device {
+            match foreign::await_bip6_registration(&client, &foreign.bbmd).await {
+                Ok(bbmd) => tracing::info!("BBMD {bbmd} accepted the foreign-device registration"),
+                Err(e) => {
+                    return Err(match client.stop().await {
+                        Ok(()) => e,
+                        Err(stop) => format!("{e}; stopping the client also failed: {stop}"),
+                    }
+                    .into());
+                }
+            }
+        }
         run(client, &cli, format).await?;
     } else {
         let mut client = transport::build_bip_client(&args).await?;
         let cmd = cli.command.as_ref().expect("a command after parsing");
         // Broadcasts reach the remote network once the BBMD has taken the
         // registration (#938).
-        if let Some(bbmd) = cli.foreign_bbmd
-            && let Err(e) = foreign::await_registration(&client, bbmd).await
-        {
-            // The registration's failure is the error to report.
-            return Err(match client.stop().await {
-                Ok(()) => e,
-                Err(stop) => format!("{e}; stopping the client also failed: {stop}"),
+        if let Some(bbmd) = args.foreign_device.as_ref().map(|config| &config.bbmd) {
+            match foreign::await_registration(&client, bbmd).await {
+                Ok(bbmd) => tracing::info!("BBMD {bbmd} accepted the foreign-device registration"),
+                // The registration's failure is the error to report.
+                Err(e) => {
+                    return Err(match client.stop().await {
+                        Ok(()) => e,
+                        Err(stop) => format!("{e}; stopping the client also failed: {stop}"),
+                    }
+                    .into());
+                }
             }
-            .into());
         }
         if !execute_bip_command(&client, cmd, cli.ttl, format).await? {
             execute_command(&client, cmd, format).await?;

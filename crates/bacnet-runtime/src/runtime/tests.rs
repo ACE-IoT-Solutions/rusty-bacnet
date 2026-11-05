@@ -66,6 +66,22 @@ fn config_rejects_a_zero_bbmd_port_before_start() {
     assert_eq!(error.code, crate::ErrorCode::InvalidConfig);
 }
 
+#[test]
+fn config_accepts_a_named_bbmd_using_upstream_foreign_target_validation() {
+    let mut item = attachment(1, 0);
+    let TransportConfig::Bip(config) = &mut item.transport else {
+        unreachable!()
+    };
+    config.bbmd_address = Some("bbmd.example:47808".to_owned());
+    config.foreign_device_ttl = Some(60);
+    RuntimeConfig {
+        attachments: vec![item],
+        ..RuntimeConfig::default()
+    }
+    .validate()
+    .unwrap();
+}
+
 #[tokio::test]
 async fn lifecycle_health_stop_and_restart() {
     let runtime = BacnetRuntime::start(RuntimeConfig {
@@ -346,7 +362,7 @@ async fn direct_read_batch_round_trips_through_bip() {
             property_value: vec![0x44, 0x42, 0x90, 0x00, 0x00],
         };
         let mut service_ack = BytesMut::new();
-        ack.encode(&mut service_ack);
+        ack.encode(&mut service_ack).unwrap();
         let mut encoded = BytesMut::new();
         encode_apdu(
             &mut encoded,

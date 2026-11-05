@@ -55,8 +55,8 @@ pub(crate) use access_credential::{
 };
 pub(crate) use access_rule::{access_rules_from_py, device_object_reference};
 pub(crate) use action_list::action_lists_from_py;
-pub use address::parse_address;
 pub(crate) use address::{PeerAddresses, parse_bip6_address};
+pub use address::{PyDirectTarget, PyRoutedTarget, PyTarget, parse_address};
 pub(crate) use audit::recipient as audit_recipient_from_py;
 pub(crate) use audit::{audit_log_query_request_from_py, audit_notification_request_from_py};
 pub(crate) use audit_projection::{audit_log_query_ack_to_py, audit_log_record_to_py};
@@ -162,6 +162,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDiscoveredDevice>()?;
     m.add_class::<PyCovNotification>()?;
     m.add_class::<PyCovNotificationIterator>()?;
+    m.add_class::<PyDirectTarget>()?;
+    m.add_class::<PyRoutedTarget>()?;
 
     // 255, what an unspecified date or time field holds (#1501).
     m.add("UNSPECIFIED", date::UNSPECIFIED)?;

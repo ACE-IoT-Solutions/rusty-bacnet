@@ -1,4 +1,5 @@
 use super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::error::RemoteError;
 
 #[test]
@@ -138,8 +139,8 @@ fn loop_cov_increment_is_writable_validated_and_drives_cov() {
         read(&lo, PropertyIdentifier::COV_INCREMENT),
         PropertyValue::Real(0.0)
     );
-    assert_eq!(lo.cov_increment(), Some(0.0));
-    assert!(lo.is_writable_property(PropertyIdentifier::COV_INCREMENT));
+    assert_eq!(lo.cov().and_then(|cov| cov.cov_increment()), Some(0.0));
+    assert!(is_writable_property(&lo, PropertyIdentifier::COV_INCREMENT));
 
     lo.write_property(
         PropertyIdentifier::COV_INCREMENT,
@@ -148,7 +149,7 @@ fn loop_cov_increment_is_writable_validated_and_drives_cov() {
         None,
     )
     .unwrap();
-    assert_eq!(lo.cov_increment(), Some(2.5));
+    assert_eq!(lo.cov().and_then(|cov| cov.cov_increment()), Some(2.5));
 
     for (value, code) in [
         (PropertyValue::Real(-0.5), ErrorCode::VALUE_OUT_OF_RANGE),
@@ -177,7 +178,7 @@ fn loop_present_value_is_writable_only_out_of_service() {
     let mut lo = LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     lo.set_present_value(10.0);
     // Writable for PICS purposes; the state gate decides each request.
-    assert!(lo.is_writable_property(PropertyIdentifier::PRESENT_VALUE));
+    assert!(is_writable_property(&lo, PropertyIdentifier::PRESENT_VALUE));
     assert_property_error(
         lo.write_property(
             PropertyIdentifier::PRESENT_VALUE,
@@ -236,7 +237,11 @@ fn loop_present_value_is_writable_only_out_of_service() {
 #[test]
 fn loop_application_present_value_is_refused_out_of_service() {
     let mut lo = LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
-    lo.set_present_value_internal(PropertyValue::Real(12.0))
+    lo.local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(
+            PropertyValue::Real(12.0),
+        ))
         .unwrap();
     assert_eq!(
         read(&lo, PropertyIdentifier::PRESENT_VALUE),
@@ -252,7 +257,11 @@ fn loop_application_present_value_is_refused_out_of_service() {
     )
     .unwrap();
     assert_property_error(
-        lo.set_present_value_internal(PropertyValue::Real(13.0))
+        lo.local_input()
+            .unwrap()
+            .apply_local_input(crate::traits::LocalInputValue::present_value(
+                PropertyValue::Real(13.0),
+            ))
             .unwrap_err(),
         ErrorCode::WRITE_ACCESS_DENIED,
     );
@@ -264,11 +273,19 @@ fn loop_application_present_value_is_refused_out_of_service() {
 
     set_out_of_service(&mut lo, false);
     assert_property_error(
-        lo.set_present_value_internal(PropertyValue::Real(f32::INFINITY))
+        lo.local_input()
+            .unwrap()
+            .apply_local_input(crate::traits::LocalInputValue::present_value(
+                PropertyValue::Real(f32::INFINITY),
+            ))
             .unwrap_err(),
         ErrorCode::VALUE_OUT_OF_RANGE,
     );
-    lo.set_present_value_internal(PropertyValue::Real(14.0))
+    lo.local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::present_value(
+            PropertyValue::Real(14.0),
+        ))
         .unwrap();
     assert_eq!(
         read(&lo, PropertyIdentifier::PRESENT_VALUE),
@@ -288,7 +305,10 @@ fn loop_controlled_variable_value_is_application_fed_and_read_only() {
         read(&lo, PropertyIdentifier::CONTROLLED_VARIABLE_VALUE),
         PropertyValue::Real(21.5)
     );
-    assert!(!lo.is_writable_property(PropertyIdentifier::CONTROLLED_VARIABLE_VALUE));
+    assert!(!is_writable_property(
+        &lo,
+        PropertyIdentifier::CONTROLLED_VARIABLE_VALUE
+    ));
     for out_of_service in [false, true] {
         set_out_of_service(&mut lo, out_of_service);
         assert_property_error(
@@ -311,7 +331,11 @@ fn loop_controlled_variable_value_hook_takes_finite_reals_in_and_out_of_service(
     let mut lo = LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     for (out_of_service, measured) in [(false, 20.5), (true, 19.0), (false, -4.25)] {
         set_out_of_service(&mut lo, out_of_service);
-        lo.set_controlled_variable_value_internal(PropertyValue::Real(measured))
+        lo.local_input()
+            .unwrap()
+            .apply_local_input(crate::traits::LocalInputValue::ControlledVariableValue(
+                PropertyValue::Real(measured),
+            ))
             .unwrap();
         assert_eq!(
             read(&lo, PropertyIdentifier::CONTROLLED_VARIABLE_VALUE),
@@ -328,7 +352,11 @@ fn loop_controlled_variable_value_hook_takes_finite_reals_in_and_out_of_service(
         ),
     ] {
         assert_property_error(
-            lo.set_controlled_variable_value_internal(value)
+            lo.local_input()
+                .unwrap()
+                .apply_local_input(crate::traits::LocalInputValue::ControlledVariableValue(
+                    value,
+                ))
                 .unwrap_err(),
             code,
         );
@@ -346,7 +374,11 @@ fn controlled_variable_value_hook_is_refused_by_other_objects() {
         crate::analog::AnalogValueObject::new(1, "AV-1", EngineeringUnits::DEGREES_CELSIUS)
             .unwrap();
     let error = av
-        .set_controlled_variable_value_internal(PropertyValue::Real(1.0))
+        .local_input()
+        .unwrap()
+        .apply_local_input(crate::traits::LocalInputValue::ControlledVariableValue(
+            PropertyValue::Real(1.0),
+        ))
         .unwrap_err();
     assert!(
         matches!(error, Error::Remote(RemoteError::Error { class, code })
@@ -361,14 +393,14 @@ fn loop_cov_reports_setpoint_and_controlled_variable_value() {
     use crate::traits::CovReportedProperty::Value;
     let lo = LoopObject::new(1, "LOOP-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
     assert_eq!(
-        lo.cov_reported_properties(),
+        crate::cov_reporting_tests::reported(&lo),
         [
             Value(PropertyIdentifier::SETPOINT),
             Value(PropertyIdentifier::CONTROLLED_VARIABLE_VALUE),
         ]
     );
-    let list = lo.property_list();
-    for reported in lo.cov_reported_properties() {
+    let list = crate::test_rows::listed(&lo.property_metadata());
+    for reported in crate::cov_reporting_tests::reported(&lo) {
         assert!(list.contains(&reported.property()));
         assert!(!reported.triggers(), "Table 13-1 reports them only");
     }

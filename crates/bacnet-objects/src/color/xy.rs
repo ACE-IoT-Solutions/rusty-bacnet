@@ -18,12 +18,18 @@ use super::{
     command, metadata, milliseconds, noncommandable_audit_policy, written_transition,
     written_unsigned, written_xy, xy_value,
 };
-use crate::audit::{AuditPolicyAuthority, ObjectAuditPolicy};
+use crate::audit::ObjectAuditPolicy;
 use crate::command_source::{CommandOrigin, SingleValueSource};
 use crate::common::{self, read_identity_properties};
+use crate::durable::StageStep;
 use crate::object_profile::{ObjectProfile, ProfileState, TagsPersistence};
-use crate::traits::{BACnetObject, DeadlineWaker, MonotonicClock};
+use crate::traits::BACnetObject;
 use crate::transition::Transition;
+
+/// A written Default_Color as storage keeps it.
+fn written_default(value: &PropertyValue) -> Result<ColorOutputValue, Error> {
+    written_xy(value.clone()).map(ColorOutputValue::Xy)
+}
 
 /// D65 white, where a new Color object starts.
 const D65: BACnetXyColor = BACnetXyColor::new(0.3127, 0.3290);
@@ -52,7 +58,8 @@ const XY_SAMPLE_STEP: f64 = 0.001;
 ///
 /// Fades run on the monotonic clock the database binds; the server's
 /// monotonic task samples Tracking_Value for COV as it moves and ends the
-/// fade on time. With no clock bound they wait on `advance_time_internal`.
+/// fade on time. With no clock bound they wait on the test-only
+/// `advance_time`.
 ///
 /// Cloning copies served state into an in-memory object. Tags persistence and
 /// pending saves remain solely with the original; cloning or dropping the copy
@@ -114,14 +121,17 @@ impl ColorObject {
         })
     }
 
-    /// Keep Present_Value in `persistence` (#1526), and take the colour it
-    /// saved for this object, if any, as Present_Value. Call it right after
-    /// building the object, before anything writes Present_Value.
+    /// Keep Present_Value and a written Default_Color in `persistence`
+    /// (#1526, #1956), and take what it saved for this object, if anything:
+    /// the colour as Present_Value, and a default a write set as
+    /// Default_Color. Call it right after building the object, before
+    /// anything writes Present_Value.
     ///
     /// The object then saves each new Present_Value on its own writer
     /// thread; a change doesn't wait for its save, and a save that fails is
-    /// logged and tried again (see [`ColorOutputPersistence`]). With
-    /// Default_Color (0, 0), the device's start keeps the saved colour
+    /// logged and tried again (see [`ColorOutputPersistence`]). A
+    /// Default_Color write saves first and is refused when the save fails.
+    /// With Default_Color (0, 0), the device's start keeps the saved colour
     /// (Clause 12.X.8).
     ///
     /// Fails with storage's error when what it holds can't be loaded, and
@@ -131,19 +141,23 @@ impl ColorObject {
         mut self,
         persistence: Arc<dyn ColorOutputPersistence>,
     ) -> Result<Self, Error> {
-        let current = ColorOutputValue::Xy(self.present_value);
-        match self.output.open(self.oid, current, persistence)? {
-            Some(ColorOutputValue::Xy(color)) if command::xy_in_range(color) => {
-                self.present_value = color;
-                self.restored = true;
-                self.to_restore = Some(color);
-            }
-            Some(_) => {
-                return Err(Error::Encoding(
-                    "saved Color output is not a colour the object can hold".into(),
-                ));
-            }
-            None => {}
+        let Some(saved) = self.output.open(self.oid, persistence)? else {
+            return Ok(self);
+        };
+        let xy = |value| match value {
+            Some(ColorOutputValue::Xy(color)) if command::xy_in_range(color) => Ok(Some(color)),
+            None => Ok(None),
+            Some(_) => Err(Error::Encoding(
+                "saved Color output is not a colour the object can hold".into(),
+            )),
+        };
+        if let Some(color) = xy(saved.present_value)? {
+            self.present_value = color;
+            self.restored = true;
+            self.to_restore = Some(color);
+        }
+        if let Some(color) = xy(saved.default)? {
+            self.default_color = color;
         }
         Ok(self)
     }
@@ -176,12 +190,46 @@ impl ColorObject {
     /// like any other colour and keeps the saved colour at the device's
     /// start (Clause 12.X.8). A coordinate outside 0.0 to 1.0, or NaN, is
     /// refused with VALUE_OUT_OF_RANGE.
+    ///
+    /// This configures the default; it is not saved. Once storage holds a
+    /// default a write set ([`with_output_persistence`](Self::with_output_persistence)),
+    /// that one wins, so an application that sets its configuration at each
+    /// start keeps a peer's write: the colour is checked but not taken, and
+    /// [`clear_written_default`](Self::clear_written_default) lets it apply
+    /// again.
     pub fn set_default_color(&mut self, color: BACnetXyColor) -> Result<(), Error> {
         if !command::xy_in_range(color) {
             return Err(common::value_out_of_range_error());
         }
-        self.default_color = color;
+        if !self.output.default_saved() {
+            self.default_color = color;
+        }
         Ok(())
+    }
+
+    /// Whether storage holds a Default_Color a write set, now or before a
+    /// restart, which [`set_default_color`](Self::set_default_color) then
+    /// leaves alone. Always false without storage.
+    pub fn default_color_saved(&self) -> bool {
+        self.output.default_saved()
+    }
+
+    /// Drop the Default_Color a write saved (#1956): storage keeps none
+    /// from now on, so [`set_default_color`](Self::set_default_color)
+    /// applies again. The default served now stays until it, or a write,
+    /// changes it. Saves before it returns; a save that fails keeps the
+    /// written default and returns storage's error. Does nothing without
+    /// storage or a written default.
+    /// Call it before the object joins the database, as the setters are,
+    /// not under the database guard: it waits for its save.
+    pub fn clear_written_default(&mut self) -> Result<(), Error> {
+        self.output.clear_written_default()
+    }
+
+    /// Stage the request's Default_Color writes on the output storage.
+    fn stage_default(&mut self, writes: &[crate::durable::PendingWrite]) -> StageStep {
+        self.output
+            .stage_defaults(writes, PropertyIdentifier::DEFAULT_COLOR, written_default)
     }
 
     /// Drive the output as the device's start does (#1526); the server
@@ -286,7 +334,7 @@ impl ColorObject {
         self.audit_policy = noncommandable_audit_policy(policy);
     }
 
-    pub(super) fn audit_policy(&self) -> &ObjectAuditPolicy {
+    pub(super) fn audit_overrides(&self) -> &ObjectAuditPolicy {
         &self.audit_policy
     }
 
@@ -399,6 +447,8 @@ impl ColorObject {
 }
 
 impl BACnetObject for ColorObject {
+    crate::traits::lend_audit_policy!();
+
     fn object_identifier(&self) -> ObjectIdentifier {
         self.oid
     }
@@ -412,6 +462,7 @@ impl BACnetObject for ColorObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = read_identity_properties!(self, property, array_index) {
             return result;
         }
@@ -457,6 +508,7 @@ impl BACnetObject for ColorObject {
         value: PropertyValue,
         priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
@@ -478,9 +530,15 @@ impl BACnetObject for ColorObject {
                 self.write_output(property, value)?;
             }
             // (0, 0) is taken like any other colour: Clause 12.X.8 has it
-            // mean that a restart brings back the colour from before it.
+            // mean that a restart brings back the colour from before it. With
+            // storage it is saved first (#1956).
             p if p == PropertyIdentifier::DEFAULT_COLOR => {
-                self.default_color = written_xy(value)?;
+                let written = self
+                    .output
+                    .write_default(p, &value, || written_default(&value))?;
+                if let ColorOutputValue::Xy(color) = written {
+                    self.default_color = color;
+                }
             }
             p if p == PropertyIdentifier::DEFAULT_FADE_TIME => {
                 self.default_fade_time = written_unsigned(value, command::FADE_TIME_MS)?;
@@ -492,7 +550,6 @@ impl BACnetObject for ColorObject {
                 return Err(common::unhandled_write_error(
                     self.property_metadata().as_ref(),
                     property,
-                    array_index,
                 ));
             }
         }
@@ -507,6 +564,7 @@ impl BACnetObject for ColorObject {
         priority: Option<u8>,
         origin: &CommandOrigin,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         match property {
             PropertyIdentifier::VALUE_SOURCE => {
                 self.value_source.correct(array_index, value, origin)
@@ -526,62 +584,64 @@ impl BACnetObject for ColorObject {
         metadata::for_color_object(self)
     }
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
         if self.output.is_some() {
             return Some(self);
         }
         self.profile.capability()
     }
 
-    fn start_output_internal(&mut self) {
+    crate::traits::lend_cov_reporting!();
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
+    }
+}
+
+impl crate::traits::CovReporting for ColorObject {}
+
+crate::traits::impl_audit_policy!(ColorObject);
+
+impl crate::traits::Timed for ColorObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.engine.bind_clock(clocks.monotonic.clone());
+        self.engine.bind_waker(clocks.deadline_waker.clone());
+    }
+
+    fn start_output(&mut self) {
         self.start_output();
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
-
-    fn supports_cov(&self) -> bool {
-        true
-    }
-
-    fn audit_object_policy_internal(&self) -> ObjectAuditPolicy {
-        self.audit_policy
-    }
-
-    fn audit_policy_authority_internal(&mut self) -> Option<AuditPolicyAuthority<'_>> {
-        Some(AuditPolicyAuthority::new(&mut self.audit_policy))
-    }
-
-    fn advance_time_internal(&mut self, elapsed: Duration) -> bool {
-        self.engine.advance_by(elapsed)
-    }
-
-    fn bind_monotonic_clock_internal(&mut self, clock: Option<Arc<MonotonicClock>>) {
-        self.engine.bind_clock(clock);
-    }
-
-    fn bind_deadline_waker_internal(&mut self, waker: Option<Arc<DeadlineWaker>>) {
-        self.engine.bind_waker(waker);
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: Duration) -> bool {
-        self.profile.expire(now);
+    fn advance_monotonic_time(&mut self, now: Duration) -> bool {
         self.engine.advance_to(now)
     }
 
-    fn next_monotonic_deadline_internal(&self) -> Option<Duration> {
+    fn next_monotonic_deadline(&self) -> Option<Duration> {
         self.engine.deadline()
     }
 
     /// A copy that reads as the object does now: its clock stops at this
     /// instant, so a fade's Tracking_Value in a COV report is the value at
     /// the moment the report was taken.
-    fn cov_snapshot_internal(&self) -> Option<Box<dyn BACnetObject>> {
+    fn cov_snapshot(&self) -> Option<Box<dyn BACnetObject>> {
         Some(Box::new(Self {
             engine: self.engine.frozen(),
             ..self.clone()
         }))
+    }
+}
+
+#[cfg(test)]
+impl ColorObject {
+    pub(crate) fn advance_time(&mut self, elapsed: Duration) -> bool {
+        self.engine.advance_by(elapsed)
+    }
+
+    /// Whether the output writer's thread has ended.
+    #[cfg(feature = "std")]
+    pub(super) fn writer_thread_ended(&self) -> bool {
+        self.output.writer_thread_ended()
     }
 }
 

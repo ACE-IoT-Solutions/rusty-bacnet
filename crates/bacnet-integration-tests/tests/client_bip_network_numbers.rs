@@ -69,6 +69,7 @@ async fn client_number_bbmd_wire_admission_and_release() {
         let denied = udp().await;
         let (captured, port) = observer();
         let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, port, BROADCAST);
+        transport.set_share_wildcard_port(true);
         transport.enable_bbmd(vec![BdtEntry {
             ip: Ipv4Addr::LOCALHOST.octets(),
             port: address(&bdt).port(),
@@ -138,8 +139,7 @@ async fn client_number_foreign_wire_alternate_sender_retry_and_progress() {
         let alternate = udp().await;
         let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, BROADCAST);
         transport.register_as_foreign_device(ForeignDeviceConfig {
-            bbmd_ip: Ipv4Addr::LOCALHOST,
-            bbmd_port: address(&bbmd).port(),
+            bbmd: (Ipv4Addr::LOCALHOST, address(&bbmd).port()).into(),
             renewal_interval: None,
             ttl: 60,
         });

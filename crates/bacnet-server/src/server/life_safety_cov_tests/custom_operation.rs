@@ -1,5 +1,6 @@
 //! Custom LifeSafetyOperation contract exercised through confirmed dispatch.
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::{BACnetObject, LifeSafetyOperationEffect, LifeSafetyOperationOutcome};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use std::borrow::Cow;
@@ -62,8 +63,8 @@ impl BACnetObject for CustomPoint {
     fn object_name(&self) -> &str {
         &self.name
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[
             PropertyIdentifier::PRESENT_VALUE,
             PropertyIdentifier::TRACKING_VALUE,
             PropertyIdentifier::SILENCED,
@@ -106,18 +107,22 @@ impl BACnetObject for CustomPoint {
             ErrorCode::WRITE_ACCESS_DENIED,
         ))
     }
-    fn supports_cov(&self) -> bool {
-        true
+    fn cov(&self) -> Option<&dyn bacnet_objects::traits::CovReporting> {
+        Some(self)
     }
+
+    fn life_safety(&mut self) -> Option<&mut dyn bacnet_objects::traits::LifeSafety> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::CovReporting for CustomPoint {
     fn supports_cov_property(&self, p: PropertyIdentifier) -> bool {
-        [
-            PropertyIdentifier::PRESENT_VALUE,
-            PropertyIdentifier::TRACKING_VALUE,
-            PropertyIdentifier::SILENCED,
-            PropertyIdentifier::STATUS_FLAGS,
-        ]
-        .contains(&p)
+        bacnet_objects::life_safety::COV_PROPERTIES.contains(&p)
     }
+}
+
+impl bacnet_objects::traits::LifeSafety for CustomPoint {
     fn apply_life_safety_operation(
         &mut self,
         _: LifeSafetyOperation,
@@ -363,6 +368,8 @@ async fn applied_without_readback_deltas_succeeds_without_cov() {
         let mut db = fixture.db.write().await;
         let object = db.get_mut(&point_oid()).unwrap();
         let next = object
+            .life_safety()
+            .unwrap()
             .apply_life_safety_operation(LifeSafetyOperation::SILENCE)
             .unwrap();
         assert_eq!(

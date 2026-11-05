@@ -42,6 +42,10 @@ pub struct AnalogInputObject {
     /// Optional maximum engineering bound metadata for Present_Value.
     max_pres_value: Option<f32>,
     pub(crate) event_history: EventHistory,
+    /// The reporting settings a write set, kept in storage once the
+    /// object opts in (#2331).
+    #[cfg(feature = "event-reporting")]
+    reporting_store: crate::write_config::reporting::ReportingStore,
 }
 
 impl AnalogInputObject {
@@ -71,6 +75,8 @@ impl AnalogInputObject {
             min_pres_value: None,
             max_pres_value: None,
             event_history: EventHistory::default(),
+            #[cfg(feature = "event-reporting")]
+            reporting_store: Default::default(),
         })
     }
 
@@ -130,11 +136,6 @@ impl AnalogInputObject {
         Ok(())
     }
 
-    /// Set the description string.
-    pub fn set_description(&mut self, desc: impl Into<String>) {
-        self.description = desc.into();
-    }
-
     /// Set minimum engineering-bound metadata; this is not a reliability fault limit.
     pub fn set_min_pres_value(&mut self, value: f32) {
         self.min_pres_value = Some(value);
@@ -155,6 +156,8 @@ impl AnalogInputObject {
     }
 }
 
+crate::write_config::reporting::impl_reporting_persistence!(AnalogInputObject);
+
 impl BACnetObject for AnalogInputObject {
     fn object_identifier(&self) -> ObjectIdentifier {
         self.oid
@@ -169,6 +172,7 @@ impl BACnetObject for AnalogInputObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // IN_ALARM: override STATUS_FLAGS with event_state before common macro
         if property == PropertyIdentifier::STATUS_FLAGS {
             return Ok(common::compute_status_flags(
@@ -234,6 +238,8 @@ impl BACnetObject for AnalogInputObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        crate::write_config::reporting::admit(self, property, array_index, &value)?;
         // AI present-value is writable only when out-of-service
         if property == PropertyIdentifier::PRESENT_VALUE {
             if !self.out_of_service {
@@ -310,72 +316,49 @@ impl BACnetObject for AnalogInputObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
-        self.profile.capability()
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: core::time::Duration) -> bool {
-        self.profile.expire(now);
-        false
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.durable_capability()
     }
 
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
+    crate::traits::lend_cov_reporting!();
 
-    fn supports_cov(&self) -> bool {
-        true
-    }
+    crate::traits::lend_event_reporting!();
 
+    crate::traits::lend_reliability_eval!();
+
+    fn local_input(&mut self) -> Option<&mut dyn crate::traits::LocalInput> {
+        Some(self)
+    }
+}
+
+impl crate::creation::Creatable for AnalogInputObject {
+    const CREATION_ONLY_PROPERTIES: &'static [PropertyIdentifier] = super::CREATION_ONLY;
+
+    fn initialize_property(
+        &mut self,
+        property: PropertyIdentifier,
+        value: PropertyValue,
+    ) -> Result<(), Error> {
+        super::initialize_units(&mut self.units, property, value)
+    }
+}
+
+impl crate::traits::CovReporting for AnalogInputObject {
     fn cov_increment(&self) -> Option<f64> {
         Some(f64::from(self.cov_increment))
     }
+}
 
-    crate::event::impl_builtin_intrinsic_reporting!(
-        event_detector,
-        event_history,
-        [present_value],
-        reliability,
-        event_detection_enable,
-        OutOfRangeDetector::ALGORITHM
-    );
-
-    fn acknowledge_alarm(
-        &mut self,
-        transition_bit: bacnet_types::bitstring::EventTransitionBits,
-    ) -> Result<(), bacnet_types::error::Error> {
-        self.event_detector.acked_transitions |=
-            transition_bit & bacnet_types::bitstring::EventTransitionBits::all();
-        Ok(())
-    }
-
-    fn acknowledge_alarm_correlated_internal(
-        &mut self,
-        event_state: EventState,
-        timestamp: &BACnetTimeStamp,
-    ) -> Result<(), Error> {
-        if !self.event_detection_enable {
-            return Err(Error::protocol(
-                ErrorClass::OBJECT,
-                ErrorCode::NO_ALARM_CONFIGURED,
-            ));
-        }
-        self.event_history.acknowledge_correlated(
-            &mut self.event_detector.acked_transitions,
-            event_state,
-            timestamp,
-        )
-    }
-
-    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
+impl crate::traits::ReliabilityEval for AnalogInputObject {
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
         if self.out_of_service || self.reliability_inhibit.enabled() {
             return Err(common::write_access_denied_error());
         }
@@ -387,15 +370,7 @@ impl BACnetObject for AnalogInputObject {
         Ok(())
     }
 
-    fn set_present_value_internal(&mut self, value: PropertyValue) -> Result<(), Error> {
-        // Local safe-ownership policy: preserve the client's OOS simulation.
-        if self.out_of_service {
-            return Err(common::write_access_denied_error());
-        }
-        self.apply_present_value(value)
-    }
-
-    fn evaluate_reliability_internal(&mut self) -> Result<ReliabilityEvaluation, Error> {
+    fn evaluate_reliability(&mut self) -> Result<ReliabilityEvaluation, Error> {
         if self.out_of_service || self.reliability_inhibit.enabled() {
             return Ok(ReliabilityEvaluation::Unchanged);
         }
@@ -403,30 +378,39 @@ impl BACnetObject for AnalogInputObject {
             .evaluate(self.present_value, &mut self.reliability)
     }
 
-    fn reliability_evaluation_inhibited_internal(&self) -> bool {
+    fn reliability_evaluation_inhibited(&self) -> bool {
         self.reliability_inhibit.enabled()
     }
+}
 
-    fn is_createable(&self) -> bool {
-        true
-    }
+crate::event::impl_builtin_intrinsic_reporting!(
+    AnalogInputObject,
+    event_detector,
+    event_history,
+    [present_value],
+    reliability,
+    event_detection_enable,
+    OutOfRangeDetector::ALGORITHM
+);
 
-    fn creation_only_properties(&self) -> &'static [PropertyIdentifier] {
-        super::CREATION_ONLY
-    }
-
-    fn initialize_property(
-        &mut self,
-        property: PropertyIdentifier,
-        value: PropertyValue,
-    ) -> Result<(), Error> {
-        super::initialize_units(&mut self.units, property, value)
+/// The Present_Value the application supplies.
+impl crate::traits::LocalInput for AnalogInputObject {
+    fn apply_local_input(&mut self, input: crate::traits::LocalInputValue) -> Result<(), Error> {
+        let crate::traits::LocalInputValue::PresentValue { value, .. } = input else {
+            return Err(crate::traits::not_supported());
+        };
+        // Local safe-ownership policy: preserve the client's OOS simulation.
+        if self.out_of_service {
+            return Err(common::write_access_denied_error());
+        }
+        self.apply_present_value(value)
     }
 }
 
 #[cfg(test)]
 mod detection_enable_reset_tests {
     use super::*;
+    use crate::traits::EventReporting as _;
     use bacnet_types::error::RemoteError;
 
     #[test]
@@ -457,7 +441,7 @@ mod detection_enable_reset_tests {
         );
         assert!(ai.event_detector.pending.is_none());
 
-        ai.commit_event_transition_internal(EventTransitionCommit {
+        ai.commit_event_transition(EventTransitionCommit {
             coordinate: outcome.change.transition(),
             change: outcome.change,
             ack_required: true,
@@ -481,6 +465,7 @@ mod detection_enable_reset_tests {
         );
     }
 
+    #[cfg(feature = "event-reporting")]
     #[test]
     fn rejected_delayed_and_fault_reindication_proposals_remain_retryable() {
         use crate::event::{
@@ -512,7 +497,7 @@ mod detection_enable_reset_tests {
             message_text: None,
         };
         assert_eq!(
-            delayed.commit_event_transition_internal(stale),
+            delayed.commit_event_transition(stale),
             Err(EventTransitionCommitError::CurrentStateMismatch {
                 expected: EventState::FAULT,
                 actual: EventState::NORMAL,
@@ -539,7 +524,7 @@ mod detection_enable_reset_tests {
             }
         );
         assert_eq!(
-            faulted.commit_event_transition_internal(EventTransitionCommit {
+            faulted.commit_event_transition(EventTransitionCommit {
                 change: reindication.change.clone(),
                 coordinate: EventTransition::ToNormal,
                 ack_required: false,
@@ -709,7 +694,7 @@ mod fault_out_of_range_non_finite_tests {
                 .unwrap();
             normal.present_value = non_finite;
 
-            assert_value_out_of_range(normal.evaluate_reliability_internal());
+            assert_value_out_of_range(normal.reliability_eval().unwrap().evaluate_reliability());
             assert_eq!(normal.present_value.to_bits(), non_finite.to_bits());
             assert_eq!(normal.reliability, Reliability::NO_FAULT_DETECTED);
             assert_eq!(
@@ -722,7 +707,11 @@ mod fault_out_of_range_non_finite_tests {
 
             normal.present_value = 9.0;
             assert_eq!(
-                normal.evaluate_reliability_internal().unwrap(),
+                normal
+                    .reliability_eval()
+                    .unwrap()
+                    .evaluate_reliability()
+                    .unwrap(),
                 ReliabilityEvaluation::Changed {
                     old_reliability: Reliability::NO_FAULT_DETECTED,
                     new_reliability: Reliability::UNDER_RANGE,
@@ -733,13 +722,17 @@ mod fault_out_of_range_non_finite_tests {
                 AnalogInputObject::new(2, "AI-owned", EngineeringUnits::DEGREES_CELSIUS).unwrap();
             owned.configure_fault_out_of_range(10.0, 20.0).unwrap();
             owned.present_value = 9.0;
-            owned.evaluate_reliability_internal().unwrap();
+            owned
+                .reliability_eval()
+                .unwrap()
+                .evaluate_reliability()
+                .unwrap();
             let status_before = owned
                 .read_property(PropertyIdentifier::STATUS_FLAGS, None)
                 .unwrap();
             owned.present_value = non_finite;
 
-            assert_value_out_of_range(owned.evaluate_reliability_internal());
+            assert_value_out_of_range(owned.reliability_eval().unwrap().evaluate_reliability());
             assert_eq!(owned.present_value.to_bits(), non_finite.to_bits());
             assert_eq!(owned.reliability, Reliability::UNDER_RANGE);
             assert_eq!(
@@ -755,7 +748,11 @@ mod fault_out_of_range_non_finite_tests {
 
             owned.present_value = 21.0;
             assert_eq!(
-                owned.evaluate_reliability_internal().unwrap(),
+                owned
+                    .reliability_eval()
+                    .unwrap()
+                    .evaluate_reliability()
+                    .unwrap(),
                 ReliabilityEvaluation::Changed {
                     old_reliability: Reliability::UNDER_RANGE,
                     new_reliability: Reliability::OVER_RANGE,

@@ -7,21 +7,21 @@ use std::time::Duration;
 
 use bacnet_transport::bbmd::{BdtEntry, ForeignDevicePolicy, NatTraversal, PrivateRange};
 use bacnet_transport::bip::{
-    BbmdOptions, BipMode, BipMulticast, DEFAULT_BACNET_PORT, ForeignDeviceConfig,
-    ForeignRegistrationOutcome, ForeignRegistrationSnapshot,
+    BbmdOptions, BipMode, BipMulticast, DEFAULT_BACNET_PORT, ForeignBbmd, ForeignDeviceConfig,
 };
-use bacnet_transport::bip6::Bip6ForeignDeviceConfig;
+use bacnet_transport::bip6::{Bip6ForeignBbmd, Bip6ForeignDeviceConfig};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-/// `share_port_by_address` (#1538) binds a B/IP interface address, so it
-/// means nothing on another transport: refuse it there rather than ignore it.
-pub(crate) fn only_on_bip(share_port_by_address: bool, transport: &str) -> PyResult<()> {
-    if share_port_by_address && transport != "bip" {
-        return Err(PyValueError::new_err(
-            "share_port_by_address applies only to transport='bip'",
-        ));
+/// `share_port_by_address` (#1538) binds a B/IP interface address, and
+/// `share_wildcard_port` (#2366) shares a B/IP port, so each means nothing on
+/// another transport: refuse the keyword `name` there rather than ignore it.
+pub(crate) fn only_on_bip(name: &str, set: bool, transport: &str) -> PyResult<()> {
+    if set && transport != "bip" {
+        return Err(PyValueError::new_err(format!(
+            "{name} applies only to transport='bip'"
+        )));
     }
     Ok(())
 }
@@ -32,11 +32,17 @@ const MIN_RENEWAL_SECS: f64 = 0.1;
 /// A foreign-device registration, for the `foreign_device=` keyword (#938,
 /// #1941).
 ///
-/// `bbmd` names a B/IP BBMD as `"ip"` or `"ip:port"`, or a B/IPv6 one as
-/// `"ip"`, `"[ip]"` or `"[ip]:port"` (port 47808 by default; a port needs
-/// the brackets, since `"2001:db8::10:4780"` is a bare address); the owner's
-/// transport must match. A B/IPv6 BBMD must be a unicast host: not unspecified,
-/// multicast, link-local, IPv4-mapped or IPv4-compatible. `ttl`, at least
+/// `bbmd` names a B/IP BBMD as `"ip"`, `"host"` or either with `":port"`,
+/// or a B/IPv6 one as `"ip"`, `"[ip]"` or `"[ip]:port"` (port 47808 by
+/// default; a port needs the brackets, since `"2001:db8::10:4780"` is a bare
+/// address); the owner's transport must match. A host name (#2308, #2365)
+/// serves either transport: it is looked up at start and again alongside
+/// the registrations; one that doesn't resolve still starts the owner,
+/// with registration waiting and the name tried again every 30 s, except a
+/// B/IPv6 owner on the interface `::`, whose start needs the address and
+/// fails. A B/IPv6 BBMD must be a unicast
+/// host: not unspecified, multicast, link-local, IPv4-mapped or
+/// IPv4-compatible. `ttl`, at least
 /// 1, is how many seconds the BBMD keeps the entry. `renewal` (B/IP only)
 /// is the seconds between registrations, at least 0.1 and shorter than
 /// `ttl`; `None` renews at half the TTL, which is what a B/IPv6 foreign
@@ -71,13 +77,19 @@ impl PyForeignDevice {
         if let Some(address) = parse_ipv6_address(bbmd)? {
             return Self::bip6(bbmd, address, ttl, renewal);
         }
-        if bbmd.parse::<SocketAddrV4>().is_err() && bbmd.parse::<Ipv4Addr>().is_err() {
-            return Err(PyValueError::new_err(format!(
-                "bbmd: '{bbmd}' is not an IPv4 or IPv6 address ('ip' or 'ip:port' for B/IP, \
-                 'ip' or '[ip]:port' for B/IPv6)"
-            )));
-        }
-        let address = parse_address(bbmd, "bbmd")?;
+        // An IPv4 address, with or without a port, takes the unicast checks
+        // and messages the other options do; anything else may be a name.
+        let is_address = bbmd.parse::<SocketAddrV4>().is_ok() || bbmd.parse::<Ipv4Addr>().is_ok();
+        let address = match bbmd.parse::<ForeignBbmd>() {
+            _ if is_address => parse_address(bbmd, "bbmd")?.into(),
+            Ok(named) => named,
+            Err(_) => {
+                return Err(PyValueError::new_err(format!(
+                    "bbmd: '{bbmd}' is not an IPv4 or IPv6 address or a host name ('ip', \
+                     'host' or either with ':port' for B/IP, 'ip' or '[ip]:port' for B/IPv6)"
+                )));
+            }
+        };
         if ttl == 0 {
             return Err(PyValueError::new_err("ttl must be at least 1 second"));
         }
@@ -94,24 +106,19 @@ impl PyForeignDevice {
             .transpose()?;
         Ok(Self {
             registration: Registration::Bip(ForeignDeviceConfig {
-                bbmd_ip: *address.ip(),
-                bbmd_port: address.port(),
+                bbmd: address,
                 ttl,
                 renewal_interval,
             }),
         })
     }
 
-    /// The BBMD's address: `"ip:port"`, or `"[ip]:port"` for B/IPv6.
+    /// The BBMD: `"ip:port"` or `"host:port"`, or `"[ip]:port"` for B/IPv6.
     #[getter]
     fn bbmd(&self) -> String {
         match &self.registration {
-            Registration::Bip(config) => {
-                SocketAddrV4::new(config.bbmd_ip, config.bbmd_port).to_string()
-            }
-            Registration::Bip6(config) => {
-                SocketAddrV6::new(config.bbmd_ip, config.bbmd_port, 0, 0).to_string()
-            }
+            Registration::Bip(config) => config.bbmd.to_string(),
+            Registration::Bip6(config) => config.bbmd.to_string(),
         }
     }
 
@@ -159,8 +166,7 @@ impl PyForeignDevice {
             ));
         }
         let config = Bip6ForeignDeviceConfig {
-            bbmd_ip: *address.ip(),
-            bbmd_port: address.port(),
+            bbmd: (*address.ip(), address.port()).into(),
             ttl,
         };
         config.check().map_err(|refusal| {
@@ -506,9 +512,17 @@ pub(crate) fn ip_modes(
                     bip6_foreign: Some(config.clone()),
                 });
             }
+            // A host name serves either transport (#2365).
+            (Registration::Bip(config), _) if config.bbmd.address().is_none() => {
+                return Ok(IpModes {
+                    bip: BipMode::Normal,
+                    bip6_foreign: Some(bip6_named(config)?),
+                });
+            }
             (Registration::Bip(_), _) => {
                 return Err(PyValueError::new_err(format!(
-                    "transport='ipv6' needs a B/IPv6 BBMD ('ip' or '[ip]:port'), not {}",
+                    "transport='ipv6' needs a B/IPv6 BBMD ('ip', '[ip]:port' or a host name), \
+                     not {}",
                     foreign.bbmd()
                 )));
             }
@@ -527,6 +541,27 @@ pub(crate) fn ip_modes(
     })
 }
 
+/// A `ForeignDevice` naming its BBMD by host name, for a B/IPv6 owner
+/// (#2365): the name and port, and the time-to-live. `renewal` is B/IP's.
+fn bip6_named(config: &ForeignDeviceConfig) -> PyResult<Bip6ForeignDeviceConfig> {
+    if config.renewal_interval.is_some() {
+        return Err(PyValueError::new_err(
+            "renewal applies only to a B/IP BBMD: a B/IPv6 foreign device renews at \
+             half the ttl, but never more often than every 30 seconds",
+        ));
+    }
+    let ForeignBbmd::Name { host, port } = &config.bbmd else {
+        return Err(PyValueError::new_err("a B/IPv6 BBMD by host name"));
+    };
+    Ok(Bip6ForeignDeviceConfig {
+        bbmd: Bip6ForeignBbmd::Name {
+            host: host.clone(),
+            port: *port,
+        },
+        ttl: config.ttl,
+    })
+}
+
 /// The B/IP mode for a B/IP-only owner (an endpoint or a router port): see
 /// [`ip_modes`].
 pub(crate) fn bip_mode(
@@ -535,34 +570,6 @@ pub(crate) fn bip_mode(
     foreign_device: Option<PyRef<'_, PyForeignDevice>>,
 ) -> PyResult<BipMode> {
     ip_modes(transport, bbmd, foreign_device).map(|modes| modes.bip)
-}
-
-/// `registration` as the dict `foreign_registration()` returns.
-pub(crate) fn registration_dict(registration: ForeignRegistrationSnapshot) -> PyResult<Py<PyAny>> {
-    let seconds = |d: Option<Duration>| d.map(|d| d.as_secs_f64());
-    let outcome = registration.last_outcome.map(|outcome| match outcome {
-        ForeignRegistrationOutcome::Pending => "pending",
-        ForeignRegistrationOutcome::Accepted => "accepted",
-        ForeignRegistrationOutcome::Refused => "refused",
-        ForeignRegistrationOutcome::TimedOut => "timed_out",
-        ForeignRegistrationOutcome::LocalError => "local_error",
-        ForeignRegistrationOutcome::Cancelled => "cancelled",
-    });
-    crate::py_async::attach(|py| {
-        let dict = PyDict::new(py);
-        dict.set_item("registered", registration.registered)?;
-        dict.set_item("lease_remaining", seconds(registration.lease_remaining))?;
-        dict.set_item("next_attempt_in", seconds(registration.next_attempt_in))?;
-        dict.set_item("last_bbmd", registration.last_bbmd.map(|a| a.to_string()))?;
-        dict.set_item("last_result", registration.last_result.map(|c| c.to_raw()))?;
-        dict.set_item("last_outcome", outcome)?;
-        dict.set_item("attempts", registration.attempts)?;
-        dict.set_item("accepted", registration.accepted)?;
-        dict.set_item("refused", registration.refused)?;
-        dict.set_item("lapses", registration.lapses)?;
-        dict.set_item("renewal_hints", registration.renewal_hints)?;
-        Ok(dict.into_any().unbind())
-    })
 }
 
 /// The NAT setting the `nat_global_address` and `nat_private_ranges`

@@ -229,7 +229,7 @@ async fn local_rearm_api_supports_two_operation_cycles() {
                 .unwrap();
         assert_eq!(
             changed,
-            vec![crate::life_safety_cov::LifeSafetyCovChange {
+            vec![bacnet_device_core::cov::life_safety::LifeSafetyCovChange {
                 object_identifier: oid,
                 changed_properties: vec![PropertyIdentifier::OPERATION_EXPECTED],
             }]
@@ -629,7 +629,9 @@ async fn exact_success_duplicate_replays_identical_simple_ack_single_execution()
         .await
         .get_mut(&oid)
         .unwrap()
-        .set_life_safety_operation_expected_internal(LifeSafetyOperation::RESET_ALARM)
+        .life_safety()
+        .unwrap()
+        .set_life_safety_operation_expected(LifeSafetyOperation::RESET_ALARM)
         .unwrap();
     let changed = dispatch_life_safety_operation_with_tracker(
         Arc::clone(&db),

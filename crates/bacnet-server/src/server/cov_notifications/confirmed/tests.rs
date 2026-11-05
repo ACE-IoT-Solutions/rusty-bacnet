@@ -1,11 +1,13 @@
 //! Admission refusals and follow-up budgets of confirmed COV reports (#896),
 //! driven straight through the sender and the follow-up fanout.
 use super::*;
-use crate::cov::{CovNotificationKind, CovSample, CovSubscription};
 use crate::server::cov_notify_context::CovNotifyContext;
 use crate::server::test_transport::{BIP_LOCAL_MAC, SendLog, SendMode, TestTransport};
+use bacnet_device_core::cov::CovSubscription;
+use bacnet_device_core::cov::{CovNotificationKind, CovSample};
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_types::enums::EngineeringUnits;
 use std::collections::HashSet;
 
@@ -40,7 +42,7 @@ fn proposal_on(
         subscriber_process_identifier: 7,
         monitored_object_identifier: object,
         issue_confirmed_notifications: true,
-        expires_at: Some(runtime_clock::now() + Duration::from_secs(3600)),
+        expires_at: Some(crate::runtime_clock::core_now() + bacnet_time::Duration::from_secs(3600)),
         last_notified_observation: None,
         monitored_property: (kind == CovNotificationKind::Multiple).then_some(property),
         monitored_property_array_index: None,
@@ -109,6 +111,7 @@ impl Fixture {
                 Arc::clone(table.in_flight_tracker()),
             )
         };
+        let completion = self.table.write().await.prepare_completion(sub).unwrap();
         let ctx = self.ctx();
         let observation =
             CovObservation::new(CovSample::new(&PropertyValue::Real(1.0)).unwrap(), None).unwrap();
@@ -122,7 +125,7 @@ impl Fixture {
             ConfirmedReport {
                 service: ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION,
                 route: sub.clone(),
-                completion: sub.prepare_completion().unwrap(),
+                completion,
                 observations: vec![(sub.clone(), observation)],
                 claim: None,
                 deferred: Vec::new(),
@@ -181,8 +184,9 @@ async fn a_busy_coordinate_refuses_a_report_and_leaves_the_follow_up_to_it() {
     let outstanding = {
         let mut table = f.table.write().await;
         [&single, &a].map(|sub| {
+            let report = table.prepare_completion(sub).unwrap();
             table
-                .begin_confirmed(sub.prepare_completion().unwrap(), [sub])
+                .begin_confirmed(report, [sub].map(|sub| (sub, placeholder())))
                 .unwrap()
         })
     };
@@ -196,7 +200,12 @@ async fn a_busy_coordinate_refuses_a_report_and_leaves_the_follow_up_to_it() {
             sub.notification_kind
         );
     }
-    drop(outstanding);
+    {
+        let mut table = f.table.write().await;
+        for flight in &outstanding {
+            table.delivered(flight, Delivery::NotSent);
+        }
+    }
     f.finish().await;
 }
 
@@ -294,8 +303,9 @@ async fn a_fence_follow_up_that_beats_the_initial_report_carries_it() {
         .await;
     let outstanding = {
         let mut table = f.table.write().await;
+        let report = table.prepare_completion(&a).unwrap();
         table
-            .begin_confirmed(a.prepare_completion().unwrap(), [&a, &b])
+            .begin_confirmed(report, [&a, &b].map(|sub| (sub, placeholder())))
             .unwrap()
     };
     // Re-subscribing to Present_Value alone while the context is busy fences
@@ -352,7 +362,10 @@ async fn a_fence_follow_up_that_beats_the_initial_report_carries_it() {
         properties.contains(&PropertyIdentifier::PRESENT_VALUE),
         "the relisted reference's first report rides with the follow-up"
     );
-    drop(outstanding);
+    f.table
+        .write()
+        .await
+        .delivered(&outstanding, Delivery::NotSent);
     f.finish().await;
 }
 
@@ -370,8 +383,8 @@ impl bacnet_objects::traits::BACnetObject for PanicsOnce {
         "PANICS-ONCE"
     }
 
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        std::borrow::Cow::Borrowed(&[PropertyIdentifier::PRESENT_VALUE])
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[PropertyIdentifier::PRESENT_VALUE])
     }
 
     fn read_property(
@@ -486,4 +499,16 @@ async fn a_report_dcc_withdraws_before_its_first_attempt_is_not_counted() {
     );
     assert!(f.table.read().await.confirmed_idle(&sub), "no hold-off");
     f.finish().await;
+}
+
+/// An observation for a report these tests never acknowledge.
+fn placeholder() -> bacnet_device_core::cov::CovObservation {
+    bacnet_device_core::cov::CovObservation::new(
+        bacnet_device_core::cov::CovSample::new(&bacnet_types::primitives::PropertyValue::Real(
+            0.0,
+        ))
+        .unwrap(),
+        None,
+    )
+    .unwrap()
 }

@@ -7,7 +7,9 @@
 //! token from the caller's [`TokenBucket`], when the account has one. The
 //! account rides in a task-local, so the engine's read paths charge it
 //! without passing it along; a request made outside [`charged`] (the TUI's)
-//! charges nothing.
+//! charges nothing. An [`agent`](Account::agent)'s account marks its
+//! requests on the request-rate meter as an agent's, so a front end that
+//! shares its engine with agents (the TUI, #2185) shows their share.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -27,6 +29,7 @@ pub struct Account {
     requests: AtomicU32,
     throttled_us: AtomicU64,
     bucket: Option<Arc<TokenBucket>>,
+    agent: bool,
 }
 
 impl Account {
@@ -36,7 +39,24 @@ impl Account {
             requests: AtomicU32::new(0),
             throttled_us: AtomicU64::new(0),
             bucket,
+            agent: false,
         }
+    }
+
+    /// [`new`](Self::new), for an agent's call: the meter counts its
+    /// requests as an agent's ([`RequestLimits::recent_agents`]).
+    ///
+    /// [`RequestLimits::recent_agents`]: super::RequestLimits::recent_agents
+    pub fn agent(bucket: Option<Arc<TokenBucket>>) -> Self {
+        Self {
+            agent: true,
+            ..Self::new(bucket)
+        }
+    }
+
+    /// Whether it is an agent's ([`agent`](Self::agent)).
+    pub fn is_agent(&self) -> bool {
+        self.agent
     }
 
     /// Requests counted so far.
@@ -93,8 +113,10 @@ pub(super) fn current() -> Option<Arc<Account>> {
 
 /// A token bucket: at most `burst` requests at once, refilled at
 /// `per_second`. A caller that finds it empty waits for its token, which
-/// is booked as it starts waiting, so callers are served in turn and a
-/// dropped wait still spends its token.
+/// is booked as it starts waiting, so callers are served in turn. A
+/// request through [`RequestLimits`](super::RequestLimits) holds its token
+/// until it goes: withdrawn before, waiting for the bucket, its device's
+/// gate or a slot, it gives the token back (#2202).
 #[derive(Debug)]
 pub struct TokenBucket {
     per_second: f64,
@@ -126,8 +148,17 @@ impl TokenBucket {
 
     /// Take a token, waiting for one when the bucket is empty.
     pub async fn take(&self) {
+        if let Some(token) = self.hold().await {
+            token.keep();
+        }
+    }
+
+    /// [`take`](Self::take), the token held by the guard returned: dropped
+    /// before [`Refund::keep`] (the request withdrawn before it went), the
+    /// token goes back. `None` when the bucket doesn't limit.
+    pub(super) async fn hold(&self) -> Option<Refund<'_>> {
         if self.per_second == 0.0 {
-            return;
+            return None;
         }
         let wait = {
             let mut tokens = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -137,8 +168,41 @@ impl TokenBucket {
             tokens.at = now;
             (tokens.left < 0.0).then(|| Duration::from_secs_f64(-tokens.left / self.per_second))
         };
+        // Booked now: a wait dropped from here on gives it back.
+        let token = Refund {
+            bucket: self,
+            armed: true,
+        };
         if let Some(wait) = wait {
             tokio::time::sleep(wait).await;
+        }
+        Some(token)
+    }
+}
+
+/// A token booked for a request that hasn't gone yet: dropped before
+/// [`keep`](Self::keep), the token goes back to the bucket.
+pub(super) struct Refund<'a> {
+    bucket: &'a TokenBucket,
+    armed: bool,
+}
+
+impl Refund<'_> {
+    /// The request is going: the token is spent.
+    pub(super) fn keep(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for Refund<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let mut tokens = self
+                .bucket
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            tokens.left += 1.0;
         }
     }
 }
@@ -173,6 +237,24 @@ mod tests {
             unlimited.take().await;
         }
         assert_eq!(Instant::now(), before);
+    }
+
+    /// A wait dropped before its token comes gives the token back: the
+    /// next caller waits for one token, not for those of the dropped waits.
+    #[tokio::test(start_paused = true)]
+    async fn a_dropped_wait_gives_its_token_back() {
+        use std::future::Future as _;
+        use std::task::{Context, Poll, Waker};
+        let bucket = TokenBucket::new(1, 1);
+        let start = Instant::now();
+        bucket.take().await;
+        for _ in 0..3 {
+            let mut wait = std::pin::pin!(bucket.take());
+            let polled = wait.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+            assert_eq!(polled, Poll::Pending, "the bucket is empty");
+        }
+        bucket.take().await;
+        assert_eq!(Instant::now() - start, Duration::from_secs(1));
     }
 
     /// A charged future sees its account; one outside sees none.

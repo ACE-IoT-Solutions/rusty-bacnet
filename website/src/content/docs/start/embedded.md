@@ -5,7 +5,7 @@ description: "Which no_std crates an MS/TP device, a B/IP device or a router nee
 
 The portable crates run on a microcontroller with no operating system and no heap. Each one is a sans-IO core: it reads no clock and owns no UART or socket. Your firmware feeds it what the line does, stamped with the time, and carries out the actions it hands back. This page says which crates a product needs, how they share time, how much memory they take, and what the adapter between them and your hardware must do.
 
-This page describes v0.14.0, the first release with the allocation-free profile of `bacnet-types`, `bacnet-encoding` and `bacnet-services`, the `bacnet-npdu` crate, the MS/TP storage bundle and `bacnet_time::earliest` (a new `bacnet-time` version that only adds API). The firmware images, the `device` image among them, live in the repository, not on crates.io. Nothing here is a hardware qualification: the images are measured and checked natively, and run under emulation by hand.
+This page describes v0.15.0. The firmware images, the `device` image among them, live in the repository, not on crates.io. Nothing here is a hardware qualification: the images are measured and checked natively, and run under emulation by hand.
 
 ## Crates by product
 
@@ -37,21 +37,21 @@ All the cores take `bacnet-time`'s `Instant` and `Duration`: nanoseconds on a 64
 
 Each core's large buffers are yours, and a `const fn` builds them from zeros, so firmware keeps them in a static in the zero-initialized section, `.bss`, costing no flash. Build the core itself on the stack over that static; it borrows the buffers and is a few hundred bytes. For MS/TP, one `StandardStorage` bundle holds the receive buffer and the queue and delivery slots, their counts given as its three type parameters; `ExtendedStorage` is the same, sized for extended frames.
 
-CI links each firmware image for four targets and checks it against a budget in `firmware/link/size-budget.toml`. These sizes were measured for the Cortex-M0+ target, `thumbv6m-none-eabi`, with the size-optimized `firmware` profile. Flash is code, read-only data and the vector table. Static RAM is initialized and zeroed data. The stack column is the budget in `firmware/link/stack-budget.toml` for the BBC micro:bit board under emulation (the router's is the LM3S6965 board's, since its statics don't leave a 16-kibibyte part room for its stack); each budget is the deepest stack measured plus a quarter. Each image links a test scenario as well as its stack, so compare images with care.
+CI links each image below for four targets, `thumbv7m-none-eabi`, `thumbv6m-none-eabi`, `riscv32imc-unknown-none-elf` and `thumbv7em-none-eabihf`, and checks it against a budget in `firmware/link/size-budget.toml`. After this release, CI on `dev` also links an `objects` image, `bacnet-device-core` over `bacnet-objects` with an allocator, for the targets with atomic compare-and-swap: `thumbv7m-none-eabi`, `thumbv7em-none-eabihf` and `riscv32imac-unknown-none-elf`. These sizes were measured for the Cortex-M0+ target, `thumbv6m-none-eabi`, with the size-optimized `firmware` profile. Flash is code, read-only data and the vector table. Static RAM is initialized and zeroed data. The stack column is the budget in `firmware/link/stack-budget.toml` for the BBC micro:bit board under emulation (the router's is the LM3S6965 board's, since its statics don't leave a 16-kibibyte part room for its stack); each budget is the deepest stack measured plus a quarter. Each image links a test scenario as well as its stack, so compare images with care.
 
 | Image | What it links | Flash (bytes) | Static RAM (bytes) | Stack budget (bytes) |
 | --- | --- | --- | --- | --- |
-| `mstp` | MS/TP codec and master core, standard frames | 18,180 | 5,528 | 2,560 |
-| `mstp-extended` | the same with extended frames | 17,048 | 7,696 | 3,776 |
-| `node` | B/IP foreign-device node and its port | 15,128 | 240 | 6,816 |
-| `bbmd` | a BBMD's port and tables | 12,376 | 240 | 2,976 |
-| `device` | a whole MS/TP device with Who-Is and ReadProperty | 29,876 | 3,496 | 3,328 |
-| `router` | a B/IP-to-MS/TP router whose B/IP port is the BBMD | 43,320 | 15,536 | 5,584 |
+| `mstp` | MS/TP codec and master core, standard frames | 18,388 | 5,528 | 2,560 |
+| `mstp-extended` | the same with extended frames | 17,220 | 7,696 | 3,776 |
+| `node` | B/IP foreign-device node and its port | 16,164 | 240 | 6,816 |
+| `bbmd` | a BBMD's port and tables | 13,284 | 240 | 2,976 |
+| `device` | a whole MS/TP device with Who-Is and ReadProperty | 30,912 | 3,496 | 3,328 |
+| `router` | a B/IP-to-MS/TP router whose B/IP port is the BBMD | 45,900 | 15,632 | 5,584 |
 
 What drives the RAM:
 
 - An MS/TP standard frame carries up to 501 bytes of NPDU. The `device` image's 3,496 bytes of static RAM are mostly its storage bundle: one unicast slot, two broadcast slots and one delivery slot, about 3.3 kilobytes, plus 88 bytes of application scratch and an 88-byte buffer for the answer's NPDU.
-- An extended frame carries up to 1,497 bytes. Clause 9.3 asks them of a router's MS/TP port, and their buffers are most of the router's 15.5 kilobytes of static RAM. A device needs them only to take NPDUs longer than 501 bytes.
+- An extended frame carries up to 1,497 bytes. Clause 9.3 asks them of a router's MS/TP port, and their buffers are most of the router's 15.6 kilobytes of static RAM. A device needs them only to take NPDUs longer than 501 bytes.
 - Each more queue slot costs about one NPDU: 501 bytes for standard frames, 1,497 for extended.
 - The `device` image links no formatting code (`core::fmt`), no 64-bit division and no `memmove`; the check counts each and fails if one appears.
 
@@ -83,8 +83,8 @@ Without `alloc`, the application crates have the enums, the object identifier, t
 - owned property values (`PropertyValue`) and the constructed types;
 - every encoder that writes into a growable `BytesMut` buffer.
 
-`bacnet-objects`, with its object database, builds without the standard library too, given an allocator and a target with atomic compare-and-swap (so not ARMv6-M): depend on it with `default-features = false, features = ["alloc"]`. Each save then runs on the caller's thread, and the application supplies the storage; the file backends need the standard library. The Tokio client, server and transports need the standard library. Firmware that wants the application crates builds them with `alloc` and supplies a global allocator; the `apdu` firmware image does that with a one-kilobyte heap.
+`bacnet-objects`, with its object database, builds without the standard library too, given an allocator and a target with atomic compare-and-swap (so not ARMv6-M): depend on it with `default-features = false, features = ["alloc"]`. Each save then runs on the caller's thread, and the application supplies the storage; the file backends need the standard library. That build leaves out two capabilities its objects would otherwise lend, event reporting and staged durable writes, which saves 4 to 6 KB of flash on the `objects` firmware image; a firmware that drives either asks for it, as in `features = ["alloc", "event-reporting", "durable-writes"]`. `bacnet-device-core` with `alloc` alone likewise refuses writes of three structured datatypes it would decode itself (an event parameter, and port permission and stage limit elements) with WRITE_ACCESS_DENIED, which saves about 20 KB of flash there; its `structured-writes` feature brings them back. The Tokio client, server and transports need the standard library. Firmware that wants the application crates builds them with `alloc` and supplies a global allocator; the `apdu` firmware image does that with a one-kilobyte heap.
 
 ## Sources
 
-[firmware/link](https://github.com/jscott3201/rusty-bacnet/tree/dev/firmware/link) (the images, their scenarios and budgets) · [Rust API notes](https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/rust-api.md) · [CI's firmware link test](https://github.com/jscott3201/rusty-bacnet/blob/dev/docs/ci.md#firmware-link-test).
+[firmware/link](https://github.com/jscott3201/rusty-bacnet/tree/v0.15.0/firmware/link) (the images, their scenarios and budgets) · [Rust API notes](https://github.com/jscott3201/rusty-bacnet/blob/v0.15.0/docs/rust-api.md) · [CI's firmware link test](https://github.com/jscott3201/rusty-bacnet/blob/v0.15.0/docs/ci.md#firmware-link-test).

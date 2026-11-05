@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::analog::{AnalogOutputObject, AnalogValueObject};
+use crate::traits::Timed;
 use crate::trend::TrendLogMultipleObject;
 use bacnet_encoding::constructed::decode_log_multiple_record;
 use bacnet_types::bitstring::LogStatus;
@@ -92,7 +93,12 @@ pub(super) fn multiple(
 
 /// The log's records, decoded from the framed records ReadRange serves.
 pub(super) fn records(db: &ObjectDatabase, oid: ObjectIdentifier) -> Vec<BACnetLogMultipleRecord> {
-    let records = db.get(&oid).unwrap().log_buffer_internal().unwrap();
+    let records = db
+        .get(&oid)
+        .unwrap()
+        .log_buffer()
+        .and_then(|log| log.buffer_records())
+        .unwrap();
     (0..records.record_count())
         .map(|index| {
             let mut bytes = BytesMut::new();
@@ -340,7 +346,10 @@ fn a_disabled_log_accepts_the_poll_without_a_record() {
         8,
         vec![member(av(), P::PRESENT_VALUE, None, None)],
     );
-    log.bind_clock_internal(Some(Arc::new(WallClock(Mutex::new(Some(frame()))))));
+    log.bind_clocks(&crate::traits::Clocks {
+        clock: Some(Arc::new(WallClock(Mutex::new(Some(frame()))))),
+        ..crate::traits::Clocks::default()
+    });
     log.write_property(P::LOG_ENABLE, None, PropertyValue::Boolean(false), None)
         .unwrap();
     let oid = log.object_identifier();

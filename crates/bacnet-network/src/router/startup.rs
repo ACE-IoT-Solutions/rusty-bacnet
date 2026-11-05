@@ -44,6 +44,7 @@ impl BACnetRouter {
         let mut configs = Vec::new();
         let mut networks = Vec::new();
         let mut limit_changes = Vec::new();
+        let mut port_counters = Vec::new();
 
         let setup = async {
             for index in 0..startup.ports.len() {
@@ -66,6 +67,16 @@ impl BACnetRouter {
                     network_number: port.network_number,
                     mac: MacAddr::from_slice(mac.as_slice()),
                 });
+                port_counters.push(PortCounterEntry::new(
+                    index,
+                    port.network_number,
+                    std::any::type_name::<T>().to_string(),
+                    mac.as_slice()
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(":"),
+                ));
                 // Read once the transport has started: MS/TP's grows with the
                 // extended frames routing turned on, and BACnet/SC's comes from
                 // its hub connection.
@@ -101,10 +112,22 @@ impl BACnetRouter {
         let ports = std::mem::take(&mut startup.ports);
 
         let network_control_ingress_sequence = Arc::new(AtomicU64::new(0));
-        let shared = Arc::new(Shared::new(engine, control, networks));
+        let shared = Arc::new(Shared::with_counters(
+            engine,
+            control,
+            networks,
+            port_counters,
+        ));
 
         let (send_txs, send_rxs): (Vec<_>, Vec<_>) = (0..ports.len())
-            .map(|_| send_queue::channel(send_queue::CAPACITY))
+            .map(|index| {
+                send_queue::channel_with_counters(
+                    send_queue::CAPACITY,
+                    shared
+                        .port_counter(PortId(index as u8))
+                        .map(|counter| Arc::clone(&counter.state)),
+                )
+            })
             .unzip();
         let replies = Arc::new(replies::ReplyLifetime::default());
         let outputs = Arc::new(Outputs {

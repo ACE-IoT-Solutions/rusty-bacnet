@@ -20,7 +20,7 @@ fn pics_network_port_property_metadata_is_exact() {
         (P::NETWORK_NUMBER_QUALITY, false, false),
         (P::MAC_ADDRESS, false, false),
         (P::APDU_LENGTH, false, false),
-        (P::LINK_SPEED, true, false),
+        (P::LINK_SPEED, false, false),
         (P::CHANGES_PENDING, false, false),
         (P::BACNET_IP_MODE, false, false),
         (P::IP_ADDRESS, false, false),
@@ -58,10 +58,13 @@ fn pics_network_port_property_metadata_is_exact() {
                     None,
                 )
                 .unwrap();
-            let required = object.required_properties();
+            let required: Vec<_> =
+                bacnet_objects::property_metadata::required_properties(&object.property_metadata())
+                    .collect();
             let mut db = ObjectDatabase::new();
             db.add(Box::new(object)).unwrap();
-            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+                .instance_types_only(&db);
             assert_eq!(pics.supported_object_types.len(), 1);
             let support = &pics.supported_object_types[0];
             assert_eq!(support.object_type, ObjectType::NETWORK_PORT);
@@ -106,7 +109,7 @@ fn pics_non_bip_application_profiles_exclude_ipv4_rows() {
         (P::NETWORK_NUMBER_QUALITY, false, false),
         (P::MAC_ADDRESS, false, false),
         (P::APDU_LENGTH, false, false),
-        (P::LINK_SPEED, true, false),
+        (P::LINK_SPEED, false, false),
         (P::CHANGES_PENDING, false, false),
         (P::PROPERTY_LIST, false, false),
     ];
@@ -119,7 +122,8 @@ fn pics_non_bip_application_profiles_exclude_ipv4_rows() {
                 .unwrap();
         let mut db = ObjectDatabase::new();
         db.add(Box::new(object)).unwrap();
-        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+            .instance_types_only(&db);
         let rows: Vec<_> = pics.supported_object_types[0]
             .supported_properties
             .iter()
@@ -164,7 +168,7 @@ fn pics_network_port_lists_the_rows_its_bip_mode_adds() {
         (P::NETWORK_NUMBER_QUALITY, false, false),
         (P::MAC_ADDRESS, false, false),
         (P::APDU_LENGTH, false, false),
-        (P::LINK_SPEED, true, false),
+        (P::LINK_SPEED, false, false),
         (P::CHANGES_PENDING, false, false),
         (P::BACNET_IP_MODE, false, false),
         (P::IP_ADDRESS, false, false),
@@ -220,7 +224,8 @@ fn pics_network_port_lists_the_rows_its_bip_mode_adds() {
             .unwrap();
         db.publish_bip_port_internal(oid, [127, 0, 0, 1], 47808, 1476, mode)
             .unwrap();
-        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+            .instance_types_only(&db);
         let rows: Vec<_> = pics.supported_object_types[0]
             .supported_properties
             .iter()
@@ -317,7 +322,8 @@ fn pics_lists_the_pending_rows_writable_only_when_their_view_can_change() {
                     .unwrap();
                 db.set_network_port_activation_internal(oid, activation)
                     .unwrap();
-                let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+                let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+                    .instance_types_only(&db);
                 let listed = &pics.supported_object_types[0].supported_properties;
                 for property in rows {
                     let row = listed
@@ -357,7 +363,7 @@ fn pics_network_port_lists_the_ipv6_rows_in_each_mode() {
         (P::NETWORK_NUMBER_QUALITY, false, false),
         (P::MAC_ADDRESS, false, false),
         (P::APDU_LENGTH, false, false),
-        (P::LINK_SPEED, true, false),
+        (P::LINK_SPEED, false, false),
         (P::CHANGES_PENDING, false, false),
         (P::BACNET_IPV6_MODE, false, false),
         (P::IPV6_ADDRESS, false, false),
@@ -434,7 +440,8 @@ fn pics_network_port_lists_the_ipv6_rows_in_each_mode() {
         .unwrap();
         db.set_network_port_activation_internal(oid, activation)
             .unwrap();
-        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+            .instance_types_only(&db);
         let rows: Vec<_> = pics.supported_object_types[0]
             .supported_properties
             .iter()
@@ -510,7 +517,8 @@ fn pics_lists_the_nat_rows_of_a_nat_capable_ipv4_bbmd() {
             .unwrap();
         db.set_network_port_activation_internal(oid, activation)
             .unwrap();
-        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+            .instance_types_only(&db);
         let listed = &pics.supported_object_types[0].supported_properties;
         for (property, optional) in [
             (P::BACNET_IP_NAT_TRAVERSAL, false),
@@ -575,7 +583,8 @@ fn pics_lists_the_multicast_row_of_a_port_that_can_use_multicast() {
         db.set_network_port_multicast_internal(oid, view).unwrap();
         db.set_network_port_activation_internal(oid, activation)
             .unwrap();
-        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+        let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+            .instance_types_only(&db);
         let row = pics.supported_object_types[0]
             .supported_properties
             .iter()

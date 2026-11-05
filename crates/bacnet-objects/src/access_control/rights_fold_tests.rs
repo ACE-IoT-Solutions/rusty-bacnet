@@ -2,8 +2,10 @@
 //! (#1423), and a write the object won't make leaves a write staged for
 //! another request alone (#1424).
 
+#[cfg(feature = "std")]
+use super::test_storage::WAIT;
 use super::test_storage::{
-    MemoryPersistence, WAIT, assert_refused, block_on, octets, persistent, positive_only, write,
+    MemoryPersistence, assert_refused, block_on, octets, persistent, positive_only, write,
     write_positive, zone_rule,
 };
 use super::*;
@@ -58,9 +60,12 @@ fn provisioned() -> AccessRightsSnapshot {
         negative_access_rules: Some(vec![zone_rule(3)]),
         enable: Some(false),
         accompaniment: None,
+        description: None,
     }
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_requests_writes_stage_one_save_and_each_takes_its_step() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -149,9 +154,14 @@ fn staging_ends_at_a_write_the_object_will_refuse_and_passes_a_null_by() {
         pending(P::NEGATIVE_ACCESS_RULES, Some(1), octets(&rules)),
         pending(P::LOG_ENABLE, None, PropertyValue::Boolean(false)),
     ];
+    // The Description is kept with the rules (#2364).
+    let saved = AccessRightsSnapshot {
+        description: Some("door".into()),
+        ..positive_only(&rules)
+    };
     let wait = staged(rights.stage_writes(&writes));
     block_on(&wait);
-    assert_eq!(storage.snapshot(), Some(positive_only(&rules)));
+    assert_eq!(storage.snapshot(), Some(saved.clone()));
     assert_refused(
         make(&mut rights, &writes[0]),
         ErrorClass::PROPERTY,
@@ -167,10 +177,12 @@ fn staging_ends_at_a_write_the_object_will_refuse_and_passes_a_null_by() {
     rights.release_staged_write(&wait);
     rights.wait_for_saves();
     assert_eq!(storage.saves(), 1);
-    assert_eq!(storage.snapshot(), Some(positive_only(&rules)));
+    assert_eq!(storage.snapshot(), Some(saved));
     assert!(rights.enable());
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_write_the_object_wont_make_leaves_another_requests_staged_write_alone() {
     let storage = Arc::new(MemoryPersistence::default());

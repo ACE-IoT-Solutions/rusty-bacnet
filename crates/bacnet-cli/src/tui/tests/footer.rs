@@ -47,9 +47,11 @@ fn foreign_app() -> App {
     worker(
         &mut app,
         WorkerEvent::ForeignDevice(Foreign {
-            bbmd: bbmd(),
+            configured: bbmd().into(),
+            bbmd: Some(bbmd()),
             ttl: 60,
             renewal: Duration::from_secs(30),
+            nat_global: None,
         }),
     );
     press(&mut app, KeyCode::Char('4'));

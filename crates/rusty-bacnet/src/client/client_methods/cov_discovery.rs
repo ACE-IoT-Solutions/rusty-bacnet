@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::types::PyTarget;
 
 #[pymethods]
 impl BACnetClient {
@@ -11,7 +12,7 @@ impl BACnetClient {
     fn subscribe_cov<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         subscriber_process_identifier: u32,
         monitored_object_identifier: PyObjectIdentifier,
         confirmed: bool,
@@ -22,16 +23,29 @@ impl BACnetClient {
         let oid = monitored_object_identifier.to_rust();
 
         let future = async move {
-            let mac = peers.parse(&address)?;
+            let (mac, routing) = address.into_parts(peers)?;
             let c = started(&inner).await?;
-            c.subscribe_cov(
-                &mac,
-                subscriber_process_identifier,
-                oid,
-                confirmed,
-                lifetime,
-            )
-            .await
+            if let Some((dnet, dadr)) = routing {
+                c.subscribe_cov_routed(
+                    &mac,
+                    dnet,
+                    &dadr,
+                    subscriber_process_identifier,
+                    oid,
+                    confirmed,
+                    lifetime,
+                )
+                .await
+            } else {
+                c.subscribe_cov(
+                    &mac,
+                    subscriber_process_identifier,
+                    oid,
+                    confirmed,
+                    lifetime,
+                )
+                .await
+            }
             .map_err(to_py_err)?;
             Ok(())
         };
@@ -43,7 +57,7 @@ impl BACnetClient {
     fn unsubscribe_cov<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: PyTarget,
         subscriber_process_identifier: u32,
         monitored_object_identifier: PyObjectIdentifier,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -52,11 +66,16 @@ impl BACnetClient {
         let oid = monitored_object_identifier.to_rust();
 
         let future = async move {
-            let mac = peers.parse(&address)?;
+            let (mac, routing) = address.into_parts(peers)?;
             let c = started(&inner).await?;
-            c.unsubscribe_cov(&mac, subscriber_process_identifier, oid)
-                .await
-                .map_err(to_py_err)?;
+            if let Some((dnet, dadr)) = routing {
+                c.unsubscribe_cov_routed(&mac, dnet, &dadr, subscriber_process_identifier, oid)
+                    .await
+            } else {
+                c.unsubscribe_cov(&mac, subscriber_process_identifier, oid)
+                    .await
+            }
+            .map_err(to_py_err)?;
             Ok(())
         };
         crate::py_async::future_into_py(py, crate::unit_result(future))

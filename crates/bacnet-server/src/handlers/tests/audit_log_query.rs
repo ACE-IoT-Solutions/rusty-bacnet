@@ -1,3 +1,4 @@
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_types::error::RemoteError;
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -222,8 +223,8 @@ impl BACnetObject for AuditWithoutCapability {
         ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 }
 
@@ -302,12 +303,22 @@ impl BACnetObject for SpyAuditObject {
         unreachable!("AuditLogQuery is read-only")
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
 
-    fn audit_log_storage_internal(&self) -> Option<&dyn AuditLogStorage> {
-        Some(self.storage.as_ref())
+    fn audit_log(&self) -> Option<&dyn bacnet_objects::traits::AuditLog> {
+        Some(self)
+    }
+
+    fn audit_log_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::AuditLog> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::AuditLog for SpyAuditObject {
+    fn storage(&self) -> &dyn AuditLogStorage {
+        self.storage.as_ref()
     }
 }
 

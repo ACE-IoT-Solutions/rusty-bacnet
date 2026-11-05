@@ -5,6 +5,7 @@ use crate::clock::{ClockFrame, ClockReader};
 use crate::device::{AuditRecipientChangeSink, AuditWriteSource, DeviceConfig, DeviceObject};
 use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
 use crate::traits::BACnetObject;
+use crate::traits::Timed;
 use bacnet_types::constructed::BACnetRecipient;
 use bacnet_types::enums::{ObjectType, Segmentation, ServiceSupported};
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
@@ -77,7 +78,10 @@ fn configured(clock: bool, segmented: bool, cov: bool, audit: u8) -> (DeviceObje
     .unwrap();
     object.set_device_uuid([7; 16]);
     if clock {
-        object.bind_clock_internal(Some(Arc::new(Clock)));
+        object.bind_clocks(&crate::traits::Clocks {
+            clock: Some(Arc::new(Clock)),
+            ..crate::traits::Clocks::default()
+        });
     }
     if !cov {
         object.set_services_supported(&[ServiceSupported::READ_PROPERTY]);
@@ -126,7 +130,7 @@ fn device_eight_masks_compose_with_clock_segmentation_cov_and_audit_metadata() {
                         }
                         let before = object.property_metadata().into_owned();
                         let values = unrelated(&object);
-                        let list = object.property_list().into_owned();
+                        let list = crate::test_rows::listed(&object.property_metadata());
                         object.set_profile(optional(mask)).unwrap();
                         let metadata = object.property_metadata();
                         assert_eq!(
@@ -144,13 +148,19 @@ fn device_eight_masks_compose_with_clock_segmentation_cov_and_audit_metadata() {
                             .filter(|(bit, _)| mask & (1 << bit) != 0)
                             .map(|(_, p)| p)
                             .collect();
-                        assert_eq!(&object.property_list()[list.len()..], expected);
-                        assert!(object.property_list().contains(&P::PROPERTY_LIST));
-                        assert!(
-                            !object
-                                .property_list()
-                                .contains(&P::DEPLOYED_PROFILE_LOCATION)
+                        assert_eq!(
+                            &crate::test_rows::listed(&object.property_metadata())[list.len()..],
+                            expected
                         );
+                        // The row stays; only the served list leaves it out.
+                        assert!(crate::property_metadata::has_property(
+                            &object.property_metadata(),
+                            P::PROPERTY_LIST
+                        ));
+                        assert!(!crate::property_metadata::has_property(
+                            &object.property_metadata(),
+                            P::DEPLOYED_PROFILE_LOCATION
+                        ));
                         for (bit, p) in ROWS.into_iter().enumerate() {
                             let present = mask & (1 << bit) != 0;
                             let row = metadata.iter().find(|r| r.property_identifier == p);
@@ -215,9 +225,9 @@ fn device_eight_masks_compose_with_clock_segmentation_cov_and_audit_metadata() {
                         }
                         assert_eq!(unrelated(&object), values);
                         assert_eq!(sink.changes.load(Ordering::SeqCst), 0);
-                        assert!(!object.advance_monotonic_time_internal(Duration::from_secs(30)));
-                        assert!(object.durable_writes_internal().is_none());
-                        assert!(object.cov_snapshot_internal().is_none());
+                        assert!(!object.advance_monotonic_time(Duration::from_secs(30)));
+                        assert!(object.durable_writes().is_none());
+                        assert!(object.cov_snapshot().is_none());
                     }
                 }
             }
@@ -243,7 +253,10 @@ fn device_saved_overrides_need_provisioning_and_invalid_replacement_preserves_st
             object.read_property(P::TAGS, None),
             ErrorCode::UNKNOWN_PROPERTY,
         );
-        assert!(!object.property_list().contains(&P::TAGS));
+        assert!(!crate::property_metadata::has_property(
+            &object.property_metadata(),
+            P::TAGS
+        ));
         object.set_profile(optional(7)).unwrap();
         let expected = saved
             .as_ref()
@@ -339,6 +352,7 @@ fn device_invalid_writes_and_save_failure_preserve_served_and_stored_tags() {
     assert_eq!(object.read_property(P::TAGS, None).unwrap(), before);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn device_expired_stage_corrects_tags_and_accepts_the_next_write() {
     let store = Arc::new(Memory::default());
@@ -348,14 +362,20 @@ fn device_expired_stage_corrects_tags_and_accepts_the_next_write() {
     let values = unrelated(&object);
     staged(
         object
-            .durable_writes_internal()
+            .durable_writes()
             .unwrap()
             .stage_writes(&[whole("never-served")]),
     )
     .block();
     assert_eq!(store.saved(), Some(snapshot("never-served")));
-    assert!(!object.advance_monotonic_time_internal(Duration::ZERO));
-    assert!(!object.advance_monotonic_time_internal(Duration::from_secs(11)));
+    object
+        .durable_writes()
+        .unwrap()
+        .expire_staged(Duration::ZERO);
+    object
+        .durable_writes()
+        .unwrap()
+        .expire_staged(Duration::from_secs(11));
     object.wait_for_tag_saves();
     assert_eq!(store.saved(), Some(snapshot("saved")));
     assert_eq!(store.attempts(), 2);

@@ -1,3 +1,4 @@
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_types::error::RemoteError;
 use std::borrow::Cow;
 
@@ -137,11 +138,20 @@ impl BACnetObject for SummaryFixture {
         ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Owned(self.advertised.clone())
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&self.advertised)
     }
 
-    fn enrollment_summary_capability_internal(&self) -> Option<EnrollmentSummaryCapability> {
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::EventReporting for SummaryFixture {
+    fn enrollment_summary_capability(&self) -> Option<EnrollmentSummaryCapability> {
         self.capability
     }
 }

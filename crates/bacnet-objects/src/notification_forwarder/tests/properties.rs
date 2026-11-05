@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::property_metadata::PropertyConformance;
+use crate::property_metadata::{is_array_property, is_list_property};
+use crate::traits::Timed;
 use bacnet_types::enums::PropertyIdentifier as P;
 
 fn forwarder() -> NotificationForwarderObject {
@@ -11,7 +13,7 @@ fn forwarder() -> NotificationForwarderObject {
 #[test]
 fn notification_forwarder_serves_every_required_row() {
     let nf = forwarder();
-    let required: Vec<_> = nf.required_properties().iter().copied().collect();
+    let required: Vec<_> = crate::test_rows::required(&nf.property_metadata()).to_vec();
     assert_eq!(
         required,
         [
@@ -68,15 +70,18 @@ fn notification_forwarder_serves_every_required_row() {
         PropertyValue::ApplicationData(Vec::new())
     );
     // Port_Filter is left out until the application configures it.
-    assert!(!nf.property_list().contains(&P::PORT_FILTER));
+    assert!(!crate::property_metadata::has_property(
+        &nf.property_metadata(),
+        P::PORT_FILTER
+    ));
     assert_refused(
         nf.read_property(P::PORT_FILTER, None).map(|_| ()),
         ErrorClass::PROPERTY,
         ErrorCode::UNKNOWN_PROPERTY,
     );
-    assert!(nf.is_list_property(P::SUBSCRIBED_RECIPIENTS));
-    assert!(nf.is_list_property(P::RECIPIENT_LIST));
-    assert!(nf.is_array_property(P::PORT_FILTER));
+    assert!(is_list_property(&nf, P::SUBSCRIBED_RECIPIENTS));
+    assert!(is_list_property(&nf, P::RECIPIENT_LIST));
+    assert!(is_array_property(&nf, P::PORT_FILTER));
 }
 
 #[test]
@@ -190,7 +195,10 @@ fn notification_forwarder_recipient_list_takes_framed_writes_up_to_the_cap() {
 fn notification_forwarder_subscribed_recipients_take_writes_and_lapse() {
     let mut nf = forwarder();
     let (clock, set) = manual_clock();
-    nf.bind_monotonic_clock_internal(Some(clock));
+    nf.bind_clocks(&crate::traits::Clocks {
+        monotonic: Some(clock),
+        ..crate::traits::Clocks::default()
+    });
     let written = [subscription(device(7), 1, 2), subscription(device(8), 1, 5)];
     nf.write_property(
         P::SUBSCRIBED_RECIPIENTS,
@@ -200,9 +208,9 @@ fn notification_forwarder_subscribed_recipients_take_writes_and_lapse() {
     )
     .unwrap();
     assert_eq!(nf.subscriptions(), written);
-    assert_eq!(nf.next_monotonic_deadline_internal(), Some(2 * MINUTE));
+    assert_eq!(nf.next_monotonic_deadline(), Some(2 * MINUTE));
     set(2 * MINUTE);
-    assert!(nf.advance_monotonic_time_internal(2 * MINUTE));
+    assert!(nf.advance_monotonic_time(2 * MINUTE));
     assert_eq!(nf.subscriptions(), [subscription(device(8), 1, 3)]);
     assert_refused(
         nf.write_property(
@@ -229,7 +237,10 @@ fn notification_forwarder_port_filter_writes_change_only_enabled_members() {
             enabled: true,
         },
     ]));
-    assert!(nf.property_list().contains(&P::PORT_FILTER));
+    assert!(crate::property_metadata::has_property(
+        &nf.property_metadata(),
+        P::PORT_FILTER
+    ));
     assert_eq!(
         nf.read_property(P::PORT_FILTER, Some(0)).unwrap(),
         PropertyValue::Unsigned(2)

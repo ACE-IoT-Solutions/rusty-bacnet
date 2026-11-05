@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_objects::property_metadata::{Datatype, PropertyMetadata, ValueType};
 use bacnet_objects::traits::BACnetObject;
 use bacnet_services::cov::COVNotificationRequest;
 use bacnet_services::cov_multiple::COVNotificationMultipleRequest;
@@ -19,17 +20,18 @@ impl BACnetObject for Probe {
     fn object_name(&self) -> &str {
         "selected probe"
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Owned(vec![PropertyIdentifier::PRESENT_VALUE, SELECTED])
+    // The vendor property's shape follows the probe's state: the rows are
+    // built per call, so an array one answers as an array.
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        let rows = crate::test_rows::read_only(&[PropertyIdentifier::PRESENT_VALUE, SELECTED]);
+        if self.0.lock().unwrap().array {
+            crate::test_rows::typed(rows, &[(SELECTED, ValueType::array(Datatype::Unsigned))])
+        } else {
+            rows
+        }
     }
-    fn supports_cov(&self) -> bool {
-        true
-    }
-    fn is_array_property(&self, p: PropertyIdentifier) -> bool {
-        p == SELECTED && self.0.lock().unwrap().array
-    }
-    fn cov_increment(&self) -> Option<f64> {
-        Some(100.0)
+    fn cov(&self) -> Option<&dyn bacnet_objects::traits::CovReporting> {
+        Some(self)
     }
     fn read_property(&self, p: PropertyIdentifier, _: Option<u32>) -> Result<PropertyValue, Error> {
         if p == PropertyIdentifier::PRESENT_VALUE {
@@ -62,6 +64,12 @@ impl BACnetObject for Probe {
         _: Option<u8>,
     ) -> Result<(), Error> {
         Err(Error::Encoding("test read only".into()))
+    }
+}
+
+impl bacnet_objects::traits::CovReporting for Probe {
+    fn cov_increment(&self) -> Option<f64> {
+        Some(100.0)
     }
 }
 async fn fixture(

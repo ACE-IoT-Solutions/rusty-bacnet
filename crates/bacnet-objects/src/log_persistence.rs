@@ -40,9 +40,11 @@
 //! records that fit and logs a warning naming both sizes. A Buffer_Size
 //! whose full buffer of the family's worst-case records couldn't fit a
 //! slot's 256 MiB is refused.
-//! Settings the application applies after opening replace the stored ones,
-//! so an application that configures its logs on every start should skip
-//! that for a log that [reopened](crate::trend::TrendLogObject::reopened).
+//! The settings above that the application applies after opening replace
+//! the stored ones, so an application that configures its logs on every
+//! start should skip that for a log that
+//! [reopened](crate::trend::TrendLogObject::reopened). The written
+//! reporting settings work the other way round (see below).
 //!
 //! A reopened log then appends one LOG_INTERRUPTED status record, which
 //! tells readers samples may be missing across the restart (Clauses
@@ -58,6 +60,37 @@
 //!
 //! Notification_Threshold comes back with the counts, since BUFFER_READY
 //! resumes from them.
+//!
+//! # Written reporting settings (#1952)
+//!
+//! A snapshot also keeps the reporting settings a write set
+//! ([`LogReportingSettings`]): Notification_Class, Event_Enable,
+//! Notify_Type, Event_Detection_Enable, Event_Message_Texts_Config and the
+//! Event_Algorithm_Inhibit pair on every log, plus Client_COV_Increment and
+//! COV_Resubscription_Interval on a Trend Log (Table 12-35 gives a Trend Log
+//! Multiple neither). Only a written setting is kept; the application's
+//! setter governs one no write has set. Once a write has set one, the saved
+//! value wins over its setter on every later start, so an application that
+//! configures its logs at each start keeps a peer's write.
+//! `clear_written_reporting` (on each log) drops them all, so the setters
+//! apply again.
+//!
+//! A written Description is kept the same way, beside these settings
+//! (#2364): saved before it is answered, winning over `set_description`
+//! until `clear_written_reporting`, and dropped by it. A NULL changes
+//! nothing and is never saved, and a Description past 16 KiB is refused
+//! with RESOURCES / NO_SPACE_TO_WRITE_PROPERTY. Clause 12 says nothing
+//! about restarts, so keeping it is this stack's choice: a head end that
+//! labelled a log expects the label to stay.
+//!
+//! These writes don't wait for the cadence. A write of one of them commits a
+//! snapshot holding it before the log serves it, and is refused with
+//! DEVICE / OPERATIONAL_PROBLEM, the old value kept, when that commit fails.
+//! The bundled server stages the commit, so it runs with the database guard
+//! dropped ([`crate::durable`]); while a write is staged the cadence's own
+//! commits wait, so none of them can put the old value back in storage
+//! after the request is answered. A write nobody staged commits where it is
+//! and waits for the commit.
 //!
 //! # Failed commits
 //!
@@ -76,14 +109,16 @@
 use crate::prelude::*;
 use core::time::Duration;
 
-use bacnet_types::constructed::BACnetDeviceObjectPropertyReference;
-use bacnet_types::enums::LoggingType;
+use bacnet_types::bitstring::EventTransitionBits;
+use bacnet_types::constructed::{
+    BACnetDeviceObjectPropertyReference, BACnetObjectPropertyReference,
+};
+use bacnet_types::enums::{LoggingType, NotifyType};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
 
-// The snapshot format: only the file backend reads and writes it whole.
-#[cfg_attr(not(feature = "std"), allow(dead_code))]
-mod codec;
+// The snapshot format, public as `crate::snapshot::log`.
+pub(crate) mod codec;
 #[cfg(feature = "std")]
 mod file;
 pub(crate) mod store;
@@ -103,6 +138,39 @@ pub struct LogAcquisitionSettings {
     pub align_intervals: bool,
     /// Interval_Offset in hundredths of a second.
     pub interval_offset: u32,
+}
+
+/// The reporting settings a write set on a log, as its snapshot keeps them
+/// (#1952). Each is `None` until a write sets it; see the
+/// [module documentation](self).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LogReportingSettings {
+    /// Notification_Class.
+    pub notification_class: Option<u32>,
+    /// Event_Enable.
+    pub event_enable: Option<EventTransitionBits>,
+    /// Notify_Type.
+    pub notify_type: Option<NotifyType>,
+    /// Event_Detection_Enable.
+    pub event_detection_enable: Option<bool>,
+    /// Event_Message_Texts_Config, ordered TO_OFFNORMAL, TO_FAULT,
+    /// TO_NORMAL; at most 16 KiB of UTF-8 each, as a durable log refuses a
+    /// longer write.
+    pub event_message_texts_config: Option<[String; 3]>,
+    /// Event_Algorithm_Inhibit_Ref, when a write set one. A write of the
+    /// unset form leaves `None`, which reopens as unset too.
+    pub event_algorithm_inhibit_ref: Option<BACnetObjectPropertyReference>,
+    /// Event_Algorithm_Inhibit.
+    pub event_algorithm_inhibit: Option<bool>,
+    /// Client_COV_Increment, on a Trend Log only: `Some(None)` for a
+    /// written NULL, as `set_client_cov_increment` takes it.
+    pub client_cov_increment: Option<Option<f32>>,
+    /// COV_Resubscription_Interval in seconds, on a Trend Log only.
+    pub cov_resubscription_interval: Option<u32>,
+    /// Description, which a log keeps beside these settings (#2364); at
+    /// most 16 KiB of UTF-8, as a durable log refuses a longer write. Only
+    /// a snapshot holding one takes schema version 3.
+    pub description: Option<String>,
 }
 
 /// The durable state of one Trend Log (`R` = `BACnetLogRecord`), Trend Log
@@ -144,20 +212,39 @@ pub struct LogSnapshot<R> {
     /// [`MAX_LOG_DEVICE_OBJECT_PROPERTIES`](crate::trend::MAX_LOG_DEVICE_OBJECT_PROPERTIES)
     /// on a Trend Log Multiple, none on an Event Log.
     pub log_device_object_property: Vec<BACnetDeviceObjectPropertyReference>,
+    /// The reporting settings a write set (#1952); none in a snapshot of
+    /// the first schema version, which still loads.
+    pub reporting: LogReportingSettings,
 }
 
 /// Application-owned storage for one log's [`LogSnapshot`].
 ///
 /// The log calls `load` once, as it opens, and `commit` from its writer
 /// thread, one call at a time.
+///
+/// An implementation must not own the object it serves, or the database
+/// holding it: the object's writer thread calls it, and dropping the object
+/// there would wait for that same thread to end, forever.
 pub trait LogPersistence<R>: Send + Sync {
     /// Load the newest valid snapshot for `expected_object`, or `None` when
     /// storage holds none yet.
     fn load(&self, expected_object: ObjectIdentifier) -> Result<Option<LogSnapshot<R>>, Error>;
 
     /// Durably store `snapshot`, whose generation is one past the last one
-    /// committed (or loaded).
+    /// committed (or loaded). Store all of it, `reporting` included: a
+    /// write of a reporting setting is answered once this returns `Ok`, so
+    /// a backend that drops it loses a write the peer was told succeeded.
     fn commit(&self, snapshot: &LogSnapshot<R>) -> Result<(), Error>;
+
+    /// Test support, not a stable API: whether the log's final commit may
+    /// run on the dropping thread when no writer thread is running (#2233).
+    /// Only `FileLogPersistence`'s in-memory mode says yes; every other
+    /// storage keeps the writer thread its commits are documented to run on.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    fn commits_inline(&self) -> bool {
+        false
+    }
 }
 
 /// When a durable log commits its snapshot: after `records` new records or
@@ -191,14 +278,28 @@ impl Default for LogCommitCadence {
     }
 }
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
 mod tests;
 
+// std: these reopen logs through the file backend.
 #[cfg(all(test, feature = "std"))]
 mod reopen_tests;
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
 mod cadence_tests;
 
+// std: these reopen logs through the file backend.
 #[cfg(all(test, feature = "std"))]
 mod reopen_fit_tests;
+
+#[cfg(test)]
+mod codec_tests;
+
+#[cfg(test)]
+mod reporting_codec_tests;
+
+#[cfg(test)]
+mod description_codec_tests;
+
+#[cfg(test)]
+mod reporting_tests;

@@ -41,7 +41,9 @@ use std::time::Duration;
 
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_transport::mstp::{MstpConfig, MstpExecutionMode, MstpTransport, SerialPort};
+use bacnet_types::MacAddr;
 use bacnet_types::error::Error;
+use bacnet_types::primitives::ObjectIdentifier;
 
 use crate::session::{EndpointSession, SessionConfig, SessionRole};
 
@@ -97,6 +99,8 @@ pub struct MstpEndpointBuilder<S: SerialPort> {
     session: SessionConfig,
     database: Option<ObjectDatabase>,
     identity: Option<crate::identity::DeviceIdentity>,
+    source_audit_bindings: Vec<(ObjectIdentifier, MacAddr)>,
+    source_audit_routed: crate::session::RoutedBindings,
 }
 
 impl<S: SerialPort> MstpEndpointBuilder<S> {
@@ -124,7 +128,40 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
             session: SessionConfig::default(),
             database: None,
             identity: None,
+            source_audit_bindings: Vec::new(),
+            source_audit_routed: Vec::new(),
         }
+    }
+
+    /// Bind a Device to its station on the link, for source Audit delivery
+    /// to that Device (#2357); see
+    /// [`EndpointSession::with_source_audit_device_binding`].
+    /// [`build_session`](Self::build_session) refuses station 255, this
+    /// node's own and a repeated or non-Device identifier, and
+    /// [`build_transport`](Self::build_transport) refuses any binding, since
+    /// a bare transport can't keep it. Route data only: provision the
+    /// recipient on the Device itself.
+    pub fn source_audit_device_binding(mut self, device: ObjectIdentifier, station: u8) -> Self {
+        self.source_audit_bindings
+            .push((device, MacAddr::from_slice(&[station])));
+        self
+    }
+
+    /// Bind a Device behind a router, on `network` at `mac` there, for
+    /// source Audit delivery to that Device (#2371); see
+    /// [`EndpointSession::with_source_audit_routed_device_binding`]. Every
+    /// build refuses network 0 or 65535, an empty MAC or one past 18 octets,
+    /// and a repeated or non-Device identifier. Route data only: provision
+    /// the recipient on the Device itself.
+    /// [`build_transport`](Self::build_transport) refuses these too.
+    pub fn source_audit_routed_device_binding(
+        mut self,
+        device: ObjectIdentifier,
+        network: u16,
+        mac: MacAddr,
+    ) -> Self {
+        self.source_audit_routed.push((device, network, mac));
+        self
     }
 
     /// Sets the maximum master address on the link (0..=127).
@@ -297,6 +334,11 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// value: a second call returns `"MS/TP endpoint serial owner is missing"`.
     pub fn build_transport(mut self) -> Result<MstpTransport<S>, Error> {
         self.validate_only()?;
+        if !self.source_audit_bindings.is_empty() || !self.source_audit_routed.is_empty() {
+            return Err(Error::Encoding(
+                "source Audit route data requires build_session()".into(),
+            ));
+        }
         let config = self.config();
         let serial = self
             .serial
@@ -318,6 +360,9 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// the [`SessionConfig`] 480 default.
     pub fn build_session(mut self) -> Result<EndpointSession<MstpTransport<S>>, Error> {
         self.validate_only()?;
+        let bindings = std::mem::take(&mut self.source_audit_bindings);
+        let routed = std::mem::take(&mut self.source_audit_routed);
+        crate::session::check_link_bindings(&bindings, &routed, &[self.this_station])?;
         let role = self.role;
         let session = self.session.clone();
         let database = self.database.take();
@@ -332,6 +377,6 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
         if let Some(id) = identity {
             endpoint = endpoint.device(id);
         }
-        Ok(endpoint)
+        Ok(endpoint.with_source_audit_device_bindings(bindings, routed))
     }
 }

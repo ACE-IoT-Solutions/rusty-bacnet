@@ -1,4 +1,5 @@
-//! Keeping a colour object's Present_Value across a restart (#1526).
+//! Keeping a colour object's Present_Value, and a written default, across a
+//! restart (#1526, #1956).
 //!
 //! Addendum 135-2020ca lets a zero default, Default_Color (0, 0) or a
 //! Default_Color_Temperature of 0, mean that the output comes back at the
@@ -8,6 +9,15 @@
 //! belongs to the application. The object loads it once, as it takes the
 //! storage, and saves each new Present_Value on its own writer thread
 //! ([`crate::durable`]), so no file I/O happens under the database guard.
+//!
+//! A default a peer writes is kept with it, so a BMS that writes a zero
+//! default to ask for the restart rule gets it at the next start. Unlike
+//! Present_Value, a default write is configuration: it saves before the
+//! object serves it, as a Notification Class's Recipient_List does, and is
+//! refused with DEVICE / OPERATIONAL_PROBLEM, keeping the old default, when
+//! the save fails. A written default wins over the configured one at the
+//! next start (`set_default_color` and `set_default_color_temperature` then
+//! check their argument without taking it).
 //!
 //! Unlike a Notification Class's Recipient_List, a Present_Value change
 //! doesn't wait for its save, and a save that fails doesn't refuse it: the
@@ -29,6 +39,8 @@ use bacnet_types::primitives::ObjectIdentifier;
 use super::command;
 #[cfg(feature = "std")]
 use crate::durable::file::ObjectFile;
+#[cfg(feature = "std")]
+use crate::snapshot::color as format;
 
 /// A colour output's Present_Value, as storage keeps it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,13 +60,24 @@ impl ColorOutputValue {
             Self::Kelvin(kelvin) => command::KELVIN.contains(&kelvin),
         }
     }
+
+    /// Whether the value is one the object takes as its default: one it
+    /// could hold, or a temperature of 0 (an xy (0, 0) is in range anyway).
+    pub fn is_valid_default(&self) -> bool {
+        self.is_valid() || *self == Self::Kelvin(0)
+    }
 }
 
 /// What a Color or Color Temperature object keeps across a restart.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ColorOutputSnapshot {
-    /// The last Present_Value the object held.
-    pub present_value: ColorOutputValue,
+    /// The last Present_Value the object held, once something drove the
+    /// output; `None` before that.
+    pub present_value: Option<ColorOutputValue>,
+    /// Default_Color or Default_Color_Temperature, once a write has set it
+    /// (#1956). `None` until then: the configured default applies at each
+    /// start.
+    pub default: Option<ColorOutputValue>,
 }
 
 /// Application-owned storage for one colour object's Present_Value.
@@ -62,6 +85,10 @@ pub struct ColorOutputSnapshot {
 /// The object calls `load` once, as it takes the storage, and `save` from
 /// its writer thread, one call at a time. A backend that refuses a save
 /// returns an error and keeps what it held.
+///
+/// An implementation must not own the object it serves, or the database
+/// holding it: the object's writer thread calls it, and dropping the object
+/// there would wait for that same thread to end, forever.
 pub trait ColorOutputPersistence: Send + Sync {
     /// What was last saved for `object`, or `None` when nothing was saved.
     fn load(&self, object: ObjectIdentifier) -> Result<Option<ColorOutputSnapshot>, Error>;
@@ -70,34 +97,19 @@ pub trait ColorOutputPersistence: Send + Sync {
     fn save(&self, object: ObjectIdentifier, snapshot: &ColorOutputSnapshot) -> Result<(), Error>;
 }
 
-/// The format's tag.
-#[cfg(feature = "std")]
-const MAGIC: &[u8; 8] = b"RBNCLR01";
-/// The body is at most a kind octet and two REALs; anything much larger is
-/// not a file this backend wrote.
-#[cfg(feature = "std")]
-const MAX_FILE_BYTES: u64 = 64;
-/// The kind octet of an xy colour, followed by x and y as big-endian IEEE
-/// 754 single-precision values.
-#[cfg(feature = "std")]
-const KIND_XY: u8 = 1;
-/// The kind octet of a colour temperature, followed by the kelvin as a
-/// big-endian 32-bit unsigned value.
-#[cfg(feature = "std")]
-const KIND_KELVIN: u8 = 2;
-
-/// A file holding one colour object's Present_Value, replaced whole on each
-/// save the same way as [`FileNotificationClassPersistence`]: a failed save
-/// leaves the previous value in place, and a completed one survives a power
-/// loss.
-///
-/// The file holds a magic tag, the object's identifier, one octet naming the
-/// kind of value, and the value: two big-endian REALs for an xy colour, a
-/// big-endian 32-bit kelvin for a temperature. A file of the wrong size, of
-/// the other kind, or with a value outside the object's range, does not
-/// load. It does not coordinate between processes.
+/// A file holding one colour object's Present_Value and written default,
+/// replaced whole on each save the same way as
+/// [`FileNotificationClassPersistence`]: a failed save leaves the previous
+/// file in place, and a completed one survives a power loss. A file of the
+/// previous version (`RBNCLR01`) loads with no default. It does not
+/// coordinate between processes.
 ///
 /// [`FileNotificationClassPersistence`]: crate::notification_class::FileNotificationClassPersistence
+///
+/// The file holds what [`snapshot::color::encode`] returns; that module
+/// documents the format.
+///
+/// [`snapshot::color::encode`]: crate::snapshot::color::encode
 #[derive(Clone, Debug)]
 #[cfg(feature = "std")]
 pub struct FileColorOutputPersistence {
@@ -106,14 +118,27 @@ pub struct FileColorOutputPersistence {
 
 #[cfg(feature = "std")]
 impl FileColorOutputPersistence {
-    /// Keep the Present_Value in the file at `path`. Refuses an empty path.
+    /// Keep the value in the file at `path`.
     pub fn new(path: impl AsRef<Path>) -> Result<Self, Error> {
         Ok(Self {
-            file: ObjectFile::new(path.as_ref(), MAGIC, MAX_FILE_BYTES, "Color output")?,
+            file: ObjectFile::new(path.as_ref(), format::MAX_LEN as u64, "Color output file")?,
         })
     }
 
-    /// The file the Present_Value is kept in.
+    /// Test support, not a stable API: keep the file in `memory`'s entry 0
+    /// instead of on disk, decoding and encoding it as on disk (#2233).
+    /// [`path`](Self::path) is then a placeholder.
+    /// Nothing reaches disk: the state is gone when the process ends, so
+    /// never use this outside tests.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn in_memory(memory: crate::durable::MemoryFiles) -> Self {
+        let mut store = Self::new("in-memory").expect("a path that isn't empty");
+        store.file.keep_in(memory);
+        store
+    }
+
+    /// The file the value is kept in.
     pub fn path(&self) -> &Path {
         self.file.path()
     }
@@ -122,38 +147,13 @@ impl FileColorOutputPersistence {
 #[cfg(feature = "std")]
 impl ColorOutputPersistence for FileColorOutputPersistence {
     fn load(&self, object: ObjectIdentifier) -> Result<Option<ColorOutputSnapshot>, Error> {
-        let Some(body) = self.file.load(object)? else {
+        let Some(octets) = self.file.read()? else {
             return Ok(None);
         };
-        let present_value = match body.as_slice() {
-            [KIND_XY, x0, x1, x2, x3, y0, y1, y2, y3] => ColorOutputValue::Xy(BACnetXyColor::new(
-                f32::from_be_bytes([*x0, *x1, *x2, *x3]),
-                f32::from_be_bytes([*y0, *y1, *y2, *y3]),
-            )),
-            [KIND_KELVIN, k0, k1, k2, k3] => {
-                ColorOutputValue::Kelvin(u32::from_be_bytes([*k0, *k1, *k2, *k3]))
-            }
-            _ => return Err(self.file.corrupt("holds no valid value")),
-        };
-        if !present_value.is_valid() {
-            return Err(self.file.corrupt("holds a value out of range"));
-        }
-        Ok(Some(ColorOutputSnapshot { present_value }))
+        Ok(Some(format::decode(object, &octets)?))
     }
 
     fn save(&self, object: ObjectIdentifier, snapshot: &ColorOutputSnapshot) -> Result<(), Error> {
-        let mut body = Vec::with_capacity(9);
-        match snapshot.present_value {
-            ColorOutputValue::Xy(color) => {
-                body.push(KIND_XY);
-                body.extend_from_slice(&color.x.to_be_bytes());
-                body.extend_from_slice(&color.y.to_be_bytes());
-            }
-            ColorOutputValue::Kelvin(kelvin) => {
-                body.push(KIND_KELVIN);
-                body.extend_from_slice(&kelvin.to_be_bytes());
-            }
-        }
-        self.file.save(object, &body)
+        self.file.save_octets(format::encode(object, snapshot)?)
     }
 }

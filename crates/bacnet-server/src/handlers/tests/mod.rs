@@ -1,6 +1,9 @@
 use super::*;
+use bacnet_device_core::write::{self, Applied, WpmOutcome, decode_write_property_value};
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::traits::BACnetObject;
+use bacnet_services::read_property::ReadPropertyACK;
+use bacnet_services::who_has::{WhoHasObject, WhoHasRequest};
 use bacnet_services::wpm::WritePropertyMultipleRequest;
 use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::error::RemoteError;
@@ -129,6 +132,7 @@ mod create_object_default_name;
 mod create_object_initial_values;
 mod create_object_state_count;
 mod credential_data_input_oos_writes;
+mod custom_value_types;
 mod detection_enable_summary;
 mod device_description_writes;
 mod device_event;
@@ -170,6 +174,7 @@ mod multi_element_writes;
 mod noncommandable_null_writes;
 mod noncommandable_value_source;
 mod none_enrollment_fault;
+mod object_mgmt_codes;
 mod passwords;
 mod property_metadata;
 mod pulse_converter_input_reference;
@@ -185,6 +190,8 @@ mod scalar_null_writes;
 mod staging_writes;
 mod state_text_count;
 mod tags_profile_rows;
+mod timer_state_change_writes;
+mod timer_writes;
 mod trend_log_multiple_options;
 mod trend_log_options;
 mod undefined_property_rows;
@@ -198,7 +205,7 @@ mod write_validation;
 // Isolated handler fixtures explicitly assert a standalone writer. Live ingress
 // derivation is tested separately through the running server's wire dispatcher.
 fn sourced_wp(db: &mut ObjectDatabase, data: &[u8]) -> Result<ObjectIdentifier, Error> {
-    handle_write_property_observed(
+    write::write_property(
         db,
         data,
         None,
@@ -208,18 +215,16 @@ fn sourced_wp(db: &mut ObjectDatabase, data: &[u8]) -> Result<ObjectIdentifier, 
     .map(|(oid, _)| oid)
 }
 fn sourced_wpm(db: &mut ObjectDatabase, data: &[u8]) -> Result<Vec<ObjectIdentifier>, Error> {
-    let mut snapshots = crate::life_safety_cov::LifeSafetyCovSnapshots::default();
-    match handle_write_property_multiple_observed(
+    match write::write_property_multiple(
         db,
         data,
-        &mut snapshots,
         None,
         None,
         None,
         Some(&crate::command_source::test_origin()),
     ) {
-        WritePropertyMultipleOutcome::Success { committed_oids } => Ok(committed_oids),
-        WritePropertyMultipleOutcome::Error { error, .. } => Err(error),
-        WritePropertyMultipleOutcome::Reject { reason } => Err(Error::reject(reason)),
+        WpmOutcome::Success { committed_oids } => Ok(committed_oids),
+        WpmOutcome::Error { error, .. } => Err(error),
+        WpmOutcome::Reject { reason } => Err(Error::reject(reason)),
     }
 }

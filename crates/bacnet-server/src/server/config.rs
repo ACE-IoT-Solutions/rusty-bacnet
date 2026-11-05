@@ -1,6 +1,7 @@
 use super::*;
 use crate::ServerPolicy;
 use crate::mutation::MutationPolicy;
+use bacnet_device_core::read::ReadPropertyMultipleBudget;
 
 /// Server configuration.
 #[derive(Clone)]
@@ -39,6 +40,12 @@ pub struct ServerConfig {
     /// `BipTransport::set_share_port_by_address` for what changes. Only the
     /// B/IP builder reads it; a transport passed to `start` has its own.
     pub share_port_by_address: bool,
+    /// B/IP only: share an explicitly requested port with other sockets on
+    /// this host, as before #2366. Off by default: the transport claims the
+    /// port, so a second bind of it fails. See
+    /// `BipTransport::set_share_wildcard_port` for what sharing costs. Only
+    /// the B/IP builder reads it; a transport passed to `start` has its own.
+    pub share_wildcard_port: bool,
     /// Device declarations shared by stock objects, discovery and active limits.
     /// Startup resolves its receive ceiling against the owned transport. An
     /// explicitly supplied selected Device must match; an empty database may
@@ -161,6 +168,11 @@ pub struct ServerConfig {
     pub cov_policy: CovPolicy,
     /// Positive independent top-level request handler limits.
     pub request_admission_policy: RequestAdmissionPolicy,
+    /// The application's CreateObject constructors (default: none), each
+    /// making its type creatable or standing in for the built-in one. See
+    /// [`ObjectTypeRegistry::register`] for which types it takes and how a
+    /// constructor must behave: it runs with the database write-locked.
+    pub object_types: ObjectTypeRegistry,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -187,6 +199,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("port", &self.port)
             .field("broadcast_address", &self.broadcast_address)
             .field("share_port_by_address", &self.share_port_by_address)
+            .field("share_wildcard_port", &self.share_wildcard_port)
             .field("device", &self.device)
             .field("cov_retry_timeout_ms", &self.cov_retry_timeout_ms)
             .field("time_sync_policy", &self.time_sync_policy)
@@ -218,6 +231,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("discovery_policy", &self.discovery_policy)
             .field("cov_policy", &self.cov_policy)
             .field("request_admission_policy", &self.request_admission_policy)
+            .field("object_types", &self.object_types)
             .finish()
     }
 }
@@ -230,6 +244,15 @@ impl ServerConfig {
         self.policy
             .as_ref()
             .filter(|policy| policy.decides_mutations())
+    }
+
+    /// How the COV table times confirmed notifications: this config's retry
+    /// timeout and the server's retries, which the notification workers use.
+    pub(crate) fn cov_flight_timing(&self) -> bacnet_device_core::cov::FlightTiming {
+        bacnet_device_core::cov::FlightTiming::new(
+            bacnet_time::Duration::from_millis(self.cov_retry_timeout_ms),
+            super::DEFAULT_APDU_RETRIES,
+        )
     }
 }
 
@@ -250,6 +273,7 @@ impl Default for ServerConfig {
             port: 0xBAC0,
             broadcast_address: Ipv4Addr::BROADCAST,
             share_port_by_address: false,
+            share_wildcard_port: false,
             cov_retry_timeout_ms: 3000,
             time_sync_policy: TimeSyncPolicy::default(),
             on_time_sync: None,
@@ -268,6 +292,7 @@ impl Default for ServerConfig {
             discovery_policy: DiscoveryPolicy::default(),
             cov_policy: CovPolicy::default(),
             request_admission_policy: RequestAdmissionPolicy::default(),
+            object_types: ObjectTypeRegistry::default(),
         }
     }
 }
@@ -339,7 +364,8 @@ impl BipServerBuilder {
     /// the server is the BBMD that serves the group (Annex J.8.3), and its
     /// own BDT row must be two-hop. A registered Network Port serves the
     /// group as `BACnet_IP_Multicast_Address`, writable when the server
-    /// answers ReinitializeDevice and isn't a BBMD (#941).
+    /// answers ReinitializeDevice (#941); on a BBMD a written group is
+    /// activated together with the BDT, both or neither (#1963).
     pub fn multicast(mut self, multicast: Option<BipMulticast>) -> Self {
         self.multicast = multicast;
         self
@@ -352,6 +378,16 @@ impl BipServerBuilder {
     /// See [`BipTransport::set_share_port_by_address`] for what changes.
     pub fn share_port_by_address(mut self, enabled: bool) -> Self {
         self.config.share_port_by_address = enabled;
+        self
+    }
+
+    /// Share an explicitly requested port with other sockets on this host
+    /// that bind it the same way (#2366). Off by default: the transport
+    /// claims the port, and `build` fails when another socket holds it. With
+    /// sharing on, unicast to the port reaches only one of the sockets on
+    /// it. See [`BipTransport::set_share_wildcard_port`].
+    pub fn share_wildcard_port(mut self, enabled: bool) -> Self {
+        self.config.share_wildcard_port = enabled;
         self
     }
 

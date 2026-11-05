@@ -8,11 +8,15 @@ use super::test_storage::{
 };
 use super::*;
 use crate::access_control::rights_writes::grown_rule;
+#[cfg(feature = "std")]
 use bacnet_types::constructed::{BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference};
 use bacnet_types::enums::PropertyIdentifier as P;
+#[cfg(feature = "std")]
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "std")]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 const SAVED: [P; 3] = [
     P::POSITIVE_ACCESS_RULES,
@@ -54,6 +58,7 @@ fn written_rules_and_enable_read_back_after_a_rebuild() {
         negative_access_rules: Some(negative.to_vec()),
         enable: Some(false),
         accompaniment: None,
+        description: None,
     };
     assert_eq!(storage.snapshot(), Some(expected));
     assert_eq!(storage.saves(), 4);
@@ -152,6 +157,7 @@ fn saved_values_win_over_configured_ones() {
             negative_access_rules: None,
             enable: Some(true),
             accompaniment: None,
+            description: None,
         })
     );
 }
@@ -161,15 +167,7 @@ fn configured_values_apply_at_every_start_until_a_write() {
     let storage = Arc::new(MemoryPersistence::default());
     let mut first = persistent(&storage);
     first.set_positive_access_rules([zone_rule(1)]).unwrap();
-    // Writes to the properties the object doesn't save save nothing.
-    first
-        .write_property(
-            P::DESCRIPTION,
-            None,
-            PropertyValue::CharacterString("doors".into()),
-            None,
-        )
-        .unwrap();
+    // A write to a property the object doesn't save saves nothing.
     write(
         &mut first,
         P::GLOBAL_IDENTIFIER,
@@ -288,8 +286,12 @@ fn saved_state_the_setters_refuse_refuses_the_object() {
     }
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+// std: the file backend.
+#[cfg(feature = "std")]
 fn temp_file() -> PathBuf {
     let serial = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir()
@@ -300,10 +302,14 @@ fn temp_file() -> PathBuf {
         .join("rules")
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 fn rights_oid(instance: u32) -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::ACCESS_RIGHTS, instance).unwrap()
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn file_persistence_round_trips_each_member_and_refuses_bad_files() {
     let path = temp_file();
@@ -321,6 +327,7 @@ fn file_persistence_round_trips_each_member_and_refuses_bad_files() {
         negative_access_rules: Some(vec![zone_rule(2)]),
         enable: Some(false),
         accompaniment: Some(accompaniment.clone()),
+        description: None,
     };
     // Each member may be absent, and an array may be empty.
     for saved in [
@@ -423,6 +430,8 @@ fn file_persistence_round_trips_each_member_and_refuses_bad_files() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn file_persistence_keeps_rules_across_a_rebuild() {
     let path = temp_file();
@@ -454,6 +463,8 @@ fn file_persistence_keeps_rules_across_a_rebuild() {
 
 /// The longest rule a write accepts: SPECIFIED members whose references
 /// carry every optional part, with the widest numbers.
+// std: the file backend.
+#[cfg(feature = "std")]
 fn longest_rule() -> BACnetAccessRule {
     let widest = |object_type| {
         ObjectIdentifier::new(object_type, ObjectIdentifier::MAX_INSTANCE - 1).unwrap()
@@ -473,6 +484,8 @@ fn longest_rule() -> BACnetAccessRule {
     )
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn file_persistence_refuses_a_file_past_its_size_or_entry_caps() {
     use super::persistence::MAX_FILE_BYTES;
@@ -496,25 +509,33 @@ fn file_persistence_refuses_a_file_past_its_size_or_entry_caps() {
             device_identifier: Some(ObjectIdentifier::new(ObjectType::DEVICE, 99).unwrap()),
             object_identifier: ObjectIdentifier::new(ObjectType::ACCESS_CREDENTIAL, 5).unwrap(),
         }),
+        description: None,
     };
     storage.save(rights, &full).unwrap();
     let file_len = std::fs::metadata(&path).unwrap().len();
     assert!(file_len < MAX_FILE_BYTES, "{file_len}");
     assert_eq!(storage.load(rights).unwrap(), Some(full.clone()));
 
-    // One rule past the cap is refused. The backend saves what it is given,
-    // so a file like this can only come from elsewhere.
+    // One rule past the cap is refused, and never saved: a file like this,
+    // written here by hand, can only come from elsewhere.
     let mut too_many = full_array;
     too_many.push(zone_rule(1));
-    storage
-        .save(
-            rights,
-            &AccessRightsSnapshot {
-                negative_access_rules: Some(too_many),
-                ..AccessRightsSnapshot::default()
-            },
-        )
-        .unwrap();
+    let past_cap = AccessRightsSnapshot {
+        negative_access_rules: Some(too_many.clone()),
+        ..AccessRightsSnapshot::default()
+    };
+    assert!(matches!(
+        storage.save(rights, &past_cap),
+        Err(Error::OutOfRange(_))
+    ));
+    let mut body = BytesMut::new();
+    bacnet_encoding::tags::encode_opening_tag(&mut body, 1);
+    for rule in &too_many {
+        encode_access_rule(&mut body, rule);
+    }
+    bacnet_encoding::tags::encode_closing_tag(&mut body, 1);
+    let raw = crate::snapshot::framing::seal(&crate::snapshot::access_rights::MAGIC, rights, &body);
+    std::fs::write(&path, raw).unwrap();
     assert!(
         refusal(&storage)
             .to_string()

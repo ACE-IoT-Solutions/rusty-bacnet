@@ -98,7 +98,9 @@ fn assert_simulation_and_evaluation_drive_flags(object: &mut dyn BACnetObject) {
     assert_flags(object, Kind::FollowsOutOfService, StatusFlags::empty());
 
     object
-        .set_reliability_internal(Reliability::CONFIGURATION_ERROR)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::CONFIGURATION_ERROR)
         .unwrap();
     assert_flags(object, Kind::FollowsOutOfService, StatusFlags::FAULT);
 
@@ -136,7 +138,9 @@ fn assert_simulation_and_evaluation_drive_flags(object: &mut dyn BACnetObject) {
     assert_flags(object, Kind::FollowsOutOfService, StatusFlags::FAULT);
 
     object
-        .set_reliability_internal(Reliability::NO_FAULT_DETECTED)
+        .reliability_eval()
+        .unwrap()
+        .set_reliability(Reliability::NO_FAULT_DETECTED)
         .unwrap();
     assert_flags(object, Kind::FollowsOutOfService, StatusFlags::empty());
 }
@@ -176,10 +180,8 @@ fn trend_log_flags_match_its_fixed_state() {
         )
         .is_err()
     );
-    assert!(
-        log.set_reliability_internal(Reliability::OPEN_LOOP)
-            .is_err()
-    );
+    // Nor does it lend a derived-Reliability route.
+    assert!(log.reliability_eval().is_none());
     assert_flags(&log, Kind::LogFixedFalse, StatusFlags::empty());
 }
 
@@ -216,6 +218,9 @@ fn calendar_has_no_status_flags_to_compute() {
             ),
             "Calendar must not serve {property:?}"
         );
-        assert!(!calendar.property_list().contains(&property));
+        assert!(!crate::property_metadata::has_property(
+            &calendar.property_metadata(),
+            property
+        ));
     }
 }

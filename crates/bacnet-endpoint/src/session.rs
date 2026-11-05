@@ -76,6 +76,7 @@ use tokio::task::JoinHandle;
 
 #[path = "source_profile.rs"]
 mod source_profile;
+pub(crate) use source_profile::{RoutedBindings, check_link_bindings};
 #[path = "source_reporter.rs"]
 pub(crate) mod source_reporter;
 #[path = "session_start.rs"]
@@ -169,7 +170,7 @@ pub struct SessionConfig {
     /// (default 256).
     ///
     /// The endpoint's counterpart of the server's
-    /// [`ReadPropertyMultipleBudget::max_result_elements`](bacnet_server::server::ReadPropertyMultipleBudget::max_result_elements),
+    /// [`ReadPropertyMultipleBudget::max_result_elements`](bacnet_device_core::read::ReadPropertyMultipleBudget::max_result_elements),
     /// with the same default. A read counts its own row, and a Group's
     /// Present_Value adds one row per member property after ALL, REQUIRED
     /// and OPTIONAL expand. A read past the limit is answered with an Abort
@@ -192,6 +193,31 @@ pub struct SessionConfig {
     pub min_request_interval_ms: u64,
 }
 
+impl SessionConfig {
+    /// The checks [`EndpointSession::new`] makes, without a transport, so a
+    /// builder that dials can make them before it does (#1946).
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        if self.queue_capacity == 0 {
+            return Err(Error::Encoding(
+                "endpoint session queue capacity must be greater than zero".into(),
+            ));
+        }
+        if self.read_work_limit == 0 {
+            return Err(Error::Encoding(
+                "endpoint session read work limit must be greater than zero".into(),
+            ));
+        }
+        let interval = self.min_request_interval_ms;
+        if interval > bacnet_client::client::MAX_MIN_REQUEST_INTERVAL_MS {
+            return Err(Error::Encoding(format!(
+                "endpoint session min-request-interval {interval} ms is more than {} ms",
+                bacnet_client::client::MAX_MIN_REQUEST_INTERVAL_MS
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
@@ -199,7 +225,7 @@ impl Default for SessionConfig {
             apdu_timeout_ms: 1_000,
             apdu_retries: 0,
             max_apdu_length: 480,
-            read_work_limit: bacnet_server::server::ReadPropertyMultipleBudget::default()
+            read_work_limit: bacnet_device_core::read::ReadPropertyMultipleBudget::default()
                 .max_result_elements,
             min_request_interval_ms: 0,
         }
@@ -289,6 +315,8 @@ pub struct EndpointSession<T: TransportPort + 'static = bacnet_transport::any::A
     source_audit_reporter: Option<ObjectIdentifier>,
     source_audit: Option<Arc<crate::source_audit::SourceAudit>>,
     pub(crate) source_audit_bindings: Vec<(ObjectIdentifier, std::net::SocketAddrV4)>,
+    pub(crate) source_audit_link_bindings: Vec<(ObjectIdentifier, bacnet_types::MacAddr)>,
+    pub(crate) source_audit_routed_bindings: Vec<(ObjectIdentifier, u16, bacnet_types::MacAddr)>,
     source_recipient: Option<Arc<crate::source_audit::recipient::SourceRecipient>>,
     stop_exit: Option<Result<SessionExit, Error>>,
     durable_settlement: Option<JoinHandle<()>>,
@@ -306,6 +334,8 @@ pub struct EndpointSession<T: TransportPort + 'static = bacnet_transport::any::A
     pub(crate) bip_status: Option<bacnet_transport::bip::BvlcClientStatus>,
     /// The MS/TP transport's counters, when the MS/TP builder built it.
     pub(crate) mstp_diagnostics: Option<bacnet_transport::mstp::MstpDiagnostics>,
+    /// The SC transport's events and link status, when the SC builder built it.
+    pub(crate) sc_link: Option<bacnet_transport::sc::ScLinkMonitor>,
 }
 
 /// Terminal state of the session dispatch task.
@@ -345,30 +375,14 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// assert!(EndpointSession::new(transport, SessionRole::Both, bad).is_err());
     /// ```
     pub fn new(transport: T, role: SessionRole, config: SessionConfig) -> Result<Self, Error> {
-        if config.queue_capacity == 0 {
-            return Err(Error::Encoding(
-                "endpoint session queue capacity must be greater than zero".into(),
-            ));
-        }
-        if config.read_work_limit == 0 {
-            return Err(Error::Encoding(
-                "endpoint session read work limit must be greater than zero".into(),
-            ));
-        }
-        let interval = config.min_request_interval_ms;
-        if interval > bacnet_client::client::MAX_MIN_REQUEST_INTERVAL_MS {
-            return Err(Error::Encoding(format!(
-                "endpoint session min-request-interval {interval} ms is more than {} ms",
-                bacnet_client::client::MAX_MIN_REQUEST_INTERVAL_MS
-            )));
-        }
+        config.validate()?;
         let coordinator = Arc::new(OutboundTransactionCoordinator::new());
         let token = SessionToken::new(Arc::clone(&coordinator));
         let client_config = ClientConfig {
             apdu_timeout_ms: config.apdu_timeout_ms,
             apdu_retries: config.apdu_retries,
             max_apdu_length: config.max_apdu_length,
-            min_request_interval_ms: interval,
+            min_request_interval_ms: config.min_request_interval_ms,
             ..ClientConfig::default()
         };
         let local_receive_capacity = transport.local_receive_apdu_capacity();
@@ -402,6 +416,8 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             source_audit_reporter: None,
             source_audit: None,
             source_audit_bindings: Vec::new(),
+            source_audit_link_bindings: Vec::new(),
+            source_audit_routed_bindings: Vec::new(),
             source_recipient: None,
             stop_exit: None,
             durable_settlement: None,
@@ -416,6 +432,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             egress: None,
             bip_status: None,
             mstp_diagnostics: None,
+            sc_link: None,
         })
     }
 
@@ -451,7 +468,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     ///
     /// [`start`](Self::start) requires a concrete built-in local Device
     /// ([`ObjectDatabase::local_device`]: the lowest instance when the database
-    /// holds several) matching the optional identity, and one selected Reporter capability with
+    /// holds several, which preflight requires to be the identity's) matching the optional identity, and one selected Reporter capability with
     /// no conflicting source Reporter. Preflight validation changes no source flags
     /// and leaves configuration retryable; post-ingress failure joins terminal cleanup.
     /// Successful startup installs the Device
@@ -791,6 +808,19 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         self.mstp_diagnostics.clone()
     }
 
+    /// The BACnet/SC hub link's events and status (#1946): a handle on the
+    /// transport's own event stream and status snapshot, readable in any
+    /// state, after stop included. Subscribe to its events before
+    /// [`start`](Self::start) to see the first connection, and through every
+    /// reconnect and failover the transport makes after. It is there for a
+    /// session [`ScEndpointBuilder`](crate::sc::ScEndpointBuilder) built, and
+    /// `None` for any other: take
+    /// [`ScTransport::link_monitor`](bacnet_transport::sc::ScTransport::link_monitor)
+    /// before handing a transport to [`Self::new`].
+    pub fn sc_link(&self) -> Option<bacnet_transport::sc::ScLinkMonitor> {
+        self.sc_link.clone()
+    }
+
     /// Returns the composed session role (narrow admin).
     pub fn session_role(&self) -> SessionRole {
         self.role
@@ -827,11 +857,13 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             .database
             .as_ref()
             .ok_or_else(|| Error::Encoding("endpoint I-Am has no Device database".into()))?;
-        let database = database.read().await;
-        if !database
+        // The guard covers only this check, never the send below (#2199).
+        let present = database
+            .read()
+            .await
             .get(&identity.device_oid())
-            .is_some_and(|object| object.object_identifier() == identity.device_oid())
-        {
+            .is_some_and(|object| object.object_identifier() == identity.device_oid());
+        if !present {
             return Err(Error::Encoding("endpoint I-Am Device is absent".into()));
         }
         let apdu = crate::identity::encode_iam_apdu(identity)?;
@@ -906,6 +938,8 @@ struct DispatchParts {
     /// The layer's network number, which the session's Number owner
     /// publishes; answers relayed with it as SNET match like direct ones.
     local_network: LocalNetworkNumber,
+    /// Routed source Audit bindings' routers, learned from traffic (#2371).
+    source_routers: Option<Arc<crate::source_audit::routers::SourceRouters>>,
 }
 
 #[path = "session_dispatch.rs"]
@@ -941,6 +975,9 @@ async fn handle_inbound(parts: &mut DispatchParts, received: ReceivedApdu) {
     let _attributes = received.data_attributes.clone();
     let _provenance = &received.provenance;
     let _ingress = received.ingress_network;
+    if let Some(routers) = &parts.source_routers {
+        routers.observe(&received);
+    }
     let Some(responder) = parts.responder.as_ref() else {
         let mut counters = parts.shared.counters.lock().await;
         counters.no_server_role += 1;
@@ -1012,7 +1049,12 @@ async fn handle_terminal(parts: &mut DispatchParts, received: ReceivedApdu) {
         &apdu,
     );
     let admission = match outcome {
-        Ok(AdmissionOutcome::Admitted(admission)) => admission,
+        Ok(AdmissionOutcome::Admitted(admission)) => {
+            if let Some(routers) = &parts.source_routers {
+                routers.observe(&received);
+            }
+            admission
+        }
         Ok(_) => {
             let mut counters = parts.shared.counters.lock().await;
             counters.unclaimed_terminal += 1;
@@ -1099,6 +1141,16 @@ mod registered_port_wire_tests;
 #[cfg(test)]
 #[path = "network_number_tests.rs"]
 mod network_number_tests;
+
+/// The in-memory link the tests run on under paused time (#2293, #2298).
+#[cfg(test)]
+#[path = "../tests/support/bus_port.rs"]
+mod bus_port;
+
+/// Waits on paused time that fail at their limit instead of hanging (#2293).
+#[cfg(test)]
+#[path = "../tests/support/eventually.rs"]
+mod eventually;
 
 /// Reruns a test whose closing rebind loses the freed port to another
 /// process (#1419).

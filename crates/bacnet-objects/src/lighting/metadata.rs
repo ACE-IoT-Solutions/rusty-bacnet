@@ -14,12 +14,13 @@ use crate::property_metadata::{
 // Canonical effective rows for the Lighting duo (ASHRAE 135-2020; PDF = printed + 2):
 // - Lighting Output (type 54, §12.54 Table 12-64; printed pp. 518-519 / PDF pp. 520-521)
 // - Binary Lighting Output (type 55, §12.55 Table 12-69; printed pp. 532-533 / PDF pp. 534-535)
-// Order preserves each legacy projection; DEFAULT_FADE_TIME (once readable
+// Order preserves each type's earlier row order; DEFAULT_FADE_TIME (once
+// readable
 // but unlisted) is appended after the Lighting Output legacy rows (Lift
 // FLOOR_NUMBER precedent), followed by the rows #1092 added
 // (Default_Ramp_Rate, Default_Step_Increment, then Current_Command_Priority
-// on both objects), and PROPERTY_LIST is appended so the projection helper
-// omits it while required_properties keeps it. Only implemented rows are
+// on both objects), and PROPERTY_LIST is appended last. Only implemented
+// rows are
 // described: table rows the objects do not serve (Lighting Output
 // Transition, Feedback_Value, Power, Instantaneous_Power,
 // Min/Max_Actual_Value, Command_Time_Array, event/intrinsic/audit rows;
@@ -60,15 +61,14 @@ use crate::property_metadata::{
 // arm unconditionally and the suites pin in-service writes, so the metadata
 // mirrors dispatch. Presence is None apart from the value-source rows: the
 // implementation models no commandable or intrinsic-reporting gating here.
-// The duo is not createable at runtime (the network factory builds only the
-// eight analog/binary/multi-state input/output/value types, so the
-// is_createable=false default holds) and remains deleteable (delete denies
-// only Device and NetworkPort, so the is_deleteable=true default holds);
+// The duo is not createable at runtime (the `creation` table has no
+// constructor for it) and remains deleteable (delete denies
+// only Device and NetworkPort, so the builtin_deleteable=true default holds);
 // neither needs an override. Array gating keeps the default: Priority_Array
 // and Property_List admit an index (BACnetARRAY per Tables 12-64/12-69)
 // while every other served row rejects one. COV keeps its override:
-// supports_cov=true on both objects, and the COV gating path (read_property
-// plus supports_cov_property to supports_cov) never consults metadata.
+// both objects lend `cov()`, and the COV gating path (read_property plus
+// `CovReporting::supports_cov_property`) never consults metadata.
 const LIGHTING_OUTPUT_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::OBJECT_IDENTIFIER, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::OBJECT_NAME, RequiredRead, None, ReadOnly),
@@ -96,7 +96,7 @@ const LIGHTING_OUTPUT_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::DEFAULT_RAMP_RATE, RequiredRead, None, Always),
     PropertyMetadata::new(P::DEFAULT_STEP_INCREMENT, RequiredRead, None, Always),
     PropertyMetadata::new(P::CURRENT_COMMAND_PRIORITY, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::COV_INCREMENT, Optional, None, Always),
+    crate::property_metadata::COV_INCREMENT_ROW,
     VALUE_SOURCE_ROWS[0],
     VALUE_SOURCE_ROWS[1],
     VALUE_SOURCE_ROWS[2],
@@ -222,8 +222,14 @@ mod tests {
         let metadata = object.property_metadata();
         assert!(matches!(metadata, Cow::Borrowed(_)));
         assert_eq!(metadata.len(), all.len() + 1);
-        assert_eq!(object.property_list().as_ref(), all);
-        assert_eq!(object.required_properties().as_ref(), required);
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(all)
+        );
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            required
+        );
         assert_eq!(
             metadata
                 .iter()
@@ -232,9 +238,10 @@ mod tests {
                 .len(),
             metadata.len()
         );
-        assert!(!object.is_createable());
-        assert!(object.is_deleteable());
-        assert!(object.supports_cov());
+        assert!(crate::creation::builtin_deleteable(
+            object.object_identifier().object_type()
+        ));
+        assert!(object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
         for row in metadata.iter() {
             // The value-source rows are required by their footnotes, not
             // their base code (#1866).
@@ -244,6 +251,8 @@ mod tests {
                     Some(PropertyPresenceCondition::CommandableValueSourceTracking),
                     true,
                 ),
+                // Table 12-64 footnote 3 (#2193).
+                P::COV_INCREMENT => (Some(PropertyPresenceCondition::CovReporting), true),
                 _ => (None, false),
             };
             assert_eq!(row.presence_condition, condition);
@@ -271,8 +280,14 @@ mod tests {
             .filter(|&&p| !matches!(p, P::OBJECT_IDENTIFIER | P::OBJECT_NAME | P::OBJECT_TYPE))
             .map(|p| PropertyValue::Enumerated(p.to_raw()))
             .collect();
-        assert!(object.is_array_property(P::PROPERTY_LIST));
-        assert!(object.is_array_property(P::PRIORITY_ARRAY));
+        assert!(crate::property_metadata::is_array_property(
+            object,
+            P::PROPERTY_LIST
+        ));
+        assert!(crate::property_metadata::is_array_property(
+            object,
+            P::PRIORITY_ARRAY
+        ));
         assert_eq!(
             object.read_property(P::PROPERTY_LIST, None).unwrap(),
             PropertyValue::List(wire.clone())
@@ -349,6 +364,7 @@ mod tests {
             P::DEFAULT_RAMP_RATE,
             P::DEFAULT_STEP_INCREMENT,
             P::CURRENT_COMMAND_PRIORITY,
+            P::COV_INCREMENT,
             P::VALUE_SOURCE,
             P::VALUE_SOURCE_ARRAY,
             P::LAST_COMMAND_TIME,
@@ -401,10 +417,22 @@ mod tests {
         );
         // Priority_Array is BACnetARRAY (Table 12-64), so the service gate
         // admits an index; Tracking_Value is scalar and rejects one.
-        assert!(object.is_array_property(P::PRIORITY_ARRAY));
-        assert!(!object.is_array_property(P::TRACKING_VALUE));
-        assert!(!object.is_array_property(P::DEFAULT_FADE_TIME));
-        assert!(!object.is_array_property(P::CURRENT_COMMAND_PRIORITY));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::PRIORITY_ARRAY
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::TRACKING_VALUE
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::DEFAULT_FADE_TIME
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::CURRENT_COMMAND_PRIORITY
+        ));
     }
 
     #[test]
@@ -467,9 +495,18 @@ mod tests {
                 .unwrap(),
             PropertyValue::Null
         );
-        assert!(object.is_array_property(P::PRIORITY_ARRAY));
-        assert!(!object.is_array_property(P::BLINK_WARN_ENABLE));
-        assert!(!object.is_array_property(P::CURRENT_COMMAND_PRIORITY));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::PRIORITY_ARRAY
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::BLINK_WARN_ENABLE
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::CURRENT_COMMAND_PRIORITY
+        ));
     }
 
     #[test]
@@ -536,7 +573,7 @@ mod tests {
                     };
                     assert_eq!(row.write_capability, capability, "{p:?}");
                     assert_eq!(
-                        object.is_writable_property(p),
+                        crate::property_metadata::is_writable_property(&*object, p),
                         capability.is_writable(),
                         "{p:?}"
                     );
@@ -567,7 +604,10 @@ mod tests {
                 }
                 // Object_Name has no network write route: a rename falls
                 // through to WRITE_ACCESS_DENIED even with a well-formed value.
-                assert!(!object.is_writable_property(P::OBJECT_NAME));
+                assert!(!crate::property_metadata::is_writable_property(
+                    &*object,
+                    P::OBJECT_NAME
+                ));
                 assert_error(
                     object
                         .write_property(
@@ -717,7 +757,7 @@ mod tests {
                         .unwrap_err(),
                     ErrorCode::WRITE_ACCESS_DENIED,
                 );
-                assert!(!object.is_writable_property(p));
+                assert!(!crate::property_metadata::is_writable_property(&object, p));
             }
         }
     }
@@ -725,7 +765,7 @@ mod tests {
     #[test]
     fn property_metadata_lighting_duo_unserved_rows_stay_unknown() {
         fn assert_unserved(object: &mut dyn BACnetObject, p: P) {
-            assert!(!object.is_writable_property(p));
+            assert!(!crate::property_metadata::is_writable_property(&*object, p));
             assert_error(
                 object.read_property(p, None).unwrap_err(),
                 ErrorCode::UNKNOWN_PROPERTY,

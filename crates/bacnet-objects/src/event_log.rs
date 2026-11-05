@@ -13,9 +13,7 @@ use bacnet_types::primitives::{Date, ObjectIdentifier, PropertyValue, StatusFlag
 
 use crate::clock::ClockReader;
 use crate::common::{self, read_common_properties};
-use crate::log_buffer::{
-    LogBufferRecords, LogRecordBuffer, LogRecordIdentity, log_buffer_read_denied,
-};
+use crate::log_buffer::{LogRecordBuffer, log_buffer_read_denied};
 use crate::log_lifecycle::LogLifecycle;
 use crate::log_persistence::store::{DurableLog, LogStore};
 use crate::log_reporting::{BufferReadyReporting, impl_buffer_ready_reporting};
@@ -148,9 +146,12 @@ impl EventLogObject {
         self.log_buffer.clear();
     }
 
-    /// Set the description string.
+    /// Set the description string. On a log with storage, a Description a
+    /// write saved wins until `clear_written_reporting` (#2364).
     pub fn set_description(&mut self, desc: impl Into<String>) {
-        self.description = desc.into();
+        if !self.kept_over_setter(PropertyIdentifier::DESCRIPTION) {
+            self.description = desc.into();
+        }
     }
 
     /// Set Start_Time, the local date and time from which records are kept,
@@ -197,20 +198,29 @@ impl EventLogObject {
     }
 
     /// Set Notification_Class: the number of the Notification Class whose
-    /// recipients get the log's reports (0 by default).
+    /// recipients get the log's reports (0 by default). On a log with
+    /// storage, a value a write set wins (see
+    /// [`clear_written_reporting`](Self::clear_written_reporting)), as it
+    /// does for the next two setters.
     pub fn set_notification_class(&mut self, class: u32) {
-        self.reporting.set_notification_class(class);
+        if !self.kept_over_setter(PropertyIdentifier::NOTIFICATION_CLASS) {
+            self.reporting.set_notification_class(class);
+        }
     }
 
     /// Set Event_Enable; a report goes out only while its TO_NORMAL flag is
     /// set, as it is by default.
     pub fn set_event_enable(&mut self, enable: EventTransitionBits) {
-        self.reporting.set_event_enable(enable);
+        if !self.kept_over_setter(PropertyIdentifier::EVENT_ENABLE) {
+            self.reporting.set_event_enable(enable);
+        }
     }
 
     /// Set Notify_Type, sent with each report (EVENT by default).
     pub fn set_notify_type(&mut self, notify_type: NotifyType) {
-        self.reporting.set_notify_type(notify_type);
+        if !self.kept_over_setter(PropertyIdentifier::NOTIFY_TYPE) {
+            self.reporting.set_notify_type(notify_type);
+        }
     }
 
     fn lifecycle(&mut self) -> LogLifecycle<'_, BACnetEventLogRecord> {
@@ -239,6 +249,7 @@ impl BACnetObject for EventLogObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         // Table 12-31 has neither Out_Of_Service nor Log_Interval (#1064), and
         // Clause 12.27 holds the OUT_OF_SERVICE flag FALSE.
         if let Some(result) =
@@ -264,7 +275,7 @@ impl BACnetObject for EventLogObject {
             p if p == PropertyIdentifier::BUFFER_SIZE => {
                 Ok(PropertyValue::Unsigned(self.buffer_size as u64))
             }
-            // ReadRange pages it through `log_buffer_internal`.
+            // ReadRange pages it through `LogBuffer::buffer_records`.
             p if p == PropertyIdentifier::LOG_BUFFER => Err(log_buffer_read_denied()),
             p if p == PropertyIdentifier::RECORD_COUNT => {
                 Ok(PropertyValue::Unsigned(self.records().len() as u64))
@@ -283,6 +294,13 @@ impl BACnetObject for EventLogObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        // A reporting setting a durable log keeps saves first (#1952).
+        if let Some(result) =
+            crate::log_persistence::store::staging::write(self, property, array_index, &value)
+        {
+            return result;
+        }
         if property == PropertyIdentifier::LOG_ENABLE {
             if let PropertyValue::Boolean(v) = value {
                 return self.lifecycle().write_enable(v);
@@ -317,7 +335,6 @@ impl BACnetObject for EventLogObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
@@ -325,48 +342,33 @@ impl BACnetObject for EventLogObject {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
-
-    fn bind_clock_internal(&mut self, clock: Option<Arc<dyn ClockReader>>) {
-        self.clock = clock;
-        self.settle_interruption(None);
-    }
-
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
         self.store.is_some().then_some(self as _)
     }
 
-    fn advance_monotonic_time_internal(&mut self, now: core::time::Duration) -> bool {
+    crate::traits::lend_log_buffer!();
+
+    crate::traits::lend_event_reporting!();
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
+    }
+}
+
+impl_buffer_ready_reporting!(EventLogObject, reporting, log_buffer);
+crate::traits::impl_log_buffer!(EventLogObject, add_event_log_record, BACnetEventLogRecord);
+
+impl crate::traits::Timed for EventLogObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.clock = clocks.clock.clone();
+        self.settle_interruption(None);
+    }
+
+    fn advance_monotonic_time(&mut self, now: core::time::Duration) -> bool {
         self.commit_if_interval(now);
         false
     }
-
-    fn log_record_identities_internal(&self) -> Option<Vec<LogRecordIdentity>> {
-        Some(self.log_buffer.identities())
-    }
-
-    fn log_buffer_internal(&self) -> Option<&dyn LogBufferRecords> {
-        Some(&self.log_buffer)
-    }
-
-    fn add_event_log_record(&mut self, record: BACnetEventLogRecord) -> Result<(), Error> {
-        self.add_record(record)
-    }
-
-    fn refresh_log_window_internal(&mut self) -> bool {
-        self.settle_interruption(None);
-        let recorded = self.lifecycle().refresh_window();
-        self.commit_if_counted();
-        recorded
-    }
-
-    fn logs_received_event_notifications_internal(&self) -> bool {
-        self.log_received_notifications
-    }
-
-    impl_buffer_ready_reporting!(reporting, log_buffer);
 }
 
 #[cfg(test)]

@@ -30,6 +30,18 @@ bip-broadcast-observers = { max-threads = 1 }
 filter = 'binary(bip_network_numbers) | binary(client_bip_network_numbers)'
 test-group = 'bip-broadcast-observers'
 
+# The MS/TP dedicated-thread smoke tests on the wall clock (rb17's and
+# mstp_network_numbers') run their node on a thread of its own, on that
+# runtime's time, beside the test's thread. Under heavy load a node starved
+# past a deadline (the 250 ms reply window, T_no_token) rightly drops or
+# misses a frame, and the test fails (#2269, #2277; the rb17 signature is in
+# tests/support/rb17_harness.rs). Count each as two threads, so a loaded run
+# starts fewer tests beside them. The other dedicated variants run on the
+# test's paused time and need no override (#2284).
+[[profile.default.overrides]]
+filter = '(binary_id(bacnet-endpoint::rb17_mstp_flows) | binary_id(bacnet-endpoint::rb17_mstp_proof) | binary_id(bacnet-endpoint::rb17_mstp_extended) | binary_id(bacnet-endpoint::mstp_network_numbers)) & test(/_wall_clock$/)'
+threads-required = 2
+
 # These B/IP broadcast tests skip themselves on a host without a usable
 # default route or broadcast; show their output when they pass, so a CI log
 # says whether each one ran or skipped (#1538).

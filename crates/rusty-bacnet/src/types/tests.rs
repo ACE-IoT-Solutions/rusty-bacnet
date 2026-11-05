@@ -175,3 +175,51 @@ fn parse_address_rejects_malformed_and_negative_mstp_peers_explicitly() {
 fn parse_address_rejects_garbage() {
     assert!(parse_address("not_an_address").is_err());
 }
+
+#[test]
+fn direct_target_preserves_non_default_bip_port() {
+    let target = PyDirectTarget::new("192.0.2.10:47809".to_owned()).unwrap();
+    assert_eq!(target.address, "192.0.2.10:47809");
+    assert_eq!(target.mac, vec![192, 0, 2, 10, 0xba, 0xc1]);
+}
+
+#[test]
+fn direct_target_rejects_non_unicast_or_non_bip_addresses() {
+    for address in [
+        "0.0.0.0:47808",
+        "224.0.0.1:47808",
+        "255.255.255.255:47808",
+        "01:02:03:04:05:06",
+        "[::1]:47808",
+    ] {
+        assert!(
+            PyDirectTarget::new(address.to_owned()).is_err(),
+            "{address}"
+        );
+    }
+}
+
+#[test]
+fn routed_target_preserves_router_dnet_and_multibyte_dadr() {
+    let target = PyRoutedTarget::new(
+        "192.0.2.1:47810".to_owned(),
+        200,
+        vec![0xde, 0xad, 0xbe, 0xef],
+    )
+    .unwrap();
+    assert_eq!(target.router, "192.0.2.1:47810");
+    assert_eq!(target.router_mac, vec![192, 0, 2, 1, 0xba, 0xc2]);
+    assert_eq!(target.network, 200);
+    assert_eq!(target.address, vec![0xde, 0xad, 0xbe, 0xef]);
+}
+
+#[test]
+fn routed_target_validates_dnet_and_dadr_bounds() {
+    for network in [0, u16::MAX] {
+        assert!(PyRoutedTarget::new("192.0.2.1:47808".to_owned(), network, vec![1]).is_err());
+    }
+    for address in [Vec::new(), vec![1; 19]] {
+        assert!(PyRoutedTarget::new("192.0.2.1:47808".to_owned(), 1, address).is_err());
+    }
+    assert!(PyRoutedTarget::new("192.0.2.1:47808".to_owned(), 1, vec![1; 18]).is_ok());
+}

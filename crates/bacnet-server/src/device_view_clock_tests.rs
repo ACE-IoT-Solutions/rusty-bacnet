@@ -6,6 +6,7 @@ use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_types::bitstring::ServicesSupported;
 use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::primitives::{Date, Time};
+use std::sync::Arc;
 use std::sync::{
     Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -212,12 +213,14 @@ fn rpm_repeated_service_rows_share_one_availability_sample() {
                 ],
             }],
         };
-        let plan = crate::handlers::RpmPlan::new(&db, &request, 3, Some(&context)).unwrap();
+        let scope = bacnet_device_core::read::ReadScope::UNLIMITED;
+        let plan = bacnet_device_core::read::RpmPlan::new(&db, &scope, Some(&context), &request, 3)
+            .unwrap();
         assert_eq!(clock.reads(), 0, "explicit-row planning needs no clock");
         let context = context.with_live(None);
         let mut out = bytes::BytesMut::new();
         let mut observed = 0;
-        plan.read_observed(&db, Some(&context), &mut out, 4096, |_, _, _, _| {
+        plan.read(&db, Some(&context), &mut out, 4096, |_, _, _, _| {
             observed += 1;
             clock.set(!available);
         })
@@ -256,10 +259,16 @@ fn cached_service_availability_does_not_freeze_time_or_metadata() {
         PropertyValue::Time(changed.local_time)
     );
     clock.set(false);
-    assert!(!view.property_list().contains(&P::LOCAL_TIME));
+    assert!(!bacnet_objects::property_metadata::has_property(
+        &view.property_metadata(),
+        P::LOCAL_TIME
+    ));
     assert!(view.read_property(P::LOCAL_TIME, None).is_err());
     assert_clock_services(services(&context, &db), true);
     clock.set(true);
-    assert!(view.property_list().contains(&P::LOCAL_TIME));
+    assert!(bacnet_objects::property_metadata::has_property(
+        &view.property_metadata(),
+        P::LOCAL_TIME
+    ));
     assert!(view.read_property(P::LOCAL_TIME, None).is_ok());
 }

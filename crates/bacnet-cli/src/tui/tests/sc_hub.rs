@@ -132,6 +132,7 @@ pub(super) fn args(dir: &Path, site: &Site, node: &Leaf, url: &str) -> Transport
     TransportArgs {
         interface: std::net::Ipv4Addr::UNSPECIFIED,
         port: 0,
+        share_port: false,
         broadcast: std::net::Ipv4Addr::BROADCAST,
         timeout_ms: 6000,
         min_interval_ms: 0,
@@ -149,6 +150,8 @@ pub(super) fn args(dir: &Path, site: &Site, node: &Leaf, url: &str) -> Transport
         ipv6_interface: None,
         device_instance: None,
         foreign_device: None,
+        bip6_foreign_device: None,
+        nat_global_address: None,
         multicast: None,
         mstp: None,
     }

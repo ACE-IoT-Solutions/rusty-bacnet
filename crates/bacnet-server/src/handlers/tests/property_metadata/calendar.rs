@@ -120,34 +120,6 @@ fn wp_calendar_properties_outside_table_12_11_are_unknown() {
     assert_eq!(snapshot(&db), before);
 }
 
-#[test]
-fn rpm_calendar_metadata_does_not_enable_create_object() {
-    use bacnet_services::object_mgmt::{CreateObjectRequest, ObjectSpecifier};
-
-    let oid = ObjectIdentifier::new(ObjectType::CALENDAR, 7).unwrap();
-    for object_specifier in [
-        ObjectSpecifier::Type(ObjectType::CALENDAR),
-        ObjectSpecifier::Identifier(oid),
-    ] {
-        let mut db = ObjectDatabase::new();
-        let mut request = BytesMut::new();
-        CreateObjectRequest {
-            object_specifier,
-            list_of_initial_values: vec![],
-        }
-        .encode(&mut request);
-        let mut response = BytesMut::new();
-        let result = handle_create_object(&mut db, &request, &mut response);
-        assert!(
-            matches!(result, Err(Error::Remote(RemoteError::Error { class, code }))
-            if class == ErrorClass::OBJECT
-                && code == ErrorCode::UNSUPPORTED_OBJECT_TYPE)
-        );
-        assert!(response.is_empty());
-        assert!(db.is_empty());
-    }
-}
-
 // Keep the Calendar PICS fixture with its handler contract while the shared
 // PICS test file is capped; the pics:: filter still selects this test.
 mod pics {
@@ -169,11 +141,12 @@ mod pics {
         for configured in [false, true] {
             let mut db = ObjectDatabase::new();
             db.add(Box::new(calendar_object(configured))).unwrap();
-            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+            let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+                .instance_types_only(&db);
             assert_eq!(pics.supported_object_types.len(), 1);
             let support = &pics.supported_object_types[0];
             assert_eq!(support.object_type, ObjectType::CALENDAR);
-            assert!(!support.createable);
+            assert!(support.createable);
             assert!(support.deleteable);
             let rows: Vec<_> = support
                 .supported_properties

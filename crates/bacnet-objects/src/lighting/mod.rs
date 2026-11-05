@@ -55,7 +55,7 @@ use crate::traits::{BACnetObject, DeadlineWaker, MonotonicClock};
 ///
 /// Fades, ramps and egress timers run on the monotonic clock the database
 /// binds; the server's monotonic task advances them and fans their COV out.
-/// With no clock bound they wait on `advance_time_internal`.
+/// With no clock bound they wait on the test-only `advance_time`.
 ///
 /// Cloning copies served state into an in-memory object. Tags persistence and
 /// pending saves remain solely with the original; cloning or dropping the copy
@@ -396,6 +396,7 @@ impl BACnetObject for LightingOutputObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = self
             .value_source
             .read(property, array_index, &self.priority_array)
@@ -472,13 +473,7 @@ impl BACnetObject for LightingOutputObject {
         priority: Option<u8>,
         origin: &CommandOrigin,
     ) -> Result<(), Error> {
-        if matches!(
-            property,
-            PropertyIdentifier::PRESENT_VALUE | PropertyIdentifier::VALUE_SOURCE
-        ) && array_index.is_some()
-        {
-            return Err(common::property_is_not_an_array_error());
-        }
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if property == PropertyIdentifier::VALUE_SOURCE {
             return self.value_source.correct(value, priority, origin);
         }
@@ -520,6 +515,7 @@ impl BACnetObject for LightingOutputObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         // The commands need their writer (`write_property_from`, #1866).
         if matches!(
             property,
@@ -620,68 +616,74 @@ impl BACnetObject for LightingOutputObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
         self.profile.capability()
-    }
-
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
     }
 
     fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
         metadata::for_lighting_output_object(self)
     }
 
+    crate::traits::lend_cov_reporting!();
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
+    }
+}
+
+impl crate::traits::CovReporting for LightingOutputObject {
     fn cov_increment(&self) -> Option<f64> {
         Some(f64::from(self.cov_increment))
     }
+}
 
-    fn supports_cov(&self) -> bool {
-        true
+impl crate::traits::Timed for LightingOutputObject {
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        self.monotonic_clock = clocks.monotonic.clone();
+        self.deadline_waker = clocks.deadline_waker.clone();
     }
 
-    fn advance_time_internal(&mut self, elapsed: Duration) -> bool {
-        self.logical_now = self.logical_now.saturating_add(elapsed);
-        self.advance_sourced(self.logical_now)
+    fn set_tracking_cov_increment(&mut self, finest: Option<f64>) {
+        self.finest_tracking_increment = finest;
     }
 
-    fn bind_monotonic_clock_internal(&mut self, clock: Option<Arc<MonotonicClock>>) {
-        self.monotonic_clock = clock;
-    }
-
-    fn bind_deadline_waker_internal(&mut self, waker: Option<Arc<DeadlineWaker>>) {
-        self.deadline_waker = waker;
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: Duration) -> bool {
-        self.profile.expire(now);
+    fn advance_monotonic_time(&mut self, now: Duration) -> bool {
         self.advance_sourced(now)
     }
 
-    fn next_monotonic_deadline_internal(&self) -> Option<Duration> {
+    fn next_monotonic_deadline(&self) -> Option<Duration> {
         self.next_deadline()
-    }
-
-    fn set_tracking_cov_increment_internal(&mut self, finest: Option<f64>) {
-        self.finest_tracking_increment = finest;
     }
 
     /// A copy that reads as the object does now: its clock stops at this
     /// instant, so a fade's Tracking_Value in a COV report is the value at
     /// the moment the report was taken.
-    fn cov_snapshot_internal(&self) -> Option<Box<dyn BACnetObject>> {
+    fn cov_snapshot(&self) -> Option<Box<dyn BACnetObject>> {
         let mut snapshot = self.clone();
         snapshot.logical_now = self.now();
         snapshot.monotonic_clock = None;
         snapshot.deadline_waker = None;
         Some(Box::new(snapshot))
     }
+}
 
-    fn lighting_blink_count_internal(&self) -> u64 {
+#[cfg(test)]
+impl LightingOutputObject {
+    pub(crate) fn advance_time(&mut self, elapsed: Duration) -> bool {
+        self.logical_now = self.logical_now.saturating_add(elapsed);
+        self.advance_sourced(self.logical_now)
+    }
+}
+
+impl LightingOutputObject {
+    /// How many blink-warn notifications the object has asked for: a
+    /// conformance-test channel, read through
+    /// `ObjectDatabase::lighting_blink_count_internal`.
+    pub(crate) fn lighting_blink_count(&self) -> u64 {
         self.blink_request_count
     }
 }

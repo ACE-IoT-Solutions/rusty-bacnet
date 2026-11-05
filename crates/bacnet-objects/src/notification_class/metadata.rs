@@ -86,11 +86,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected
         );
-        assert_eq!(object.property_list().as_ref(), ALL);
-        assert_eq!(object.required_properties().as_ref(), REQUIRED);
-        assert!(!object.supports_cov());
-        assert!(!object.is_createable());
-        assert!(object.is_deleteable());
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(ALL)
+        );
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            REQUIRED
+        );
+        assert!(!object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
+        assert!(crate::creation::builtin_deleteable(
+            object.object_identifier().object_type()
+        ));
         for row in metadata.iter() {
             assert_eq!(row.presence_condition, None);
             assert_eq!(
@@ -146,7 +153,10 @@ mod tests {
                 _ => ReadOnly,
             };
             assert_eq!(row.write_capability, capability, "{p:?}");
-            assert_eq!(object.is_writable_property(p), capability.is_writable());
+            assert_eq!(
+                crate::property_metadata::is_writable_property(&object, p),
+                capability.is_writable()
+            );
             let value = object.read_property(p, None).unwrap();
             let result = object.write_property(p, None, value, None);
             if capability == Always {
@@ -171,9 +181,18 @@ mod tests {
             object.read_property(P::NOTIFICATION_CLASS, None).unwrap(),
             PropertyValue::Unsigned(99)
         );
-        assert!(object.is_array_property(P::PRIORITY));
-        assert!(!object.is_array_property(P::ACK_REQUIRED));
-        assert!(!object.is_array_property(P::RECIPIENT_LIST));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::PRIORITY
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::ACK_REQUIRED
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::RECIPIENT_LIST
+        ));
         assert_error(
             object
                 .write_property(
@@ -192,7 +211,7 @@ mod tests {
             P::ALL,
             P::OUT_OF_SERVICE,
         ] {
-            assert!(!object.is_writable_property(p));
+            assert!(!crate::property_metadata::is_writable_property(&object, p));
             assert_error(
                 object.read_property(p, None).unwrap_err(),
                 ErrorCode::UNKNOWN_PROPERTY,
@@ -205,7 +224,13 @@ mod tests {
             );
         }
         assert_eq!(object.property_metadata().as_ref(), original);
-        assert_eq!(object.property_list().as_ref(), ALL);
-        assert_eq!(object.required_properties().as_ref(), REQUIRED);
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(ALL)
+        );
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            REQUIRED
+        );
     }
 }

@@ -77,6 +77,9 @@ pub(super) struct Quirks {
     /// How long frames take to reach this port: a slow device, whose
     /// requests stay outstanding that long.
     pub(super) latency: Duration,
+    /// How much longer this device's acknowledgements of SubscribeCOV take
+    /// than its other frames: its first notification arrives before them.
+    pub(super) slow_cov_ack: Duration,
 }
 
 struct Port {
@@ -189,6 +192,13 @@ fn apdu_kind(npdu: &[u8]) -> Option<(u8, Option<(u8, u8)>)> {
         .then(|| Some((*apdu.get(2)?, *apdu.get(3)?)))
         .flatten();
     Some((pdu_type, request))
+}
+
+/// The service a SimpleAck acknowledges.
+fn simple_ack_service(npdu: &[u8]) -> Option<u8> {
+    let decoded = decode_npdu(Bytes::copy_from_slice(npdu)).ok()?;
+    let apdu = decoded.payload;
+    (apdu.first()? >> 4 == 2).then(|| apdu.get(2).copied())?
 }
 
 pub(super) struct HubPort {
@@ -326,11 +336,18 @@ impl HubPort {
                 _ => {}
             }
         }
+        let cov_ack =
+            simple_ack_service(npdu) == Some(ConfirmedServiceChoice::SUBSCRIBE_COV.to_raw());
+        let slow = inner
+            .ports
+            .iter()
+            .find(|port| cov_ack && port.mac == self.mac)
+            .map_or(Duration::ZERO, |port| port.quirks.slow_cov_ack);
         let targets: Vec<_> = inner
             .ports
             .iter()
             .filter(|port| port.mac != self.mac && to.is_none_or(|to| port.mac.as_slice() == to))
-            .map(|port| (port.inbox.clone(), port.quirks.latency))
+            .map(|port| (port.inbox.clone(), port.quirks.latency + slow))
             .collect();
         drop(inner);
         for (tx, latency) in targets {
@@ -365,6 +382,8 @@ impl TransportPort for HubPort {
     }
 
     async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
+        #[cfg(feature = "mcp")]
+        super::mcp_attach::panic_if_armed();
         self.deliver(npdu, Some(mac));
         Ok(())
     }
@@ -597,6 +616,24 @@ impl Site {
         .await;
     }
 
+    /// Apply worker events until `task` ends, and return what it gave.
+    #[cfg(feature = "mcp")]
+    pub(super) async fn pump_while<R>(&mut self, task: &mut JoinHandle<R>) -> R {
+        bounded(async {
+            loop {
+                tokio::select! {
+                    biased;
+                    done = &mut *task => return done.expect("the task panicked"),
+                    event = self.events.recv() => {
+                        let commands = worker(&mut self.app, event.expect("worker stopped"));
+                        self.send(commands).await;
+                    }
+                }
+            }
+        })
+        .await
+    }
+
     /// Apply worker events until one satisfies `done`, which sees each first.
     pub(super) async fn pump_events_until(&mut self, mut done: impl FnMut(&WorkerEvent) -> bool) {
         bounded(async {
@@ -617,15 +654,23 @@ impl Site {
     /// send it (confirming the warning if one appears), wait out the window,
     /// and then until the table holds at least `rows` devices.
     pub(super) async fn who_is(&mut self, range: &str, rows: usize) {
-        self.who_is_in(false, range, rows).await;
+        self.who_is_in(false, range, rows, "2").await;
+    }
+
+    /// [`Self::who_is`] with a window of one second, for a test on the
+    /// real clock, which waits the window out. Its caller is the attached
+    /// MCP test, so it has that test's cfg.
+    #[cfg(feature = "mcp")]
+    pub(super) async fn who_is_briefly(&mut self, range: &str, rows: usize) {
+        self.who_is_in(false, range, rows, "1").await;
     }
 
     /// [`Self::who_is`] as a global broadcast, which routers pass on.
     pub(super) async fn global_who_is(&mut self, range: &str, rows: usize) {
-        self.who_is_in(true, range, rows).await;
+        self.who_is_in(true, range, rows, "2").await;
     }
 
-    async fn who_is_in(&mut self, global: bool, range: &str, rows: usize) {
+    async fn who_is_in(&mut self, global: bool, range: &str, rows: usize, window: &str) {
         press(&mut self.app, KeyCode::Char('d'));
         if global {
             press(&mut self.app, KeyCode::Right);
@@ -634,7 +679,7 @@ impl Site {
         type_text(&mut self.app, range);
         press(&mut self.app, KeyCode::Tab);
         press(&mut self.app, KeyCode::Backspace);
-        type_text(&mut self.app, "2");
+        type_text(&mut self.app, window);
         let mut commands = press(&mut self.app, KeyCode::Enter);
         if commands.is_empty() {
             commands = press(&mut self.app, KeyCode::Enter);

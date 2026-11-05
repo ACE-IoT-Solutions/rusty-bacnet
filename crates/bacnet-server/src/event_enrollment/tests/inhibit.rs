@@ -5,6 +5,8 @@
 use super::super::*;
 use super::*;
 use bacnet_objects::event_enrollment::EventEnrollmentEvalState;
+use bacnet_objects::property_metadata::PropertyMetadata;
+use bacnet_objects::traits::EnrollmentEval;
 use bacnet_types::constructed::ChangeOfValueCriteria;
 use std::borrow::Cow;
 
@@ -47,7 +49,8 @@ fn set_value(db: &mut ObjectDatabase, ai: ObjectIdentifier, value: f32) {
 fn state(db: &ObjectDatabase, ee: ObjectIdentifier) -> EventEnrollmentEvalState {
     db.get(&ee)
         .unwrap()
-        .enrollment_eval_state_internal()
+        .enrollment_eval()
+        .map(|e| e.eval_state())
         .unwrap()
 }
 
@@ -158,11 +161,11 @@ impl BACnetObject for Variable {
         Ok(())
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[
-            PropertyIdentifier::OBJECT_IDENTIFIER,
-            PropertyIdentifier::PRESENT_VALUE,
-        ])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::rows(
+            &[PropertyIdentifier::PRESENT_VALUE],
+            &[PropertyIdentifier::PRESENT_VALUE],
+        )
     }
 }
 
@@ -199,10 +202,11 @@ fn change_of_value(time_delay: u32) -> (ObjectDatabase, ObjectIdentifier, Object
 /// Put the enrollment in a state CHANGE_OF_VALUE doesn't name, as a rewrite
 /// of Event_Parameters can leave behind.
 fn leave_offnormal(db: &mut ObjectDatabase, ee: ObjectIdentifier) {
-    db.get_mut(&ee)
-        .unwrap()
-        .set_event_state_internal(EventState::OFFNORMAL)
-        .unwrap();
+    crate::test_event_state::commit_event_state(
+        db.get_mut(&ee).unwrap(),
+        EventState::OFFNORMAL,
+        false,
+    );
 }
 
 fn set_variable(db: &mut ObjectDatabase, variable: ObjectIdentifier, value: PropertyValue) {
@@ -365,63 +369,65 @@ impl BACnetObject for UnencodableParameters {
             .write_property(property, array_index, value, priority)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        self.inner.property_list()
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        self.inner.property_metadata()
     }
 
-    fn enrollment_eval_state_internal(&self) -> Option<EventEnrollmentEvalState> {
-        self.inner.enrollment_eval_state_internal()
+    fn enrollment_eval(&self) -> Option<&dyn EnrollmentEval> {
+        Some(self)
     }
 
-    fn set_enrollment_eval_state_internal(
+    fn enrollment_eval_mut(&mut self) -> Option<&mut dyn EnrollmentEval> {
+        Some(self)
+    }
+
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+}
+
+impl EnrollmentEval for UnencodableParameters {
+    fn eval_state(&self) -> EventEnrollmentEvalState {
+        self.inner.eval_state()
+    }
+
+    fn set_eval_state(
         &mut self,
         state: EventEnrollmentEvalState,
     ) -> Result<(), bacnet_types::error::Error> {
-        self.inner.set_enrollment_eval_state_internal(state)
+        self.inner.set_eval_state(state)
     }
 
-    fn enrollment_eval_source_internal(
+    fn eval_source(
         &self,
     ) -> Option<Option<bacnet_objects::event_enrollment::EventEnrollmentMonitoredSource>> {
-        self.inner.enrollment_eval_source_internal()
+        self.inner.eval_source()
     }
 
-    fn set_enrollment_eval_source_internal(
+    fn set_eval_source(
         &mut self,
         source: Option<bacnet_objects::event_enrollment::EventEnrollmentMonitoredSource>,
     ) -> Result<(), bacnet_types::error::Error> {
-        self.inner.set_enrollment_eval_source_internal(source)
+        self.inner.set_eval_source(source)
     }
 
-    fn set_event_state_internal(
-        &mut self,
-        state: EventState,
-    ) -> Result<(), bacnet_types::error::Error> {
-        self.inner.set_event_state_internal(state)
-    }
-
-    fn set_acked_transitions_internal(
-        &mut self,
-        transition_bit: EventTransitionBits,
-        acknowledged: bool,
-    ) -> Result<(), bacnet_types::error::Error> {
-        self.inner
-            .set_acked_transitions_internal(transition_bit, acknowledged)
-    }
-
-    fn commit_event_transition_internal(
-        &mut self,
-        commit: bacnet_objects::event::EventTransitionCommit,
-    ) -> Result<(), bacnet_objects::event::EventTransitionCommitError> {
-        self.inner.commit_event_transition_internal(commit)
-    }
-
-    fn commit_event_enrollment_reliability_internal(
+    fn commit_reliability(
         &mut self,
         commit: bacnet_objects::event_enrollment::EventEnrollmentReliabilityCommit,
     ) -> Result<(), bacnet_objects::event::EventTransitionCommitError> {
-        self.inner
-            .commit_event_enrollment_reliability_internal(commit)
+        self.inner.commit_reliability(commit)
+    }
+}
+
+impl bacnet_objects::traits::EventReporting for UnencodableParameters {
+    fn commit_event_transition(
+        &mut self,
+        commit: bacnet_objects::event::EventTransitionCommit,
+    ) -> Result<(), bacnet_objects::event::EventTransitionCommitError> {
+        self.inner.commit_event_transition(commit)
     }
 }
 

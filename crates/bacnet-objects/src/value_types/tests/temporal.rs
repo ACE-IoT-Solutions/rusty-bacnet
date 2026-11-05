@@ -3,6 +3,7 @@
 //! Split out to keep every file under the 700-LOC cap.
 
 use super::super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::enums::ObjectType;
 use bacnet_types::error::RemoteError;
 
@@ -300,7 +301,7 @@ fn date_pattern_value_object_type() {
 #[test]
 fn date_pattern_value_has_priority_array() {
     let obj = DatePatternValueObject::new(1, "DPV-1").unwrap();
-    let props = obj.property_list();
+    let props = crate::test_rows::listed(&obj.property_metadata());
     assert!(props.contains(&PropertyIdentifier::PRIORITY_ARRAY));
     assert!(props.contains(&PropertyIdentifier::RELINQUISH_DEFAULT));
 }
@@ -393,7 +394,7 @@ fn datetime_pattern_value_object_type() {
 #[test]
 fn datetime_pattern_value_has_priority_array() {
     let obj = DateTimePatternValueObject::new(1, "DTPV-1").unwrap();
-    let props = obj.property_list();
+    let props = crate::test_rows::listed(&obj.property_metadata());
     assert!(props.contains(&PropertyIdentifier::PRIORITY_ARRAY));
     assert!(props.contains(&PropertyIdentifier::RELINQUISH_DEFAULT));
 }
@@ -425,7 +426,10 @@ fn datetime_value_relinquish_default_write_recaptures_present_value() {
     let datetime = PropertyValue::List(vec![PropertyValue::Date(dt.0), PropertyValue::Time(dt.1)]);
 
     let mut obj = DateTimeValueObject::new(1, "DTV-1").unwrap();
-    assert!(obj.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &obj,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
     obj.write_property(
         PropertyIdentifier::RELINQUISH_DEFAULT,
         None,
@@ -469,7 +473,10 @@ fn datetime_value_relinquish_default_write_recaptures_present_value() {
 
     // The pattern-typed sibling carries the arm as well.
     let mut pat = DateTimePatternValueObject::new(1, "DTPV-1").unwrap();
-    assert!(pat.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &pat,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
     pat.write_property(PropertyIdentifier::RELINQUISH_DEFAULT, None, datetime, None)
         .unwrap();
 }
@@ -478,7 +485,10 @@ fn datetime_value_relinquish_default_write_recaptures_present_value() {
 #[test]
 fn date_value_relinquish_default_write_recaptures_present_value() {
     let mut dv = DateValueObject::new(1, "DV-1").unwrap();
-    assert!(dv.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &dv,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
     let d = Date {
         year: 124,
         month: 12,

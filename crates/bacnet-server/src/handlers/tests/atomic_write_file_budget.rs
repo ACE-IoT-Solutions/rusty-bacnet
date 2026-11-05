@@ -3,6 +3,7 @@ use crate::server::AtomicWriteFileBudget;
 use bacnet_objects::file::{
     FileObject, FileRecordRead, FileStorage, FileStreamRead, FileWriteStart,
 };
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_services::file::{
     AtomicWriteFileAck, AtomicWriteFileRequest, FileWriteAccessMethod, FileWriteAckMethod,
 };
@@ -28,8 +29,8 @@ impl BACnetObject for Probe {
     fn object_name(&self) -> &str {
         self.file.object_name()
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(&[])
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[])
     }
     fn read_property(&self, p: PropertyIdentifier, i: Option<u32>) -> Result<PropertyValue, Error> {
         assert!(
@@ -60,10 +61,10 @@ impl BACnetObject for Probe {
     ) -> Result<(), Error> {
         panic!("no property writes")
     }
-    fn file_storage_internal(&self) -> Option<&dyn FileStorage> {
+    fn file_storage(&self) -> Option<&dyn FileStorage> {
         (self.gate != 1).then_some(self)
     }
-    fn file_storage_internal_mut(&mut self) -> Option<&mut dyn FileStorage> {
+    fn file_storage_mut(&mut self) -> Option<&mut dyn FileStorage> {
         if self.gate == 6 { None } else { Some(self) }
     }
 }
@@ -148,7 +149,7 @@ fn state(db: &ObjectDatabase, record: bool) -> Vec<Vec<u8>> {
     let s = db
         .get(&ObjectIdentifier::new(ObjectType::FILE, 1).unwrap())
         .unwrap()
-        .file_storage_internal()
+        .file_storage()
         .unwrap();
     if record {
         s.read_records(0, 10000).unwrap().records

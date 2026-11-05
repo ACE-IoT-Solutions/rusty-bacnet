@@ -46,6 +46,8 @@ pub(super) fn drain(
         let Action::Send(send) = router.poll_action() else {
             return drained;
         };
+        let (port, kind, priority) = (send.port, send.kind, send.priority);
+        let count_forward = count_forward(kind);
         let npdu = match last.take() {
             Some(previous) if previous.as_ref() == send.npdu => previous,
             _ => Bytes::copy_from_slice(send.npdu),
@@ -62,17 +64,18 @@ pub(super) fn drain(
                 data_attributes,
                 response: None,
                 reject_origin: send.reject_origin,
+                count_forward,
             },
             Dest::Broadcast => SendRequest::Broadcast {
                 npdu,
                 data_attributes,
                 reject_origin: send.reject_origin,
+                count_forward,
             },
         };
-        let (port, kind) = (send.port, send.kind);
         let tx = send_txs.get(usize::from(port.0));
         let result = match tx {
-            Some(tx) => tx.try_send(send.priority, request),
+            Some(tx) => tx.try_send(priority, request),
             None => Err(TrySendError::Closed(())),
         };
         if let (true, Some(tx)) = (congestion, tx) {
@@ -80,11 +83,18 @@ pub(super) fn drain(
             tx.set_watched(router.port_congested(port));
         }
         if let Err(error) = result {
+            if count_forward && let Some(tx) = tx {
+                tx.record_forward_refusal(&error);
+            }
             refused(kind, &error);
             router.refused(SendRefusal::Full);
             drained.originate_refused |= kind == Kind::Originate;
         }
     }
+}
+
+fn count_forward(kind: Kind) -> bool {
+    matches!(kind, Kind::Forward | Kind::Global)
 }
 
 /// What a [`drain`] saw that its caller may need.

@@ -1,6 +1,7 @@
 use super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_encoding::constructed::encode_device_object_reference;
-use bacnet_types::error::RemoteError;
+use bacnet_types::{enums::PropertyIdentifier as P, error::RemoteError};
 
 fn reference(object_type: ObjectType, instance: u32) -> BACnetDeviceObjectReference {
     BACnetDeviceObjectReference {
@@ -315,21 +316,21 @@ fn clamp_selection_and_bidirectional_hysteresis_follow_stage_boundaries() {
             .unwrap(),
         PropertyValue::Real(-1.0)
     );
-    object.take_staging_write_plan_internal();
+    object.take_staging_write_plan();
 
     write_real(&mut object, 10.5);
     assert_eq!(present_stage(&object), 1, "retain through upper deadband");
-    assert!(object.take_staging_write_plan_internal().is_none());
+    assert!(object.take_staging_write_plan().is_none());
     write_real(&mut object, 11.1);
     assert_eq!(present_stage(&object), 2);
-    object.take_staging_write_plan_internal();
+    object.take_staging_write_plan();
 
     write_real(&mut object, 9.1);
     assert_eq!(present_stage(&object), 2, "retain above prior lower edge");
-    assert!(object.take_staging_write_plan_internal().is_none());
+    assert!(object.take_staging_write_plan().is_none());
     write_real(&mut object, 8.9);
     assert_eq!(present_stage(&object), 1);
-    object.take_staging_write_plan_internal();
+    object.take_staging_write_plan();
 
     write_real(&mut object, 100.0);
     assert_eq!(present_stage(&object), 3);
@@ -373,7 +374,7 @@ fn supported_configuration_writes_revalidate_atomically_and_reevaluate() {
     let mut object = StagingObject::new(1, "STG-1", config()).unwrap();
     write_real(&mut object, 15.0);
     assert_eq!(present_stage(&object), 2);
-    object.take_staging_write_plan_internal();
+    object.take_staging_write_plan();
 
     let replacement = stage(16.0, &[false, false], 2.0);
     let mut encoded = BytesMut::new();
@@ -387,7 +388,7 @@ fn supported_configuration_writes_revalidate_atomically_and_reevaluate() {
         )
         .unwrap();
     assert_eq!(present_stage(&object), 2);
-    assert!(object.take_staging_write_plan_internal().is_some());
+    assert!(object.take_staging_write_plan().is_some());
 
     let before = object
         .read_property(PropertyIdentifier::STAGES, None)
@@ -461,7 +462,7 @@ fn supported_configuration_writes_revalidate_atomically_and_reevaluate() {
 #[test]
 fn whole_configuration_array_writes_preserve_shape_and_reapply_targets() {
     let mut object = StagingObject::new(1, "STG-1", config()).unwrap();
-    object.take_staging_write_plan_internal();
+    object.take_staging_write_plan();
 
     let stages = [
         stage(12.0, &[true, false], 1.0),
@@ -485,7 +486,7 @@ fn whole_configuration_array_writes_preserve_shape_and_reapply_targets() {
         )
         .unwrap();
     assert_eq!(object.max_present_value(), 32.0);
-    assert!(object.take_staging_write_plan_internal().is_some());
+    assert!(object.take_staging_write_plan().is_some());
 
     object
         .write_property(
@@ -526,7 +527,7 @@ fn whole_configuration_array_writes_preserve_shape_and_reapply_targets() {
             None,
         )
         .unwrap();
-    let plan = object.take_staging_write_plan_internal().unwrap();
+    let plan = object.take_staging_write_plan().unwrap();
     assert_eq!(
         plan.writes[1].object_identifier,
         references[1].object_identifier
@@ -550,7 +551,7 @@ fn whole_configuration_array_writes_preserve_shape_and_reapply_targets() {
 fn out_of_service_suppresses_plans_and_return_to_service_reapplies() {
     let mut object = StagingObject::new(1, "STG-1", config()).unwrap();
     write_real(&mut object, 5.0);
-    object.take_staging_write_plan_internal();
+    object.take_staging_write_plan();
     object
         .write_property(
             PropertyIdentifier::OUT_OF_SERVICE,
@@ -561,7 +562,7 @@ fn out_of_service_suppresses_plans_and_return_to_service_reapplies() {
         .unwrap();
     write_real(&mut object, 25.0);
     assert_eq!(present_stage(&object), 3);
-    assert!(object.take_staging_write_plan_internal().is_none());
+    assert!(object.take_staging_write_plan().is_none());
     object
         .write_property(
             PropertyIdentifier::OUT_OF_SERVICE,
@@ -570,18 +571,21 @@ fn out_of_service_suppresses_plans_and_return_to_service_reapplies() {
             None,
         )
         .unwrap();
-    assert!(object.take_staging_write_plan_internal().is_some());
+    assert!(object.take_staging_write_plan().is_some());
 }
 
 #[test]
 fn completion_is_generation_guarded_and_status_flags_track_fault_and_oos() {
     let mut object = StagingObject::new(1, "STG-1", config()).unwrap();
     write_real(&mut object, 5.0);
-    let first = object.take_staging_write_plan_internal().unwrap();
+    let first = object.take_staging_write_plan().unwrap();
     write_real(&mut object, 25.0);
-    let second = object.take_staging_write_plan_internal().unwrap();
-    assert!(!object.complete_staging_write_plan_internal(first.generation, false));
-    assert!(object.complete_staging_write_plan_internal(second.generation, false));
+    let second = object.take_staging_write_plan().unwrap();
+    // The host reads the generation through the object's accessor.
+    let current = object.staging_source().map(|s| s.staging_generation());
+    assert_eq!(current, Some(second.generation));
+    assert!(!object.complete_staging_write_plan(first.generation, false));
+    assert!(object.complete_staging_write_plan(second.generation, false));
     assert_eq!(
         object
             .read_property(PropertyIdentifier::RELIABILITY, None)
@@ -650,8 +654,8 @@ fn completion_is_generation_guarded_and_status_flags_track_fault_and_oos() {
             None,
         )
         .unwrap();
-    let plan = object.take_staging_write_plan_internal().unwrap();
-    assert!(object.complete_staging_write_plan_internal(plan.generation, true));
+    let plan = object.take_staging_write_plan().unwrap();
+    assert!(object.complete_staging_write_plan(plan.generation, true));
     assert_eq!(
         object
             .read_property(PropertyIdentifier::RELIABILITY, None)
@@ -663,7 +667,7 @@ fn completion_is_generation_guarded_and_status_flags_track_fault_and_oos() {
 #[test]
 fn metadata_and_property_list_are_truthful_and_non_intrinsic() {
     let object = StagingObject::new(1, "STG-1", config()).unwrap();
-    let list = object.property_list();
+    let list = crate::test_rows::listed(&object.property_metadata());
     for required in [
         PropertyIdentifier::PRESENT_VALUE,
         PropertyIdentifier::PRESENT_STAGE,
@@ -678,18 +682,17 @@ fn metadata_and_property_list_are_truthful_and_non_intrinsic() {
     ] {
         assert!(list.contains(&required), "missing {required:?}");
     }
-    assert!(object.is_writable_property(PropertyIdentifier::PRESENT_VALUE));
-    assert!(!object.is_writable_property(PropertyIdentifier::PRESENT_STAGE));
-    assert!(object.supports_cov());
+    assert!(is_writable_property(&object, P::PRESENT_VALUE));
+    assert!(!is_writable_property(&object, P::PRESENT_STAGE));
+    assert!(object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
 
     let mut unnamed = config();
     unnamed.stage_names = None;
     let unnamed = StagingObject::new(2, "unnamed", unnamed).unwrap();
-    assert!(
-        !unnamed
-            .property_list()
-            .contains(&PropertyIdentifier::STAGE_NAMES)
-    );
+    assert!(!crate::property_metadata::has_property(
+        &unnamed.property_metadata(),
+        PropertyIdentifier::STAGE_NAMES
+    ));
     assert_protocol_error(
         unnamed
             .read_property(PropertyIdentifier::STAGE_NAMES, None)
@@ -709,8 +712,8 @@ fn staging_cov_increment_and_reported_present_stage() {
             .unwrap(),
         PropertyValue::Real(0.0)
     );
-    assert_eq!(object.cov_increment(), Some(0.0));
-    assert!(object.is_writable_property(PropertyIdentifier::COV_INCREMENT));
+    assert_eq!(object.cov().and_then(|cov| cov.cov_increment()), Some(0.0));
+    assert!(is_writable_property(&object, P::COV_INCREMENT));
     object
         .write_property(
             PropertyIdentifier::COV_INCREMENT,
@@ -719,7 +722,7 @@ fn staging_cov_increment_and_reported_present_stage() {
             None,
         )
         .unwrap();
-    assert_eq!(object.cov_increment(), Some(1.5));
+    assert_eq!(object.cov().and_then(|cov| cov.cov_increment()), Some(1.5));
     for (value, code) in [
         (PropertyValue::Real(-1.0), ErrorCode::VALUE_OUT_OF_RANGE),
         (PropertyValue::Real(f32::NAN), ErrorCode::VALUE_OUT_OF_RANGE),
@@ -733,10 +736,10 @@ fn staging_cov_increment_and_reported_present_stage() {
             code,
         );
     }
-    assert_eq!(object.cov_increment(), Some(1.5));
+    assert_eq!(object.cov().and_then(|cov| cov.cov_increment()), Some(1.5));
     // Table 13-1: a Present_Stage change triggers a report and is carried.
     assert_eq!(
-        object.cov_reported_properties(),
+        crate::cov_reporting_tests::reported(&object),
         [Trigger(PropertyIdentifier::PRESENT_STAGE)]
     );
 }

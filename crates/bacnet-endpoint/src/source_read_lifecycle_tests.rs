@@ -1,6 +1,6 @@
 use super::*;
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_read_filters_priority_independence_and_unsupported_destinations() {
     let (mut peer, mut requests) = network().await;
     let (mut sink, mut records) = network().await;
@@ -41,7 +41,9 @@ async fn source_read_filters_priority_independence_and_unsupported_destinations(
             .await
             .get_mut(&selected())
             .unwrap()
-            .configure_audit_reporter_internal(
+            .audit_reporter_mut()
+            .expect("an Audit Reporter")
+            .configure(
                 level,
                 AuditOperationFlags::from_bits(bits).unwrap(),
                 false,
@@ -80,9 +82,10 @@ async fn source_read_filters_priority_independence_and_unsupported_destinations(
         bacnet_endpoint_core::endpoint_ingress::EndpointApduDestination::Direct {
             destination_mac: MacAddr::from_slice(&encode_bip_mac([255; 4], 47808)),
         },
+        // A routed station is audited (#2371), but not the global network.
         bacnet_endpoint_core::endpoint_ingress::EndpointApduDestination::Routed {
             router_mac: MacAddr::from_slice(peer.local_mac()),
-            destination_network: 7,
+            destination_network: 0xFFFF,
             destination_mac: MacAddr::from_slice(&[2]),
         },
     ] {
@@ -107,7 +110,7 @@ async fn source_read_filters_priority_independence_and_unsupported_destinations(
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_read_whole_operation_capacity_bounds_prelease_waiters_and_stop() {
     let (mut peer, mut requests) = network().await;
     let (mut sink, _records) = network().await;
@@ -124,19 +127,15 @@ async fn source_read_whole_operation_capacity_bounds_prelease_waiters_and_stop()
             None,
         ));
     }
-    timeout(WAIT, async {
-        while session
+    eventually(WAIT, "every source operation is in use", async || {
+        session
             .source_audit
             .as_ref()
             .unwrap()
             .available_operations()
-            != 0
-        {
-            tokio::task::yield_now().await;
-        }
+            == 0
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(session.coordinator.active_count().unwrap(), 0);
     assert!(
         start_read(
@@ -165,7 +164,7 @@ async fn source_read_whole_operation_capacity_bounds_prelease_waiters_and_stop()
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_read_audit_capacity_deadline_health_and_later_recovery() {
     let (mut peer, mut requests) = network().await;
     let (mut sink, mut records) = network().await;
@@ -223,13 +222,10 @@ async fn source_read_audit_capacity_deadline_health_and_later_recovery() {
         }),
     )
     .await;
-    timeout(WAIT, async {
-        while session.coordinator.active_count().unwrap() != 63 {
-            tokio::task::yield_now().await;
-        }
+    eventually(WAIT, "63 invoke IDs are active", async || {
+        session.coordinator.active_count().unwrap() == 63
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(
         reliability(&session).await,
         Reliability::COMMUNICATION_FAILURE.to_raw(),
@@ -265,19 +261,16 @@ async fn source_read_audit_capacity_deadline_health_and_later_recovery() {
         }),
     )
     .await;
-    timeout(WAIT, async {
-        while reliability(&session).await != Reliability::NO_FAULT_DETECTED.to_raw() {
-            tokio::task::yield_now().await;
-        }
+    eventually(WAIT, "Reliability is NO_FAULT_DETECTED", async || {
+        reliability(&session).await == Reliability::NO_FAULT_DETECTED.to_raw()
     })
-    .await
-    .unwrap();
+    .await;
     session.stop().await.unwrap();
     peer.stop().await.unwrap();
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn source_read_stop_and_drop_cancel_owned_work_with_held_client_clones() {
     let (mut peer, mut requests) = network().await;
     let (mut sink, mut records) = network().await;
@@ -313,21 +306,20 @@ async fn source_read_stop_and_drop_cancel_owned_work_with_held_client_clones() {
                 .await
                 .is_err()
         );
-        timeout(WAIT, async {
-            while coordinator.active_count().unwrap() != 0 || weak_db.upgrade().is_some() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        eventually(
+            WAIT,
+            "invoke IDs are free and the database is dropped",
+            async || coordinator.active_count().unwrap() == 0 && weak_db.upgrade().is_none(),
+        )
+        .await;
         assert!(records.try_recv().is_err());
     }
     peer.stop().await.unwrap();
     sink.stop().await.unwrap();
 }
 
-#[tokio::test]
-async fn source_read_and_target_reporting_remain_independent_over_bip() {
+#[tokio::test(start_paused = true)]
+async fn source_read_and_target_reporting_remain_independent() {
     use bacnet_server::server::{AuditReportersConfig, BACnetServer, DeviceBinding};
     use bacnet_types::enums::EngineeringUnits;
     let (mut sink, mut records) = network().await;
@@ -346,7 +338,9 @@ async fn source_read_and_target_reporting_remain_independent_over_bip() {
     .unwrap();
     let mut reporter = AuditReporterObject::new(1, "Target Reporter").unwrap();
     reporter
-        .configure_audit_reporter_internal(
+        .audit_reporter_mut()
+        .expect("an Audit Reporter")
+        .configure(
             AuditLevel::AUDIT_ALL,
             AuditOperationFlags::from_bits(1).unwrap(),
             false,
@@ -365,10 +359,9 @@ async fn source_read_and_target_reporting_remain_independent_over_bip() {
             999,
         )))
         .unwrap();
-    let mut target_server = BACnetServer::bip_builder()
+    let mut target_server = BACnetServer::generic_builder()
         .device(bacnet_objects::DeviceIdentity::new(456, 42).unwrap())
-        .interface(Ipv4Addr::LOCALHOST)
-        .port(0)
+        .transport(BusPort::new())
         .database(db)
         .audit_reporters(AuditReportersConfig {
             reporters: vec![selected()],

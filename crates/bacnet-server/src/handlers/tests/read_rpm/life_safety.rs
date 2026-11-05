@@ -35,6 +35,7 @@ fn rpm_life_safety_point_indexed_reads_and_list_bytes_are_unchanged() {
         let mut object = LifeSafetyPointObject::new(7, "LSP-7").unwrap();
         if configured {
             object.set_direct_reading(42.5);
+            object.set_maintenance_required(bacnet_types::enums::Maintenance::PERIODIC_TEST);
             object
                 .add_member(ObjectIdentifier::new(ObjectType::LIFE_SAFETY_ZONE, 9).unwrap())
                 .unwrap();
@@ -104,7 +105,12 @@ fn rpm_life_safety_point_indexed_reads_and_list_bytes_are_unchanged() {
                 Some(0),
                 Err(ErrorCode::PROPERTY_IS_NOT_AN_ARRAY),
             ),
-            (P::MAINTENANCE_REQUIRED, None, Ok(&[0x10])),
+            // A BACnetMaintenance (Table 12-18): periodic-test, or none.
+            (
+                P::MAINTENANCE_REQUIRED,
+                None,
+                Ok(if configured { &[0x91, 1] } else { &[0x91, 0] }),
+            ),
             (P::EVENT_STATE, None, Ok(&[0x91, 0])),
             (P::STATUS_FLAGS, None, Ok(&[0x82, 4, 0])),
             (P::OUT_OF_SERVICE, None, Ok(&[0x10])),
@@ -273,9 +279,9 @@ fn assert_indexed_cases(
     }
     .encode(&mut request)
     .unwrap();
-    let mut legacy = BytesMut::new();
-    handle_read_property_multiple(db, &request, &mut legacy).unwrap();
-    let ack = ReadPropertyMultipleACK::decode(&legacy).unwrap();
+    let mut unlimited = BytesMut::new();
+    handle_read_property_multiple(db, &request, &mut unlimited).unwrap();
+    let ack = ReadPropertyMultipleACK::decode(&unlimited).unwrap();
     assert_eq!(ack.list_of_read_access_results.len(), 1);
     let access = &ack.list_of_read_access_results[0];
     assert_eq!(access.object_identifier, oid);
@@ -323,21 +329,22 @@ fn assert_indexed_cases(
             }
         }
     }
-    use crate::handlers::{ReadFailure, rpm_budget::handle_rpm_budgeted};
-    let budget = crate::server::ReadPropertyMultipleBudget {
+    use crate::handlers::rpm_budget::handle_rpm_budgeted;
+    use bacnet_device_core::read::ReadFailure;
+    let budget = bacnet_device_core::read::ReadPropertyMultipleBudget {
         max_result_elements: cases.len(),
-        max_service_ack_bytes: legacy.len(),
+        max_service_ack_bytes: unlimited.len(),
     };
     let mut bounded = BytesMut::new();
     handle_rpm_budgeted(db, &request, &mut bounded, budget).unwrap();
-    assert_eq!(bounded, legacy);
+    assert_eq!(bounded, unlimited);
     let mut prefix = BytesMut::from(&b"prefix"[..]);
     assert!(matches!(
         handle_rpm_budgeted(
             db,
             &request,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
                 max_result_elements: cases.len() - 1,
                 ..budget
             }
@@ -350,8 +357,8 @@ fn assert_indexed_cases(
             db,
             &request,
             &mut prefix,
-            crate::server::ReadPropertyMultipleBudget {
-                max_service_ack_bytes: legacy.len() - 1,
+            bacnet_device_core::read::ReadPropertyMultipleBudget {
+                max_service_ack_bytes: unlimited.len() - 1,
                 ..budget
             }
         ),

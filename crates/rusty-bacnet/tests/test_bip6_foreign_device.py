@@ -6,15 +6,19 @@ BBMD here is a plain UDP socket on ``::1`` that answers each
 Register-Foreign-Device (Clause U.4.5) with a successful BVLC-Result, and
 records the time-to-live each one asks for.
 """
+import ast
 import asyncio
 import socket
 import unittest
+from pathlib import Path
 
+import rusty_bacnet
 from rusty_bacnet import (
     BACnetClient, BACnetServer, Bbmd, BipEndpoint, ForeignDevice, ObjectIdentifier,
     ObjectType, PropertyIdentifier as P, PropertyValue as V, ReinitializedState as S,
 )
 
+from port_retry import rerun_on_lost_port
 from test_bip6_vmac import CLIENT_INSTANCE, free_udp6_port, ipv6_loopback, loopback_client
 
 PORT = ObjectIdentifier(ObjectType.NETWORK_PORT, 1)
@@ -23,6 +27,34 @@ REGISTER = b"\x82\x09\x00\x09"
 DISTRIBUTE_BROADCAST = b"\x82\x0c"
 # BVLC-Result, successful completion, from the BBMD's VMAC.
 RESULT_OK = b"\x82\x00\x00\x09\x0b\xbb\xbb\x00\x00"
+# The same with the Register-Foreign-Device NAK (Clause U.2.1.1).
+RESULT_NAK = b"\x82\x00\x00\x09\x0b\xbb\xbb\x00\x90"
+
+
+def stub_fields(name):
+    """The fields the installed stub's TypedDict ``name`` declares."""
+    stub = Path(rusty_bacnet.__file__).with_suffix(".pyi")
+    tree = ast.parse(stub.read_text(encoding="utf-8"))
+    typed = next(node for node in tree.body
+                 if isinstance(node, ast.ClassDef) and node.name == name)
+    return {node.target.id for node in typed.body if isinstance(node, ast.AnnAssign)}
+
+
+def localhost_is_ipv6_loopback() -> bool:
+    """True when this host's resolver stands ``localhost`` for ``::1``."""
+    try:
+        found = socket.getaddrinfo("localhost", None, socket.AF_INET6)
+    except OSError:
+        return False
+    return any(address[4][0] == "::1" for address in found)
+
+
+async def eventually(check, seconds=5.0):
+    """Poll the coroutine function ``check`` until it returns a true value."""
+    async with asyncio.timeout(seconds):
+        while not (result := await check()):
+            await asyncio.sleep(0.02)
+        return result
 
 
 def vmac(instance: int) -> bytes:
@@ -68,10 +100,11 @@ class FakeBbmd:
                 if datagram.startswith(prefix):
                     return datagram, sender
 
-    async def registration(self):
-        """The VMAC and time-to-live of the next registration, answered."""
+    async def registration(self, answer=RESULT_OK):
+        """The VMAC and time-to-live of the next registration, answered
+        with ``answer``."""
         datagram, sender = await self.next(REGISTER)
-        self.sock.sendto(RESULT_OK, sender[:2])
+        self.sock.sendto(answer, sender[:2])
         return datagram[4:7], int.from_bytes(datagram[7:9], "big")
 
 
@@ -107,8 +140,10 @@ class OptionTests(unittest.TestCase):
         for bbmd in ("[fe80::1%3]:47808", "fe80::1%3", "[::1]:47808x", "::1::2"):
             with self.subTest(bbmd=bbmd), self.assertRaises(ValueError):
                 ForeignDevice(bbmd)
-        with self.assertRaisesRegex(ValueError, "not an IPv4 or IPv6 address"):
-            ForeignDevice("nowhere")
+        # "nowhere" is a host name a B/IP BBMD may have (#2308).
+        with self.assertRaisesRegex(ValueError,
+                                    "not an IPv4 or IPv6 address or a host name"):
+            ForeignDevice("no where")
 
     def test_the_bbmd_family_must_match_the_transport(self):
         ipv4, ipv6 = ForeignDevice("192.0.2.10"), ForeignDevice("::1")
@@ -132,6 +167,15 @@ class OptionTests(unittest.TestCase):
         BACnetServer(INSTANCE, transport="ipv6", foreign_device=ipv6)
         BACnetClient(transport="ipv6", ipv6_device_instance=1, foreign_device=ipv6)
 
+    def test_a_host_name_serves_ipv6_too(self):
+        # A host name serves either transport (#2365); renewal stays B/IP's.
+        named = ForeignDevice("bbmd.example:47809", ttl=60)
+        BACnetClient(transport="ipv6", ipv6_device_instance=1, foreign_device=named)
+        BACnetServer(INSTANCE, transport="ipv6", foreign_device=named)
+        with self.assertRaisesRegex(ValueError, "renewal applies only to a B/IP BBMD"):
+            BACnetClient(transport="ipv6", ipv6_device_instance=1,
+                         foreign_device=ForeignDevice("bbmd.example", ttl=60, renewal=10))
+
     def test_an_ipv6_foreign_client_needs_a_device_instance(self):
         with self.assertRaisesRegex(ValueError, "needs ipv6_device_instance"):
             BACnetClient(transport="ipv6", foreign_device=ForeignDevice("::1"))
@@ -146,6 +190,9 @@ class LoopbackTests(unittest.IsolatedAsyncioTestCase):
         self.bbmd.close()
 
     async def test_a_foreign_server_registers_and_reports_foreign_mode(self):
+        await rerun_on_lost_port(self.foreign_server_registers)
+
+    async def foreign_server_registers(self):
         port = free_udp6_port()
         server = BACnetServer(INSTANCE, transport="ipv6", ipv6_interface="::1", port=port,
                               registered_network_port=1,
@@ -170,6 +217,9 @@ class LoopbackTests(unittest.IsolatedAsyncioTestCase):
             await server.stop()
 
     async def test_activate_changes_carries_a_written_lifetime_and_bbmd(self):
+        await rerun_on_lost_port(self.activate_changes)
+
+    async def activate_changes(self):
         second = FakeBbmd()
         port = free_udp6_port()
         server = BACnetServer(INSTANCE, transport="ipv6", ipv6_interface="::1", port=port,
@@ -205,12 +255,91 @@ class LoopbackTests(unittest.IsolatedAsyncioTestCase):
             await server.stop()
             second.close()
 
+    @unittest.skipUnless(localhost_is_ipv6_loopback(), "localhost isn't ::1 here")
+    async def test_a_bbmd_named_by_host_name_takes_the_registration(self):
+        foreign = ForeignDevice(f"localhost:{self.bbmd.port}", ttl=90)
+        async with BACnetClient(transport="ipv6", ipv6_interface="::1", port=0,
+                                ipv6_device_instance=CLIENT_INSTANCE,
+                                foreign_device=foreign) as client:
+            self.assertEqual(await self.bbmd.registration(), (vmac(CLIENT_INSTANCE), 90))
+            status = await client.foreign_registration()
+            self.assertEqual(set(status), stub_fields("Bip6ForeignRegistrationStatus"))
+            self.assertEqual(
+                (status["bbmd"], status["bbmd_name"], status["waiting_for_bbmd"],
+                 status["bbmd_lookups"], status["bbmd_lookup_failures"],
+                 status["last_bbmd_lookup_failure"]),
+                (self.bbmd.address, f"localhost:{self.bbmd.port}", False, 1, 0, None))
+
+    async def test_a_name_with_no_usable_address_waits(self):
+        # localhost stands for the client's own address here, or for no IPv6
+        # address at all: either way the lookup fails at once, with no name
+        # service involved, and the client, on an explicit interface, waits.
+        async def run():
+            port = free_udp6_port()
+            foreign = ForeignDevice(f"localhost:{port}", ttl=60)
+            async with BACnetClient(transport="ipv6", ipv6_interface="::1", port=port,
+                                    ipv6_device_instance=CLIENT_INSTANCE,
+                                    foreign_device=foreign) as client:
+                async def failed():
+                    status = await client.foreign_registration()
+                    return status if status["bbmd_lookup_failures"] else None
+                status = await eventually(failed)
+                self.assertEqual(
+                    (status["bbmd"], status["bbmd_name"], status["waiting_for_bbmd"],
+                     status["bbmd_lookups"], status["previous_releases"]),
+                    (None, f"localhost:{port}", True, 1, 0))
+                self.assertIn(status["last_bbmd_lookup_failure"],
+                              ("unusable_address", "no_ipv6_address"))
+                # With no BBMD, a broadcast is refused, and counted.
+                with self.assertRaises(OSError):
+                    await client.who_is(INSTANCE, INSTANCE)
+                status = await client.foreign_registration()
+                self.assertEqual(status["broadcasts_refused"], 1)
+        await rerun_on_lost_port(run)
+
+    async def test_the_bbmds_answer_reads_as_on_b_ip(self):
+        # #2388: the answer to the latest registration, under B/IP's keys.
+        for answer, outcome, result, refused in ((RESULT_OK, "accepted", 0x0000, 0),
+                                                 (RESULT_NAK, "refused", 0x0090, 1)):
+            with self.subTest(outcome=outcome):
+                bbmd = FakeBbmd()
+                try:
+                    foreign = ForeignDevice(bbmd.address, ttl=90)
+                    async with BACnetClient(transport="ipv6", ipv6_interface="::1", port=0,
+                                            ipv6_device_instance=CLIENT_INSTANCE,
+                                            foreign_device=foreign) as client:
+                        # The BBMD hasn't answered yet.
+                        status = await client.foreign_registration()
+                        self.assertEqual(set(status), stub_fields("Bip6ForeignRegistrationStatus"))
+                        self.assertEqual(
+                            (status["last_outcome"], status["last_result"],
+                             status["last_outcome_age"], status["refused"],
+                             status["unanswered"]),
+                            (None, None, None, 0, 0))
+                        await bbmd.registration(answer)
+
+                        async def answered():
+                            status = await client.foreign_registration()
+                            return status if status["last_outcome"] else None
+                        status = await eventually(answered)
+                        self.assertEqual(
+                            (status["last_outcome"], status["last_result"], status["refused"],
+                             status["unanswered"]),
+                            (outcome, result, refused, 0))
+                        self.assertIsInstance(status["last_outcome_age"], float)
+                        self.assertGreaterEqual(status["last_outcome_age"], 0.0)
+                finally:
+                    bbmd.close()
+
     async def test_a_foreign_client_registers_and_broadcasts_through_its_bbmd(self):
         foreign = ForeignDevice(self.bbmd.address, ttl=90)
         async with BACnetClient(transport="ipv6", ipv6_interface="::1", port=0,
                                 ipv6_device_instance=CLIENT_INSTANCE,
                                 foreign_device=foreign) as client:
             self.assertEqual(await self.bbmd.registration(), (vmac(CLIENT_INSTANCE), 90))
+            status = await client.foreign_registration()
+            # Known by address: no host name to show.
+            self.assertEqual((status["bbmd"], status["bbmd_name"]), (self.bbmd.address, None))
             # A Who-Is goes to the BBMD as a Distribute-Broadcast-To-Network.
             await client.who_is(INSTANCE, INSTANCE)
             datagram, _ = await self.bbmd.next(DISTRIBUTE_BROADCAST)

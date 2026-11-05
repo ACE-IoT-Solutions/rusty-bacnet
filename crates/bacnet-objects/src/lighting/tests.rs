@@ -1,4 +1,5 @@
 use super::*;
+use crate::property_metadata::is_writable_property;
 use bacnet_types::error::RemoteError;
 
 // --- LightingOutputObject ---
@@ -223,7 +224,7 @@ fn lighting_output_lighting_properties() {
 #[test]
 fn lighting_output_property_list() {
     let obj = LightingOutputObject::new(1, "LO-1").unwrap();
-    let props = obj.property_list();
+    let props = crate::test_rows::listed(&obj.property_metadata());
     assert!(props.contains(&PropertyIdentifier::PRESENT_VALUE));
     assert!(props.contains(&PropertyIdentifier::TRACKING_VALUE));
     assert!(props.contains(&PropertyIdentifier::LIGHTING_COMMAND));
@@ -423,7 +424,7 @@ fn binary_lighting_output_priority_array_tracks_present_value_command() {
 #[test]
 fn binary_lighting_output_property_list() {
     let obj = BinaryLightingOutputObject::new(1, "BLO-1").unwrap();
-    let props = obj.property_list();
+    let props = crate::test_rows::listed(&obj.property_metadata());
     assert!(props.contains(&PropertyIdentifier::PRESENT_VALUE));
     assert!(props.contains(&PropertyIdentifier::BLINK_WARN_ENABLE));
     assert!(props.contains(&PropertyIdentifier::EGRESS_TIME));
@@ -441,7 +442,10 @@ fn binary_lighting_output_property_list() {
 #[test]
 fn lighting_output_relinquish_default_write_recaptures_present_value() {
     let mut lo = LightingOutputObject::new(1, "LO-1").unwrap();
-    assert!(lo.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &lo,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
 
     lo.write_property(
         PropertyIdentifier::RELINQUISH_DEFAULT,
@@ -524,7 +528,10 @@ fn assert_binary_lighting_output_command_state(
 #[test]
 fn binary_lighting_output_relinquish_default_accepts_off_on_and_recaptures_present_value() {
     let mut blo = BinaryLightingOutputObject::new(1, "BLO-1").unwrap();
-    assert!(blo.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &blo,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
 
     for value in [1, 0] {
         blo.set_relinquish_default(value).unwrap();

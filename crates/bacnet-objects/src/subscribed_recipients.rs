@@ -25,7 +25,7 @@
 //! rounded up, so a live entry never reads as zero. An entry leaves the list
 //! once its deadline passes: reads and writes skip it from then on, and the
 //! server's operation task drops it at its deadline (through
-//! `advance_monotonic_time_internal`). With no clock bound the store counts
+//! [`Timed::advance_monotonic_time`](crate::traits::Timed::advance_monotonic_time)). With no clock bound the store counts
 //! the time [`advance_by`](SubscribedRecipients::advance_by) gives it, and
 //! binding a clock later keeps the time each entry has left.
 //!
@@ -180,9 +180,11 @@ impl SubscribedRecipients {
 
     /// Replace the list with a written one, all or nothing.
     ///
-    /// Only the framed form in `PropertyValue::ApplicationData` is a value;
-    /// anything else, or an entry that does not decode, fails with PROPERTY /
-    /// INVALID_DATA_TYPE. An entry whose Time Remaining is 0 or past
+    /// Only encoded entries are a value: the framed form in
+    /// `PropertyValue::ApplicationData`, or a non-empty list of such elements,
+    /// joined (#2272; `common::framed_octets`). Anything else, or an entry
+    /// that does not decode, fails with PROPERTY / INVALID_DATA_TYPE. An
+    /// entry whose Time Remaining is 0 or past
     /// [`MAX_SUBSCRIPTION_MINUTES`] fails with PROPERTY / VALUE_OUT_OF_RANGE,
     /// and the first entry past [`MAX_SUBSCRIBED_RECIPIENTS`] with RESOURCES /
     /// NO_SPACE_TO_WRITE_PROPERTY; both name the entry's position in the
@@ -197,9 +199,7 @@ impl SubscribedRecipients {
     /// entries naming the same recipient and process are one entry, which
     /// takes the later one's members.
     pub fn write(&mut self, value: PropertyValue) -> Result<(), Error> {
-        let PropertyValue::ApplicationData(bytes) = value else {
-            return Err(common::invalid_data_type_error());
-        };
+        let bytes = common::framed_octets(&value)?;
         let now = self.now();
         let mut written: Vec<Entry> = Vec::new();
         let mut offset = 0;
@@ -263,8 +263,13 @@ impl SubscribedRecipients {
         }
     }
 
+    /// The bound monotonic clock, if any.
+    pub(crate) fn clock(&self) -> Option<&Arc<MonotonicClock>> {
+        self.monotonic_clock.as_ref()
+    }
+
     /// Bind the database's monotonic clock, from the object's
-    /// `bind_monotonic_clock_internal`. Each held entry keeps the time it has
+    /// [`Timed::bind_clocks`](crate::traits::Timed::bind_clocks). Each held entry keeps the time it has
     /// left: its deadline moves from the old time base to the new one, so a
     /// list written or restored before the object joins a database lapses on
     /// time.
@@ -279,8 +284,9 @@ impl SubscribedRecipients {
     }
 
     /// Drop every entry whose deadline is at or before `now`, a monotonic
-    /// instant, from the object's `advance_monotonic_time_internal`. `true`
-    /// when one was dropped.
+    /// instant, from the object's
+    /// [`Timed::advance_monotonic_time`](crate::traits::Timed::advance_monotonic_time).
+    /// `true` when one was dropped.
     pub fn advance_to(&mut self, now: Duration) -> bool {
         let held = self.entries.len();
         self.entries.retain(|entry| entry.is_live(now));
@@ -295,7 +301,7 @@ impl SubscribedRecipients {
     }
 
     /// The earliest deadline among the held entries, for the object's
-    /// `next_monotonic_deadline_internal`.
+    /// [`Timed::next_monotonic_deadline`](crate::traits::Timed::next_monotonic_deadline).
     pub fn next_deadline(&self) -> Option<Duration> {
         self.entries.iter().map(|entry| entry.expires_at).min()
     }

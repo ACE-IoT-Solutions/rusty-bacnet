@@ -138,8 +138,15 @@ impl<W: WebSocketPort> Recovery<'_, W> {
         let mut attempts = 0;
         // Losing the failover hub sends each attempt to the primary first,
         // then back to the failover hub, so the connector keeps working toward
-        // the primary (Annex AB.5.2). Losing the primary retries the primary.
+        // the primary (Annex AB.5.2). Finite primary recovery retries the
+        // primary before failover. With unbounded retries, that exhaustion
+        // point never arrives, so include failover in each retry cycle.
         let mut targets = match active_hub {
+            ScActiveHub::Primary
+                if self.config.max_retries == u32::MAX && self.failover_connector.is_some() =>
+            {
+                vec![ScActiveHub::Primary, ScActiveHub::Failover]
+            }
             ScActiveHub::Primary => vec![ScActiveHub::Primary],
             ScActiveHub::Failover => vec![ScActiveHub::Primary, ScActiveHub::Failover],
         };
@@ -292,6 +299,9 @@ impl<W: WebSocketPort> Recovery<'_, W> {
         let probe_conn = connect_probe_from(self.conn).await;
         match perform_handshake(&*ws, &probe_conn, None, self.connect_timeout_ms).await {
             Ok(()) => {
+                if target == ScActiveHub::Failover && !lost {
+                    self.observer.failover_engaged();
+                }
                 self.publish(&ws, &probe_conn, target).await;
                 let suppressed = self.diagnostic_throttle.take_suppressed();
                 info!(

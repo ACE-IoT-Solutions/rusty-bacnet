@@ -13,8 +13,8 @@ use crate::property_metadata::{
 // - Group (type 11, §12.14 Table 12-17; printed pp. 243-244 / PDF pp. 245-246)
 // - GlobalGroup (type 26, §12.50 Table 12-57; printed pp. 490-492 / PDF pp. 492-494)
 // - StructuredView (type 29, §12.29 Table 12-34; printed p. 351 / PDF pp. 353-355)
-// Order preserves each legacy projection; PROPERTY_LIST is appended so the
-// projection helper omits it while required_properties keeps it. Only
+// Order preserves each type's earlier row order; PROPERTY_LIST is appended
+// last. Only
 // implemented rows are described: table rows the objects do not serve (Group
 // audit/tag/profile rows; GlobalGroup intrinsic-reporting, COVU, audit, tag
 // and profile rows; StructuredView subordinate tags/relationships rows) stay
@@ -42,11 +42,10 @@ use crate::property_metadata::{
 // serve none of them (#1064 removed the rows the 0.1.0 import carried).
 // Presence is None throughout: the implementation models no commandable,
 // intrinsic-reporting, or paired-text gating on this family.
-// The trio is not createable at runtime (the network factory builds only the
-// eight analog/binary/multi-state input/output/value types, so the
-// is_createable=false default holds) and remains deleteable (delete denies
-// only Device and NetworkPort, so the is_deleteable=true default holds);
-// neither needs an override. Array gating, writability, and COV also keep
+// Of the trio only StructuredView is createable at runtime (#2208), taking
+// its ReadOnly node and subordinate rows as CreateObject initial values; all
+// three remain deleteable (delete denies only Device and NetworkPort, so the
+// builtin_deleteable=true default holds). Array gating, writability, and COV also keep
 // their defaults: Present_Value admits an index only on GlobalGroup
 // (BACnetARRAY per Table 12-57) and rejects it on Group (BACnetLIST per
 // Table 12-17); List_Of_Group_Members stays index-rejecting while
@@ -126,8 +125,14 @@ mod tests {
         let metadata = object.property_metadata();
         assert!(matches!(metadata, Cow::Borrowed(_)));
         assert_eq!(metadata.len(), all.len() + 1);
-        assert_eq!(object.property_list().as_ref(), all);
-        assert_eq!(object.required_properties().as_ref(), required);
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(all)
+        );
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            required
+        );
         assert_eq!(
             metadata
                 .iter()
@@ -136,9 +141,10 @@ mod tests {
                 .len(),
             metadata.len()
         );
-        assert!(!object.is_createable());
-        assert!(object.is_deleteable());
-        assert!(!object.supports_cov());
+        assert!(crate::creation::builtin_deleteable(
+            object.object_identifier().object_type()
+        ));
+        assert!(!object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
         for row in metadata.iter() {
             assert_eq!(row.presence_condition, None);
             let expected = if required.contains(&row.property_identifier) {
@@ -157,7 +163,10 @@ mod tests {
             .filter(|&&p| !matches!(p, P::OBJECT_IDENTIFIER | P::OBJECT_NAME | P::OBJECT_TYPE))
             .map(|p| PropertyValue::Enumerated(p.to_raw()))
             .collect();
-        assert!(object.is_array_property(P::PROPERTY_LIST));
+        assert!(crate::property_metadata::is_array_property(
+            object,
+            P::PROPERTY_LIST
+        ));
         assert_eq!(
             object.read_property(P::PROPERTY_LIST, None).unwrap(),
             PropertyValue::List(wire.clone())
@@ -218,8 +227,14 @@ mod tests {
         );
         // Group Present_Value is a BACnetLIST (Table 12-17), so an index is
         // rejected; GlobalGroup admits one (Table 12-57 BACnetARRAY).
-        assert!(!object.is_array_property(P::PRESENT_VALUE));
-        assert!(!object.is_array_property(P::LIST_OF_GROUP_MEMBERS));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::PRESENT_VALUE
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::LIST_OF_GROUP_MEMBERS
+        ));
     }
 
     #[test]
@@ -268,9 +283,18 @@ mod tests {
         );
         // GlobalGroup collections are BACnetARRAY (Table 12-57), including
         // Present_Value, which is scalar elsewhere.
-        assert!(object.is_array_property(P::GROUP_MEMBERS));
-        assert!(object.is_array_property(P::GROUP_MEMBER_NAMES));
-        assert!(object.is_array_property(P::PRESENT_VALUE));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::GROUP_MEMBERS
+        ));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::GROUP_MEMBER_NAMES
+        ));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::PRESENT_VALUE
+        ));
     }
 
     #[test]
@@ -316,8 +340,14 @@ mod tests {
             PropertyValue::List(vec![])
         );
         // StructuredView subordinate collections are BACnetARRAY (Table 12-34).
-        assert!(object.is_array_property(P::SUBORDINATE_LIST));
-        assert!(object.is_array_property(P::SUBORDINATE_ANNOTATIONS));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::SUBORDINATE_LIST
+        ));
+        assert!(crate::property_metadata::is_array_property(
+            &object,
+            P::SUBORDINATE_ANNOTATIONS
+        ));
     }
 
     #[test]
@@ -353,7 +383,7 @@ mod tests {
                     };
                     assert_eq!(row.write_capability, capability, "{p:?}");
                     assert_eq!(
-                        object.is_writable_property(p),
+                        crate::property_metadata::is_writable_property(&*object, p),
                         capability.is_writable(),
                         "{p:?}"
                     );
@@ -367,7 +397,10 @@ mod tests {
                 }
                 // Object_Name has no network write route: a rename falls
                 // through to WRITE_ACCESS_DENIED even with a well-formed value.
-                assert!(!object.is_writable_property(P::OBJECT_NAME));
+                assert!(!crate::property_metadata::is_writable_property(
+                    &*object,
+                    P::OBJECT_NAME
+                ));
                 assert_error(
                     object
                         .write_property(
@@ -398,7 +431,7 @@ mod tests {
                             object.write_property(p, None, value, None).unwrap_err(),
                             ErrorCode::WRITE_ACCESS_DENIED,
                         );
-                        assert!(!object.is_writable_property(p));
+                        assert!(!crate::property_metadata::is_writable_property(&*object, p));
                     }
                 }
                 // Description and Out_Of_Service reject mistyped values
@@ -426,7 +459,7 @@ mod tests {
     #[test]
     fn property_metadata_group_trio_unserved_rows_stay_unknown() {
         fn assert_unserved(object: &mut dyn BACnetObject, p: P) {
-            assert!(!object.is_writable_property(p));
+            assert!(!crate::property_metadata::is_writable_property(&*object, p));
             assert_error(
                 object.read_property(p, None).unwrap_err(),
                 ErrorCode::UNKNOWN_PROPERTY,

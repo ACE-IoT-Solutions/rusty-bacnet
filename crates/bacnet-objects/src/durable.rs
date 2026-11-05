@@ -1,15 +1,17 @@
 //! Saving object state off the object database lock (#1270).
 //!
-//! The Audit Log, the Notification Forwarder, the Notification Class and the
-//! Access Rights object keep state in storage the application provides
-//! ([`AuditLogPersistence`], [`NotificationForwarderPersistence`],
-//! [`NotificationClassPersistence`] and [`AccessRightsPersistence`]).
+//! The Audit Log, the Notification Forwarder, the Notification Class, the
+//! Access Rights object, and the Timer and Channel keep state in storage the
+//! application provides ([`AuditLogPersistence`],
+//! [`NotificationForwarderPersistence`], [`NotificationClassPersistence`],
+//! [`AccessRightsPersistence`] and [`WriteConfigPersistence`]).
 //! A storage call can be slow, since the file backends write, synchronize and
 //! rename, so none of these objects makes one while its caller holds the
 //! database's write guard. They all follow the pattern this module provides.
 //! The Trend Log, Trend Log Multiple and Event Log commit to their
-//! [`LogPersistence`] through the same writer, on a cadence rather than per
-//! request (see [`crate::log_persistence`]), so they never stage.
+//! [`LogPersistence`] through the same writer, mostly on a cadence rather
+//! than per request (see [`crate::log_persistence`]); only a write of a
+//! reporting setting they keep stages its commit (#1952).
 //!
 //! - Under the guard, the object copies the state to keep and queues the copy
 //!   on its save writer. The writer's own thread makes the storage calls, one
@@ -83,9 +85,13 @@
 //!
 //! The writer's thread is a plain `std` thread with no Tokio runtime, so a
 //! storage implementation that needs one brings its own handle. A storage
-//! call that panics fails that save. An object starts the thread with its
-//! first save and keeps it, parked while idle, until the object is dropped:
-//! one thread per object that has saved.
+//! call that panics fails that save. A save starts the thread when none is
+//! running, and the thread ends once the object has queued nothing for a
+//! while (#1956), so a device with many durable objects holds a thread only
+//! for each one that is saving. The thread is detached, so one that has
+//! ended holds nothing. Saves stay in order across a new thread: the old one
+//! ends only with nothing queued and never touches the queue again, and
+//! dropping the object waits until no thread runs it.
 //!
 //! Without std there are no threads: each save runs on the caller's thread
 //! before the call that queued it returns, so every wait is already over
@@ -108,7 +114,7 @@
 //!    `StagedSaves::submit_coalescing`.
 //! 2. Implement [`DurableWrites`] for the object, including
 //!    `settle_forgotten_writes` (`StagedSaves::drop_forgotten`), and return
-//!    it from `BACnetObject::durable_writes_internal`.
+//!    it from `BACnetObject::durable_writes`.
 //! 3. Add the object type, and the properties it saves, to `may_save` in the
 //!    server's `durable_writes` module. The server stages only the writes
 //!    listed there; any other write saves in place.
@@ -119,7 +125,8 @@
 //! The Notification Forwarder's `saving` module is the full example: a list
 //! write stages, and the operation task's saves coalesce. The Notification
 //! Class's is the smallest: a Recipient_List write stages, and nothing else
-//! saves. The Access Rights object's stages indexed array writes too, keyed
+//! saves. The Timer and Channel share theirs (`write_config::saving`): an
+//! object hands it its configuration and how a write changes it. The Access Rights object's stages indexed array writes too, keyed
 //! by the index as well as the value.
 //!
 //! [`AuditLogPersistence`]: crate::audit::AuditLogPersistence
@@ -127,6 +134,7 @@
 //! [`NotificationClassPersistence`]: crate::notification_class::NotificationClassPersistence
 //! [`AccessRightsPersistence`]: crate::access_control::AccessRightsPersistence
 //! [`LogPersistence`]: crate::log_persistence::LogPersistence
+//! [`WriteConfigPersistence`]: crate::write_config::WriteConfigPersistence
 
 use alloc::sync::Arc;
 use core::future::Future;
@@ -160,6 +168,10 @@ mod thread;
 pub(crate) use inline::SaveWriter;
 #[cfg(feature = "std")]
 pub(crate) use thread::SaveWriter;
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use file::MemoryFiles;
 
 /// How long a staged write may wait for its request once its save has run.
 /// It counts from the end of the save, so a slow save never uses it up. Past
@@ -361,9 +373,13 @@ impl SaveTicket {
     }
 
     /// Whether `wait` is the one [`wait`](Self::wait) hands out for this
-    /// save, so a request releasing a staged write can show it staged it.
+    /// save, or a wait [joined](SaveWait::and) with it, so a request
+    /// releasing a staged write can show it staged it. A colour object
+    /// stages a Tags write and a default write for one request, and hands
+    /// it their two waits joined (#1956).
     pub(crate) fn issued(&self, wait: &SaveWait) -> bool {
         Arc::ptr_eq(&self.slot.done, &wait.event)
+            || wait.then.as_deref().is_some_and(|then| self.issued(then))
     }
 
     /// Whether, at `now`, a staged write waiting on this save has outlived
@@ -466,17 +482,31 @@ pub(crate) fn sync_parent_dir(path: &Path) {
 }
 
 /// The CRC-32 (IEEE 802.3, reflected) of `data`, which the two-slot
-/// snapshot files end with.
+/// snapshot files end with. One table lookup per octet rather than eight
+/// shift steps (#2233).
 pub(crate) fn crc32(data: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for byte in data {
-        crc ^= u32::from(*byte);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xedb8_8320 & (0u32.wrapping_sub(crc & 1)));
-        }
-    }
-    !crc
+    !data.iter().fold(!0u32, |crc, &byte| {
+        CRC32_TABLE[usize::from(crc as u8 ^ byte)] ^ (crc >> 8)
+    })
 }
+
+/// [`crc32`]'s table: entry `n` is the remainder of octet `n` shifted
+/// through the reflected polynomial eight times.
+static CRC32_TABLE: [u32; 256] = {
+    let mut table = [0u32; 256];
+    let mut n = 0;
+    while n < 256 {
+        let mut crc = n as u32;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
+            bit += 1;
+        }
+        table[n] = crc;
+        n += 1;
+    }
+    table
+};
 
 /// Whether a directory sync failed only because the filesystem cannot
 /// synchronize a directory.
@@ -528,7 +558,14 @@ pub struct PendingWrite {
 /// again, and in that same critical section calls
 /// [`release_staged_write`](Self::release_staged_write). A write made
 /// without staging still works: the object then saves in place.
-#[doc(hidden)]
+///
+/// An object opts in by implementing this trait and returning itself, or
+/// the field that keeps its storage, from
+/// [`BACnetObject::durable_writes`](crate::traits::BACnetObject::durable_writes).
+/// The server's monotonic pass also calls
+/// [`expire_staged`](Self::expire_staged) on it about once a second, so a
+/// staged write whose request never came back doesn't stay in storage. See
+/// the [module docs](self) for the parts an implementation owns.
 pub trait DurableWrites {
     /// Stage a write of `value` to `property` (at `array_index`).
     fn stage_write(
@@ -597,8 +634,25 @@ pub trait DurableWrites {
     fn settle_forgotten_writes(&mut self) -> Option<SaveWait> {
         None
     }
+
+    /// The host's monotonic pass at `now`, on the monotonic clock's time
+    /// base: drop a staged write whose request has neither taken nor
+    /// released it within the staged-write lifetime of its save finishing,
+    /// and queue a save of the served state, so storage follows the object
+    /// again. An object that keeps its staged saves in a
+    /// `staged::StagedSaves` forwards `now` to its `expire`.
+    ///
+    /// The server calls it on every pass, before it advances the object's
+    /// [`Timed`](crate::traits::Timed) operations, so an object that only
+    /// stages writes needs no `Timed`. The default has nothing that expires.
+    fn expire_staged(&mut self, _now: core::time::Duration) {}
 }
 
+// std: these run saves on the writer thread and sync directories.
 #[cfg(all(test, feature = "std"))]
 #[path = "durable/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "durable/shared_tests.rs"]
+mod shared_tests;

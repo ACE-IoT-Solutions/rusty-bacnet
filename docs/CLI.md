@@ -33,9 +33,12 @@ cargo install --path crates/bacnet-cli --locked --features sc-tls
 
 # With MS/TP over a serial port
 cargo install --path crates/bacnet-cli --locked --features serial
+
+# With the MCP server for AI agent hosts (`bacnet mcp`)
+cargo install --path crates/bacnet-cli --locked --features mcp
 ```
 
-The features combine (`--features sc-tls,pcap,serial`). Packet capture needs libpcap
+The features combine (`--features sc-tls,pcap,serial,mcp`). Packet capture needs libpcap
 and its headers (`libpcap-dev` on Debian and Ubuntu). The `serial` feature
 builds on Linux, macOS and Windows; the Linux release binary has it, and the
 macOS and Windows ones don't yet (see [MS/TP](#mstp)).
@@ -46,12 +49,14 @@ macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 |------|---------|-------------|
 | `-i, --interface <IP>` | (see below) | Network interface IP to bind |
 | `-p, --port <PORT>` | `47808` | BACnet UDP port |
+| `--share-port` | off | Share `--port` with other programs on this host that bind it the same way; BACnet/IP only. See [Port sharing](#port-sharing) |
 | `-b, --broadcast <IP>` | `255.255.255.255` | Broadcast address for WhoIs |
 | `-t, --timeout <MS>` | `6000` | APDU timeout in milliseconds |
 | `--min-interval-ms <MS>` | `0` | Least time from the latest confirmed request to a device finishing (or being sent, while it is still outstanding) to the next, at most 3600000, so paging or polling leaves a slow device room for others |
-| `--foreign-bbmd <ADDR>` | | Run as a foreign device registered with this BBMD (`ip` or `ip:port`), so broadcasts reach its network; BACnet/IP only. See [Foreign-device mode](#foreign-device-mode) |
+| `--foreign-bbmd <ADDR>` | | Run as a foreign device registered with this BBMD (`ip`, `host`, or either with `:port`), so broadcasts reach its network. With `--ipv6`, an IPv6 address (`ip`, `[ip]` or `[ip]:port`) or a host name, and `--device-instance`. See [Foreign-device mode](#foreign-device-mode) |
 | `--ttl <N>` | `300` | Time-to-live in seconds of a foreign-device registration, for `--foreign-bbmd`, `register` and `discover --bbmd` |
 | `--renewal <SECS>` | half the TTL | Seconds between `--foreign-bbmd` registrations, less than `--ttl` |
+| `--nat-global-address <IP:PORT>` | | Our address and port as the `--foreign-bbmd` BBMD records them when a NAT router translates the registration. The TUI's Network screen finds our FDT entry there; nothing sent changes. Needs `--foreign-bbmd` (or a named TUI profile with a BBMD) |
 | `--bip-multicast <GROUP>` | | Join this IPv4 multicast group (class D) as a B/IP-M node: broadcasts go to the group and only the group's are taken. Needs `--interface`; BACnet/IP only, not with `--foreign-bbmd`. See [Multicast mode](#multicast-mode) |
 | `--bip-multicast-ttl <TTL>` | `1` | Multicast TTL for `--bip-multicast`, 1 to 255; raise it for a group that spans IP routers |
 | `--bip-multicast-port <PORT>` | `--port` | UDP port of the `--bip-multicast` group; needed with `--port 0`, and for several stacks on one host at one address |
@@ -96,6 +101,25 @@ with control characters escaped as JSON requires; a script that prints a
 JSON string to a terminal should clean it first.
 
 **Interface selection:** A one-shot command without `--interface` binds `0.0.0.0`. The terminal UI on BACnet/IP without `-i` lists the available network interfaces in a dialog; named B/IP profiles use their saved interface.
+
+<a id="port-sharing"></a>**Port sharing:** on BACnet/IP the CLI claims its
+`--port` (#2366). When another program on this host already holds the port
+(a BACnet device, a BMS, another `bacnet`), the CLI fails at once with an
+error naming the port, rather than binding beside it. Give the CLI another
+port (`-p 47809`, or `-p 0` for one the OS picks, which hears only the
+broadcasts sent to that port), stop the other program, or pass `--share-port`
+to bind beside it as earlier releases did. With sharing, broadcasts reach
+both programs, but each unicast to the port reaches only one of them (on
+Linux the one that bound last), so either program's replies can go astray.
+The other program must share the port too, and macOS and the BSDs never let
+two programs share a port on `0.0.0.0` this way. `--share-port` has no
+effect with `-p 0`, nor on B/IPv6, BACnet/SC or MS/TP. A named B/IP profile
+keeps the choice as `share_port = true` in its `[bip]` table; `bacnet tui
+--profile NAME --share-port` turns it on for that run, and `bacnet mcp serve
+--profile NAME` refuses the flag, as it refuses every transport flag, so set
+it in the profile and authorize the profile again. Passive listening (`--passive`)
+always binds the port shared, since it only listens beside another stack;
+that stack must share the port too.
 
 ## Target Resolution
 
@@ -162,7 +186,7 @@ before the CLI binds a socket.
 
 | Class | Commands (aliases) | Needs |
 |---|---|---|
-| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `alarm-summary`, `enrollment-summary`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `mstp-ports`, `capture`, `sc-check`, `tui`, `help` | nothing |
+| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `alarm-summary`, `enrollment-summary`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `mstp-ports`, `capture`, `sc-check`, `tui`, `mcp`, `help` | nothing |
 | write | `write` (`wp`), `writem` (`wpm`), `create-object`, `delete-object`, `file-write`, `ack-alarm` (`ack`), `time-sync` (`ts`), `unregister`, `subscribe --lifetime 0` | `--allow-write` |
 | device management | `control` (`dcc`), `reinit` | `--allow-write`, plus `--yes` or the typed confirmation |
 
@@ -177,7 +201,9 @@ it is a write. `unregister` is a write: the BBMD drops whichever foreign-device
 entry has the address the request names (the CLI gives its own, but the BBMD
 can't tell). The TUI's session levels use the same classes: a read-only
 session runs reads, an armed write session runs writes, and device management
-will need a session the profile marks `dangerous`.
+needs an armed session on a profile marked `dangerous`. `tui` and `mcp` are
+read commands to the guard because each guards its own writes one by one (see
+[Write sessions](#write-sessions) and [MCP server](#mcp-server)).
 
 A refused one-shot exits with status 4 and prints nothing on stdout. With
 table output the reason goes to stderr as `ERROR: ...`. With JSON output
@@ -198,8 +224,8 @@ JSON in this shape, which scripts can rely on:
 | `message` | the same reason as a sentence, for people; its wording may change |
 
 **The TUI** ignores both flags: its writes need an armed write session (see
-[Write sessions](#write-sessions)). Profiles apply only to the TUI, so there
-is no profile setting for one-shot commands.
+[Write sessions](#write-sessions)). Profiles apply only to the TUI and
+`bacnet mcp serve`, so there is no profile setting for one-shot commands.
 
 ### Exit status
 
@@ -255,9 +281,11 @@ it shows a picker. `--profile NAME` selects one directly. The Devices screen is
 a live table of I-Am answers, with a Who-Is form. The status bar shows the
 session level: `READ-ONLY` by default (discovery, reads, finite COV
 subscriptions and foreign-device registrations), a red `WRITE mm:ss` while a
-write session is armed (see [Write sessions](#write-sessions)), or `PASSIVE`.
-Screens: `1` devices, `3` watch list, `4` network, `5` SC, `6` MS/TP and `7`
-[capture](#capture-screen). The design is in
+write session is armed (`WRITE+DANGER mm:ss` on a profile with
+`dangerous = true`; see [Write sessions](#write-sessions)), or `PASSIVE`.
+Screens: `1` devices, `3` watch list, `4` network, `5` SC, `6` MS/TP, `7`
+[capture](#capture-screen) and, while agents can attach, `8` the agent pane
+(see `bacnet mcp connect` below). The design is in
 [docs/design/tui.md](design/tui.md).
 
 Explicit global network flags without `--profile`, or `--no-profile`, start
@@ -272,7 +300,7 @@ flag for the other transport (say `--port` on an SC profile) is an error.
 |------|---------|-------------|
 | `--profile <NAME>` | | Preview a named B/IP, SC or MS/TP profile; explicit global flags override saved values |
 | `--no-profile` | | Use flags only, without profile/workspace I/O; conflicts with `--profile` |
-| `--passive` | | Transmit nothing: no client is built, so no discovery, reads, subscriptions, registrations or writes. The ledger can still be viewed |
+| `--passive` | | Transmit nothing: no client is built, so no discovery, reads, subscriptions, registrations or writes. On B/IP it listens for announcements instead (see [Passive](#passive-listening)). The ledger can still be viewed |
 | `--mstp-monitor <PORT>` | | Listen to an MS/TP trunk on this serial port without transmitting (the `serial` feature). Takes `--mstp-baud` and `--mstp-max-info-frames`, and on Linux `--mstp-rt-priority` and `--mstp-cpus`, which only a station joined from it gets (the monitor itself runs normally); not `--mstp`, `--mstp-mac`, `--mstp-max-master`, another transport's flags or `--profile`. See [MS/TP monitor](#mstp-monitor-and-safe-join) |
 | `--fps <N>` | `20` | Redraws per second, 1 to 60. Idle screens are not redrawn |
 | `--log-file <FILE>` | | Append log lines to this file as well as the in-app log pane |
@@ -377,7 +405,8 @@ accepts the ones shown, and the check runs again just before the dial.
 The preview shows the settings after CLI overrides. Explicit values win even
 when equal to defaults, such as `--port 47808`, `--timeout 6000` or
 `--min-interval-ms 0`. They are not written to the profile by a connection or
-an authorization save. `--renewal` may use a named profile's saved BBMD.
+an authorization save. `--renewal` and `--nat-global-address` may use a named
+profile's saved BBMD.
 
 On first use, `a` explicitly attests that you are authorized to use BACnet on
 the displayed network. Its timestamp must be saved successfully before the
@@ -393,10 +422,17 @@ The config root is the platform directory returned by
 shows its path. `BACNET_CONFIG_DIR` replaces it completely, including all
 per-profile workspaces. Profiles are `profiles/NAME.toml`; workspaces are
 `workspaces/NAME/` and hold the session ledger (`ledger.json`), the audit log
-(`audit.jsonl`) and watch-list CSV logs.
+(`audit.jsonl`), watch-list CSV logs and, for a profile with an MCP plan
+grant, the plan's write count (`plan-budget.json`).
 Names use 1–64 ASCII letters, digits, `_` or `-`, excluding Windows device
 names. New-profile saves never overwrite an existing name. Failed saves keep
-the previous file; errors stay visible. Reload after changing a file outside
+the previous file, except when only the final directory sync fails: the error
+then says the new file is already in place (it may not survive a power loss),
+and saving the same profile again goes through (a new BACnet/SC profile's
+editor keeps the VMAC and device UUID it was given, so the retry matches the
+file). A filesystem that can't sync
+a directory at all counts as synced, with one warning in the log. Errors stay
+visible. Reload after changing a file outside
 the TUI. A profile uses this versioned schema:
 
 ```toml
@@ -413,6 +449,8 @@ min_interval_ms = 0
 ttl = 300
 # bbmd = "127.0.0.2:47808"
 # renewal_secs = 30
+# nat_global_address = "203.0.113.7:61000"  # needs bbmd; display only
+# share_port = true  # as --share-port; see Port sharing
 
 [safety]
 writes = "session"
@@ -508,7 +546,7 @@ table is refreshed from the client's discovery table afterwards.
 | `d` | Who-Is form |
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
-| `1` / `2` / `3` / `4` / `5` / `6` / `7` | The devices / Browse, the open device's browser / the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / the MS/TP screen / Capture. The status bar's strip numbers those that apply to the session (Network once connected, SC on SC, MS/TP with a serial port), with the one shown in brackets. `1` keeps an open browser as it was, and `2` shows it again; with no device open, `2` stays on the devices and says so |
+| `1` / `2` / `3` / `4` / `5` / `6` / `7` / `8` | The devices / Browse, the open device's browser / the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / the MS/TP screen / Capture / the agent pane, the attached agents' MCP calls and the write requests waiting for you (only while the profile's MCP listener runs; otherwise `8` stays and says so). The status bar's strip numbers those that apply to the session (Network once connected, SC on SC, MS/TP with a serial port, Agents with a listener), with the one shown in brackets. `1` keeps an open browser as it was, and `2` shows it again; with no device open, `2` stays on the devices and says so |
 | `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd [ADDRESS]`, `find NAME`, `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`, `mstp scan SECS`, `mstp scan cancel`, `dcc enable`, `dcc ACTION [MINUTES|forever]`, `reinit STATE`; the footer shows the syntax of the commands matching what is typed |
 | `W` | Arm a write session, or disarm the armed one |
 | `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |
@@ -558,7 +596,7 @@ SubscribeCOVProperty for anything else. Removing a row, and quitting, cancel
 its subscription on the device; the status bar's `COV` counter is how many
 subscriptions the session holds. A renewal that fails turns the row to
 polling and it subscribes again later, waiting longer each time it fails.
-A device that refuses COV, or a routed one, is polled instead: one
+Routed rows subscribe too (#1790). A device that refuses COV is polled instead: one
 ReadPropertyMultiple per device for up to 16 rows (asked again a row at a
 time when the answer would be too large), a point at most every
 `--poll-interval` seconds (default 10) counted from the end of its last
@@ -581,10 +619,33 @@ works on every transport. `4` shows the foreign-device panel and one BBMD's
 tables. With `--foreign-bbmd` (or a profile with a BBMD) the panel shows the
 BBMD, the TTL, the last BVLC-Result, a countdown to the next registration and
 the lease left; a refused registration raises a red banner on every screen.
+A B/IPv6 foreign device (`--ipv6 --foreign-bbmd`) gets the same panel without
+the tables: the BBMD, named by its host name and the address it stands for, or
+`(not resolved yet)`, the TTL, the BBMD's answer to the latest registration and
+how long ago it came (`registered, accepted 12 s ago`, `REFUSED 4 s ago`, `no
+answer to the last 2 registrations`, or `waiting for the BBMD's host name to
+resolve`), the broadcasts refused while waiting, the host name's lookups and
+failures with the newest reason, the registrations sent and refused (to every
+BBMD it has used), and the releases of BBMDs it left (#2388). The status bar
+reads `FD held`, `refused` or `no answer` as on B/IP, and a refusal or silence
+raises B/IP's banner; after a refusal it says broadcasts go undelivered, since
+B/IPv6 only logs the BBMD's refusal of each. A registration counts as unanswered
+once its renewal goes first: B/IPv6 renews at half the TTL whatever the answer.
+One that a Network Port activation replaces at once counts only once the BBMD has
+been silent for 3 seconds. `:bbmd`, `r` and `m` read tables on B/IP only, and say
+so on other transports.
 Once the BBMD accepts, the TUI reads its FDT and shows the entry the BBMD
-recorded for us, the address it forwards broadcasts to; when no entry has our
-address, a NAT router may have rewritten it. `:bbmd ADDRESS` reads any other
-BBMD, and `:bbmd` alone goes back to ours, as the footer says meanwhile. Tab
+recorded for us, the address it forwards broadcasts to. Behind a NAT router
+the BBMD records the router's address instead: give it with
+`--nat-global-address IP:PORT` (or `nat_global_address` in the profile), and
+the entry at that address is marked as ours (`us, via NAT` in the FDT, and
+`NAT-translated from` our local address in the panel, or `via NAT` when the
+line is short). It wins over an entry at our local address, which may be
+another site's device on the same private range or a stale entry; without
+the option, or with no entry at it, the local entry is ours. When neither
+address has an entry, the panel names both addresses, or, with no global
+address set, our own and the option. `:bbmd ADDRESS` reads any other BBMD,
+and `:bbmd` alone goes back to ours, as the footer says meanwhile. Tab
 switches between the BDT, with what each entry's mask means for forwarding,
 the FDT, with each entry's seconds left (`!` and `expiring` under 30 s), and
 the consistency matrix; `r` reads again. `m` reads the BDT of every BBMD the
@@ -947,10 +1008,14 @@ ledger, or with a write session request still out, opens the exit guard: `r`
 reverts all and quits, `k` keeps them, records that in the audit log and quits
 (also when passive or disconnected), Esc cancels. Entries left by an earlier
 run, whether kept or left by a crash, are listed when the next session on the
-profile starts; one a crash cut off mid-request is recorded as unknown.
+profile starts; one a crash cut off mid-request is recorded as unknown. Changes
+an AI agent made through [`bacnet mcp serve`](#mcp-server) on the same profile
+are in the same ledger, marked `[mcp: NAME]` with the OS user who ran the
+server, and revert like the TUI's own.
 
 **Audit log.** `audit.jsonl` in the workspace gets one JSON object a line,
-flushed and synced: UTC time, OS user, host, profile, transport and local
+flushed and synced: UTC time, OS user, host, the front end (`front_end`:
+`tui`, or `mcp` with the agent's `principal`), profile, transport and local
 address, session level, the event, and for a write its target, service,
 parameters, priority, pre-image and outcome (ack, error class and code,
 denied, reject, abort, timeout or not sent). An outcome's `class`, `code` and
@@ -959,19 +1024,32 @@ denied, reject, abort, timeout or not sent). An outcome's `class`, `code` and
 each request. Arming, disarming, refusals, declined confirmations, reverts and
 kept entries are recorded too; a session that ran out shows as
 `write-session (expired)`. Fields
-named like passwords are written as `[redacted]`. Reads are not logged. This
+named for a secret (`password`, `token`, `authorization`, `secret`, `key`) are
+written as `[redacted]`. Reads are not logged. This
 is a client-side record, separate from BACnet's own audit reporting.
 
-**Passive.** `--passive` builds no client at all, so nothing is transmitted;
+<a id="passive-listening"></a>**Passive.** `--passive` builds no client at all, so nothing is transmitted;
 discovery, browsing, watching and arming are refused with a notice. The
-status bar shows `PASSIVE`.
+status bar shows `PASSIVE`. On B/IP (broadcast or unicast, not multicast) it
+binds a receive-only UDP listener on the chosen interface and port, and the
+link state reads `listening` once the bind succeeds. Router announcements
+fill the Networks tab, and `:find NAME` filters the I-Haves overheard so far,
+and new ones, by exact name without sending a Who-Has; object names are
+learned from those I-Haves. Foreign-device settings are
+ignored: there is no registration, renewal, responder or send path. B/IPv6,
+BACnet/SC, B/IP multicast and participant MS/TP sessions are refused in this
+mode; the MS/TP monitor (`--mstp-monitor`) still works. The listener sees only
+UDP traffic delivered to this host, not other switched unicast traffic, so it
+is not a packet capture. It keeps at most 4,096 recent I-Have observations and
+4 MiB of their strings, and at most 128 routers with 128 networks each,
+evicting the least recently heard first.
 
 **Footprint.** The status bar's `COV n` and `FD` show the state this session
 holds on other devices: COV subscriptions, and our entry in a BBMD's
 foreign-device table. `FD` appears only with a registration and says
-where it stands (`held`, `pending`, `refused`, `no answer` or `lapsed`), from
-the same state the Network screen's banner reads. `ledger n` counts changes
-still in effect.
+where it stands (`held`, `pending`, `refused`, `no answer`, `lapsed` or
+`waiting for name`), on B/IP and B/IPv6 alike, from the same state the
+Network screen's banner reads. `ledger n` counts changes still in effect.
 
 **Status bar and footer.** Both fit their width by priority: at 80 columns
 the least useful fields and keys go first, while the link state, the
@@ -993,6 +1071,118 @@ builds a lean CLI without it (add back what you need, such as
 `bacnet tui` prints rebuild advice, and plain `bacnet` prints the usage. The
 one-shot commands and their JSON output are the same with or without the
 feature.
+
+### MCP server
+
+```bash
+bacnet mcp authorize --profile plant-a          # once, in a terminal: review and consent
+bacnet mcp serve --stdio --profile plant-a      # what an agent host's configuration launches
+bacnet mcp serve --stdio --passive              # decode and list only; sends nothing
+bacnet mcp connect --profile plant-a            # attach to the TUI that has plant-a open
+```
+
+`bacnet mcp serve --stdio` runs a [Model Context Protocol](https://modelcontextprotocol.io)
+server for an AI agent host on stdin and stdout until the host closes them.
+From 0.15.0 the prebuilt release binaries include it. A source build enables
+it with the `mcp` cargo feature, which brings `tui` along for its profiles;
+a build without it prints rebuild advice for `bacnet mcp`. Stdout carries only JSON-RPC; logs go to stderr (`-v` or `RUST_LOG`
+set their level), with one line per read call and a summary at shutdown
+always on. SIGINT or SIGTERM (Ctrl-C on Windows) shuts it down gracefully.
+Experimental in 0.15.
+
+**mcp serve flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--stdio` | Serve on stdin and stdout, the transport an agent host launches (required) |
+| `--profile <NAME>` | Named B/IP, BACnet/SC or MS/TP profile to connect with; its `[mcp]` table limits what the agent may reach. Needed unless `--passive`; global transport flags, `--share-port` among them, are refused with it, since they would change the transport that was authorized (set `share_port` in the profile instead) |
+| `--passive` | Build no client and send nothing: only the tools that need no network are offered (`bacnet_decode`, and `bacnet_discover`, which only lists) |
+
+**mcp connect flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--profile <NAME>` | The profile a `bacnet tui` has open. Without it, `connect` attaches to the only profile whose TUI is listening, and asks for a name when there are several |
+
+`bacnet mcp connect` attaches an agent host to a running `bacnet tui`
+instead of starting a client of its own. It passes its stdin and stdout
+to the local socket the TUI opens in the profile's workspace (on Windows,
+a named pipe whose name comes from the workspace and secret files in
+it, one of them new on each TUI run), byte for byte, so the agent's reads go
+through the TUI's client, transport and rate meter, and the profile's UDP
+port isn't contended for. The agent host launches it as it launches
+`bacnet mcp serve`. The TUI listens only on a profile authorized for MCP
+(below), unless its `[mcp]` table sets `tui_listener = false`; the status
+bar shows `MCP n` with the agents attached. Over the socket or pipe the tools are
+read-only unless `mcp_writes = "elicit"`: then each write an agent asks
+for opens the TUI's preview dialog, and only your confirmation there
+sends it. Disarming the TUI refuses every request still waiting
+(`not-armed`). Screen `8`, the agent pane, lists every call the agents
+made, newest first, with its outcome and cost (the requests charged to it),
+and the write requests waiting for you with their ages; the watch list's
+rate meter shows the agents' share. Agent hosts often end a tool call after
+about 60 s, while a request may wait up to 120 s here: raise the host's
+tool timeout if it has one. The table's rates join the TUI's only while an
+agent is attached. Only your own OS user can connect.
+On Unix the workspace is kept at mode 0700 (a looser one is narrowed when
+the listener starts), the socket is 0600, and each connection's peer
+credentials are checked. On Windows the pipe's access list grants your
+user alone, it takes no remote clients, and each client's process must
+run as your user; `connect` checks the TUI's process the same way.
+Refusals go to the audit log. The listener
+holds `mcp.lock` in the workspace, so a second TUI on the profile doesn't
+listen, and without `--profile` `connect` picks the only profile whose
+lock is held. With no TUI listening, `connect` exits
+non-zero with a message on stderr; when the TUI closes the profile, it
+exits cleanly. Details are in [docs/mcp.md](mcp.md#attached-to-the-tui).
+
+Live traffic needs an authorized profile. `bacnet mcp authorize --profile
+NAME` shows what the profile's `[mcp]` table lets an agent reach (networks,
+devices, broad discovery, and any writes or plan grant), and records consent
+in that table when you type the profile's name. It needs a terminal, so an
+agent can't run it. Widening the table later (more networks or devices, broad
+discovery, a higher rate or cap, a network taken off `slow_networks` or
+`fast_networks`), offering writes, letting the client arm, adding or changing
+a plan, or changing the profile's transport clears the authorization; dropping
+a plan doesn't. Authorizing a profile with an `[mcp.plan]` starts the plan's
+write count at zero in `plan-budget.json`, beside the ledger: the count holds
+across `bacnet mcp serve` restarts, and only authorizing again starts it
+afresh. A plan authorized by an earlier release has no count, so its writes are
+refused until it is authorized again. A running `bacnet mcp serve` reads the
+authorization when it starts: after authorizing again, restart it to pick up
+the new plan and its fresh count; until then it keeps spending the old count.
+
+The `[mcp]` table is optional; every key in it is too. Left out, the server
+may reach every network and device at the default rates, with no broad
+discovery and no writes:
+
+```toml
+[mcp]
+networks = [0, 2001]          # 0 is the local network
+devices = ["1000-1999", "5"]
+slow_networks = [2001]        # MS/TP behind a router: 2 requests a second
+broad_discovery = false
+mcp_writes = "elicit"         # offer bacnet_write and bacnet_revert (default "never")
+mcp_arm = "elicit"            # the host's confirmation may arm a session (default "never")
+tui_listener = true           # let agents attach to `bacnet tui` (default: on once authorized)
+
+[mcp.plan]                    # writes approved in advance, without a prompt
+devices = ["1201"]
+properties = ["present-value"]
+priority_min = 8              # 8 and 16 by default
+max_writes = 50
+hours = 4                     # 1 to 8, counted from `bacnet mcp authorize`
+```
+
+Writes go through the same planner, tiers, ledger and audit log as the TUI's
+[write sessions](#write-sessions), in the profile's workspace. Without a plan,
+the agent host's own confirmation can approve only T1 writes (priorities 9 to
+16, or a property that isn't commandable); priority 6 is always refused, and
+device management (`dcc`, `reinit`) isn't offered. The TUI's ledger lists the
+agent's changes, and `R` reverts them like its own. The tools, resources,
+limits and every key are in [docs/mcp.md](mcp.md); the website's
+[AI agents](https://jscott3201.github.io/rusty-bacnet/guides/ai-agents/) guide
+walks through setting up an agent host.
 
 ### Device Discovery
 
@@ -1664,8 +1854,48 @@ bacnet --foreign-bbmd 203.0.113.7:47808 --ttl 600 --renewal 20 discover 1000-200
 A one-shot command waits for the BBMD to answer the first registration and
 fails if it refuses or doesn't answer. The TUI reports the outcome, keeps
 trying either way, and shows the registration on its Network screen.
+
+The BBMD may be a host name (`--foreign-bbmd bbmd.example:47808`, #2308), looked
+up when the CLI starts. Until it first resolves it is tried again 30 seconds after
+each failure; from then on it is looked up alongside the registrations, at most
+every 30 seconds. A name that doesn't resolve still starts the transport, with
+nothing registered and broadcasts held: a one-shot command then fails at once,
+saying why the name didn't resolve and counting its lookups (`its host name did
+not resolve (1 name lookup, 1 failed)`), and the TUI logs that reason and keeps
+trying the name. A one-shot command's other registration errors name the BBMD with
+the address its name stood for and its lookups (`BBMD bbmd.example:47808 (at
+192.0.2.10:47808; 1 name lookup, 0 failed) did not answer the foreign-device
+registration`). In the TUI the status bar reads `FD waiting for name` until the
+name resolves, and once a lookup fails a WAITING banner says why. The Network
+screen's panel shows the name and the address it stands for, or `(not resolved
+yet)`, counts the lookups and failures beside the registration's counters, with
+the newest failure's reason, and follows the name to its address when it resolves
+later or elsewhere.
+
+With `--ipv6`, `--foreign-bbmd` takes a B/IPv6 BBMD (#2365): an IPv6 address as `ip`,
+`[ip]` or `[ip]:port`, or a host name, which stands for its IPv6 addresses; it needs
+`--device-instance`, and `--renewal` is refused (B/IPv6 renews at half the TTL, at
+most every 30 seconds). Without `--ipv6-interface` the transport binds `::` and picks
+its source from the route to the BBMD, so a host name must resolve at start, or the
+command fails saying why. With `--ipv6-interface` the transport starts and waits for
+the name as B/IP does, and its broadcasts fail meanwhile. A one-shot command waits for
+the name's first lookup: one that doesn't resolve fails it (`BBMD bbmd.example:47808
+could not be registered with: its host name did not resolve (1 name lookup, 1
+failed)`). It then waits for the BBMD to answer the first registration, as on B/IP
+(#2388), and fails if it refuses (`BBMD [2001:db8::10]:47808 refused the
+foreign-device registration (REGISTER_FOREIGN_DEVICE_NAK)`) or doesn't answer within
+5 seconds; an accepting BBMD is logged, a named one with its address
+(`bbmd.example:47808 (at [2001:db8::10]:47808; 1 name lookup, 0 failed)`). The TUI
+logs the outcome and carries on. Its status bar reads `FD waiting for name` until
+the name resolves, then the BBMD's answer as on B/IP; a WAITING banner says why a
+lookup failed, and broadcasts are refused meanwhile; and the Network screen's panel
+shows the name, the address it stands for, the answer and the counts (#2378).
+
 Behind NAT, keep `--renewal` short so the mapping the BBMD's replies come back
-on stays open; the TTL can stay long. While the transport manages the
+on stays open; the TTL can stay long. If you know the address and port the NAT
+router gives the registration, `--nat-global-address IP:PORT` lets the TUI's
+Network screen find our FDT entry there; it is a display hint only, and changes
+neither the registration nor anything else sent. While the transport manages the
 registration, `register` and `unregister` to that BBMD are refused; use
 another BBMD or a normal-mode CLI. With `--foreign-bbmd`, log lines go to
 stderr so they can't corrupt JSON output.
@@ -1846,8 +2076,9 @@ Flag mistakes are usage errors: the CLI exits with status 2 before opening the
 port and prints nothing on stdout, and the message on stderr names the values
 the flag takes. That includes an empty port name and, on either side of the
 subcommand, any B/IP, B/IPv6 or BACnet/SC flag (`-i`, `-p`, `-b`,
-`--foreign-bbmd`, `--ttl`, `--renewal`, `--ipv6*`, `--device-instance`,
-`--sc*`), which MS/TP would otherwise ignore. A port that can't be opened exits with status 1.
+`--foreign-bbmd`, `--ttl`, `--renewal`, `--nat-global-address`, `--ipv6*`,
+`--device-instance`, `--sc*`), which MS/TP would otherwise ignore. A port that
+can't be opened exits with status 1.
 
 The station runs its token handling on a dedicated thread. Its timing defaults
 suit a USB adapter: it waits up to 100 ms for the rest of a frame, and its
@@ -1973,7 +2204,9 @@ Available from [GitHub Releases](https://github.com/jscott3201/rusty-bacnet/rele
 Rename the downloaded file to `bacnet` (`bacnet.exe` on Windows), make it
 executable and put it on your `PATH`. Linux binaries include packet capture
 support out of the box. macOS/Windows users who need capture can build from
-source with `--features pcap`.
+source with `--features pcap`. From 0.15.0 every release binary also includes
+the MCP server (`mcp`, see [MCP server](#mcp-server)); a source build enables
+it with `--features mcp`.
 
 The Linux binaries need glibc 2.17 or newer, so they run on RHEL/CentOS 7,
 Debian 8, Ubuntu 14.04 and later. They link libpcap statically, so no libpcap

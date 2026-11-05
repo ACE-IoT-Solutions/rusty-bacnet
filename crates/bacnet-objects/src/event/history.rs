@@ -35,8 +35,11 @@ pub(crate) struct EventHistory {
 ///
 /// This aggregate is staged for object-family adoption: it keeps the generic
 /// commit policy centralized while each object remains responsible for
-/// lending its own three property stores through its trait hook.
+/// lending its own three property stores through its trait hook, and its
+/// Event_Detection_Enable, so no caller can skip the detection gate.
 pub(crate) struct EventTransitionState<'a> {
+    /// Event_Detection_Enable; FALSE refuses every commit (Clause 13.2.2.1).
+    detection_enabled: bool,
     event_state: &'a mut EventState,
     acked_transitions: &'a mut EventTransitionBits,
     history: &'a mut EventHistory,
@@ -44,11 +47,13 @@ pub(crate) struct EventTransitionState<'a> {
 
 impl<'a> EventTransitionState<'a> {
     pub(crate) fn new(
+        detection_enabled: bool,
         event_state: &'a mut EventState,
         acked_transitions: &'a mut EventTransitionBits,
         history: &'a mut EventHistory,
     ) -> Self {
         Self {
+            detection_enabled,
             event_state,
             acked_transitions,
             history,
@@ -56,10 +61,18 @@ impl<'a> EventTransitionState<'a> {
     }
 
     /// Validate and commit all event properties for exactly one coordinate.
+    ///
+    /// With detection off nothing commits, NORMAL targets included: the
+    /// state machine is stopped and the event properties stay at the initial
+    /// values the disabling write restored (Clause 13.2.2.1). That reset is
+    /// made directly, never through a commit.
     pub(crate) fn commit(
         self,
         commit: EventTransitionCommit,
     ) -> Result<(), EventTransitionCommitError> {
+        if !self.detection_enabled {
+            return Err(EventTransitionCommitError::DetectionDisabled);
+        }
         let expected_coordinate = EventTransition::for_target_state(commit.change.to);
         if commit.coordinate != expected_coordinate {
             return Err(EventTransitionCommitError::CoordinateTargetMismatch {
@@ -97,14 +110,18 @@ impl<'a> EventTransitionState<'a> {
     }
 }
 
-/// Implement proposal-and-commit intrinsic reporting for built-in object families.
+/// Implement proposal-and-commit intrinsic reporting for built-in object
+/// families: the [`EventReporting`](crate::traits::EventReporting) of
+/// `$object`, which lends it with `crate::traits::lend_event_reporting!()`.
 ///
 /// The evaluation hooks only propose transitions. The commit hook lends the
 /// detector and object history to the shared kernel and finalizes private
-/// detector state only after that kernel succeeds. The gated arms enforce
-/// Clause 13.2.2.1's Event_Detection_Enable state-machine gate.
+/// detector state only after that kernel succeeds. The gated arms, and the
+/// kernel's own detection check on the commit, enforce Clause 13.2.2.1's
+/// Event_Detection_Enable state-machine gate.
 macro_rules! impl_builtin_intrinsic_reporting {
     (
+        $object:ty,
         $detector_field:ident,
         $history_field:ident,
         [$($input_field:ident),+],
@@ -112,85 +129,90 @@ macro_rules! impl_builtin_intrinsic_reporting {
         $event_detection_enable_field:ident,
         $algorithm:expr_2021
     ) => {
-        fn enrollment_summary_capability_internal(
-            &self,
-        ) -> Option<$crate::event::EnrollmentSummaryCapability> {
-            Some($crate::event::EnrollmentSummaryCapability {
-                event_type: $algorithm,
-                last_transition: self.$history_field.last_transition(),
-            })
-        }
-
-        fn evaluate_intrinsic_reporting(&mut self) -> Option<$crate::event::TransitionOutcome> {
-            if !self.$event_detection_enable_field {
-                return None;
+        impl $crate::traits::EventReporting for $object {
+            fn enrollment_summary_capability(
+                &self,
+            ) -> Option<$crate::event::EnrollmentSummaryCapability> {
+                Some($crate::event::EnrollmentSummaryCapability {
+                    event_type: $algorithm,
+                    last_transition: self.$history_field.last_transition(),
+                })
             }
-            self.$detector_field.propose(
-                $(self.$input_field,)+
-                self.$reliability_field,
-                self.$history_field.options.inhibited(),
-            )
-        }
 
-        fn tick_intrinsic_reporting(&mut self) -> Option<$crate::event::TransitionOutcome> {
-            if !self.$event_detection_enable_field {
-                return None;
+            fn evaluate_intrinsic_reporting(
+                &mut self,
+            ) -> Option<$crate::event::TransitionOutcome> {
+                if !self.$event_detection_enable_field {
+                    return None;
+                }
+                self.$detector_field.propose(
+                    $(self.$input_field,)+
+                    self.$reliability_field,
+                    self.$history_field.options.inhibited(),
+                )
             }
-            self.$detector_field.tick_proposal(
-                $(self.$input_field,)+
-                self.$reliability_field,
-                self.$history_field.options.inhibited(),
-            )
-        }
 
-        fn event_algorithm_inhibit_reference_internal(
-            &self,
-        ) -> Option<bacnet_types::constructed::BACnetObjectPropertyReference> {
-            self.$history_field.options.inhibit_reference().cloned()
-        }
-
-        fn follow_event_algorithm_inhibit_internal(&mut self, inhibit: bool) -> bool {
-            self.$history_field.options.follow(inhibit)
-        }
-
-        fn commit_event_transition_internal(
-            &mut self,
-            commit: $crate::event::EventTransitionCommit,
-        ) -> Result<(), $crate::event::EventTransitionCommitError> {
-            let change = commit.change.clone();
-            $crate::event::history::EventTransitionState::new(
-                &mut self.$detector_field.event_state,
-                &mut self.$detector_field.acked_transitions,
-                &mut self.$history_field,
-            )
-            .commit(commit)?;
-            self.$detector_field.confirm_transition(
-                &change,
-                self.$reliability_field,
-            );
-            Ok(())
-        }
-
-        fn acknowledge_alarm_correlated_detailed_internal(
-            &mut self,
-            event_state: bacnet_types::enums::EventState,
-            timestamp: &bacnet_types::primitives::BACnetTimeStamp,
-        ) -> Result<Option<$crate::event::EventStateChange>, bacnet_types::error::Error> {
-            if !self.$event_detection_enable_field {
-                return Err(bacnet_types::error::Error::protocol(bacnet_types::enums::ErrorClass::OBJECT, bacnet_types::enums::ErrorCode::NO_ALARM_CONFIGURED));
+            fn tick_intrinsic_reporting(&mut self) -> Option<$crate::event::TransitionOutcome> {
+                if !self.$event_detection_enable_field {
+                    return None;
+                }
+                self.$detector_field.tick_proposal(
+                    $(self.$input_field,)+
+                    self.$reliability_field,
+                    self.$history_field.options.inhibited(),
+                )
             }
-            self.$history_field
-                .acknowledge_correlated_detailed(
+
+            fn event_algorithm_inhibit_reference(
+                &self,
+            ) -> Option<bacnet_types::constructed::BACnetObjectPropertyReference> {
+                self.$history_field.options.inhibit_reference().cloned()
+            }
+
+            fn follow_event_algorithm_inhibit(&mut self, inhibit: bool) -> bool {
+                self.$history_field.options.follow(inhibit)
+            }
+
+            fn commit_event_transition(
+                &mut self,
+                commit: $crate::event::EventTransitionCommit,
+            ) -> Result<(), $crate::event::EventTransitionCommitError> {
+                let change = commit.change.clone();
+                $crate::event::history::EventTransitionState::new(
+                    self.$event_detection_enable_field,
+                    &mut self.$detector_field.event_state,
+                    &mut self.$detector_field.acked_transitions,
+                    &mut self.$history_field,
+                )
+                .commit(commit)?;
+                self.$detector_field.confirm_transition(
+                    &change,
+                    self.$reliability_field,
+                );
+                Ok(())
+            }
+
+            fn acknowledge_alarm(
+                &mut self,
+                event_state: bacnet_types::enums::EventState,
+                timestamp: &bacnet_types::primitives::BACnetTimeStamp,
+            ) -> Result<Option<$crate::event::EventStateChange>, bacnet_types::error::Error> {
+                if !self.$event_detection_enable_field {
+                    return Err($crate::traits::no_alarm_configured());
+                }
+                self.$history_field.acknowledge_correlated(
                     &mut self.$detector_field.acked_transitions,
                     event_state,
                     timestamp,
                 )
+            }
         }
     };
 }
 
 pub(crate) use impl_builtin_intrinsic_reporting;
 
+#[cfg(feature = "event-reporting")]
 /// Commit a built-in proposal with fixed, explicit test policy.
 ///
 /// Object-level tests that need a later state transition use no-acknowledgment
@@ -205,7 +227,9 @@ where
     O: crate::traits::BACnetObject + ?Sized,
 {
     object
-        .commit_event_transition_internal(EventTransitionCommit {
+        .event_reporting_mut()
+        .unwrap()
+        .commit_event_transition(EventTransitionCommit {
             coordinate: outcome.change.transition(),
             change: outcome.change.clone(),
             ack_required: false,
@@ -262,20 +286,10 @@ impl EventHistory {
             .write(property, array_index, value, detection_enabled)
     }
 
-    /// Validate an acknowledgment against the latest committed transition slot.
+    /// Validate an acknowledgment against the latest committed transition
+    /// slot, and return exact historical context when its optional From
+    /// State is available.
     pub(crate) fn acknowledge_correlated(
-        &self,
-        acked_transitions: &mut EventTransitionBits,
-        requested_state: EventState,
-        timestamp: &BACnetTimeStamp,
-    ) -> Result<(), Error> {
-        self.acknowledge_correlated_detailed(acked_transitions, requested_state, timestamp)
-            .map(|_| ())
-    }
-
-    /// Validate an acknowledgment and return exact historical context when
-    /// its optional From State is available.
-    pub(crate) fn acknowledge_correlated_detailed(
         &self,
         acked_transitions: &mut EventTransitionBits,
         requested_state: EventState,
@@ -358,6 +372,7 @@ fn timestamp_value(stamp: &BACnetTimeStamp) -> PropertyValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::EventReporting as _;
     use alloc::borrow::Cow;
 
     use bacnet_types::enums::{EventState, ObjectType};
@@ -404,7 +419,7 @@ mod tests {
         history: &mut EventHistory,
         commit: EventTransitionCommit,
     ) -> Result<(), EventTransitionCommitError> {
-        EventTransitionState::new(state, acked, history).commit(commit)
+        EventTransitionState::new(true, state, acked, history).commit(commit)
     }
 
     #[test]
@@ -679,13 +694,13 @@ mod tests {
             message_text: Some("low-limit".into()),
         };
 
-        EventTransitionState::new(&mut state, &mut acked, &mut history)
+        EventTransitionState::new(true, &mut state, &mut acked, &mut history)
             .commit(first.clone())
             .unwrap();
         let expected_acked = acked;
         let expected_history = history.clone();
 
-        let error = EventTransitionState::new(&mut state, &mut acked, &mut history)
+        let error = EventTransitionState::new(true, &mut state, &mut acked, &mut history)
             .commit(first)
             .unwrap_err();
 
@@ -734,8 +749,8 @@ mod tests {
                 Err(Error::Encoding("not used by this test".into()))
             }
 
-            fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-                Cow::Borrowed(&[])
+            fn property_metadata(&self) -> Cow<'_, [crate::property_metadata::PropertyMetadata]> {
+                crate::test_rows::read_only(&[])
             }
         }
 
@@ -753,10 +768,14 @@ mod tests {
             message_text: None,
         };
 
+        // The object lends no event reporting, and the capability's own
+        // defaults fail closed too.
+        assert!(object.event_reporting_mut().is_none());
+        impl crate::traits::EventReporting for DefaultOnly {}
         assert_eq!(
-            object.commit_event_transition_internal(commit),
+            object.commit_event_transition(commit),
             Err(EventTransitionCommitError::Unsupported)
         );
-        assert_eq!(object.enrollment_summary_capability_internal(), None);
+        assert_eq!(object.enrollment_summary_capability(), None);
     }
 }

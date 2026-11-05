@@ -87,7 +87,17 @@ pub enum ForwardedTrust {
 pub struct Foreign {
     /// The BBMD, at its B/IP address. Replies are matched against this
     /// address and port.
-    pub bbmd: SocketAddrV4,
+    ///
+    /// `None` while the BBMD's address isn't known yet, as when its host
+    /// name hasn't resolved: the node then waits. No registration attempt
+    /// is due, a broadcast is held up to [`hold`](Self::hold) and refused
+    /// beyond it ([`SendRefusal::HoldFull`](super::SendRefusal::HoldFull)),
+    /// and no Forwarded-NPDU is trusted under
+    /// [`ForwardedTrust::ConfiguredBbmd`]. A
+    /// [`retarget`](super::Node::retarget) to a known BBMD ends the wait,
+    /// its first attempt due at once; there is nothing to release
+    /// ([`release_previous`](Self::release_previous)) from the wait.
+    pub bbmd: Option<SocketAddrV4>,
     /// The time-to-live sent with each registration, in seconds; above 0.
     pub ttl: u16,
     /// How often to register again: above zero and below the time-to-live.
@@ -102,21 +112,45 @@ pub struct Foreign {
     /// When a failed attempt is tried again.
     pub retry: Retry,
     /// How many broadcasts the caller can keep while the first attempt is
-    /// outstanding. [`Node::admit_broadcast`](super::Node::admit_broadcast)
-    /// asks it to hold them until that attempt is answered or times out.
-    /// With 0 they are sent at once.
+    /// outstanding, or the BBMD isn't known yet.
+    /// [`Node::admit_broadcast`](super::Node::admit_broadcast) asks it to
+    /// hold them until that attempt is answered or times out. With 0 they
+    /// are sent at once, or refused while the BBMD isn't known.
     pub hold: u16,
     /// Which Forwarded-NPDUs are taken.
     pub trust: ForwardedTrust,
+    /// On a move to this registration from another BBMD
+    /// ([`Node::retarget`](super::Node::retarget)), ask the BBMD left
+    /// behind to delete this device's entry with one
+    /// Delete-Foreign-Device-Table-Entry (Annex J.2.9, J.5.2.1.2), rather
+    /// than let it run out its time-to-live and grace period (J.5.2.3).
+    /// Best effort: the move never waits for it. Off by default: the entry
+    /// lapses anyway, a BBMD may refuse deletions from senders it doesn't
+    /// trust, and behind NAT the BBMD knows the device by another address.
+    pub release_previous: bool,
 }
 
 impl Foreign {
     /// Registration with `bbmd` for `ttl` seconds: renewed every half
     /// time-to-live (at least [`MIN_RENEWAL`]), a response timeout of that
     /// or [`DEFAULT_RESPONSE_TIMEOUT`] if shorter, [`Retry::Backoff`], no
-    /// broadcasts held, and Forwarded-NPDUs taken only from `bbmd`.
+    /// broadcasts held, Forwarded-NPDUs taken only from `bbmd`, and no
+    /// release of the BBMD a move leaves.
+    /// For a BBMD not known yet, see [`Foreign::waiting`].
     #[must_use]
     pub const fn new(bbmd: SocketAddrV4, ttl: u16) -> Self {
+        Self::with_bbmd(Some(bbmd), ttl)
+    }
+
+    /// As [`Foreign::new`], for a BBMD not known yet
+    /// ([`bbmd`](Self::bbmd) `None`): the node waits for a
+    /// [`retarget`](super::Node::retarget) to name it.
+    #[must_use]
+    pub const fn waiting(ttl: u16) -> Self {
+        Self::with_bbmd(None, ttl)
+    }
+
+    const fn with_bbmd(bbmd: Option<SocketAddrV4>, ttl: u16) -> Self {
         // Half the time-to-live, exactly: a whole number of milliseconds.
         let renewal = Duration::from_millis(ttl as u64 * 500).max(MIN_RENEWAL);
         Self {
@@ -127,6 +161,7 @@ impl Foreign {
             retry: Retry::Backoff,
             hold: 0,
             trust: ForwardedTrust::ConfiguredBbmd,
+            release_previous: false,
         }
     }
 
@@ -220,15 +255,18 @@ impl Link {
             if foreign.response_timeout.as_nanos() == 0 {
                 return Err(ConfigError::ResponseTimeout);
             }
-            if foreign.bbmd.port() == 0 {
-                return Err(ConfigError::BbmdPort);
-            }
-            if foreign.bbmd.ip().is_unspecified() || self.groups().contains(foreign.bbmd) {
-                return Err(ConfigError::BbmdAddress);
-            }
-            let (bbmd, own) = (foreign.bbmd, self.address);
-            if bbmd.ip().to_bits() == own.ip().to_bits() && bbmd.port() == own.port() {
-                return Err(ConfigError::BbmdIsSelf);
+            // A BBMD not known yet has nothing to check.
+            if let Some(bbmd) = foreign.bbmd {
+                if bbmd.port() == 0 {
+                    return Err(ConfigError::BbmdPort);
+                }
+                if bbmd.ip().is_unspecified() || self.groups().contains(bbmd) {
+                    return Err(ConfigError::BbmdAddress);
+                }
+                let own = self.address;
+                if bbmd.ip().to_bits() == own.ip().to_bits() && bbmd.port() == own.port() {
+                    return Err(ConfigError::BbmdIsSelf);
+                }
             }
         }
         Ok(())

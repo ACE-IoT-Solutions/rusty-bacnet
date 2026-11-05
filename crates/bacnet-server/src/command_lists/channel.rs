@@ -64,7 +64,6 @@ use bacnet_objects::channel::{
     ChannelDistribution, ChannelMember, MemberDatatype, coerce_channel_value,
 };
 use bacnet_objects::command::{CommandRun, WriteFailure};
-use bacnet_objects::database::ObjectDatabase;
 use bacnet_types::constructed::BACnetActionCommand;
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
@@ -75,7 +74,7 @@ use tracing::debug;
 
 use super::remote_slots::RemoteSlot;
 use super::target::{self, Failed};
-use super::{Owner, RunHost};
+use super::{Owner, RunHost, is_current as current};
 use crate::server::RemoteRequestError;
 
 /// What a distribution's members share while they are written.
@@ -169,13 +168,6 @@ pub(super) async fn distribute<H: RunHost>(
         owner.progress(made, outcome);
     }
     Some(outcome)
-}
-
-/// Whether `run` is still its object's current run.
-fn current(db: &ObjectDatabase, run: &CommandRun) -> bool {
-    db.get(&run.source)
-        .and_then(|object| object.command_generation_internal())
-        == Some(run.generation)
 }
 
 /// Learn the datatype of `member`, in `device`, then write it once its delay
@@ -294,8 +286,11 @@ async fn remember<H: RunHost>(
     datatype: Option<MemberDatatype>,
 ) {
     let mut db = host.database().write().await;
-    if let Some(channel) = db.get_mut(&run.source) {
-        channel.remember_member_datatype_internal(member.slot, &member.reference, datatype);
+    let runner = db
+        .get_mut(&run.source)
+        .and_then(|channel| channel.command_runner_mut());
+    if let Some(channel) = runner {
+        channel.remember_member_datatype(member.slot, &member.reference, datatype);
     }
 }
 

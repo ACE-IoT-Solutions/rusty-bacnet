@@ -8,7 +8,6 @@
 
 use crate::prelude::*;
 use alloc::borrow::Cow;
-use alloc::sync::Arc;
 use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetObjectPropertyReference,
 };
@@ -19,7 +18,7 @@ use core::time::Duration;
 
 use crate::common::{self, read_identity_properties};
 use crate::device_reference;
-use crate::traits::{BACnetObject, MonotonicClock};
+use crate::traits::BACnetObject;
 
 mod metadata;
 mod schedule;
@@ -180,6 +179,7 @@ impl BACnetObject for AveragingObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = read_identity_properties!(self, property, array_index) {
             return result;
         }
@@ -229,10 +229,11 @@ impl BACnetObject for AveragingObject {
     fn write_property(
         &mut self,
         property: PropertyIdentifier,
-        _array_index: Option<u32>,
+        array_index: Option<u32>,
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if let Some(result) = common::write_description(&mut self.description, property, &value) {
             return result;
         }
@@ -281,7 +282,6 @@ impl BACnetObject for AveragingObject {
             _ => Err(common::unhandled_write_error(
                 self.property_metadata().as_ref(),
                 property,
-                _array_index,
             )),
         }
     }
@@ -290,22 +290,33 @@ impl BACnetObject for AveragingObject {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
+    crate::traits::lend_cov_reporting!();
+
+    fn timed(&mut self) -> Option<&mut dyn crate::traits::Timed> {
+        Some(self)
     }
 
-    fn supports_subscribe_cov_property(&self) -> bool {
+    fn local_input(&mut self) -> Option<&mut dyn crate::traits::LocalInput> {
+        Some(self)
+    }
+}
+
+impl crate::traits::CovReporting for AveragingObject {
+    fn supports_subscribe_cov(&self) -> bool {
         // Table 13-1 has no Averaging row, so SubscribeCOV stays refused
-        // (supports_cov is false). A property subscription uses the Table
+        // (supports_subscribe_cov is false). A property subscription uses the Table
         // 13-1a criterion for its datatype; the object has no Status_Flags to
         // add to the report.
-        true
+        false
     }
+}
 
-    fn add_averaging_sample_internal(
-        &mut self,
-        sample: Option<PropertyValue>,
-    ) -> Result<(), Error> {
+/// The samples the application or the database takes.
+impl crate::traits::LocalInput for AveragingObject {
+    fn apply_local_input(&mut self, input: crate::traits::LocalInputValue) -> Result<(), Error> {
+        let crate::traits::LocalInputValue::AveragingSample(sample) = input else {
+            return Err(crate::traits::not_supported());
+        };
         match sample {
             Some(value) => self.add_sample(sample_as_real(&value)?),
             None => {
@@ -314,25 +325,32 @@ impl BACnetObject for AveragingObject {
             }
         }
     }
+}
 
-    fn bind_monotonic_clock_internal(&mut self, clock: Option<Arc<MonotonicClock>>) {
-        self.window.bind_clock(clock);
+impl crate::traits::Timed for AveragingObject {
+    /// Binding restarts the sample schedule, so a pass for another clock's
+    /// sake leaves an unchanged monotonic clock alone.
+    fn bind_clocks(&mut self, clocks: &crate::traits::Clocks) {
+        let offered = clocks.monotonic.as_ref();
+        if !crate::traits::capabilities::same_handle(self.window.clock(), offered) {
+            self.window.bind_clock(clocks.monotonic.clone());
+        }
     }
 
-    fn next_monotonic_deadline_internal(&self) -> Option<Duration> {
+    fn next_monotonic_deadline(&self) -> Option<Duration> {
         // Only an object with a reference has anything for the server to read.
         self.object_property_reference.as_ref()?;
         self.window.next_due()
     }
 
-    fn take_due_averaging_sample_internal(
-        &mut self,
-        now: Duration,
-    ) -> Option<BACnetObjectPropertyReference> {
+    fn take_due_sample(&mut self, now: Duration) -> Option<BACnetObjectPropertyReference> {
         let reference = self.object_property_reference.clone()?;
         self.window.take_due(now).then_some(reference)
     }
 }
+
+#[cfg(test)]
+mod rebind_tests;
 
 #[cfg(test)]
 mod sample_tests;

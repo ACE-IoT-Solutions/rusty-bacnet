@@ -1,4 +1,6 @@
 use super::*;
+use crate::property_metadata::is_writable_property;
+use crate::traits::EventReporting as _;
 use bacnet_types::enums::{EventState, EventType};
 
 fn write_unsigned(object: &mut MultiStateOutputObject, property: PropertyIdentifier, value: u64) {
@@ -35,11 +37,14 @@ fn feedback_value_round_trips_and_is_advertised_writable() {
             .unwrap(),
         PropertyValue::Unsigned(2)
     );
-    assert!(
-        mso.property_list()
-            .contains(&PropertyIdentifier::FEEDBACK_VALUE)
-    );
-    assert!(mso.is_writable_property(PropertyIdentifier::FEEDBACK_VALUE));
+    assert!(crate::property_metadata::has_property(
+        &mso.property_metadata(),
+        PropertyIdentifier::FEEDBACK_VALUE
+    ));
+    assert!(is_writable_property(
+        &mso,
+        PropertyIdentifier::FEEDBACK_VALUE
+    ));
     assert!(
         mso.write_property(
             PropertyIdentifier::FEEDBACK_VALUE,
@@ -128,6 +133,7 @@ fn oversized_feedback_value_is_rejected_rather_than_wrapped_into_agreement() {
     assert_eq!(outcome.event_type, EventType::COMMAND_FAILURE);
 }
 
+#[cfg(feature = "event-reporting")]
 #[test]
 fn command_failure_uses_present_and_feedback() {
     let mut mso = MultiStateOutputObject::new(1, "MSO-1", 3).unwrap();
@@ -225,7 +231,10 @@ fn generic_event_properties_round_trip_and_match_pics() {
         )
         .is_err()
     );
-    assert!(!mso.is_writable_property(PropertyIdentifier::ACKED_TRANSITIONS));
+    assert!(!is_writable_property(
+        &mso,
+        PropertyIdentifier::ACKED_TRANSITIONS
+    ));
 
     for property in [
         PropertyIdentifier::EVENT_ENABLE,
@@ -234,8 +243,11 @@ fn generic_event_properties_round_trip_and_match_pics() {
         PropertyIdentifier::NOTIFY_TYPE,
         PropertyIdentifier::NOTIFICATION_CLASS,
     ] {
-        assert!(mso.property_list().contains(&property));
-        assert!(mso.is_writable_property(property));
+        assert!(crate::property_metadata::has_property(
+            &mso.property_metadata(),
+            property
+        ));
+        assert!(is_writable_property(&mso, property));
     }
     assert!(
         mso.write_property(
@@ -246,7 +258,7 @@ fn generic_event_properties_round_trip_and_match_pics() {
         )
         .is_err()
     );
-    assert!(!mso.is_writable_property(PropertyIdentifier::EVENT_STATE));
+    assert!(!is_writable_property(&mso, PropertyIdentifier::EVENT_STATE));
 }
 
 #[test]
@@ -308,9 +320,12 @@ fn detection_enable_is_a_disabled_by_default_invariant() {
             .unwrap(),
         PropertyValue::Boolean(false)
     );
-    assert!(
-        mso.property_list()
-            .contains(&PropertyIdentifier::EVENT_DETECTION_ENABLE)
-    );
-    assert!(mso.is_writable_property(PropertyIdentifier::EVENT_DETECTION_ENABLE));
+    assert!(crate::property_metadata::has_property(
+        &mso.property_metadata(),
+        PropertyIdentifier::EVENT_DETECTION_ENABLE
+    ));
+    assert!(is_writable_property(
+        &mso,
+        PropertyIdentifier::EVENT_DETECTION_ENABLE
+    ));
 }

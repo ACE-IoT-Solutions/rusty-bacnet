@@ -1,13 +1,14 @@
 //! Python-composable BACnet/IP and BACnet/SC router.
 
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bacnet_network::router::{BACnetRouter as NativeRouter, RouterPort, RouterStopError};
 use bacnet_transport::any::AnyTransport;
 use bacnet_transport::bip::BipTransport;
-use bacnet_transport::sc::{ScConnectionState, ScReconnectConfig, ScTransport};
-use bacnet_transport::sc_tls::TlsWebSocket;
+use bacnet_transport::sc::{
+    ScConnectionState, ScEvent, ScHubDialer, ScLinkMonitor, ScReconnectConfig,
+};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use tokio::sync::{Mutex, watch};
@@ -28,7 +29,7 @@ use session::MixedSession;
 
 pub use config::{PyRouterBipPort, PyRouterScPort};
 use config::{PyRouterPortConfig, validate_ports};
-pub use snapshots::{PyRouterPortHealth, PyRouterRouteEntry};
+pub use snapshots::{PyRouterPortCounters, PyRouterPortHealth, PyRouterRouteEntry};
 
 type MixedTransport = AnyTransport;
 const SC_DIAL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -41,7 +42,26 @@ enum HealthSource {
     Sc {
         identity: String,
         state: watch::Receiver<ScConnectionState>,
+        monitor: Option<ScLinkMonitor>,
+        projection: Arc<StdMutex<ScHealthProjection>>,
     },
+}
+
+#[derive(Clone)]
+struct ScHealthProjection {
+    since: Instant,
+    attempt: u64,
+    last_error: Option<String>,
+}
+
+impl Default for ScHealthProjection {
+    fn default() -> Self {
+        Self {
+            since: Instant::now(),
+            attempt: 0,
+            last_error: None,
+        }
+    }
 }
 
 impl HealthSource {
@@ -50,13 +70,37 @@ impl HealthSource {
             Self::Bip { identity } => {
                 snapshots::port_health(config_index, network_number, "bip", identity, None)
             }
-            Self::Sc { identity, state } => snapshots::port_health(
-                config_index,
-                network_number,
-                "sc",
+            Self::Sc {
                 identity,
-                Some(*state.borrow()),
-            ),
+                state,
+                monitor,
+                projection,
+            } => {
+                let metadata = projection
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone();
+                if let Some(monitor) = monitor {
+                    snapshots::port_health_from_status(
+                        config_index,
+                        network_number,
+                        "sc",
+                        identity,
+                        monitor.connection_status(),
+                        metadata.attempt,
+                        metadata.last_error.clone(),
+                        metadata.since.elapsed().as_secs_f64(),
+                    )
+                } else {
+                    snapshots::port_health(
+                        config_index,
+                        network_number,
+                        "sc",
+                        identity,
+                        Some(*state.borrow()),
+                    )
+                }
+            }
         }
     }
 }
@@ -87,6 +131,7 @@ pub struct PyAceMixedRouter {
     configured_ports: Vec<PyRouterPortConfig>,
     announce_interval: Option<Duration>,
     last_health: Arc<StdMutex<Vec<PyRouterPortHealth>>>,
+    last_counters: Arc<StdMutex<Vec<PyRouterPortCounters>>>,
     last_routes: Arc<StdMutex<Vec<PyRouterRouteEntry>>>,
 }
 
@@ -120,6 +165,7 @@ impl PyAceMixedRouter {
             configured_ports: ports,
             announce_interval,
             last_health: Arc::new(StdMutex::new(Vec::new())),
+            last_counters: Arc::new(StdMutex::new(Vec::new())),
             last_routes: Arc::new(StdMutex::new(Vec::new())),
         })
     }
@@ -129,6 +175,7 @@ impl PyAceMixedRouter {
             self.configured_ports.clone(),
             self.announce_interval,
             Arc::clone(&self.last_health),
+            Arc::clone(&self.last_counters),
             Arc::clone(&self.last_routes),
         );
         let publication = Publication::new(self.lifecycle.clone());
@@ -212,6 +259,27 @@ impl PyAceMixedRouter {
                 .clone())
         })
     }
+
+    fn port_counters<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let lifecycle = self.lifecycle.clone();
+        let last = Arc::clone(&self.last_counters);
+        crate::py_async::future_into_py(py, async move {
+            if let Some((router, health)) = lifecycle
+                .inspect(|session| {
+                    let active = session.active();
+                    (Arc::clone(&active.router), active.health.clone())
+                })
+                .await
+            {
+                let router = router.lock().await;
+                return Ok(counter_snapshot(&router, &health));
+            }
+            Ok(last
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("internal counter lock poisoned"))?
+                .clone())
+        })
+    }
 }
 
 impl Drop for PyAceMixedRouter {
@@ -268,6 +336,35 @@ fn spawn_background(
                 }
             }
         }));
+
+        let HealthSource::Sc {
+            monitor: Some(monitor),
+            projection,
+            ..
+        } = source
+        else {
+            continue;
+        };
+        let monitor = monitor.clone();
+        let projection = Arc::clone(projection);
+        let mut events = monitor.connection_events();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        let mut health =
+                            projection.lock().unwrap_or_else(|error| error.into_inner());
+                        health.apply(event);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // The status snapshot remains authoritative after a
+                        // lag. Keep the accumulated diagnostic metadata and
+                        // resume at the next event.
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }));
     }
     if let Some(interval) = announce_interval {
         let router = Arc::clone(router);
@@ -286,6 +383,31 @@ fn spawn_background(
         }));
     }
     tasks
+}
+
+impl ScHealthProjection {
+    fn apply(&mut self, event: ScEvent) {
+        self.since = Instant::now();
+        match event {
+            ScEvent::Connected { .. } | ScEvent::PrimaryRestored => {
+                self.attempt = 0;
+                self.last_error = None;
+            }
+            ScEvent::Disconnected { cause, .. }
+            | ScEvent::ConnectFailed { cause, .. }
+            | ScEvent::PrimaryRestoreFailed { cause, .. } => {
+                self.last_error = Some(format!("{cause:?}"));
+            }
+            ScEvent::ReconnectAttempt { attempt, .. } => {
+                self.attempt = u64::from(attempt);
+            }
+            ScEvent::ReconnectGaveUp { attempts, .. } => {
+                self.attempt = u64::from(attempts);
+            }
+            ScEvent::FailoverEngaged => {}
+            _ => {}
+        }
+    }
 }
 
 fn health_snapshot(health: &[(u16, HealthSource)]) -> Vec<PyRouterPortHealth> {
@@ -319,6 +441,28 @@ fn route_snapshot(router: &NativeRouter) -> Vec<PyRouterRouteEntry> {
         .collect()
 }
 
+fn counter_snapshot(
+    router: &NativeRouter,
+    health: &[(u16, HealthSource)],
+) -> Vec<PyRouterPortCounters> {
+    router
+        .port_counters()
+        .into_iter()
+        .map(|counter| {
+            let index = counter.config_index;
+            let mut snapshot = PyRouterPortCounters::from(counter);
+            if let Some((_, source)) = health.get(index) {
+                snapshot.transport_kind = match source {
+                    HealthSource::Bip { .. } => "bip",
+                    HealthSource::Sc { .. } => "sc",
+                }
+                .to_owned();
+            }
+            snapshot
+        })
+        .collect()
+}
+
 async fn build_router_port(
     _config_index: usize,
     configured: PyRouterPortConfig,
@@ -332,7 +476,11 @@ async fn build_router_port(
                 .parse()
                 .expect("validated B/IP broadcast address");
             let mut transport = BipTransport::new(interface, config.port, broadcast);
-            transport.set_share_port_by_address(config.reuse_port);
+            if interface == std::net::Ipv4Addr::UNSPECIFIED {
+                transport.set_share_wildcard_port(config.reuse_port);
+            } else {
+                transport.set_share_port_by_address(config.reuse_port);
+            }
             Ok(BuiltPort {
                 port: RouterPort {
                     transport: MixedTransport::Bip(Box::new(transport)),
@@ -346,7 +494,7 @@ async fn build_router_port(
         PyRouterPortConfig::Sc(config) => {
             if config.max_npdu_length != 1497 || config.max_bvlc_length != 5705 {
                 return Err(PyValueError::new_err(
-                    "upstream 0.13 SC router ports use fixed receive limits of 1497 NPDU / 5705 BVLC",
+                    "SC router ports use fixed receive limits of 1497 NPDU / 5705 BVLC",
                 ));
             }
             let tls = crate::tls::build_client_tls_config(
@@ -356,40 +504,39 @@ async fn build_router_port(
             )
             .map_err(|error| PyRuntimeError::new_err(format!("TLS config error: {error}")))?;
             let primary = config.primary_hub.clone();
-            let ws = tokio::time::timeout(
-                SC_DIAL_TIMEOUT,
-                TlsWebSocket::connect(&primary, tls.clone()),
-            )
-            .await
-            .map_err(|_| PyRuntimeError::new_err("SC primary hub dial timed out"))?
-            .map_err(to_py_err)?;
+            let reconnect = ScReconnectConfig {
+                initial_delay_ms: config.reconnect_initial_delay_ms,
+                max_delay_ms: config.reconnect_max_delay_ms,
+                max_retries: if config.reconnect_forever {
+                    u32::MAX
+                } else {
+                    config.reconnect_max_retries
+                },
+            };
+            let mut hubs = ScHubDialer::new(&primary, tls)
+                .connect_timeout_ms(SC_DIAL_TIMEOUT.as_millis() as u64);
+            if let Some(failover) = &config.failover_hub {
+                hubs = hubs.failover_url(failover);
+            }
             let mut vmac = [0; 6];
             vmac.copy_from_slice(&config.local_vmac);
             let mut uuid = [0; 16];
             uuid.copy_from_slice(&config.device_uuid);
-            let connector_url = primary.clone();
-            let connector_tls = tls.clone();
-            let retries = if config.reconnect_forever {
-                u32::MAX
-            } else {
-                config.reconnect_max_retries
-            };
-            let transport = ScTransport::new(ws, vmac)
+            // `ScHubDialer` bounds each primary/failover dial and preserves
+            // the selected hub for the transport's initial handshake. Do not
+            // wrap the dial in a second total timeout: doing so could expire
+            // while the dialer is correctly moving from a failed primary to
+            // the failover hub.
+            let transport = hubs
+                .connect(vmac, Some(reconnect))
+                .await
+                .map_err(to_py_err)?;
+            let transport = transport
                 .with_device_uuid(uuid)
-                .with_connect_timeout_ms(SC_DIAL_TIMEOUT.as_millis() as u64)
                 .with_heartbeat_interval_ms(config.heartbeat_interval_ms)
-                .with_heartbeat_timeout_ms(config.heartbeat_timeout_ms)
-                .with_connector(move || {
-                    let url = connector_url.clone();
-                    let tls = connector_tls.clone();
-                    async move { TlsWebSocket::connect(&url, tls).await }
-                })
-                .with_reconnect(ScReconnectConfig {
-                    initial_delay_ms: config.reconnect_initial_delay_ms,
-                    max_delay_ms: config.reconnect_max_delay_ms,
-                    max_retries: retries,
-                });
+                .with_heartbeat_timeout_ms(config.heartbeat_timeout_ms);
             let state = transport.connection_state_changes();
+            let monitor = transport.link_monitor();
             Ok(BuiltPort {
                 port: RouterPort {
                     transport: MixedTransport::Sc(Box::new(transport)),
@@ -398,6 +545,8 @@ async fn build_router_port(
                 health: HealthSource::Sc {
                     identity: primary,
                     state,
+                    projection: Arc::new(StdMutex::new(ScHealthProjection::default())),
+                    monitor: Some(monitor),
                 },
             })
         }

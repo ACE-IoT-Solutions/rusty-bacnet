@@ -184,7 +184,7 @@ Each mutation decision receives a `mutation::MutationAuthorizationContext`:
 - `source_mac` / `source_network` — claimed immediate peer and routed origin.
   Never authenticated identities, never certificate principals.
 - `provenance` — the reassembled ingress snapshot (`TransportProvenance`)
-  threaded from dispatch through `handle_admitted_confirmed_request[_with_lso]`
+  threaded from dispatch through `handle_admitted_confirmed_request`
   into `mutations::Request`. Cross-segment provenance mismatches already fail
   closed at reassembly, so every element of one request (including each WPM
   element) observes the same snapshot.
@@ -234,6 +234,26 @@ and side-effect-free, and may be called concurrently. A panicking policy denies
 fail-closed. Neither the allow nor the deny path generates an audit record for
 the decision itself; audit records arrive only as explicitly authorized
 AuditNotification service receptions.
+
+**Inline policies (#2049).** A cheap policy doesn't need the pool, and the trip
+costs it a task and two thread hand-offs per request. A policy whose
+`decides_inline()` returns `true` (default `false`; `FnPolicy::inline()` for
+closures) is called on the request task instead, for every method it has. Opt
+in only when no method:
+
+- blocks or awaits (a lock wait, a channel receive, a sleep, `block_on`, or a
+  wait on another thread);
+- takes a lock the request path may also hold;
+- calls back into the server, its database included;
+- does I/O (files, sockets, a log writer that can block).
+
+Otherwise the call holds the request task and the runtime worker under it for as
+long as it runs (on a current-thread runtime, every task). `stop()` joins every
+admitted request, and an abort lands only when the task next yields, so `stop()`
+waits for each inline call already running and ends once it returns; one that
+never returns keeps `stop()` from ending at all. That is the inline path's only
+bound, so it rests on the rules above. On the pool, `stop()` doesn't wait. A
+panic denies either way.
 
 **WPM elements are decided ahead (#1321, #2032).** The server first walks the
 elements in wire order under a short database read guard and keeps those that pass
@@ -296,7 +316,8 @@ off the request task, so one that blocks delays only its own request, not
 other clients or `stop()` (#2032), but one that never returns keeps the
 process from exiting, since interpreter exit waits for every thread inside the
 bindings. It should still decide from the context alone, synchronously and
-quickly. Python has no direct BACnet/SC listener, so the context's
+quickly. It always runs on the blocking pool: Python has no way to declare a
+policy inline (#2049). Python has no direct BACnet/SC listener, so the context's
 `principal` is always `None` there, and its `certificate` and
 `forwarding_peer_certificate` are `None` too. See
 [the Python API](python-api.md#runtime-object-access) for the calling rules.

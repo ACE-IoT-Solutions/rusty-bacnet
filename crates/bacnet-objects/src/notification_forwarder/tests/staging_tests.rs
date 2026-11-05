@@ -1,11 +1,15 @@
 //! Saves that run off the database lock (#1270): staged writes, and the
 //! operation task's coalesced saves.
 
-use super::storage::{MemoryPersistence, WAIT, block_on, persistent};
+#[cfg(feature = "std")]
+use super::storage::WAIT;
+use super::storage::{MemoryPersistence, block_on, persistent};
 use super::*;
 use crate::durable::{DurableWrites, STAGED_WRITE_LIFETIME, SaveWait, StageStep};
+use crate::traits::Timed;
 use bacnet_types::enums::PropertyIdentifier as P;
 use std::sync::atomic::Ordering;
+#[cfg(feature = "std")]
 use std::time::Instant;
 
 fn staged(step: StageStep) -> SaveWait {
@@ -15,6 +19,8 @@ fn staged(step: StageStep) -> SaveWait {
     }
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 fn busy(step: StageStep) -> SaveWait {
     match step {
         StageStep::Busy(wait) => wait,
@@ -45,6 +51,8 @@ fn stage_saved(
     wait
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_staged_write_saves_while_the_forwarder_serves_the_old_list() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -98,6 +106,8 @@ fn a_staged_write_whose_save_fails_is_refused_and_the_old_list_stays() {
     assert_eq!(counters.failed_saves(), 1);
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_second_write_waits_until_the_first_has_landed() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -169,6 +179,8 @@ fn a_released_staged_write_whose_save_failed_saves_nothing_more() {
     assert_eq!(storage.saved(), served);
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_release_from_another_request_leaves_the_staged_write_alone() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -200,6 +212,8 @@ fn a_release_from_another_request_leaves_the_staged_write_alone() {
     assert_eq!(storage.saved(), second);
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_slow_save_keeps_its_staged_write_for_a_lifetime_after_it_finishes() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -245,6 +259,8 @@ fn a_write_nobody_staged_supersedes_a_staged_one() {
     assert_eq!(storage.saved(), staged_list);
 }
 
+// std: waits out the staged lifetime on the wall clock.
+#[cfg(feature = "std")]
 #[test]
 fn a_forgotten_staged_write_frees_the_forwarder() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -256,7 +272,7 @@ fn a_forgotten_staged_write_frees_the_forwarder() {
     // Its request never comes back. Once the staged write's lifetime is
     // over, the operation task drops it and the waiting request goes on.
     std::thread::sleep(STAGED_WRITE_LIFETIME + Duration::from_millis(100));
-    nf.advance_monotonic_time_internal(Duration::ZERO);
+    nf.advance_monotonic_time(Duration::ZERO);
     block_on(waiting);
     let wait = stage_saved(&mut nf, &list);
     write(&mut nf, &list).unwrap();
@@ -269,16 +285,19 @@ fn an_operation_task_call_drops_a_forgotten_staged_write_on_the_store_clock() {
     let storage = Arc::new(MemoryPersistence::default());
     let (clock, set) = manual_clock();
     let mut nf = persistent(&storage);
-    nf.bind_monotonic_clock_internal(Some(clock));
+    nf.bind_clocks(&crate::traits::Clocks {
+        monotonic: Some(clock),
+        ..crate::traits::Clocks::default()
+    });
     let served = [subscription(device(7), 1, 10)];
     write(&mut nf, &served).unwrap();
     let _forgotten = stage_saved(&mut nf, &[subscription(device(9), 1, 10)]);
     // Its request never comes back. The first call that finds the save
     // finished starts the count on the store's clock, and the call a
     // lifetime later drops it and saves the served lists.
-    nf.advance_monotonic_time_internal(Duration::ZERO);
+    nf.advance_monotonic_time(Duration::ZERO);
     set(STAGED_WRITE_LIFETIME);
-    nf.advance_monotonic_time_internal(STAGED_WRITE_LIFETIME);
+    nf.advance_monotonic_time(STAGED_WRITE_LIFETIME);
     nf.wait_for_saves();
     assert_eq!(storage.saved(), served);
     assert_eq!(nf.subscriptions(), served);
@@ -316,12 +335,17 @@ fn staging_skips_writes_the_forwarder_does_not_save_or_will_refuse() {
     assert_eq!(storage.saves(), 0);
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn operation_task_saves_coalesce_and_never_hold_the_forwarder() {
     let storage = Arc::new(MemoryPersistence::default());
     let (clock, set) = manual_clock();
     let mut nf = persistent(&storage);
-    nf.bind_monotonic_clock_internal(Some(clock));
+    nf.bind_clocks(&crate::traits::Clocks {
+        monotonic: Some(clock),
+        ..crate::traits::Clocks::default()
+    });
     let entries: Vec<_> = (1..=6)
         .map(|minutes| subscription(device(minutes), 1, minutes))
         .collect();
@@ -329,14 +353,14 @@ fn operation_task_saves_coalesce_and_never_hold_the_forwarder() {
     let held = storage.hold();
     // The entry with one minute lapses: its save starts and is held.
     set(MINUTE);
-    assert!(nf.advance_monotonic_time_internal(MINUTE));
+    assert!(nf.advance_monotonic_time(MINUTE));
     held.started.recv_timeout(WAIT).unwrap();
     // While it is held, four more entries lapse, one a minute. Each call
     // returns at once, and each queued save replaces the one before.
     for minute in 2..=5 {
         let at = MINUTE * minute;
         set(at);
-        assert!(nf.advance_monotonic_time_internal(at));
+        assert!(nf.advance_monotonic_time(at));
         assert_eq!(nf.subscriptions().len(), 6 - minute as usize);
     }
     drop(held.go);
@@ -346,12 +370,17 @@ fn operation_task_saves_coalesce_and_never_hold_the_forwarder() {
     assert_eq!(storage.saved(), [subscription(device(6), 1, 1)]);
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn an_operation_task_save_returns_while_storage_is_held() {
     let storage = Arc::new(MemoryPersistence::default());
     let (clock, set) = manual_clock();
     let mut nf = persistent(&storage);
-    nf.bind_monotonic_clock_internal(Some(clock));
+    nf.bind_clocks(&crate::traits::Clocks {
+        monotonic: Some(clock),
+        ..crate::traits::Clocks::default()
+    });
     write(
         &mut nf,
         &[subscription(device(1), 1, 1), subscription(device(2), 1, 6)],
@@ -365,7 +394,7 @@ fn an_operation_task_save_returns_while_storage_is_held() {
     let (returned_tx, returned) = std::sync::mpsc::channel();
     let returned_in_time = std::thread::scope(|scope| {
         scope.spawn(|| {
-            nf.advance_monotonic_time_internal(MINUTE);
+            nf.advance_monotonic_time(MINUTE);
             returned_tx.send(()).unwrap();
         });
         held.started
@@ -447,6 +476,8 @@ fn a_forwarder_dropped_with_a_staged_write_whose_save_failed_leaves_storage_alon
     assert_eq!(storage.saves(), 1);
 }
 
+// std: holds a save open on the writer thread.
+#[cfg(feature = "std")]
 #[test]
 fn a_forwarder_dropped_while_its_staged_save_runs_puts_storage_back_after_it() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -472,7 +503,10 @@ fn a_forwarder_dropped_with_a_staged_write_puts_back_the_lists_it_serves_as_it_g
     let storage = Arc::new(MemoryPersistence::default());
     let (clock, set) = manual_clock();
     let mut nf = persistent(&storage);
-    nf.bind_monotonic_clock_internal(Some(clock));
+    nf.bind_clocks(&crate::traits::Clocks {
+        monotonic: Some(clock),
+        ..crate::traits::Clocks::default()
+    });
     write(
         &mut nf,
         &[subscription(device(1), 1, 1), subscription(device(2), 1, 6)],
@@ -486,7 +520,7 @@ fn a_forwarder_dropped_with_a_staged_write_puts_back_the_lists_it_serves_as_it_g
     // While it waits for its request, the one-minute entry lapses and the
     // other loses a minute. Nothing saves that while the write is staged.
     set(MINUTE);
-    assert!(nf.advance_monotonic_time_internal(MINUTE));
+    assert!(nf.advance_monotonic_time(MINUTE));
     drop(nf);
     // The put-back holds the lists the forwarder served when it went, not
     // those it served when the write staged.
@@ -495,6 +529,7 @@ fn a_forwarder_dropped_with_a_staged_write_puts_back_the_lists_it_serves_as_it_g
         ForwarderSnapshot {
             recipient_list: None,
             subscribed_recipients: vec![subscription(device(2), 1, 5)],
+            description: None,
         }
     );
 }

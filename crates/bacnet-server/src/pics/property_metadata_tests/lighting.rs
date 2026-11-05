@@ -28,7 +28,8 @@ fn expected_rows(kind: ObjectType) -> Vec<PropertyRow> {
             (P::DEFAULT_RAMP_RATE, false, true),
             (P::DEFAULT_STEP_INCREMENT, false, true),
             (P::CURRENT_COMMAND_PRIORITY, false, false),
-            (P::COV_INCREMENT, true, true),
+            // Table 12-64 footnote 3 (#2193).
+            (P::COV_INCREMENT, false, true),
             (P::VALUE_SOURCE, false, true),
             (P::VALUE_SOURCE_ARRAY, false, false),
             (P::LAST_COMMAND_TIME, false, false),
@@ -96,10 +97,14 @@ fn pics_lighting_property_metadata_is_exact() {
                         None,
                     )
                     .unwrap();
-                let required = object.required_properties();
+                let required: Vec<_> = bacnet_objects::property_metadata::required_properties(
+                    &object.property_metadata(),
+                )
+                .collect();
                 let mut db = ObjectDatabase::new();
                 db.add(object).unwrap();
-                let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+                let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+                    .instance_types_only(&db);
                 assert_eq!(pics.supported_object_types.len(), 1);
                 let support = &pics.supported_object_types[0];
                 assert_eq!(support.object_type, kind);
@@ -134,10 +139,14 @@ fn pics_lighting_property_metadata_is_exact() {
 fn pics_rows(
     object: Box<dyn bacnet_objects::traits::BACnetObject>,
 ) -> (Vec<PropertyRow>, Vec<PropertyIdentifier>) {
-    let required = sorted_required(object.required_properties().as_ref());
+    let required = sorted_required(
+        &bacnet_objects::property_metadata::required_properties(&object.property_metadata())
+            .collect::<Vec<_>>(),
+    );
     let mut db = ObjectDatabase::new();
     db.add(object).unwrap();
-    let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default());
+    let pics = generate_pics(&db, &ServerConfig::default(), &PicsConfig::default())
+        .instance_types_only(&db);
     let rows = pics.supported_object_types[0]
         .supported_properties
         .iter()

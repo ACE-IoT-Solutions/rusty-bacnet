@@ -7,6 +7,7 @@ use crate::event::{EventStateChange, EventTransition, EventTransitionCommit};
 use crate::event_enrollment::{AlertEnrollmentObject, EventEnrollmentObject};
 use crate::multistate::{MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject};
 use crate::property_metadata::PropertyWriteCapability;
+use crate::property_metadata::is_writable_property;
 use crate::traits::BACnetObject;
 use bacnet_types::constructed::BACnetDeviceObjectPropertyReference;
 use bacnet_types::enums::{
@@ -46,8 +47,19 @@ fn objects() -> Vec<Box<dyn BACnetObject>> {
         Box::new(MultiStateOutputObject::new(1, "MSO", 3).unwrap()),
         Box::new(MultiStateValueObject::new(1, "MSV", 3).unwrap()),
         Box::new(enrollment),
-        Box::new(AlertEnrollmentObject::new(1, "Alert", source).unwrap()),
+        Box::new(unacknowledged_alert(source)),
     ]
+}
+
+/// Alert Enrollment has no transition commit, so its unacknowledged
+/// TO_OFFNORMAL is seeded in its fields.
+fn unacknowledged_alert(source: ObjectIdentifier) -> AlertEnrollmentObject {
+    let mut alert = AlertEnrollmentObject::new(1, "Alert", source).unwrap();
+    alert.seed_unacknowledged(
+        EventState::OFFNORMAL,
+        EventTransition::ToOffnormal.bit_mask(),
+    );
+    alert
 }
 
 fn bits(wire_octet: u8) -> PropertyValue {
@@ -91,18 +103,13 @@ fn seed_unacknowledged(object: &mut dyn BACnetObject) {
             None,
         )
         .unwrap();
-    if object.object_identifier().object_type() == ObjectType::ALERT_ENROLLMENT {
-        // Alert Enrollment retains its existing internal setter, not the
-        // atomic commit/AcknowledgeAlarm capability of the other families.
+    // Alert Enrollment comes seeded: it has no atomic commit or
+    // AcknowledgeAlarm capability like the other families.
+    if object.object_identifier().object_type() != ObjectType::ALERT_ENROLLMENT {
         object
-            .set_event_state_internal(EventState::OFFNORMAL)
-            .unwrap();
-        object
-            .set_acked_transitions_internal(EventTransition::ToOffnormal.bit_mask(), false)
-            .unwrap();
-    } else {
-        object
-            .commit_event_transition_internal(EventTransitionCommit {
+            .event_reporting_mut()
+            .unwrap()
+            .commit_event_transition(EventTransitionCommit {
                 change: EventStateChange {
                     from: EventState::NORMAL,
                     to: EventState::OFFNORMAL,
@@ -131,10 +138,10 @@ fn acked_transitions_network_write_and_metadata_deny_every_family() {
                 )
                 .unwrap();
             for out_of_service in [false, true] {
-                if object
-                    .property_list()
-                    .contains(&PropertyIdentifier::OUT_OF_SERVICE)
-                {
+                if crate::property_metadata::has_property(
+                    &object.property_metadata(),
+                    PropertyIdentifier::OUT_OF_SERVICE,
+                ) {
                     object
                         .write_property(
                             PropertyIdentifier::OUT_OF_SERVICE,
@@ -144,18 +151,19 @@ fn acked_transitions_network_write_and_metadata_deny_every_family() {
                         )
                         .unwrap();
                 }
-                assert!(!object.is_writable_property(PropertyIdentifier::ACKED_TRANSITIONS));
+                assert!(!is_writable_property(
+                    &*object,
+                    PropertyIdentifier::ACKED_TRANSITIONS
+                ));
                 {
                     let metadata = object.property_metadata();
-                    if !metadata.is_empty() {
-                        let row = metadata
-                            .iter()
-                            .find(|row| {
-                                row.property_identifier == PropertyIdentifier::ACKED_TRANSITIONS
-                            })
-                            .expect("migrated metadata must include Acked_Transitions");
-                        assert_eq!(row.write_capability, PropertyWriteCapability::ReadOnly);
-                    }
+                    let row = metadata
+                        .iter()
+                        .find(|row| {
+                            row.property_identifier == PropertyIdentifier::ACKED_TRANSITIONS
+                        })
+                        .expect("the metadata must include Acked_Transitions");
+                    assert_eq!(row.write_capability, PropertyWriteCapability::ReadOnly);
                 }
                 for priority in [None, Some(1), Some(16)] {
                     // Fabricating, erasing, and partially replacing acknowledgments
@@ -174,29 +182,25 @@ fn acked_transitions_internal_commit_and_acknowledgment_bypass_property_writes()
     for mut object in objects() {
         seed_unacknowledged(&mut *object);
         assert_denied(&mut *object, bits(0xe0), None);
-        if object.object_identifier().object_type() == ObjectType::ALERT_ENROLLMENT {
-            object
-                .set_acked_transitions_internal(EventTransition::ToOffnormal.bit_mask(), true)
-                .unwrap();
-            // TO_NORMAL stays acknowledged even if generic local logic clears it.
-            object
-                .set_acked_transitions_internal(EventTransition::ToNormal.bit_mask(), false)
-                .unwrap();
-        } else {
+        // Alert Enrollment has no local acknowledgment or commit route, so
+        // its seeded transition stays unacknowledged.
+        let alert = object.object_identifier().object_type() == ObjectType::ALERT_ENROLLMENT;
+        if !alert {
             let mut acknowledged = snapshot(&*object);
             acknowledged[1] = bits(0xe0);
             object
-                .acknowledge_alarm_correlated_internal(
-                    EventState::OFFNORMAL,
-                    &BACnetTimeStamp::SequenceNumber(42),
-                )
+                .event_reporting_mut()
+                .unwrap()
+                .acknowledge_alarm(EventState::OFFNORMAL, &BACnetTimeStamp::SequenceNumber(42))
                 .unwrap();
             assert_eq!(snapshot(&*object), acknowledged, "{}", object.object_name());
             // The commit kernel can also set a previously cleared coordinate
             // when Notification Class policy does not require acknowledgment.
             for ack_required in [true, false] {
                 object
-                    .commit_event_transition_internal(EventTransitionCommit {
+                    .event_reporting_mut()
+                    .unwrap()
+                    .commit_event_transition(EventTransitionCommit {
                         change: EventStateChange {
                             from: EventState::OFFNORMAL,
                             to: EventState::OFFNORMAL,
@@ -215,11 +219,14 @@ fn acked_transitions_internal_commit_and_acknowledgment_bypass_property_writes()
         }
         assert_eq!(
             snapshot(&*object)[1],
-            bits(0xe0),
+            bits(if alert { 0x60 } else { 0xe0 }),
             "{}",
             object.object_name()
         );
-        assert!(!object.is_writable_property(PropertyIdentifier::ACKED_TRANSITIONS));
+        assert!(!is_writable_property(
+            &*object,
+            PropertyIdentifier::ACKED_TRANSITIONS
+        ));
     }
 }
 

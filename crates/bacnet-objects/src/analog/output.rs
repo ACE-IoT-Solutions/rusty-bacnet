@@ -41,6 +41,10 @@ pub struct AnalogOutputObject {
     min_pres_value: Option<f32>,
     max_pres_value: Option<f32>,
     pub(crate) event_history: EventHistory,
+    /// The reporting settings a write set, kept in storage once the
+    /// object opts in (#2331).
+    #[cfg(feature = "event-reporting")]
+    reporting_store: crate::write_config::reporting::ReportingStore,
     /// Value source tracking.
     value_source: crate::command_source::ValueSourceTracking,
 }
@@ -73,6 +77,8 @@ impl AnalogOutputObject {
             min_pres_value: None,
             max_pres_value: None,
             event_history: EventHistory::default(),
+            #[cfg(feature = "event-reporting")]
+            reporting_store: Default::default(),
             value_source: crate::command_source::ValueSourceTracking::default(),
         })
     }
@@ -105,11 +111,6 @@ impl AnalogOutputObject {
         self.profile.wait_for_saves();
     }
 
-    /// Set the description string.
-    pub fn set_description(&mut self, desc: impl Into<String>) {
-        self.description = desc.into();
-    }
-
     /// Set minimum engineering-bound metadata; this is not a reliability fault limit.
     pub fn set_min_pres_value(&mut self, value: f32) {
         self.min_pres_value = Some(value);
@@ -139,6 +140,8 @@ impl AnalogOutputObject {
     }
 }
 
+crate::write_config::reporting::impl_reporting_persistence!(AnalogOutputObject);
+
 impl BACnetObject for AnalogOutputObject {
     fn object_identifier(&self) -> ObjectIdentifier {
         self.oid
@@ -153,6 +156,7 @@ impl BACnetObject for AnalogOutputObject {
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if let Some(result) = self
             .value_source
             .read(property, array_index, &self.priority_array)
@@ -231,13 +235,7 @@ impl BACnetObject for AnalogOutputObject {
         priority: Option<u8>,
         origin: &crate::command_source::CommandOrigin,
     ) -> Result<(), Error> {
-        if matches!(
-            property,
-            PropertyIdentifier::PRESENT_VALUE | PropertyIdentifier::VALUE_SOURCE
-        ) && array_index.is_some()
-        {
-            return Err(common::property_is_not_an_array_error());
-        }
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         if property == PropertyIdentifier::VALUE_SOURCE {
             return self.value_source.correct(value, priority, origin);
         }
@@ -269,6 +267,8 @@ impl BACnetObject for AnalogOutputObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        crate::write_config::reporting::admit(self, property, array_index, &value)?;
         if matches!(
             property,
             PropertyIdentifier::PRESENT_VALUE | PropertyIdentifier::VALUE_SOURCE
@@ -354,72 +354,45 @@ impl BACnetObject for AnalogOutputObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
-        self.profile.capability()
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: core::time::Duration) -> bool {
-        self.profile.expire(now);
-        false
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.durable_capability()
     }
 
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
         metadata::for_object(self)
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        crate::property_metadata::property_list_from_metadata(self.property_metadata().as_ref())
-    }
+    crate::traits::lend_cov_reporting!();
 
-    fn supports_cov(&self) -> bool {
-        true
-    }
+    crate::traits::lend_event_reporting!();
 
+    crate::traits::lend_reliability_eval!();
+}
+
+impl crate::creation::Creatable for AnalogOutputObject {
+    const CREATION_ONLY_PROPERTIES: &'static [PropertyIdentifier] = super::CREATION_ONLY;
+
+    fn initialize_property(
+        &mut self,
+        property: PropertyIdentifier,
+        value: PropertyValue,
+    ) -> Result<(), Error> {
+        super::initialize_units(&mut self.units, property, value)
+    }
+}
+
+impl crate::traits::CovReporting for AnalogOutputObject {
     fn cov_increment(&self) -> Option<f64> {
         Some(f64::from(self.cov_increment))
     }
+}
 
-    crate::event::impl_builtin_intrinsic_reporting!(
-        event_detector,
-        event_history,
-        [present_value],
-        reliability,
-        event_detection_enable,
-        OutOfRangeDetector::ALGORITHM
-    );
-
-    fn acknowledge_alarm(
-        &mut self,
-        transition_bit: bacnet_types::bitstring::EventTransitionBits,
-    ) -> Result<(), bacnet_types::error::Error> {
-        self.event_detector.acked_transitions |=
-            transition_bit & bacnet_types::bitstring::EventTransitionBits::all();
-        Ok(())
-    }
-
-    fn acknowledge_alarm_correlated_internal(
-        &mut self,
-        event_state: EventState,
-        timestamp: &BACnetTimeStamp,
-    ) -> Result<(), Error> {
-        if !self.event_detection_enable {
-            return Err(Error::protocol(
-                ErrorClass::OBJECT,
-                ErrorCode::NO_ALARM_CONFIGURED,
-            ));
-        }
-        self.event_history.acknowledge_correlated(
-            &mut self.event_detector.acked_transitions,
-            event_state,
-            timestamp,
-        )
-    }
-
-    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
+impl crate::traits::ReliabilityEval for AnalogOutputObject {
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
         if self.out_of_service || self.reliability_inhibit.enabled() {
             return Err(common::write_access_denied_error());
         }
@@ -430,26 +403,20 @@ impl BACnetObject for AnalogOutputObject {
         Ok(())
     }
 
-    fn reliability_evaluation_inhibited_internal(&self) -> bool {
+    fn reliability_evaluation_inhibited(&self) -> bool {
         self.reliability_inhibit.enabled()
     }
-
-    fn is_createable(&self) -> bool {
-        true
-    }
-
-    fn creation_only_properties(&self) -> &'static [PropertyIdentifier] {
-        super::CREATION_ONLY
-    }
-
-    fn initialize_property(
-        &mut self,
-        property: PropertyIdentifier,
-        value: PropertyValue,
-    ) -> Result<(), Error> {
-        super::initialize_units(&mut self.units, property, value)
-    }
 }
+
+crate::event::impl_builtin_intrinsic_reporting!(
+    AnalogOutputObject,
+    event_detector,
+    event_history,
+    [present_value],
+    reliability,
+    event_detection_enable,
+    OutOfRangeDetector::ALGORITHM
+);
 
 #[cfg(test)]
 mod detection_enable_reset_tests {

@@ -6,14 +6,13 @@ use bacnet_types::enums::PropertyIdentifier as P;
 use crate::property_metadata::{
     PropertyConformance::{Optional, RequiredRead},
     PropertyMetadata,
-    PropertyWriteCapability::{Always, ReadOnly},
+    PropertyWriteCapability::{Always, ReadOnly, WhenOutOfService},
 };
 
 // Canonical effective rows for the Accumulator (type 23, ASHRAE 135-2020
 // §12.61 Table 12-79; printed pp. 601-609 / PDF pp. 603-611). The Pulse
 // Converter keeps its own rows in pulse_converter/metadata.rs.
-// Order preserves the legacy projection; PROPERTY_LIST is appended so the
-// projection helper omits it while required_properties keeps it. Only
+// Order preserves the earlier row order; PROPERTY_LIST is appended last. Only
 // implemented rows are described: table rows the object does not serve
 // (Device_Type, Value_Change_Time, Logging_Record, Logging_Object,
 // High/Limit rows, Limit_Enable, event/intrinsic/audit/tag/profile rows) stay
@@ -28,47 +27,45 @@ use crate::property_metadata::{
 // Table-R served rows with no network write route stay RequiredRead/ReadOnly;
 // table-R rows with a write arm are RequiredRead/Always. Table-O served rows
 // are Optional, with Always exactly where dispatch accepts the write
-// (Max_Pres_Value is table R with an arm, so RequiredRead/Always; Pulse_Rate
-// and Limit_Monitoring_Interval are table O with arms, so Optional/Always;
-// Prescale, Reliability, Value_Before_Change, and Value_Set have no arm, so
+// (Max_Pres_Value is table R with an arm, so RequiredRead/Always;
+// Limit_Monitoring_Interval is table O with an arm, so Optional/Always;
+// Pulse_Rate is table O and writable only out of service (Clause 12.61.20),
+// so Optional/WhenOutOfService; Present_Value is table R with footnote 1,
+// writable only out of service (Clause 12.61.4, #2267), so
+// RequiredRead/WhenOutOfService; Reliability is table O and writable only
+// out of service (Clause 12.61.10, #2280), so Optional/WhenOutOfService;
+// Prescale, Value_Before_Change, and Value_Set have no arm, so
 // Optional/ReadOnly). Prescale is present only once the application sets
 // one; without it the row is left out, so the property reads as unknown
 // rather than as a NULL its datatype doesn't have.
-// Present_Value is the one deliberate dispatch-first deviation: Table 12-79
-// codes it R with footnote 1, and both that footnote and §12.61 require it to
-// accept writes while Out_Of_Service is TRUE, but the write arm
-// unconditionally denies it and no Value_Set mechanism advances it, so the
-// metadata mirrors dispatch as RequiredRead/ReadOnly rather than advertising
-// a route that does not exist. Pulse_Rate is served as Real while Table 12-79
-// types it Unsigned, and Status_Flags is computed with event_state=0 by the
-// shared common arm even though the object owns an Event_State field; both
-// quirks are preserved, not fixed, by this migration. Presence is None
+// Status_Flags is computed with event_state=0
+// by the shared common arm even though the object owns an Event_State field;
+// that quirk is preserved, not fixed, by this migration. Presence is None
 // throughout: the implementation models no commandable, intrinsic-reporting,
-// or paired-text gating. The object is not createable at runtime (the network
-// factory builds only the eight analog/binary/multi-state input/output/value
-// types, so the is_createable=false default holds) and remains deleteable
-// (delete denies only Device and NetworkPort, so the is_deleteable=true
+// or paired-text gating. The object is not createable at runtime (the
+// `creation` table has no constructor for it) and remains deleteable
+// (delete denies only Device and NetworkPort, so the builtin_deleteable=true
 // default holds); neither needs an override. Array gating keeps the default:
 // Property_List admits an index (BACnetARRAY per Table 12-79) while every
-// other served row rejects one. COV keeps its supports_cov=true override, and
-// the COV gating path (read_property plus supports_cov_property to
-// supports_cov) never consults metadata.
+// other served row rejects one. COV keeps its `cov()` lend, and the COV
+// gating path (read_property plus `CovReporting::supports_cov_property`)
+// never consults metadata.
 const ACCUMULATOR_BASE: &[PropertyMetadata] = &[
     PropertyMetadata::new(P::OBJECT_IDENTIFIER, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::OBJECT_NAME, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::DESCRIPTION, Optional, None, Always),
     PropertyMetadata::new(P::OBJECT_TYPE, RequiredRead, None, ReadOnly),
-    PropertyMetadata::new(P::PRESENT_VALUE, RequiredRead, None, ReadOnly),
+    PropertyMetadata::new(P::PRESENT_VALUE, RequiredRead, None, WhenOutOfService),
     PropertyMetadata::new(P::MAX_PRES_VALUE, RequiredRead, None, Always),
     PropertyMetadata::new(P::SCALE, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::PRESCALE, Optional, None, ReadOnly),
-    PropertyMetadata::new(P::PULSE_RATE, Optional, None, Always),
+    PropertyMetadata::new(P::PULSE_RATE, Optional, None, WhenOutOfService),
     PropertyMetadata::new(P::UNITS, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::LIMIT_MONITORING_INTERVAL, Optional, None, Always),
     PropertyMetadata::new(P::STATUS_FLAGS, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::EVENT_STATE, RequiredRead, None, ReadOnly),
     PropertyMetadata::new(P::OUT_OF_SERVICE, RequiredRead, None, Always),
-    PropertyMetadata::new(P::RELIABILITY, Optional, None, ReadOnly),
+    PropertyMetadata::new(P::RELIABILITY, Optional, None, WhenOutOfService),
     PropertyMetadata::new(P::VALUE_BEFORE_CHANGE, Optional, None, ReadOnly),
     PropertyMetadata::new(P::VALUE_SET, Optional, None, ReadOnly),
     PropertyMetadata::new(P::PROPERTY_LIST, RequiredRead, None, ReadOnly),
@@ -113,8 +110,14 @@ mod tests {
     fn assert_exact_sets(object: &dyn BACnetObject, all: &[P], required: &[P]) {
         let metadata = object.property_metadata();
         assert_eq!(metadata.len(), all.len() + 1);
-        assert_eq!(object.property_list().as_ref(), all);
-        assert_eq!(object.required_properties().as_ref(), required);
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(all)
+        );
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            required
+        );
         assert_eq!(
             metadata
                 .iter()
@@ -123,9 +126,10 @@ mod tests {
                 .len(),
             metadata.len()
         );
-        assert!(!object.is_createable());
-        assert!(object.is_deleteable());
-        assert!(object.supports_cov());
+        assert!(crate::creation::builtin_deleteable(
+            object.object_identifier().object_type()
+        ));
+        assert!(object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
         for row in metadata.iter() {
             assert_eq!(row.presence_condition, None);
             let expected = if required.contains(&row.property_identifier) {
@@ -144,7 +148,10 @@ mod tests {
             .filter(|&&p| !matches!(p, P::OBJECT_IDENTIFIER | P::OBJECT_NAME | P::OBJECT_TYPE))
             .map(|p| PropertyValue::Enumerated(p.to_raw()))
             .collect();
-        assert!(object.is_array_property(P::PROPERTY_LIST));
+        assert!(crate::property_metadata::is_array_property(
+            object,
+            P::PROPERTY_LIST
+        ));
         assert_eq!(
             object.read_property(P::PROPERTY_LIST, None).unwrap(),
             PropertyValue::List(wire.clone())
@@ -233,9 +240,18 @@ mod tests {
         );
         // Scale, Prescale, and Property_List-adjacent scalars are not
         // BACnetARRAY rows, so the service gate rejects an index on them.
-        assert!(!object.is_array_property(P::SCALE));
-        assert!(!object.is_array_property(P::PRESCALE));
-        assert!(!object.is_array_property(P::PRESENT_VALUE));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::SCALE
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::PRESCALE
+        ));
+        assert!(!crate::property_metadata::is_array_property(
+            &object,
+            P::PRESENT_VALUE
+        ));
     }
 
     #[test]
@@ -244,7 +260,6 @@ mod tests {
             P::DESCRIPTION,
             P::OUT_OF_SERVICE,
             P::MAX_PRES_VALUE,
-            P::PULSE_RATE,
             P::LIMIT_MONITORING_INTERVAL,
         ];
         for out_of_service in [false, true] {
@@ -263,18 +278,22 @@ mod tests {
                 let p = row.property_identifier;
                 let capability = if writable.contains(&p) {
                     PropertyWriteCapability::Always
+                } else if matches!(p, P::PULSE_RATE | P::PRESENT_VALUE | P::RELIABILITY) {
+                    PropertyWriteCapability::WhenOutOfService
                 } else {
                     PropertyWriteCapability::ReadOnly
                 };
                 assert_eq!(row.write_capability, capability, "{p:?}");
                 assert_eq!(
-                    object.is_writable_property(p),
+                    crate::property_metadata::is_writable_property(&object, p),
                     capability.is_writable(),
                     "{p:?}"
                 );
                 let value = object.read_property(p, None).unwrap();
                 let result = object.write_property(p, None, value, None);
-                if capability.is_writable() {
+                if capability == PropertyWriteCapability::Always
+                    || (capability == PropertyWriteCapability::WhenOutOfService && out_of_service)
+                {
                     result.unwrap();
                 } else {
                     assert_error(result.unwrap_err(), ErrorCode::WRITE_ACCESS_DENIED);
@@ -282,7 +301,10 @@ mod tests {
             }
             // Object_Name has no network write route: a rename falls through
             // to WRITE_ACCESS_DENIED even with a well-formed value.
-            assert!(!object.is_writable_property(P::OBJECT_NAME));
+            assert!(!crate::property_metadata::is_writable_property(
+                &object,
+                P::OBJECT_NAME
+            ));
             assert_error(
                 object
                     .write_property(
@@ -294,20 +316,23 @@ mod tests {
                     .unwrap_err(),
                 ErrorCode::WRITE_ACCESS_DENIED,
             );
-            // Present_Value is always denied — even out of service and even
-            // with its own readback — because no arm routes it. The metadata
-            // mirrors dispatch (ReadOnly) rather than the Table 12-79
-            // footnote-1 writability the implementation does not provide.
-            assert!(!object.is_writable_property(P::PRESENT_VALUE));
-            assert_error(
-                object
-                    .write_property(P::PRESENT_VALUE, None, PropertyValue::Unsigned(10), None)
-                    .unwrap_err(),
-                ErrorCode::WRITE_ACCESS_DENIED,
-            );
+            // Present_Value takes a write only out of service (Table 12-79
+            // footnote 1, #2267); in service it stays the input's count.
+            // The row advertises it writable in both states; dispatch gates it.
+            assert!(crate::property_metadata::is_writable_property(
+                &object,
+                P::PRESENT_VALUE
+            ));
+            let written =
+                object.write_property(P::PRESENT_VALUE, None, PropertyValue::Unsigned(10), None);
+            if out_of_service {
+                written.unwrap();
+            } else {
+                assert_error(written.unwrap_err(), ErrorCode::WRITE_ACCESS_DENIED);
+            }
             assert_eq!(
                 object.read_property(P::PRESENT_VALUE, None).unwrap(),
-                PropertyValue::Unsigned(0)
+                PropertyValue::Unsigned(if out_of_service { 10 } else { 0 })
             );
             assert_eq!(object.property_metadata().as_ref(), original);
         }
@@ -337,13 +362,16 @@ mod tests {
                 object.read_property(P::MAX_PRES_VALUE, None).unwrap(),
                 PropertyValue::Unsigned(1000)
             );
-            object
-                .write_property(P::PULSE_RATE, None, PropertyValue::Real(2.5), None)
-                .unwrap();
-            assert_eq!(
-                object.read_property(P::PULSE_RATE, None).unwrap(),
-                PropertyValue::Real(2.5)
-            );
+            // Pulse_Rate takes a write only out of service (Clause 12.61.20).
+            let pulse_rate =
+                object.write_property(P::PULSE_RATE, None, PropertyValue::Unsigned(25), None);
+            if out_of_service {
+                pulse_rate.unwrap();
+            } else {
+                assert_error(pulse_rate.unwrap_err(), ErrorCode::WRITE_ACCESS_DENIED);
+            }
+            let rate = PropertyValue::Unsigned(if out_of_service { 25 } else { 0 });
+            assert_eq!(object.read_property(P::PULSE_RATE, None).unwrap(), rate);
             object
                 .write_property(
                     P::LIMIT_MONITORING_INTERVAL,
@@ -358,19 +386,22 @@ mod tests {
                     .unwrap(),
                 PropertyValue::Unsigned(60)
             );
-            // Non-finite Pulse_Rate values are refused without touching state.
-            for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            // Pulse_Rate is an Unsigned (Table 12-79): out of service the
+            // REAL it was once served as is refused without touching state.
+            let refusal = if out_of_service {
+                ErrorCode::INVALID_DATA_TYPE
+            } else {
+                ErrorCode::WRITE_ACCESS_DENIED
+            };
+            for value in [2.5, f32::NAN] {
                 assert_error(
                     object
                         .write_property(P::PULSE_RATE, None, PropertyValue::Real(value), None)
                         .unwrap_err(),
-                    ErrorCode::VALUE_OUT_OF_RANGE,
+                    refusal,
                 );
             }
-            assert_eq!(
-                object.read_property(P::PULSE_RATE, None).unwrap(),
-                PropertyValue::Real(2.5)
-            );
+            assert_eq!(object.read_property(P::PULSE_RATE, None).unwrap(), rate);
             // Oversized Limit_Monitoring_Interval values are refused.
             assert_error(
                 object
@@ -386,7 +417,6 @@ mod tests {
             // Mistyped values are rejected without changing state.
             for (p, value) in [
                 (P::MAX_PRES_VALUE, PropertyValue::Real(1.0)),
-                (P::PULSE_RATE, PropertyValue::Unsigned(1)),
                 (P::LIMIT_MONITORING_INTERVAL, PropertyValue::Enumerated(60)),
                 (P::DESCRIPTION, PropertyValue::Unsigned(1)),
                 (P::OUT_OF_SERVICE, PropertyValue::Unsigned(1)),
@@ -404,7 +434,6 @@ mod tests {
                 P::VALUE_SET,
                 P::STATUS_FLAGS,
                 P::EVENT_STATE,
-                P::RELIABILITY,
                 P::UNITS,
             ] {
                 let value = object.read_property(p, None).unwrap();
@@ -412,7 +441,7 @@ mod tests {
                     object.write_property(p, None, value, None).unwrap_err(),
                     ErrorCode::WRITE_ACCESS_DENIED,
                 );
-                assert!(!object.is_writable_property(p));
+                assert!(!crate::property_metadata::is_writable_property(&object, p));
             }
         }
     }
@@ -420,7 +449,7 @@ mod tests {
     #[test]
     fn property_metadata_accumulator_unserved_rows_stay_unknown() {
         fn assert_unserved(object: &mut dyn BACnetObject, p: P) {
-            assert!(!object.is_writable_property(p));
+            assert!(!crate::property_metadata::is_writable_property(&*object, p));
             assert_error(
                 object.read_property(p, None).unwrap_err(),
                 ErrorCode::UNKNOWN_PROPERTY,

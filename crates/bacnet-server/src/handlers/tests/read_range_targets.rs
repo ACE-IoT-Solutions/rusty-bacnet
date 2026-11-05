@@ -9,6 +9,7 @@ use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_objects::elevator::ElevatorGroupObject;
 use bacnet_objects::multistate::MultiStateValueObject;
 use bacnet_objects::notification_class::NotificationClass;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::schedule::ScheduleObject;
 use bacnet_objects::value_types::DateTimeValueObject;
 use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits};
@@ -163,12 +164,22 @@ impl BACnetObject for FixedList {
         ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Owned(vec![self.property])
-    }
-
-    fn is_list_property(&self, property: PropertyIdentifier) -> bool {
-        property == self.property
+    // The listed property is a BACnetLIST: a vendor one states it on its
+    // row, of a datatype with no element codec; a standard one is a list
+    // already.
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        let rows = crate::test_rows::read_only(&[self.property]);
+        let standard = bacnet_objects::property_metadata::standard_value_type(
+            self.oid.object_type(),
+            self.property,
+        );
+        if standard.is_some_and(|value_type| value_type.is_list()) {
+            return rows;
+        }
+        let list = bacnet_objects::property_metadata::ValueType::list(
+            bacnet_objects::property_metadata::Datatype::Any,
+        );
+        crate::test_rows::typed(rows, &[(self.property, list)])
     }
 }
 

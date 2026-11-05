@@ -44,7 +44,9 @@ impl ProfileState {
         persistence: Arc<dyn TagsPersistence>,
     ) -> Result<Self, Error> {
         let snapshot = persistence.load(oid)?.unwrap_or_default();
-        encode_snapshot(&snapshot)?;
+        // As the file backend refuses the same Tags in a file.
+        crate::snapshot::tags::check_loaded(&snapshot)
+            .map_err(|error| Error::from(error.in_format("Tags snapshot")))?;
         let writer = SaveWriter::new(
             format!("bacnet-tags-{oid}-save"),
             move |snapshot: &TagsSnapshot| persistence.save(oid, snapshot),
@@ -91,6 +93,7 @@ impl ProfileState {
         self.profile.read(property, index)
     }
 
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn capability(&mut self) -> Option<&mut dyn DurableWrites> {
         self.storage.is_some().then_some(self)
     }
@@ -187,10 +190,6 @@ impl ProfileState {
         self.storage = Some(storage);
         Some(result)
     }
-
-    pub(crate) fn expire(&mut self, now: Duration) {
-        self.with_storage(|storage| storage.expire(now));
-    }
 }
 
 impl DurableWrites for ProfileState {
@@ -250,5 +249,9 @@ impl DurableWrites for ProfileState {
         let wait = storage.drop_forgotten(|| self.snapshot());
         self.storage = Some(storage);
         Some(wait)
+    }
+
+    fn expire_staged(&mut self, now: Duration) {
+        self.with_storage(|storage| storage.expire(now));
     }
 }

@@ -7,12 +7,12 @@
 //! operation task can be driven against it. Having no filter rows, it takes no
 //! notifications to forward.
 
+use bacnet_objects::property_metadata::PropertyMetadata;
 use std::borrow::Cow;
-use std::sync::Arc;
 use std::time::Duration;
 
 use bacnet_objects::subscribed_recipients::SubscribedRecipients;
-use bacnet_objects::traits::{BACnetObject, MonotonicClock};
+use bacnet_objects::traits::{BACnetObject, Clocks, Timed};
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
@@ -87,23 +87,26 @@ impl BACnetObject for TestForwarder {
         }
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        Cow::Borrowed(PROPERTIES)
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::rows(PROPERTIES, &[PropertyIdentifier::SUBSCRIBED_RECIPIENTS])
     }
 
-    fn advance_time_internal(&mut self, elapsed: Duration) -> bool {
-        self.subscribed_recipients.advance_by(elapsed)
+    fn timed(&mut self) -> Option<&mut dyn Timed> {
+        Some(self)
+    }
+}
+
+impl Timed for TestForwarder {
+    fn bind_clocks(&mut self, clocks: &Clocks) {
+        self.subscribed_recipients
+            .bind_monotonic_clock(clocks.monotonic.clone());
     }
 
-    fn bind_monotonic_clock_internal(&mut self, clock: Option<Arc<MonotonicClock>>) {
-        self.subscribed_recipients.bind_monotonic_clock(clock);
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: Duration) -> bool {
+    fn advance_monotonic_time(&mut self, now: Duration) -> bool {
         self.subscribed_recipients.advance_to(now)
     }
 
-    fn next_monotonic_deadline_internal(&self) -> Option<Duration> {
+    fn next_monotonic_deadline(&self) -> Option<Duration> {
         self.subscribed_recipients.next_deadline()
     }
 }

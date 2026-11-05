@@ -304,11 +304,11 @@ async fn server_enrollment_task_evaluates_at_startup_on_its_configured_interval(
     // value and revert this.
     {
         let mut guard = server.db.write().await;
-        guard
-            .get_mut(&ee_oid)
-            .unwrap()
-            .set_event_state_internal(EventState::NORMAL)
-            .unwrap();
+        crate::test_event_state::commit_event_state(
+            guard.get_mut(&ee_oid).unwrap(),
+            EventState::NORMAL,
+            false,
+        );
     }
     tokio::time::sleep(Duration::from_secs(60)).await;
     {
@@ -524,7 +524,7 @@ fn segmented_transaction_key_identity_matrix() {
 
 #[test]
 fn service_reject_error_preserves_reason_on_wire_response() {
-    let response = BACnetServer::<BipTransport>::error_apdu_from_error(
+    let response = bacnet_device_core::reply::error_apdu(
         0x31,
         ConfirmedServiceChoice::GET_ENROLLMENT_SUMMARY,
         &Error::reject(RejectReason::UNDEFINED_ENUMERATION),
@@ -596,6 +596,33 @@ async fn reply_tx_response_preserves_routed_npdu_destination() {
 #[test]
 fn max_neg_segment_ack_retries_constant() {
     assert_eq!(MAX_NEG_SEGMENT_ACK_RETRIES, 3);
+}
+
+/// The B/IP builder hands `share_wildcard_port` to its transport (#2366): on a
+/// port another socket holds, a claiming transport's error names the opt-in,
+/// and a sharing one's says the holder doesn't share. Windows decides a
+/// sharing bind beside a socket that set no options by the two sockets'
+/// accounts (Microsoft's SO_REUSEADDR table), so only the claiming case runs
+/// there.
+#[tokio::test]
+async fn bip_builder_hands_its_wildcard_sharing_choice_to_the_transport() {
+    let holder = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+    let port = holder.local_addr().unwrap().port();
+    for (share, says) in [(false, "share_wildcard_port"), (true, "refuses sharing")] {
+        if share && cfg!(windows) {
+            continue;
+        }
+        let built = BACnetServer::<BipTransport>::bip_builder()
+            .interface(Ipv4Addr::LOCALHOST)
+            .port(port)
+            .share_wildcard_port(share)
+            .build()
+            .await;
+        let Err(Error::Transport(refused)) = built else {
+            panic!("build must fail on a held port (share: {share})");
+        };
+        assert!(refused.to_string().contains(says), "{refused}");
+    }
 }
 
 /// The B/IP builder hands `share_port_by_address` to its transport, which

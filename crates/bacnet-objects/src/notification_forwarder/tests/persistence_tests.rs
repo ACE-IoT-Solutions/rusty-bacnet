@@ -2,9 +2,13 @@
 
 use super::storage::{MemoryPersistence, persistent};
 use super::*;
+use crate::traits::Timed;
 use bacnet_types::enums::PropertyIdentifier as P;
+#[cfg(feature = "std")]
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "std")]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 fn write(nf: &mut NotificationForwarderObject, list: &[BACnetEventNotificationSubscription]) {
     nf.write_property(
@@ -25,7 +29,7 @@ fn minutes(nf: &NotificationForwarderObject) -> Vec<u32> {
 
 /// Run the operation task's call at `at` and let the save it queues land.
 fn tick(nf: &mut NotificationForwarderObject, at: Duration) -> bool {
-    let lapsed = nf.advance_monotonic_time_internal(at);
+    let lapsed = nf.advance_monotonic_time(at);
     nf.wait_for_saves();
     lapsed
 }
@@ -35,7 +39,10 @@ fn subscribed_recipients_restart_lands_between_the_time_left_and_the_last_subscr
     let storage = Arc::new(MemoryPersistence::default());
     let (clock, set) = manual_clock();
     let mut before = persistent(&storage);
-    before.bind_monotonic_clock_internal(Some(Arc::clone(&clock)));
+    before.bind_clocks(&crate::traits::Clocks {
+        monotonic: Some(Arc::clone(&clock)),
+        ..crate::traits::Clocks::default()
+    });
     let a = |minutes| subscription(device(7), 1, minutes);
     let b = |minutes| subscription(device(8), 1, minutes);
     let c = |minutes| subscription(address(0, &[9]), 2, minutes);
@@ -54,7 +61,10 @@ fn subscribed_recipients_restart_lands_between_the_time_left_and_the_last_subscr
     drop(before);
 
     let mut after = persistent(&storage);
-    after.bind_monotonic_clock_internal(Some(clock));
+    after.bind_clocks(&crate::traits::Clocks {
+        monotonic: Some(clock),
+        ..crate::traits::Clocks::default()
+    });
     let restored = minutes(&after);
     let last_subscribed = [10, 30, 20];
     for ((restored, stopped), subscribed) in restored.iter().zip(at_stop).zip(last_subscribed) {
@@ -103,7 +113,10 @@ fn boot(
 ) -> u32 {
     let (clock, set) = manual_clock();
     let mut nf = persistent(storage);
-    nf.bind_monotonic_clock_internal(Some(clock));
+    nf.bind_clocks(&crate::traits::Clocks {
+        monotonic: Some(clock),
+        ..crate::traits::Clocks::default()
+    });
     if let Some(list) = first_write {
         write(&mut nf, list);
     }
@@ -112,7 +125,7 @@ fn boot(
     while at < run {
         at += Duration::from_secs(10);
         set(at);
-        nf.advance_monotonic_time_internal(at);
+        nf.advance_monotonic_time(at);
     }
     // Dropping the forwarder lets its queued saves land.
     restored
@@ -138,7 +151,10 @@ fn subscribed_recipients_minute_saves_come_at_most_once_a_minute() {
     let storage = Arc::new(MemoryPersistence::default());
     let (clock, set) = manual_clock();
     let mut nf = persistent(&storage);
-    nf.bind_monotonic_clock_internal(Some(clock));
+    nf.bind_clocks(&crate::traits::Clocks {
+        monotonic: Some(clock),
+        ..crate::traits::Clocks::default()
+    });
     // Two entries whose minutes fall half a minute apart.
     write(&mut nf, &[subscription(device(7), 1, 10)]);
     set(MINUTE / 2);
@@ -184,7 +200,10 @@ fn a_failed_save_is_counted_and_retried_a_minute_later() {
     let (clock, set) = manual_clock();
     let mut nf = persistent(&storage);
     let counters = nf.save_counters();
-    nf.bind_monotonic_clock_internal(Some(clock));
+    nf.bind_clocks(&crate::traits::Clocks {
+        monotonic: Some(clock),
+        ..crate::traits::Clocks::default()
+    });
     write(&mut nf, &[subscription(device(7), 1, 10)]);
     storage.fail.store(true, Ordering::SeqCst);
     set(MINUTE);
@@ -212,13 +231,18 @@ fn subscribed_recipients_saved_out_of_range_refuses_the_forwarder() {
         ForwarderSnapshot {
             recipient_list: None,
             subscribed_recipients: vec![subscription(device(7), 1, 0)],
+            description: None,
         },
     );
     assert!(NotificationForwarderObject::with_persistence(1, "NF", storage).is_err());
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+// std: the file backend.
+#[cfg(feature = "std")]
 fn temp_file() -> PathBuf {
     let serial = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     std::env::temp_dir()
@@ -229,6 +253,8 @@ fn temp_file() -> PathBuf {
         .join("lists")
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn file_persistence_round_trips_and_refuses_another_objects_file() {
     let path = temp_file();
@@ -244,6 +270,7 @@ fn file_persistence_round_trips_and_refuses_another_objects_file() {
             subscription(device(7), 1, 10),
             subscription(address(5, &[1, 2, 3, 4, 0xBA, 0xC0]), 9, 1440),
         ],
+        description: None,
     };
     storage.save(forwarder, &snapshot).unwrap();
     assert_eq!(storage.load(forwarder).unwrap().unwrap(), snapshot);
@@ -295,6 +322,8 @@ fn file_persistence_round_trips_and_refuses_another_objects_file() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn file_persistence_keeps_a_forwarder_list_across_a_rebuild() {
     let path = temp_file();
@@ -321,6 +350,8 @@ fn file_persistence_keeps_a_forwarder_list_across_a_rebuild() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+// std: the file backend.
+#[cfg(feature = "std")]
 #[test]
 fn file_persistence_refuses_a_file_past_its_size_or_entry_caps() {
     use crate::notification_forwarder::persistence::MAX_FILE_BYTES;
@@ -341,12 +372,13 @@ fn file_persistence_refuses_a_file_past_its_size_or_entry_caps() {
     let full = ForwarderSnapshot {
         recipient_list: Some(destinations.clone()),
         subscribed_recipients: subscriptions.clone(),
+        description: None,
     };
     storage.save(forwarder, &full).unwrap();
     assert_eq!(storage.load(forwarder).unwrap().unwrap(), full);
 
-    // One entry past either cap is refused. The backend saves what it is
-    // given, so a file like this can only come from elsewhere.
+    // One entry past either cap is refused, and never saved: a file like
+    // this, written here by hand, can only come from elsewhere.
     let mut too_many = destinations;
     too_many.push(destination(device(999), 1, false));
     let past_recipient_cap = ForwarderSnapshot {
@@ -360,7 +392,11 @@ fn file_persistence_refuses_a_file_past_its_size_or_entry_caps() {
         ..full.clone()
     };
     for past_cap in [past_recipient_cap, past_subscription_cap] {
-        storage.save(forwarder, &past_cap).unwrap();
+        assert!(matches!(
+            storage.save(forwarder, &past_cap),
+            Err(Error::OutOfRange(_))
+        ));
+        std::fs::write(&path, raw_file(forwarder, &past_cap)).unwrap();
         assert!(refusal(&storage).contains("more entries than the cap"));
     }
 
@@ -376,4 +412,27 @@ fn file_persistence_refuses_a_file_past_its_size_or_entry_caps() {
     let at_cap = refusal(&storage);
     assert!(!at_cap.contains("too large"), "{at_cap}");
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+/// The file the backend would write for `snapshot` if it took any list,
+/// built by hand: what another writer could leave.
+// std: only the file backend's test writes one.
+#[cfg(feature = "std")]
+fn raw_file(forwarder: ObjectIdentifier, snapshot: &ForwarderSnapshot) -> Vec<u8> {
+    use bacnet_encoding::constructed::{
+        encode_destination_list, encode_event_notification_subscription_list,
+    };
+    let mut list = bytes::BytesMut::new();
+    encode_destination_list(&mut list, snapshot.recipient_list.as_deref().unwrap()).unwrap();
+    let mut body = bytes::BytesMut::new();
+    body.extend_from_slice(&[1]);
+    body.extend_from_slice(&(list.len() as u32).to_be_bytes());
+    body.extend_from_slice(&list);
+    encode_event_notification_subscription_list(&mut body, &snapshot.subscribed_recipients)
+        .unwrap();
+    crate::snapshot::framing::seal(
+        &crate::snapshot::notification_forwarder::MAGIC,
+        forwarder,
+        &body,
+    )
 }

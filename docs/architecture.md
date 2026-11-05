@@ -31,6 +31,13 @@ Foundations
                         the B/IP node and BBMD via bacnet-bip-core)
   bacnet-network        Network layer, BACnetRouter, RouterTable
   bacnet-objects        BACnetObject, ObjectDatabase, object implementations
+                        (no_std + alloc where atomics allow, #1615)
+  bacnet-device-core    Sans-IO request core over a borrowed ObjectDatabase: the read
+                        and write paths, discovery, the COV subscription table, COV
+                        evaluation and the reply map the server runs on, and a
+                        Responder, a COV Reporter and a TimeSynchronization-set
+                        Device clock for firmware
+                        (no_std + alloc where atomics allow, #2178, #2303, #2321)
 
 Runtime and application roles
   bacnet-endpoint-core  Private lifecycle, ingress, egress, coordination
@@ -40,15 +47,17 @@ Runtime and application roles
 
 Operations core (UI-free, for the front ends)
   bacnet-ops            Target and value grammar, value formatting, request
-                        limits, read engine over bacnet-client
-  bacnet-mcp            Read-only MCP server over the bacnet-ops engine
-                        (rmcp SDK; the CLI's `mcp` feature)
+                        limits, read engine over bacnet-client, frame decoder,
+                        watch hub, write-safety core (plan, ledger, audit)
+  bacnet-mcp            MCP server over the bacnet-ops engine; read-only unless
+                        a profile offers writes (rmcp SDK; the CLI's `mcp` feature)
 
 Selected direct dependencies
+  bacnet-server   -> bacnet-device-core, bacnet-objects, bacnet-network
   bacnet-endpoint -> bacnet-client, bacnet-server, bacnet-endpoint-core,
                      bacnet-network, bacnet-objects
-  bacnet-ops     -> bacnet-client, bacnet-transport
-  bacnet-mcp     -> bacnet-ops, rmcp
+  bacnet-ops     -> bacnet-client, bacnet-transport, bacnet-npdu
+  bacnet-mcp     -> bacnet-ops, bacnet-client, rmcp
   bacnet-cli     -> bacnet-ops, bacnet-client, bacnet-mcp (with `mcp`)  (CLI application)
   rusty-bacnet   -> bacnet-client, bacnet-server, bacnet-endpoint
                                               (PyO3 bindings)
@@ -94,7 +103,8 @@ Optional private EndpointIngress classifier / Client dispatch task / Server disp
     |  Decodes APDU header (PDU type, service choice, invoke ID)
     |  Routes to appropriate handler
     v
-Service handler (e.g., handle_read_property)
+Service handler (ReadProperty, ReadPropertyMultiple, WriteProperty, WritePropertyMultiple,
+    |  Who-Is and Who-Has through bacnet-device-core)
     |  Decodes service request from APDU payload
     |  Reads/writes ObjectDatabase
     |  Encodes response
@@ -383,10 +393,14 @@ pub trait BACnetObject: Send + Sync {
     fn object_name(&self) -> &str;
     fn read_property(&self, property: PropertyIdentifier, array_index: Option<u32>) -> Result<PropertyValue, Error>;
     fn write_property(&mut self, property: PropertyIdentifier, array_index: Option<u32>, value: PropertyValue, priority: Option<u8>) -> Result<(), Error>;
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]>;
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]>;
     // ... plus COV, intrinsic reporting, scheduling methods
 }
 ```
+
+The metadata rows are the object's only property list: Property_List, the
+required properties and property presence all derive from them, through the
+free functions in `bacnet_objects::property_metadata` (#2197).
 
 `ObjectDatabase` stores `Box<dyn BACnetObject>` keyed by `ObjectIdentifier`, with secondary indexes by name (for WhoHas) and by type (for efficient enumeration).
 
@@ -394,7 +408,7 @@ pub trait BACnetObject: Send + Sync {
 
 The stack runs on a Tokio multi-threaded runtime.
 
-**Lock ordering** (server): always lock `db` (ObjectDatabase) before `cov_table` (COV subscriptions). With target Audit configured, a DeviceCommunicationControl change and its timer's expiry take the DCC timer slot first and `db` second, to report the change under the slot (#1387); nothing takes the slot while holding `db`. Violating either order risks deadlock.
+**Lock ordering** (server): always lock `db` (ObjectDatabase) before `cov_table` (COV subscriptions). The COV fanouts read an object under the database guard and take the table's write guard before releasing it: the Single fanout runs `bacnet-device-core`'s `cov::evaluate` there, which decides each notification and issues its completion ticket, and both guards drop before any send (#2303); no path holds the table guard and then waits for the database. With target Audit configured, a DeviceCommunicationControl change and its timer's expiry take the DCC timer slot first and `db` second, to report the change under the slot (#1387); nothing takes the slot while holding `db`. Violating either order risks deadlock.
 
 **Resource exhaustion caps**:
 - COV subscriptions: 1,024 max
@@ -415,7 +429,7 @@ The `BACnetServer` spawns several background tasks:
 | Task | Purpose | Interval |
 |------|---------|----------|
 | Dispatch | Receives APDUs, routes to service handlers | Event-driven |
-| COV purge | Removes expired COV subscriptions | 60s |
+| COV purge | Removes expired COV subscriptions, and ends confirmed reports past their deadline whose worker never reported (#2303) | 30s |
 | Fault detection | Evaluates analog objects for over/under-range | 10s |
 | Intrinsic reporting | Advances Time_Delay countdowns and fires confirmed transitions via `tick_intrinsic_reporting` | 1s |
 | Event enrollment | Evaluates Event Enrollment objects against their monitored properties | 10s |

@@ -38,8 +38,8 @@ fn the_foreign_device_flags_reach_the_transport() {
             .unwrap();
     let foreign = args.foreign_device.unwrap();
     assert_eq!(
-        (foreign.bbmd_ip, foreign.bbmd_port, foreign.ttl),
-        (Ipv4Addr::new(192, 0, 2, 10), 0xBAC0, 60)
+        (foreign.bbmd, foreign.ttl),
+        ((Ipv4Addr::new(192, 0, 2, 10), 0xBAC0).into(), 60)
     );
     assert_eq!(
         foreign.renewal_interval,
@@ -47,13 +47,164 @@ fn the_foreign_device_flags_reach_the_transport() {
     );
 
     let cli = parse(["bacnet", "register", "192.0.2.10"]).unwrap();
-    assert_eq!((cli.ttl, cli.foreign_bbmd), (300, None));
+    assert_eq!((cli.ttl, &cli.foreign_bbmd), (300, &None));
     let args =
         crate::transport::TransportArgs::from_cli(&cli, Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST)
             .unwrap();
     assert!(args.foreign_device.is_none());
     let cli = parse(["bacnet", "register", "192.0.2.10", "--ttl", "45"]).unwrap();
     assert_eq!(cli.ttl, 45);
+}
+
+/// `--foreign-bbmd` takes a host name, with or without a port (#2308); a
+/// value in neither form is refused before anything starts.
+#[test]
+fn the_foreign_bbmd_may_be_a_host_name() {
+    let named = |host: &str, port| bacnet_transport::bip::ForeignBbmd::Name {
+        host: host.into(),
+        port,
+    };
+    for (value, bbmd) in [
+        ("bbmd.example", named("bbmd.example", 0xBAC0)),
+        ("bbmd.example:47809", named("bbmd.example", 47809)),
+    ] {
+        let cli = parse(["bacnet", "--foreign-bbmd", value, "discover"]).unwrap();
+        assert_eq!(
+            cli.foreign_bbmd,
+            Some(crate::foreign::ForeignBbmdArg::Bip(bbmd.clone()))
+        );
+        let args = crate::transport::TransportArgs::from_cli(
+            &cli,
+            Ipv4Addr::UNSPECIFIED,
+            Ipv4Addr::BROADCAST,
+        )
+        .unwrap();
+        assert_eq!(args.foreign_device.unwrap().bbmd, bbmd);
+    }
+    for value in ["bb md", "bbmd:0", "0.0.0.0", "999.1.1.1"] {
+        let error = parse(["bacnet", "--foreign-bbmd", value, "discover"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ValueValidation, "{value}");
+    }
+}
+
+/// With `--ipv6`, `--foreign-bbmd` takes an IPv6 address or a host name
+/// for B/IPv6 (#2365); each transport refuses the other's addresses, and
+/// B/IPv6 takes no `--renewal`.
+#[test]
+fn the_foreign_bbmd_of_a_bip6_session() {
+    use bacnet_transport::bip6::Bip6ForeignBbmd;
+    // The B/IPv6 registration the flags ask for, or why they're refused.
+    macro_rules! bip6 {
+        ($($arg:expr),*) => {{
+            let cli = parse(["bacnet", $($arg,)* "discover"]).unwrap();
+            crate::transport::TransportArgs::from_cli(&cli, Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST)
+                .map(|args| args.bip6_foreign_device.map(|config| config.bbmd))
+        }};
+    }
+    assert_eq!(
+        bip6!("--ipv6", "--foreign-bbmd", "bbmd.example"),
+        Ok(Some(Bip6ForeignBbmd::Name {
+            host: "bbmd.example".into(),
+            port: 0xBAC0
+        }))
+    );
+    assert_eq!(
+        bip6!("--ipv6", "--foreign-bbmd", "[2001:db8::10]:47809"),
+        Ok(Some("[2001:db8::10]:47809".parse().unwrap()))
+    );
+    for (refused, why) in [
+        (
+            bip6!("--foreign-bbmd", "[2001:db8::10]:47809"),
+            "add --ipv6",
+        ),
+        (
+            bip6!("--ipv6", "--foreign-bbmd", "192.0.2.1"),
+            "IPv4 address",
+        ),
+        (
+            bip6!(
+                "--ipv6",
+                "--foreign-bbmd",
+                "bbmd.example",
+                "--renewal",
+                "20"
+            ),
+            "--renewal applies only to B/IP",
+        ),
+        (bip6!("--ipv6", "--foreign-bbmd", "[fe80::1]"), "link-local"),
+    ] {
+        let error = refused.unwrap_err();
+        assert!(error.contains(why), "{error}");
+    }
+}
+
+/// `--nat-global-address` (#1943) reaches the TUI's transport arguments
+/// and leaves the registration alone; it needs `--foreign-bbmd`, a port
+/// and a unicast address.
+#[test]
+fn the_nat_global_address_is_checked_and_reaches_the_args() {
+    let cli = parse([
+        "bacnet",
+        "--foreign-bbmd",
+        "192.0.2.10",
+        "--nat-global-address",
+        "203.0.113.7:61000",
+        "discover",
+    ])
+    .unwrap();
+    let args =
+        crate::transport::TransportArgs::from_cli(&cli, Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST)
+            .unwrap();
+    assert_eq!(
+        args.nat_global_address,
+        Some(SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 7), 61000))
+    );
+    let foreign = args.foreign_device.unwrap();
+    assert_eq!(foreign.bbmd, (Ipv4Addr::new(192, 0, 2, 10), 0xBAC0).into());
+
+    let error = parse([
+        "bacnet",
+        "--nat-global-address",
+        "203.0.113.7:61000",
+        "discover",
+    ])
+    .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+    assert!(
+        error.to_string().contains("requires --foreign-bbmd"),
+        "{error}"
+    );
+    // A named profile may hold the BBMD.
+    parse([
+        "bacnet",
+        "--nat-global-address",
+        "203.0.113.7:61000",
+        "tui",
+        "--profile",
+        "site",
+    ])
+    .unwrap();
+
+    for (value, why) in [
+        ("203.0.113.7", "not an IPv4 ip:port"),
+        ("[2001:db8::1]:61000", "not an IPv4 ip:port"),
+        ("203.0.113.7:0", "needs a nonzero port"),
+        ("0.0.0.0:61000", "is not a unicast address"),
+        ("224.0.0.1:61000", "is not a unicast address"),
+        ("255.255.255.255:61000", "is not a unicast address"),
+    ] {
+        let error = parse([
+            "bacnet",
+            "--foreign-bbmd",
+            "192.0.2.10",
+            "--nat-global-address",
+            value,
+            "discover",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ValueValidation, "{value}");
+        assert!(error.to_string().contains(why), "{value}: {error}");
+    }
 }
 
 /// The SC reconnect flags (#1831): `--sc-failover-url` brings the

@@ -12,9 +12,7 @@ pub mod event_enrollment;
 pub mod fault_detection;
 pub mod handlers;
 pub mod life_safety;
-mod life_safety_cov;
 mod local_device;
-mod local_references;
 mod membership;
 pub mod mutation;
 #[doc(hidden)]
@@ -27,6 +25,10 @@ pub use policy::{FnPolicy, ServerPolicy};
 mod runtime_clock;
 pub mod schedule;
 pub mod server;
+#[cfg(test)]
+mod test_event_state;
+#[cfg(test)]
+mod test_rows;
 pub mod trend_log;
 
 /// Explicit initiators for local command-source tracking.

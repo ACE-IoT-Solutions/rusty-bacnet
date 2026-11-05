@@ -1,4 +1,6 @@
 use super::super::*;
+use crate::property_metadata::is_writable_property;
+use crate::traits::EventReporting as _;
 use bacnet_encoding::primitives::encode_property_value;
 use bacnet_types::bitstring::LimitEnable;
 use bacnet_types::enums::EventState;
@@ -204,10 +206,10 @@ fn ao_description_read_write() {
 #[test]
 fn ao_description_in_property_list() {
     let ao = AnalogOutputObject::new(1, "AO-1", EngineeringUnits::DEGREES_CELSIUS).unwrap();
-    assert!(
-        ao.property_list()
-            .contains(&PropertyIdentifier::DESCRIPTION)
-    );
+    assert!(crate::property_metadata::has_property(
+        &ao.property_metadata(),
+        PropertyIdentifier::DESCRIPTION
+    ));
 }
 
 #[test]
@@ -457,26 +459,27 @@ fn ao_direct_priority_array_index_17_error() {
 }
 
 #[test]
-fn ao_is_createable_matches_factory() {
-    use crate::traits::BACnetObject;
-    let ao = AnalogOutputObject::new(1, "ao-1", EngineeringUnits::NO_UNITS).unwrap();
-    assert!(ao.is_createable(), "AnalogOutput is factory-constructable");
-}
-
-#[test]
 fn ao_is_writable_property_mirrors_write_property() {
-    use crate::traits::BACnetObject;
     let ao = AnalogOutputObject::new(1, "ao-1", EngineeringUnits::NO_UNITS).unwrap();
     // Commandable.
-    assert!(!ao.is_writable_property(PropertyIdentifier::PRIORITY_ARRAY));
-    assert!(ao.is_writable_property(PropertyIdentifier::PRESENT_VALUE));
+    assert!(!is_writable_property(
+        &ao,
+        PropertyIdentifier::PRIORITY_ARRAY
+    ));
+    assert!(is_writable_property(&ao, PropertyIdentifier::PRESENT_VALUE));
     // Event + common.
-    assert!(ao.is_writable_property(PropertyIdentifier::LIMIT_ENABLE));
-    assert!(ao.is_writable_property(PropertyIdentifier::NOTIFY_TYPE));
-    assert!(ao.is_writable_property(PropertyIdentifier::TIME_DELAY));
-    assert!(ao.is_writable_property(PropertyIdentifier::OUT_OF_SERVICE));
+    assert!(is_writable_property(&ao, PropertyIdentifier::LIMIT_ENABLE));
+    assert!(is_writable_property(&ao, PropertyIdentifier::NOTIFY_TYPE));
+    assert!(is_writable_property(&ao, PropertyIdentifier::TIME_DELAY));
+    assert!(is_writable_property(
+        &ao,
+        PropertyIdentifier::OUT_OF_SERVICE
+    ));
     // #270: RELINQUISH_DEFAULT grew a validated write arm.
-    assert!(ao.is_writable_property(PropertyIdentifier::RELINQUISH_DEFAULT));
+    assert!(is_writable_property(
+        &ao,
+        PropertyIdentifier::RELINQUISH_DEFAULT
+    ));
 }
 
 /// #270: a Relinquish_Default write is validated like a commanded

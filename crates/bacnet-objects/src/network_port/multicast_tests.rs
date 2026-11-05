@@ -4,18 +4,20 @@
 
 use super::*;
 use crate::database::ObjectDatabase;
-use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
+use crate::property_metadata::{
+    PropertyConformance, PropertyPresenceCondition, PropertyWriteCapability,
+};
 use bacnet_types::bip_port::{BipPortMode, IpMulticast};
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
 use bacnet_types::error::RemoteError;
 use std::sync::{Arc, Mutex};
 
-const GROUP: [u8; 4] = [239, 255, 94, 1];
+pub(super) const GROUP: [u8; 4] = [239, 255, 94, 1];
 const OFF: [u8; 4] = [0; 4];
 
 /// A transport's group, as its live view would answer: only a class D
 /// address or 0.0.0.0 is taken.
-struct Group {
+pub(super) struct Group {
     group: Mutex<[u8; 4]>,
     activated: Mutex<Vec<[u8; 4]>>,
     /// Whether activation fails even after the check passed.
@@ -23,7 +25,7 @@ struct Group {
 }
 
 impl Group {
-    fn new(group: [u8; 4]) -> Arc<Self> {
+    pub(super) fn new(group: [u8; 4]) -> Arc<Self> {
         Arc::new(Self {
             group: Mutex::new(group),
             activated: Mutex::default(),
@@ -67,7 +69,7 @@ fn oid() -> ObjectIdentifier {
 
 /// A NORMAL IPv4 port lent `group`, activating changes when `activation`
 /// says so.
-fn port(group: Option<&Arc<Group>>, activation: bool) -> (ObjectDatabase, Arc<()>) {
+pub(super) fn port(group: Option<&Arc<Group>>, activation: bool) -> (ObjectDatabase, Arc<()>) {
     let mut db = ObjectDatabase::new();
     let config = BipPortConfig {
         ip_address: [127, 0, 0, 1],
@@ -139,13 +141,17 @@ fn a_port_that_can_use_multicast_serves_its_group_live() {
     let group = Group::new(OFF);
     let (db, _lease) = port(Some(&group), true);
     let row = row(&db).expect("listed");
-    assert_eq!(row.conformance, PropertyConformance::RequiredRead);
-    assert!(
-        db.get(&oid())
-            .unwrap()
-            .property_list()
-            .contains(&P::BACNET_IP_MULTICAST_ADDRESS)
+    // Table 12-71 footnote 7 (#2191).
+    assert_eq!(row.conformance, PropertyConformance::Optional);
+    assert_eq!(
+        row.presence_condition,
+        Some(PropertyPresenceCondition::BacnetIpMulticast)
     );
+    assert!(row.is_required());
+    assert!(crate::property_metadata::has_property(
+        &db.get(&oid()).unwrap().property_metadata(),
+        P::BACNET_IP_MULTICAST_ADDRESS
+    ));
     // 0.0.0.0 while off (Clause 12.56.26), then the group, read live.
     assert_eq!(group_read(&db), OFF);
     *group.group.lock().unwrap() = GROUP;
@@ -267,11 +273,10 @@ fn a_new_publication_drops_a_written_group() {
 fn an_ipv6_port_never_serves_the_row() {
     let mut port = NetworkPortObject::new_bip6(1, "NP6", Bip6PortConfig::default()).unwrap();
     port.set_multicast_internal(Some(Group::new(GROUP) as Arc<dyn IpMulticast>));
-    assert!(
-        !port
-            .property_list()
-            .contains(&P::BACNET_IP_MULTICAST_ADDRESS)
-    );
+    assert!(!crate::property_metadata::has_property(
+        &port.property_metadata(),
+        P::BACNET_IP_MULTICAST_ADDRESS
+    ));
     assert_eq!(
         code(port.read_property(P::BACNET_IP_MULTICAST_ADDRESS, None)),
         ErrorCode::UNKNOWN_PROPERTY

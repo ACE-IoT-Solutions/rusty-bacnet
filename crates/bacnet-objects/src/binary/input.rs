@@ -187,6 +187,10 @@ pub struct BinaryInputObject {
     /// event-state-machine evaluation under Clause 13.2.2.1.
     event_detection_enable: bool,
     pub(crate) event_history: EventHistory,
+    /// The reporting settings a write set, kept in storage once the
+    /// object opts in (#2331).
+    #[cfg(feature = "event-reporting")]
+    reporting_store: crate::write_config::reporting::ReportingStore,
 }
 
 impl BinaryInputObject {
@@ -213,6 +217,8 @@ impl BinaryInputObject {
             },
             event_detection_enable: true,
             event_history: EventHistory::default(),
+            #[cfg(feature = "event-reporting")]
+            reporting_store: Default::default(),
         })
     }
 
@@ -268,12 +274,9 @@ impl BinaryInputObject {
         self.present_value = v;
         Ok(())
     }
-
-    /// Set the description string.
-    pub fn set_description(&mut self, desc: impl Into<String>) {
-        self.description = desc.into();
-    }
 }
+
+crate::write_config::reporting::impl_reporting_persistence!(BinaryInputObject);
 
 impl BACnetObject for BinaryInputObject {
     fn object_identifier(&self) -> ObjectIdentifier {
@@ -284,13 +287,9 @@ impl BACnetObject for BinaryInputObject {
         &self.name
     }
 
-    fn durable_writes_internal(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
-        self.profile.capability()
-    }
-
-    fn advance_monotonic_time_internal(&mut self, now: core::time::Duration) -> bool {
-        self.profile.expire(now);
-        false
+    #[cfg(feature = "durable-writes")]
+    fn durable_writes(&mut self) -> Option<&mut dyn crate::durable::DurableWrites> {
+        self.durable_capability()
     }
 
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
@@ -301,42 +300,16 @@ impl BACnetObject for BinaryInputObject {
         rows
     }
 
-    fn supports_cov(&self) -> bool {
-        true
-    }
+    crate::traits::lend_cov_reporting!();
 
-    crate::event::impl_builtin_intrinsic_reporting!(
-        event_detector,
-        event_history,
-        [present_value],
-        reliability,
-        event_detection_enable,
-        ChangeOfStateDetector::ALGORITHM
-    );
-
-    fn acknowledge_alarm_correlated_internal(
-        &mut self,
-        event_state: EventState,
-        timestamp: &BACnetTimeStamp,
-    ) -> Result<(), Error> {
-        if !self.event_detection_enable {
-            return Err(Error::protocol(
-                ErrorClass::OBJECT,
-                ErrorCode::NO_ALARM_CONFIGURED,
-            ));
-        }
-        self.event_history.acknowledge_correlated(
-            &mut self.event_detector.acked_transitions,
-            event_state,
-            timestamp,
-        )
-    }
+    crate::traits::lend_event_reporting!();
 
     fn read_property(
         &self,
         property: PropertyIdentifier,
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
+        crate::property_metadata::check_read_array_index(self, property, array_index)?;
         if property == PropertyIdentifier::STATUS_FLAGS {
             return Ok(common::compute_status_flags(
                 self.status_flags,
@@ -399,6 +372,8 @@ impl BACnetObject for BinaryInputObject {
         value: PropertyValue,
         _priority: Option<u8>,
     ) -> Result<(), Error> {
+        crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
+        crate::write_config::reporting::admit(self, property, array_index, &value)?;
         if property == PropertyIdentifier::PRESENT_VALUE {
             if !self.out_of_service {
                 return Err(common::write_access_denied_error());
@@ -491,20 +466,22 @@ impl BACnetObject for BinaryInputObject {
         Err(crate::common::unhandled_write_error(
             self.property_metadata().as_ref(),
             property,
-            array_index,
         ))
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        let metadata = self.property_metadata();
-        crate::property_metadata::property_list_from_metadata(metadata.as_ref())
-    }
+    crate::traits::lend_reliability_eval!();
 
-    fn is_createable(&self) -> bool {
-        true
+    fn local_input(&mut self) -> Option<&mut dyn crate::traits::LocalInput> {
+        Some(self)
     }
+}
 
-    fn set_reliability_internal(&mut self, reliability: Reliability) -> Result<(), Error> {
+impl crate::creation::Creatable for BinaryInputObject {}
+
+impl crate::traits::CovReporting for BinaryInputObject {}
+
+impl crate::traits::ReliabilityEval for BinaryInputObject {
+    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
         if self.out_of_service || self.reliability_inhibit.enabled() {
             return Err(common::write_access_denied_error());
         }
@@ -515,16 +492,32 @@ impl BACnetObject for BinaryInputObject {
         Ok(())
     }
 
-    fn set_present_value_internal(&mut self, value: PropertyValue) -> Result<(), Error> {
+    fn reliability_evaluation_inhibited(&self) -> bool {
+        self.reliability_inhibit.enabled()
+    }
+}
+
+crate::event::impl_builtin_intrinsic_reporting!(
+    BinaryInputObject,
+    event_detector,
+    event_history,
+    [present_value],
+    reliability,
+    event_detection_enable,
+    ChangeOfStateDetector::ALGORITHM
+);
+
+/// The Present_Value the application supplies.
+impl crate::traits::LocalInput for BinaryInputObject {
+    fn apply_local_input(&mut self, input: crate::traits::LocalInputValue) -> Result<(), Error> {
+        let crate::traits::LocalInputValue::PresentValue { value, .. } = input else {
+            return Err(crate::traits::not_supported());
+        };
         // Local safe-ownership policy: preserve the client's OOS simulation.
         if self.out_of_service {
             return Err(common::write_access_denied_error());
         }
         self.apply_present_value(value)
-    }
-
-    fn reliability_evaluation_inhibited_internal(&self) -> bool {
-        self.reliability_inhibit.enabled()
     }
 }
 

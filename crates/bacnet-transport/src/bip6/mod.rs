@@ -55,8 +55,12 @@ pub const MAX_VMAC_RETRIES: u32 = 3;
 
 mod addressing;
 mod collision_probe;
+mod foreign_bbmd;
 mod foreign_target;
-pub use foreign_target::Bip6ForeignDeviceRefusal;
+pub use foreign_bbmd::Bip6ForeignBbmd;
+pub use foreign_target::{
+    Bip6ForeignDeviceRefusal, Bip6ForeignStatus, Bip6RegistrationAnswer, Bip6ReleaseCounters,
+};
 mod frame;
 pub use frame::{bvll6_error, decode_bvll6, encode_bvll6};
 mod ingress;
@@ -85,6 +89,8 @@ pub use vmac_table::{
 };
 
 #[cfg(test)]
+mod configured_name_tests;
+#[cfg(test)]
 mod foreign_retarget_tests;
 #[cfg(test)]
 mod frame_tests;
@@ -96,6 +102,10 @@ mod multicast_resolution_tests;
 mod network_port_tests;
 #[cfg(test)]
 mod receive_counters_tests;
+#[cfg(test)]
+mod registration_answer_tests;
+#[cfg(test)]
+mod release_tests;
 #[cfg(test)]
 mod reply_tests;
 #[cfg(test)]
@@ -110,3 +120,5 @@ mod safety_tests;
 mod tests;
 #[cfg(test)]
 mod vmac_generation_tests;
+#[cfg(test)]
+mod waiting_receive_tests;

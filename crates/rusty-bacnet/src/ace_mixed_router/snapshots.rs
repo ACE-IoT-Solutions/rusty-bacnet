@@ -1,6 +1,55 @@
+use bacnet_network::router::RouterPortCounters;
 use bacnet_network::router_table::{Duration, Instant, Reachability, Route};
-use bacnet_transport::sc::ScConnectionState;
+use bacnet_transport::sc::{ScActiveHub, ScConnectionState, ScLinkStatus};
 use pyo3::prelude::*;
+
+/// Immutable cumulative forwarding counters for one configured router port.
+#[pyclass(
+    name = "RouterPortCounters",
+    module = "rusty_bacnet",
+    frozen,
+    skip_from_py_object
+)]
+#[derive(Clone)]
+pub struct PyRouterPortCounters {
+    #[pyo3(get)]
+    pub(super) config_index: usize,
+    #[pyo3(get)]
+    pub(super) network_number: u16,
+    #[pyo3(get)]
+    pub(super) transport_kind: String,
+    #[pyo3(get)]
+    pub(super) identity: String,
+    #[pyo3(get)]
+    pub(super) forwarded_unicast: u64,
+    #[pyo3(get)]
+    pub(super) forwarded_broadcast: u64,
+    #[pyo3(get)]
+    pub(super) send_errors: u64,
+    #[pyo3(get)]
+    pub(super) output_full_drops: u64,
+    #[pyo3(get)]
+    pub(super) no_route_drops: u64,
+    #[pyo3(get)]
+    pub(super) shutdown_drops: u64,
+}
+
+impl From<RouterPortCounters> for PyRouterPortCounters {
+    fn from(value: RouterPortCounters) -> Self {
+        Self {
+            config_index: value.config_index,
+            network_number: value.network_number,
+            transport_kind: value.transport_kind,
+            identity: value.identity,
+            forwarded_unicast: value.forwarded_unicast,
+            forwarded_broadcast: value.forwarded_broadcast,
+            send_errors: value.send_errors,
+            output_full_drops: value.output_full_drops,
+            no_route_drops: value.no_route_drops,
+            shutdown_drops: value.shutdown_drops,
+        }
+    }
+}
 
 /// Immutable current health for one configured router port.
 #[pyclass(
@@ -66,6 +115,42 @@ impl PyRouterPortHealth {
             since: None,
         }
     }
+
+    pub(super) fn from_sc_status(
+        config_index: usize,
+        network_number: u16,
+        identity: String,
+        status: ScLinkStatus,
+        attempt: u64,
+        last_error: Option<String>,
+        since: f64,
+    ) -> Self {
+        let state = match status.state {
+            ScConnectionState::Disconnected | ScConnectionState::Disconnecting => "Down",
+            ScConnectionState::Connecting if attempt > 0 => "Reconnecting",
+            ScConnectionState::Connecting => "Connecting",
+            ScConnectionState::Connected => "Up",
+        };
+        Self {
+            config_index,
+            network_number,
+            transport_kind: "sc".to_owned(),
+            identity,
+            state: state.to_owned(),
+            detail: None,
+            active_hub: status.active_hub.map(sc_hub_name),
+            last_error,
+            attempt,
+            since: Some(since),
+        }
+    }
+}
+
+fn sc_hub_name(hub: ScActiveHub) -> String {
+    match hub {
+        ScActiveHub::Primary => "primary".to_owned(),
+        ScActiveHub::Failover => "failover".to_owned(),
+    }
 }
 
 /// Build a health snapshot for the parent router's configured health source.
@@ -82,6 +167,27 @@ pub(super) fn port_health(
         transport_kind,
         identity.to_owned(),
         sc_state,
+    )
+}
+
+pub(super) fn port_health_from_status(
+    config_index: usize,
+    network_number: u16,
+    _transport_kind: &str,
+    identity: &str,
+    status: ScLinkStatus,
+    attempt: u64,
+    last_error: Option<String>,
+    since: f64,
+) -> PyRouterPortHealth {
+    PyRouterPortHealth::from_sc_status(
+        config_index,
+        network_number,
+        identity.to_owned(),
+        status,
+        attempt,
+        last_error,
+        since,
     )
 }
 

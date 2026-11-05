@@ -8,7 +8,12 @@ fn fallible_trend_hook_preserves_state_on_clock_error_and_retries() {
             let mut object = kind.object(2);
             object
                 .object_mut()
-                .bind_clock_internal(clock.map(|clock| clock as Arc<dyn ClockReader>));
+                .timed()
+                .unwrap()
+                .bind_clocks(&crate::traits::Clocks {
+                    clock: clock.map(|clock| clock as Arc<dyn ClockReader>),
+                    ..crate::traits::Clocks::default()
+                });
             object
                 .write(
                     PropertyIdentifier::STOP_WHEN_FULL,
@@ -38,7 +43,14 @@ fn fallible_trend_hook_preserves_state_on_clock_error_and_retries() {
             assert_eq!(object.identities()[0], identities[0]);
             assert_status(&object, LOG_DISABLED);
 
-            object.object_mut().bind_clock_internal(None);
+            object
+                .object_mut()
+                .timed()
+                .unwrap()
+                .bind_clocks(&crate::traits::Clocks {
+                    clock: None,
+                    ..crate::traits::Clocks::default()
+                });
             let before = object.records();
             let identities = object.identities();
             object.add_trend_record(ordinary(3, 30)).unwrap();
@@ -68,10 +80,19 @@ fn fallible_insertion_keeps_count_only_success_and_rejects_unsupported_objects()
             assert_eq!(object.total(), 2);
         }
     }
+    // A non-log lends no buffer, so the host has nowhere to add a record.
     let mut unsupported =
         crate::analog::AnalogInputObject::new(1, "AI", EngineeringUnits::DEGREES_CELSIUS).unwrap();
+    assert!(unsupported.log_buffer_mut().is_none());
+    // A log that lends one but takes no trend records refuses them.
+    let mut event = FamilyKind::Event.object(2);
     assert_protocol(
-        unsupported.add_trend_record(ordinary(1, 10)).unwrap_err(),
+        event
+            .object_mut()
+            .log_buffer_mut()
+            .unwrap()
+            .add_trend_record(ordinary(1, 10))
+            .unwrap_err(),
         ErrorClass::OBJECT,
         ErrorCode::OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED,
     );

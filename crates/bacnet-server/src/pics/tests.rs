@@ -1,5 +1,7 @@
+use bacnet_objects::property_metadata::is_writable_property;
 use std::borrow::Cow;
 
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::enums::{
     EngineeringUnits, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
@@ -42,18 +44,13 @@ impl BACnetObject for TestAnalogInput {
             ErrorCode::WRITE_ACCESS_DENIED,
         ))
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        static PROPS: [PropertyIdentifier; 8] = [
-            PropertyIdentifier::OBJECT_IDENTIFIER,
-            PropertyIdentifier::OBJECT_NAME,
-            PropertyIdentifier::OBJECT_TYPE,
-            PropertyIdentifier::PROPERTY_LIST,
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[
             PropertyIdentifier::PRESENT_VALUE,
             PropertyIdentifier::STATUS_FLAGS,
             PropertyIdentifier::OUT_OF_SERVICE,
             PropertyIdentifier::UNITS,
-        ];
-        Cow::Borrowed(&PROPS)
+        ])
     }
 }
 
@@ -85,16 +82,14 @@ impl BACnetObject for TestBinaryValue {
     ) -> Result<(), Error> {
         Ok(())
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        static PROPS: [PropertyIdentifier; 6] = [
-            PropertyIdentifier::OBJECT_IDENTIFIER,
-            PropertyIdentifier::OBJECT_NAME,
-            PropertyIdentifier::OBJECT_TYPE,
-            PropertyIdentifier::PROPERTY_LIST,
-            PropertyIdentifier::PRESENT_VALUE,
-            PropertyIdentifier::STATUS_FLAGS,
-        ];
-        Cow::Borrowed(&PROPS)
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::rows(
+            &[
+                PropertyIdentifier::PRESENT_VALUE,
+                PropertyIdentifier::STATUS_FLAGS,
+            ],
+            &[PropertyIdentifier::PRESENT_VALUE],
+        )
     }
 }
 
@@ -135,23 +130,11 @@ impl BACnetObject for TestDevice {
             ErrorCode::WRITE_ACCESS_DENIED,
         ))
     }
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        static PROPS: [PropertyIdentifier; 6] = [
-            PropertyIdentifier::OBJECT_IDENTIFIER,
-            PropertyIdentifier::OBJECT_NAME,
-            PropertyIdentifier::OBJECT_TYPE,
-            PropertyIdentifier::PROPERTY_LIST,
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        crate::test_rows::read_only(&[
             PropertyIdentifier::PROTOCOL_VERSION,
             PropertyIdentifier::PROTOCOL_REVISION,
-        ];
-        Cow::Borrowed(&PROPS)
-    }
-    /// Device is not createable or deleteable; mirrors the real DeviceObject.
-    fn is_createable(&self) -> bool {
-        false
-    }
-    fn is_deleteable(&self) -> bool {
-        false
+        ])
     }
 }
 
@@ -182,7 +165,7 @@ fn make_test_db() -> ObjectDatabase {
     db
 }
 
-fn make_pics_config() -> PicsConfig {
+pub(super) fn make_pics_config() -> PicsConfig {
     PicsConfig {
         device_profile: DeviceProfile::BAsc,
         data_link_layers: vec![DataLinkSupport::BipV4],
@@ -227,26 +210,20 @@ fn all_object_types_listed() {
         .iter()
         .map(|ot| ot.object_type)
         .collect();
-    assert!(types.contains(&ObjectType::DEVICE));
+    // The test DB's three types, and every type CreateObject builds (Analog
+    // Input and Binary Value among them), once each in type order.
+    let mut expected: Vec<ObjectType> = bacnet_objects::creation::builtin_createable_types()
+        .chain([ObjectType::DEVICE])
+        .collect();
+    expected.sort_by_key(|kind| kind.to_raw());
+    assert_eq!(types, expected);
     assert!(types.contains(&ObjectType::ANALOG_INPUT));
     assert!(types.contains(&ObjectType::BINARY_VALUE));
-    // 3 distinct types in our test DB
-    assert_eq!(types.len(), 3);
 }
 
 #[test]
 fn object_type_properties_populated() {
     let db = make_test_db();
-    let unmigrated = db
-        .iter_objects()
-        .find_map(|(_, object)| {
-            (object.object_identifier().object_type() == ObjectType::ANALOG_INPUT).then_some(object)
-        })
-        .unwrap();
-    assert!(
-        unmigrated.property_metadata().is_empty(),
-        "the test fixture must exercise the legacy PICS fallback"
-    );
     let server_config = ServerConfig::default();
     let pics_config = make_pics_config();
     let pics = generate_pics(&db, &server_config, &pics_config);
@@ -260,10 +237,8 @@ fn object_type_properties_populated() {
     // AI has 8 properties in our test fixture
     assert_eq!(ai.supported_properties.len(), 8);
 
-    // The TestAnalogInput stub does not override is_writable_property, so it
-    // inherits the default historical_writable_default heuristic, which reports
-    // PRESENT_VALUE read-only for ANALOG_INPUT. The real AnalogInputObject
-    // overrides this to writable-when-out-of-service — see
+    // The TestAnalogInput stub's rows give PRESENT_VALUE no write route. The
+    // real AnalogInputObject's make it writable when out of service: see
     // pics_input_present_value_writable_only_when_out_of_service.
     let pv = ai
         .supported_properties
@@ -291,32 +266,15 @@ fn device_not_createable_or_deleteable() {
 }
 
 #[test]
-fn real_device_and_network_port_overrides_not_createable_or_deleteable() {
-    // Directly exercise the real DeviceObject and NetworkPortObject trait
-    // overrides (not the TestDevice stub) so a regression flipping either
-    // override to true fails here rather than silently changing PICS output.
-    use bacnet_objects::device::{DeviceConfig, DeviceObject};
-    use bacnet_objects::network_port::NetworkPortObject;
-
-    let device = DeviceObject::new(DeviceConfig {
-        identity: bacnet_objects::DeviceIdentity::default().with_name("Dev"),
-        ..Default::default()
-    })
-    .unwrap();
-    assert!(!device.is_createable(), "Device must not be createable");
-    assert!(!device.is_deleteable(), "Device must not be deleteable");
-
-    let np = NetworkPortObject::new_non_bip(
-        1,
-        "NP-1",
-        bacnet_types::enums::NetworkType::from_raw(0),
-        0,
-        Default::default(),
-        1476,
-    )
-    .unwrap();
-    assert!(!np.is_createable(), "NetworkPort must not be createable");
-    assert!(!np.is_deleteable(), "NetworkPort must not be deleteable");
+fn device_and_network_port_types_are_not_createable_or_deleteable() {
+    // The type-level answers DeleteObject and the PICS share (#2179): a
+    // regression flipping either fails here rather than silently changing
+    // PICS output.
+    use bacnet_objects::creation::{builtin_constructor, builtin_deleteable};
+    for kind in [ObjectType::DEVICE, ObjectType::NETWORK_PORT] {
+        assert!(!builtin_deleteable(kind), "{kind:?} must not be deleteable");
+        assert!(builtin_constructor(kind).is_none(), "{kind:?}");
+    }
 }
 
 #[test]
@@ -411,17 +369,6 @@ fn markdown_output_has_tables() {
     assert!(md.contains("| Property | Access |"));
     assert!(md.contains("## Supported Object Types"));
     assert!(md.contains("## Supported Services"));
-}
-
-#[test]
-fn empty_database_produces_empty_object_list() {
-    let db = ObjectDatabase::new();
-    let server_config = ServerConfig::default();
-    let pics_config = PicsConfig::default();
-    let pics = generate_pics(&db, &server_config, &pics_config);
-
-    assert!(pics.supported_object_types.is_empty());
-    assert!(!pics.supported_services.is_empty());
 }
 
 #[test]
@@ -706,45 +653,6 @@ fn pics_fixed_readonly_properties_never_writable() {
 }
 
 #[test]
-fn pics_createability_matches_runtime_factory() {
-    let db = make_real_objects_db();
-    let pics = generate_pics(&db, &ServerConfig::default(), &make_pics_config());
-
-    // The 8 types handle_create_object actually constructs must be createable.
-    for ot in [
-        ObjectType::ANALOG_INPUT,
-        ObjectType::ANALOG_OUTPUT,
-        ObjectType::BINARY_INPUT,
-        ObjectType::BINARY_OUTPUT,
-        ObjectType::BINARY_VALUE,
-        ObjectType::MULTI_STATE_INPUT,
-        ObjectType::MULTI_STATE_OUTPUT,
-        ObjectType::MULTI_STATE_VALUE,
-    ] {
-        let entry = pics
-            .supported_object_types
-            .iter()
-            .find(|e| e.object_type == ot)
-            .expect("type should be in PICS");
-        assert!(
-            entry.createable,
-            "{ot:?} should be createable (factory constructs it)"
-        );
-    }
-
-    // AnalogValue is NOT in the factory — PICS must not advertise createability.
-    let av = pics
-        .supported_object_types
-        .iter()
-        .find(|e| e.object_type == ObjectType::ANALOG_VALUE)
-        .expect("ANALOG_VALUE should be in PICS");
-    assert!(
-        !av.createable,
-        "AnalogValue must NOT be createable (factory rejects it with UNSUPPORTED_OBJECT_TYPE)"
-    );
-}
-
-#[test]
 fn pics_writability_matches_runtime_write_property() {
     // Cross-check: PICS reports LIMIT_ENABLE writable on AnalogInput AND
     // write_property actually accepts it. The old heuristic reported it
@@ -755,7 +663,7 @@ fn pics_writability_matches_runtime_write_property() {
     let mut ai = AnalogInputObject::new(1, "ai-1", NO_UNITS).unwrap();
     // PICS (via the trait method) must report it writable.
     assert!(
-        ai.is_writable_property(PropertyIdentifier::LIMIT_ENABLE),
+        is_writable_property(&ai, PropertyIdentifier::LIMIT_ENABLE),
         "is_writable_property must report LIMIT_ENABLE writable on AnalogInput"
     );
     // And the runtime write_property must accept it.
@@ -776,7 +684,7 @@ fn pics_writability_matches_runtime_write_property() {
 
     // Cross-check a property PICS reports non-writable: STATUS_FLAGS.
     assert!(
-        !ai.is_writable_property(PropertyIdentifier::STATUS_FLAGS),
+        !is_writable_property(&ai, PropertyIdentifier::STATUS_FLAGS),
         "STATUS_FLAGS must not be writable on AnalogInput"
     );
     let result = ai.write_property(

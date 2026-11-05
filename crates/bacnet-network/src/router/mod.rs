@@ -102,7 +102,8 @@ use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::MacAddr;
 use bacnet_types::error::Error;
 use bytes::Bytes;
-pub use counters::Counters;
+use counters::PortCounterEntry;
+pub use counters::{Counters, PortCounters, RouterPortCounters};
 pub use originate::OriginateFailure;
 use tokio::sync::mpsc;
 
@@ -137,12 +138,24 @@ enum SendRequest {
         data_attributes: Vec<DataAttribute>,
         reject_origin: Option<bacnet_router_core::router::RejectOrigin>,
         response: Option<replies::ReplyCompletion>,
+        count_forward: bool,
     },
     Broadcast {
         npdu: Bytes,
         data_attributes: Vec<DataAttribute>,
         reject_origin: Option<bacnet_router_core::router::RejectOrigin>,
+        count_forward: bool,
     },
+}
+
+impl SendRequest {
+    pub(super) fn counts_as_forward(&self) -> bool {
+        match self {
+            Self::Unicast { count_forward, .. } | Self::Broadcast { count_forward, .. } => {
+                *count_forward
+            }
+        }
+    }
 }
 
 /// A router port: a transport bound to a specific BACnet network number.
@@ -348,6 +361,20 @@ impl BACnetRouter {
     /// which read them.
     pub fn counters(&self) -> Counters {
         self.shared.engine.counters()
+    }
+
+    /// Cumulative forwarding counters in the configured port order.
+    ///
+    /// Each entry is keyed by its zero-based `config_index` and configured
+    /// BACnet `network_number`. The snapshot remains available after
+    /// [`Self::stop`] and complements, rather than partitions, the aggregate
+    /// [`Self::counters`] totals.
+    pub fn port_counters(&self) -> Vec<RouterPortCounters> {
+        self.shared
+            .port_counters
+            .iter()
+            .map(PortCounterEntry::snapshot)
+            .collect()
     }
 
     /// NPDUs refused on any port since start because an address in them was

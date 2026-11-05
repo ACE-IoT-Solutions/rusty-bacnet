@@ -1,6 +1,7 @@
 use super::super::*;
 use bacnet_objects::analog::AnalogValueObject;
 use bacnet_objects::event_enrollment::{EventEnrollmentEvalState, EventEnrollmentObject};
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_types::constructed::{
     BACnetDeviceObjectPropertyReference, BACnetEventParameter, ChangeOfValueCriteria,
@@ -152,12 +153,8 @@ impl BACnetObject for IndexedReadProbe {
         )
     }
 
-    fn property_list(&self) -> Cow<'static, [PropertyIdentifier]> {
-        self.inner.property_list()
-    }
-
-    fn is_array_property(&self, property: PropertyIdentifier) -> bool {
-        self.inner.is_array_property(property)
+    fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
+        self.inner.property_metadata()
     }
 }
 
@@ -233,11 +230,15 @@ fn out_of_range_index_clears_state_without_whole_property_fallback() {
     };
     db.get_mut(&enrollment_oid)
         .unwrap()
-        .set_enrollment_eval_state_internal(stale)
+        .enrollment_eval_mut()
+        .unwrap()
+        .set_eval_state(stale)
         .unwrap();
     db.get_mut(&enrollment_oid)
         .unwrap()
-        .set_enrollment_eval_source_internal(Some((
+        .enrollment_eval_mut()
+        .unwrap()
+        .set_eval_source(Some((
             value_oid,
             PropertyIdentifier::PRIORITY_ARRAY,
             Some(17),
@@ -249,13 +250,15 @@ fn out_of_range_index_clears_state_without_whole_property_fallback() {
     assert_eq!(
         db.get(&enrollment_oid)
             .unwrap()
-            .enrollment_eval_state_internal(),
+            .enrollment_eval()
+            .map(|e| e.eval_state()),
         Some(EventEnrollmentEvalState::default())
     );
     assert_eq!(
         db.get(&enrollment_oid)
             .unwrap()
-            .enrollment_eval_source_internal(),
+            .enrollment_eval()
+            .and_then(|e| e.eval_source()),
         Some(None)
     );
 }
@@ -311,7 +314,8 @@ fn index_change_restarts_the_pending_delay() {
     let pending = db
         .get(&enrollment_oid)
         .unwrap()
-        .enrollment_eval_state_internal()
+        .enrollment_eval()
+        .map(|e| e.eval_state())
         .unwrap();
     assert_eq!(pending.pending.as_ref().unwrap().remaining, 2);
 
@@ -327,14 +331,17 @@ fn index_change_restarts_the_pending_delay() {
     assert_eq!(replacement_oid, enrollment_oid);
     db.get_mut(&enrollment_oid)
         .unwrap()
-        .set_enrollment_eval_state_internal(pending)
+        .enrollment_eval_mut()
+        .unwrap()
+        .set_eval_state(pending)
         .unwrap();
 
     assert!(evaluate_event_enrollments(&mut db, 1).is_empty());
     assert_eq!(
         db.get(&enrollment_oid)
             .unwrap()
-            .enrollment_eval_state_internal()
+            .enrollment_eval()
+            .map(|e| e.eval_state())
             .unwrap()
             .pending
             .unwrap()
@@ -369,7 +376,8 @@ fn index_change_discards_the_previous_element_baselines() {
     let mut prior_state = db
         .get(&enrollment_oid)
         .unwrap()
-        .enrollment_eval_state_internal()
+        .enrollment_eval()
+        .map(|e| e.eval_state())
         .unwrap();
     assert_eq!(prior_state.cov_baseline, Some(PropertyValue::Real(10.0)));
     prior_state.last_offnormal_value = Some(7);
@@ -378,21 +386,25 @@ fn index_change_discards_the_previous_element_baselines() {
     assert_eq!(add_cov_enrollment(&mut db, 6, value_oid, 2), enrollment_oid);
     db.get_mut(&enrollment_oid)
         .unwrap()
-        .set_enrollment_eval_state_internal(prior_state)
+        .enrollment_eval_mut()
+        .unwrap()
+        .set_eval_state(prior_state)
         .unwrap();
 
     assert!(evaluate_event_enrollments(&mut db, 1).is_empty());
     let state = db
         .get(&enrollment_oid)
         .unwrap()
-        .enrollment_eval_state_internal()
+        .enrollment_eval()
+        .map(|e| e.eval_state())
         .unwrap();
     assert_eq!(state.cov_baseline, Some(PropertyValue::Real(90.0)));
     assert_eq!(state.last_offnormal_value, None);
     assert_eq!(
         db.get(&enrollment_oid)
             .unwrap()
-            .enrollment_eval_source_internal(),
+            .enrollment_eval()
+            .and_then(|e| e.eval_source()),
         Some(Some((
             value_oid,
             PropertyIdentifier::PRIORITY_ARRAY,
@@ -442,7 +454,8 @@ fn null_indexed_element_interrupts_the_pending_delay() {
     assert!(
         db.get(&enrollment_oid)
             .unwrap()
-            .enrollment_eval_state_internal()
+            .enrollment_eval()
+            .map(|e| e.eval_state())
             .unwrap()
             .pending
             .is_none()
@@ -482,13 +495,16 @@ fn transient_indexed_read_failure_clears_private_continuity() {
     let mut stale = db
         .get(&enrollment_oid)
         .unwrap()
-        .enrollment_eval_state_internal()
+        .enrollment_eval()
+        .map(|e| e.eval_state())
         .unwrap();
     stale.cov_baseline = Some(PropertyValue::Real(42.0));
     stale.last_offnormal_value = Some(3);
     db.get_mut(&enrollment_oid)
         .unwrap()
-        .set_enrollment_eval_state_internal(stale)
+        .enrollment_eval_mut()
+        .unwrap()
+        .set_eval_state(stale)
         .unwrap();
     control.reads.lock().unwrap().clear();
     control.transient_failure.store(true, Ordering::SeqCst);
@@ -498,13 +514,15 @@ fn transient_indexed_read_failure_clears_private_continuity() {
     assert_eq!(
         db.get(&enrollment_oid)
             .unwrap()
-            .enrollment_eval_state_internal(),
+            .enrollment_eval()
+            .map(|e| e.eval_state()),
         Some(EventEnrollmentEvalState::default())
     );
     assert_eq!(
         db.get(&enrollment_oid)
             .unwrap()
-            .enrollment_eval_source_internal(),
+            .enrollment_eval()
+            .and_then(|e| e.eval_source()),
         Some(None)
     );
 }
@@ -579,7 +597,8 @@ fn null_indexed_floating_setpoint_interrupts_the_pending_delay() {
     assert!(
         db.get(&enrollment_oid)
             .unwrap()
-            .enrollment_eval_state_internal()
+            .enrollment_eval()
+            .map(|e| e.eval_state())
             .unwrap()
             .pending
             .is_none()

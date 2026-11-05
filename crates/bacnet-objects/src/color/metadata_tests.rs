@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
+use crate::property_metadata::{is_array_property, is_writable_property};
 use crate::traits::BACnetObject;
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier as P};
 use bacnet_types::error::RemoteError;
@@ -117,20 +118,27 @@ fn rows_and_codes_match_the_addendum_tables() {
             .collect();
         assert_eq!(found, rows);
         let all: Vec<_> = rows[..rows.len() - 1].iter().map(|&(p, _)| p).collect();
-        assert_eq!(object.property_list().as_ref(), all);
+        assert_eq!(
+            crate::test_rows::listed(&object.property_metadata()),
+            crate::test_rows::listed_from(&all)
+        );
         let required: Vec<_> = rows
             .iter()
             .filter(|(_, code)| code.is_required())
             .map(|&(p, _)| p)
             .collect();
-        assert_eq!(object.required_properties().as_ref(), required);
+        assert_eq!(
+            crate::test_rows::required(&object.property_metadata()),
+            required
+        );
         assert_eq!(
             rows.iter().map(|&(p, _)| p).collect::<HashSet<_>>().len(),
             rows.len()
         );
-        assert!(!object.is_createable());
-        assert!(object.is_deleteable());
-        assert!(object.supports_cov());
+        assert!(crate::creation::builtin_deleteable(
+            object.object_identifier().object_type()
+        ));
+        assert!(object.cov().is_some_and(|cov| cov.supports_subscribe_cov()));
         for row in metadata.iter() {
             let p = row.property_identifier;
             assert_eq!(row.presence_condition, None);
@@ -140,9 +148,13 @@ fn rows_and_codes_match_the_addendum_tables() {
                 PropertyWriteCapability::ReadOnly
             };
             assert_eq!(row.write_capability, capability, "{p:?}");
-            assert_eq!(object.is_writable_property(p), capability.is_writable());
+            assert_eq!(is_writable_property(&*object, p), capability.is_writable());
             object.read_property(p, None).unwrap();
-            assert_eq!(object.is_array_property(p), p == P::PROPERTY_LIST, "{p:?}");
+            assert_eq!(
+                is_array_property(&*object, p),
+                p == P::PROPERTY_LIST,
+                "{p:?}"
+            );
         }
     }
 }
@@ -160,8 +172,11 @@ fn neither_object_serves_status_or_service_rows() {
             P::COV_INCREMENT,
             P::DEVICE_TYPE,
         ] {
-            assert!(!object.property_list().contains(&p), "{p:?}");
-            assert!(!object.is_writable_property(p), "{p:?}");
+            assert!(
+                !crate::property_metadata::has_property(&object.property_metadata(), p),
+                "{p:?}"
+            );
+            assert!(!is_writable_property(&*object, p), "{p:?}");
             assert_error(
                 object.read_property(p, None).unwrap_err(),
                 ErrorCode::UNKNOWN_PROPERTY,
@@ -327,7 +342,11 @@ fn a_provisioned_audit_policy_serves_its_two_rows_before_property_list() {
             .write_property(P::AUDIT_LEVEL, None, PropertyValue::Enumerated(1), None)
             .unwrap();
         assert_eq!(
-            object.audit_object_policy_internal().level,
+            object
+                .audit_policy()
+                .map(|policy| policy.object_policy())
+                .unwrap_or_default()
+                .level,
             Some(bacnet_types::enums::AuditLevel::AUDIT_ALL)
         );
         assert_error(
@@ -342,6 +361,11 @@ fn a_provisioned_audit_policy_serves_its_two_rows_before_property_list() {
                 .unwrap_err(),
             ErrorCode::UNKNOWN_PROPERTY,
         );
-        assert!(object.audit_policy_authority_internal().is_some());
+        assert!(
+            object
+                .audit_policy_mut()
+                .and_then(|policy| policy.policy_authority())
+                .is_some()
+        );
     }
 }

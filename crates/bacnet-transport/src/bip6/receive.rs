@@ -18,7 +18,7 @@ use crate::udp_metadata::ReceivedDatagram;
 
 use super::frame::encoded;
 use super::ingress::{
-    LocalBinding, destination_vmac_matches, forwarded_address_resolution_is_trusted,
+    Forwarders, LocalBinding, destination_vmac_matches, forwarded_address_resolution_is_trusted,
     forwarded_npdu_is_trusted, forwarded_source_is_usable, group_destination, is_answerable_source,
     is_configured_bbmd, original_destination_matches, own_frame, source_drop,
 };
@@ -108,7 +108,19 @@ impl Receiver {
     /// The BBMD this node is registered with as a foreign device, read at
     /// the moment of the check, so a moved registration applies at once.
     fn foreign_bbmd(&self) -> Option<(Ipv6Addr, u16)> {
-        self.foreign_bbmd.as_ref().map(|target| target.bbmd())
+        self.foreign_bbmd.as_ref().and_then(|target| target.bbmd())
+    }
+
+    /// Whom forwarded messages are taken from, read as
+    /// [`foreign_bbmd`](Self::foreign_bbmd) is: a foreign device waiting
+    /// for its BBMD's host name takes none (#2365).
+    fn forwarders(&self) -> Forwarders {
+        match &self.foreign_bbmd {
+            None => Forwarders::Group,
+            Some(target) => target
+                .bbmd()
+                .map_or(Forwarders::None, |(ip, port)| Forwarders::Bbmd(ip, port)),
+        }
     }
 
     /// Receive until the socket fails.
@@ -218,7 +230,7 @@ impl Receiver {
                 self.local_ip,
                 &self.unicast_ips,
                 self.wildcard_bind,
-                self.foreign_bbmd(),
+                self.forwarders(),
             )
         {
             self.drops.count(DropReason::UntrustedForwardedNpdu);
@@ -237,7 +249,7 @@ impl Receiver {
                 received.destination,
                 received.os_group_delivery,
                 &self.binding(),
-                self.foreign_bbmd(),
+                self.forwarders(),
             )
         {
             self.drops.count(DropReason::UntrustedForwardedResolution);
@@ -415,7 +427,7 @@ impl Receiver {
     ///
     /// | Message | Annex U asks | This transport | Clause |
     /// | --- | --- | --- | --- |
-    /// | BVLC-Result | No reply: it reports on a request this node sent | Logged, a NAK at error level at most once per interval. The configured BBMD's Address-Resolution NAK marks this node's resolutions refused; a peer's Virtual-Address-Resolution NAK fails the lookup of it | U.2.1, U.4.4 |
+    /// | BVLC-Result | No reply: it reports on a request this node sent | Logged, a NAK at error level at most once per interval. The configured BBMD's success or Register-Foreign-Device NAK answers a foreign device's outstanding registration; its Address-Resolution NAK marks this node's resolutions refused; a peer's Virtual-Address-Resolution NAK fails the lookup of it | U.2.1, U.4.4, U.4.5.3 |
     /// | Original-Unicast-NPDU | Take the NPDU when the destination VMAC is this node's, else discard | Handed up, its source VMAC as the source MAC, when sent to this node's address and VMAC | U.1.3, U.2.2, U.3 |
     /// | Original-Broadcast-NPDU | Take the NPDU | Handed up, its source VMAC as the source MAC, when sent to a BACnet multicast group | U.1.3, U.2.3, U.4 |
     /// | Address-Resolution | When it targets this node's VMAC, unicast an Address-Resolution-ACK to the asker | Answered at an answerable source other than this node's own address, when sent to a BACnet group and targeting this VMAC; no quota | U.2.4, U.5 |
@@ -615,6 +627,12 @@ impl Receiver {
             }
 
             Bvll6::BvlcResult { code, .. } => {
+                // Perhaps the answer to the release of the BBMD a move
+                // left (#2338), or to this foreign device's registration
+                // (#2388).
+                if let Some(target) = &self.foreign_bbmd {
+                    target.result(peer, code);
+                }
                 if code == Bvlc6ResultCode::SUCCESSFUL_COMPLETION {
                     debug!("BIP6: BVLC-Result successful");
                     return None;

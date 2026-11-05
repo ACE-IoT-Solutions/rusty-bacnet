@@ -10,6 +10,7 @@
 //! *included* rather than excluded.
 
 use super::*;
+use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 
 /// A minimal event-initiating object that is simultaneously in HIGH_LIMIT and
@@ -17,8 +18,8 @@ use bacnet_objects::traits::BACnetObject;
 ///
 /// A mock rather than a real `EventEnrollmentObject`, deliberately.
 /// `EventEnrollmentObject` now enforces the Clause 13.2.2.1 invariant on every
-/// path — `write_property`, `set_event_state_internal` and the `set_event_state`
-/// seeder all refuse to leave it non-NORMAL while detection is off — so it
+/// path — `write_property` and the `set_event_state` seeder both refuse to
+/// leave it non-NORMAL while detection is off — so it
 /// *cannot* reach this state, and a fixture built from it would prove only that
 /// the reset works, not that these services filter on the property.
 ///
@@ -93,8 +94,8 @@ impl BACnetObject for DisabledAlarmingObject {
             bacnet_types::enums::ErrorCode::WRITE_ACCESS_DENIED,
         ))
     }
-    fn property_list(&self) -> std::borrow::Cow<'static, [PropertyIdentifier]> {
-        let mut properties = vec![
+    fn property_metadata(&self) -> std::borrow::Cow<'_, [PropertyMetadata]> {
+        let mut served = vec![
             PropertyIdentifier::EVENT_STATE,
             PropertyIdentifier::EVENT_TYPE,
             PropertyIdentifier::NOTIFICATION_CLASS,
@@ -104,12 +105,21 @@ impl BACnetObject for DisabledAlarmingObject {
             PropertyIdentifier::EVENT_TIME_STAMPS,
         ];
         if self.detection_enable.is_some() {
-            properties.push(PropertyIdentifier::EVENT_DETECTION_ENABLE);
+            served.push(PropertyIdentifier::EVENT_DETECTION_ENABLE);
         }
-        std::borrow::Cow::Owned(properties)
+        crate::test_rows::read_only(&served)
     }
 
-    fn enrollment_summary_capability_internal(
+    fn event_reporting(&self) -> Option<&dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+    fn event_reporting_mut(&mut self) -> Option<&mut dyn bacnet_objects::traits::EventReporting> {
+        Some(self)
+    }
+}
+
+impl bacnet_objects::traits::EventReporting for DisabledAlarmingObject {
+    fn enrollment_summary_capability(
         &self,
     ) -> Option<bacnet_objects::event::EnrollmentSummaryCapability> {
         Some(bacnet_objects::event::EnrollmentSummaryCapability {

@@ -84,16 +84,19 @@ async fn local_authorization_cov_collision_releases_db_and_retries_fresh_until_q
             timestamped: false,
         })
         .unwrap();
-    let context = crate::cov::MultipleContextKey {
-        recipient: crate::cov::CovRecipient::from_endpoint(&MacAddr::from_slice(&PEER), None),
+    let context = bacnet_device_core::cov::MultipleContextKey {
+        recipient: bacnet_device_core::cov::CovRecipient::from_endpoint(
+            &MacAddr::from_slice(&PEER),
+            None,
+        ),
         process_id: 1570,
         confirmed: false,
     };
-    let expires_at = std::time::Instant::now() + Duration::from_secs(300);
+    let expires_at = crate::runtime_clock::core_now() + bacnet_time::Duration::from_secs(300);
     let fresh = table
         .subscribe_multiple(
             &context,
-            &crate::cov::SubscriberEndpoint::new(&PEER, None),
+            &bacnet_device_core::cov::SubscriberEndpoint::new(&PEER, None),
             expires_at,
             0,
             None,
@@ -284,11 +287,11 @@ async fn local_authorization_competing_mode_waiter_cannot_enter_between_evaluati
     // a delayed live read after the competing writer obtains the database.
     db.get_mut(&oid)
         .unwrap()
-        .report_access_input_internal(AccessControlInput::AccessEvent(access_event(
-            AccessEvent::DENIED_OTHER,
-            99,
-            30,
-        )))
+        .local_input()
+        .unwrap()
+        .apply_local_input(bacnet_objects::traits::LocalInputValue::AccessControl(
+            AccessControlInput::AccessEvent(access_event(AccessEvent::DENIED_OTHER, 99, 30)),
+        ))
         .unwrap();
     drop(db);
     let result = operation.await.unwrap().unwrap();
