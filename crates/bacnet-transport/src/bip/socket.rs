@@ -642,6 +642,10 @@ pub(super) struct BipSocket {
     /// drive [`SendTo`]'s boxed wait on a real socket.
     #[cfg(test)]
     pub(super) block_next_try: std::sync::atomic::AtomicBool,
+    /// Runs at each try just before the socket write, so a test can see
+    /// what the tap holds at that moment (#2519).
+    #[cfg(test)]
+    pub(super) on_try: std::sync::Mutex<Option<Box<dyn FnMut() + Send>>>,
 }
 
 impl BipSocket {
@@ -654,6 +658,8 @@ impl BipSocket {
             sink: None,
             #[cfg(test)]
             block_next_try: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            on_try: std::sync::Mutex::new(None),
         }
     }
 
@@ -679,7 +685,8 @@ impl BipSocket {
     }
 
     /// Send one datagram. Every send of the transport goes through here,
-    /// and the tap sees each one sent.
+    /// and the tap sees each one as it is handed to the socket, whether or
+    /// not the socket then sends it.
     #[cfg(not(test))]
     pub(super) fn send_to<'a>(&'a self, buf: &'a [u8], target: SocketAddrV4) -> SendTo<'a> {
         self.send_datagram(OutgoingDatagram::whole(buf), target)
@@ -749,6 +756,10 @@ impl BipSocket {
             .swap(false, std::sync::atomic::Ordering::Relaxed)
         {
             return Err(io::ErrorKind::WouldBlock.into());
+        }
+        #[cfg(test)]
+        if let Some(hook) = self.on_try.lock().unwrap().as_mut() {
+            hook();
         }
         datagram.try_send(&self.socket, target)
     }
