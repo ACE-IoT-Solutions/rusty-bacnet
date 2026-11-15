@@ -25,8 +25,9 @@ bacnet-transport = { workspace = true, features = ["ipv6"] }
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-services = { workspace = true, features = ["std"] }
 # The official MCP SDK, pinned (#2066): it has had three majors in 2026, and
-# a release counts here only once it is two weeks old. Server role only; the
-# stdio transport is the `stdio` feature.
+# a release normally counts here only once it is two weeks old. ACE 0.15.2
+# makes a security exception for 3.9.0, the minimum version that clears the
+# release's RustSec audit. Server role only; the stdio transport is `stdio`.
 rmcp = { version = "=3.9.0", default-features = false, features = ["server"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json.workspace = true
