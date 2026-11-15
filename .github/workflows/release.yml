@@ -253,6 +253,12 @@ jobs:
           mkdir crate-files
           cp target/package/*.crate crate-files/
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) maturin sdist -m crates/rusty-bacnet/Cargo.toml --out dist
+          # Maturin prunes workspace members but copies the full Cargo.lock.
+          # Repair the ACE GitHub sdist as well as the private registry copy.
+          if [ "$GITHUB_REPOSITORY" = ACE-IoT-Solutions/rusty-bacnet ]; then
+            SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
+              python3 scripts/release/repair_sdist.py dist/ace_rusty_bacnet-*.tar.gz
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: crates
