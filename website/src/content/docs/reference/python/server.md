@@ -112,6 +112,7 @@ def __init__(
     cov_policy: CovPolicy | None = None,
     time_sync_policy: TimeSyncPolicy | None = None,
     share_port_by_address: bool = False,
+    share_wildcard_port: bool = False,
     segmentation_supported: Segmentation = Segmentation.NONE,
     apdu_segment_timeout_ms: int = 5000,
     bbmd: Optional[Bbmd] = None,
@@ -175,6 +176,14 @@ at once can drop the reply; wait a short while first.
 interface address itself, so devices on other addresses of this host
 can share the port. Needs an explicit interface and a nonzero port;
 broadcasts and unicast are still handled in the order they arrived.
+
+`share_wildcard_port` (B/IP only, default False): share an
+explicitly requested port with other sockets on this host that bind
+it the same way. By default the server claims its port, so a second
+bind of it fails, and `start()` raises when another socket holds
+it. With sharing, broadcasts reach every socket on the port, but
+each unicast reaches only one of them; prefer
+`share_port_by_address` or separate ports.
 
 `bbmd` / `foreign_device` (at most one, else ValueError): run
 the device as a BBMD (B/IP only), or register it with a BBMD on

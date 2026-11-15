@@ -50,3 +50,12 @@ python sc_secure_connect.py
 # Device management
 python device_management.py
 ```
+
+### Frame transcripts
+
+[`frame_transcript.py`](frame_transcript.py) prints raw frames and Rust-decoded
+summaries while a virtual device answers and reads on one socket.
+
+```bash
+python frame_transcript.py --interface 127.0.0.1 --port 0
+```

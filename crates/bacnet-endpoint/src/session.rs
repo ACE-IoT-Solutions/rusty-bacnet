@@ -824,16 +824,6 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         self.sc_link.clone()
     }
 
-    /// Returns the composed session role (narrow admin).
-    pub fn session_role(&self) -> SessionRole {
-        self.role
-    }
-
-    /// Returns true while the session dispatch is running (narrow admin).
-    pub fn is_running(&self) -> bool {
-        self.lifecycle.load(Ordering::Acquire) == Lifecycle::Running as u8
-    }
-
     /// Broadcasts an I-Am consistent with the composed identity.
     ///
     /// Missing-identity path: errors without sending (no invented device).

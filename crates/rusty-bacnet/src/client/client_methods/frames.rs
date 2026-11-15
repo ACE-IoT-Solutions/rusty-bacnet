@@ -21,7 +21,7 @@ impl BACnetClient {
             let tap = transport.frame_tap().ok_or_else(|| {
                 PyValueError::new_err("this transport does not support frame observation")
             })?;
-            let address = if let Some(bip) = transport.bip_transport() {
+            let address = if let AnyTransport::Bip(bip) = transport {
                 bacnet_transport::bvll::decode_bip_mac(bip.local_mac())
                     .map(|(ip, port)| std::net::SocketAddrV4::new(ip.into(), port).to_string())
                     .unwrap_or_default()

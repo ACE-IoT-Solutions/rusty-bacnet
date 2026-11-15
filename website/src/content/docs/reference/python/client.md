@@ -68,6 +68,15 @@ colon hex such as `"01:02:03:04:05:06"` (SC, or `"00:04:d2"` for a
 VMAC), or an MS/TP station. `"[ip]:port"` raises ValueError: use
 `resolve_vmac`. So does a `bip6:` address on any other transport.
 
+### BACnetClient.frames
+
+```python
+def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]
+```
+
+Observe raw frames on the running owner; capacity is 1–65536.
+Owner shutdown ends this subscription; a restart needs a new one.
+
 ### BACnetClient.__init__
 
 ```python
@@ -100,6 +109,7 @@ def __init__(
     mstp_reply_timeout_ms: Optional[int] = None,
     sc_device_uuid: Optional[bytes | bytearray] = None,
     share_port_by_address: bool = False,
+    share_wildcard_port: bool = False,
     min_request_interval_ms: int = 0,
     ipv6_device_instance: Optional[int] = None,
     bbmd: Optional[Bbmd] = None,
@@ -197,6 +207,14 @@ of this host can share the port. Needs an explicit interface and a
 nonzero port; broadcasts and unicast are still handled in the order
 they arrived.
 
+`share_wildcard_port` (B/IP only, default False): share an
+explicitly requested port with other sockets on this host that bind
+it the same way. By default the client claims its port, so a second
+bind of it fails, and `start()` raises when another socket holds
+it. With sharing, broadcasts reach every socket on the port, but
+each unicast reaches only one of them; prefer
+`share_port_by_address` or separate ports.
+
 `min_request_interval_ms` (default 0, no pacing; at most
 3,600,000, else ValueError) paces the confirmed requests to each
 destination: each waits until that long after the latest one sent to
@@ -231,7 +249,7 @@ def __aexit__(
 ```python
 def read_property(
     self,
-    address: str,
+    address: Target,
     object_id: ObjectIdentifier,
     property_id: PropertyIdentifier,
     array_index: Optional[int] = None,
@@ -250,7 +268,7 @@ shaped as `PropertyValue` describes for read results.
 ```python
 def write_property(
     self,
-    address: str,
+    address: Target,
     object_id: ObjectIdentifier,
     property_id: PropertyIdentifier,
     value: PropertyValue,
@@ -269,7 +287,7 @@ synchronously; integers outside u8 raise OverflowError.
 ```python
 def read_property_multiple(
     self,
-    address: str,
+    address: Target,
     specs: list[tuple[ObjectIdentifier, list[tuple[PropertyIdentifier, Optional[int]]]]],
 ) -> Awaitable[list[ReadAccessResult]]
 ```
@@ -285,7 +303,7 @@ are rejected; this standalone profile still permits property selectors.
 ```python
 def write_property_multiple(
     self,
-    address: str,
+    address: Target,
     specs: list[tuple[ObjectIdentifier, list[tuple[PropertyIdentifier, PropertyValue, Optional[int], Optional[int]]]]],
 ) -> Awaitable[None]
 ```
@@ -686,7 +704,7 @@ Add a device to the discovery table manually (useful when address is known witho
 ```python
 def subscribe_cov(
     self,
-    address: str,
+    address: Target,
     subscriber_process_identifier: int,
     monitored_object_identifier: ObjectIdentifier,
     confirmed: bool,
@@ -704,7 +722,7 @@ Use unsubscribe\_cov for cancellation. confirmed always supplies the mode.
 ```python
 def unsubscribe_cov(
     self,
-    address: str,
+    address: Target,
     subscriber_process_identifier: int,
     monitored_object_identifier: ObjectIdentifier,
 ) -> Awaitable[None]
@@ -1400,13 +1418,16 @@ stopped or non-SC client.
 ### BACnetClient.foreign_registration
 
 ```python
-def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]
+def foreign_registration(
+    self,
+) -> Awaitable[Union[ForeignRegistrationStatus, Bip6ForeignRegistrationStatus]]
 ```
 
 How the foreign-device registration is going (#938), a refusal
 included. Sends nothing. Outside `foreign_device=` only manual
-registrations show. RuntimeError before start and after stop; a
-non-B/IP client raises BacnetError.
+registrations show. A `transport="ipv6"` client returns a
+`Bip6ForeignRegistrationStatus` (#2365). RuntimeError before start
+and after stop; a client on another transport raises BacnetError.
 
 ### BACnetClient.stop
 
@@ -1573,6 +1594,168 @@ Properties:
 - `leaf_sha256: bytes`
 - `certificates: tuple[ScPeerCertificate, ...]`
 
+## RouterBipPort
+
+Attributes:
+
+- `network_number: int`
+- `interface: str`
+- `port: int`
+- `broadcast_address: str`
+- `reuse_port: bool`
+
+### RouterBipPort.__init__
+
+```python
+def __init__(
+    self,
+    network_number: int,
+    interface: str = "0.0.0.0",
+    port: int = 0xBAC0,
+    broadcast_address: str = "255.255.255.255",
+    reuse_port: bool = False,
+) -> None
+```
+
+## RouterScPort
+
+Attributes:
+
+- `network_number: int`
+- `primary_hub: str`
+- `local_vmac: bytes`
+- `device_uuid: bytes`
+- `ca_cert: str`
+- `client_cert: str`
+- `client_key: str`
+- `failover_hub: Optional[str]`
+- `heartbeat_interval_ms: int`
+- `heartbeat_timeout_ms: int`
+- `reconnect_initial_delay_ms: int`
+- `reconnect_max_delay_ms: int`
+- `reconnect_max_retries: int`
+- `reconnect_forever: bool`
+- `max_npdu_length: int`
+- `max_bvlc_length: int`
+
+### RouterScPort.__init__
+
+```python
+def __init__(
+    self,
+    network_number: int,
+    primary_hub: str,
+    local_vmac: bytes,
+    device_uuid: bytes,
+    ca_cert: str,
+    client_cert: str,
+    client_key: str,
+    failover_hub: Optional[str] = None,
+    heartbeat_interval_ms: int = 30000,
+    heartbeat_timeout_ms: int = 60000,
+    reconnect_initial_delay_ms: int = 10000,
+    reconnect_max_delay_ms: int = 600000,
+    reconnect_max_retries: int = 10,
+    reconnect_forever: bool = False,
+    max_npdu_length: int = 1497,
+    max_bvlc_length: int = 5705,
+) -> None
+```
+
+## RouterPortHealth
+
+Attributes:
+
+- `config_index: int`
+- `network_number: int`
+- `transport_kind: str`
+- `identity: str`
+- `state: str`
+- `detail: Optional[str]`
+- `active_hub: Optional[str]`
+- `last_error: Optional[str]`
+- `attempt: int`
+- `since: Optional[float]`
+
+## RouterPortCounters
+
+Attributes:
+
+- `config_index: int`
+- `network_number: int`
+- `transport_kind: str`
+- `identity: str`
+- `forwarded_unicast: int`
+- `forwarded_broadcast: int`
+- `send_errors: int`
+- `output_full_drops: int`
+- `no_route_drops: int`
+- `shutdown_drops: int`
+
+## RouterRouteEntry
+
+Attributes:
+
+- `network_number: int`
+- `port_index: int`
+- `directly_connected: bool`
+- `next_hop_mac: bytes`
+- `reachability: str`
+- `last_seen_age_s: Optional[float]`
+- `busy_remaining_s: Optional[float]`
+- `flap_count: int`
+- `last_port_change_age_s: Optional[float]`
+
+## AceMixedRouter
+
+### AceMixedRouter.from_ports
+
+```python
+@classmethod
+def from_ports(
+    cls,
+    ports: list[Union[RouterBipPort, RouterScPort]],
+    *,
+    announce_interval_s: Optional[float] = None,
+) -> AceMixedRouter
+```
+
+### AceMixedRouter.start
+
+```python
+async def start(self) -> None
+```
+
+### AceMixedRouter.stop
+
+```python
+async def stop(self) -> None
+```
+
+### AceMixedRouter.local_address
+
+```python
+async def local_address(self) -> str
+```
+
+### AceMixedRouter.port_health
+
+```python
+async def port_health(self) -> list[RouterPortHealth]
+```
+
+### AceMixedRouter.port_counters
+
+```python
+async def port_counters(self) -> list[RouterPortCounters]
+```
+
+### AceMixedRouter.routing_table
+
+```python
+async def routing_table(self) -> list[RouterRouteEntry]
+```
+
 ## ScEvent
 
 One SC hub-connector event (#1829), frozen. Fields that don't apply
@@ -1640,6 +1823,114 @@ def __aiter__(self) -> ScEventIterator
 def __anext__(self) -> Awaitable[ScEvent]
 ```
 
+## DirectTarget
+
+A direct BACnet/IP target with an explicitly preserved UDP port.
+
+Properties:
+
+- `address: str`
+- `mac: bytes`
+
+### DirectTarget.__init__
+
+```python
+def __init__(self, address: str) -> None
+```
+
+## RoutedTarget
+
+A routed target with an explicit next-hop router, DNET, and DADR.
+
+Properties:
+
+- `router: str`
+- `router_mac: bytes`
+- `network: int`
+- `address: bytes`
+
+### RoutedTarget.__init__
+
+```python
+def __init__(self, router: str, network: int, address: bytes) -> None
+```
+
+## Frame
+
+Frozen raw frame. Pass octets and link to decode\_frame for a summary.
+
+Properties:
+
+- `timestamp: float`: Monotonic capture seconds from the first subscription in this module. Comparable across subscriptions, not to wall time or Python's clock origin.
+- `direction: str`: 'inbound' or 'outbound'.
+- `link: str`: Link display name, such as 'BACnet/IP'.
+- `local_address: str`: Local address at subscription: IPv4 ip:port, otherwise a hex MAC.
+- `peer: str`: UDP peer, SC hub name, MS/TP station or Ethernet MAC. This is the next hop, not a forwarded frame's original source.
+- `octets: bytes`: Raw link octets, including malformed received datagrams.
+- `missed: int`: Cumulative queue overflow at the first delivery attempt. Redelivery after cancellation keeps this snapshot; iterator.missed is live.
+
+## FrameSummary
+
+Frozen offline header summary. Missing fields are None.
+
+parse\_error reports header decoding failures, while problem also reports
+valid protocol refusals. Service parameters are not exhaustively validated.
+original\_source is encoded in a forwarded message; Frame.peer is the actual
+transport peer. Neither field proves the sender's identity or its path.
+
+Properties:
+
+- `link: str`
+- `broadcast: bool`
+- `link_source: str | None`
+- `link_destination: str | None`
+- `original_source: str | None`
+- `snet: int | None`
+- `dnet: int | None`
+- `routed_source: str | None`
+- `routed_destination: str | None`
+- `network_message: str | None`
+- `pdu: str | None`
+- `invoke_id: int | None`
+- `service: str | None`
+- `problem: str | None`
+- `parse_error: str | None`
+- `device: int | None`
+
+## FrameIterator
+
+Bounded raw-frame subscription. A full queue drops new arrivals.
+
+Cancelling a read preserves the next frame and the subscription. Explicit
+close or owner shutdown discards queued frames and wakes pending reads.
+A native delivery admitted before close may still complete its asyncio Future.
+Each subscription is independent and never keeps the owner's socket alive.
+Read from one running event loop; concurrent reads keep arrival order.
+
+Properties:
+
+- `missed: int`: Frames lost to overflow or failed delivery; readable after close.
+
+### FrameIterator.__aiter__
+
+```python
+def __aiter__(self) -> FrameIterator
+```
+
+### FrameIterator.__anext__
+
+```python
+def __anext__(self) -> Awaitable[Frame]
+```
+
+### FrameIterator.aclose
+
+```python
+def aclose(self) -> Awaitable[None]
+```
+
+Idempotently stop this subscription, without stopping its owner.
+
 ## _DeviceReadBatchResult
 
 `class _DeviceReadBatchResult(TypedDict)`
@@ -1677,4 +1968,10 @@ Keys:
 - `request_index: int`
 - `device_instance: int`
 - `error: BacnetError | None`
+
+## Target
+
+```python
+Target = Union[str, DirectTarget, RoutedTarget]
+```
 <!-- generated:end -->
