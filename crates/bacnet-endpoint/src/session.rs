@@ -85,6 +85,7 @@ mod startup;
 #[path = "device_writes.rs"]
 mod device_writes;
 pub use device_writes::{RESPONDER_OPT_IN_SERVICES, RESPONDER_SERVICES, ResponderOptIn};
+mod frame_observation;
 #[path = "registered_port.rs"]
 mod registered_port;
 
@@ -332,6 +333,7 @@ pub struct EndpointSession<T: TransportPort + 'static = bacnet_transport::any::A
     egress: Option<bacnet_endpoint_core::endpoint_ingress::EndpointEgress>,
     /// The B/IP transport's own exchanges, when the B/IP builder built it.
     pub(crate) bip_status: Option<bacnet_transport::bip::BvlcClientStatus>,
+    pub(crate) frame_tap: Option<bacnet_transport::tap::FrameTap>,
     /// The MS/TP transport's counters, when the MS/TP builder built it.
     pub(crate) mstp_diagnostics: Option<bacnet_transport::mstp::MstpDiagnostics>,
     /// The SC transport's events and link status, when the SC builder built it.
@@ -431,6 +433,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             reinit_password: None,
             egress: None,
             bip_status: None,
+            frame_tap: None,
             mstp_diagnostics: None,
             sc_link: None,
         })
@@ -819,16 +822,6 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// before handing a transport to [`Self::new`].
     pub fn sc_link(&self) -> Option<bacnet_transport::sc::ScLinkMonitor> {
         self.sc_link.clone()
-    }
-
-    /// Returns the composed session role (narrow admin).
-    pub fn session_role(&self) -> SessionRole {
-        self.role
-    }
-
-    /// Returns true while the session dispatch is running (narrow admin).
-    pub fn is_running(&self) -> bool {
-        self.lifecycle.load(Ordering::Acquire) == Lifecycle::Running as u8
     }
 
     /// Broadcasts an I-Am consistent with the composed identity.
