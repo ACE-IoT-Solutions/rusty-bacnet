@@ -5602,6 +5602,124 @@ asyncio.run(client_example())
 
 ---
 
+## Raw frame observation
+
+`BipEndpoint.frames(capacity=1024)` and `BACnetClient.frames(capacity=1024)`
+return an awaitable for a `FrameIterator` on the owner's existing transport.
+Subscribe after starting the owner. The endpoint continues answering requests
+and its client role can issue reads while observation runs:
+
+```python
+async with BipEndpoint(1001, interface="127.0.0.1", port=0) as endpoint:
+    frames = await endpoint.frames(capacity=256)
+    try:
+        async for frame in frames:
+            print(frame.timestamp, frame.direction, frame.peer, frame.octets.hex())
+    finally:
+        await frames.aclose()
+```
+
+Each frozen `Frame` holds `timestamp`, `direction`, `link`, `local_address`,
+`peer`, `octets` and `missed`. The timestamp is captured in Rust when the
+transport observes the frame; it is monotonic seconds from this module's first
+subscription, comparable across subscriptions but not to wall time or Python's
+clock origin. `local_address` is the local IPv4 address and port for B/IP;
+other client transports report their local MAC in colon-separated hex.
+`peer` is the datagram source or destination, the SC hub name (`primary` or
+`failover`), the MS/TP station number, or an Ethernet MAC. It identifies the
+link peer, not a forwarded packet's original sender.
+
+The queue holds 1–65536 frames. A full queue drops **new** arrivals without
+delaying the transport. `Frame.missed` samples that subscription's cumulative
+overflow count at the first delivery attempt; redelivery after cancellation
+keeps that snapshot. `FrameIterator.missed` also counts failed deliveries
+to Python and remains readable after close. Received datagrams rejected by the
+protocol decoder still appear as raw octets; failed operating-system reads do
+not. Outgoing B/IP, B/IPv6 and SC frames appear before the socket write, even
+if the write subsequently fails. This observes this process's own traffic,
+not all traffic on the network. SC observations are plaintext from inside TLS.
+
+Cancelling `anext(frames)` leaves the subscription usable and preserves a frame
+being delivered for the next read. `await frames.aclose()` discards queued
+frames, wakes pending reads with `StopAsyncIteration` and releases the
+subscription. Closing or dropping the owner does the same. Admission to a native
+read and close share one ordering point: a delivery admitted before close may
+still complete its asyncio Future; no later delivery is admitted. Restarting an
+owner needs a new iterator. Read each iterator from one running event loop;
+concurrent reads keep arrival order. A slow or closed event loop can delay
+redelivery, as on the existing event iterators; explicit close ends that wait.
+
+This first observation API exposes raw frames on B/IP endpoints and standalone
+clients. Router application clients have no link of their own and are refused.
+Server and other endpoint entry points remain follow-up work for #2614.
+
+`interface` for B/IP is an IPv4 address, not an OS interface name.
+`ipv6_interface` is an IPv6 address, also not an OS interface name; `None` and
+`"::"` use the existing automatic selection rules. Observation opens no additional
+socket and changes no port-sharing behavior: Linux/macOS sharing options remain
+those documented under transport configuration. It does not make two separately
+constructed stacks into one endpoint.
+
+### Decoded frame summaries and trap transcripts
+
+`decode_frame(octets, link="bip")` decodes link, NPDU and APDU headers through
+the stack's Rust decoder. It sends no traffic and returns a frozen
+`FrameSummary`, including for malformed input. Use the observed link directly:
+
+```python
+from rusty_bacnet import decode_frame
+
+async def transcript(endpoint):
+    frames = await endpoint.frames(capacity=256)
+    try:
+        async for frame in frames:
+            summary = decode_frame(frame.octets, link=frame.link)
+            print({
+                "time": frame.timestamp,
+                "direction": frame.direction,
+                "peer": frame.peer,
+                "original_source": summary.original_source,
+                "routed_source": summary.routed_source,
+                "service": summary.service,
+                "invoke_id": summary.invoke_id,
+                "problem": summary.problem,
+                "parse_error": summary.parse_error,
+                "missed": frames.missed,
+                "octets": frame.octets.hex(),
+            })
+    finally:
+        await frames.aclose()
+```
+
+Run `transcript(endpoint)` as an asyncio task beside the endpoint's client
+reads. The virtual device keeps answering on that same socket. Cancel and await
+the task to finish its `finally` block before closing the endpoint.
+The runnable [frame transcript example](../examples/python/frame_transcript.py)
+accepts a local bind address and an optional peer to read on that socket.
+
+The summary exposes `link` (the decoded message name), `broadcast`,
+`link_source`, `link_destination`, `original_source`, `snet`, `dnet`,
+`routed_source`, `routed_destination`, `network_message`, `pdu`, `invoke_id`,
+`service`, `problem`, `parse_error` and `device` (an I-Am device instance).
+Fields not available in the decoded headers are `None`. A valid protocol
+Error, Reject, Abort or NAK sets `problem` without setting `parse_error`.
+Header decoding failures set `parse_error` and also remain visible in `problem`;
+their text is diagnostic, not a stable error code. This is a header summary,
+not exhaustive validation or decoding of every service payload.
+
+For a B/IP Forwarded-NPDU, `original_source` is its encoded original IP address
+and UDP port; for B/IPv6 it is the encoded original IPv6 endpoint, while
+`link_source` preserves the original VMAC. `Frame.peer` remains the actual
+UDP peer observed by the socket. The summary's routed addresses come from
+SNET/SADR and DNET/DADR. No field invents an intermediate router path or
+authenticates an encoded source.
+
+Supported `link` values are `bip`, `bip6` (also `ipv6`), `sc`, `mstp`, or their
+`Frame.link` names (`BACnet/IP`, `BACnet/IPv6`, `BACnet/SC`, `MS/TP`), ignoring
+case. Unsupported links, including Ethernet, raise `ValueError`. The input
+octets and `Frame.octets` remain unredacted, including any service parameters
+they contain; this API does not apply the CLI capture's password masking.
+
 ## Endpoint (one transport, both roles)
 
 `BipEndpoint`, `ScEndpoint`, and `MstpEndpoint` own one transport above both

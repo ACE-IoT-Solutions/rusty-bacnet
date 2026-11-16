@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-bip-codec"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bytes",
  "heapless",
@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-bip-core"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-bip-codec",
  "bacnet-npdu",
@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-cli"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-bip-core",
  "bacnet-client",
@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-client"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-encoding",
  "bacnet-endpoint-core",
@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-device-core"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-encoding",
  "bacnet-objects",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-encoding"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-npdu",
  "bacnet-types",
@@ -398,7 +398,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-endpoint"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-client",
  "bacnet-device-core",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-endpoint-core"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-encoding",
  "bacnet-network",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-integration-tests"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-bip-codec",
  "bacnet-client",
@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-mcp"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-client",
  "bacnet-encoding",
@@ -492,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-mstp-codec"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bytes",
  "heapless",
@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-mstp-core"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-mstp-codec",
  "bacnet-npdu",
@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-mstp-sim"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-mstp-codec",
  "bacnet-mstp-core",
@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-network"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-encoding",
  "bacnet-npdu",
@@ -538,14 +538,14 @@ dependencies = [
 
 [[package]]
 name = "bacnet-npdu"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "proptest",
 ]
 
 [[package]]
 name = "bacnet-objects"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-encoding",
  "bacnet-types",
@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-ops"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-client",
  "bacnet-encoding",
@@ -573,6 +573,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "libc",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
@@ -582,7 +583,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-router-core"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-bip-core",
  "bacnet-encoding",
@@ -597,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-runtime"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-bip-codec",
  "bacnet-client",
@@ -614,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-server"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-client",
  "bacnet-device-core",
@@ -637,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-services"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-encoding",
  "bacnet-types",
@@ -653,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-transport"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "aws-lc-rs",
  "bacnet-bip-codec",
@@ -684,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-types"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-npdu",
  "bitflags 2.13.1",
@@ -1536,7 +1537,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1563,7 +1564,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "firmware-link"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-bip-codec",
  "bacnet-bip-core",
@@ -2410,7 +2411,7 @@ dependencies = [
 
 [[package]]
 name = "nostd-harness"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bytes",
  "portable-atomic",
@@ -3227,18 +3228,20 @@ checksum = "d3f2ad9f15a07f4a0e1677124f9120ce7e83ab7e1ca7186af0ca9da529b62e80"
 
 [[package]]
 name = "rmcp"
-version = "3.5.1"
+version = "3.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab5023804cbe0304cbe06197ac16e645a0a0d0ffa2953bf735c15c2fa0213350"
+checksum = "d24a7e92f4bcaa36b97fa93c4fa7ca8f3e669eced949345b3462dba333c7f909"
 dependencies = [
  "chrono",
  "futures",
  "indexmap",
+ "libc",
  "pastey",
  "pin-project-lite",
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -3280,15 +3283,15 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "1.1.4"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+checksum = "e5e76742e5294153d4dde1207dbec5bdd81eef6fabdc0d2118babadabfd858aa"
 dependencies = [
  "bitflags 2.13.1",
  "errno 0.3.14",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3335,7 +3338,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty-bacnet"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "bacnet-client",
  "bacnet-device-core",
@@ -3344,6 +3347,7 @@ dependencies = [
  "bacnet-network",
  "bacnet-npdu",
  "bacnet-objects",
+ "bacnet-ops",
  "bacnet-server",
  "bacnet-services",
  "bacnet-transport",
@@ -3571,7 +3575,7 @@ version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
- "errno 0.3.14",
+ "errno 0.2.8",
  "libc",
 ]
 
@@ -3733,7 +3737,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4348,7 +4352,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

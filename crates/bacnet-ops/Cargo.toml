@@ -38,6 +38,7 @@ tracing.workspace = true
 libc.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 bacnet-objects = { workspace = true, features = ["std"] }
 bacnet-server.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

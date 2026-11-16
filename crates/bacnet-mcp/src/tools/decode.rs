@@ -254,6 +254,7 @@ fn summary_json(summary: &FrameSummary) -> Value {
         "broadcast": summary.broadcast,
         "link_source": summary.link_source,
         "link_destination": summary.link_destination,
+        "original_source": summary.original_source,
         "snet": summary.snet,
         "dnet": summary.dnet,
         "routed_source": summary.routed_source,
@@ -263,6 +264,7 @@ fn summary_json(summary: &FrameSummary) -> Value {
         "invoke_id": summary.invoke_id,
         "service": summary.service,
         "problem": summary.problem,
+        "parse_error": summary.parse_error,
         "device": summary.device,
     })
 }

@@ -3379,6 +3379,110 @@ class RoutedTarget:
 Target = Union[str, DirectTarget, RoutedTarget]
 
 
+class Frame:
+    """Frozen raw frame. Pass octets and link to decode_frame for a summary."""
+    @property
+    def timestamp(self) -> float:
+        """Monotonic capture seconds from the first subscription in this module.
+        Comparable across subscriptions, not to wall time or Python's clock origin."""
+        ...
+    @property
+    def direction(self) -> str:
+        """'inbound' or 'outbound'."""
+        ...
+    @property
+    def link(self) -> str:
+        """Link display name, such as 'BACnet/IP'."""
+        ...
+    @property
+    def local_address(self) -> str:
+        """Local address at subscription: IPv4 ip:port, otherwise a hex MAC."""
+        ...
+    @property
+    def peer(self) -> str:
+        """UDP peer, SC hub name, MS/TP station or Ethernet MAC.
+        This is the next hop, not a forwarded frame's original source."""
+        ...
+    @property
+    def octets(self) -> bytes:
+        """Raw link octets, including malformed received datagrams."""
+        ...
+    @property
+    def missed(self) -> int:
+        """Cumulative queue overflow at the first delivery attempt.
+        Redelivery after cancellation keeps this snapshot; iterator.missed is live."""
+        ...
+
+class FrameSummary:
+    """Frozen offline header summary. Missing fields are None.
+
+    parse_error reports header decoding failures, while problem also reports
+    valid protocol refusals. Service parameters are not exhaustively validated.
+    original_source is encoded in a forwarded message; Frame.peer is the actual
+    transport peer. Neither field proves the sender's identity or its path.
+    """
+    @property
+    def link(self) -> str: ...
+    @property
+    def broadcast(self) -> bool: ...
+    @property
+    def link_source(self) -> str | None: ...
+    @property
+    def link_destination(self) -> str | None: ...
+    @property
+    def original_source(self) -> str | None: ...
+    @property
+    def snet(self) -> int | None: ...
+    @property
+    def dnet(self) -> int | None: ...
+    @property
+    def routed_source(self) -> str | None: ...
+    @property
+    def routed_destination(self) -> str | None: ...
+    @property
+    def network_message(self) -> str | None: ...
+    @property
+    def pdu(self) -> str | None: ...
+    @property
+    def invoke_id(self) -> int | None: ...
+    @property
+    def service(self) -> str | None: ...
+    @property
+    def problem(self) -> str | None: ...
+    @property
+    def parse_error(self) -> str | None: ...
+    @property
+    def device(self) -> int | None: ...
+
+def decode_frame(octets: bytes, link: str = "bip") -> FrameSummary:
+    """Decode link/NPDU/APDU headers with Rust, without sending traffic.
+
+    link accepts bip, bip6 (or ipv6), sc, mstp and the corresponding Frame.link
+    display names, case-insensitively. Unsupported links, including Ethernet,
+    raise ValueError. Malformed octets return a partial summary with parse_error.
+    Raw input is not redacted, and service payloads are not fully validated.
+    """
+    ...
+
+class FrameIterator:
+    """Bounded raw-frame subscription. A full queue drops new arrivals.
+
+    Cancelling a read preserves the next frame and the subscription. Explicit
+    close or owner shutdown discards queued frames and wakes pending reads.
+    A native delivery admitted before close may still complete its asyncio Future.
+    Each subscription is independent and never keeps the owner's socket alive.
+    Read from one running event loop; concurrent reads keep arrival order.
+    """
+    def __aiter__(self) -> FrameIterator: ...
+    def __anext__(self) -> Awaitable[Frame]: ...
+    def aclose(self) -> Awaitable[None]:
+        """Idempotently stop this subscription, without stopping its owner."""
+        ...
+    @property
+    def missed(self) -> int:
+        """Frames lost to overflow or failed delivery; readable after close."""
+        ...
+
 class BACnetClient:
     """Async BACnet client for reading/writing properties on remote devices.
 
@@ -3434,6 +3538,11 @@ class BACnetClient:
     VMAC), or an MS/TP station. ``"[ip]:port"`` raises ValueError: use
     ``resolve_vmac``. So does a ``bip6:`` address on any other transport.
     """
+
+    def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]:
+        """Observe raw frames on the running owner; capacity is 1–65536.
+        Owner shutdown ends this subscription; a restart needs a new one."""
+        ...
 
     def __init__(
         self,
@@ -7231,6 +7340,11 @@ class BipEndpoint:
     # foreign_device= or bbmd=). None stays unbound. Each mode answers/learns
     # local Network Number controls. Only explicit
     # registration supplies configured provenance; an unregistered owner starts unknown.
+
+    def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]:
+        """Observe raw frames on the running owner; capacity is 1–65536.
+        Owner shutdown ends this subscription; a restart needs a new one."""
+        ...
 
     def __init__(
         self,

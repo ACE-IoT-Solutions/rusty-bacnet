@@ -25,6 +25,7 @@
 //! conversion, a closed exit gate or a closed loop that dropped the queued
 //! callback).
 
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -50,9 +51,21 @@ mod tests;
 /// A broadcast receiver shared by one Python iterator's pending
 /// `__anext__` futures, with its redelivery slot and a running count of
 /// the items lost.
-pub(crate) struct LossyReceiver<T> {
-    rx: Arc<Mutex<broadcast::Receiver<T>>>,
+pub(crate) struct LossyReceiver<T, R = broadcast::Receiver<T>> {
+    rx: Arc<Mutex<R>>,
     slot: Arc<Redelivery>,
+    item: PhantomData<fn() -> T>,
+}
+
+/// A cancel-safe event source, including the transport's bounded frame tap.
+pub(crate) trait EventSource<T>: Send {
+    fn recv(&mut self) -> impl std::future::Future<Output = Result<T, RecvError>> + Send;
+}
+
+impl<T: Clone + Send> EventSource<T> for broadcast::Receiver<T> {
+    async fn recv(&mut self) -> Result<T, RecvError> {
+        broadcast::Receiver::recv(self).await
+    }
 }
 
 /// The one-item slot for an item a cancelled `__anext__` could not take.
@@ -69,6 +82,8 @@ pub(crate) struct Redelivery {
     in_flight: AtomicUsize,
     /// Set once the stall warning has gone out, so it goes out once.
     warned: AtomicBool,
+    /// Explicit close interrupts pending delivery and receive waits.
+    closed: AtomicBool,
     /// Which put-back and settle paths ran, for the tests.
     #[cfg(test)]
     trace: Trace,
@@ -100,6 +115,16 @@ impl Redelivery {
         self.item().take()
     }
 
+    /// The same short lock orders close against native delivery admission.
+    fn close(&self) {
+        let mut item = self.item();
+        self.closed.store(true, Ordering::Release);
+        let discarded = item.take();
+        drop(item);
+        drop(discarded);
+        self.filled.notify_waiters();
+    }
+
     /// Raise one `RuntimeWarning` for a read held up behind a delivery that
     /// has not settled, from a blocking thread so no runtime worker waits
     /// for the GIL.
@@ -124,6 +149,9 @@ impl Redelivery {
     fn put_back(&self, value: Py<PyAny>) {
         let refused = {
             let mut item = self.item();
+            if self.closed.load(Ordering::Acquire) {
+                return;
+            }
             match *item {
                 None => {
                     *item = Some(value);
@@ -158,10 +186,16 @@ struct Delivery {
 }
 
 impl Delivery {
-    /// Count the item handed out as in flight. Runs under the receiver lock.
-    fn arm(&self) {
+    /// Admit this delivery before close, or refuse it. The slot lock is the
+    /// linearization point shared with close; no Python work runs under it.
+    fn arm(&self) -> bool {
+        let _item = self.slot.item();
+        if self.slot.closed.load(Ordering::Acquire) {
+            return false;
+        }
         self.slot.in_flight.fetch_add(1, Ordering::AcqRel);
         self.armed.store(true, Ordering::Release);
+        true
     }
 
     /// Settle an armed delivery, once; an unarmed one has nothing to settle.
@@ -250,10 +284,23 @@ impl<'py, T: IntoPyObject<'py>> IntoPyObject<'py> for Next<T> {
 
 impl<T: Clone + Send + 'static> LossyReceiver<T> {
     pub(crate) fn new(rx: broadcast::Receiver<T>) -> Self {
+        Self::from_source(rx)
+    }
+}
+
+impl<T: Send + 'static, R: EventSource<T> + 'static> LossyReceiver<T, R> {
+    pub(crate) fn from_source(rx: R) -> Self {
         Self {
             rx: Arc::new(Mutex::new(rx)),
             slot: Arc::default(),
+            item: PhantomData,
         }
+    }
+
+    /// End this iterator and wake reads waiting for redelivery. The source's
+    /// own close must also wake a read currently waiting on its receiver.
+    pub(crate) fn close(&self) {
+        self.slot.close();
     }
 
     /// Items lost so far: to lag, or dropped on the way to a read.
@@ -279,7 +326,7 @@ impl<T: Clone + Send + 'static> LossyReceiver<T> {
     pub(crate) fn next(
         &self,
     ) -> (
-        impl std::future::Future<Output = Option<Next<T>>> + Send + 'static + use<T>,
+        impl std::future::Future<Output = Option<Next<T>>> + Send + 'static + use<T, R>,
         Arc<dyn PutBack>,
     ) {
         let rx = Arc::clone(&self.rx);
@@ -299,6 +346,9 @@ impl<T: Clone + Send + 'static> LossyReceiver<T> {
                 let wake = slot.filled.notified();
                 tokio::pin!(wake);
                 wake.as_mut().enable();
+                if slot.closed.load(Ordering::Acquire) {
+                    return None;
+                }
                 if slot.in_flight.load(Ordering::Acquire) > 0 {
                     // Bounded only to warn: the item ahead must come first.
                     if tokio::time::timeout(STALL_WARNING, wake.as_mut())
@@ -311,24 +361,21 @@ impl<T: Clone + Send + 'static> LossyReceiver<T> {
                     continue;
                 }
                 if let Some(object) = slot.take() {
-                    delivery.arm();
-                    return Some(Next::Again(object));
+                    return delivery.arm().then_some(Next::Again(object));
                 }
                 tokio::select! {
                     biased;
                     () = &mut wake => {}
                     received = rx.recv() => match received {
                         Ok(item) => {
-                            delivery.arm();
-                            return Some(Next::Fresh(item));
+                            return delivery.arm().then_some(Next::Fresh(item));
                         }
                         Err(RecvError::Lagged(lost)) => {
                             slot.missed.fetch_add(lost, Ordering::Relaxed);
                         }
                         Err(RecvError::Closed) => {
                             let object = slot.take()?;
-                            delivery.arm();
-                            return Some(Next::Again(object));
+                            return delivery.arm().then_some(Next::Again(object));
                         }
                     },
                 }
