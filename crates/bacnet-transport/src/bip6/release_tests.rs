@@ -9,9 +9,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, timeout};
 
-use super::foreign_retarget_tests::{
-    address_of, bbmd, changes, next, next_within, registration, started,
-};
+use super::foreign_retarget_tests::{address_of, bbmd, changes, next, registration, started};
 use super::frame::encoded;
 use super::*;
 use crate::port::TransportPort;
@@ -98,29 +96,32 @@ async fn a_move_releases_the_bbmd_left_and_counts_its_answer() {
 
 /// An unanswered release is given up 3 s after it went.
 ///
-/// Time is paused, and real sockets let the clock jump while a datagram is
-/// on its way, so the wait is read from the counters, a millisecond at a
-/// time, and the request only after.
-#[tokio::test(start_paused = true)]
+/// Observe the real datagrams before pausing for the deadline assertions,
+/// so an idle runtime cannot jump past a receive while it is in flight.
+#[tokio::test]
 async fn an_unanswered_release_is_given_up_after_3_s() {
     let (a, b) = (bbmd().await, bbmd().await);
     let (mut transport, lent) = started(&a, 300).await;
     transport.set_release_previous_bbmd(true);
     let moved = Instant::now();
     lent.activate(&changes(Some(address_of(&b)), None)).unwrap();
-    counted(&transport, counters(1, 0, 0, 1)).await;
-    let waited = moved.elapsed();
-    assert!(
-        (Duration::from_secs(3)..Duration::from_millis(3_002)).contains(&waited),
-        "{waited:?}"
-    );
-    let long = Duration::from_secs(3600);
-    let entry = next_within(&a, long, |message| match message {
-        Bvll6::DeleteForeignDeviceTableEntry { entry, .. } => Some(entry),
-        _ => None,
-    })
-    .await;
+    assert_eq!(registration(&b).await, 300);
+    let entry = release(&a).await;
     assert_eq!(entry.port, transport.local_address().unwrap().port());
+
+    tokio::time::pause();
+    let observed = Instant::now();
+    let due = transport.foreign_target().unwrap().release_due().unwrap();
+    // The pass that started the deadline ran between activation and the
+    // observed release. Check its three-second offset without assuming a
+    // fixed amount of live time for the socket operations.
+    assert!((moved + Duration::from_secs(3)..=observed + Duration::from_secs(3)).contains(&due));
+    tokio::time::advance(due - observed - Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(transport.previous_bbmd_releases(), counters(1, 0, 0, 0));
+    tokio::time::sleep_until(due).await;
+    counted(&transport, counters(1, 0, 0, 1)).await;
+    tokio::time::resume();
     transport.stop().await.unwrap();
 }
 

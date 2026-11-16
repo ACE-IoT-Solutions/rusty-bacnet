@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "bacnet-bip-codec"
-version = "0.15.2"
+version = "0.15.3"
 dependencies = [
  "bytes",
  "heapless",

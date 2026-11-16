@@ -9,7 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries for the next release are fragment files in [`changelog.d/`](changelog.d/), assembled here when a version is released. Add one per change instead of editing this file: [`changelog.d/README.md`](changelog.d/README.md) has the format, and `python3 scripts/changelog.py preview` shows the section they make.
 
+## [0.15.3] - 2026-11-15
+
+This release includes the features, security updates and source archive repair
+prepared for 0.15.2, an unpublished candidate whose release stopped after a
+post-merge native test failed.
+
+Observe and decode BACnet frames from Python on the same transport used for
+requests. Bounded frame streams and Rust-backed header summaries preserve
+request/reply order and routed addresses for scanner trap transcripts.
+
+### Migration notes
+
+- **Breaking (Rust API, #2614):** Exhaustive `FrameSummary` and `Link` literals must initialize the added observation metadata fields. Prefer `summarize_frame` and `link` to construct decoder results; partial `FrameSummary` literals can use `..Default::default()`. The ACE decoder remains in `bacnet_ops::decode`. ([6b1d083](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/6b1d08335ce81a09a7abe3e2b81a75f8cd913a8f))
+
+### Security
+
+- Update the MCP SDK and Unix system bindings to patched releases, covering upstream SSRF, unbounded HTTP buffering and schema caching, and uninitialized extended-attribute data advisories.
+
+### Added
+
+- **Python API:** Decode observed frames through Rust into header summaries, distinguish parse failures from protocol refusals, and retain encoded forwarded origins and routed addresses in same-socket trap transcripts (#2614). ([6b1d083](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/6b1d08335ce81a09a7abe3e2b81a75f8cd913a8f))
+
+- **Python API:** B/IP endpoints and standalone clients can observe raw frames on their existing transport with bounded queues, monotonic capture times, missed counts and explicit iterator close (#2614). ([6b1d083](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/6b1d08335ce81a09a7abe3e2b81a75f8cd913a8f))
+
+### Fixed
+
+- **Rust API:** The B/IP, B/IPv6, BACnet/SC and Ethernet frame taps report a
+  sent frame just before the socket writes it, so a reply never shows ahead of
+  its request; a frame whose write then fails or is abandoned is now reported
+  too, where before it was not (#2519). ([6b1d083](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/6b1d08335ce81a09a7abe3e2b81a75f8cd913a8f))
+
+- ACE GitHub source distributions now carry a lockfile matching their packaged workspace, so locked source builds can resolve dependencies without the omitted CLI and development members.
+
+- Keep real UDP setup and receive operations outside the paused clock in the B/IPv6 release-timeout test, preventing false datagram timeouts while retaining the virtual three-second timeout assertion.
+
 ## [0.15.2] - 2026-11-15
+
+Unpublished candidate. The release stopped before artifact publication after a
+post-merge native test failed; 0.15.3 carries these changes forward.
 
 Observe and decode BACnet frames from Python on the same transport used for
 requests. Bounded frame streams and Rust-backed header summaries preserve
