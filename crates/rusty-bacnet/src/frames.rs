@@ -109,7 +109,8 @@ impl PyFrame {
         self.frame.link.name()
     }
 
-    /// The observing node's link address when the subscription was created.
+    /// The local link address associated with the subscription. ScEndpoint
+    /// reports its configured VMAC, including after duplicate-VMAC recovery.
     #[getter]
     fn local_address(&self) -> &str {
         &self.context.local_address
@@ -163,10 +164,12 @@ impl SourceState {
     }
 
     fn close(&self) {
-        if let Some(receiver) = self.receiver().take() {
+        let mut guard = self.receiver();
+        if let Some(receiver) = guard.take() {
             self.final_missed
-                .store(receiver.dropped(), std::sync::atomic::Ordering::Relaxed);
+                .store(receiver.close(), std::sync::atomic::Ordering::Relaxed);
         }
+        drop(guard);
         self.closed.notify_waiters();
     }
 

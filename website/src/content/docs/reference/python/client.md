@@ -1877,7 +1877,7 @@ Properties:
 - `hub_url: str | None`: Configured URL for this frame's primary or failover hub on ScEndpoint or AceMixedRouter. None when the subscription supplies no hub URL.
 - `direction: str`: 'inbound' or 'outbound'.
 - `link: str`: Link display name, such as 'BACnet/IP'.
-- `local_address: str`: Local address at subscription: IPv4 ip:port, otherwise a hex MAC.
+- `local_address: str`: Local B/IP socket address or hex MAC. ScEndpoint reports its configured VMAC even if duplicate-VMAC recovery selects another address.
 - `peer: str`: UDP peer, SC hub name, MS/TP station or Ethernet MAC. This is the next hop, not a forwarded frame's original source.
 - `octets: bytes`: Raw link octets, including malformed received datagrams.
 - `missed: int`: Cumulative queue overflow at the first delivery attempt. Redelivery after cancellation keeps this snapshot; iterator.missed is live.

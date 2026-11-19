@@ -3414,7 +3414,8 @@ class Frame:
         ...
     @property
     def local_address(self) -> str:
-        """Local address at subscription: IPv4 ip:port, otherwise a hex MAC."""
+        """Local B/IP socket address or hex MAC. ScEndpoint reports its configured
+        VMAC even if duplicate-VMAC recovery selects another address."""
         ...
     @property
     def peer(self) -> str:

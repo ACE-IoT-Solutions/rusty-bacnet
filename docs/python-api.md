@@ -5636,7 +5636,9 @@ Each frozen `Frame` carries the transport's capture time. `timestamp` counts
 monotonic seconds from the module's first subscription. `timestamp_unix_ns` is
 the signed integer wall-clock time in nanoseconds since the Unix epoch.
 `direction` and `link` describe the observation. `local_address` gives the B/IP
-socket address or the local MAC in colon-separated hex. `port_index` gives the
+socket address or the local MAC in colon-separated hex. On `ScEndpoint` this
+is the configured VMAC, even if duplicate-VMAC recovery selects another
+address. `port_index` gives the
 configured index on a mixed router and is `None` on other owners. `peer` gives
 the link peer, such as a UDP socket address or the SC role `primary` or `failover`.
 
