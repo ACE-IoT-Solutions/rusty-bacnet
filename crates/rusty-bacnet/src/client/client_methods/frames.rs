@@ -28,9 +28,10 @@ impl BACnetClient {
             } else {
                 crate::frames::hex_address(transport.local_mac())
             };
-            Ok(inner
-                .frames
-                .subscribe(tap.subscribe_with_capacity(capacity), address))
+            Ok(inner.frames.subscribe(
+                tap.subscribe_with_capacity(capacity),
+                crate::frames::FrameContext::local(address),
+            ))
         })
     }
 }

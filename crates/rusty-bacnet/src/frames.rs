@@ -1,8 +1,9 @@
 //! Bounded raw-frame observation, sharing the event bridge's cancellation delivery.
 
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
+use bacnet_transport::sc::ScActiveHub;
 use bacnet_transport::tap::{FrameTapReceiver, TapDirection, TapPeer, TappedFrame};
 use pyo3::exceptions::{PyStopAsyncIteration, PyValueError};
 use pyo3::prelude::*;
@@ -24,11 +25,37 @@ pub(crate) fn capacity(capacity: usize) -> PyResult<usize> {
     Ok(capacity)
 }
 
+/// Metadata fixed for the lifetime of a subscription. A queued SC frame's
+/// peer selects its URL even if the transport has reconnected since capture.
+#[derive(Clone, Default)]
+pub(crate) struct FrameContext {
+    pub(crate) local_address: String,
+    pub(crate) port_index: Option<usize>,
+    pub(crate) primary_hub: Option<String>,
+    pub(crate) failover_hub: Option<String>,
+}
+
+impl FrameContext {
+    pub(crate) fn local(local_address: String) -> Self {
+        Self {
+            local_address,
+            ..Self::default()
+        }
+    }
+}
+
+fn unix_nanos(time: SystemTime) -> i128 {
+    match time.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(duration) => duration.as_nanos() as i128,
+        Err(error) => -(error.duration().as_nanos() as i128),
+    }
+}
+
 /// One transport observation. Its timestamp belongs to capture, not iteration.
 #[pyclass(name = "Frame", module = "rusty_bacnet", frozen)]
 pub(crate) struct PyFrame {
     frame: TappedFrame,
-    local_address: String,
+    context: Arc<FrameContext>,
     missed: u64,
 }
 
@@ -42,6 +69,28 @@ impl PyFrame {
             .monotonic_timestamp
             .duration_since(*EPOCH.get().expect("subscription epoch"))
             .as_secs_f64()
+    }
+
+    /// Wall-clock capture time in nanoseconds since the Unix epoch.
+    #[getter]
+    fn timestamp_unix_ns(&self) -> i128 {
+        unix_nanos(self.frame.timestamp)
+    }
+
+    /// Zero-based configured router port, when observing an AceMixedRouter.
+    #[getter]
+    fn port_index(&self) -> Option<usize> {
+        self.context.port_index
+    }
+
+    /// Configured hub URL for this frame's socket on a router or SC endpoint.
+    #[getter]
+    fn hub_url(&self) -> Option<&str> {
+        match self.frame.peer {
+            TapPeer::ScHub(ScActiveHub::Primary) => self.context.primary_hub.as_deref(),
+            TapPeer::ScHub(ScActiveHub::Failover) => self.context.failover_hub.as_deref(),
+            _ => None,
+        }
     }
 
     /// `"inbound"` or `"outbound"` (`"other"` for a future direction).
@@ -63,7 +112,7 @@ impl PyFrame {
     /// The observing node's link address when the subscription was created.
     #[getter]
     fn local_address(&self) -> &str {
-        &self.local_address
+        &self.context.local_address
     }
 
     /// UDP source/destination, SC hub name, MS/TP station or Ethernet MAC.
@@ -72,8 +121,8 @@ impl PyFrame {
     fn peer(&self) -> String {
         match self.frame.peer {
             TapPeer::Udp(address) => address.to_string(),
-            TapPeer::ScHub(bacnet_transport::sc::ScActiveHub::Primary) => "primary".into(),
-            TapPeer::ScHub(bacnet_transport::sc::ScActiveHub::Failover) => "failover".into(),
+            TapPeer::ScHub(ScActiveHub::Primary) => "primary".into(),
+            TapPeer::ScHub(ScActiveHub::Failover) => "failover".into(),
             TapPeer::Mstp(station) => station.to_string(),
             TapPeer::Ethernet(mac) => hex_address(&mac),
             _ => "other".into(),
@@ -176,7 +225,7 @@ impl FrameSubscriptions {
     pub(crate) fn subscribe(
         &self,
         receiver: FrameTapReceiver,
-        local_address: String,
+        context: FrameContext,
     ) -> PyFrameIterator {
         let source = FrameSource(Arc::new(SourceState {
             receiver: Mutex::new(Some(receiver)),
@@ -192,7 +241,7 @@ impl FrameSubscriptions {
         subscriptions.push(Arc::downgrade(&subscription));
         PyFrameIterator {
             subscription,
-            local_address,
+            context: Arc::new(context),
         }
     }
 
@@ -216,7 +265,7 @@ impl Drop for FrameSubscriptions {
 #[pyclass(name = "FrameIterator", module = "rusty_bacnet", frozen)]
 pub(crate) struct PyFrameIterator {
     subscription: Arc<Subscription>,
-    local_address: String,
+    context: Arc<FrameContext>,
 }
 
 #[pymethods]
@@ -227,7 +276,7 @@ impl PyFrameIterator {
 
     fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let (next, put_back) = self.subscription.stream.next();
-        let local_address = self.local_address.clone();
+        let context = self.context.clone();
         let source = self.subscription.source.clone();
         crate::py_async::future_into_py_or_put_back(
             py,
@@ -236,7 +285,7 @@ impl PyFrameIterator {
                     .map(|next| {
                         next.map(|frame| PyFrame {
                             frame,
-                            local_address,
+                            context,
                             missed: source.0.missed(),
                         })
                     })
@@ -281,11 +330,18 @@ mod tests {
     use std::future::Future;
     use std::task::{Context, Waker};
 
+    #[test]
+    fn capture_time_keeps_nanoseconds_on_both_sides_of_epoch() {
+        let offset = std::time::Duration::new(1, 100);
+        assert_eq!(unix_nanos(SystemTime::UNIX_EPOCH + offset), 1_000_000_100);
+        assert_eq!(unix_nanos(SystemTime::UNIX_EPOCH - offset), -1_000_000_100);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn owner_close_releases_receiver_and_wakes_pending_read() {
         let tap = bacnet_transport::tap::FrameTap::new();
         let owner = FrameSubscriptions::default();
-        let iterator = owner.subscribe(tap.subscribe(), "local".into());
+        let iterator = owner.subscribe(tap.subscribe(), FrameContext::local("local".into()));
         let (pending, _hook) = iterator.subscription.stream.next();
         tokio::pin!(pending);
         assert!(
@@ -298,7 +354,10 @@ mod tests {
         owner.close();
         assert_eq!(tap.counters().subscribers, 0);
         assert!(pending.await.is_none());
-        let fresh = owner.subscribe(tap.subscribe(), "new generation".into());
+        let fresh = owner.subscribe(
+            tap.subscribe(),
+            FrameContext::local("new generation".into()),
+        );
         assert!(iterator.subscription.stream.next().0.await.is_none());
         assert_eq!(tap.counters().subscribers, 1);
         drop(fresh);
@@ -309,7 +368,7 @@ mod tests {
     async fn cancelling_native_wait_keeps_subscription_until_iterator_drop() {
         let tap = bacnet_transport::tap::FrameTap::new();
         let owner = FrameSubscriptions::default();
-        let iterator = owner.subscribe(tap.subscribe(), "local".into());
+        let iterator = owner.subscribe(tap.subscribe(), FrameContext::local("local".into()));
         {
             let (pending, _hook) = iterator.subscription.stream.next();
             tokio::pin!(pending);

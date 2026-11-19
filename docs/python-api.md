@@ -2930,6 +2930,10 @@ print(await router.routing_table())
 await router.stop()
 ```
 
+To observe traffic on one port, use `await router.frames(port_index)`. The index
+is its zero-based position in the list passed to `from_ports`. See
+[Raw frame observation](#raw-frame-observation) for fields and lifetime.
+
 For a B/IP port shared by several SC hubs, use
 `AceMixedRouter.from_ports(ports, isolate_sc_ports=True)`. B/IP can reach
 each hub and each hub can reach B/IP. The router suppresses direct transit
@@ -5612,7 +5616,8 @@ asyncio.run(client_example())
 
 ## Raw frame observation
 
-`BipEndpoint.frames(capacity=1024)` and `BACnetClient.frames(capacity=1024)`
+`BipEndpoint.frames(capacity=1024)`, `ScEndpoint.frames(capacity=1024)`,
+`BACnetClient.frames(capacity=1024)` and `AceMixedRouter.frames(port_index, capacity=1024)`
 return an awaitable for a `FrameIterator` on the owner's existing transport.
 Subscribe after starting the owner. The endpoint continues answering requests
 and its client role can issue reads while observation runs:
@@ -5627,15 +5632,23 @@ async with BipEndpoint(1001, interface="127.0.0.1", port=0) as endpoint:
         await frames.aclose()
 ```
 
-Each frozen `Frame` holds `timestamp`, `direction`, `link`, `local_address`,
-`peer`, `octets` and `missed`. The timestamp is captured in Rust when the
-transport observes the frame; it is monotonic seconds from this module's first
-subscription, comparable across subscriptions but not to wall time or Python's
-clock origin. `local_address` is the local IPv4 address and port for B/IP;
-other client transports report their local MAC in colon-separated hex.
-`peer` is the datagram source or destination, the SC hub name (`primary` or
-`failover`), the MS/TP station number, or an Ethernet MAC. It identifies the
-link peer, not a forwarded packet's original sender.
+Each frozen `Frame` carries the transport's capture time. `timestamp` counts
+monotonic seconds from the module's first subscription. `timestamp_unix_ns` is
+the signed integer wall-clock time in nanoseconds since the Unix epoch.
+`direction` and `link` describe the observation. `local_address` gives the B/IP
+socket address or the local MAC in colon-separated hex. `port_index` gives the
+configured index on a mixed router and is `None` on other owners. `peer` gives
+the link peer, such as a UDP socket address or the SC role `primary` or `failover`.
+
+On SC, `octets` contains one plaintext BVLC-SC message on this node's hub
+connection, including link controls and encapsulated network-control or
+application traffic. A router or SC endpoint also supplies `hub_url`, the
+configured URL for the role recorded on that frame. It identifies the logical
+hub even when a queued record is read after failover. Other subscriptions
+return `None` for this field. Capture starts at subscription, after the
+initial connection. The same iterator sees subsequent reconnect handshakes.
+TLS records, WebSocket control frames and direct SC connections are outside
+this tap.
 
 The queue holds 1–65536 frames. A full queue drops **new** arrivals without
 delaying the transport. `Frame.missed` samples that subscription's cumulative
@@ -5657,9 +5670,8 @@ owner needs a new iterator. Read each iterator from one running event loop;
 concurrent reads keep arrival order. A slow or closed event loop can delay
 redelivery, as on the existing event iterators; explicit close ends that wait.
 
-This first observation API exposes raw frames on B/IP endpoints and standalone
-clients. Router application clients have no link of their own and are refused.
-Server and other endpoint entry points remain follow-up work for #2614.
+Router application clients have no link of their own. Server and other
+endpoint entry points remain follow-up work for #2614.
 
 `interface` for B/IP is an IPv4 address, not an OS interface name.
 `ipv6_interface` is an IPv6 address, also not an OS interface name; `None` and

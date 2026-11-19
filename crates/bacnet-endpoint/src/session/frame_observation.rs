@@ -16,7 +16,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         self.lifecycle.load(Ordering::Acquire) == Lifecycle::Running as u8
     }
 
-    /// Subscribe to raw frames on a B/IP-builder session's transport.
+    /// Subscribe to raw frames on a B/IP or SC builder session's transport.
     ///
     /// Returns `None` outside the running state or when the builder did not
     /// supply a tap. Each receiver has its own bounded queue; full queues

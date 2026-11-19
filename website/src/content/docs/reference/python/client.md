@@ -1717,6 +1717,7 @@ def from_ports(
     ports: list[Union[RouterBipPort, RouterScPort]],
     *,
     announce_interval_s: Optional[float] = None,
+    isolate_sc_ports: bool = False,
 ) -> AceMixedRouter
 ```
 
@@ -1731,6 +1732,15 @@ async def start(self) -> None
 ```python
 async def stop(self) -> None
 ```
+
+### AceMixedRouter.frames
+
+```python
+def frames(self, port_index: int, capacity: int = 1024) -> Awaitable[FrameIterator]
+```
+
+Observe future frames on one running port, indexed in configuration order.
+SC records contain plaintext BVLC-SC messages across primary/failover changes.
 
 ### AceMixedRouter.local_address
 
@@ -1862,6 +1872,9 @@ Frozen raw frame. Pass octets and link to decode\_frame for a summary.
 Properties:
 
 - `timestamp: float`: Monotonic capture seconds from the first subscription in this module. Comparable across subscriptions, not to wall time or Python's clock origin.
+- `timestamp_unix_ns: int`: Wall-clock capture time in nanoseconds since the Unix epoch.
+- `port_index: int | None`: Zero-based configured port index for AceMixedRouter frames, otherwise None.
+- `hub_url: str | None`: Configured URL for this frame's primary or failover hub on ScEndpoint or AceMixedRouter. None when the subscription supplies no hub URL.
 - `direction: str`: 'inbound' or 'outbound'.
 - `link: str`: Link display name, such as 'BACnet/IP'.
 - `local_address: str`: Local address at subscription: IPv4 ip:port, otherwise a hex MAC.

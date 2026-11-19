@@ -585,6 +585,15 @@ def __aexit__(
 ) -> Awaitable[None]
 ```
 
+### ScEndpoint.frames
+
+```python
+def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]
+```
+
+Observe future plaintext BVLC-SC messages on the running hub connection.
+The iterator follows reconnects and ends when the endpoint closes.
+
 ### ScEndpoint.client
 
 ```python
