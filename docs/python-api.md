@@ -2930,6 +2930,13 @@ print(await router.routing_table())
 await router.stop()
 ```
 
+For a B/IP port shared by several SC hubs, use
+`AceMixedRouter.from_ports(ports, isolate_sc_ports=True)`. B/IP can reach
+each hub and each hub can reach B/IP. The router suppresses direct transit
+between distinct SC ports, including broadcasts, and omits routes behind
+other isolated ports from discovery replies and announcements. Isolation
+is off by default and applies only at this router.
+
 `announce_interval_s`, when set, must be at least one second. Startup already
 announces every port. The interval repeats those announcements; an SC recovery
 also reannounces only that port through the native router's bounded send queue.

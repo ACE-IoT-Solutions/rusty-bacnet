@@ -6,6 +6,7 @@ use bacnet_network::router::{RouterOptions, StartedRouter};
 pub(super) struct MixedSession {
     configured: Vec<PyRouterPortConfig>,
     announce_interval: Option<Duration>,
+    isolate_sc_ports: bool,
     running: Option<RunningRouter>,
     last_health: Arc<StdMutex<Vec<PyRouterPortHealth>>>,
     pub(super) last_counters: Arc<StdMutex<Vec<PyRouterPortCounters>>>,
@@ -20,6 +21,7 @@ impl MixedSession {
     pub(super) fn new(
         configured: Vec<PyRouterPortConfig>,
         announce_interval: Option<Duration>,
+        isolate_sc_ports: bool,
         last_health: Arc<StdMutex<Vec<PyRouterPortHealth>>>,
         last_counters: Arc<StdMutex<Vec<PyRouterPortCounters>>>,
         last_routes: Arc<StdMutex<Vec<PyRouterRouteEntry>>>,
@@ -27,6 +29,7 @@ impl MixedSession {
         Self {
             configured,
             announce_interval,
+            isolate_sc_ports,
             running: None,
             last_health,
             last_counters,
@@ -81,7 +84,15 @@ impl Session for MixedSession {
             health.push((built.port.network_number, built.health));
             ports.push(built.port);
         }
-        let started = NativeRouter::start(ports, RouterOptions::new())
+        let isolated = self
+            .configured
+            .iter()
+            .enumerate()
+            .filter_map(|(index, config)| {
+                (self.isolate_sc_ports && matches!(config, PyRouterPortConfig::Sc(_)))
+                    .then_some(index)
+            });
+        let started = NativeRouter::start(ports, RouterOptions::new().isolated_ports(isolated))
             .await
             .map_err(to_py_err)?;
         self.install(started, health);

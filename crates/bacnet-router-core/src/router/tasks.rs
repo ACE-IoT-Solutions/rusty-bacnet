@@ -1,7 +1,7 @@
 //! Outputs that wait in the queue, and how each is written when polled.
 
 use super::Storage;
-use super::config::PortConfig;
+use super::config::{PortConfig, isolated_pair};
 use super::counters::bump;
 use super::output::{Cause, Current, Kind, Target};
 use crate::message::{NetworkNumberIs, Networks, RoutingEntries};
@@ -161,13 +161,16 @@ fn write_message(
 
 /// The routes from network `from` on that have a wire Port ID, ascending,
 /// as (network, Port ID).
-fn wire_entries<const R: usize, const H: usize>(
-    table: &Table<R, H>,
+fn wire_entries<'a, G, const R: usize, const H: usize>(
+    table: &'a Table<R, H>,
+    ports: &'a [PortConfig<G>],
+    requester: PortId,
     from: u32,
-) -> impl Iterator<Item = (u16, u8)> + Clone + '_ {
+) -> impl Iterator<Item = (u16, u8)> + Clone + 'a {
     table
         .routes()
         .filter(move |(network, _)| u32::from(*network) >= from)
+        .filter(move |(_, route)| !isolated_pair(ports, requester, route.port()))
         .filter_map(|(network, route)| Some((network, route.port().wire_id()?)))
 }
 
@@ -179,7 +182,9 @@ fn other_networks<G>(
     ports
         .iter()
         .enumerate()
-        .filter(move |(index, _)| *index != usize::from(port.0))
+        .filter(move |(index, _)| {
+            *index != usize::from(port.0) && !isolated_pair(ports, port, PortId(*index as u8))
+        })
         .map(|(_, config)| config.network)
 }
 
@@ -233,11 +238,13 @@ impl<
                 Some((len, Kind::Reject(task.reason), Cause::Ingress, target))
             }
             TaskKind::IAmAnswer => {
+                let ports = &self.ports;
                 let mut others = self
                     .table
                     .routes()
                     .filter(move |(_, route)| {
                         route.port() != task.port
+                            && !isolated_pair(ports, task.port, route.port())
                             && route.reachability() != Reachability::Unreachable
                     })
                     .map(|(network, _)| network)
@@ -268,7 +275,8 @@ impl<
                 Some((len, kind, Cause::Ingress, target))
             }
             TaskKind::TableAck => {
-                let entries = wire_entries(&self.table, task.cursor).take(ACK_ENTRIES);
+                let entries = wire_entries(&self.table, &self.ports, task.port, task.cursor)
+                    .take(ACK_ENTRIES);
                 let last = entries.clone().last().map(|(network, _)| network);
                 // The first Ack goes even for an empty table, with a count
                 // of 0; later ones only while routes remain.
@@ -300,7 +308,7 @@ impl<
                 } else {
                     self.announce_end()
                 };
-                self.next_announcement(task.cursor).map(|(at, len)| {
+                self.next_announcement(task.cursor, end).map(|(at, len)| {
                     next = Some(at + 1).filter(|&cursor| cursor < end);
                     let kind = if at & 1 == 0 {
                         Kind::Announce(NetworkMessageType::NETWORK_NUMBER_IS)
@@ -354,14 +362,17 @@ impl<
     /// then an I-Am-Router listing every other port's network, in
     /// port order, when there is another port. Returns its cursor and its
     /// length (`None`: the writer refused it), or `None` when none is left.
-    fn next_announcement(&mut self, cursor: u32) -> Option<(u32, Option<usize>)> {
-        for at in cursor..self.announce_end() {
+    fn next_announcement(&mut self, cursor: u32, end: u32) -> Option<(u32, Option<usize>)> {
+        for at in cursor..end {
             let port = PortId((at >> 1) as u8);
             if at & 1 == 0 {
                 return Some((at, self.write_number_is(port)));
             }
             if self.port_count > 1 {
-                let others = other_networks(&self.ports[..self.port_count], port);
+                let mut others = other_networks(&self.ports[..self.port_count], port).peekable();
+                if others.peek().is_none() {
+                    continue;
+                }
                 let len = write_message(
                     &mut self.scratch,
                     NetworkMessageType::I_AM_ROUTER_TO_NETWORK,

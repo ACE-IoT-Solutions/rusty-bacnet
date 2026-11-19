@@ -326,6 +326,7 @@ impl BACnetRouter {
             gate,
             control_tx,
             options.engine_options(),
+            &options.isolated_ports,
         )
         .await?;
         Ok(StartedRouter {

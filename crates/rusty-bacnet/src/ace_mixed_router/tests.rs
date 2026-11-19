@@ -79,6 +79,7 @@ fn session(ports: Vec<TestPort>) -> MixedSession {
     let mut session = MixedSession::new(
         Vec::new(),
         None,
+        false,
         Arc::new(StdMutex::new(Vec::new())),
         Arc::new(StdMutex::new(Vec::new())),
         Arc::new(StdMutex::new(Vec::new())),

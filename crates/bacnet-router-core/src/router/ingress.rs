@@ -344,6 +344,13 @@ impl<
         own
     }
 
+    /// Whether a network's current egress is isolated from the requester.
+    pub(super) fn hidden_from(&self, port: PortId, network: u16) -> bool {
+        self.table
+            .lookup(network)
+            .is_some_and(|route| super::config::isolated_pair(&self.ports, port, route.port()))
+    }
+
     /// The usable route to `dnet`, marked as used; or, when the table has
     /// none or can't use it now, `None`, with the search and the reject
     /// that answer the frame queued (Clauses 6.6.3.1, 6.6.3.5, 6.6.3.6).
@@ -380,6 +387,9 @@ impl<
             );
             return None;
         };
+        if super::config::isolated_pair(&self.ports, at.port, route.port()) {
+            return None;
+        }
         self.table.touch(dnet, at.now);
         let refusal = match reachability {
             Some(Reachability::Busy) => RejectMessageReason::ROUTER_BUSY,

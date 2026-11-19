@@ -130,6 +130,7 @@ pub struct PyAceMixedRouter {
     lifecycle: Lifecycle<MixedSession>,
     configured_ports: Vec<PyRouterPortConfig>,
     announce_interval: Option<Duration>,
+    isolate_sc_ports: bool,
     last_health: Arc<StdMutex<Vec<PyRouterPortHealth>>>,
     last_counters: Arc<StdMutex<Vec<PyRouterPortCounters>>>,
     last_routes: Arc<StdMutex<Vec<PyRouterRouteEntry>>>,
@@ -139,11 +140,12 @@ pub struct PyAceMixedRouter {
 impl PyAceMixedRouter {
     /// Build a mixed-transport router from typed port configurations.
     #[classmethod]
-    #[pyo3(signature = (ports, *, announce_interval_s=None))]
+    #[pyo3(signature = (ports, *, announce_interval_s=None, isolate_sc_ports=false))]
     fn from_ports(
         _class: &Bound<'_, pyo3::types::PyType>,
         ports: Vec<PyRouterPortConfig>,
         announce_interval_s: Option<f64>,
+        isolate_sc_ports: bool,
     ) -> PyResult<Self> {
         validate_ports(&ports)?;
         let announce_interval = announce_interval_s
@@ -164,6 +166,7 @@ impl PyAceMixedRouter {
             lifecycle: Lifecycle::new(),
             configured_ports: ports,
             announce_interval,
+            isolate_sc_ports,
             last_health: Arc::new(StdMutex::new(Vec::new())),
             last_counters: Arc::new(StdMutex::new(Vec::new())),
             last_routes: Arc::new(StdMutex::new(Vec::new())),
@@ -174,6 +177,7 @@ impl PyAceMixedRouter {
         let session = MixedSession::new(
             self.configured_ports.clone(),
             self.announce_interval,
+            self.isolate_sc_ports,
             Arc::clone(&self.last_health),
             Arc::clone(&self.last_counters),
             Arc::clone(&self.last_routes),
