@@ -150,6 +150,8 @@ pub(super) enum Target<'m> {
     Broadcast(PortId),
     /// A broadcast on every port but this one.
     AllBut(PortId),
+    /// A follow-up search restricted to isolated ports.
+    IsolatedBut(PortId),
 }
 
 /// A mixed network-list relay sends its full list to ordinary ports before
@@ -260,6 +262,11 @@ impl Current {
                 current.port = port;
                 current.broadcast = true;
             }
+            Target::IsolatedBut(port) => {
+                current.port = port;
+                current.fan_out = true;
+                current.recipients = Recipients::Isolated;
+            }
             Target::AllBut(port) => {
                 current.port = port;
                 current.fan_out = true;
@@ -284,7 +291,7 @@ impl Current {
         self
     }
 
-    /// Whether it has a send left on a router of `ports` ports.
+    /// Whether the current fan-out should send on this port.
     fn eligible<G>(&self, ports: &[PortConfig<G>], port: PortId) -> bool {
         port != self.port
             && (self.tag == Tag::Originate || !isolated_pair(ports, self.port, port))
@@ -295,6 +302,7 @@ impl Current {
             }
     }
 
+    /// Whether the current output has another send to poll.
     fn has_more<G>(&self, ports: &[PortConfig<G>]) -> bool {
         self.active
             && (!self.fan_out
@@ -456,8 +464,10 @@ impl<
         // networks outside the isolated set, preserving order and duplicates.
         let hidden_bytes = if listed && self.has_isolated_pair && !isolated(ports, except) {
             npdu.payload
-                .chunks_exact(2)
-                .filter(|n| self.isolated_network(u16::from_be_bytes([n[0], n[1]])))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .filter(|n| self.isolated_network(u16::from_be_bytes(**n)))
                 .count()
                 * 2
         } else {

@@ -68,6 +68,9 @@ mod reject;
 mod reply;
 mod tasks;
 
+/// A fan-out excluding this index reaches every port.
+const NO_PORT: PortId = PortId(u8::MAX);
+
 use core::borrow::BorrowMut;
 use core::fmt;
 

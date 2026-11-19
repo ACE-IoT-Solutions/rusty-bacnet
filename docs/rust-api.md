@@ -3349,7 +3349,9 @@ separate, select their zero-based positions in the input port list. With
 ports ordered as B/IP, SC A, SC B, use
 `RouterOptions::new().isolated_ports([1, 2])`. The router blocks transit
 between those two ports, including routed broadcasts and learned routes.
-Each isolated port receives only the route advertisements it can use.
+The router filters its own discovery replies and route announcements, and
+the broadcast route and congestion lists it relays. It forwards the contents
+of third-party messages addressed across permitted links unchanged.
 The router's local application retains access to all ports. The policy
 applies to traffic crossing this router. Other routers on a shared network
 make their own forwarding decisions. The default selection is empty.

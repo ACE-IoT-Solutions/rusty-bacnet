@@ -105,7 +105,8 @@ pub struct Options {
     /// The table's timers: the busy period, the reject hold-down and the
     /// corroboration window.
     pub timing: Timing,
-    /// The least time between two searches for one network.
+    /// The least time between repeat searches for one network on the same
+    /// port. Isolation can leave other ports available to a later search.
     pub discovery_cooldown: Duration,
     /// How long a search is remembered.
     pub discovery_age: Duration,

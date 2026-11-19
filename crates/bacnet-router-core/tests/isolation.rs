@@ -204,3 +204,58 @@ fn congestion_is_only_announced_to_ports_that_can_use_the_route() {
         }
     }
 }
+
+/// Only the searches triggered by a transit or local request for DNET 99.
+fn search_ports(r: &mut TestRouter, from: Option<u8>, now: Instant) -> Vec<u8> {
+    let sent = match from {
+        Some(port) => {
+            let frame = apdu_to(99, &[7], UNCONFIRMED);
+            deliver(r, &mut Permissive, port, R7, &frame, now).1
+        }
+        None => {
+            let request = Request::new(addr(99, &[7]), UNCONFIRMED);
+            assert_eq!(
+                r.originate(&request, now),
+                Err(bacnet_router_core::router::OriginateError::NoRoute)
+            );
+            drain(r)
+        }
+    };
+    sent.iter()
+        .filter(|s| s.kind == Kind::Solicit)
+        .map(|s| s.port)
+        .collect()
+}
+
+#[test]
+fn discovery_cooldown_searches_each_newly_reachable_port_once() {
+    for (first, second, initial, additional) in [
+        (Some(1), Some(0), vec![0, 3], vec![1, 2]),
+        (Some(0), Some(1), vec![1, 2, 3], vec![0]),
+        (Some(1), None, vec![0, 3], vec![1, 2]),
+        (None, Some(1), vec![0, 1, 2, 3], vec![]),
+        (Some(0), Some(3), vec![1, 2, 3], vec![0]),
+        (Some(1), Some(2), vec![0, 3], vec![]),
+    ] {
+        let mut r = configured(Options::HOSTED);
+        assert_eq!(search_ports(&mut r, first, at(1)), initial);
+        assert_eq!(search_ports(&mut r, second, at(2)), additional);
+        assert!(search_ports(&mut r, second, at(3)).is_empty());
+        let last = if additional.is_empty() { 1 } else { 2 };
+        assert_eq!(r.discovery().last_solicited(99), Some(at(last)));
+        assert_eq!(search_ports(&mut r, first, at(last + 5)), initial);
+    }
+}
+
+#[test]
+fn an_isolated_request_with_no_egress_leaves_discovery_available_to_local_origin() {
+    let mut ports = two_ports();
+    for p in &mut ports {
+        p.isolated = true;
+    }
+    let mut r = router_with(&ports, Options::HOSTED);
+    assert!(search_ports(&mut r, Some(0), at(1)).is_empty());
+    assert!(r.discovery().is_empty());
+    assert_eq!(r.counters().solicitations, 0);
+    assert_eq!(search_ports(&mut r, None, at(1)), [0, 1]);
+}

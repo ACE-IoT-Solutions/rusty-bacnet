@@ -4,6 +4,7 @@ use super::Storage;
 use super::config::{PortConfig, isolated_pair};
 use super::counters::bump;
 use super::output::{Cause, Current, Kind, Target};
+use crate::discovery::Omitted;
 use crate::message::{NetworkNumberIs, Networks, RoutingEntries};
 use crate::npdu::{Address, NetworkPriority, Npdu};
 use crate::npdu::{NetworkMessageType, RejectMessageReason, RejectMessageToNetwork};
@@ -14,7 +15,7 @@ use crate::{Mac, PortId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TaskKind {
     Empty,
-    /// A Who-Is-Router for `network` on every port but `port`.
+    /// A Who-Is-Router for `network` on the eligible ports still needing a search.
     Solicit,
     /// A reject with `reason` naming `network`, unicast to `to` on `port`,
     /// with `origin` as its DNET and DADR when `origin_network` isn't 0.
@@ -45,6 +46,7 @@ pub(super) struct Task {
     to: Mac,
     origin_network: u16,
     origin: Mac,
+    search_gap: Omitted,
     pub(super) cursor: u32,
 }
 
@@ -57,6 +59,7 @@ impl Task {
         to: Mac::EMPTY,
         origin_network: 0,
         origin: Mac::EMPTY,
+        search_gap: Omitted::None,
         cursor: 0,
     };
 
@@ -67,10 +70,11 @@ impl Task {
         task
     }
 
-    /// A Who-Is-Router for `network` on every port but `except`.
-    pub(super) fn solicit(except: PortId, network: u16) -> Self {
+    /// Search from `except`, restricted to a previous search's gap when it has one.
+    pub(super) fn solicit(except: PortId, network: u16, search_gap: Omitted) -> Self {
         Self {
             network,
+            search_gap,
             ..Self::of(TaskKind::Solicit, except)
         }
     }
@@ -213,12 +217,12 @@ impl<
                 let data = task.network.to_be_bytes();
                 let npdu = Npdu::message(NetworkMessageType::WHO_IS_ROUTER_TO_NETWORK, &data);
                 let len = npdu.encode_into(&mut self.scratch).ok();
-                Some((
-                    len,
-                    Kind::Solicit,
-                    Cause::Ingress,
-                    Target::AllBut(task.port),
-                ))
+                let target = match task.search_gap {
+                    Omitted::None => Target::AllBut(task.port),
+                    Omitted::IsolatedPorts => Target::IsolatedBut(task.port),
+                    Omitted::OrdinaryPort(port) => Target::Broadcast(port),
+                };
+                Some((len, Kind::Solicit, Cause::Ingress, target))
             }
             TaskKind::Reject => {
                 let data = RejectMessageToNetwork {
