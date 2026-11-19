@@ -45,7 +45,12 @@ impl MixedSession {
             .expect("running session was published")
     }
 
-    fn install(&mut self, started: StartedRouter, mut health: Vec<(u16, HealthSource)>) {
+    fn install(
+        &mut self,
+        started: StartedRouter,
+        mut health: Vec<(u16, HealthSource)>,
+        taps: Vec<FrameTap>,
+    ) {
         let router = started.router;
         for (index, (_, source)) in health.iter_mut().enumerate() {
             if let HealthSource::Bip { identity } = source
@@ -54,12 +59,14 @@ impl MixedSession {
                 *identity = endpoint.to_string();
             }
         }
+        let frames = RouterFrames::new(&router, &self.configured, taps);
         let router = Arc::new(Mutex::new(router));
         let background = spawn_background(&router, &health, self.announce_interval);
         self.running = Some(RunningRouter {
             router,
             background,
             health,
+            frames,
         });
     }
 }
@@ -71,7 +78,7 @@ impl Session for MixedSession {
     async fn start(&mut self) -> PyResult<()> {
         #[cfg(test)]
         if let Some(start) = self.test_start.take() {
-            self.install(start.await?, Vec::new());
+            self.install(start.await?, Vec::new(), Vec::new());
             return Ok(());
         }
         let mut built = Vec::with_capacity(self.configured.len());
@@ -80,7 +87,9 @@ impl Session for MixedSession {
         }
         let mut ports = Vec::with_capacity(built.len());
         let mut health = Vec::with_capacity(built.len());
+        let mut taps = Vec::with_capacity(built.len());
         for built in built {
+            taps.push(built.tap);
             health.push((built.port.network_number, built.health));
             ports.push(built.port);
         }
@@ -95,7 +104,7 @@ impl Session for MixedSession {
         let started = NativeRouter::start(ports, RouterOptions::new().isolated_ports(isolated))
             .await
             .map_err(to_py_err)?;
-        self.install(started, health);
+        self.install(started, health, taps);
         Ok(())
     }
 
@@ -104,6 +113,7 @@ impl Session for MixedSession {
             .running
             .as_mut()
             .expect("stop follows successful startup");
+        active.frames.subscriptions.close();
         for task in &active.background {
             task.abort();
         }

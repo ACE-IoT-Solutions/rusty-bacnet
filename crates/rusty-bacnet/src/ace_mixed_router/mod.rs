@@ -9,6 +9,7 @@ use bacnet_transport::bip::BipTransport;
 use bacnet_transport::sc::{
     ScConnectionState, ScEvent, ScHubDialer, ScLinkMonitor, ScReconnectConfig,
 };
+use bacnet_transport::tap::FrameTap;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use tokio::sync::{Mutex, watch};
@@ -18,12 +19,14 @@ use crate::errors::to_py_err;
 use crate::router::lifecycle::{CloseError, Lifecycle, StartError};
 
 mod config;
+mod frames;
 mod publication;
 mod session;
 mod snapshots;
 #[cfg(test)]
 mod tests;
 
+use frames::RouterFrames;
 use publication::Publication;
 use session::MixedSession;
 
@@ -106,11 +109,13 @@ impl HealthSource {
 }
 
 struct BuiltPort {
+    tap: FrameTap,
     port: RouterPort<MixedTransport>,
     health: HealthSource,
 }
 
 struct RunningRouter {
+    frames: RouterFrames,
     router: Arc<Mutex<NativeRouter>>,
     background: Vec<JoinHandle<()>>,
     health: Vec<(u16, HealthSource)>,
@@ -486,6 +491,7 @@ async fn build_router_port(
                 transport.set_share_port_by_address(config.reuse_port);
             }
             Ok(BuiltPort {
+                tap: transport.frame_tap().clone(),
                 port: RouterPort {
                     transport: MixedTransport::Bip(Box::new(transport)),
                     network_number,
@@ -542,6 +548,7 @@ async fn build_router_port(
             let state = transport.connection_state_changes();
             let monitor = transport.link_monitor();
             Ok(BuiltPort {
+                tap: transport.frame_tap().clone(),
                 port: RouterPort {
                     transport: MixedTransport::Sc(Box::new(transport)),
                     network_number,

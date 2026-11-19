@@ -23,6 +23,7 @@ use crate::endpoint::common::{
 use crate::endpoint::lifecycle::Lifecycle;
 use crate::endpoint::roles::{PyEndpointClient, PyEndpointServer};
 use crate::errors::to_py_err;
+use crate::frames::{FrameContext, FrameSubscriptions};
 use crate::sc_events::{FirstScEvents, PyScEventIterator, PyScLinkStatus};
 use crate::types::{PyReadAccessSpec, PySegmentation};
 
@@ -124,6 +125,7 @@ impl ScEndpointConfig {
 pub struct PyScEndpoint {
     lifecycle: Lifecycle<ScSession, PendingObject>,
     config: ScEndpointConfig,
+    frames: Arc<FrameSubscriptions>,
     /// Each start's receiver for the first `connection_events()` call; the
     /// next start replaces one nobody took.
     first_events: Arc<FirstScEvents>,
@@ -353,8 +355,11 @@ impl PyScEndpoint {
             super::source_audit::AuditLink::Sc(vmac),
             device_writes.enabled(),
         )?;
+        let frames = Arc::new(FrameSubscriptions::default());
+        let observer = frames.clone();
         Ok(Self {
-            lifecycle: Lifecycle::new(),
+            lifecycle: Lifecycle::new().with_close_observer(move || observer.close()),
+            frames,
             config: ScEndpointConfig {
                 hub_url: sc_hub.to_string(),
                 vmac,
@@ -460,6 +465,29 @@ impl PyScEndpoint {
         _exc_tb: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.close(py)
+    }
+
+    /// Subscribe to plaintext BVLC-SC messages on the running hub connection.
+    /// Both roles share this tap across reconnects. Closing the endpoint ends it.
+    #[pyo3(signature = (capacity=1024))]
+    fn frames<'py>(&self, py: Python<'py>, capacity: usize) -> PyResult<Bound<'py, PyAny>> {
+        let capacity = crate::frames::capacity(capacity)?;
+        let session = self.lifecycle.session.clone();
+        let frames = self.frames.clone();
+        let context = FrameContext {
+            local_address: self.vmac_hex(),
+            primary_hub: Some(self.config.hub_url.clone()),
+            failover_hub: self.config.failover_hub.clone(),
+            port_index: None,
+        };
+        crate::py_async::future_into_py(py, async move {
+            let guard = session.lock().await;
+            let receiver = guard
+                .as_ref()
+                .and_then(|running| running.frames(capacity))
+                .ok_or_else(|| PyRuntimeError::new_err("endpoint not started"))?;
+            Ok(frames.subscribe(receiver, context))
+        })
     }
 
     /// Clone the client role.

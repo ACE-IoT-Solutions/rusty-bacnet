@@ -479,7 +479,10 @@ impl PyBipEndpoint {
             let address = session
                 .bip_local_address()
                 .ok_or_else(|| PyRuntimeError::new_err("endpoint not started"))?;
-            Ok(frames.subscribe(receiver, address.to_string()))
+            Ok(frames.subscribe(
+                receiver,
+                crate::frames::FrameContext::local(address.to_string()),
+            ))
         })
     }
 
