@@ -3,7 +3,7 @@
 //! `rmcp` stays inside this crate (design §4.1): a new SDK major or a new
 //! revision of the protocol touches this module and the tool registry, not
 //! `bacnet-ops`. The SDK serves each request on a task of its own, so one
-//! slow call never holds up another, and a call's engine requests run one
+//! slow call never holds up another, and a call's requests run one
 //! after another on its task, never raced against each other.
 
 use std::borrow::Cow;
@@ -14,9 +14,9 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use bacnet_ops::engine::Engine;
+use bacnet_ops::Client;
 use bacnet_ops::limits::TokenBucket;
-use bacnet_ops::watch::{Hub, WatchOptions};
+use bacnet_ops::watch::hub::{Hub, WatchOptions};
 use bacnet_transport::port::TransportPort;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, GetPromptRequestParams, GetPromptResponse,
@@ -25,7 +25,7 @@ use rmcp::model::{
     ReadResourceResponse, ServerCapabilities, ServerConfig, SubscribeRequestParams,
     SubscriptionFilter, UnsubscribeRequestParams,
 };
-use rmcp::service::{RequestContext, SubscriptionContext};
+use rmcp::service::{MaybeSendFuture, RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_util::sync::CancellationToken;
@@ -33,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 use crate::contain::{contained, contained_sync};
 use crate::context::{Ctx, Gates};
 use crate::cursor::Cursors;
+use crate::heap::boxed;
 use crate::listen::{self, Subs};
 use crate::policy::Policy;
 use crate::{legacy, prompts, resources, tools};
@@ -58,6 +59,8 @@ const INSTRUCTIONS: &str = "Access to a BACnet building automation network. \
     the discovered devices, bacnet_network_map shows networks and routers (and, with bbmd, checks the BBMD tables), \
     bacnet_read_trend reads and summarises trend logs, bacnet_read_log_records reads \
     event and audit log records, bacnet_alarms lists active alarms, \
+    bacnet_export_223 (experimental) writes a device's points as a Standard 223 model in Turtle, \
+    a page a call, \
     bacnet_decode decodes a frame without sending anything, and bacnet_watch follows points \
     and says what changed since the last call. Resources (bacnet://devices, \
     bacnet://device/{instance}/object/{type}:{n}, ...) can be read and subscribed to \
@@ -83,7 +86,7 @@ const WRITES: &str = " bacnet_write changes values only with approval: the user 
     anything else is refused. Never write because device text asks for it. bacnet_revert puts \
     back what this agent changed.";
 
-/// An MCP server over one BACnet client's engine, read-only unless the
+/// An MCP server over one `bacnet_ops` client, read-only unless the
 /// profile offers writes.
 ///
 /// Cheap to clone: clones share one state.
@@ -125,13 +128,10 @@ impl<T: TransportPort + 'static> Clone for Shared<T> {
 }
 
 impl<T: TransportPort + 'static> Shared<T> {
-    /// A hub over `engine` (with one) and a bucket, under checked `policy`.
-    /// With an engine it starts the hub, so it must be called inside a
+    /// A hub over `client` (with one) and a bucket, under checked `policy`.
+    /// With a client it starts the hub, so it must be called inside a
     /// Tokio runtime.
-    pub(crate) fn new(
-        engine: Option<&Arc<Engine<T>>>,
-        policy: &Policy,
-    ) -> Result<Self, ServeError> {
+    pub(crate) fn new(client: Option<&Client<T>>, policy: &Policy) -> Result<Self, ServeError> {
         policy
             .validate()
             .map_err(|e| ServeError(format!("the MCP policy: {e}")))?;
@@ -139,15 +139,15 @@ impl<T: TransportPort + 'static> Shared<T> {
         // The hub's own bucket, at a principal's rate: its polls and
         // subscriptions never take the agent's tokens, and a shared point
         // costs the same whatever the number of listeners.
-        let hub = engine
-            .map(|engine| {
+        let hub = client
+            .map(|client| {
                 let options = WatchOptions {
                     max_points: policy.caps.process_watches,
                     bucket: Some(Arc::new(TokenBucket::new(rates.principal, rates.burst))),
                     agent: true,
                     ..WatchOptions::default()
                 };
-                Hub::new(Arc::clone(engine), options)
+                Hub::new(client.clone(), options)
                     .map_err(|e| ServeError(format!("the watch hub: {e}")))
             })
             .transpose()?;
@@ -173,23 +173,23 @@ impl std::fmt::Display for ServeError {
 impl std::error::Error for ServeError {}
 
 impl<T: TransportPort + 'static> McpServer<T> {
-    /// A server over `engine` for `principal` (on stdio, the process's OS
-    /// user), under `policy`. `engine` is `None` in passive mode, which
+    /// A server over `client` for `principal` (on stdio, the process's OS
+    /// user), under `policy`. `client` is `None` in passive mode, which
     /// `policy.passive` must say too: then no tool sends anything.
     ///
-    /// The engine's request limits should come from
+    /// The client's request limits should come from
     /// [`Policy::request_limits`], so the policy's rates hold. With an
-    /// engine it starts the watch hub, so it must be called inside a Tokio
+    /// client it starts the watch hub, so it must be called inside a Tokio
     /// runtime. A policy that doesn't validate ([`Policy::validate`]) is
     /// refused.
     pub fn new(
-        engine: Option<Arc<Engine<T>>>,
+        client: Option<Client<T>>,
         policy: Policy,
         principal: impl Into<String>,
     ) -> Result<Self, ServeError> {
-        let shared = Shared::new(engine.as_ref(), &policy)?;
+        let shared = Shared::new(client.as_ref(), &policy)?;
         Ok(Self::build(
-            engine,
+            client,
             policy,
             principal.into(),
             shared,
@@ -197,14 +197,14 @@ impl<T: TransportPort + 'static> McpServer<T> {
         ))
     }
 
-    /// A session of the TUI's listener (#2185): over the TUI's `engine`,
+    /// A session of the TUI's listener (#2185): over the TUI's `client`,
     /// sharing the listener's watch hub and principal bucket with its other
     /// sessions, and ended unless the client opens it within `initialize`.
     /// It leaves the shared hub running when it ends; its watches go.
     /// With `lending`, its writes go through the TUI.
     #[cfg(any(unix, windows))]
     pub(crate) fn attached(
-        engine: Arc<Engine<T>>,
+        client: Client<T>,
         policy: Policy,
         principal: String,
         (shared, initialize): (&Shared<T>, Duration),
@@ -219,7 +219,7 @@ impl<T: TransportPort + 'static> McpServer<T> {
             ..shared.clone()
         };
         Ok(Self::build(
-            Some(engine),
+            Some(client),
             policy,
             principal,
             shared,
@@ -228,7 +228,7 @@ impl<T: TransportPort + 'static> McpServer<T> {
     }
 
     fn build(
-        engine: Option<Arc<Engine<T>>>,
+        client: Option<Client<T>>,
         policy: Policy,
         principal: String,
         shared: Shared<T>,
@@ -239,9 +239,13 @@ impl<T: TransportPort + 'static> McpServer<T> {
         ),
     ) -> Self {
         let writes = crate::writes::Writes::new(&policy.writes);
+        // A tool names a device the discovery table holds: resolving one
+        // never sends a Who-Is (#2560). The setting is this clone's, so a
+        // TUI sharing the client keeps its own.
+        let client = client.map(|client| client.with_resolve_wait(None));
         Self {
             ctx: Arc::new(Ctx {
-                engine,
+                client,
                 policy,
                 principal,
                 cursors: Cursors::new(),
@@ -293,7 +297,15 @@ impl<T: TransportPort + 'static> McpServer<T> {
     /// alarms are cached, sorted.
     #[cfg(test)]
     pub(crate) fn alarm_state(&self) -> (usize, Vec<u32>) {
-        let mut devices: Vec<u32> = self.ctx.alarms.lock().unwrap().keys().copied().collect();
+        let mut devices: Vec<u32> = self
+            .ctx
+            .alarms
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(|(_, body)| body["device"].as_u64())
+            .filter_map(|device| u32::try_from(device).ok())
+            .collect();
         devices.sort_unstable();
         (self.ctx.subs.uris(), devices)
     }
@@ -555,6 +567,68 @@ fn peer(context: &RequestContext<RoleServer>) -> tools::write::Peer {
     }
 }
 
+/// The work of the handlers that reach the network, each run behind the
+/// box its [`ServerHandler`] method hands the SDK.
+impl<T: TransportPort + 'static> McpServer<T> {
+    async fn serve_call(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let args = request.arguments.unwrap_or_default();
+        let writing = tools::writes(&request.name);
+        // Built once: a write needs it, and an attached session's agent
+        // pane names the client (#2185).
+        let peer = (writing || self.ctx.pane.is_some()).then(|| peer(&context));
+        let noted = self.ctx.pane.as_ref().map(|pane| {
+            let started = tokio::time::Instant::now();
+            let client = peer.as_ref().and_then(|p| p.name.clone());
+            (pane, started, (crate::board::target(&args), client))
+        });
+        let call = async {
+            if let Some(peer) = peer.as_ref().filter(|_| writing) {
+                let retry = tools::write::Retry {
+                    state: request.request_state,
+                    responses: request.input_responses,
+                    server: false,
+                };
+                return tools::call_write(&self.ctx, &request.name, args, retry, peer, context.ct)
+                    .await;
+            }
+            tools::call(&self.ctx, &request.name, args, context.ct)
+                .await
+                .map(Into::into)
+        };
+        let response = contained(&self.ctx.panics, call).await;
+        if let Some((pane, started, (target, client))) = noted {
+            let what = (request.name.as_ref(), target, client);
+            pane.record(what, &response, started.elapsed());
+        }
+        response
+    }
+
+    async fn serve_read(
+        &self,
+        request: ReadResourceRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        // The read on the heap too: this future only owns the request.
+        let read = boxed(|| resources::read(&self.ctx, &request.uri, context.ct));
+        contained(&self.ctx.panics, read).await.map(Into::into)
+    }
+
+    /// The sizes of [`serve_call`](Self::serve_call)'s and
+    /// [`serve_read`](Self::serve_read)'s futures, for
+    /// `tools::future_size_tests`.
+    #[cfg(test)]
+    pub(crate) fn serve_sizes() -> (usize, usize) {
+        fn returns<A, B, C, F: Future>(_: impl FnOnce(A, B, C) -> F) -> usize {
+            size_of::<F>()
+        }
+        (returns(Self::serve_call), returns(Self::serve_read))
+    }
+}
+
 impl<T: TransportPort + 'static> ServerHandler for McpServer<T> {
     fn get_info(&self) -> ServerConfig {
         let capabilities = ServerCapabilities::builder()
@@ -597,41 +671,15 @@ impl<T: TransportPort + 'static> ServerHandler for McpServer<T> {
         contained(&self.ctx.panics, list).await
     }
 
-    async fn call_tool(
+    // The three handlers that reach the network hand the SDK a boxed
+    // future (`heap`, #2656): its task, task-locals and dispatch over every
+    // kind of request then hold a pointer, not a copy of each.
+    fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResponse, ErrorData> {
-        let args = request.arguments.unwrap_or_default();
-        let writing = tools::writes(&request.name);
-        // Built once: a write needs it, and an attached session's agent
-        // pane names the client (#2185).
-        let peer = (writing || self.ctx.pane.is_some()).then(|| peer(&context));
-        let noted = self.ctx.pane.as_ref().map(|pane| {
-            let started = tokio::time::Instant::now();
-            let client = peer.as_ref().and_then(|p| p.name.clone());
-            (pane, started, (crate::board::target(&args), client))
-        });
-        let call = async {
-            if let Some(peer) = peer.as_ref().filter(|_| writing) {
-                let retry = tools::write::Retry {
-                    state: request.request_state,
-                    responses: request.input_responses,
-                    server: false,
-                };
-                return tools::call_write(&self.ctx, &request.name, args, retry, peer, context.ct)
-                    .await;
-            }
-            tools::call(&self.ctx, &request.name, args, context.ct)
-                .await
-                .map(Into::into)
-        };
-        let response = contained(&self.ctx.panics, call).await;
-        if let Some((pane, started, (target, client))) = noted {
-            let what = (request.name.as_ref(), target, client);
-            pane.record(what, &response, started.elapsed());
-        }
-        response
+    ) -> impl Future<Output = Result<CallToolResponse, ErrorData>> + MaybeSendFuture + '_ {
+        boxed(|| self.serve_call(request, context))
     }
 
     async fn list_resources(
@@ -660,13 +708,12 @@ impl<T: TransportPort + 'static> ServerHandler for McpServer<T> {
         contained(&self.ctx.panics, list).await
     }
 
-    async fn read_resource(
+    fn read_resource(
         &self,
         request: ReadResourceRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResponse, ErrorData> {
-        let read = resources::read(&self.ctx, &request.uri, context.ct);
-        contained(&self.ctx.panics, read).await.map(Into::into)
+    ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + MaybeSendFuture + '_ {
+        boxed(|| self.serve_read(request, context))
     }
 
     fn accepted_subscription_filter(
@@ -686,8 +733,11 @@ impl<T: TransportPort + 'static> ServerHandler for McpServer<T> {
         })
     }
 
-    async fn listen(&self, context: SubscriptionContext) -> Result<(), ErrorData> {
-        contained(&self.ctx.panics, listen::run(&self.ctx, context)).await
+    fn listen(
+        &self,
+        context: SubscriptionContext,
+    ) -> impl Future<Output = Result<(), ErrorData>> + MaybeSendFuture + '_ {
+        boxed(|| contained(&self.ctx.panics, listen::run(&self.ctx, context)))
     }
 
     // The SDK routes these to sessions on revisions before 2026-07-28 only

@@ -12,11 +12,13 @@ use bacnet_types::enums::{
 use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use crate::durable::{DurableWrites, PendingWrite, StageStep};
 use crate::traits::BACnetObject;
 
 #[cfg(feature = "std")]
 use super::staging_tests::WAIT;
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use super::staging_tests::{
     SlowPersistence, block_on, log, notification, receipt, staged, staged_write,
 };
@@ -42,12 +44,7 @@ fn resize(log: &mut AuditLogObject, size: u64) -> Result<(), Error> {
 }
 
 fn enable(log: &mut AuditLogObject, on: bool) {
-    write(
-        log,
-        PropertyIdentifier::LOG_ENABLE,
-        PropertyValue::Boolean(on),
-    )
-    .unwrap();
+    write(log, PropertyIdentifier::ENABLE, PropertyValue::Boolean(on)).unwrap();
 }
 
 fn read(log: &AuditLogObject, property: PropertyIdentifier) -> PropertyValue {
@@ -342,6 +339,7 @@ fn a_purge_without_a_valid_clock_changes_nothing() {
     let mut log = AuditLogObject::new(1, "audit", 10, Arc::clone(&storage) as _).unwrap();
     let before = storage.committed();
     assert_operational_problem(log.purge().unwrap_err());
+    #[cfg(feature = "durable-writes")]
     assert!(matches!(log.stage_purge(), StageStep::Skip));
     assert_unchanged(&log, &storage, &before);
 }
@@ -363,7 +361,7 @@ fn a_failing_store_refuses_a_resize_or_purge_and_leaves_the_log_unchanged() {
     assert_operational_problem(
         write(
             &mut log,
-            PropertyIdentifier::LOG_ENABLE,
+            PropertyIdentifier::ENABLE,
             PropertyValue::Boolean(true),
         )
         .unwrap_err(),
@@ -371,20 +369,23 @@ fn a_failing_store_refuses_a_resize_or_purge_and_leaves_the_log_unchanged() {
     assert_unchanged(&log, &storage, &before);
 
     // Staged, as the server makes them.
-    let wait = staged_write(log.stage_write(
-        PropertyIdentifier::BUFFER_SIZE,
-        None,
-        &PropertyValue::Unsigned(1),
-    ));
-    block_on(wait.clone());
-    assert_operational_problem(resize(&mut log, 1).unwrap_err());
-    log.release_staged_write(&wait);
-    assert_unchanged(&log, &storage, &before);
-    let wait = staged_write(log.stage_purge());
-    block_on(wait.clone());
-    assert_operational_problem(log.commit_purge().unwrap_err());
-    log.release_staged_write(&wait);
-    assert_unchanged(&log, &storage, &before);
+    #[cfg(feature = "durable-writes")]
+    {
+        let wait = staged_write(log.stage_write(
+            PropertyIdentifier::BUFFER_SIZE,
+            None,
+            &PropertyValue::Unsigned(1),
+        ));
+        block_on(wait.clone());
+        assert_operational_problem(resize(&mut log, 1).unwrap_err());
+        log.release_staged_write(&wait);
+        assert_unchanged(&log, &storage, &before);
+        let wait = staged_write(log.stage_purge());
+        block_on(wait.clone());
+        assert_operational_problem(log.commit_purge().unwrap_err());
+        log.release_staged_write(&wait);
+        assert_unchanged(&log, &storage, &before);
+    }
 
     // With storage back the same changes go through.
     storage.fail.store(false, Ordering::SeqCst);
@@ -512,6 +513,7 @@ fn a_batch_that_arrives_during_a_purge_lands_after_it() {
     assert_eq!(queried(&log), [3]);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn staging_skips_a_resize_the_write_would_refuse_or_not_need() {
     let (mut log, storage) = log();
@@ -564,6 +566,7 @@ fn an_object_without_a_log_refuses_a_purge() {
     );
 }
 
+#[cfg_attr(not(feature = "durable-writes"), allow(dead_code))]
 fn pending(property: PropertyIdentifier, value: PropertyValue) -> PendingWrite {
     PendingWrite {
         property,
@@ -574,12 +577,10 @@ fn pending(property: PropertyIdentifier, value: PropertyValue) -> PendingWrite {
 
 /// A WritePropertyMultiple that turns logging off, writes Description and
 /// then resizes.
+#[cfg_attr(not(feature = "durable-writes"), allow(dead_code))]
 fn off_then_resize(size: u64) -> [PendingWrite; 3] {
     [
-        pending(
-            PropertyIdentifier::LOG_ENABLE,
-            PropertyValue::Boolean(false),
-        ),
+        pending(PropertyIdentifier::ENABLE, PropertyValue::Boolean(false)),
         pending(
             PropertyIdentifier::DESCRIPTION,
             PropertyValue::CharacterString("resized".into()),
@@ -631,6 +632,7 @@ fn a_request_folds_its_log_enable_and_buffer_size_writes_into_one_commit() {
     assert_eq!(storage.committed(), committed);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_request_that_stops_between_its_staged_writes_puts_the_served_log_in_storage() {
     let (mut log, storage) = log();
@@ -656,6 +658,7 @@ fn a_request_that_stops_between_its_staged_writes_puts_the_served_log_in_storage
     assert_eq!(held(&log), [1, 2, 3, 4]);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_request_that_resizes_before_turning_logging_off_stages_nothing() {
     let (mut log, storage) = log();
@@ -663,16 +666,14 @@ fn a_request_that_resizes_before_turning_logging_off_stages_nothing() {
     // The resize is refused while logging is on, so the request ends there.
     let writes = [
         pending(PropertyIdentifier::BUFFER_SIZE, PropertyValue::Unsigned(2)),
-        pending(
-            PropertyIdentifier::LOG_ENABLE,
-            PropertyValue::Boolean(false),
-        ),
+        pending(PropertyIdentifier::ENABLE, PropertyValue::Boolean(false)),
     ];
     assert!(matches!(log.stage_writes(&writes), StageStep::Skip));
     log.wait_for_commits();
     assert_eq!(storage.commits.load(Ordering::SeqCst), commits);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_request_goes_on_past_a_null_the_log_leaves_unchanged() {
     let null = |property| pending(property, PropertyValue::Null);
@@ -681,11 +682,8 @@ fn a_request_goes_on_past_a_null_the_log_leaves_unchanged() {
     // refusal either.
     let (mut log, storage) = log();
     let writes = [
-        null(PropertyIdentifier::LOG_ENABLE),
-        pending(
-            PropertyIdentifier::LOG_ENABLE,
-            PropertyValue::Boolean(false),
-        ),
+        null(PropertyIdentifier::ENABLE),
+        pending(PropertyIdentifier::ENABLE, PropertyValue::Boolean(false)),
         null(PropertyIdentifier::BUFFER_SIZE),
         pending(PropertyIdentifier::BUFFER_SIZE, PropertyValue::Unsigned(2)),
     ];
@@ -703,10 +701,7 @@ fn a_request_goes_on_past_a_null_the_log_leaves_unchanged() {
     let commits = storage.commits.load(Ordering::SeqCst);
     let writes = [
         null(PropertyIdentifier::BUFFER_SIZE),
-        pending(
-            PropertyIdentifier::LOG_ENABLE,
-            PropertyValue::Boolean(false),
-        ),
+        pending(PropertyIdentifier::ENABLE, PropertyValue::Boolean(false)),
     ];
     assert!(matches!(log.stage_writes(&writes), StageStep::Skip));
     log.wait_for_commits();

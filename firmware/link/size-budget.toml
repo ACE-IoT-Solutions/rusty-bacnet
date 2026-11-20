@@ -609,6 +609,265 @@
 # the outbox is: 171440 / 171936 / 206732 octets of .text and 189744 /
 # 190244 / 227702 of flash; .rodata and RAM unchanged. The reporting
 # budgets are --suggest's again.
+#
+# On 2026-11-10 (#2320, Rust 1.99.0) the `Reporter` runs
+# SubscribeCOVPropertyMultiple behind bacnet-device-core's `cov-multiple`
+# feature, which the reporting image leaves off. Its outbox entries carry
+# their service, 152 octets of .text more on thumbv7m (177160, 195840 of
+# flash); no budget moved. With the feature on and one COV-multiple
+# context in the scenario (the crate's `reporting-multiple` feature, which
+# this check doesn't build) the image measures 330228 / 331144 / 399418
+# octets of flash (thumbv7m / thumbv7em / riscv32imac) and 36968 of RAM,
+# with three 64-bit division routines (two on riscv32imac): over the thumb
+# targets' 256 KiB region and this table's limits, so the row waits for
+# the path to be trimmed (docs/design/device-core-events.md, decision 18).
+#
+# On 2026-11-11 (#2446, Rust 1.99.0, against PR 2's branch at 0c2e1f314)
+# the scenario runs the application's control loop through the Reporter's
+# local writes: four cycles, each an `update` of AI-2's reading, which its
+# six subscribers hear of, then BV-2 commanded at 8 and at 12 and
+# relinquished at both (`command`, `relinquish`); the last cycle also sets
+# a fault (`set_reliability`); and after CHANGE an `update` of the
+# out-of-service AI-2 is refused. As text / rodata / flash, before then
+# after; RAM unchanged at 24680:
+#
+#   thumbv7m             177164 / 17656 / 195844
+#                        181416 / 17804 / 200244
+#   thumbv7em            177976 / 17660 / 196660
+#                        181616 / 17808 / 200448
+#   riscv32imac          214052 / 21340 / 235414
+#                        218536 / 21552 / 240110
+#
+# So 4400 / 3788 / 4696 octets of flash. A spike with the five calls
+# stubbed out measured 198132 / 198976 / 237706, which puts 2112 / 1472 /
+# 2404 octets on the facade and the rest on the scenario's own loop and
+# summary. Of the facade's 2108 octets of thumbv7m .text, apply_local is
+# 1544 (the local write inlined into it), and source resolution, the name
+# index and the array-index check, which the network write doesn't reach,
+# are 446; the code it shares with the request path (handle and
+# commit_attempt), outlined now rather than inlined there, nets 288 less.
+# core::fmt and the 64-bit division routines stay at 0, and the memmove
+# count doesn't move. The host test's heap peak goes from 19136 to 19768
+# octets (31848 to 32560 with `reporting-multiple`), within the arena. The
+# rows were last set by #2363's second review round, at 171440 / 171936 /
+# 206732 octets of .text, and the image grew to the sizes before this
+# change without a re-set; they are --suggest's again.
+#
+# The points rows are from when that image joined, on 2026-11-10, Rust
+# 1.99.0 against dev at 420a0d6ad (#2445). It answers the objects image's
+# requests, and two reads of its own, from a database that bacnet-objects'
+# point-list builder (points::build_database) makes: the objects image's
+# four points and one each of the other seven analog, binary and
+# multi-state types, so all nine the builder covers, in a 28 KiB arena. As
+# text / rodata / flash, then RAM, the objects image, then this one:
+#
+#   thumbv7m             128736 / 15168 / 144928    16480
+#                        168576 / 21572 / 191172    28768
+#   thumbv7em            128860 / 15168 / 145052    16480
+#                        168648 / 21572 / 191244    28768
+#   riscv32imac          155612 / 18712 / 174346    16480
+#                        203016 / 25084 / 228122    28768
+#
+# So the builder's price for all nine types is 46244 / 46192 / 53776
+# octets of flash, and 12 KiB more arena. The builder reaches every type's
+# constructor, and so its vtable, whatever the list holds. A spike that
+# built the same eleven objects by hand, with the same settings and no
+# builder, measured 161876 / 21584 / 184484 on thumbv7m: the seven more
+# types cost about 39.6 KB of flash (21.3 KB of it .text in their own
+# functions), and the builder 6.7 KB (its checks, the setters it calls and
+# the match over a list it can't see; build_database, with the nine
+# constructors inlined, is 16.6 KB of .text). Boxing two of the larger
+# objects (1488 and 1392 octets) copies them with __aeabi_memmove8 on Arm,
+# a third memmove entry point, which the hand-built spike linked too. The
+# counts are what the image links, with no headroom; the octet budgets are
+# --suggest's.
+#
+# Its heap, on a 64-bit host, whose blocks bound a 32-bit target's
+# (tests/points.rs, capability features off as the image builds them, the
+# identity's 32 octets counted in each figure but the list's): the list
+# 1624 octets, the build's peak 22144 and the database it leaves 21672,
+# the scenario's peak 25320. A host that keeps its list and builds from a
+# clone, so that the list and the database are both live, peaks at 23768.
+# An output or a value takes about 2 KB of it on the host, an input about
+# 0.5 KB.
+#
+# On 2026-11-11 (#2456, Rust 1.99.0, dev at 1d4fb5fb1) the builder covers
+# the Integer Value too. The scenario's list holds none, but the builder
+# reaches its constructor, and so its vtable, whatever the list holds. As
+# text / rodata / flash, dev then this change:
+#
+#   thumbv7m             168576 / 21572 / 191172
+#                        171576 / 22088 / 194688
+#   thumbv7em            168648 / 21572 / 191244
+#                        171752 / 22088 / 194864
+#   riscv32imac          203016 / 25084 / 228122
+#                        206796 / 25640 / 232458
+#
+# So the Integer Value costs 3516 / 3620 / 4336 octets of flash (2718 /
+# 2844 / 3028 of them bacnet-objects .text) and nothing more of RAM or of
+# the arena, which makes the builder's price for all ten types 49760 /
+# 49812 / 58112. core::fmt and the 64-bit division routines stay at 0 and
+# the memmove count doesn't move. Every row was within its budget, so
+# none moved.
+#
+# On 2026-11-12 (#2303, PR 3b part three, Rust 1.99.0, dev at 5e2da52a5)
+# the reporting image reports intrinsic events: `reporting` turns on
+# bacnet-device-core's `event-reporting` (and so bacnet-objects'), the
+# `Reporter` sweeps every second, and the scenario takes AI-3 over its
+# limit, sends the transition after its Time_Delay, answers a
+# GetEventInformation and acknowledges the alarm locally. As text /
+# rodata / flash, PR 3b part two then this change:
+#
+#   thumbv7m             183256 / 17812 / 202092
+#                        243240 / 21320 / 265584
+#   thumbv7em            183056 / 17812 / 201892
+#                        242992 / 21320 / 265336
+#   riscv32imac          220764 / 21596 / 242382
+#                        299100 / 26608 / 325730
+#
+# 63492 / 63444 / 83348 octets of flash; RAM unchanged (24680), and the
+# scenario's host heap peaks at 22360 of the 24 KiB arena. With LTO,
+# callers hold what they inline: `Reporter::handle` (the write path with
+# the event evaluation, GetEventInformation and AcknowledgeAlarm) is 25.8
+# KB of thumbv7m .text, `Reporter::report` 8.0 KB, the EventNotification
+# encoder 4.6 KB, distribution 4.5 KB and the intrinsic commit 2.4 KB; by
+# crate, bacnet-device-core 73.5 KB and bacnet-objects 56.4 KB (its
+# detectors, Notification Class and the event properties of every object
+# type). The image is over the shared 256 KiB layout on the thumb targets
+# too, so it takes riscv32imac's 512 KiB one on every target (build.rs).
+# core::fmt and the 64-bit division routines stay at 0; the memmove count
+# doesn't move. The objects rows didn't move: the clockless Recipient_List
+# filter compiles only with `event-reporting`. The reporting budgets are
+# --suggest's again.
+#
+# On 2026-11-12 (#2532, Rust 1.99.0, dev at c958470e9) the staged-save
+# stale check #2529 added to bacnet-objects' reporting store compiles only
+# with its `durable-writes` feature, which the image leaves off: nothing
+# there stages, so no step can be stale. #2529 had linked the check, and
+# through its encoding fallback the write-configuration encoder and the
+# Event Enrollment parameter encoders, which also left the EventNotification
+# encoder inlined into `Reporter::distribute`. As text / rodata / flash,
+# #2528, dev, then this change; RAM unchanged at 24680:
+#
+#   thumbv7m             243316 / 21320 / 265660
+#                        253280 / 23604 / 277908
+#                        242744 / 21320 / 265088
+#   thumbv7em            243080 / 21320 / 265424
+#                        252896 / 23604 / 277524
+#                        242288 / 21320 / 264632
+#   riscv32imac          299228 / 26608 / 325858
+#                        311500 / 29300 / 340822
+#                        298324 / 26528 / 324874
+#
+# So 572 / 792 / 984 octets of flash under #2528, from the rest of #2529:
+# snapshots go to storage behind an Arc, and the store's kept path is
+# outlined from each object's write_property. The 12% headroom of
+# these rows hid the growth (12248 octets on thumbv7m, in about 31 KB of
+# room), so a PR touching the crates this image links reports its rows
+# against dev's. The objects rows didn't move. The reporting budgets are
+# --suggest's again.
+#
+# On 2026-11-12 (#2524, Rust 1.99.0, dev at e454108ea) the event path is
+# trimmed, each step measured against the one before it, as octets of
+# flash on thumbv7m / thumbv7em / riscv32imac:
+#
+#   every change runs one out-of-line tail               12 /  144 /   56
+#   AcknowledgeAlarm and GetEventInformation out of
+#   Reporter::handle                                   1076 / 1112 / 1820
+#   the Event Log step comes from a log's vtable       1428 / 1424 / 2376
+#   the Reporter encodes the intrinsic forms only      3416 / 3416 / 4820
+#
+# As text / rodata / flash, dev then this change:
+#
+#   thumbv7m             242744 / 21320 / 265088
+#                        237332 / 20800 / 259156
+#   thumbv7em            242288 / 21320 / 264632
+#                        236720 / 20800 / 258544
+#   riscv32imac          298324 / 26528 / 324874
+#                        289932 / 25848 / 315802
+#
+# 5932 / 6088 / 9072 octets of flash; RAM unchanged (24680). Its review
+# round (dev at a988b4432, rows unchanged there) keeps the encoder's match
+# exhaustive, each arm checking the mask first: the rows hold, but for 8
+# octets of alignment on thumbv7em. core::fmt and the 64-bit division
+# routines stay at 0, and the memmove count doesn't move. The objects rows move by 8 octets of .text on the thumb
+# targets with no function changed in size (alignment), so their budgets
+# stay. The thumb images would fit the 256 KiB layout again, by about
+# 3 KB; they keep the 512 KiB one (docs/design/device-core-events.md,
+# section 8.3). The reporting budgets are --suggest's again.
+#
+# On 2026-11-13 (#2319, PR 3, Rust 1.99.0, dev at 4a982f29c) the
+# enrollment image joins: the reporting image's scenario with
+# bacnet-device-core's `event-enrollment` on, then a second device whose
+# `Reporter` sweeps and runs the Event Enrollment pass once a second, with
+# one Event Enrollment (OUT_OF_RANGE with a Time_Delay and
+# FAULT_OUT_OF_RANGE) on an Analog Input: a transition, its local
+# acknowledgement, its return and a fault, five notifications. The
+# reporting image keeps the feature off, and its rows, the objects' and the
+# points' don't move. As text / rodata / flash, the reporting image then
+# this one; RAM 24680 for both, and the host heap's peak 22360 of the same
+# 24 KiB arena:
+#
+#   thumbv7m             237332 / 20800 / 259156
+#                        304260 / 26272 / 331556
+#   thumbv7em            236720 / 20800 / 258544
+#                        304188 / 26272 / 331484
+#   riscv32imac          289932 / 25848 / 315802
+#                        370644 / 33048 / 403714
+#
+# So algorithmic reporting costs 72400 / 72940 / 87912 octets of flash, at
+# the top of the 60-75 KB estimate (design section 8.2). Of the thumbv7m
+# .text: the pass (evaluate_event_enrollments_for_delivery, with its
+# algorithms and commit inlined) 12.4 KB, the scenario's own loop and
+# second database 9.7 KB, decode_event_parameter 8.4 KB and
+# BACnetEventParameter::decode 4.4 KB, decode_fault_parameters 3.4 KB, the
+# Event Enrollment payload projection 2.8 KB, and the Event Enrollment
+# object's constructor inlined into the database builder 4.3 KB; by crate,
+# bacnet-device-core 23.9 KB, bacnet-encoding 20.8 KB, bacnet-objects
+# 10.7 KB and bacnet-types 8.2 KB. The Reporter encodes the intrinsic forms
+# and the six the pass builds, not every form, which keeps 4024 / 4052
+# octets (thumbv7m / riscv32imac) out. core::fmt and the 64-bit division
+# routines stay at 0 (the pass converts its delays in 32 bits), and the
+# memmove count is the reporting image's. The budgets are --suggest's.
+
+# On 2026-11-13 (#2538, Rust 1.99.0, dev at f94e54541, then 4a02d5a3e) bacnet-objects' staged
+# saves compile only with `durable-writes`, which the image leaves off: the
+# built-in objects don't implement `DurableWrites` without it, and the
+# staging half of `StagedSaves` (the staged write, its ticket, correction
+# and expiry) isn't compiled, so none of it links. The inline save path
+# stays. As flash, dev then this change; RAM unchanged at 24680:
+#
+#   thumbv7m             259156, 255264
+#   thumbv7em            258544, 254496
+#   riscv32imac          315802, 309786
+#
+# The objects image falls by 1764 / 1768 / 2296 octets of flash and the
+# points image by 1588 / 1608 / 2076; their rows keep their old budgets.
+# The enrollment image, which leaves `durable-writes` off too, measures
+# 327556 / 327516 / 397678 octets of flash (thumbv7m / thumbv7em /
+# riscv32imac), about 4 KB under what its budget rows were taken from. The
+# reporting and enrollment budgets are --suggest's again.
+
+# On 2026-11-18 (#2669, Rust 1.99.0, dev at 612be0858) the database keeps
+# the local Device's Object_List and Database_Revision, which the read plan
+# and the property references now read from it; a rename moves the
+# revision, and a File added or removed during a backup or a restore
+# doesn't. Before, these images served the list as built after any
+# application add or remove. As flash, dev then this change; RAM, the
+# memmove counts and the 32 images without a database unchanged:
+#
+#   thumbv7m      objects 142892, 143952     points 184096, 185068
+#                 reporting 253444, 254172   enrollment 325788, 326768
+#   thumbv7em     objects 142716, 143768     points 184028, 185004
+#                 reporting 252532, 253540   enrollment 325532, 326628
+#   riscv32imac   objects 171530, 172618     points 220706, 221886
+#                 reporting 307622, 308622   enrollment 395846, 396650
+#
+# 728 to 1180 octets of flash. On thumbv7m's objects image the largest
+# parts are the database's read of the two properties (about 450), the
+# read plan's row source (114) and the list, rename and backup upkeep in
+# `add`, `remove` and the write path (about 280), with the Device's own
+# list code 212 less. Every budget stays.
 
 [thumbv7m-none-eabi.mstp]
 text = 18320
@@ -710,11 +969,33 @@ div64_functions = 0
 memmove_functions = 2
 
 [thumbv7m-none-eabi.reporting]
-text = 192016
-rodata = 19360
+text = 261456
+rodata = 23296
 data = 64
 bss = 27648
-flash = 212528
+flash = 285904
+ram = 27648
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 4
+
+[thumbv7m-none-eabi.points]
+text = 188816
+rodata = 24160
+data = 64
+bss = 32224
+flash = 214112
+ram = 32224
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 3
+
+[thumbv7m-none-eabi.enrollment]
+text = 336304
+rodata = 29424
+data = 64
+bss = 27648
+flash = 366864
 ram = 27648
 fmt_functions = 0
 div64_functions = 0
@@ -996,11 +1277,33 @@ div64_functions = 0
 memmove_functions = 2
 
 [thumbv7em-none-eabihf.reporting]
-text = 192576
-rodata = 19360
+text = 260592
+rodata = 23296
 data = 64
 bss = 27648
-flash = 213088
+flash = 285040
+ram = 27648
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 4
+
+[thumbv7em-none-eabihf.points]
+text = 188896
+rodata = 24160
+data = 64
+bss = 32224
+flash = 214208
+ram = 32224
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 3
+
+[thumbv7em-none-eabihf.enrollment]
+text = 336256
+rodata = 29424
+data = 64
+bss = 27648
+flash = 366832
 ram = 27648
 fmt_functions = 0
 div64_functions = 0
@@ -1018,11 +1321,33 @@ div64_functions = 0
 memmove_functions = 2
 
 [riscv32imac-unknown-none-elf.reporting]
-text = 231552
-rodata = 23472
+text = 318000
+rodata = 28960
 data = 64
 bss = 27648
-flash = 255040
+flash = 346960
+ram = 27648
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 2
+
+[riscv32imac-unknown-none-elf.points]
+text = 227392
+rodata = 28096
+data = 64
+bss = 32224
+flash = 255504
+ram = 32224
+fmt_functions = 0
+div64_functions = 0
+memmove_functions = 2
+
+[riscv32imac-unknown-none-elf.enrollment]
+text = 408368
+rodata = 37024
+data = 64
+bss = 27648
+flash = 445408
 ram = 27648
 fmt_functions = 0
 div64_functions = 0

@@ -109,6 +109,178 @@ def routes(self) -> Awaitable[list[RouterRoute]]
 Copy direct/learned routes; raises RuntimeError before start or
 after close begins. No lock or wall-clock timestamp is exposed.
 
+## RouterBipPort
+
+Attributes:
+
+- `network_number: int`
+- `interface: str`
+- `port: int`
+- `broadcast_address: str`
+- `reuse_port: bool`
+
+### RouterBipPort.__init__
+
+```python
+def __init__(
+    self,
+    network_number: int,
+    interface: str = "0.0.0.0",
+    port: int = 0xBAC0,
+    broadcast_address: str = "255.255.255.255",
+    reuse_port: bool = False,
+) -> None
+```
+
+## RouterScPort
+
+Attributes:
+
+- `network_number: int`
+- `primary_hub: str`
+- `local_vmac: bytes`
+- `device_uuid: bytes`
+- `ca_cert: str`
+- `client_cert: str`
+- `client_key: str`
+- `failover_hub: Optional[str]`
+- `heartbeat_interval_ms: int`
+- `heartbeat_timeout_ms: int`
+- `reconnect_initial_delay_ms: int`
+- `reconnect_max_delay_ms: int`
+- `reconnect_max_retries: int`
+- `reconnect_forever: bool`
+- `max_npdu_length: int`
+- `max_bvlc_length: int`
+
+### RouterScPort.__init__
+
+```python
+def __init__(
+    self,
+    network_number: int,
+    primary_hub: str,
+    local_vmac: bytes,
+    device_uuid: bytes,
+    ca_cert: str,
+    client_cert: str,
+    client_key: str,
+    failover_hub: Optional[str] = None,
+    heartbeat_interval_ms: int = 30000,
+    heartbeat_timeout_ms: int = 60000,
+    reconnect_initial_delay_ms: int = 10000,
+    reconnect_max_delay_ms: int = 600000,
+    reconnect_max_retries: int = 10,
+    reconnect_forever: bool = False,
+    max_npdu_length: int = 1497,
+    max_bvlc_length: int = 5705,
+) -> None
+```
+
+## RouterPortHealth
+
+Attributes:
+
+- `config_index: int`
+- `network_number: int`
+- `transport_kind: str`
+- `identity: str`
+- `state: str`
+- `detail: Optional[str]`
+- `active_hub: Optional[str]`
+- `last_error: Optional[str]`
+- `attempt: int`
+- `since: Optional[float]`
+
+## RouterPortCounters
+
+Attributes:
+
+- `config_index: int`
+- `network_number: int`
+- `transport_kind: str`
+- `identity: str`
+- `forwarded_unicast: int`
+- `forwarded_broadcast: int`
+- `send_errors: int`
+- `output_full_drops: int`
+- `no_route_drops: int`
+- `shutdown_drops: int`
+
+## RouterRouteEntry
+
+Attributes:
+
+- `network_number: int`
+- `port_index: int`
+- `directly_connected: bool`
+- `next_hop_mac: bytes`
+- `reachability: str`
+- `last_seen_age_s: Optional[float]`
+- `busy_remaining_s: Optional[float]`
+- `flap_count: int`
+- `last_port_change_age_s: Optional[float]`
+
+## AceMixedRouter
+
+### AceMixedRouter.from_ports
+
+```python
+@classmethod
+def from_ports(
+    cls,
+    ports: list[Union[RouterBipPort, RouterScPort]],
+    *,
+    announce_interval_s: Optional[float] = None,
+    isolate_sc_ports: bool = False,
+) -> AceMixedRouter
+```
+
+### AceMixedRouter.start
+
+```python
+async def start(self) -> None
+```
+
+### AceMixedRouter.stop
+
+```python
+async def stop(self) -> None
+```
+
+### AceMixedRouter.frames
+
+```python
+def frames(self, port_index: int, capacity: int = 1024) -> Awaitable[FrameIterator]
+```
+
+Observe future frames on one running port, indexed in configuration order.
+SC records contain plaintext BVLC-SC messages across primary/failover changes.
+
+### AceMixedRouter.local_address
+
+```python
+async def local_address(self) -> str
+```
+
+### AceMixedRouter.port_health
+
+```python
+async def port_health(self) -> list[RouterPortHealth]
+```
+
+### AceMixedRouter.port_counters
+
+```python
+async def port_counters(self) -> list[RouterPortCounters]
+```
+
+### AceMixedRouter.routing_table
+
+```python
+async def routing_table(self) -> list[RouterRouteEntry]
+```
+
 ## BipRouterPort
 
 Immutable unopened B/IP port configuration; network\_number is 1..65534.

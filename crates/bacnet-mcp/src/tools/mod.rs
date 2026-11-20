@@ -6,13 +6,19 @@
 //! tools that send nothing, and the two write tools (`bacnet_write`,
 //! `bacnet_revert`, #2068) are listed only when the policy offers writes
 //! (`mcp_writes = "elicit"`). Arming a session never changes the list.
+//!
+//! `bacnet_export_223` (#2436, experimental) is the one tool whose text
+//! is more than a rendering: its second text block is the Turtle.
 
 pub(crate) mod alarms;
 mod bbmd;
 mod decode;
 pub(crate) mod describe;
 pub(crate) mod discover;
+pub(crate) mod export;
 mod find;
+#[cfg(test)]
+mod future_size_tests;
 mod list;
 mod log_pages;
 mod log_records;
@@ -44,6 +50,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::context::{Call, Ctx};
 use crate::errors::ToolError;
+use crate::heap::boxed;
 use crate::policy::Policy;
 
 /// One tool's definition.
@@ -74,6 +81,7 @@ const SPECS: &[Spec] = &[
     alarms::SPEC,
     decode::SPEC,
     watch::SPEC,
+    export::SPEC,
 ];
 
 /// The write tools, listed only when the policy offers writes.
@@ -150,6 +158,7 @@ enum Request {
     Alarms(alarms::Args),
     Decode(decode::Args),
     Watch(watch::Args),
+    Export(export::Args),
 }
 
 fn parse<A: DeserializeOwned>(args: &Map<String, Value>) -> Result<A, ErrorData> {
@@ -178,6 +187,7 @@ fn request(name: &str, args: &Map<String, Value>) -> Result<Request, ErrorData> 
         alarms::NAME => Request::Alarms(parse(args)?),
         decode::NAME => Request::Decode(parse(args)?),
         watch::NAME => Request::Watch(parse(args)?),
+        export::NAME => Request::Export(parse(args)?),
         other => {
             return Err(ErrorData::invalid_params(
                 format!("unknown tool: {other}"),
@@ -210,26 +220,35 @@ pub(crate) async fn call<T: TransportPort + 'static>(
     let account = ctx.account();
     let budget = ctx.policy.caps.budget;
     let call = Call::new(budget, Arc::clone(&account));
+    // The export's Turtle, which goes beside the summary.
+    let mut turtle = None;
+    // The tool's own future goes on the heap (`heap`, #2656), so the
+    // budget, account and cancel around it hold a pointer.
     let run = async {
+        let (call, args) = (&call, &args);
         match request {
-            Request::Discover(a) => discover::run(ctx, &call, a, &args).await,
-            Request::Read(a) => read::run(ctx, &call, a, &args).await,
-            Request::List(a) => list::run(ctx, &call, a, &args).await,
-            Request::Describe(a) => describe::run(ctx, &call, a).await,
-            Request::Find(a) => find::run(ctx, &call, a, &args).await,
-            Request::NetworkMap(a) => netmap::run(ctx, &call, a).await,
-            Request::Trend(a) => trend::run(ctx, &call, a, &args).await,
-            Request::LogRecords(a) => log_records::run(ctx, &call, a, &args).await,
-            Request::Alarms(a) => alarms::run(ctx, &call, a, &args).await,
-            Request::Decode(a) => decode::run(ctx, &call, a).await,
-            Request::Watch(a) => watch::run(ctx, &call, a, &args).await,
+            Request::Discover(a) => boxed(move || discover::run(ctx, call, a, args)).await,
+            Request::Read(a) => boxed(move || read::run(ctx, call, a, args)).await,
+            Request::List(a) => boxed(move || list::run(ctx, call, a, args)).await,
+            Request::Describe(a) => boxed(move || describe::run(ctx, call, a)).await,
+            Request::Find(a) => boxed(move || find::run(ctx, call, a, args)).await,
+            Request::NetworkMap(a) => boxed(move || netmap::run(ctx, call, a)).await,
+            Request::Trend(a) => boxed(move || trend::run(ctx, call, a, args)).await,
+            Request::LogRecords(a) => boxed(move || log_records::run(ctx, call, a, args)).await,
+            Request::Alarms(a) => boxed(move || alarms::run(ctx, call, a, args)).await,
+            Request::Decode(a) => boxed(move || decode::run(ctx, call, a)).await,
+            Request::Watch(a) => boxed(move || watch::run(ctx, call, a, args)).await,
+            Request::Export(a) => {
+                let out = &mut turtle;
+                boxed(move || export::run(ctx, call, a, args, out)).await
+            }
         }
     };
     // A cancelled call (`notifications/cancelled`, or the host going away)
     // drops its future, and with it any gate, lock or slot it waits for:
     // nothing more is sent, and what it was charged is still logged. The
-    // call's own engine requests run one after another inside that one
-    // future, so none is left queued and unpolled.
+    // call's own requests run one after another inside that one future,
+    // so none is left queued and unpolled.
     let work = tokio::time::timeout(budget + GRACE, charged(account, run));
     let finished = tokio::select! {
         finished = work => finished,
@@ -242,7 +261,15 @@ pub(crate) async fn call<T: TransportPort + 'static>(
         Ok(outcome) => outcome,
         Err(_) => Err(out_of_budget(&call, budget)),
     };
-    Ok(finish(ctx, name, &call, outcome))
+    let mut result = finish(ctx, name, &call, outcome);
+    if let Some(turtle) = turtle.filter(|_| result.is_error == Some(false)) {
+        if let Some(ContentBlock::Text(text)) = result.content.first_mut() {
+            text.text.push('\n');
+            text.text.push_str(export::LITERALS);
+        }
+        result.content.push(ContentBlock::text(turtle));
+    }
+    Ok(result)
 }
 
 /// Why a call that ran past its budget plus grace stopped.
@@ -458,11 +485,13 @@ async fn attempt<T: TransportPort + 'static>(
     let account = account.unwrap_or_else(|| ctx.account());
     let budget = ctx.policy.caps.budget;
     let call = Call::new(budget, Arc::clone(&account));
+    // On the heap, as a tool's future is in [`call`].
     let run = async {
+        let call = &call;
         if name == write::NAME {
-            write::run(ctx, &call, args, retry, peer).await
+            boxed(move || write::run(ctx, call, args, retry, peer)).await
         } else {
-            revert::run(ctx, &call, args, peer).await
+            boxed(move || revert::run(ctx, call, args, peer)).await
         }
     };
     let work = tokio::time::timeout(budget + GRACE, charged(account, run));

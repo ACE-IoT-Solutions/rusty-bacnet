@@ -10,7 +10,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 
 use crate::clock::{ClockFrame, ClockReader};
 use crate::event_enrollment::EventEnrollmentMonitoredSource;
-use crate::traits::{BACnetObject, Clocks, DeadlineWaker, MonotonicClock};
+use crate::traits::{BACnetObject, Clocks, DeadlineWaker, MonotonicClock, Retirement};
 
 mod averaging_sampling;
 mod event_algorithm_inhibit;
@@ -19,6 +19,7 @@ mod input_references;
 mod local_device;
 mod membership;
 mod network_port;
+mod object_list;
 mod trend_poll;
 pub use local_device::LocalDevice;
 #[doc(hidden)]
@@ -47,6 +48,11 @@ pub struct ObjectDatabase {
     name_index: HashMap<String, ObjectIdentifier>,
     /// Type index: object type → set of ObjectIdentifiers for fast enumeration.
     type_index: HashMap<ObjectType, Vec<ObjectIdentifier>>,
+    /// Every object but the Devices, in the order added: Object_List after
+    /// the Devices, which the local Device serves (#2669; `object_list`).
+    order: Vec<ObjectIdentifier>,
+    /// Database_Revision, which moves with each add and remove (#2669).
+    revision: u32,
     /// Event Enrollment objects whose private evaluator state must be reset
     /// before it can be used again.
     invalid_enrollment_eval_state: HashSet<ObjectIdentifier>,
@@ -96,6 +102,8 @@ impl ObjectDatabase {
             network_port: None,
             name_index: HashMap::new(),
             type_index: HashMap::new(),
+            order: Vec::new(),
+            revision: 0,
             invalid_enrollment_eval_state: HashSet::new(),
             enrollment_eval_sources: HashMap::new(),
             membership: membership::MembershipQueue::default(),
@@ -119,7 +127,21 @@ impl ObjectDatabase {
     /// Reliability changes is queued for the server's COV fanout. A Schedule
     /// holding a refused reference to it is queued for the server to retry
     /// that reference (#1440). A Schedule replaced gives up the slots it
-    /// held, as [`remove`](Self::remove) has it do (#2264).
+    /// held, as [`remove`](Self::remove) has it do (#2264). A timed object
+    /// replaced retires as [`Retirement::Released`] (#2479): it ends what it
+    /// runs but leaves its storage as it was, since the object put in its
+    /// place may restore from the same storage. So a Load Control replaced
+    /// by one over other storage leaves its request stored, to come back
+    /// with a later object built over that storage; to end and forget it,
+    /// [`remove`](Self::remove) the object first, then add the new one. The
+    /// replaced object is dropped here, under the caller's borrow, and
+    /// dropping an object with storage waits for the saves it queued
+    /// earlier (see [`crate::durable`]).
+    ///
+    /// An object added under a new identifier joins the local Device's
+    /// Object_List and moves Database_Revision
+    /// ([`object_list`](Self::object_list), #2669); a replaced one keeps its
+    /// place and leaves the revision alone.
     pub fn add(&mut self, mut object: Box<dyn BACnetObject>) -> Result<(), Error> {
         let identifier = object.object_identifier();
         ObjectIdentifier::new_addressable(identifier.object_type(), identifier.instance_number())?;
@@ -136,11 +158,13 @@ impl ObjectDatabase {
 
         // If replacing an existing object, remove its old name from the index
         // and invalidate state owned by enrollments that monitor it.
+        let mut renamed = false;
         if let Some(old) = self.objects.get(&oid) {
             if let Some(reporter) = old.audit_reporter() {
                 reporter.status_internal().configuration_changed();
             }
             let old_name = old.object_name().to_string();
+            renamed = old_name != name;
             self.name_index.remove(&old_name);
             self.invalidate_enrollments_monitoring(&oid);
         }
@@ -150,9 +174,11 @@ impl ObjectDatabase {
         self.enrollment_eval_sources.remove(&oid);
         self.trend_poll.retire(&oid);
         // A Schedule or Staging object replaced gives up the slots it held,
-        // as a removed one does (#2264, #2265); the new object starts from
+        // as a removed one does (#2264, #2265), and a timed one retires
+        // with its storage left alone (#2479); the new object starts from
         // what it holds.
         if let Some(mut replaced) = self.objects.insert(oid, object) {
+            retire(replaced.as_mut(), Retirement::Released);
             self.commander_removed(oid, replaced.as_mut());
         }
         self.audit_membership_changed(oid, true);
@@ -161,6 +187,9 @@ impl ObjectDatabase {
                 .entry(oid.object_type())
                 .or_default()
                 .push(oid);
+            self.list_added(oid);
+        } else if renamed {
+            self.list_renamed(&oid);
         }
         self.membership_changed(oid, true);
         Ok(())
@@ -198,13 +227,27 @@ impl ObjectDatabase {
 
     /// Update the name index after a successful Object_Name write.
     ///
-    /// Call this after `write_property(OBJECT_NAME, …)` succeeds.
+    /// Call this after `write_property(OBJECT_NAME, …)` succeeds. A name
+    /// that changed moves Database_Revision (#2669); writing the name the
+    /// object already had doesn't.
     pub fn update_name_index(&mut self, oid: &ObjectIdentifier) {
         if let Some(obj) = self.objects.get(oid) {
-            // Remove any old name mapping for this OID
-            self.name_index.retain(|_, v| v != oid);
+            let name = obj.object_name();
+            // Remove any old name mapping for this OID, noting whether it
+            // was the name the object has now.
+            let mut renamed = true;
+            self.name_index.retain(|old, v| {
+                if v != oid {
+                    return true;
+                }
+                renamed &= old != name;
+                false
+            });
             // Insert the current name
-            self.name_index.insert(obj.object_name().to_string(), *oid);
+            self.name_index.insert(name.to_string(), *oid);
+            if renamed {
+                self.list_renamed(oid);
+            }
         }
     }
 
@@ -286,7 +329,8 @@ impl ObjectDatabase {
     /// logging by COV keeps no Enable or window gate and no baseline restart,
     /// a wrapped Event Log takes no received notifications, and a wrapped
     /// Pulse Converter counts nothing and its Reliability no longer follows
-    /// its Input_Reference.
+    /// its Input_Reference. A wrapped Binary Output gives no
+    /// [`physical_output`](Self::physical_output).
     ///
     /// ```compile_fail
     /// use bacnet_objects::{database::ObjectDatabase, traits::BACnetObject};
@@ -375,7 +419,15 @@ impl ObjectDatabase {
     /// the reference judged again, as [`add`](Self::add) does. A removed
     /// Schedule gives up the slots it holds on its targets: the NULLs are
     /// queued for the server, which writes them under its next guard and
-    /// fans COV out (#2264). Without a server they wait in the queue.
+    /// fans COV out (#2264). Without a server they wait in the queue. A
+    /// timed object retires ([`Timed::retire`], as
+    /// [`Retirement::Removed`]) before it is handed back, so a Load Control
+    /// ends a request under way, tells its application to stop and saves
+    /// the ended request (#2479). A removed object leaves the local
+    /// Device's Object_List and moves Database_Revision
+    /// ([`object_list`](Self::object_list), #2669).
+    ///
+    /// [`Timed::retire`]: crate::traits::Timed::retire
     pub fn remove(
         &mut self,
         oid: &ObjectIdentifier,
@@ -405,7 +457,9 @@ impl ObjectDatabase {
                 if let Some(type_set) = self.type_index.get_mut(&oid.object_type()) {
                     type_set.retain(|o| o != oid);
                 }
+                self.list_removed(oid);
                 self.audit_membership_changed(*oid, false);
+                retire(obj.as_mut(), Retirement::Removed);
                 self.commander_removed(*oid, obj.as_mut());
                 self.membership_changed(*oid, false);
                 Ok(Some(obj))
@@ -433,6 +487,10 @@ impl ObjectDatabase {
     ///
     /// Returns a `Vec` of `ObjectIdentifier`s whose object type matches `object_type`.
     /// Useful for WhoHas, object enumeration, and similar queries.
+    ///
+    /// They come in the order the objects were added: an object replaced
+    /// under the same identifier keeps its place, and one removed and added
+    /// again goes last.
     pub fn find_by_type(&self, object_type: ObjectType) -> Vec<ObjectIdentifier> {
         self.type_index
             .get(&object_type)
@@ -491,6 +549,19 @@ impl ObjectDatabase {
         }
     }
 
+    /// The device isn't starting after all: call [`Timed::retire`] as
+    /// [`Retirement::Released`] on every timed object, so what a start
+    /// began ([`start_outputs`](Self::start_outputs)) ends, while what the
+    /// objects keep in storage stays for the next start (#2479). The bundled
+    /// server calls it when its start fails after driving the outputs.
+    ///
+    /// [`Timed::retire`]: crate::traits::Timed::retire
+    pub fn release_outputs(&mut self) {
+        for object in self.objects.values_mut() {
+            retire(object.as_mut(), Retirement::Released);
+        }
+    }
+
     /// Hand the database's clocks to every timed object again, after one of
     /// them changed.
     fn rebind_clocks(&mut self) {
@@ -520,6 +591,18 @@ impl ObjectDatabase {
         object
             .downcast_mut::<BinaryLightingOutputObject>()
             .map(|object| object.lighting_blink_count())
+    }
+
+    /// The state to drive the physical output of the Binary Output at `oid`
+    /// to, ON as `true`: [`BinaryOutputObject::physical_output`], its
+    /// Present_Value through Polarity in service and the state it was
+    /// driven to while Out_Of_Service is TRUE (#2580). `None` for an
+    /// unknown object, another type, or a Binary Output an adapter wraps.
+    ///
+    /// [`BinaryOutputObject::physical_output`]: crate::binary::BinaryOutputObject::physical_output
+    pub fn physical_output(&self, oid: &ObjectIdentifier) -> Option<bool> {
+        self.stored_as::<crate::binary::BinaryOutputObject>(oid)
+            .map(crate::binary::BinaryOutputObject::physical_output)
     }
 
     /// Read one coherent sample from the database's shared clock.
@@ -584,6 +667,13 @@ impl ObjectDatabase {
     /// Whether the database is empty.
     pub fn is_empty(&self) -> bool {
         self.objects.is_empty()
+    }
+}
+
+/// Tell an object leaving the database that it is going, and how (#2479).
+fn retire(object: &mut dyn BACnetObject, retirement: Retirement) {
+    if let Some(timed) = object.timed() {
+        timed.retire(retirement);
     }
 }
 

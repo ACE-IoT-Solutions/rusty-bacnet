@@ -39,8 +39,11 @@ pub(super) async fn run(
     let mut malformed_diag = DiagnosticThrottle::new();
     let mut broadcast_rate = super::broadcast_rate::SenderBudget::for_connection();
     let mut graceful_signal = graceful.signal();
-    let refused =
-        |why| super::peer_warnings::connect_refused(&admission.connection_warning, peer_addr, why);
+    // A refusal ends the connection on purpose: the lease closes it (#2463).
+    let refused = |lease: &mut super::retirement::Lease, why| {
+        lease.note_hub_ends();
+        super::peer_warnings::connect_refused(&admission.connection_warning, peer_addr, why)
+    };
 
     loop {
         // A stream of immediately ready frames must not starve the timer.
@@ -79,8 +82,10 @@ pub(super) async fn run(
 
         let data = match msg_result {
             Ok(Message::Binary(data)) => data,
-            Ok(Message::Close(_)) => {
-                debug!("Hub: client {peer_addr} sent close");
+            Ok(Message::Close(frame)) => {
+                // A node's orderly end says 1000 (#2520): debug, as any close.
+                let status = frame.map(|frame| u16::from(frame.code));
+                debug!("Hub: client {peer_addr} sent close, status {status:?}");
                 break;
             }
             Ok(Message::Ping(_) | Message::Pong(_)) => continue,
@@ -89,15 +94,9 @@ pub(super) async fn run(
                     admission.connection_warning,
                     "Hub: non-binary frame from {peer_addr}, closing with 1003"
                 );
+                lease.note_fault();
                 let mut w = write.lock().await;
-                let _ = w
-                    .send(Message::Close(Some(
-                        tokio_tungstenite::tungstenite::protocol::CloseFrame {
-                            code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Unsupported,
-                            reason: "BACnet/SC requires binary frames".into(),
-                        },
-                    )))
-                    .await;
+                let _ = w.send(super::retirement::non_binary_close()).await;
                 break;
             }
             Err(e) => {
@@ -105,6 +104,9 @@ pub(super) async fn run(
                     admission.connection_warning,
                     "Hub: recv error from {peer_addr}: {e}"
                 );
+                // Not an orderly end: a frame past the size limit, a
+                // WebSocket protocol fault or a lost link (#2463).
+                lease.note_fault();
                 break;
             }
         };
@@ -154,7 +156,11 @@ pub(super) async fn run(
             }
             // Preserve the existing pre-registration rejection lifecycle;
             // a malformed repeat must not retire an established connection.
+            // A malformed request is the peer's fault: after the NAK, the
+            // lease closes with no status (#2463).
             if lease.vmac.is_none() {
+                lease.note_hub_ends();
+                lease.note_fault();
                 break;
             }
             continue;
@@ -396,7 +402,9 @@ pub(super) async fn run(
         match sc_msg.function {
             ScFunction::ConnectRequest => {
                 if let Some(registered_vmac) = lease.vmac {
-                    refused(ConnectRefusal::AlreadyConnected(registered_vmac));
+                    refused(lease, ConnectRefusal::AlreadyConnected(registered_vmac));
+                    // A protocol fault, not an orderly end: no 1000 (#2463).
+                    lease.note_fault();
                     let mut w = write.lock().await;
                     let _ = w.send(Message::Close(None)).await;
                     break;
@@ -415,13 +423,9 @@ pub(super) async fn run(
 
                 match connect_request_vmac_disposition(vmac, hub_vmac) {
                     ConnectRequestVmacDisposition::Accept => {}
-                    ConnectRequestVmacDisposition::CloseReserved => {
-                        refused(ConnectRefusal::ReservedVmac(vmac));
-                        break;
-                    }
                     ConnectRequestVmacDisposition::Nak(error_class, error_code) => {
                         super::outcomes::increment(&clients.outcomes.vmac_collision_rejections);
-                        refused(ConnectRefusal::VmacCollision(vmac));
+                        refused(lease, ConnectRefusal::VmacCollision(vmac));
                         send_connect_nak(&write, sc_msg.message_id, error_class, error_code).await;
                         break;
                     }
@@ -458,7 +462,7 @@ pub(super) async fn run(
                     }) || admission.evaluate(&input) == ScHubAdmissionDecision::Deny
                     {
                         admission.note_denied();
-                        refused(ConnectRefusal::AdminDenied);
+                        refused(lease, ConnectRefusal::AdminDenied);
                         drop(map); // release lock before sending
                         let error_result = connect_denied_nak(sc_msg.message_id);
                         let mut buf = BytesMut::new();
@@ -499,7 +503,7 @@ pub(super) async fn run(
                         }
                         HubClientRegistrationDecision::NakDuplicateVmac => {
                             super::outcomes::increment(&clients.outcomes.vmac_collision_rejections);
-                            refused(ConnectRefusal::VmacCollision(vmac));
+                            refused(lease, ConnectRefusal::VmacCollision(vmac));
                             drop(map); // release lock before sending
                             send_connect_nak(
                                 &write,
@@ -514,7 +518,7 @@ pub(super) async fn run(
                             super::outcomes::increment(
                                 &clients.outcomes.registered_capacity_rejections,
                             );
-                            refused(ConnectRefusal::MaxClients);
+                            refused(lease, ConnectRefusal::MaxClients);
                             drop(map);
                             send_connect_nak(
                                 &write,
@@ -575,6 +579,8 @@ pub(super) async fn run(
 
             ScFunction::DisconnectRequest => {
                 debug!("Hub: DisconnectRequest from {peer_addr}");
+                // Before any Connect too, the lease closes it with 1000.
+                lease.note_hub_ends();
                 let ack = ScMessage {
                     function: ScFunction::DisconnectAck,
                     message_id: sc_msg.message_id,

@@ -6,7 +6,8 @@ Covers, on supported interpreters via maturin develop:
 - I-Am/Device identity agreement (vendor + name + present-value);
 - concurrent client/server use (asyncio.gather, poll pattern, no callbacks);
 - cancellation (in-flight read cancel leaves endpoint usable) + idempotent close;
-- live role handle after owner close fails closed via BacnetError;
+- live role handle after owner close fails closed (the client with a
+  RuntimeError naming the endpoint, the server via BacnetError);
 - error propagation (protocol error attributes, unknown address timeout);
 - constructor validation (ValueError/RuntimeError/OverflowError split);
 - SC + MS/TP validation paths (no wire for MS/TP without hardware);
@@ -20,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import socket
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,9 +30,9 @@ from rusty_bacnet import (
     BacnetAbortError,
     BacnetError,
     BacnetProtocolError,
+    BACnetClient,
+    BACnetServer,
     BipEndpoint,
-    EndpointClient,
-    EndpointServer,
     ScHub,
     MstpEndpoint,
     ObjectIdentifier,
@@ -41,6 +41,7 @@ from rusty_bacnet import (
     ScEndpoint,
 )
 
+from openssl_fixture import require_openssl, site_authority
 from port_retry import rerun_on_lost_port
 
 
@@ -75,10 +76,13 @@ class EndpointSurfaceTests(unittest.TestCase):
         self.assertIsNone(getattr(rusty_bacnet, "EthernetEndpoint", None))
         self.assertIsNone(getattr(rusty_bacnet, "BacnetEndpoint", None))
 
-    def test_roles_expose_no_lifecycle(self):
-        for cls in (EndpointClient, EndpointServer):
-            for forbidden in ("start", "stop", "close"):
-                self.assertNotIn(forbidden, dir(cls), f"{cls.__name__}.{forbidden}")
+    def test_the_roles_are_the_standalone_classes(self):
+        # The client role is a BACnetClient and the server role a
+        # BACnetServer (#2617): the narrow classes are gone.
+        import rusty_bacnet
+
+        for gone in ("EndpointServer", "EndpointClient", "EndpointCov"):
+            self.assertIsNone(getattr(rusty_bacnet, gone, None), gone)
 
     def test_no_python_callback_registry(self):
         for cls in (BipEndpoint, ScEndpoint, MstpEndpoint):
@@ -400,7 +404,15 @@ class BipLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     "no_server_role",
                     "no_client_role",
                     "unclaimed_terminal",
-                    "responder_declined",
+                    "unconfirmed_full_drops",
+                    "confirmed_full_drops",
+                    "answer_full_drops",
+                    "policy_full_drops",
+                    "client_seat_apdus",
+                    "client_seat_full_drops",
+                    "client_seat_control_full_drops",
+                    "server_seat_apdus",
+                    "server_seat_full_drops",
                 },
             )
             self.assertTrue(status["is_running"])
@@ -583,20 +595,25 @@ class BipFunctionalTests(unittest.IsolatedAsyncioTestCase):
                         addr_a, oid, PropertyIdentifier.PRESENT_VALUE
                     )
 
-                async def poll_liveness():
+                async def read_own():
+                    # The endpoint's server reads its own objects beside
+                    # the two network reads (#2617).
                     for _ in range(10):
-                        self.assertTrue(first_server.is_session_alive())
+                        value = await first_server.read_property(
+                            oid, PropertyIdentifier.PRESENT_VALUE
+                        )
+                        self.assertEqual(value.value, 5.0)
                         await asyncio.sleep(0.01)
                     return True
 
-                a_val, b_val, alive = await asyncio.gather(
+                a_val, b_val, own = await asyncio.gather(
                     asyncio.wait_for(asyncio.ensure_future(read_a_to_b()), 10),
                     asyncio.wait_for(asyncio.ensure_future(read_b_to_a()), 10),
-                    poll_liveness(),
+                    read_own(),
                 )
                 self.assertEqual(a_val.value, 6.0)
                 self.assertEqual(b_val.value, 5.0)
-                self.assertTrue(alive)
+                self.assertTrue(own)
 
     async def test_owner_close_with_live_handles_fails_closed(self):
         first = BipEndpoint(**bip_kwargs(port=0, device_instance=5001))
@@ -608,20 +625,28 @@ class BipFunctionalTests(unittest.IsolatedAsyncioTestCase):
         try:
             addr_b = await second.local_address()
             live_client = await first.client()
+            self.assertIsInstance(live_client, BACnetClient)
             live_server = await first.server()
-            self.assertTrue(live_server.is_session_alive())
-            await asyncio.wait_for(first.close(), 5)
-            self.assertFalse(live_server.is_session_alive())
+            self.assertIsInstance(live_server, BACnetServer)
             oid = ObjectIdentifier(ObjectType.ANALOG_INPUT, 1)
-            with self.assertRaises(BacnetError):
+            self.assertEqual(
+                (await live_server.read_property(oid, PropertyIdentifier.PRESENT_VALUE)).value,
+                1.0,
+            )
+            await asyncio.wait_for(first.close(), 5)
+            # The close stopped the client on its link first (#2617).
+            with self.assertRaisesRegex(RuntimeError, "ran on an endpoint"):
                 await asyncio.wait_for(
                     live_client.read_property(
                         addr_b, oid, PropertyIdentifier.PRESENT_VALUE
                     ),
                     10,
                 )
-            with self.assertRaises(BacnetError):
-                live_server.suspend_next_reply()
+            # The close stopped the server too: its calls raise at once.
+            with self.assertRaisesRegex(RuntimeError, "came from is closed"):
+                await asyncio.wait_for(
+                    live_server.read_property(oid, PropertyIdentifier.PRESENT_VALUE), 5
+                )
             # Owner borrows released at termination.
             with self.assertRaisesRegex(RuntimeError, "not started"):
                 await first.client()
@@ -837,47 +862,11 @@ class ScEndpointHubTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def setUpClass(cls):
-        try:
-            subprocess.run(["openssl", "version"], check=True, capture_output=True)
-        except Exception as exc:
-            raise unittest.SkipTest(f"openssl unavailable: {exc}")
+        require_openssl()
         cls.temp = tempfile.TemporaryDirectory(prefix="bacnet-endpoint-sc-")
         cls.addClassCleanup(cls.temp.cleanup)
         cls.root = Path(cls.temp.name)
-
-        def run(*args: str):
-            subprocess.run(
-                ["openssl", *args],
-                cwd=cls.root,
-                check=True,
-                capture_output=True,
-                timeout=15,
-            )
-
-        run(
-            "req", "-x509", "-newkey", "ec", "-pkeyopt",
-            "ec_paramgen_curve:prime256v1", "-nodes", "-days", "2",
-            "-subj", "/CN=site", "-keyout", "site.key", "-out", "site.pem",
-            "-addext", "basicConstraints=critical,CA:TRUE",
-            "-addext", "keyUsage=critical,keyCertSign,cRLSign",
-        )
-        (cls.root / "leaf.cnf").write_text(
-            "[leaf]\nbasicConstraints=critical,CA:FALSE\n"
-            "keyUsage=critical,digitalSignature\n"
-            "extendedKeyUsage=serverAuth,clientAuth\n"
-            "subjectAltName=DNS:localhost,IP:127.0.0.1\n"
-        )
-        for name in ("hub", "a", "b"):
-            run(
-                "req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
-                "-nodes", "-subj", f"/CN={name}", "-keyout", f"{name}.key",
-                "-out", f"{name}.csr",
-            )
-            run(
-                "x509", "-req", "-in", f"{name}.csr", "-CA", "site.pem",
-                "-CAkey", "site.key", "-CAcreateserial", "-days", "1",
-                "-extfile", "leaf.cnf", "-extensions", "leaf", "-out", f"{name}.pem",
-            )
+        site_authority().provide(cls.root, "hub", "a", "b")
 
     def path(self, name: str) -> str:
         return str(self.root / name)
@@ -1042,6 +1031,15 @@ class ScEndpointHubTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(uuid_value.tag, "octet_string")
                 self.assertEqual(bytes(uuid_value.value), SC_B_UUID)
+                # The endpoint's client is a BACnetClient on the hub link
+                # (#2617): its SC calls read that link, and the B/IP ones
+                # refuse plainly.
+                self.assertIsInstance(first_client, BACnetClient)
+                status = await first_client.connection_status()
+                self.assertEqual(status.state, (await first.connection_status()).state)
+                with self.assertRaises(BacnetError):
+                    await first_client.read_bdt("127.0.0.1:47808")
+                self.assertIn("client_seat_apdus", await first.status())
             finally:
                 self.assertIsNone(await asyncio.wait_for(first.__aexit__(None, None, None), 5))
                 self.assertIsNone(await first.close())

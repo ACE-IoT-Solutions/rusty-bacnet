@@ -23,8 +23,18 @@
 
 #![allow(dead_code)]
 
+#[path = "restore_formats.rs"]
+mod formats;
 #[path = "restore_samples.rs"]
 mod samples;
+#[path = "restore_seal.rs"]
+mod sealing;
+
+// The corruption test seals; only the fuzz crate takes the checksum too.
+#[allow(unused_imports)]
+pub use sealing::{crc32, seal};
+
+pub use formats::FORMATS;
 
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
@@ -32,7 +42,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bacnet_objects::access_control::{
-    AccessRightsObject, AccessRightsPersistence, AccessRightsSnapshot, FileAccessRightsPersistence,
+    AccessDoorObject, AccessRightsObject, AccessRightsPersistence, AccessRightsSnapshot,
+    AccessZoneObject, FileAccessRightsPersistence,
 };
 use bacnet_objects::analog::AnalogInputObject;
 use bacnet_objects::audit::{AuditLogObject, AuditLogPersistence, FileAuditLogPersistence};
@@ -41,9 +52,14 @@ use bacnet_objects::color::{
     ColorObject, ColorOutputPersistence, ColorOutputSnapshot, ColorTemperatureObject,
     FileColorOutputPersistence,
 };
-use bacnet_objects::event_enrollment::AlertEnrollmentObject;
+use bacnet_objects::event_enrollment::{AlertEnrollmentObject, EventEnrollmentObject};
 use bacnet_objects::event_log::EventLogObject;
+use bacnet_objects::lighting::LightingOutputObject;
+use bacnet_objects::load_control::{
+    FileLoadControlPersistence, LoadControlObject, LoadControlPersistence, LoadControlSnapshot,
+};
 use bacnet_objects::log_persistence::{FileLogPersistence, LogPersistence};
+use bacnet_objects::multistate::MultiStateInputObject;
 use bacnet_objects::notification_class::{
     FileNotificationClassPersistence, NotificationClass, NotificationClassPersistence,
     NotificationClassSnapshot,
@@ -59,7 +75,7 @@ use bacnet_objects::trend::{TrendLogMultipleObject, TrendLogObject};
 use bacnet_objects::write_config::{
     FileWriteConfigPersistence, WriteConfigPersistence, WriteConfigSnapshot,
 };
-use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier};
+use bacnet_types::enums::{EngineeringUnits, EventType, ObjectType, PropertyIdentifier};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
@@ -86,6 +102,7 @@ enum Kind {
     NotificationForwarder,
     NotificationClass,
     Tags,
+    DescribedTags,
     Color,
     ColorTemperature,
     AccessRights,
@@ -93,6 +110,11 @@ enum Kind {
     ChannelWriteConfig,
     ReportingWriteConfig,
     AlertReportingWriteConfig,
+    MultiStateReportingWriteConfig,
+    DoorReportingWriteConfig,
+    ZoneReportingWriteConfig,
+    EnrollmentReportingWriteConfig,
+    LoadControl,
 }
 
 /// Where a check's storage lives. Each method opens one backend on it; a
@@ -106,6 +128,7 @@ pub trait Medium: Sized {
     fn color(&self) -> FileColorOutputPersistence;
     fn rights(&self) -> FileAccessRightsPersistence;
     fn write_config(&self) -> FileWriteConfigPersistence;
+    fn load_control(&self) -> FileLoadControlPersistence;
     /// Empty storage of the same kind, for the round trip.
     fn fresh(&self) -> Self;
     /// What each of the format's files holds now, `None` for a missing one.
@@ -152,6 +175,9 @@ impl Medium for Files {
     fn write_config(&self) -> FileWriteConfigPersistence {
         FileWriteConfigPersistence::new(&self.base).unwrap()
     }
+    fn load_control(&self) -> FileLoadControlPersistence {
+        FileLoadControlPersistence::new(&self.base).unwrap()
+    }
     /// A sibling base, with its files removed.
     fn fresh(&self) -> Self {
         let base = suffixed(&self.base, ".copy");
@@ -176,142 +202,6 @@ pub struct Outcome {
     /// The object built on the storage.
     pub built: bool,
 }
-
-/// Every format, in a fixed order the fuzz targets' selectors index.
-pub const FORMATS: &[Format] = &[
-    Format {
-        name: "trend_log",
-        two_slot: true,
-        sample: samples::trend_log,
-        kind: Kind::TrendLog,
-    },
-    Format {
-        name: "trend_log_multiple",
-        two_slot: true,
-        sample: samples::trend_log_multiple,
-        kind: Kind::TrendLogMultiple,
-    },
-    Format {
-        name: "event_log",
-        two_slot: true,
-        sample: samples::event_log,
-        kind: Kind::EventLog,
-    },
-    Format {
-        name: "audit_log",
-        two_slot: true,
-        sample: samples::audit_log,
-        kind: Kind::AuditLog,
-    },
-    Format {
-        name: "notification_forwarder",
-        two_slot: false,
-        sample: samples::notification_forwarder,
-        kind: Kind::NotificationForwarder,
-    },
-    Format {
-        name: "notification_class",
-        two_slot: false,
-        sample: samples::notification_class,
-        kind: Kind::NotificationClass,
-    },
-    Format {
-        name: "tags",
-        two_slot: false,
-        sample: samples::tags,
-        kind: Kind::Tags,
-    },
-    Format {
-        name: "color",
-        two_slot: false,
-        sample: samples::color,
-        kind: Kind::Color,
-    },
-    Format {
-        name: "color_temperature",
-        two_slot: false,
-        sample: samples::color_temperature,
-        kind: Kind::ColorTemperature,
-    },
-    Format {
-        name: "access_rights",
-        two_slot: false,
-        sample: samples::access_rights,
-        kind: Kind::AccessRights,
-    },
-    Format {
-        name: "timer_write_config",
-        two_slot: false,
-        sample: samples::timer_write_config,
-        kind: Kind::TimerWriteConfig,
-    },
-    Format {
-        name: "channel_write_config",
-        two_slot: false,
-        sample: samples::channel_write_config,
-        kind: Kind::ChannelWriteConfig,
-    },
-    Format {
-        name: "reporting_write_config",
-        two_slot: false,
-        sample: samples::reporting_write_config,
-        kind: Kind::ReportingWriteConfig,
-    },
-    // Last, so the selectors of the formats before it stay as they were.
-    Format {
-        name: "alert_reporting_write_config",
-        two_slot: false,
-        sample: samples::alert_reporting_write_config,
-        kind: Kind::AlertReportingWriteConfig,
-    },
-    // Kind 5 around kinds 3, 2 and 4 (#2364), after the rest for the same
-    // reason.
-    Format {
-        name: "described_timer_write_config",
-        two_slot: false,
-        sample: samples::described_timer_write_config,
-        kind: Kind::TimerWriteConfig,
-    },
-    Format {
-        name: "described_channel_write_config",
-        two_slot: false,
-        sample: samples::described_channel_write_config,
-        kind: Kind::ChannelWriteConfig,
-    },
-    Format {
-        name: "described_reporting_write_config",
-        two_slot: false,
-        sample: samples::described_reporting_write_config,
-        kind: Kind::ReportingWriteConfig,
-    },
-    // The formats of their own with a written Description (#2364), after
-    // the rest for the same reason: the log's schema version 3, and the
-    // version 2 tags of the forwarder's, the class's and Access Rights'.
-    Format {
-        name: "described_trend_log",
-        two_slot: true,
-        sample: samples::described_trend_log,
-        kind: Kind::TrendLog,
-    },
-    Format {
-        name: "described_notification_forwarder",
-        two_slot: false,
-        sample: samples::described_notification_forwarder,
-        kind: Kind::NotificationForwarder,
-    },
-    Format {
-        name: "described_notification_class",
-        two_slot: false,
-        sample: samples::described_notification_class,
-        kind: Kind::NotificationClass,
-    },
-    Format {
-        name: "described_access_rights",
-        two_slot: false,
-        sample: samples::described_access_rights,
-        kind: Kind::AccessRights,
-    },
-];
 
 impl Format {
     /// Restore from what `medium` holds; see the module docs.
@@ -340,6 +230,12 @@ impl Format {
                 M::forwarder,
                 |store| NotificationForwarderObject::with_persistence(1, "NF", store).map(drop),
             ),
+            Kind::LoadControl => check_file(
+                medium,
+                oid(ObjectType::LOAD_CONTROL),
+                M::load_control,
+                |store| LoadControlObject::with_persistence(1, "LC", store).map(drop),
+            ),
             Kind::NotificationClass => check_file(
                 medium,
                 oid(ObjectType::NOTIFICATION_CLASS),
@@ -350,6 +246,11 @@ impl Format {
                 let units = EngineeringUnits::DEGREES_CELSIUS;
                 AnalogInputObject::with_tags_persistence(1, "AI", units, store).map(drop)
             }),
+            Kind::DescribedTags => {
+                check_file(medium, oid(ObjectType::LIGHTING_OUTPUT), M::tags, |store| {
+                    LightingOutputObject::with_tags_persistence(1, "LO", store).map(drop)
+                })
+            }
             Kind::Color => check_file(medium, oid(ObjectType::COLOR), M::color, |store| {
                 ColorObject::new(1, "CLR")?
                     .with_output_persistence(store)
@@ -403,6 +304,54 @@ impl Format {
                         .map(drop)
                 },
             ),
+            // A Multi-state Input of eight states: it opens on an
+            // Alarm_Values state past them too, which the format takes and
+            // only a write refuses (#2331), and on a saved State_Text that
+            // gives it another count (#2414).
+            Kind::MultiStateReportingWriteConfig => check_file(
+                medium,
+                oid(ObjectType::MULTI_STATE_INPUT),
+                M::write_config,
+                |store| {
+                    MultiStateInputObject::new(1, "MSI", samples::MULTI_STATE_SAMPLE_STATES)?
+                        .with_reporting_persistence(store)
+                        .map(drop)
+                },
+            ),
+            // An Access Door and an Access Zone hold a listed state to
+            // their enumerations, on load as on a write (#2331).
+            Kind::DoorReportingWriteConfig => check_file(
+                medium,
+                oid(ObjectType::ACCESS_DOOR),
+                M::write_config,
+                |store| {
+                    AccessDoorObject::new(1, "Door")?
+                        .with_reporting_persistence(store)
+                        .map(drop)
+                },
+            ),
+            Kind::ZoneReportingWriteConfig => check_file(
+                medium,
+                oid(ObjectType::ACCESS_ZONE),
+                M::write_config,
+                |store| {
+                    AccessZoneObject::new(1, "Zone")?
+                        .with_reporting_persistence(store)
+                        .map(drop)
+                },
+            ),
+            // An Event Enrollment decodes its two parameters from their
+            // stored octets with the decoders a write runs (#2331).
+            Kind::EnrollmentReportingWriteConfig => check_file(
+                medium,
+                oid(ObjectType::EVENT_ENROLLMENT),
+                M::write_config,
+                |store| {
+                    EventEnrollmentObject::new(1, "EE", EventType::OUT_OF_RANGE)?
+                        .with_reporting_persistence(store)
+                        .map(drop)
+                },
+            ),
         }
     }
 
@@ -419,49 +368,6 @@ impl Format {
             vec![base.to_path_buf()]
         }
     }
-}
-
-/// The two-slot header the log and Audit Log formats share: magic tag,
-/// schema version, object identifier, generation, payload length.
-const SLOT_HEADER_LEN: usize = 8 + 2 + 4 + 8 + 4;
-const SLOT_TRAILER_LEN: usize = 4;
-
-/// The CRC-32 (IEEE 802.3, reflected) the slots end with, written here
-/// from its definition: the table holds each octet's eight shift steps, so
-/// the fuzz targets seal a slot with one lookup per octet (#2233).
-pub fn crc32(data: &[u8]) -> u32 {
-    static TABLE: [u32; 256] = {
-        let mut table = [0u32; 256];
-        let mut n = 0;
-        while n < 256 {
-            let mut crc = n as u32;
-            let mut bit = 0;
-            while bit < 8 {
-                crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
-                bit += 1;
-            }
-            table[n] = crc;
-            n += 1;
-        }
-        table
-    };
-    !data.iter().fold(!0u32, |crc, &byte| {
-        TABLE[usize::from(crc as u8 ^ byte)] ^ (crc >> 8)
-    })
-}
-
-/// Give a two-slot format's `slot` the length field and checksum of what
-/// it holds, if it is long enough to have them, so damage past the header
-/// reaches the payload decoders.
-pub fn seal(slot: &mut [u8]) {
-    if slot.len() < SLOT_HEADER_LEN + SLOT_TRAILER_LEN {
-        return;
-    }
-    let payload = (slot.len() - SLOT_HEADER_LEN - SLOT_TRAILER_LEN) as u32;
-    slot[22..26].copy_from_slice(&payload.to_be_bytes());
-    let at = slot.len() - SLOT_TRAILER_LEN;
-    let checksum = crc32(&slot[..at]);
-    slot[at..].copy_from_slice(&checksum.to_be_bytes());
 }
 
 /// The object every sample and check is for: instance 1 of `kind`.
@@ -706,6 +612,7 @@ one_file! {
     FileColorOutputPersistence => ColorOutputPersistence, ColorOutputSnapshot;
     FileAccessRightsPersistence => AccessRightsPersistence, AccessRightsSnapshot;
     FileWriteConfigPersistence => WriteConfigPersistence, WriteConfigSnapshot;
+    FileLoadControlPersistence => LoadControlPersistence, LoadControlSnapshot;
 }
 
 fn check_file<M: Medium, S: OneFile>(

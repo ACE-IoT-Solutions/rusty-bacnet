@@ -7,17 +7,18 @@
 //! goes local; an unconfirmed request still goes, and so does a routed
 //! request whose link DA is the broadcast MAC, since its DNET/DADR name one
 //! device.
+use crate::client::Station;
 use bacnet_encoding::apdu::{Apdu, decode_apdu};
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_network::network_number::LocalNetworkNumber;
 use bacnet_transport::bip::BipTransport;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_transport::port::{GroupDestinations, ReceivedNpdu, TransportPort};
+use bacnet_transport::port::{GroupDestinations, TransportPort};
+use bacnet_transport::test_transport::{SendMode, TestTransport};
 use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice, UnconfirmedServiceChoice};
 use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::network_number::NetworkNumber;
 use std::net::Ipv4Addr;
-use tokio::sync::mpsc;
 
 use super::{BACnetClient, ClientConfig};
 
@@ -68,10 +69,8 @@ async fn a_confirmed_request_to_the_broadcast_mac_is_refused_before_any_state() 
     // may be the broadcast MAC; it goes out and its transaction times out
     // unanswered.
     let routed = client
-        .confirmed_request_routed(
-            &BROADCAST,
-            5,
-            &[7],
+        .confirmed_request(
+            &Station::routed(&BROADCAST, 5, &[7]),
             ConfirmedServiceChoice::READ_PROPERTY,
             &[0x0C],
         )
@@ -93,39 +92,13 @@ async fn a_confirmed_request_to_the_broadcast_mac_is_refused_before_any_state() 
 /// A loopback link whose group destinations follow another transport's
 /// rule, so the client's check meets each B/IP or B/IPv6 address form
 /// while every send it does make is still seen.
-struct GroupRuleLink {
-    link: LoopbackTransport,
-    groups: GroupDestinations,
-}
-
-impl TransportPort for GroupRuleLink {
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        self.link.start().await
-    }
-
-    async fn stop(&mut self) -> Result<(), Error> {
-        self.link.stop().await
-    }
-
-    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        self.link.send_unicast(npdu, mac).await
-    }
-
-    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        self.link.send_broadcast(npdu).await
-    }
-
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        self.link.local_receive_apdu_capacity()
-    }
-
-    fn local_mac(&self) -> &[u8] {
-        self.link.local_mac()
-    }
-
-    fn is_group_destination(&self, mac: &[u8]) -> bool {
-        self.groups.contains(mac)
-    }
+fn group_rule_link(link: LoopbackTransport, groups: GroupDestinations) -> TestTransport {
+    TestTransport::builder()
+        .inner(link)
+        .unicast(SendMode::Forward)
+        .broadcast(SendMode::Forward)
+        .on_is_group_destination(move |mac| groups.contains(mac))
+        .build()
 }
 
 async fn refuses_each_group_form(groups: GroupDestinations, forms: &[Vec<u8>], unicast: &[u8]) {
@@ -136,7 +109,7 @@ async fn refuses_each_group_form(groups: GroupDestinations, forms: &[Vec<u8>], u
         apdu_retries: 0,
         ..ClientConfig::default()
     };
-    let mut client = BACnetClient::start(config, GroupRuleLink { link, groups })
+    let mut client = BACnetClient::start(config, group_rule_link(link, groups))
         .await
         .unwrap();
     for mac in forms {
@@ -252,10 +225,8 @@ async fn a_routed_request_to_this_networks_broadcast_mac_is_refused() {
     number.publish(NetworkNumber::configured(5).unwrap());
 
     let refused = client
-        .confirmed_request_routed(
-            &PEER,
-            5,
-            &BROADCAST,
+        .confirmed_request(
+            &Station::routed(&PEER, 5, &BROADCAST),
             ConfirmedServiceChoice::READ_PROPERTY,
             &[0x0C],
         )

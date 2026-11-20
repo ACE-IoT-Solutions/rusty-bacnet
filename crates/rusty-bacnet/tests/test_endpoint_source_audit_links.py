@@ -6,7 +6,6 @@ every endpoint, #2371), are checked on the wire in Rust (bacnet-endpoint's
 source_link_tests.rs and source_routed_tests.rs): an MS/TP endpoint needs a
 serial port here."""
 import asyncio
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +13,8 @@ from pathlib import Path
 from rusty_bacnet import (AuditOperation, BACnetClient, BACnetServer, BacnetError, BipEndpoint,
                           MstpEndpoint, ObjectIdentifier, ObjectType, PropertyIdentifier,
                           ReinitializedState, ScEndpoint, ScHub)
+
+from openssl_fixture import require_openssl, site_authority
 
 O = ObjectType
 REPORTER = ObjectIdentifier(O.AUDIT_REPORTER, 1)
@@ -28,7 +29,6 @@ HUB_VMAC = b"\x02\x00\x00\x00\x00\x01"
 def source(**overrides):
     keywords = {
         "on_reinitialize": lambda request: None,
-        "device_write_policy": lambda context: True,
         "source_audit_reporter": REPORTER,
         "audit_recipient": {"kind": "device", "object_identifier": LOGGER},
     }
@@ -75,7 +75,7 @@ class LinkBindingTests(unittest.TestCase):
         for make in (sc_endpoint, mstp_endpoint):
             refused = [
                 {"source_audit_reporter": ObjectIdentifier(O.ANALOG_VALUE, 1)},
-                {"device_write_policy": None},
+                {"mutation_policy": "permissive"},
                 {"audit_recipient": None},
                 {"audit_device_bindings": [(LOGGER, "7"), (LOGGER, "8")]},
                 {"source_audit_reporter": None, "audit_device_bindings": [(LOGGER, "7")]},
@@ -196,34 +196,11 @@ class ScSessionTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def setUpClass(cls):
-        try:
-            subprocess.run(["openssl", "version"], check=True, capture_output=True)
-        except Exception as exc:
-            raise unittest.SkipTest(f"openssl unavailable: {exc}")
+        require_openssl()
         cls.temp = tempfile.TemporaryDirectory(prefix="bacnet-source-links-")
         cls.addClassCleanup(cls.temp.cleanup)
         cls.root = Path(cls.temp.name)
-
-        def run(*args):
-            subprocess.run(["openssl", *args], cwd=cls.root, check=True,
-                           capture_output=True, timeout=15)
-
-        run("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
-            "-nodes", "-days", "2", "-subj", "/CN=site", "-keyout", "site.key",
-            "-out", "site.pem", "-addext", "basicConstraints=critical,CA:TRUE",
-            "-addext", "keyUsage=critical,keyCertSign,cRLSign")
-        (cls.root / "leaf.cnf").write_text(
-            "[leaf]\nbasicConstraints=critical,CA:FALSE\n"
-            "keyUsage=critical,digitalSignature\n"
-            "extendedKeyUsage=serverAuth,clientAuth\n"
-            "subjectAltName=DNS:localhost,IP:127.0.0.1\n")
-        for name in ("hub", "node", "sink", "client"):
-            run("req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
-                "-nodes", "-subj", f"/CN={name}", "-keyout", f"{name}.key",
-                "-out", f"{name}.csr")
-            run("x509", "-req", "-in", f"{name}.csr", "-CA", "site.pem", "-CAkey",
-                "site.key", "-CAcreateserial", "-days", "1", "-extfile", "leaf.cnf",
-                "-extensions", "leaf", "-out", f"{name}.pem")
+        site_authority().provide(cls.root, "hub", "node", "sink", "client")
 
     def path(self, name):
         return str(self.root / name)
@@ -254,7 +231,7 @@ class ScSessionTests(unittest.IsolatedAsyncioTestCase):
                                      auditable_operations=RESET)
             await asyncio.wait_for(added.start(), 15)
             try:
-                self.assertIsNone(await added.report_device_reset_local())
+                self.assertIsNone(await (await added.server()).report_device_reset_local())
             finally:
                 await asyncio.wait_for(added.close(), 5)
         finally:
@@ -321,7 +298,7 @@ class ScSessionTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     address = await owner.local_address()
                     await client.reinitialize_device(address, ReinitializedState.WARMSTART)
-                    self.assertIsNone(await owner.report_device_reset_local())
+                    self.assertIsNone(await (await owner.server()).report_device_reset_local())
                     async with asyncio.timeout(10):
                         while len(found := await records()) < before + 2:
                             await asyncio.sleep(0.05)

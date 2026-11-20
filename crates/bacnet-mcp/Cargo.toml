@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
-description = "A Model Context Protocol server for BACnet sites, over the bacnet-ops engine, read-only unless a profile offers guarded writes"
+description = "A Model Context Protocol server for BACnet sites, over the bacnet-ops client, read-only unless a profile offers guarded writes"
 keywords = ["bacnet", "mcp", "building-automation", "hvac"]
 categories = ["network-programming"]
 
@@ -20,14 +20,14 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 bacnet-ops.workspace = true
+bacnet-tool.workspace = true
 bacnet-client = { workspace = true, features = ["ipv6"] }
 bacnet-transport = { workspace = true, features = ["ipv6"] }
 bacnet-types = { workspace = true, features = ["std"] }
 bacnet-services = { workspace = true, features = ["std"] }
 # The official MCP SDK, pinned (#2066): it has had three majors in 2026, and
-# a release normally counts here only once it is two weeks old. ACE 0.15.3
-# makes a security exception for 3.9.0, the minimum version that clears the
-# release's RustSec audit. Server role only; the stdio transport is `stdio`.
+# a release counts here only once it is two weeks old. Server role only; the
+# stdio transport is the `stdio` feature.
 rmcp = { version = "=3.9.0", default-features = false, features = ["server"] }
 serde = { workspace = true, features = ["derive", "std"] }
 serde_json.workspace = true
@@ -69,10 +69,15 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
+# The 223 export's structural check (`export::s223::testing`).
+bacnet-ops = { workspace = true, features = ["test-support"] }
 bacnet-encoding = { workspace = true, features = ["std"] }
 bacnet-objects = { workspace = true, features = ["std"] }
 bytes = { workspace = true, features = ["std"] }
 bacnet-server.workspace = true
+bacnet-transport = { workspace = true, features = ["test-support"] }
+# GetEventInformationBudget, for the alarm tests' server (#2303).
+bacnet-device-core = { workspace = true, features = ["std"] }
 tempfile = "3"
 tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "test-util"] }
 

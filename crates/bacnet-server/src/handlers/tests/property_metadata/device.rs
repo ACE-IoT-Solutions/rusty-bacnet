@@ -60,10 +60,10 @@ fn rpm_device_property_metadata_pics_and_database_are_exact() {
         daylight_savings_status: true,
     };
     for segmentation_supported in [
-        Segmentation::NONE,
-        Segmentation::TRANSMIT,
-        Segmentation::RECEIVE,
-        Segmentation::BOTH,
+        Segmentation::NO_SEGMENTATION,
+        Segmentation::SEGMENTED_TRANSMIT,
+        Segmentation::SEGMENTED_RECEIVE,
+        Segmentation::SEGMENTED_BOTH,
     ] {
         let mut db = ObjectDatabase::new();
         let mut object = DeviceObject::new(DeviceConfig {
@@ -76,8 +76,6 @@ fn rpm_device_property_metadata_pics_and_database_are_exact() {
         .unwrap();
         object.set_description("configured description".repeat(40));
         let oid = object.object_identifier();
-        let other = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 3).unwrap();
-        object.set_object_list(vec![oid, other]);
         db.add(Box::new(object)).unwrap();
         let clock = Arc::new(TestClock(Mutex::new(None)));
         for state in [0, 1, 2, 1, 0] {
@@ -90,7 +88,7 @@ fn rpm_device_property_metadata_pics_and_database_are_exact() {
                 P::ACTIVE_COV_MULTIPLE_SUBSCRIPTIONS,
                 P::DEVICE_UUID,
             ];
-            if segmentation_supported != Segmentation::NONE {
+            if segmentation_supported != Segmentation::NO_SEGMENTATION {
                 optional.extend([P::APDU_SEGMENT_TIMEOUT, P::MAX_SEGMENTS_ACCEPTED]);
             }
             if state == 1 {
@@ -221,17 +219,17 @@ fn rpm_device_property_metadata_pics_and_database_are_exact() {
             ] {
                 assert_rpm_selector_bytes(&db, oid, selector, expected);
             }
+            // On its own the Device lists only itself; the database keeps
+            // the list the read services serve (#2669), here the same.
             assert_eq!(
                 object.read_property(P::OBJECT_LIST, None).unwrap(),
-                PropertyValue::List(vec![
-                    PropertyValue::ObjectIdentifier(oid),
-                    PropertyValue::ObjectIdentifier(other)
-                ])
+                PropertyValue::List(vec![PropertyValue::ObjectIdentifier(oid)])
             );
             assert_eq!(
                 object.read_property(P::OBJECT_LIST, Some(0)).unwrap(),
-                PropertyValue::Unsigned(2)
+                PropertyValue::Unsigned(1)
             );
+            assert_eq!(db.object_list().collect::<Vec<_>>(), [oid]);
             for list in [
                 P::ACTIVE_COV_SUBSCRIPTIONS,
                 P::ACTIVE_COV_MULTIPLE_SUBSCRIPTIONS,

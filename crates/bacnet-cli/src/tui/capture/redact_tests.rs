@@ -306,7 +306,7 @@ fn frames_are_scrubbed_whichever_way_they_went() {
 }
 
 /// Every label of a decode tree, depth first.
-fn tree_labels(fields: &[bacnet_ops::decode::tree::Field], out: &mut Vec<String>) {
+fn tree_labels(fields: &[bacnet_tool::decode::tree::Field], out: &mut Vec<String>) {
     for field in fields {
         out.push(field.label.clone());
         tree_labels(&field.children, out);
@@ -332,7 +332,7 @@ fn the_decode_tree_of_a_masked_frame_names_fields_and_hides_the_password() {
         let masked = masked_in_place(Framing::Bip, &frame, b"Zq7-hunter2");
         let mut labels = Vec::new();
         tree_labels(
-            &bacnet_ops::decode::tree::decode_tree(Framing::Bip, &masked),
+            &bacnet_tool::decode::tree::decode_tree(Framing::Bip, &masked),
             &mut labels,
         );
         assert!(labels.iter().any(|l| l == named), "{labels:?}");
@@ -365,7 +365,7 @@ fn a_password_that_claims_too_little_is_masked_to_the_end() {
         }
         let mut labels = Vec::new();
         tree_labels(
-            &bacnet_ops::decode::tree::decode_tree(Framing::Bip, &masked),
+            &bacnet_tool::decode::tree::decode_tree(Framing::Bip, &masked),
             &mut labels,
         );
         let all = labels.join("\n");
@@ -376,8 +376,9 @@ fn a_password_that_claims_too_little_is_masked_to_the_end() {
 }
 
 /// Masked segments of a ReinitializeDevice request decode with the
-/// password hidden: the first segment's tag walk names it hidden, and a
-/// later segment is one opaque leaf. Neither the secret nor its mask shows.
+/// password hidden: the first segment's tag walk shows the state, then the
+/// password in one hidden leaf, and a later segment is one opaque leaf.
+/// Neither the secret nor its mask shows.
 #[test]
 fn the_decode_tree_of_masked_segments_hides_the_password() {
     let mut body = BytesMut::new();
@@ -396,7 +397,7 @@ fn the_decode_tree_of_masked_segments_hides_the_password() {
     ]
     .concat();
     for (apdu, expected) in [
-        (first, "Password: (hidden)"),
+        (first, "Hidden: may hold a password"),
         (
             later,
             "Segment data: 11 octets, hidden (may hold a password)",
@@ -407,7 +408,7 @@ fn the_decode_tree_of_masked_segments_hides_the_password() {
         assert!(!holds(&masked, b"hunter2"));
         let mut labels = Vec::new();
         tree_labels(
-            &bacnet_ops::decode::tree::decode_tree(Framing::Bip, &masked),
+            &bacnet_tool::decode::tree::decode_tree(Framing::Bip, &masked),
             &mut labels,
         );
         assert!(labels.iter().any(|l| l == expected), "{labels:?}");

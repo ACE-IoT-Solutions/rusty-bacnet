@@ -1,0 +1,104 @@
+//! BBMD table reads through the client, under the rate cap: the read side
+//! of BVLL only (Annex J.2.3 and J.2.7), never a table write or a
+//! registration.
+
+use std::net::SocketAddrV4;
+
+use bacnet_ops::Client;
+use bacnet_transport::bip::{BipTransport, BvlcExchangeError};
+use bacnet_transport::port::TransportPort;
+
+use super::{BdtRow, FdtRow, Outcome, Probe, mac};
+
+/// The B/IP transport of `client`'s low-level client, when it has one:
+/// the BBMD reads need it.
+pub fn bip<T: TransportPort + 'static>(client: &Client<T>) -> Option<&BipTransport> {
+    client.low_level().transport().bip_transport()
+}
+
+/// The BBMD `client`'s low-level client last tried to register with as a
+/// foreign device, if any. Reads the transport's registration state and
+/// sends nothing.
+pub fn registration_bbmd<T: TransportPort + 'static>(client: &Client<T>) -> Option<SocketAddrV4> {
+    bip(client)?
+        .bvlc_client_snapshot()
+        .foreign_registration
+        .last_bbmd
+}
+
+/// Read `bbmd`'s BDT through `client`, after a slot under the local
+/// network's rate and the global one. On a client without B/IP it sends
+/// nothing.
+pub async fn read_bdt<T: TransportPort + 'static>(client: &Client<T>, bbmd: SocketAddrV4) -> Probe {
+    let Some(bip) = bip(client) else {
+        return Outcome::Unreachable(NOT_BIP.into());
+    };
+    client.limits().slot(Some(0)).await;
+    settle(bip.read_bdt(&mac(bbmd)).await, |e| BdtRow::from(e))
+}
+
+/// Read `bbmd`'s FDT, as [`read_bdt`].
+pub async fn read_fdt<T: TransportPort + 'static>(
+    client: &Client<T>,
+    bbmd: SocketAddrV4,
+) -> Outcome<Vec<FdtRow>> {
+    let Some(bip) = bip(client) else {
+        return Outcome::Unreachable(NOT_BIP.into());
+    };
+    client.limits().slot(Some(0)).await;
+    settle(bip.read_fdt(&mac(bbmd)).await, |e| FdtRow::from(e))
+}
+
+/// Why a client without B/IP reads no BBMD.
+const NOT_BIP: &str = "BBMD tables need BACnet/IP";
+
+/// A table read's outcome. A request the node refused before sending
+/// never left, so the call isn't charged for it.
+fn settle<E, R>(read: Result<Vec<E>, BvlcExchangeError>, row: fn(&E) -> R) -> Outcome<Vec<R>> {
+    match read {
+        Ok(entries) => Outcome::Table(entries.iter().map(row).collect()),
+        Err(error) => {
+            if matches!(error, BvlcExchangeError::Refused(_)) {
+                bacnet_ops::limits::refund();
+            }
+            Outcome::from_error(&error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bacnet_client::client::{BACnetClient, ClientConfig};
+    use bacnet_transport::loopback::LoopbackTransport;
+
+    use super::*;
+
+    /// The BBMD reads follow the link under a wrapper: a client over the mixed
+    /// transport holding B/IP reaches the B/IP transport, and one holding
+    /// loopback sends nothing (#2560).
+    #[tokio::test]
+    async fn the_bbmd_reads_see_through_the_mixed_transport() {
+        use bacnet_transport::any::AnyTransport;
+        use std::net::Ipv4Addr;
+
+        let client_on = async |transport: AnyTransport| {
+            let low = BACnetClient::start(ClientConfig::default(), transport)
+                .await
+                .unwrap();
+            Client::over(low)
+        };
+        let bip_port = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+        let client = client_on(bip_port.into()).await;
+        assert!(bip(&client).is_some());
+        assert_eq!(registration_bbmd(&client), None);
+
+        let (loopback, _peer) = LoopbackTransport::pair(vec![1], vec![2]);
+        let client = client_on(loopback.into()).await;
+        assert!(bip(&client).is_none());
+        let bbmd = "10.0.0.2:47808".parse().unwrap();
+        assert!(matches!(
+            read_bdt(&client, bbmd).await,
+            Outcome::Unreachable(_)
+        ));
+    }
+}

@@ -77,13 +77,13 @@ class RouterApplicationTests(unittest.IsolatedAsyncioTestCase):
         return client
 
     async def find(self, client, instance):
-        """Discover `instance` and return its network."""
+        """Discover `instance` on every network and return its network."""
         async def found():
-            devices = await client.discover(timeout_ms=500, low_limit=instance,
-                                            high_limit=instance)
-            return [d for d in devices if d.object_identifier.instance == instance]
+            devices = await client.discover(wait=0.5, low=instance, high=instance,
+                                            scope="global")
+            return [d for d in devices if d.instance == instance]
         [device] = await eventually(found, seconds=10)
-        return device.source_network
+        return device.entry.source_network
 
     async def test_the_client_reads_a_device_on_each_attached_network(self):
         router = rb.BACnetRouter([bbmd_port(1), bbmd_port(5)], application="client")
@@ -103,6 +103,23 @@ class RouterApplicationTests(unittest.IsolatedAsyncioTestCase):
         # An ip:port names no network, and the router's application has none.
         with self.assertRaisesRegex(rb.BacnetError, "no network of its own"):
             await asyncio.wait_for(client.read_property(ports[0].address, AI0, PV), 10)
+
+    async def test_a_who_is_to_one_attached_network_finds_its_devices(self):
+        # The router's application has no network of its own: a Who-Is
+        # naming one of its networks reaches that network's devices only.
+        router = rb.BACnetRouter([bbmd_port(1), bbmd_port(5)], application="client")
+        await router.start()
+        self.addAsyncCleanup(cleanup, router.close)
+        ports = await router.ports()
+        for network, port in zip((1, 5), ports):
+            await self.device(BASE + 10 + network, port.address, 20.5 + network)
+        client = await self.router_client(router)
+        low, high = BASE + 11, BASE + 15
+
+        async def found():
+            devices = await client.discover(wait=0.5, low=low, high=high, scope=5)
+            return [(d.instance, d.network) for d in devices]
+        self.assertEqual(await eventually(found, seconds=10), [(BASE + 15, 5)])
 
     async def test_the_client_reads_a_device_behind_a_second_router(self):
         near = rb.BACnetRouter([bbmd_port(1), bbmd_port(5)], application="client")
@@ -165,9 +182,10 @@ class RouterApplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(remote_value.value, 25.5)
         # The hosted server answers Who-Is too, at the router's address.
         [found] = await eventually(lambda: remote.discover(
-            timeout_ms=1000, low_limit=BASE + 100, high_limit=BASE + 100), seconds=10)
-        self.assertEqual(found.mac_address, ports[0].mac)
-        self.assertIsNone(found.source_network)
+            wait=1.0, low=BASE + 100, high=BASE + 100), seconds=10)
+        self.assertEqual(found.entry.mac_address, ports[0].mac)
+        self.assertIsNone(found.entry.source_network)
+        self.assertEqual((found.network, found.address), (0, ports[0].address))
 
     async def test_one_stack_per_role_per_router_start(self):
         router = rb.BACnetRouter([bbmd_port(1)], application="client")
@@ -221,8 +239,10 @@ class RouterApplicationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(rb.BacnetTransportError) as caught:
             await asyncio.wait_for(client.read_property_from_device(BASE + 1, AI0, PV), 1)
         self.assertEqual(caught.exception.errno, errno.ENOTCONN)
+        # The application has no network of its own: its Who-Is names one,
+        # or every one.
         with self.assertRaises(rb.BacnetTransportError):
-            await asyncio.wait_for(client.who_is(), 1)
+            await asyncio.wait_for(client.who_is(scope="global"), 1)
         await asyncio.wait_for(client.stop(), 10)
 
     async def test_a_dropped_router_leaves_the_client_failing_cleanly(self):
@@ -232,7 +252,7 @@ class RouterApplicationTests(unittest.IsolatedAsyncioTestCase):
         del router
         async def stopped():
             try:
-                await asyncio.wait_for(client.who_is(), 1)
+                await asyncio.wait_for(client.who_is(scope="global"), 1)
             except rb.BacnetTransportError as error:
                 return error.errno == errno.ENOTCONN
             return False

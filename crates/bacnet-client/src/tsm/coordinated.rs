@@ -1,4 +1,6 @@
 use bacnet_types::error::RemoteError;
+use bacnet_types::map_hash::BuildMapHasher;
+use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fmt;
 use std::sync::Arc;
@@ -43,9 +45,25 @@ pub(crate) enum PendingRelease {
     Release,
 }
 
+/// What one registration asks for.
+struct Registration {
+    destination_mac: MacAddr,
+    peer: CanonicalPeer,
+    service_choice: ConfirmedServiceChoice,
+    segmented: bool,
+    terminal_policy: TerminalPolicy,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CoordinatedRegistrationError {
     CoordinatorUnavailable,
+    /// The node this client is seated on restricts initiation
+    /// (DeviceCommunicationControl, #2617).
+    InitiationRestricted,
+    /// The client's requests go to its node's source Audit (#2617), which
+    /// runs each through a copy that registers with
+    /// `Tsm::register_diverted`.
+    Diverted,
     Reserve(ReserveError),
     DuplicateInvokeId,
 }
@@ -55,6 +73,13 @@ impl fmt::Display for CoordinatedRegistrationError {
         match self {
             Self::CoordinatorUnavailable => {
                 formatter.write_str("coordinator is unavailable for client transaction")
+            }
+            Self::InitiationRestricted => {
+                let error = bacnet_types::error::Error::InitiationDisabled { sent: false };
+                fmt::Display::fmt(&error, formatter)
+            }
+            Self::Diverted => {
+                formatter.write_str("the node's source Audit carries out this request")
             }
             Self::Reserve(ReserveError::Exhausted) => {
                 formatter.write_str("all invoke IDs exhausted for destination")
@@ -88,6 +113,20 @@ pub(crate) enum CoordinatedTerminalPhase {
     NoTransaction,
 }
 
+impl From<CoordinatedRegistrationError> for bacnet_types::error::Error {
+    /// The typed [`Error::InitiationDisabled`](bacnet_types::error::Error::InitiationDisabled)
+    /// for a refusal DeviceCommunicationControl caused; the text of the
+    /// others.
+    fn from(error: CoordinatedRegistrationError) -> Self {
+        match error {
+            CoordinatedRegistrationError::InitiationRestricted => {
+                Self::InitiationDisabled { sent: false }
+            }
+            other => Self::Encoding(other.to_string()),
+        }
+    }
+}
+
 impl Tsm {
     pub(crate) fn current_owner(
         &self,
@@ -106,8 +145,83 @@ impl Tsm {
             config,
             allocators: Default::default(),
             pending: Default::default(),
+            leasing: Some(Arc::clone(&coordinator)),
+            restricted: false,
+            diverted: false,
             coordinator: Some(coordinator),
         }
+    }
+
+    /// Follow the node's DeviceCommunicationControl state (#2617): while
+    /// `restricted`, new transactions are refused and a retry falling due
+    /// ends its transaction instead. A closed TSM stays closed.
+    pub(crate) fn restrict_initiation(&mut self, restricted: bool) {
+        self.restricted = restricted;
+        self.leasing = self.leasable();
+    }
+
+    /// Whether the node this client is seated on restricts initiation now.
+    pub(crate) fn initiation_restricted(&self) -> bool {
+        self.restricted && self.coordinator.is_some()
+    }
+
+    /// Send every later registration to the client's cold path, which
+    /// hands the request to the node's source Audit (#2617). Transactions
+    /// already open, and the answers to every one, keep the coordinator.
+    pub(crate) fn divert_registrations(&mut self) {
+        self.diverted = true;
+        self.leasing = self.leasable();
+    }
+
+    /// The coordinator to lease from, or `None` while anything stops
+    /// leasing.
+    fn leasable(&self) -> Option<Arc<OutboundTransactionCoordinator>> {
+        if self.restricted || self.diverted {
+            None
+        } else {
+            self.coordinator.clone()
+        }
+    }
+
+    /// Why a registration found `leasing` empty: a closed seat, the node's
+    /// DeviceCommunicationControl, or the client's diversion to its node's
+    /// source Audit, in that order.
+    #[cold]
+    fn refusal(&self) -> CoordinatedRegistrationError {
+        match (&self.coordinator, self.restricted) {
+            (None, _) => CoordinatedRegistrationError::CoordinatorUnavailable,
+            (Some(_), true) => CoordinatedRegistrationError::InitiationRestricted,
+            (Some(_), false) => CoordinatedRegistrationError::Diverted,
+        }
+    }
+
+    /// [`Self::register_coordinated_transaction_with_progress`] through the
+    /// coordinator itself, while registrations are diverted: the request a
+    /// node runs for its audited client (#2617). Refused, as every other
+    /// registration is, while the node restricts initiation and once the
+    /// seat has closed.
+    pub(crate) fn register_diverted(
+        &mut self,
+        destination_mac: MacAddr,
+        peer: CanonicalPeer,
+        service_choice: ConfirmedServiceChoice,
+        segmented: bool,
+    ) -> Result<(u8, TransactionRegistration), CoordinatedRegistrationError> {
+        let coordinator = match (&self.coordinator, self.restricted) {
+            (Some(coordinator), false) => coordinator,
+            _ => return Err(self.refusal()),
+        };
+        Self::register_through(
+            coordinator,
+            &mut self.pending,
+            Registration {
+                destination_mac,
+                peer,
+                service_choice,
+                segmented,
+                terminal_policy: TerminalPolicy::EitherAck,
+            },
+        )
     }
 
     pub(crate) fn register_coordinated_transaction_with_progress(
@@ -134,10 +248,37 @@ impl Tsm {
         segmented: bool,
         terminal_policy: TerminalPolicy,
     ) -> Result<(u8, TransactionRegistration), CoordinatedRegistrationError> {
-        let coordinator = self
-            .coordinator
-            .as_ref()
-            .ok_or(CoordinatedRegistrationError::CoordinatorUnavailable)?;
+        let coordinator = self.leasing.as_ref().ok_or_else(|| self.refusal())?;
+        Self::register_through(
+            coordinator,
+            &mut self.pending,
+            Registration {
+                destination_mac,
+                peer,
+                service_choice,
+                segmented,
+                terminal_policy,
+            },
+        )
+    }
+
+    /// Reserve an invoke ID from `coordinator` and enter the transaction
+    /// in `pending`: every registration, through whichever slot gave the
+    /// coordinator. Inlined, so the registration the request path makes is
+    /// the code it was.
+    #[inline(always)]
+    fn register_through(
+        coordinator: &OutboundTransactionCoordinator,
+        pending: &mut HashMap<(MacAddr, u8), PendingTransaction, BuildMapHasher>,
+        registration: Registration,
+    ) -> Result<(u8, TransactionRegistration), CoordinatedRegistrationError> {
+        let Registration {
+            destination_mac,
+            peer,
+            service_choice,
+            segmented,
+            terminal_policy,
+        } = registration;
         let metadata = if segmented {
             LeaseMetadata::segmented_requester(peer, service_choice, terminal_policy)
         } else {
@@ -154,18 +295,27 @@ impl Tsm {
         } else {
             TransactionPhase::AwaitingResponse
         };
-        let (pending, registration) =
+        let (entry_value, registration) =
             Self::new_pending_transaction(service_choice, phase, PendingLease::Coordinated(token));
 
-        match self.pending.entry((destination_mac, invoke_id)) {
+        match pending.entry((destination_mac, invoke_id)) {
             Entry::Vacant(entry) => {
-                entry.insert(pending);
+                entry.insert(entry_value);
                 Ok((invoke_id, registration))
             }
             Entry::Occupied(_) => {
                 let _ = coordinator.cancel(token);
                 Err(CoordinatedRegistrationError::DuplicateInvokeId)
             }
+        }
+    }
+
+    /// Mark the transaction just registered under `invoke_id` as the narrow
+    /// endpoint requester's, which shares its coordinator with a full
+    /// client on the endpoint's seat (#2617).
+    pub(crate) fn mark_endpoint_requester(&self, invoke_id: u8) {
+        if let Some(coordinator) = self.coordinator.as_ref() {
+            let _ = coordinator.mark_endpoint_requester(invoke_id);
         }
     }
 
@@ -579,6 +729,15 @@ impl Tsm {
                 let _ = coordinator.cancel(token);
             }
         }
+    }
+
+    /// End every open transaction and let go of the coordinator, so each
+    /// later registration is refused at once: the seat this TSM's client
+    /// ran on has closed (#2617).
+    pub(crate) fn close_coordinated(&mut self) {
+        self.cancel_all_transactions();
+        self.coordinator = None;
+        self.leasing = None;
     }
 
     #[cfg(test)]

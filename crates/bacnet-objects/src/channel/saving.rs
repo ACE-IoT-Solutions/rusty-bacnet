@@ -148,11 +148,12 @@ impl ChannelObject {
 impl ConfigWrites for ChannelObject {
     type Config = ChannelConfig;
 
-    fn storage(&mut self) -> &mut Option<Storage<ChannelConfig>> {
+    fn storage(&mut self) -> &mut Option<Storage> {
         &mut self.config_storage
     }
 
-    fn storage_ref(&self) -> Option<&Storage<ChannelConfig>> {
+    #[cfg(feature = "durable-writes")]
+    fn storage_ref(&self) -> Option<&Storage> {
         self.config_storage.as_ref()
     }
 
@@ -189,6 +190,7 @@ impl ConfigWrites for ChannelObject {
         })
     }
 
+    #[cfg(feature = "durable-writes")]
     fn saves(property: PropertyIdentifier) -> bool {
         ChannelConfig::written_by(property) || property == PropertyIdentifier::DESCRIPTION
     }

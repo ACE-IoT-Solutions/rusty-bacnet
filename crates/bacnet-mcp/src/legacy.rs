@@ -76,8 +76,18 @@ pub(crate) fn subscribe<T: TransportPort + 'static>(
         return Err(refusal(&too_many(ctx)));
     }
     let hold = match parsed {
-        Uri::Point(point) => {
-            ctx.reach_check(point.device).map_err(|e| refusal(&e))?;
+        Uri::Point(uri) => {
+            ctx.reach_check(uri.device).map_err(|e| refusal(&e))?;
+            // The one address its instance names now; gone since the check,
+            // it is unknown again.
+            let changed = || ToolError::UnknownDevice {
+                device: uri.device.to_string(),
+                hint: "the discovery table changed meanwhile; subscribe again".into(),
+            };
+            let point = ctx
+                .known_at(uri.device)
+                .map(|at| uri.at(at))
+                .ok_or_else(|| refusal(&changed()))?;
             let hold = ctx
                 .subs
                 .hold(ctx, point)
@@ -176,7 +186,7 @@ pub(crate) async fn notify<T: TransportPort + 'static>(ctx: Arc<Ctx<T>>, peer: P
 fn follow_legacy<T: TransportPort + 'static>(ctx: &Ctx<T>, follow: &mut Follow) {
     let (uris, signals) = ctx.subs.legacy_snapshot();
     follow.adopt(signals);
-    follow.set(ctx.engine.as_deref(), &ctx.writes.signals, uris);
+    follow.set(ctx.client.as_ref(), &ctx.writes.signals, uris);
 }
 
 async fn send(peer: &Peer<RoleServer>, uri: String) -> Result<(), rmcp::service::ServiceError> {

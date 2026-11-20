@@ -25,6 +25,8 @@ bacnet discover 1000-2000 --wait 3
 
 The range limits the requested device instances; it does not make a broadcast into a unicast operation. Confirm the interface, broadcast destination, and network owner approval before expanding the scope.
 
+With no scope option the Who-Is is a local broadcast: it reaches this BACnet network, across its BBMDs, but no router passes it on, so devices behind routers don't answer it. `--dnet 2` asks one remote network, and `--global` every network. On a large routed site every device answers a global Who-Is, so keep a range on it. The terminal UI's Who-Is form, the MCP discover tool and Python's `discover()` and `who_is()` start from the same local scope.
+
 <Diagram file="discovery-path.svg" title="Choose the discovery path" description="A directed Who-Is followed by an I-Am and a property read." />
 
 ## Work across subnet boundaries
@@ -56,6 +58,8 @@ bacnet find --name "Zone Temp" --wait 3
 ```
 
 The one-shot command takes the name through `--name` or as a plain word, `bacnet find "Zone Temp"`; giving both is a usage error. The terminal UI's `:find` is a separate surface and must not be assumed identical to the one-shot command line.
+
+`find` asks the same scope `discover` does: with no option its Who-Has is a local broadcast, which no router passes on. Add `--dnet 2` to ask one remote network, `--global` to ask every network, or `--target` to ask one station on this network. Every device that hears a Who-Has searches its objects, so name the network that holds the object rather than asking every network. When a search of this network alone finds nothing, `find` says on stderr that only this network was asked: the object may still be behind a router. The terminal UI's `:find`, the Python `who_has_by_id()`, `who_has_by_name()` and `who_has_replies()`, and the Rust `bacnet_ops::Client::find` start from the same local scope.
 
 ## When discovery is empty
 

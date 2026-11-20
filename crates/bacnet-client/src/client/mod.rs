@@ -47,7 +47,7 @@ use bacnet_types::MacAddr;
 use bacnet_types::enums::{ConfirmedServiceChoice, RejectReason, UnconfirmedServiceChoice};
 use bacnet_types::error::{Error, RemoteError};
 
-use crate::discovery::{DeviceTable, DeviceUpsertResult, DiscoveredDevice, RoutedDeviceConfig};
+use crate::discovery::{Change, DeviceTable, DiscoveredDevice, RoutedDeviceConfig};
 use crate::segmentation::{
     SegmentReceiver, SegmentedPduType, duplicate_in_window, max_segment_payload, split_payload,
 };
@@ -75,11 +75,20 @@ pub const DEVICE_EVENT_CHANNEL_CAPACITY: usize = 64;
 /// Type of change observed in the device discovery table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceEventKind {
-    /// A new device instance was inserted into the discovery table.
+    /// An I-Am added a device to the discovery table: from a new address,
+    /// or from a known one announcing another instance, after that
+    /// address's old device is reported `Lost`. Also a routed station on
+    /// this client's own network that became its local row when the client
+    /// learned the network's number, after its routed row is reported
+    /// `Lost` (#2572).
     Discovered,
-    /// An existing device instance was refreshed by a later I-Am.
+    /// A later I-Am from the same address, for the same instance, refreshed
+    /// its row.
     Updated,
-    /// A previously discovered device was purged as stale.
+    /// A device left the table: purged as stale, replaced at its address
+    /// by a device announcing another instance, or, as a routed station on
+    /// this client's own network, folded into its local row once the client
+    /// learned the network's number.
     Lost,
 }
 
@@ -92,13 +101,22 @@ pub struct DeviceEvent {
     pub device: DiscoveredDevice,
 }
 
-/// Notification emitted when two endpoints claim the same Device instance.
+/// Notification that the addresses claiming one Device instance changed
+/// while two or more claim it, or claimed it just before.
+///
+/// The discovery table keeps a row for every claimant (see
+/// [`DeviceTable`]). A contest begins or grows when an I-Am from another
+/// address claims the instance, and shrinks or ends when the purge removes a
+/// claimant, a claimant announces another instance, or a routed row on this
+/// client's own network folds into its local row. Each notice describes the
+/// table after that change.
 #[derive(Debug, Clone)]
 pub struct DeviceCollisionEvent {
-    /// Snapshot of the authoritative discovery-table row that was retained.
-    pub retained: DiscoveredDevice,
-    /// Snapshot constructed from the conflicting incoming I-Am.
-    pub incoming: DiscoveredDevice,
+    /// The Device instance claimed.
+    pub instance: u32,
+    /// The rows that claim it now, ordered by address: two or more while
+    /// the contest lasts, fewer once it has ended.
+    pub claimants: Vec<DiscoveredDevice>,
 }
 
 /// Client configuration.
@@ -116,11 +134,13 @@ pub struct ClientConfig {
     /// `BipTransport::set_share_port_by_address` for what changes. Only the
     /// B/IP builder reads it; a transport passed to `start` has its own.
     pub share_port_by_address: bool,
-    /// B/IP only: share an explicitly requested port with other sockets on
-    /// this host, as before #2366. Off by default: the transport claims the
-    /// port, so a second bind of it fails. See
-    /// `BipTransport::set_share_wildcard_port` for what sharing costs. Only
-    /// the B/IP builder reads it; a transport passed to `start` has its own.
+    /// B/IP and B/IPv6: share an explicitly requested port with other
+    /// sockets on this host, as before #2366 (B/IP) and #2385 (B/IPv6). Off
+    /// by default: the transport claims the port, so a second bind of it
+    /// fails. See `BipTransport::set_share_wildcard_port` and
+    /// `Bip6Transport::set_share_wildcard_port` for what sharing costs. Only
+    /// the B/IP and B/IPv6 builders read it; a transport passed to `start`
+    /// has its own.
     pub share_wildcard_port: bool,
     /// APDU timeout in milliseconds.
     pub apdu_timeout_ms: u64,
@@ -169,6 +189,8 @@ pub struct ClientOptions {
     /// Slow receivers observe lag; valid confirmed notifications are still acknowledged.
     pub event_channel_capacity: usize,
     confirmed_cov_notification_ack_policy: ConfirmedCOVNotificationAckPolicy,
+    /// See [`Self::with_node_dcc_override`].
+    node_dcc_override: bool,
 }
 
 impl Default for ClientConfig {
@@ -197,6 +219,7 @@ impl Default for ClientOptions {
             event_channel_capacity: DEFAULT_EVENT_CHANNEL_CAPACITY,
             confirmed_cov_notification_ack_policy:
                 cov_notifications::default_confirmed_cov_notification_ack_policy(),
+            node_dcc_override: false,
         }
     }
 }
@@ -578,19 +601,35 @@ struct SegmentAckRoute {
 /// so `BACnetClient` alone names a client over any built-in transport;
 /// `BACnetClient<BipTransport>` and the like name one over a concrete
 /// transport.
+//
+// A new field here must be considered in `source_audit::runner` (#2617),
+// which builds from these fields the copy of a client that runs an audited
+// request: the copy shares the state the request path must share (the TSM,
+// the layer, the discovery table, the routed paths, the segment-ack routes,
+// the cleanup channel) and keeps its own pacer and no task. The compiler
+// only checks that every field is set there, not that it is shared rightly,
+// and a field the request path reads but the copy gets wrong changes what
+// an audited request does without failing a build.
 pub struct BACnetClient<T: TransportPort = AnyTransport> {
     config: ClientConfig,
     network: Arc<NetworkLayer<T>>,
     tsm: Arc<SyncMutex<Tsm>>,
-    device_table: Arc<SyncMutex<DeviceTable>>,
-    cov_tx: broadcast::Sender<ReceivedCOVNotification>,
+    /// The discovery table, with the asking for the network's number
+    /// beside it (#2572).
+    device_table: Arc<network_number::Discovery>,
+    cov_tx: broadcast::Sender<COVEvent>,
     event_tx: broadcast::Sender<ReceivedEventNotification>,
     device_tx: broadcast::Sender<DeviceEvent>,
     device_collision_tx: broadcast::Sender<DeviceCollisionEvent>,
     i_have_tx: broadcast::Sender<ReceivedIHave>,
     network_report_tx: broadcast::Sender<bacnet_network::layer::ReceivedNetworkReport>,
+    /// The routing-table query's state (#2612), behind one pointer to keep
+    /// the client small.
+    routing_query: Arc<routing_table::RoutingQueries>,
     dispatch_task: Option<JoinHandle<()>>,
     network_number_task: Option<JoinHandle<()>>,
+    /// Purges devices not heard from; see `lifecycle::spawn_device_purge`.
+    device_purge_task: Option<JoinHandle<()>>,
     /// Owner-qualified channels feeding SegmentACKs to in-flight segmented sends.
     ///
     /// Dispatch may hold [`Self::tsm`] while acquiring this lock so phase
@@ -837,30 +876,6 @@ impl ScClientBuilder {
     }
 }
 
-/// Routing target for confirmed requests.
-#[derive(Clone, Copy)]
-enum ConfirmedTarget<'a> {
-    Local {
-        mac: &'a [u8],
-    },
-    Routed {
-        router_mac: &'a [u8],
-        dest_network: u16,
-        dest_mac: &'a [u8],
-    },
-}
-
-impl<'a> ConfirmedTarget<'a> {
-    fn additional_npdu_header_len(&self) -> u16 {
-        match self {
-            Self::Local { .. } => 0,
-            Self::Routed { dest_mac, .. } => u16::try_from(dest_mac.len())
-                .unwrap_or(u16::MAX)
-                .saturating_add(4),
-        }
-    }
-}
-
 fn max_apdu_bucket_at_or_below(limit: u16) -> Option<u16> {
     bacnet_encoding::apdu::max_apdu_header_at_or_below(u32::from(limit)).ok()
 }
@@ -884,18 +899,19 @@ mod builder_options;
 mod cov;
 mod cov_notifications;
 mod cov_renewal;
-mod cov_target;
 mod device_events;
 mod device_mgmt;
 mod discovery;
 mod dispatch;
 mod dispatch_context;
+mod dispatch_turn;
 mod inbound_replies;
 use inbound_replies::InboundReply;
 mod event_notifications;
 mod file_list;
 mod i_have;
 mod lifecycle;
+mod messages;
 mod network_reports;
 mod object_mgmt;
 pub(crate) mod pacing;
@@ -904,41 +920,61 @@ mod read_range;
 mod requests;
 mod response_admission;
 mod routed_path_limits;
+mod routed_path_listing;
+mod routing_table;
+mod seat;
+pub use seat::SeatedClientBuilder;
 mod segmentation;
 mod segmentation_abort;
 mod segmentation_context;
 mod segmented_request;
+mod service;
+mod source_audit;
+mod source_audit_targets;
+#[doc(hidden)]
+pub use source_audit::{AuditedRequest, SourceAuditor};
+#[doc(hidden)]
+pub use source_audit_targets::{AuditTarget, AuditedOutcome};
+mod station;
 mod summaries;
 mod transaction_cleanup;
 mod transaction_peer;
 mod transport_access;
 mod write_group;
+use requests::answered_by_peer;
 pub(crate) use routed_path_limits::check_routed_unicast;
 use routed_path_limits::{
     RoutedPathLease, RoutedPathLimits, forwarded_npci_len, routed_path_quarantine_horizon,
 };
 pub(crate) use transaction_peer::TransactionPeer;
 
+pub use bacnet_network::layer::RoutingTableEntry;
 pub use cov::CovPropertySubscription;
 pub use cov_notifications::{
-    COVNotificationDelivery, ConfirmedCOVNotificationAckPolicy, ConfirmedCOVNotificationResponse,
-    ReceivedCOVNotification,
+    COVEvent, COVNotificationDelivery, ConfirmedCOVNotificationAckPolicy,
+    ConfirmedCOVNotificationResponse, ReceivedCOVNotification, ReceivedCOVNotificationMultiple,
 };
 pub use cov_renewal::{
     ManagedCOVSubscription, ManagedCOVSubscriptionEvent, ManagedCOVSubscriptionOptions,
 };
-pub use cov_target::CovTarget;
 pub use event_notifications::{
     DEFAULT_EVENT_CHANNEL_CAPACITY, EventNotificationDelivery, MAX_EVENT_CHANNEL_CAPACITY,
     ReceivedEventNotification,
 };
-pub use i_have::{I_HAVE_CHANNEL_CAPACITY, ReceivedIHave};
+pub use i_have::{I_HAVE_CHANNEL_CAPACITY, MAX_I_HAVE_REPLIES, ReceivedIHave, collect_answers};
 pub use network_reports::{DiscoveredRouter, NETWORK_REPORT_CHANNEL_CAPACITY};
 pub use pacing::MAX_MIN_REQUEST_INTERVAL_MS;
-pub use write_group::WriteGroupDestination;
+pub use routed_path_listing::{RoutedPathLimit, RoutedPathLimitSource};
+pub use routing_table::{
+    DEFAULT_ROUTING_TABLE_MAX_ENTRIES, RoutingTable, RoutingTableError, RoutingTableWait,
+};
+use station::ConfirmedTarget;
+pub use station::{Broadcast, Station, ToStation};
 
 #[cfg(test)]
 mod acknowledge_alarm_tests;
+#[cfg(test)]
+mod answer_refresh_tests;
 #[cfg(test)]
 mod audit_tests;
 #[cfg(test)]
@@ -952,6 +988,8 @@ mod confirmed_request_dispatch_tests;
 #[cfg(test)]
 mod coordinator_tests;
 #[cfg(test)]
+mod cov_multiple_notification_tests;
+#[cfg(test)]
 mod cov_notification_tests;
 #[cfg(test)]
 mod cov_renewal_gate_tests;
@@ -964,9 +1002,15 @@ mod cov_tests;
 #[cfg(test)]
 mod device_events_tests;
 #[cfg(test)]
+mod device_identity_tests;
+#[cfg(test)]
+mod dispatch_turn_tests;
+#[cfg(test)]
 mod event_notification_tests;
 #[cfg(test)]
 pub(crate) mod fake_device;
+#[cfg(test)]
+mod future_size_tests;
 #[cfg(test)]
 mod group_source_request_tests;
 #[cfg(test)]
@@ -990,9 +1034,13 @@ mod response_correlation_tests;
 #[cfg(test)]
 mod routed_max_apdu_tests;
 #[cfg(test)]
+mod routed_path_answered_tests;
+#[cfg(test)]
+mod routed_path_floor_tests;
+#[cfg(test)]
 mod routed_path_limit_tests;
 #[cfg(test)]
-mod routed_property_helpers_tests;
+mod routed_path_listing_tests;
 #[cfg(test)]
 mod routed_reply_tests;
 #[cfg(all(test, feature = "sc-tls"))]
@@ -1025,6 +1073,8 @@ mod tests;
 mod transport_access_tests;
 #[cfg(test)]
 mod typed_error_wire_tests;
+#[cfg(test)]
+mod typed_wire_tests;
 #[cfg(test)]
 mod wpm_validation_tests;
 #[cfg(test)]

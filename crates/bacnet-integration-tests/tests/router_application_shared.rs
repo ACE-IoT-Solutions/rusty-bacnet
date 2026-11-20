@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use bacnet_client::client::BACnetClient;
+use bacnet_client::client::{BACnetClient, Broadcast, Station};
 use bacnet_network::router::{
     BACnetRouter, RouterApplicationPort, RouterApplicationPorts, RouterOptions, RouterPort,
 };
@@ -24,10 +24,10 @@ use bacnet_objects::database::ObjectDatabase;
 use bacnet_objects::device::{DeviceConfig, DeviceObject};
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_transport::port::{ReceivedNpdu, TransportPort};
+use bacnet_transport::port::TransportPort;
+use bacnet_transport::test_transport::{SendMode, TestTransport};
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier, Segmentation};
-use bacnet_types::error::Error;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
@@ -45,55 +45,29 @@ const ROUTER_ON_1: u8 = 1;
 const SMALL_APDU: u16 = 128;
 
 /// A loopback link end that reports what it sends, and whose NPDU limit
-/// the test sets.
-struct Link {
+/// the test sets through the returned sender.
+fn link(
     link: LoopbackTransport,
-    sent: mpsc::UnboundedSender<Vec<u8>>,
-    limits: watch::Sender<NpduLimits>,
-}
-
-impl Link {
-    fn new(link: LoopbackTransport) -> (Self, mpsc::UnboundedReceiver<Vec<u8>>) {
-        let (sent, rx) = mpsc::unbounded_channel();
-        let limits = watch::Sender::new(NpduLimits::STANDARD);
-        (Self { link, sent, limits }, rx)
-    }
-}
-
-impl TransportPort for Link {
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        self.link.start().await
-    }
-
-    async fn stop(&mut self) -> Result<(), Error> {
-        self.link.stop().await
-    }
-
-    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        let _ = self.sent.send(npdu.to_vec());
-        self.link.send_unicast(npdu, mac).await
-    }
-
-    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        let _ = self.sent.send(npdu.to_vec());
-        self.link.send_broadcast(npdu).await
-    }
-
-    fn local_mac(&self) -> &[u8] {
-        self.link.local_mac()
-    }
-
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        self.link.local_receive_apdu_capacity()
-    }
-
-    fn max_npdu(&self) -> NpduLimits {
-        *self.limits.borrow()
-    }
-
-    fn max_npdu_changes(&self) -> Option<watch::Receiver<NpduLimits>> {
-        Some(self.limits.subscribe())
-    }
+) -> (
+    TestTransport,
+    mpsc::UnboundedReceiver<Vec<u8>>,
+    watch::Sender<NpduLimits>,
+) {
+    let (sent, rx) = mpsc::unbounded_channel();
+    let limits = watch::Sender::new(NpduLimits::STANDARD);
+    let (current, changes) = (limits.clone(), limits.subscribe());
+    let transport = TestTransport::builder()
+        .inner(link)
+        .unicast(SendMode::Forward)
+        .broadcast(SendMode::Forward)
+        .on_max_npdu(move || *current.borrow())
+        .max_npdu_changes(changes)
+        .on_send(move |frame| {
+            let _ = sent.send(frame.npdu.to_vec());
+            async { Ok(()) }
+        })
+        .build();
+    (transport, rx, limits)
 }
 
 struct Site {
@@ -118,9 +92,8 @@ async fn site() -> Site {
 async fn site_with(client_max_apdu: u16) -> Site {
     let (near, far_client) = LoopbackTransport::pair(vec![ROUTER_ON_1], vec![REMOTE_CLIENT]);
     let (far, station) = LoopbackTransport::pair(vec![2], vec![STATION]);
-    let (near, to_client) = Link::new(near);
-    let (far, to_station) = Link::new(far);
-    let station_limits = far.limits.clone();
+    let (near, to_client, _) = link(near);
+    let (far, to_station, station_limits) = link(far);
     let started = BACnetRouter::start(
         vec![
             RouterPort {
@@ -182,7 +155,7 @@ impl Site {
 async fn serve<T: TransportPort + 'static>(transport: T, instance: u32) -> BACnetServer<T> {
     let identity = bacnet_objects::DeviceIdentity::new(instance, 0)
         .unwrap()
-        .with_segmentation(Segmentation::BOTH);
+        .with_segmentation(Segmentation::SEGMENTED_BOTH);
     let mut db = ObjectDatabase::new();
     db.add(Box::new(
         DeviceObject::new(DeviceConfig {
@@ -236,10 +209,8 @@ async fn each_client_reads_the_other_sides_server() {
     let site = site().await;
     let remote = site
         .client
-        .read_property_routed(
-            &[0xEE],
-            2,
-            &[STATION],
+        .read_property(
+            &Station::routed(&[0xEE], 2, &[STATION]),
             sensor(),
             PropertyIdentifier::OBJECT_NAME,
             None,
@@ -265,11 +236,10 @@ async fn each_client_reads_the_other_sides_server() {
         PropertyValue::CharacterString(format!("Sensor {HOSTED}"))
     );
     // Both at once.
+    let station = Station::routed(&[0xEE], 2, &[STATION]);
     let (remote, hosted) = tokio::join!(
-        site.client.read_property_routed(
-            &[0xEE],
-            2,
-            &[STATION],
+        site.client.read_property(
+            &station,
             device(REMOTE),
             PropertyIdentifier::OBJECT_NAME,
             None,
@@ -299,12 +269,15 @@ async fn each_client_reads_the_other_sides_server() {
 #[tokio::test(start_paused = true)]
 async fn a_segmented_reply_each_way() {
     let mut site = site().await;
-    site.client.who_is(None).await.unwrap();
+    site.client.who_is(Broadcast::Global, None).await.unwrap();
     found(&site.client, REMOTE).await;
     while site.to_station.try_recv().is_ok() {}
     let ack = site
         .client
-        .read_property_multiple_from_device(REMOTE, all_of(REMOTE))
+        .read_property_multiple(
+            &site.client.resolve_device(REMOTE).await.unwrap(),
+            all_of(REMOTE),
+        )
         .await
         .unwrap();
     assert!(
@@ -342,18 +315,26 @@ async fn a_segmented_reply_each_way() {
 #[tokio::test(start_paused = true)]
 async fn who_is_finds_servers_on_both_sides() {
     let site = site().await;
-    site.client.who_is(None).await.unwrap();
+    site.client.who_is(Broadcast::Global, None).await.unwrap();
     let remote = found(&site.client, REMOTE).await;
     assert_eq!(remote.source_network, Some(2));
     assert_eq!(remote.source_address.as_deref(), Some(&[STATION][..]));
 
-    site.remote_client.who_is(None).await.unwrap();
+    site.remote_client
+        .who_is(Broadcast::Global, None)
+        .await
+        .unwrap();
     let hosted = found(&site.remote_client, HOSTED).await;
     assert_eq!(hosted.mac_address.as_slice(), [ROUTER_ON_1]);
     assert_eq!(hosted.source_network, None, "the router's own, not routed");
     let ack = site
         .remote_client
-        .read_property_from_device(HOSTED, sensor(), PropertyIdentifier::OBJECT_NAME, None)
+        .read_property(
+            &site.remote_client.resolve_device(HOSTED).await.unwrap(),
+            sensor(),
+            PropertyIdentifier::OBJECT_NAME,
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -378,11 +359,17 @@ async fn confirmed_notifications_are_acknowledged_to_their_sender() {
         .unwrap();
     // The router's client hears the remote server's notification, a
     // Confirmed-Request, and answers it through the saved plan.
-    site.client.who_is(None).await.unwrap();
+    site.client.who_is(Broadcast::Global, None).await.unwrap();
     found(&site.client, REMOTE).await;
     let mut routed = site.client.cov_notifications();
     site.client
-        .subscribe_cov_to_device(REMOTE, 2, sensor(), true, Some(300))
+        .subscribe_cov(
+            &site.client.resolve_device(REMOTE).await.unwrap(),
+            2,
+            sensor(),
+            true,
+            Some(300),
+        )
         .await
         .unwrap();
 
@@ -411,10 +398,8 @@ async fn the_ports_follow_a_router_ports_limit() {
     assert_eq!(site.client.transport_max_apdu_length(), 1476);
     let read = async |site: &Site| {
         site.client
-            .read_property_routed(
-                &[0xEE],
-                2,
-                &[STATION],
+            .read_property(
+                &Station::routed(&[0xEE], 2, &[STATION]),
                 sensor(),
                 PropertyIdentifier::OBJECT_NAME,
                 None,
@@ -584,7 +569,7 @@ async fn found<T: TransportPort + 'static>(
 ) -> bacnet_client::discovery::DiscoveredDevice {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let Some(found) = client.get_device(instance).await {
+            if let Some(found) = client.get_device(instance).await.unwrap() {
                 break found;
             }
             sleep(Duration::from_millis(10)).await;

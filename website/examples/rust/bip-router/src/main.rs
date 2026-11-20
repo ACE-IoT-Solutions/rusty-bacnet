@@ -3,7 +3,7 @@
 //! finds and reads a device on network 5 through it.
 #![forbid(unsafe_code)]
 
-use bacnet_client::client::BACnetClient;
+use bacnet_client::client::{BACnetClient, Broadcast};
 use bacnet_encoding::primitives::decode_application_value;
 use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
 use bacnet_objects::DeviceIdentity;
@@ -152,14 +152,14 @@ async fn read_through_the_router(
 
     // A global Who-Is crosses the router; the I-Am names the device's network.
     client
-        .who_is(Some(DeviceInstanceRange::new(
-            DEVICE_INSTANCE,
-            DEVICE_INSTANCE,
-        )?))
+        .who_is(
+            Broadcast::Global,
+            Some(DeviceInstanceRange::new(DEVICE_INSTANCE, DEVICE_INSTANCE)?),
+        )
         .await?;
     let deadline = tokio::time::Instant::now() + WAIT;
     let device = loop {
-        if let Some(device) = client.get_device(DEVICE_INSTANCE).await {
+        if let Some(device) = client.get_device(DEVICE_INSTANCE).await? {
             break device;
         }
         if tokio::time::Instant::now() > deadline {
@@ -175,11 +175,13 @@ async fn read_through_the_router(
             .ok_or("the device answered from this network")?
     )?;
 
-    // Reads by instance go through the router that answered for it.
+    // The instance resolves to the station behind the router that answered
+    // for it, and the read goes through that router.
     let temperature = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1)?;
+    let station = client.resolve_device(DEVICE_INSTANCE).await?;
     let ack = client
-        .read_property_from_device(
-            DEVICE_INSTANCE,
+        .read_property(
+            &station,
             temperature,
             PropertyIdentifier::PRESENT_VALUE,
             None,

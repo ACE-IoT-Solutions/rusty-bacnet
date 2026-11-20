@@ -1,161 +1,8 @@
 use super::*;
-use crate::object_profile::{ObjectProfile, ProfileState, TagsPersistence};
-use crate::prelude::*;
-use crate::property_metadata::{
-    PropertyConformance, PropertyMetadata, PropertyPresenceCondition, PropertyWriteCapability,
-};
+use crate::object_profile::TagsPersistence;
+use crate::property_metadata::PropertyMetadata;
 use alloc::sync::Arc;
-
-const BINARY_INPUT_PROPERTY_METADATA: &[PropertyMetadata] = &[
-    PropertyMetadata::new(
-        PropertyIdentifier::OBJECT_IDENTIFIER,
-        PropertyConformance::RequiredRead,
-        None,
-        PropertyWriteCapability::ReadOnly,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::OBJECT_NAME,
-        PropertyConformance::RequiredRead,
-        None,
-        PropertyWriteCapability::Always,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::DESCRIPTION,
-        PropertyConformance::Optional,
-        None,
-        PropertyWriteCapability::Always,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::OBJECT_TYPE,
-        PropertyConformance::RequiredRead,
-        None,
-        PropertyWriteCapability::ReadOnly,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::PRESENT_VALUE,
-        PropertyConformance::RequiredRead,
-        None,
-        PropertyWriteCapability::WhenOutOfService,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::STATUS_FLAGS,
-        PropertyConformance::RequiredRead,
-        None,
-        PropertyWriteCapability::ReadOnly,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::EVENT_STATE,
-        PropertyConformance::RequiredRead,
-        None,
-        PropertyWriteCapability::ReadOnly,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::EVENT_DETECTION_ENABLE,
-        PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
-        PropertyWriteCapability::Always,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::EVENT_ENABLE,
-        PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
-        PropertyWriteCapability::Always,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::TIME_DELAY,
-        PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
-        PropertyWriteCapability::Always,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::TIME_DELAY_NORMAL,
-        PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReportingOptional),
-        PropertyWriteCapability::Always,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::NOTIFY_TYPE,
-        PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
-        PropertyWriteCapability::Always,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::NOTIFICATION_CLASS,
-        PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
-        PropertyWriteCapability::Always,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::ACKED_TRANSITIONS,
-        PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
-        PropertyWriteCapability::ReadOnly,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::EVENT_TIME_STAMPS,
-        PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
-        PropertyWriteCapability::ReadOnly,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::EVENT_MESSAGE_TEXTS,
-        PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReportingOptional),
-        PropertyWriteCapability::ReadOnly,
-    ),
-    // Event_Message_Texts_Config and the Event_Algorithm_Inhibit pair (#1329).
-    crate::event::options::REPORTING_OPTION_METADATA[0],
-    crate::event::options::REPORTING_OPTION_METADATA[1],
-    crate::event::options::REPORTING_OPTION_METADATA[2],
-    PropertyMetadata::new(
-        PropertyIdentifier::OUT_OF_SERVICE,
-        PropertyConformance::RequiredRead,
-        None,
-        PropertyWriteCapability::Always,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::POLARITY,
-        PropertyConformance::RequiredRead,
-        None,
-        PropertyWriteCapability::ReadOnly,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::RELIABILITY,
-        PropertyConformance::Optional,
-        None,
-        PropertyWriteCapability::WhenOutOfService,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::RELIABILITY_EVALUATION_INHIBIT,
-        PropertyConformance::Optional,
-        None,
-        PropertyWriteCapability::Always,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::ACTIVE_TEXT,
-        PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::PairedText),
-        PropertyWriteCapability::Always,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::INACTIVE_TEXT,
-        PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::PairedText),
-        PropertyWriteCapability::Always,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::ALARM_VALUE,
-        PropertyConformance::Optional,
-        Some(PropertyPresenceCondition::IntrinsicReportingRequired),
-        PropertyWriteCapability::Always,
-    ),
-    PropertyMetadata::new(
-        PropertyIdentifier::PROPERTY_LIST,
-        PropertyConformance::RequiredRead,
-        None,
-        PropertyWriteCapability::ReadOnly,
-    ),
-];
+use bacnet_types::enums::PropertyIdentifier as P;
 
 // ---------------------------------------------------------------------------
 // BinaryInput (type 3)
@@ -165,60 +12,41 @@ const BINARY_INPUT_PROPERTY_METADATA: &[PropertyMetadata] = &[
 ///
 /// Read-only binary point. Present_Value is writable only when out-of-service.
 /// Uses Enumerated values: 0 = inactive, 1 = active.
+///
+/// The application feeds it from either side (#2580): the logical
+/// Present_Value ([`Self::set_present_value`], or
+/// [`LocalInputValue::PresentValue`](crate::traits::LocalInputValue::PresentValue)),
+/// or the raw state its physical input reads ([`Self::set_physical_input`],
+/// or [`LocalInputValue::PhysicalInput`](crate::traits::LocalInputValue::PhysicalInput)),
+/// which the object turns into Present_Value through Polarity. Either way
+/// the object keeps the physical state, so a later Polarity change or a
+/// return to service derives Present_Value from it again.
 pub struct BinaryInputObject {
-    profile: ProfileState,
-    oid: ObjectIdentifier,
-    name: String,
-    description: String,
-    present_value: u32,
-    out_of_service: bool,
-    status_flags: StatusFlags,
-    /// Polarity: 0 = normal, 1 = reverse.
-    polarity: u32,
-    /// Reliability; NO_FAULT_DETECTED until a fault is evaluated or simulated.
-    reliability: Reliability,
-    reliability_before_out_of_service: Option<Reliability>,
-    reliability_inhibit: common::ReliabilityInhibitState,
-    active_text: String,
-    inactive_text: String,
+    pub(super) core: IoCore,
     /// CHANGE_OF_STATE event detector.
     event_detector: ChangeOfStateDetector,
-    /// Event_Detection_Enable (Clause 12.6). A FALSE value suspends
-    /// event-state-machine evaluation under Clause 13.2.2.1.
-    event_detection_enable: bool,
-    pub(crate) event_history: EventHistory,
-    /// The reporting settings a write set, kept in storage once the
-    /// object opts in (#2331).
-    #[cfg(feature = "event-reporting")]
-    reporting_store: crate::write_config::reporting::ReportingStore,
+    binary: BinaryProperties,
+    present_value: u32,
+    /// The physical input's state, ON as `true`, once the application has
+    /// supplied one, directly or as the logical value it implies; `None`
+    /// before that.
+    physical_input: Option<bool>,
+    polarity: Polarity,
 }
 
 impl BinaryInputObject {
     /// Create a new Binary Input object; fails if `instance` exceeds the object-identifier range.
+    ///
+    /// Polarity starts NORMAL and Present_Value INACTIVE, with no physical
+    /// input state until the application supplies one.
     pub fn new(instance: u32, name: impl Into<String>) -> Result<Self, Error> {
-        let oid = ObjectIdentifier::new(ObjectType::BINARY_INPUT, instance)?;
         Ok(Self {
-            profile: ProfileState::default(),
-            oid,
-            name: name.into(),
-            description: String::new(),
+            core: IoCore::new(ObjectType::BINARY_INPUT, instance, name.into())?,
+            event_detector: alarm_value_detector(),
+            binary: BinaryProperties::new(),
             present_value: 0,
-            out_of_service: false,
-            status_flags: StatusFlags::empty(),
-            polarity: 0,
-            reliability: Reliability::NO_FAULT_DETECTED,
-            reliability_before_out_of_service: None,
-            reliability_inhibit: common::ReliabilityInhibitState::default(),
-            active_text: "Active".into(),
-            inactive_text: "Inactive".into(),
-            event_detector: ChangeOfStateDetector {
-                alarm_values: vec![1],
-                ..Default::default()
-            },
-            event_detection_enable: true,
-            event_history: EventHistory::default(),
-            #[cfg(feature = "event-reporting")]
-            reporting_store: Default::default(),
+            physical_input: None,
+            polarity: Polarity::NORMAL,
         })
     }
 
@@ -231,33 +59,71 @@ impl BinaryInputObject {
         persistence: Arc<dyn TagsPersistence>,
     ) -> Result<Self, Error> {
         let mut object = Self::new(instance, name)?;
-        object.profile = ProfileState::persistent(object.oid, persistence)?;
+        object.core.keep_tags(persistence)?;
         Ok(object)
-    }
-
-    /// Provision independent optional Tags, Profile_Location and Profile_Name
-    /// rows before registration. Tags is writable in either Out_Of_Service state;
-    /// the text rows are network read-only. Invalid configuration leaves the
-    /// previous profile and its attached storage unchanged.
-    pub fn set_profile(&mut self, profile: ObjectProfile) -> Result<(), Error> {
-        self.profile.provision(profile)
-    }
-
-    /// Wait for queued save attempts to finish; writes report their own outcomes.
-    /// This is not a success receipt. Unstaged synchronous writes block their caller.
-    pub fn wait_for_tag_saves(&self) {
-        self.profile.wait_for_saves();
     }
 
     /// Mutate logical `Present_Value` on an unattached or application-owned object.
     ///
     /// The value is BACnet INACTIVE (`0`) or ACTIVE (`1`) **after Polarity**,
-    /// not a raw electrical or physical state. This low-level helper bypasses
-    /// running-server `Out_Of_Service` ownership, validation, intrinsic-event
-    /// processing, and COV processing. Applications updating a live object
-    /// should use `BACnetServer::set_present_value_local`.
+    /// not a raw electrical or physical state: a raw state goes to
+    /// [`Self::set_physical_input`]. In service the object also takes the
+    /// physical input state that gives `value` under the current Polarity,
+    /// so a later Polarity change derives Present_Value from that state.
+    /// Out of service it sets the simulated value only, as a client's write
+    /// would. This low-level helper bypasses running-server `Out_Of_Service`
+    /// ownership, validation, intrinsic-event processing, and COV
+    /// processing. Applications updating a live object should use
+    /// `BACnetServer::set_present_value_local`.
     pub fn set_present_value(&mut self, value: u32) {
         self.present_value = value;
+        if !self.core.out_of_service {
+            self.physical_input = Some(across_polarity(is_active(value), self.polarity));
+        }
+    }
+
+    /// Take the state the application read from the physical input, ON as
+    /// `true` (#2580).
+    ///
+    /// In service, Present_Value becomes that state through Polarity:
+    /// ACTIVE for ON under NORMAL, INACTIVE for ON under REVERSE (Table
+    /// 12-7). While Out_Of_Service is TRUE, Present_Value doesn't follow
+    /// the input (Clause 12.6.10): the object keeps the state and serves the
+    /// value a client simulates, and the return to service derives
+    /// Present_Value from the latest state. Like [`Self::set_present_value`]
+    /// this runs no event or COV processing; on a running server use
+    /// `BACnetServer::set_physical_input_local`.
+    pub fn set_physical_input(&mut self, on: bool) {
+        self.physical_input = Some(on);
+        self.follow_physical_input();
+    }
+
+    /// Set Polarity, NORMAL or REVERSE (#2580); any other value fails with
+    /// PROPERTY / VALUE_OUT_OF_RANGE and changes nothing. A new object's
+    /// is NORMAL, and a client can't write it.
+    ///
+    /// In service, Present_Value is derived again from the physical input
+    /// state the object holds, so a steady input changes Present_Value when
+    /// Polarity changes (Clause 12.6.11); before the application has
+    /// supplied any state, Present_Value stays as it is. While
+    /// Out_Of_Service is TRUE, Polarity has no effect on Present_Value, and
+    /// the return to service derives it with the new Polarity. This runs no
+    /// event or COV processing; on a running server use
+    /// `BACnetServer::set_polarity_local`.
+    pub fn set_polarity(&mut self, polarity: Polarity) -> Result<(), Error> {
+        self.polarity = checked_polarity(polarity)?;
+        self.follow_physical_input();
+        Ok(())
+    }
+
+    /// In service, and once the application has supplied a physical input
+    /// state, make Present_Value that state through Polarity.
+    fn follow_physical_input(&mut self) {
+        if let Some(on) = self.physical_input
+            && !self.core.out_of_service
+        {
+            self.present_value = u32::from(across_polarity(on, self.polarity));
+        }
     }
 
     /// Validate and store a `Present_Value` write, without any access check.
@@ -276,15 +142,18 @@ impl BinaryInputObject {
     }
 }
 
+crate::io_core::impl_profile!(BinaryInputObject);
+crate::io_core::impl_reliability_eval!(BinaryInputObject);
 crate::write_config::reporting::impl_reporting_persistence!(BinaryInputObject);
+super::impl_state_texts!(BinaryInputObject);
 
 impl BACnetObject for BinaryInputObject {
     fn object_identifier(&self) -> ObjectIdentifier {
-        self.oid
+        self.core.oid
     }
 
     fn object_name(&self) -> &str {
-        &self.name
+        &self.core.name
     }
 
     #[cfg(feature = "durable-writes")]
@@ -293,10 +162,8 @@ impl BACnetObject for BinaryInputObject {
     }
 
     fn property_metadata(&self) -> Cow<'_, [PropertyMetadata]> {
-        let mut rows = Cow::Borrowed(BINARY_INPUT_PROPERTY_METADATA);
-        if self.profile.metadata().next().is_some() {
-            rows.to_mut().extend(self.profile.metadata());
-        }
+        let mut rows = Cow::Borrowed(metadata::INPUT);
+        self.core.add_profile_rows(&mut rows);
         rows
     }
 
@@ -310,56 +177,20 @@ impl BACnetObject for BinaryInputObject {
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
         crate::property_metadata::check_read_array_index(self, property, array_index)?;
-        if property == PropertyIdentifier::STATUS_FLAGS {
-            return Ok(common::compute_status_flags(
-                self.status_flags,
-                self.reliability,
-                self.out_of_service,
-                self.event_detector.event_state,
-            ));
+        if property == P::PRESENT_VALUE {
+            return Ok(PropertyValue::Enumerated(self.present_value));
         }
-        if let Some(value) = self.reliability_inhibit.read(property) {
+        if let Some(result) = self.core.read(&self.event_detector, property, array_index) {
+            return result;
+        }
+        if let Some(value) = self.binary.read(property) {
             return Ok(value);
         }
-        if let Some(result) = read_common_properties!(self, property, array_index) {
-            return result;
-        }
-        if property == PropertyIdentifier::EVENT_DETECTION_ENABLE {
-            return Ok(PropertyValue::Boolean(self.event_detection_enable));
-        }
-        if let Some(result) = read_generic_event_properties!(self, property) {
-            return result;
-        }
-        if let Some(result) = self.event_history.read(property, array_index) {
-            return result;
-        }
-        if let Some(result) = self.profile.read(property, array_index) {
-            return result;
-        }
         match property {
-            p if p == PropertyIdentifier::OBJECT_TYPE => {
-                Ok(PropertyValue::Enumerated(ObjectType::BINARY_INPUT.to_raw()))
-            }
-            p if p == PropertyIdentifier::PRESENT_VALUE => {
-                Ok(PropertyValue::Enumerated(self.present_value))
-            }
-            p if p == PropertyIdentifier::POLARITY => Ok(PropertyValue::Enumerated(self.polarity)),
-            p if p == PropertyIdentifier::ACTIVE_TEXT => {
-                Ok(PropertyValue::CharacterString(self.active_text.clone()))
-            }
-            p if p == PropertyIdentifier::INACTIVE_TEXT => {
-                Ok(PropertyValue::CharacterString(self.inactive_text.clone()))
-            }
-            p if p == PropertyIdentifier::ALARM_VALUE => {
-                // Construction and writes keep exactly one value; ACTIVE is the
-                // defensive construction default if a future reset empties it.
-                Ok(PropertyValue::Enumerated(
-                    self.event_detector
-                        .alarm_values
-                        .first()
-                        .copied()
-                        .unwrap_or(1),
-                ))
+            P::POLARITY => Ok(PropertyValue::Enumerated(self.polarity.to_raw())),
+            P::ALARM_VALUE => Ok(read_alarm_value(&self.event_detector)),
+            P::PROPERTY_LIST => {
+                crate::property_metadata::read_property_list(&self.property_metadata(), array_index)
             }
             _ => Err(common::unknown_property_error()),
         }
@@ -374,93 +205,26 @@ impl BACnetObject for BinaryInputObject {
     ) -> Result<(), Error> {
         crate::property_metadata::check_write_array_index(&*self, property, array_index)?;
         crate::write_config::reporting::admit(self, property, array_index, &value)?;
-        if property == PropertyIdentifier::PRESENT_VALUE {
-            if !self.out_of_service {
+        if property == P::PRESENT_VALUE {
+            if !self.core.out_of_service {
                 return Err(common::write_access_denied_error());
             }
             return self.apply_present_value(value);
         }
-        if let Some(result) = self.profile.write(property, array_index, &value) {
-            return result;
-        }
-        if property == PropertyIdentifier::ACTIVE_TEXT {
-            if let PropertyValue::CharacterString(s) = value {
-                self.active_text = s;
-                return Ok(());
-            }
-            return Err(common::invalid_data_type_error());
-        }
-        if property == PropertyIdentifier::INACTIVE_TEXT {
-            if let PropertyValue::CharacterString(s) = value {
-                self.inactive_text = s;
-                return Ok(());
-            }
-            return Err(common::invalid_data_type_error());
-        }
-        if property == PropertyIdentifier::ALARM_VALUE {
-            if let PropertyValue::Enumerated(v) = value {
-                if v > 1 {
-                    return Err(common::value_out_of_range_error());
-                }
-                self.event_detector.alarm_values = vec![v];
-                return Ok(());
-            }
-            return Err(common::invalid_data_type_error());
-        }
-        if property == PropertyIdentifier::EVENT_DETECTION_ENABLE {
-            if let PropertyValue::Boolean(v) = value {
-                self.event_detection_enable = v;
-                if !v {
-                    self.event_detector.event_state = bacnet_types::enums::EventState::NORMAL;
-                    self.event_detector.acked_transitions =
-                        bacnet_types::bitstring::EventTransitionBits::all();
-                    self.event_detector.pending = None;
-                    self.event_detector.fault_reliability = None;
-                    self.event_history.reset();
-                }
-                return Ok(());
-            }
-            return Err(common::invalid_data_type_error());
-        }
-        // Event_Message_Texts_Config and the Event_Algorithm_Inhibit pair (#1329).
         if let Some(result) =
-            self.event_history
-                .write(property, array_index, &value, self.event_detection_enable)
+            self.core
+                .write(&mut self.event_detector, property, array_index, &value)
         {
-            return result;
+            if result? == crate::io_core::CoreWrite::OutOfService {
+                // Back in service, Present_Value follows the input again.
+                self.follow_physical_input();
+            }
+            return Ok(());
         }
-        if let Some(result) = write_generic_event_properties!(self, property, value) {
-            return result;
+        if property == P::ALARM_VALUE {
+            return write_alarm_value(&mut self.event_detector, value);
         }
-        if let Some(result) = self.reliability_inhibit.write_inhibit(
-            &mut self.reliability,
-            self.out_of_service,
-            property,
-            &value,
-        ) {
-            return result;
-        }
-        if let Some(result) = self.reliability_inhibit.write_out_of_service(
-            &mut self.out_of_service,
-            &mut self.reliability,
-            &mut self.reliability_before_out_of_service,
-            property,
-            &value,
-        ) {
-            return result.map(|_| ());
-        }
-        if let Some(result) = common::write_object_name(&mut self.name, property, &value) {
-            return result;
-        }
-        if let Some(result) = common::write_description(&mut self.description, property, &value) {
-            return result;
-        }
-        if let Some(result) = self.reliability_inhibit.write_client_reliability(
-            self.out_of_service,
-            &mut self.reliability,
-            property,
-            &value,
-        ) {
+        if let Some(result) = self.binary.write(property, value) {
             return result;
         }
         Err(crate::common::unhandled_write_error(
@@ -480,44 +244,40 @@ impl crate::creation::Creatable for BinaryInputObject {}
 
 impl crate::traits::CovReporting for BinaryInputObject {}
 
-impl crate::traits::ReliabilityEval for BinaryInputObject {
-    fn set_reliability(&mut self, reliability: Reliability) -> Result<(), Error> {
-        if self.out_of_service || self.reliability_inhibit.enabled() {
-            return Err(common::write_access_denied_error());
-        }
-        if !common::is_reliability_value_valid(reliability) {
-            return Err(common::value_out_of_range_error());
-        }
-        self.reliability = reliability;
-        Ok(())
-    }
-
-    fn reliability_evaluation_inhibited(&self) -> bool {
-        self.reliability_inhibit.enabled()
-    }
-}
-
 crate::event::impl_builtin_intrinsic_reporting!(
     BinaryInputObject,
-    event_detector,
-    event_history,
     [present_value],
-    reliability,
-    event_detection_enable,
     ChangeOfStateDetector::ALGORITHM
 );
 
-/// The Present_Value the application supplies.
+/// The logical Present_Value the application supplies, the physical input
+/// state it read, and Polarity.
 impl crate::traits::LocalInput for BinaryInputObject {
     fn apply_local_input(&mut self, input: crate::traits::LocalInputValue) -> Result<(), Error> {
-        let crate::traits::LocalInputValue::PresentValue { value, .. } = input else {
-            return Err(crate::traits::not_supported());
-        };
-        // Local safe-ownership policy: preserve the client's OOS simulation.
-        if self.out_of_service {
-            return Err(common::write_access_denied_error());
+        use crate::traits::LocalInputValue as Input;
+        match input {
+            Input::PresentValue { value, .. } => {
+                // Local safe-ownership policy: preserve the client's OOS simulation.
+                if self.core.out_of_service {
+                    return Err(common::write_access_denied_error());
+                }
+                self.apply_present_value(value)?;
+                // The physical state this logical value implies.
+                self.physical_input = Some(across_polarity(
+                    is_active(self.present_value),
+                    self.polarity,
+                ));
+                Ok(())
+            }
+            // The hardware's state is taken out of service too: only
+            // Present_Value is the client's then.
+            Input::PhysicalInput(on) => {
+                self.set_physical_input(on);
+                Ok(())
+            }
+            Input::Polarity(polarity) => self.set_polarity(polarity),
+            _ => Err(crate::traits::not_supported()),
         }
-        self.apply_present_value(value)
     }
 }
 

@@ -52,7 +52,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     /// (#1541). That wait has no limit:
     /// storage that stalls holds stop up, and a warning naming the objects
     /// still saving is logged after 5 s and every 30 s after that. Stop does
-    /// not wait while the application holds the database: the objects then
+    /// not wait while the application holds the database, but for the
+    /// bounded wait for release tasks described below: the objects then
     /// settle from a task once it lets go, and put storage back when they
     /// are dropped. That task lets go of its handle through
     /// [`drop_database_off_runtime`], so if it holds the last one the
@@ -60,19 +61,40 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     ///
     /// A request's abort lands when its task next yields, so a request
     /// already running when stop begins may find its save done and make its
-    /// write first. Its answer is sealed, but the object serves that write,
-    /// and storage holds it (#1457).
+    /// write first. On a transport of its own its answer is sealed; on a
+    /// node's seat, whose shared layer stays open for the node's other
+    /// roles, an answer the request sends before its abort lands may still
+    /// go out. Either way the object serves that write, and storage holds
+    /// it (#1457).
     ///
-    /// [`DurableWrites::settle_forgotten_writes`]: bacnet_objects::durable::DurableWrites::settle_forgotten_writes
+    /// A local write aborted with its request (a Command or Channel run
+    /// writing) or dropped by the application lets go of its stage as it
+    /// drops, at once when the database guard is free (#2493). One that finds
+    /// the guard taken leaves the release to a task, and stop waits for such
+    /// tasks before it settles, for at most 5 s (#2495). A task still waiting
+    /// then is behind a guard the application holds: the objects settle from
+    /// a task once it is free (see above), and storage is put back after stop
+    /// returns. No local write can drop its stage after that wait: one the
+    /// application makes borrows the server, which stop holds exclusively,
+    /// and fails before it stages once stop has sealed the server, and a
+    /// run's write is a request task, joined before the wait.
+    ///
+    /// [`DurableWrites::settle_forgotten_writes`]:bacnet_objects::durable::DurableWrites::settle_forgotten_writes
     ///
     /// Cancelling this waiter leaves cleanup owned by the server. A later stop
     /// joins it; after transport cleanup begins, dropping the server lets that
     /// cleanup finish. Local mutation and broadcasts are rejected from the first
     /// stop poll; local reads and database inspection remain available.
+    ///
+    /// A server on a node's seat ([`ServerBuilder::seat`]) does all of this
+    /// but the link's part: the node's other roles answer through the shared
+    /// layer, and the node stops it (#2617).
     pub async fn stop(&mut self) -> Result<(), Error> {
-        if let Some(network) = &self.network {
+        if let Some(network) = self.network.as_ref().filter(|_| self.owns_link()) {
             network.seal_responses();
         }
+        // On a seat, the node initiates again (#2617).
+        self.comm_state.release_node();
         self.broadcaster.seal();
         self.request_tasks.close();
         stop_producer(&mut self.network_number_task).await;
@@ -125,6 +147,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         while let Some(result) = self.request_tasks.join_next().await {
             super::request_tasks::RequestTasks::observe(Some(result));
         }
+        // No request is left to push an event notification: seal the lanes
+        // and abort their tasks, dropping what they hold (#2537). A producer
+        // stopped below finds them sealed.
+        self.notification_transactions.shut_lanes().await;
         {
             let mut timer = self.dcc_timer.lock().await;
             super::dcc_timer::cancel(&mut timer).await;
@@ -137,11 +163,14 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         stop_producer(&mut self.binary_lighting_operation_task).await;
         stop_producer(&mut self.cov_purge_task).await;
         stop_producer(&mut self.cov_revisit_task).await;
+        // A local write dropped while the guard was taken lets go of its
+        // stage from a task of its own (#2493). Let those finish, so none
+        // holds the guard as the objects settle (#2495), but for a bounded
+        // time: one behind an application's guard must not hold stop up.
+        self.request_tasks.stage_releases().wait_at_stop().await;
         // No request is left to take or release a staged save, and the
         // operation task that would drop one is gone: put storage back to
-        // what each object serves before stop returns (#1363). A
-        // `write_local` still in flight isn't joined; if it staged, it finds
-        // its stage gone and saves in place under the guard.
+        // what each object serves before stop returns (#1363).
         super::durable_writes::settle_forgotten(&self.db).await;
         // Nothing can own a Command or Channel run any more. End the runs let
         // go of while the database was busy where they stood, then any run no
@@ -160,20 +189,19 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         if let Some(error) = &self.transport_cleanup_error {
             return Err(Error::Encoding(error.clone()));
         }
+        if !self.owns_link() {
+            // The node's layer, which the node stops: let go of it (#2617).
+            // The seat is free already, its queue's reader joined above.
+            self.network = None;
+            return Ok(());
+        }
         if self.transport_cleanup.is_none()
             && let Some(network) = self.network.take()
         {
-            let mut network = match Arc::try_unwrap(network) {
-                Ok(network) => network,
-                Err(network) => {
-                    self.network = Some(network);
-                    return Err(Error::Encoding(
-                        "server network still has an internal owner".into(),
-                    ));
-                }
-            };
-            // Own the complete future, including cancellation-unsafe custom
-            // transport cleanup. Drop deliberately leaves this task running.
+            // The layer stops through a shared reference (#2617), whoever
+            // else still holds it. Own the complete future, including
+            // cancellation-unsafe custom transport cleanup. Drop
+            // deliberately leaves this task running.
             self.transport_cleanup = Some(tokio::spawn(async move {
                 let result = network.stop().await;
                 (network, result)
@@ -187,7 +215,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         match outcome {
             Ok((network, result)) => {
                 if result.is_err() {
-                    self.network = Some(Arc::new(network));
+                    self.network = Some(network);
                 }
                 result
             }
@@ -209,9 +237,10 @@ impl<T: TransportPort> Drop for BACnetServer<T> {
     /// keeps the objects alive; let go of it with
     /// [`drop_database_off_runtime`] (#1513).
     fn drop(&mut self) {
-        if let Some(network) = &self.network {
+        if let Some(network) = self.network.as_ref().filter(|_| self.owns_link()) {
             network.seal_responses();
         }
+        self.comm_state.release_node();
         self.broadcaster.seal();
         self.notification_transactions
             .application_sealed
@@ -222,6 +251,11 @@ impl<T: TransportPort> Drop for BACnetServer<T> {
         }
         self.request_tasks.close();
         self.notification_transactions.close();
+        // The lanes' tasks hold the database and the network through the
+        // transactions they belong to; sealing aborts them (#2537), and
+        // they are joined, or with no runtime dropped, before the database
+        // goes.
+        super::event_send::lanes(&self.notification_transactions).seal();
         let mut tasks: Vec<JoinHandle<()>> = [
             &mut self.dispatch_task,
             &mut self.network_number_task,
@@ -256,20 +290,27 @@ impl<T: TransportPort> BACnetServer<T> {
     /// it serves when a write is still staged (#1363). A server dropped in
     /// async code without `stop()` would block a Tokio worker for as long as
     /// storage takes. So when a runtime is current, the server's handle goes
-    /// to a task that waits until `tasks`, aborted, and the server's request
-    /// and notification tasks have let go of theirs; then it lets go of the
-    /// handle through [`drop_database_off_runtime`], so the database drops
-    /// on the blocking pool if nothing else holds it, as DeleteObject drops a
-    /// removed object. The server's drop returns first, so storage may still
-    /// change after it. An application still holding the database lets go
-    /// of the last handle itself, the same way (#1513). With no runtime
-    /// current, the database drops here, as it always has.
+    /// to a task that waits until `tasks`, aborted, and the server's
+    /// request, notification and event lane tasks have let go of theirs;
+    /// then it lets go of the handle through [`drop_database_off_runtime`],
+    /// so the database drops on the blocking pool if nothing else holds it,
+    /// as DeleteObject drops a removed object. The server's drop returns
+    /// first, so storage may still change after it. An application still
+    /// holding the database lets go of the last handle itself, the same way
+    /// (#1513). With no runtime current, the database drops here, as it
+    /// always has, and the sealed lanes' tasks are dropped, which aborts
+    /// them (#2537).
     ///
     /// A DCC timer the drop could not take, because a request or the timer's
     /// own expiry held its slot, is cancelled here once the requests are
     /// joined: with Audit reporting, it holds the database too (#1560).
     fn let_database_go(&mut self, tasks: Vec<JoinHandle<()>>) {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            // Dropping the sealed lanes' set aborts what is left of them.
+            if let Some(mut lanes) = super::event_send::made_lanes(&self.notification_transactions)
+            {
+                drop(lanes.take_tasks());
+            }
             return;
         };
         let db = std::mem::take(&mut self.db);
@@ -293,6 +334,9 @@ impl<T: TransportPort> BACnetServer<T> {
             while let Some(result) = notifications.join_next().await {
                 NotificationTransactions::observe(Some(result));
             }
+            // The lanes were sealed at the drop; their aborted tasks let go
+            // of their database handles as they are joined.
+            super::event_send::join_sealed(&notifications).await;
             drop(drop_database_off_runtime(db));
         });
     }

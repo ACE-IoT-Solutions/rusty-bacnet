@@ -33,10 +33,11 @@ fn discovered(instance: u32, vendor_id: u16, routed: Option<(u16, &[u8])>) -> Di
         object_identifier: ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap(),
         mac_address: MacAddr::from_slice(&link),
         max_apdu_length: if routed.is_some() { 480 } else { 1476 },
-        segmentation_supported: Segmentation::BOTH,
+        segmentation_supported: Segmentation::SEGMENTED_BOTH,
         max_segments_accepted: None,
         vendor_id,
         last_seen: at(3),
+        last_announced: None,
         source_network: routed.map(|(network, _)| network),
         source_address: routed.map(|(_, station)| MacAddr::from_slice(station)),
     }
@@ -55,7 +56,7 @@ fn site() -> App {
         discovered(3005, 8, Some((3, &[5]))),
     ];
     for device in &devices {
-        worker(&mut app, WorkerEvent::Discovered(feed.row(device)));
+        worker(&mut app, WorkerEvent::Discovered(feed.row(device).unwrap()));
     }
     tick(&mut app, at(5));
     app
@@ -172,17 +173,21 @@ fn a_new_router_is_filtered_again() {
     assert_eq!(visible(&mut app), [2001]);
 }
 
-/// Two routers reporting the same station for one instance: the banner
-/// names the station through each router, not the station twice.
+/// One station on two networks claiming one instance: the banner names
+/// each station with the router it answers through.
 #[test]
-fn a_routed_duplicate_names_both_routers() {
+fn a_routed_duplicate_names_each_station_with_its_router() {
     let mut app = connected_app();
-    let retained = routed_row(2001, (2, &[5]), "10.0.1.1:47808", 24, 1);
-    let incoming = routed_row(2001, (2, &[5]), "10.0.1.2:47808", 24, 2);
-    worker(&mut app, WorkerEvent::Collision { retained, incoming });
+    let claimants = vec![
+        routed_row(2001, (2, &[5]), "10.0.1.1:47808", 24, 1),
+        routed_row(2001, (3, &[5]), "10.0.1.2:47808", 24, 2),
+    ];
+    for claimant in claimants {
+        worker(&mut app, WorkerEvent::Discovered(claimant));
+    }
     let banner = app.duplicates.banner().join(" ");
-    for router in ["10.0.1.1:47808", "10.0.1.2:47808"] {
-        assert!(banner.contains(&format!("2:0x05 via {router}")), "{banner}");
+    for station in ["2:0x05 via 10.0.1.1:47808", "3:0x05 via 10.0.1.2:47808"] {
+        assert!(banner.contains(station), "{banner}");
     }
 }
 

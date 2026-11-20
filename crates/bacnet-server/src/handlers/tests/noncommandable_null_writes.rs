@@ -87,7 +87,7 @@ fn db() -> ObjectDatabase {
     db.add(Box::new(NotificationClass::new(1, "NC-1").unwrap()))
         .unwrap();
     let mut states = MultiStateInputObject::new(1, "MSI-1", 3).unwrap();
-    states.set_alarm_values(vec![2]);
+    states.set_alarm_values(vec![2]).unwrap();
     db.add(Box::new(states)).unwrap();
     let mut forwarder = NotificationForwarderObject::new(1, "NF-1").unwrap();
     forwarder.set_port_filter(Some(vec![
@@ -225,7 +225,7 @@ fn assert_error(result: Result<impl std::fmt::Debug, Error>, class: ErrorClass, 
 fn cases() -> Vec<(ObjectIdentifier, P, Option<u32>, bool)> {
     vec![
         // Access Rights Enable, a rule array whole, by element and resized.
-        (ar(), P::LOG_ENABLE, None, false),
+        (ar(), P::ENABLE, None, false),
         (ar(), P::POSITIVE_ACCESS_RULES, None, false),
         (ar(), P::POSITIVE_ACCESS_RULES, Some(1), false),
         (ar(), P::NEGATIVE_ACCESS_RULES, Some(0), false),

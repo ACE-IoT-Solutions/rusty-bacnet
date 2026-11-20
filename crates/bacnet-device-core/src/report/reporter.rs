@@ -4,25 +4,20 @@
 use alloc::vec::Vec;
 
 use bacnet_encoding::apdu::{
-    Apdu, ConfirmedRequest, SimpleAck, UnconfirmedRequest, decode_apdu, encode_apdu,
-    max_apdu_header_at_or_below,
+    Apdu, ConfirmedRequest, SimpleAck, decode_apdu, encode_apdu, max_apdu_header_at_or_below,
 };
-use bacnet_encoding::npdu::view::NetworkPriority;
 use bacnet_objects::database::ObjectDatabase;
 use bacnet_time::Instant;
 use bacnet_types::constructed::BACnetAddress;
-use bacnet_types::enums::{ConfirmedServiceChoice, UnconfirmedServiceChoice};
+use bacnet_types::enums::ConfirmedServiceChoice;
 use bacnet_types::error::Error;
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
 use bytes::{Bytes, BytesMut};
 
-use super::confirmed::{ConfirmedTable, Outstanding};
+use super::confirmed::ConfirmedTable;
 use super::outbox::Outbox;
-use super::{
-    Bindings, Destination, InvokeIds, Notification, NotifyService, ReportConfig, ReporterCounters,
-    peer_address,
-};
-use crate::clock::{Basis, DeviceClock};
+use super::{InvokeIds, NotifyService, ReportConfig, ReporterCounters};
+use crate::clock::{Basis, DeviceClock, Zone};
 use crate::cov::active::ActiveCovOverlay;
 use crate::cov::life_safety::{LifeSafetyCovSnapshots, is_life_safety_object};
 use crate::cov::{
@@ -33,21 +28,38 @@ use crate::reply::{self, SEGMENTED, emit};
 use crate::responder::{Access, Inbound, Outcome, Responder, Written};
 use crate::write::{WriteCommitObserver, WriteTarget};
 
+#[cfg(feature = "event-reporting")]
+#[path = "reporter_events.rs"]
+mod events;
+#[path = "reporter_ids.rs"]
+mod ids;
+#[path = "reporter_local.rs"]
+mod local;
+#[cfg(feature = "cov-multiple")]
+#[path = "reporter_multiple.rs"]
+mod multiple;
+#[path = "reporter_pop.rs"]
+mod pop;
 #[path = "reporter_tests.rs"]
 #[cfg(test)]
 mod tests;
 
-/// The [`Responder`] with COV reporting: SubscribeCOV and
-/// SubscribeCOVProperty, the notifications what a request or the host
-/// changes calls for, confirmed delivery with its retries, and the Device's
-/// subscription lists. It strings together the staged steps
-/// `bacnet-server` runs under its guards; the parity tests hold the two to
-/// the same notifications.
+pub use local::LocalValue;
+
+/// The [`Responder`] with COV reporting: SubscribeCOV, SubscribeCOVProperty
+/// and, with the `cov-multiple` feature, SubscribeCOVPropertyMultiple, the
+/// notifications what a request or the host changes calls for, confirmed
+/// delivery with its retries, and the Device's subscription lists. It
+/// strings together the staged steps `bacnet-server` runs under its
+/// guards; the parity tests hold the two to the same notifications.
 ///
 /// The host hands it each request ([`handle`](Self::handle)), each answer to
-/// a confirmed notification ([`reply`](Self::reply)), the objects it changes
-/// itself ([`changed`](Self::changed)) or deletes
-/// ([`remove_for_object`](Self::remove_for_object)), and the time whenever
+/// a confirmed notification ([`reply`](Self::reply)), the application's own
+/// changes, which it makes and reports ([`apply_local`](Self::apply_local),
+/// [`update`](Self::update), [`set_reliability`](Self::set_reliability),
+/// [`command`](Self::command), [`relinquish`](Self::relinquish)), the
+/// objects the host changes by other means ([`changed`](Self::changed)) or
+/// deletes ([`remove_for_object`](Self::remove_for_object)), and the time whenever
 /// [`next_deadline`](Self::next_deadline) comes ([`on_deadline`](Self::on_deadline)).
 /// It sends what [`pop`](Self::pop) hands out, and reports how each send
 /// ended ([`delivered`](Self::delivered)).
@@ -71,6 +83,13 @@ pub struct Reporter {
     /// An entry left the outbox since the owed references were last looked
     /// at.
     room_freed: bool,
+    /// References whose confirmed report found no invoke ID, oldest first,
+    /// looked at again only as IDs come back (#2512).
+    owed_ids: Vec<CovSubscriptionKey>,
+    /// Invoke IDs given back since those were last looked at: this
+    /// reporter's own, and those the host reports
+    /// ([`invoke_ids_released`](Self::invoke_ids_released)).
+    ids_freed: usize,
     /// References [`look`](Self::look) evaluated, for the tests.
     #[cfg(test)]
     looked: usize,
@@ -82,15 +101,44 @@ pub struct Reporter {
     counters: ReporterCounters,
     /// The latest `now` the host gave.
     last: Instant,
+    /// The COV-multiple path: its timestamped histories, and the reports
+    /// going out.
+    #[cfg(feature = "cov-multiple")]
+    multiple: multiple::Multiple,
+    /// The event path's schedule, when it is on.
+    #[cfg(feature = "event-reporting")]
+    events: Option<events::Events>,
 }
 
 impl Reporter {
     /// A reporter answering requests with `responder`, under `config`, at
-    /// first holding no subscription. Its outbox is allocated here.
+    /// first holding no subscription. Its outbox is allocated here. Refused
+    /// when the identity's Max_APDU_Length_Accepted encodes no header, or
+    /// when `config` asks for a fault or Event Enrollment pass without a
+    /// sweep.
     pub fn new(responder: Responder, config: ReportConfig) -> Result<Self, Error> {
         let identity = responder.identity();
         let device = identity.device_oid();
         let max_apdu = max_apdu_header_at_or_below(u32::from(identity.max_apdu_length()))?;
+        #[cfg(feature = "event-reporting")]
+        if config.fault_detection.is_some() && config.sweep.is_none() {
+            // The pass would report its changes to COV, and the FAULT
+            // transitions would wait for a sweep that never runs.
+            return Err(Error::Encoding(
+                "a fault pass needs the event path: set a sweep too".into(),
+            ));
+        }
+        // Its notifications go out through the event path.
+        #[cfg(feature = "event-enrollment")]
+        if config.event_enrollment.is_some() && config.sweep.is_none() {
+            return Err(Error::Encoding(
+                "an Event Enrollment pass needs the event path: set a sweep too".into(),
+            ));
+        }
+        #[cfg(feature = "cov-multiple")]
+        let multiple = multiple::Multiple::new(usize::from(identity.max_apdu_length()));
+        #[cfg(feature = "event-reporting")]
+        let events = events::Events::new(&config);
         Ok(Self {
             responder,
             device,
@@ -102,12 +150,18 @@ impl Reporter {
             looks: Vec::new(),
             owed: Vec::new(),
             room_freed: false,
+            owed_ids: Vec::new(),
+            ids_freed: 0,
             #[cfg(test)]
             looked: 0,
             releases: Vec::new(),
             snapshots: LifeSafetyCovSnapshots::default(),
             counters: ReporterCounters::default(),
             last: Instant::ZERO,
+            #[cfg(feature = "cov-multiple")]
+            multiple,
+            #[cfg(feature = "event-reporting")]
+            events,
         })
     }
 
@@ -139,10 +193,20 @@ impl Reporter {
         self.responder.set_time(db, basis, date, time)
     }
 
+    /// Move the Device's clock to `zone`, as [`Responder::set_zone`] does:
+    /// lent to `db` again, and still synchronized if it was, so
+    /// [`clock`](Self::clock)'s window follows the new local time. Refused,
+    /// changing nothing, when the reporter's `Responder` has no clock or
+    /// the clock refuses the zone.
+    pub fn set_zone(&mut self, db: &mut ObjectDatabase, zone: Zone) -> Result<(), Error> {
+        self.responder.set_zone(db, zone)
+    }
+
     /// Run `request` from `peer` against `db`, writing any answer to `out`
     /// for the host to send before anything [`pop`](Self::pop) hands out.
     ///
-    /// SubscribeCOV and SubscribeCOVProperty are answered here, and an
+    /// SubscribeCOV, SubscribeCOVProperty and, with the `cov-multiple`
+    /// feature, SubscribeCOVPropertyMultiple are answered here, and an
     /// accepted subscription queues its first notification. Every other
     /// request is the `Responder`'s, as [`Responder::handle`] runs it, with
     /// its reads answering the Device's subscription lists from the table
@@ -160,13 +224,37 @@ impl Reporter {
     ) -> Written {
         self.last = now;
         let apdu = request.apdu.clone();
+        #[cfg(feature = "event-reporting")]
+        if let Some(written) = self.event_service(db, &request, now, out) {
+            return written;
+        }
         if let Some(service) = subscribe_service(&apdu) {
+            #[cfg(feature = "cov-multiple")]
+            if service == ConfirmedServiceChoice::SUBSCRIBE_COV_PROPERTY_MULTIPLE {
+                return self.subscribe_multiple(db, peer, request, now, out);
+            }
             return self.subscribe(db, peer, service, request, now, out);
         }
         let handled = if Responder::classify(&apdu) == Access::Write {
             let mut capture = Capture::default();
+            #[cfg(not(feature = "cov-multiple"))]
             let written = self.responder.write(db, Some(&mut capture), request, out);
-            self.report_changes(db, &written.objects, &capture.0, now);
+            // Each attempt's timestamped changes are captured as it
+            // commits, around the Life Safety capture.
+            #[cfg(feature = "cov-multiple")]
+            let written = {
+                use crate::cov::timed_capture::{TimedCapture, TimedWriteCapture};
+                let queue = (&mut self.multiple.histories, now);
+                let all = TimedCapture::all(&self.table, now);
+                let mut timed = TimedWriteCapture::new(all, queue, Some(&mut capture));
+                let written = self.responder.write(db, Some(&mut timed), request, out);
+                // Changes the request's exact fanout may not select are
+                // looked at again, ahead of the backstop.
+                self.looks.extend_from_slice(timed.life_safety_queued());
+                self.multiple.replacing = timed.take_queued();
+                written
+            };
+            self.after_change(db, &written.objects, &capture.0, Tail::Request, now);
             written
         } else {
             let overlay = self.overlay(db, now);
@@ -188,11 +276,57 @@ impl Reporter {
     }
 
     /// The host changed `objects` itself (a sensor's sample, a value it
-    /// computes): queue what that reports.
-    pub fn changed(&mut self, db: &ObjectDatabase, objects: &[ObjectIdentifier], now: Instant) {
+    /// computes): queue what that reports. With the event path on, each
+    /// object's intrinsic reporting is evaluated first, as after a write,
+    /// and its event notifications queued ahead of the COV ones.
+    pub fn changed(&mut self, db: &mut ObjectDatabase, objects: &[ObjectIdentifier], now: Instant) {
         self.last = now;
         let snapshots = core::mem::take(&mut self.snapshots);
-        self.report_changes(db, objects, &snapshots, now);
+        self.after_change(db, objects, &snapshots, Tail::Host, now);
+    }
+
+    /// The tail every change runs, whichever entry it came through: a
+    /// request's write ([`handle`](Self::handle)), the host's change
+    /// ([`changed`](Self::changed), and so the local writes), or a
+    /// background pass of the event path. Out of line, so the entries
+    /// share one copy (#2524).
+    ///
+    /// With the event path on, `objects`' intrinsic reporting is evaluated
+    /// first and the notifications it fires queued, unless a pass committed
+    /// them already (`Tail::Committed`). With `cov-multiple` the
+    /// timestamped references then take the changes. Last, `objects` are
+    /// reported to COV, a Life Safety one held in `snapshots` from the
+    /// values it changed, so a committed transition's Status_Flags change
+    /// follows its notifications (#889).
+    #[inline(never)]
+    fn after_change(
+        &mut self,
+        db: &mut ObjectDatabase,
+        objects: &[ObjectIdentifier],
+        snapshots: &LifeSafetyCovSnapshots,
+        tail: Tail,
+        now: Instant,
+    ) {
+        #[cfg(feature = "event-reporting")]
+        let committed = if tail == Tail::Committed {
+            Vec::new()
+        } else {
+            self.object_events(db, objects, now)
+        };
+        #[cfg(not(feature = "event-reporting"))]
+        let committed: [ObjectIdentifier; 0] = [];
+        #[cfg(feature = "cov-multiple")]
+        if tail == Tail::Request {
+            // A request's attempts were captured as each committed; a
+            // transition committed since takes the place of its object's
+            // newest rows, as on the server (#2535).
+            self.capture_committed(db, &committed, now);
+        } else {
+            self.capture_changed(db, objects, snapshots, now);
+        }
+        #[cfg(not(feature = "cov-multiple"))]
+        let _ = (committed, tail);
+        self.report_changes(db, objects, snapshots, now);
     }
 
     /// The host deleted `object` from its database: drop its subscriptions,
@@ -238,12 +372,16 @@ impl Reporter {
     ) -> bool {
         self.last = now;
         self.release(ids);
-        let service = ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION;
+        let ours = |service| {
+            service == NotifyService::Cov.confirmed()
+                || service == NotifyService::CovMultiple.confirmed()
+                || service == NotifyService::Event.confirmed()
+        };
         let (invoke_id, outcome) = match decode_apdu(Bytes::copy_from_slice(apdu)) {
-            Ok(Apdu::SimpleAck(ack)) if ack.service_choice == service => {
+            Ok(Apdu::SimpleAck(ack)) if ours(ack.service_choice) => {
                 (ack.invoke_id, Delivery::Acknowledged)
             }
-            Ok(Apdu::Error(error)) if error.service_choice == service => {
+            Ok(Apdu::Error(error)) if ours(error.service_choice) => {
                 (error.invoke_id, Delivery::Failed)
             }
             Ok(Apdu::Reject(reject)) => (reject.invoke_id, Delivery::Failed),
@@ -253,37 +391,95 @@ impl Reporter {
         let Some(out) = self.confirmed.answered(from, invoke_id) else {
             return false;
         };
-        ids.release(&out.peer, out.invoke_id);
+        self.give_back(ids, &out.peer, out.invoke_id);
         self.end_confirmed(out.token, outcome, now);
         true
     }
 
     /// When the host should call [`on_deadline`](Self::on_deadline): the
-    /// earliest lifetime, report deadline or overdue answer, or the latest
-    /// `now` it gave when references are owed a look.
+    /// earliest lifetime, report deadline or overdue answer, the earliest
+    /// Max_Notification_Delay deadline of a COV-multiple context with
+    /// changes pending, the next sweep, fault pass or Event Enrollment pass
+    /// of the event path, or
+    /// the latest `now` it gave when references are owed a look.
     pub fn next_deadline(&self) -> Option<Instant> {
-        let looks = !self.looks.is_empty() || (!self.owed.is_empty() && self.room_freed);
+        let looks = !self.looks.is_empty()
+            || (!self.owed.is_empty() && self.room_freed)
+            || (self.owes_invoke_id() && self.ids_freed > 0);
         let resend = self.confirmed.resend_due();
         bacnet_time::earliest([
             self.table.next_expiry(),
             self.confirmed.next_deadline(),
             (looks || resend).then_some(self.last),
+            #[cfg(feature = "cov-multiple")]
+            self.multiple_deadline(),
+            #[cfg(feature = "event-reporting")]
+            self.events.as_ref().and_then(events::Events::deadline),
         ])
     }
 
     /// The time `now` has come: expire lifetimes and abandoned reports,
-    /// time out unanswered notifications (to resend, or failed), and look
-    /// again at the references owed one.
-    pub fn on_deadline(&mut self, db: &ObjectDatabase, ids: &mut dyn InvokeIds, now: Instant) {
+    /// time out unanswered notifications (to resend, or failed), run the
+    /// event path's sweep, fault pass and Event Enrollment pass when due,
+    /// and look again at the
+    /// references owed one.
+    pub fn on_deadline(&mut self, db: &mut ObjectDatabase, ids: &mut dyn InvokeIds, now: Instant) {
+        self.expire_and_time_out(ids, now);
+        #[cfg(feature = "event-reporting")]
+        self.event_deadline(db, now);
+        self.look_owed(db, now);
+    }
+
+    /// [`on_deadline`](Self::on_deadline) over a shared database, for a
+    /// reporter with no event path (no [`ReportConfig`] sweep), whose
+    /// deadlines commit nothing: a host that serves reads meanwhile, as the
+    /// endpoint does, needn't take the database exclusively. A reporter
+    /// with the event path on refuses it, doing nothing: its sweep and
+    /// fault pass need [`on_deadline`](Self::on_deadline), and a host that
+    /// went on calling this would find the deadline still due.
+    pub fn on_cov_deadline(
+        &mut self,
+        db: &ObjectDatabase,
+        ids: &mut dyn InvokeIds,
+        now: Instant,
+    ) -> Result<(), Error> {
+        #[cfg(feature = "event-reporting")]
+        if self.events.is_some() {
+            return Err(Error::Encoding(
+                "the event path's deadlines need on_deadline".into(),
+            ));
+        }
+        self.expire_and_time_out(ids, now);
+        self.look_owed(db, now);
+        Ok(())
+    }
+
+    /// Expire lifetimes and abandoned reports, and time out unanswered
+    /// notifications, at `now`.
+    fn expire_and_time_out(&mut self, ids: &mut dyn InvokeIds, now: Instant) {
         self.last = now;
         self.release(ids);
         self.table.expire(now);
         self.settle();
         for out in self.confirmed.time_out(now) {
-            ids.release(&out.peer, out.invoke_id);
+            self.give_back(ids, &out.peer, out.invoke_id);
             self.end_confirmed(out.token, Delivery::Failed, now);
         }
+    }
+
+    /// Look again at the references owed a look at `now`.
+    fn look_owed(&mut self, db: &ObjectDatabase, now: Instant) {
         let mut keys = core::mem::take(&mut self.looks);
+        // Contexts whose pending changes reached their deadline.
+        #[cfg(feature = "cov-multiple")]
+        keys.extend(self.multiple_due(now));
+        // As many references owed an ID as IDs came back, ahead of those
+        // owed room; one refused again waits for the next.
+        // Held event notifications need none of these: every `pop` tries
+        // them first, and with IDs counted per peer, reserving for them
+        // would hold a reference to one peer back behind another's.
+        let freed = core::mem::take(&mut self.ids_freed).min(self.owed_ids.len());
+        keys.extend_from_slice(&self.owed_ids[..freed]);
         let mut owed = 0;
         if core::mem::take(&mut self.room_freed) {
             // The oldest owed references, as many as there are free
@@ -304,111 +500,24 @@ impl Reporter {
             settled && !self.owed.is_empty() && self.outbox.room().entries_free() > 0;
     }
 
-    /// The next notification to send, its APDU appended to `out`: a
-    /// confirmed one due again first, then the outbox in order. A confirmed
-    /// one takes an invoke ID from `ids`; one that gets none ends unsent,
-    /// and its subscription is owed a later look. `bindings` resolves the
-    /// Device recipients of event notifications, from #2303's third part.
-    pub fn pop(
-        &mut self,
-        bindings: &dyn Bindings,
-        ids: &mut dyn InvokeIds,
-        now: Instant,
-        out: &mut BytesMut,
-    ) -> Option<Notification> {
-        let _ = bindings;
-        self.last = now;
-        self.release(ids);
-        if let Some(resend) = self.confirmed.resend(now, self.timing.timeout) {
-            let notification = Notification {
-                token: resend.token,
-                to: Destination::Subscriber(resend.to.clone()),
-                service: NotifyService::Cov,
-                invoke_id: Some(resend.invoke_id),
-                priority: NetworkPriority::Normal,
-            };
-            let (invoke_id, params) = (resend.invoke_id, resend.params.clone());
-            self.encode_confirmed(invoke_id, &params, out);
-            self.counters.resent += 1;
-            return Some(notification);
-        }
-        loop {
-            let (token, key, to, params, confirmed, begun) = self.outbox.pop(|entry, params| {
-                (
-                    entry.token,
-                    entry.key.clone(),
-                    entry.to.clone(),
-                    params.to_vec(),
-                    entry.confirmed,
-                    entry.begun,
-                )
-            })?;
-            self.room_freed = true;
-            let start = out.len();
-            let invoke_id = if confirmed {
-                // A report popped so late that its answers would be cut off
-                // ends as the server's worker cut off at its first poll
-                // does: failed, held off.
-                // Not NotSent and owed, as below: parity with the server needs the hold-off.
-                let cutoff = begun.saturating_add(self.timing.cutoff());
-                if now >= cutoff {
-                    self.end_confirmed(token, Delivery::Failed, now);
-                    continue;
-                }
-                let peer = peer_address(&to);
-                let Some(invoke_id) = ids.take(&peer) else {
-                    // No invoke ID to send it under: it ends unsent, and the
-                    // change is looked at again later.
-                    self.table.delivered(token, Delivery::NotSent, now);
-                    self.owe(key);
-                    continue;
-                };
-                self.encode_confirmed(invoke_id, &params, out);
-                let deadline = now.saturating_add(self.timing.timeout);
-                let retries = self.timing.retries;
-                let (to, params) = (to.clone(), params);
-                self.confirmed.insert(Outstanding::new(
-                    (token, key.object()),
-                    peer,
-                    to,
-                    invoke_id,
-                    params,
-                    (deadline, cutoff),
-                    retries,
-                ));
-                Some(invoke_id)
-            } else {
-                let pdu = Apdu::UnconfirmedRequest(UnconfirmedRequest {
-                    service_choice: UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION,
-                    service_request: Bytes::from(params),
-                });
-                encode_apdu(out, &pdu).expect("an UnconfirmedRequest always encodes");
-                None
-            };
-            let counters = &mut self.counters.cov;
-            counters.notifications_sent += 1;
-            if confirmed {
-                counters.notifications_confirmed += 1;
-            } else {
-                counters.notifications_unconfirmed += 1;
-            }
-            counters.notification_bytes_sent += (out.len() - start) as u64;
-            return Some(Notification {
-                token,
-                to: Destination::Subscriber(to),
-                service: NotifyService::Cov,
-                invoke_id,
-                priority: NetworkPriority::Normal,
-            });
-        }
-    }
-
     /// How the send of the notification `token` names ended. An
     /// unconfirmed one that was [`Sent`](Delivery::Sent) becomes its
     /// subscription's baseline. A confirmed one ends through
     /// [`reply`](Self::reply) or its timeout; the host reports one here
     /// only when it couldn't send it ([`NotSent`](Delivery::NotSent)), and
     /// it then ends with no hold-off.
+    ///
+    /// With `cov-multiple`, call this for every unconfirmed notification
+    /// [`pop`](Self::pop) hands out, whichever way its send ended. A
+    /// report to a COV-multiple context holds the context's send turn
+    /// until the last of its notifications is reported here: one reported
+    /// sent retires the changes it carried, and one that was not sent
+    /// stops the report, so the notifications queued after it are not
+    /// handed out and their changes wait for the context's
+    /// Max_Notification_Delay. A notification the host never reports on
+    /// keeps the turn, and every later change of that context from being
+    /// queued, until its reference leaves the table: no deadline ends it,
+    /// as a confirmed notification's does.
     pub fn delivered(
         &mut self,
         token: Token,
@@ -423,23 +532,36 @@ impl Reporter {
                 return;
             }
             let out = self.confirmed.take(token).expect("held above");
-            ids.release(&out.peer, out.invoke_id);
+            self.give_back(ids, &out.peer, out.invoke_id);
             self.end_confirmed(token, outcome, now);
             return;
         }
-        self.table.delivered(token, outcome, now);
+        // An unconfirmed event notification leaves no baseline.
+        if token.is_event() {
+            return;
+        }
+        // One part of an unconfirmed COV-multiple report.
+        #[cfg(feature = "cov-multiple")]
+        if self.part_delivered(token, outcome, now) {
+            self.settle();
+            return;
+        }
+        // One not sent that a change was measured from owes a look (#2508).
+        let owed = self.table.delivered(token, outcome, now);
+        self.looks.extend(owed);
         self.settle();
     }
 
     /// The Device's subscription lists in `db`, live at `now`, for a read
-    /// the host runs itself. Active_COV_Multiple_Subscriptions is the
-    /// Device's own: the reporter runs no SubscribeCOVPropertyMultiple
-    /// (#2320), so its table holds no reference that list would show.
+    /// the host runs itself. Without the `cov-multiple` feature
+    /// Active_COV_Multiple_Subscriptions is the Device's own: the reporter
+    /// then runs no SubscribeCOVPropertyMultiple, so its table holds no
+    /// reference that list would show.
     pub fn overlay<'a>(
         &'a self,
         db: &'a ObjectDatabase,
         now: Instant,
-    ) -> ActiveCovOverlay<'a, false> {
+    ) -> ActiveCovOverlay<'a, { cfg!(feature = "cov-multiple") }> {
         ActiveCovOverlay::new(&self.table, db, self.device, now)
     }
 
@@ -502,6 +624,8 @@ impl Reporter {
             if let Some(stored) = db.get(&object).filter(|_| !subs.is_empty()) {
                 self.report(stored, &subs, false, now);
             }
+            #[cfg(feature = "cov-multiple")]
+            self.report_multiples(db, object, None, now);
         }
         for change in snapshots.changes(db, objects) {
             let subs: Vec<_> = self
@@ -515,6 +639,8 @@ impl Reporter {
             {
                 self.report(stored, &subs, change.status_changed(), now);
             }
+            #[cfg(feature = "cov-multiple")]
+            self.report_multiples(db, change.object_identifier, Some(&change), now);
         }
     }
 
@@ -538,20 +664,25 @@ impl Reporter {
     /// A reference whose subscription or object is gone can't be looked
     /// at, so it is owed nothing more.
     fn look(&mut self, db: &ObjectDatabase, keys: &[CovSubscriptionKey], now: Instant) {
-        for (at, key) in keys.iter().enumerate() {
+        // COV-multiple references are looked at by context.
+        #[cfg(feature = "cov-multiple")]
+        self.look_multiple(db, keys, now);
+        let single = |key: &CovSubscriptionKey| key.multiple_context().is_none();
+        for (at, key) in keys.iter().enumerate().filter(|(_, key)| single(key)) {
             let object = key.object();
-            if keys[..at].iter().any(|earlier| earlier.object() == object) {
+            let seen = |earlier: &CovSubscriptionKey| single(earlier) && earlier.object() == object;
+            if keys[..at].iter().any(seen) {
                 continue;
             }
             let mut subs = Vec::new();
             for (later, key) in keys.iter().enumerate().skip(at) {
-                if key.object() != object || keys[at..later].contains(key) {
+                if !single(key) || key.object() != object || keys[at..later].contains(key) {
                     continue;
                 }
                 let sub = self.table.get_subscription(key);
                 match sub.filter(|sub| self.table.is_current(sub, now)) {
                     Some(sub) => subs.push(sub.clone()),
-                    None => self.owed.retain(|owed| owed != key),
+                    None => self.forgive(|owed| owed == key),
                 }
             }
             #[cfg(test)]
@@ -561,7 +692,7 @@ impl Reporter {
             match db.get(&object) {
                 Some(stored) if !subs.is_empty() => self.report(stored, &subs, false, now),
                 Some(_) => {}
-                None => self.owed.retain(|owed| owed.object() != object),
+                None => self.forgive(|owed| owed.object() == object),
             }
         }
     }
@@ -584,7 +715,7 @@ impl Reporter {
         let outbox = &self.outbox;
         let mut refused = Vec::new();
         // Owed references admitted: the budget may still drop their reports.
-        let owed = &self.owed;
+        let (owed, owed_ids) = (&self.owed, &self.owed_ids);
         let mut admitted = Vec::new();
         let evaluation = Evaluation {
             device: self.device,
@@ -602,7 +733,7 @@ impl Reporter {
                 // of octets: owing it would only see it refused again.
                 let hopeless = limits.entries == 0 || octets > limits.octets || octets > max_octets;
                 if !hopeless && room.take(octets, outbox.queued(sub.key())) {
-                    if owed.contains(sub.key()) {
+                    if owed.contains(sub.key()) || owed_ids.contains(sub.key()) {
                         admitted.push(sub.key().clone());
                     }
                     return Some(());
@@ -612,7 +743,7 @@ impl Reporter {
             },
         );
         self.settle();
-        if !self.owed.is_empty() {
+        if !self.owed.is_empty() || !self.owed_ids.is_empty() {
             self.keep_owed(subs, &reports, &refused, &admitted, &budget);
         }
         for report in reports {
@@ -621,7 +752,7 @@ impl Reporter {
                 report.token,
                 sub.key().clone(),
                 sub.endpoint(),
-                sub.issue_confirmed_notifications,
+                (sub.issue_confirmed_notifications, NotifyService::Cov),
                 now,
                 &report.params,
             );
@@ -660,7 +791,7 @@ impl Reporter {
         let spent = budget
             .is_exhausted()
             .then(|| reports.last().map_or(0, |report| report.index + 1));
-        self.owed.retain(|key| {
+        let keep = |key: &CovSubscriptionKey| {
             let Some(at) = subs.iter().position(|sub| sub.key() == key) else {
                 return true;
             };
@@ -671,7 +802,11 @@ impl Reporter {
                 return !hopeless;
             }
             admitted.contains(key) || spent.is_some_and(|from| at >= from)
-        });
+        };
+        self.owed.retain(keep);
+        // One refused room now is owed room, not an ID.
+        let refused_room = |key: &CovSubscriptionKey| refused.iter().any(|(again, _)| again == key);
+        self.owed_ids.retain(|key| keep(key) && !refused_room(key));
     }
 
     /// Owe `key` a later look, after those owed already; counted once,
@@ -684,12 +819,24 @@ impl Reporter {
         }
     }
 
-    /// End the confirmed report `token` names as `outcome` says.
+    /// End the confirmed report `token` names as `outcome` says. An event
+    /// notification's end is only counted: nothing waits on it.
     fn end_confirmed(&mut self, token: Token, outcome: Delivery, now: Instant) {
         if outcome == Delivery::Failed {
             self.counters.failed += 1;
         }
+        if token.is_event() {
+            return;
+        }
+        // A COV-multiple report's claim is settled before the table ends
+        // the report, so what it returns is back before the mark clears.
+        #[cfg(feature = "cov-multiple")]
+        let context = self.settle_lodged(token, outcome, now);
         let owed = self.table.delivered(token, outcome, now);
+        #[cfg(feature = "cov-multiple")]
+        if let Some(context) = context.filter(|_| outcome == Delivery::Failed) {
+            self.hold_off_multiple(&context, token);
+        }
         self.looks.extend(owed);
         self.settle();
     }
@@ -699,15 +846,27 @@ impl Reporter {
     /// removed reference's queued notifications die, and owed references
     /// get their look.
     fn settle(&mut self) {
+        self.settle_after(true);
+    }
+
+    /// [`settle`](Self::settle), with the timestamped histories brought in
+    /// line with the table when `follow`: every mutation but the
+    /// SubscribeCOVPropertyMultiple service, which does that itself.
+    fn settle_after(&mut self, follow: bool) {
         let counts = self.table.take_counts();
         add(&mut self.counters.cov, &counts);
         let fenced = self.table.take_fenced();
+        #[cfg(feature = "cov-multiple")]
+        self.settle_multiple(&fenced, follow);
+        #[cfg(not(feature = "cov-multiple"))]
+        let _ = follow;
         if fenced.is_empty() {
             return;
         }
         let before = self.outbox.room();
         self.outbox.kill(|entry| {
-            fenced.tokens.contains(&entry.token) || fenced.removed.contains(&entry.key)
+            let removed = entry.key().is_some_and(|key| fenced.removed.contains(key));
+            fenced.tokens.contains(&entry.token) || removed
         });
         self.room_freed |= self.outbox.room().octets_free() > before.octets_free();
         for token in &fenced.tokens {
@@ -715,18 +874,25 @@ impl Reporter {
                 self.releases.push((out.peer, out.invoke_id));
             }
         }
-        self.owed.retain(|key| !fenced.removed.contains(key));
+        self.forgive(|key| fenced.removed.contains(key));
         self.looks.extend(fenced.revisit);
     }
 
     /// Give back the invoke IDs of fenced notifications.
     fn release(&mut self, ids: &mut dyn InvokeIds) {
+        self.count_freed(self.releases.len());
         for (peer, id) in self.releases.drain(..) {
             ids.release(&peer, id);
         }
     }
 
-    fn encode_confirmed(&self, invoke_id: u8, params: &[u8], out: &mut BytesMut) {
+    fn encode_confirmed(
+        &self,
+        invoke_id: u8,
+        service: NotifyService,
+        params: &[u8],
+        out: &mut BytesMut,
+    ) {
         let pdu = Apdu::ConfirmedRequest(ConfirmedRequest {
             segmented: false,
             more_follows: false,
@@ -736,26 +902,43 @@ impl Reporter {
             invoke_id,
             sequence_number: None,
             proposed_window_size: None,
-            service_choice: ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION,
+            service_choice: service.confirmed(),
             service_request: Bytes::copy_from_slice(params),
         });
         encode_apdu(out, &pdu).expect("a validated Max-APDU always encodes");
     }
 }
 
-/// SubscribeCOV or SubscribeCOVProperty, read from an unsegmented confirmed
-/// request's header.
+/// A subscribe service the reporter runs, read from an unsegmented
+/// confirmed request's header.
 fn subscribe_service(apdu: &[u8]) -> Option<ConfirmedServiceChoice> {
     let (&first, service) = (apdu.first()?, apdu.get(3)?);
     if first >> 4 != 0 || first & SEGMENTED != 0 {
         return None;
     }
     let service = ConfirmedServiceChoice::from_raw(*service);
-    matches!(
+    let multiple = cfg!(feature = "cov-multiple")
+        && service == ConfirmedServiceChoice::SUBSCRIBE_COV_PROPERTY_MULTIPLE;
+    let single = matches!(
         service,
         ConfirmedServiceChoice::SUBSCRIBE_COV | ConfirmedServiceChoice::SUBSCRIBE_COV_PROPERTY
-    )
-    .then_some(service)
+    );
+    (single || multiple).then_some(service)
+}
+
+/// Which entry a change came through, for [`Reporter::after_change`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tail {
+    /// A request's write, its timestamped changes captured as each attempt
+    /// committed.
+    Request,
+    /// A change the host made or tells of, or the fault pass's, whose
+    /// transitions are evaluated here.
+    Host,
+    /// A background pass's changes, its transitions committed and
+    /// distributed already.
+    #[cfg(feature = "event-reporting")]
+    Committed,
 }
 
 /// Add `counts`, one table mutation's, to the running `total`.

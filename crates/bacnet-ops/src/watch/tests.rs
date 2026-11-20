@@ -5,14 +5,18 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use bacnet_client::client::{CovTarget, ReceivedCOVNotification};
+use bacnet_client::client::{COVEvent, ReceivedCOVNotification, Station};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
+use super::hub::Phase;
+use super::hub::*;
 use super::shared::Registry;
-use super::test_lab::{LAB, Lab, ai, object, oid, settle};
+use super::test_lab::{LAB, Lab, ai, lab_at, object, oid, routed_at, settle};
 use super::*;
 use crate::format::decode_all;
+use std::time::Duration;
+use tokio::sync::watch;
 
 /// The Present_Value among a snapshot's rows.
 pub(super) fn present_value(snapshot: &Snapshot) -> Option<f32> {
@@ -42,7 +46,7 @@ async fn two_leases_share_one_subscription_until_the_last_goes() {
     assert_eq!(entry.monitored_property_reference.object_identifier, ai(1));
     let snapshot = first.snapshot();
     assert_eq!(snapshot.source, Some(Source::Cov));
-    assert_eq!(snapshot.state, State::Live);
+    assert_eq!(snapshot.state, Phase::Live);
     assert_eq!(present_value(&snapshot), Some(10.0));
     assert_eq!(lab.hub.stats().points, 1);
     drop(first);
@@ -58,14 +62,12 @@ async fn two_leases_share_one_subscription_until_the_last_goes() {
     lab.stop().await;
 }
 
-/// No lifetime-0 subscription can be built: the type refuses zero, and
-/// the class table calls zero a write.
+/// No lifetime-0 subscription can be built: the type refuses zero (the
+/// `bacnet` tool's class table calls zero a write, `bacnet_tool::class`).
 #[test]
 fn no_lifetime_is_indefinite() {
     assert!(Lifetime::new(0).is_none());
     assert_eq!(Lifetime::new(1).unwrap().secs(), 1);
-    assert_eq!(class::of_subscribe(Lifetime::DEFAULT.secs()), Class::Read);
-    assert_eq!(class::of_subscribe(0), Class::Write);
     let fast = WatchOptions {
         poll_every: Duration::from_secs(9),
         ..WatchOptions::default()
@@ -157,7 +159,7 @@ async fn a_silent_device_is_reported() {
     lab.quirks.muted.store(true, Ordering::Relaxed);
     tokio::time::sleep(Duration::from_secs(245)).await;
     let snapshot = lease.snapshot();
-    assert_eq!(snapshot.state, State::Unreachable, "{snapshot:?}");
+    assert_eq!(snapshot.state, Phase::Unreachable, "{snapshot:?}");
     assert_eq!(snapshot.source, Some(Source::Poll));
     // The poll that followed failed too: its error is the note, while the
     // reason the point is polled stays the renewal's.
@@ -173,7 +175,7 @@ async fn a_silent_device_is_reported() {
     tokio::time::sleep(Duration::from_secs(320)).await;
     let snapshot = lease.snapshot();
     assert_eq!(snapshot.source, Some(Source::Cov), "{snapshot:?}");
-    assert_eq!(snapshot.state, State::Live);
+    assert_eq!(snapshot.state, Phase::Live);
     lab.stop().await;
 }
 
@@ -182,7 +184,7 @@ async fn a_silent_device_is_reported() {
 async fn a_property_watch_subscribes_to_the_property() {
     let lab = Lab::start(WatchOptions::default()).await;
     let point = Point {
-        device: LAB,
+        device: lab_at(),
         object: ai(3),
         watched: Watched::Property {
             property: PropertyIdentifier::PRESENT_VALUE,
@@ -251,7 +253,7 @@ async fn shutdown_cancels_every_subscription() {
     assert_eq!(lab.table().await.len(), 2);
     assert!(lab.hub.shutdown(Duration::from_secs(30)).await);
     assert!(lab.table().await.is_empty());
-    assert_eq!(a.snapshot().state, State::Stopped);
+    assert_eq!(a.snapshot().state, Phase::Stopped);
     assert_eq!(lab.hub.watch(object(ai(3))).unwrap_err(), WatchError::Shut);
     drop((a, b));
     lab.stop().await;
@@ -278,6 +280,11 @@ async fn joining_as_the_last_leaves_keeps_one_live_subscription() {
     settle().await;
     assert_eq!(present_value(&new.snapshot()), Some(42.0));
     lab.stop().await;
+}
+
+/// `received` as the client's stream carries it.
+pub(super) fn event(received: &ReceivedCOVNotification) -> COVEvent {
+    COVEvent::Object(received.clone())
 }
 
 /// A notification for `point`'s object, from the lab device's MAC,
@@ -342,24 +349,34 @@ fn notifications_cannot_grow_the_rows() {
     assert!(rows.len() <= MAX_ROWS);
 
     let element = Point {
-        device: LAB,
+        device: lab_at(),
         object: oid(ObjectType::ANALOG_OUTPUT, 1),
         watched: Watched::Property {
             property: PropertyIdentifier::PRIORITY_ARRAY,
             index: Some(8),
         },
     };
-    let target = CovTarget::local(&[2]);
+    let target = Station::local(&[2]);
     let other = notification(
         element.object,
         &[(PropertyIdentifier::PRIORITY_ARRAY, Some(9))],
     );
-    assert!(!dispatch::belongs(&element, Some(&target), &other));
+    assert!(!dispatch::belongs(
+        &element,
+        Some(&target),
+        &event(&other),
+        None
+    ));
     let mine = notification(
         element.object,
         &[(PropertyIdentifier::PRIORITY_ARRAY, Some(8))],
     );
-    assert!(dispatch::belongs(&element, Some(&target), &mine));
+    assert!(dispatch::belongs(
+        &element,
+        Some(&target),
+        &event(&mine),
+        None
+    ));
     let mut rows = Vec::new();
     dispatch::merge(&mut rows, &element, &[], false, &other);
     assert!(rows.is_empty());
@@ -372,7 +389,12 @@ fn notifications_cannot_grow_the_rows() {
         &[(PropertyIdentifier::PRIORITY_ARRAY, None)],
     );
     array.notification.list_of_values[0].value = [0x00; 16].to_vec();
-    assert!(!dispatch::belongs(&element, Some(&target), &array));
+    assert!(!dispatch::belongs(
+        &element,
+        Some(&target),
+        &event(&array),
+        None
+    ));
     let mut kept = rows.clone();
     dispatch::merge(&mut kept, &element, &[], false, &array);
     assert_eq!(kept, rows, "the previous value stays");
@@ -380,15 +402,25 @@ fn notifications_cannot_grow_the_rows() {
         element.object,
         &[(PropertyIdentifier::PRIORITY_ARRAY, None)],
     );
-    assert!(dispatch::belongs(&element, Some(&target), &single));
+    assert!(dispatch::belongs(
+        &element,
+        Some(&target),
+        &event(&single),
+        None
+    ));
     let whole = Point {
         watched: Watched::Property {
             property: PropertyIdentifier::PRIORITY_ARRAY,
             index: None,
         },
-        ..element
+        ..element.clone()
     };
-    assert!(!dispatch::belongs(&whole, Some(&target), &mine));
+    assert!(!dispatch::belongs(
+        &whole,
+        Some(&target),
+        &event(&mine),
+        None
+    ));
 }
 
 /// A property watch that keeps Status_Flags takes in its property
@@ -397,7 +429,7 @@ fn notifications_cannot_grow_the_rows() {
 #[test]
 fn a_property_watch_takes_its_property_whatever_the_order() {
     let point = Point {
-        device: LAB,
+        device: lab_at(),
         object: ai(1),
         watched: Watched::Property {
             property: PropertyIdentifier::PRESENT_VALUE,
@@ -427,38 +459,216 @@ async fn lagged_notifications_are_counted() {
     ));
     let (sender, receiver) = tokio::sync::broadcast::channel(1);
     for _ in 0..4 {
-        sender.send(notification(ai(1), &[])).unwrap();
+        sender.send(event(&notification(ai(1), &[]))).unwrap();
     }
     let (stop, stopped) = watch::channel(false);
-    let task = tokio::spawn(dispatch::run(Arc::clone(&registry), receiver, stopped));
+    let (_events, events) = tokio::sync::broadcast::channel(1);
+    let (_devices, devices) = tokio::sync::broadcast::channel(1);
+    let heard = dispatch::Heard {
+        events,
+        devices,
+        own: Box::new(|| None),
+    };
+    let task = tokio::spawn(dispatch::run(
+        Arc::clone(&registry),
+        receiver,
+        heard,
+        stopped,
+    ));
     settle().await;
     assert_eq!(registry.lagged.load(Ordering::Relaxed), 3);
     stop.send_replace(true);
     task.await.unwrap();
 }
 
-/// A point whose device isn't in the table yet is reported so, and is
-/// subscribed once the device appears.
+/// The hub subscribes per object or property, so a COV-multiple
+/// notification answers none of its watches, even one carrying a watch's
+/// process identifier from its device: the receiver counts it and leaves the
+/// entry alone (#2654).
 #[tokio::test(start_paused = true)]
-async fn a_device_that_appears_later_is_subscribed() {
+async fn cov_multiple_notifications_are_counted_and_left_alone() {
+    use bacnet_client::client::{COVNotificationDelivery, ReceivedCOVNotificationMultiple};
+    use bacnet_services::cov_multiple::{
+        COVNotificationItem, COVNotificationMultipleRequest, COVNotificationValue,
+    };
+    let registry = Arc::new(Registry::new(
+        PROCESS_BASE,
+        Duration::ZERO,
+        POINT_PROPERTIES.to_vec(),
+        false,
+    ));
+    let shared = Arc::new(super::shared::Shared::new(object(ai(1)), PROCESS_BASE, 4));
+    registry
+        .table()
+        .by_process
+        .insert(PROCESS_BASE, Arc::clone(&shared));
+    shared.lock().target = Some(Station::local(&[2]));
+    let multiple = COVEvent::Multiple(ReceivedCOVNotificationMultiple {
+        notification: COVNotificationMultipleRequest {
+            subscriber_process_identifier: PROCESS_BASE,
+            initiating_device_identifier: oid(ObjectType::DEVICE, LAB),
+            time_remaining: 100,
+            timestamp: None,
+            list_of_cov_notifications: vec![COVNotificationItem {
+                monitored_object_identifier: ai(1),
+                list_of_values: vec![COVNotificationValue {
+                    property_identifier: PropertyIdentifier::PRESENT_VALUE,
+                    property_array_index: None,
+                    value: vec![0x44, 0x42, 0x28, 0, 0],
+                    time_of_change: None,
+                }],
+            }],
+        },
+        source_mac: bacnet_types::MacAddr::from_slice(&[2]),
+        source_network: None,
+        source_address: None,
+        delivery: COVNotificationDelivery::Unconfirmed,
+    });
+    let (sender, receiver) = tokio::sync::broadcast::channel(4);
+    sender.send(multiple.clone()).unwrap();
+    let single = notification(ai(1), &[(PropertyIdentifier::PRESENT_VALUE, None)]);
+    sender.send(event(&single)).unwrap();
+    sender.send(multiple).unwrap();
+    let (stop, stopped) = watch::channel(false);
+    let (_events, events) = tokio::sync::broadcast::channel(1);
+    let (_devices, devices) = tokio::sync::broadcast::channel(1);
+    let heard = dispatch::Heard {
+        events,
+        devices,
+        own: Box::new(|| None),
+    };
+    let task = tokio::spawn(dispatch::run(
+        Arc::clone(&registry),
+        receiver,
+        heard,
+        stopped,
+    ));
+    settle().await;
+    assert_eq!(registry.cov_multiple_ignored.load(Ordering::Relaxed), 2);
+    assert_eq!(registry.lagged.load(Ordering::Relaxed), 0);
+    // Only the single-object notification reached the entry.
+    assert_eq!(shared.lock().snapshot.notifications, 1);
+    stop.send_replace(true);
+    task.await.unwrap();
+}
+
+/// A remote point with no route known is reported so and sends nothing;
+/// once the discovery table holds a router for its network, it is read
+/// through that router.
+#[tokio::test(start_paused = true)]
+async fn a_route_that_appears_later_is_used() {
     let lab = Lab::start(WatchOptions::default()).await;
     let point = Point {
-        device: 2002,
-        object: ai(1),
-        watched: Watched::Object,
+        device: routed_at(),
+        ..object(ai(1))
     };
     let lease = lab.hub.watch(point).unwrap();
     settle().await;
     let snapshot = lease.snapshot();
-    assert_eq!(snapshot.state, State::Unreachable);
-    assert!(snapshot.note.as_deref().unwrap().contains("device table"));
-    lab.engine.client().add_device(2002, &[2]).await.unwrap();
+    assert_eq!(snapshot.state, Phase::Unreachable);
+    assert_eq!(snapshot.why, Some(Why::Missing));
+    assert!(snapshot.note.as_deref().unwrap().contains("no route"));
+    assert!(lab.services().is_empty(), "{:?}", lab.services());
+    lab.route().await;
     tokio::time::sleep(Duration::from_secs(30)).await;
-    let snapshot = lease.snapshot();
-    assert_eq!(snapshot.source, Some(Source::Cov), "{snapshot:?}");
-    assert_eq!(snapshot.state, State::Live);
-    assert_eq!(snapshot.note, None);
-    assert_eq!(present_value(&snapshot), Some(10.0));
-    assert_eq!(lab.table().await.len(), 1);
+    assert!(
+        lab.services().first() == Some(&super::test_lab::RPM),
+        "read through the router: {:?}",
+        lab.services()
+    );
+    drop(lease);
+    lab.stop().await;
+}
+
+/// A notification carrying the watched property clears the error a read
+/// left for the whole object; one carrying only another property doesn't.
+#[tokio::test(start_paused = true)]
+async fn a_notified_value_clears_the_whole_objects_error() {
+    let registry = Arc::new(Registry::new(
+        PROCESS_BASE,
+        Duration::ZERO,
+        POINT_PROPERTIES.to_vec(),
+        false,
+    ));
+    let shared = Arc::new(super::shared::Shared::new(object(ai(1)), PROCESS_BASE, 4));
+    registry
+        .table()
+        .by_process
+        .insert(PROCESS_BASE, Arc::clone(&shared));
+    {
+        let mut entry = shared.lock();
+        entry.target = Some(Station::local(&[2]));
+        entry.failure = Some(crate::format::PropertyError::NoValue);
+    }
+    let flags = notification(ai(1), &[(PropertyIdentifier::STATUS_FLAGS, None)]);
+    registry.deliver(&event(&flags), None);
+    assert!(shared.lock().failure.is_some(), "not the watched property");
+    let value = notification(ai(1), &[(PropertyIdentifier::PRESENT_VALUE, None)]);
+    registry.deliver(&event(&value), None);
+    assert!(shared.lock().failure.is_none(), "a value of the property");
+}
+
+/// A first read the link never sent fails the point the same way whether
+/// the watch reads the whole object or one property: `Phase::Failed`, with
+/// no row of text standing in for a value (#2610). Before, the
+/// one-property watch kept the refusal as a row. With no subscription the
+/// point is polled at once, and the poll is refused the same way, so the
+/// state seen is the poll's as well as the first read's; the rows are the
+/// first read's alone, which a failed poll leaves as they were.
+#[tokio::test(start_paused = true)]
+async fn a_first_read_never_sent_fails_both_kinds_of_watch_alike() {
+    let lab = Lab::start(WatchOptions::default()).await;
+    lab.quirks.unsent_reads.store(true, Ordering::Relaxed);
+    // No subscription either, whose first notification would bring the
+    // values a read couldn't: the point stays as its first read left it.
+    lab.quirks.refuse_cov.store(true, Ordering::Relaxed);
+    let property = Point {
+        device: lab_at(),
+        object: ai(2),
+        watched: Watched::Property {
+            property: PropertyIdentifier::PRESENT_VALUE,
+            index: None,
+        },
+    };
+    let leases = [
+        lab.hub.watch(object(ai(1))).unwrap(),
+        lab.hub.watch(property).unwrap(),
+    ];
+    settle().await;
+    for lease in &leases {
+        let snapshot = lease.snapshot();
+        // The first read left no row: a refusal kept as a row would show.
+        assert!(snapshot.rows.is_empty(), "{:?}", snapshot.rows);
+        assert_eq!(snapshot.state, Phase::Failed, "{:?}", lease.point());
+        let note = snapshot.note.as_deref().unwrap_or_default();
+        assert!(note.contains("the link refused the send"), "{note}");
+    }
+    drop(leases);
+    settle().await;
+    lab.stop().await;
+}
+
+/// A subscription the client's own link failed to send is no refusal by
+/// the device: nothing is remembered against its COV support, and the
+/// point is asked again after the backoff and subscribes, where it used to
+/// be polled for good.
+#[tokio::test(start_paused = true)]
+async fn a_subscription_never_sent_is_asked_again() {
+    let lab = Lab::start(WatchOptions::default()).await;
+    lab.quirks.unsent_cov.store(true, Ordering::Relaxed);
+    let lease = lab.hub.watch(object(ai(1))).unwrap();
+    settle().await;
+    assert!(lab.table().await.is_empty());
+    let device = lab.client.device(LAB).await.unwrap();
+    assert_ne!(device.cov_support(), CovSupport::Refused);
+    drop(device);
+    assert_ne!(lease.snapshot().cov, CovSupport::Refused);
+    // The link is back: the retry subscribes.
+    lab.quirks.unsent_cov.store(false, Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_secs(3600)).await;
+    assert_eq!(lab.table().await.len(), 1, "{:?}", lease.snapshot());
+    assert_eq!(lease.snapshot().source, Some(Source::Cov));
+    drop(lease);
+    settle().await;
     lab.stop().await;
 }

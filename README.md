@@ -81,19 +81,16 @@ if __name__ == "__main__":
 ```python
 # read_value.py: read Analog Input 1's present value
 import asyncio
-from rusty_bacnet import BACnetClient, ObjectIdentifier, ObjectType, PropertyIdentifier
+from rusty_bacnet import BACnetClient
 
 
 async def main():
     async with BACnetClient(
         interface="127.0.0.1", port=0, broadcast_address="127.0.0.1"
     ) as client:
-        value = await client.read_property(
-            "127.0.0.1:47808",
-            ObjectIdentifier(ObjectType.ANALOG_INPUT, 1),
-            PropertyIdentifier.PRESENT_VALUE,
-        )
-        print(value.value)  # 22.5
+        device = await client.device("127.0.0.1:47808")
+        value = await device.read("ai:1")  # an object alone is its present value
+        print(value.text)  # 22.5
 
 
 asyncio.run(main())
@@ -214,6 +211,8 @@ async def main():
             lifetime=60,
         )
         async for notification in notifications:
+            if notification.kind != "object":
+                continue  # a CovNotificationMultiple (a notification about several objects)
             for change in notification.values:
                 print(change["property_id"], change["value"].value)
             break
@@ -323,7 +322,7 @@ Depend on the highest layer that covers your task; the
 - **Protocol** (`no_std`, allocator optional): `bacnet-types`, `bacnet-encoding`, `bacnet-services`
 - **Transports and network:** `bacnet-transport`, `bacnet-network`
 - **Roles:** `bacnet-objects` and `bacnet-device-core` (also `no_std` with an allocator), `bacnet-client`, `bacnet-server`, `bacnet-endpoint-core`, `bacnet-endpoint`
-- **Tools:** `bacnet-cli`; new in 0.15.0, `bacnet-ops` (shared by the CLI, TUI and MCP server) and `bacnet-mcp`
+- **Tools:** `bacnet-cli`; new in 0.15.0, `bacnet-ops` (shared by the CLI, TUI and MCP server) and `bacnet-mcp`; after 0.15.0, `bacnet-tool` (the tool-only part of `bacnet-ops`: write safety, decoding, the BBMD survey)
 - **Python:** [`crates/rusty-bacnet`](crates/rusty-bacnet), built with [maturin](https://www.maturin.rs/)
 
 ## Find it in the docs

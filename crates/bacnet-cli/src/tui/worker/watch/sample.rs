@@ -11,7 +11,8 @@ use std::time::UNIX_EPOCH;
 
 use bacnet_ops::format::{Floats, RawRow, StateTexts, ValueFormat, decode_all, object_name, units};
 use bacnet_ops::label::kebab;
-use bacnet_ops::watch::{self as hub, Via};
+use bacnet_ops::watch::Via;
+use bacnet_ops::watch::hub;
 use bacnet_types::enums::{EngineeringUnits, PropertyIdentifier};
 use bacnet_types::primitives::{PropertyValue, StatusFlags};
 use tokio::time::Instant;
@@ -235,7 +236,7 @@ impl Writer {
             Ok(rows) => match sample.via {
                 Via::Poll => Some(
                     from_rows(property, rows)
-                        .unwrap_or_else(|| Reading::failed(hub::poll::MISSING.into())),
+                        .unwrap_or_else(|| Reading::failed(hub::MISSING.into())),
                 ),
                 Via::First | Via::Notification => from_rows(property, rows),
             },

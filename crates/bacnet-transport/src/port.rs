@@ -12,10 +12,23 @@ pub use crate::direct_response::{DirectResponse, DirectResponseScope, ResponseSc
 pub use crate::principal::ScPrincipal;
 use bacnet_npdu::NpduLimits;
 use bacnet_types::MacAddr;
+use bacnet_types::data_link::DataLink;
 use bacnet_types::error::Error;
 use bytes::Bytes;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
+
+/// The error a send returns once its transport has stopped (#2617): an
+/// [`Error::Transport`] of kind
+/// [`NotConnected`](std::io::ErrorKind::NotConnected), the kind a send
+/// before start gets, saying that the transport stopped. See
+/// [`TransportPort::stop`].
+pub fn stopped() -> Error {
+    Error::Transport(std::io::Error::new(
+        std::io::ErrorKind::NotConnected,
+        "transport stopped",
+    ))
+}
 
 /// An owned copy of a link's group-destination rule
 /// ([`TransportPort::is_group_destination`]), for a sender that checks a
@@ -486,6 +499,83 @@ pub struct Bip6Port {
 /// Implementations handle the data-link framing (e.g., BVLL for BACnet/IP)
 /// and expose a simple send/receive interface for NPDU bytes.
 pub trait TransportPort: Send + Sync {
+    /// The data link this transport carries, or `None` when it carries no
+    /// one link a caller could name: a router's application port, or a
+    /// test double. Callers that adapt to the link (a target grammar, an
+    /// address format) ask here rather than guess from the concrete type,
+    /// which a wrapper such as [`AnyTransport`](crate::any::AnyTransport)
+    /// hides. Every built-in transport reports its link, and a wrapper must
+    /// forward the underlying answer.
+    fn data_link(&self) -> Option<DataLink> {
+        None
+    }
+
+    /// The B/IP transport this one is or wraps, for what only that type
+    /// offers: BBMD table reads, the foreign-registration state and the
+    /// management counters. `None`, the default, when the link isn't
+    /// BACnet/IP. A wrapper must forward the underlying answer.
+    fn bip_transport(&self) -> Option<&crate::bip::BipTransport> {
+        None
+    }
+
+    /// The B/IP transport underneath this one, or why there is none.
+    ///
+    /// BBMD management (Annex J) and the B/IP counters only exist on a
+    /// [`BipTransport`](crate::bip::BipTransport); this lends it through
+    /// [`bip_transport`](Self::bip_transport), so the same calls work on a
+    /// client over `BipTransport` and on one over
+    /// [`AnyTransport`](crate::any::AnyTransport).
+    ///
+    /// ```
+    /// use std::net::Ipv4Addr;
+    /// use bacnet_transport::any::AnyTransport;
+    /// use bacnet_transport::bip::BipTransport;
+    /// use bacnet_transport::loopback::LoopbackTransport;
+    /// use bacnet_transport::port::TransportPort;
+    /// use bacnet_types::data_link::DataLink;
+    /// use bacnet_types::error::Error;
+    ///
+    /// let bip = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+    /// let any: AnyTransport = bip.into();
+    /// assert_eq!(any.as_bip()?.management_counters().read_bdt_responses, 0);
+    ///
+    /// let (loopback, _peer) = LoopbackTransport::pair(vec![1], vec![2]);
+    /// let any: AnyTransport = loopback.into();
+    /// assert!(matches!(
+    ///     any.as_bip(),
+    ///     Err(Error::UnsupportedTransport {
+    ///         required: DataLink::Bip,
+    ///         actual: DataLink::Loopback,
+    ///     })
+    /// ));
+    /// # Ok::<(), Error>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedTransport`] naming this transport's data link when
+    /// it is not BACnet/IP. A transport that reports no data link (a router's
+    /// application port, a test double, or a wrapper that doesn't forward
+    /// [`data_link`](Self::data_link)) refuses with [`Error::Encoding`],
+    /// since it can't say which link it is.
+    fn as_bip(&self) -> Result<&crate::bip::BipTransport, Error> {
+        self.bip_transport().ok_or_else(|| match self.data_link() {
+            Some(actual) => Error::UnsupportedTransport {
+                required: DataLink::Bip,
+                actual,
+            },
+            None => Error::Encoding("transport reports no B/IP link or data link".into()),
+        })
+    }
+
+    /// The B/IPv6 transport this one is or wraps, for what only that type
+    /// offers, such as resolving a peer's VMAC. The B/IPv6 counterpart of
+    /// [`bip_transport`](Self::bip_transport), under the same contract.
+    #[cfg(feature = "ipv6")]
+    fn bip6_transport(&self) -> Option<&crate::bip6::Bip6Transport> {
+        None
+    }
+
     /// Configured broadcast endpoint when this link uses IPv4 BACnet/IP.
     /// `None` means the link does not expose that capability. Wrappers must
     /// forward the underlying value. After `start`, the port is the actual
@@ -565,8 +655,24 @@ pub trait TransportPort: Send + Sync {
         &mut self,
     ) -> impl std::future::Future<Output = Result<mpsc::Receiver<ReceivedNpdu>, Error>> + Send;
 
-    /// Stop the transport and clean up resources.
-    fn stop(&mut self) -> impl std::future::Future<Output = Result<(), Error>> + Send;
+    /// Stop the transport and release what it holds, through a shared
+    /// reference, so an owner can stop a link that others still hold
+    /// (#2617).
+    ///
+    /// Once it returns, every send fails with an [`Error::Transport`] of
+    /// kind [`NotConnected`](std::io::ErrorKind::NotConnected), the kind a
+    /// send before start gets ([`stopped`] makes one); the receiver `start`
+    /// returned yields what was queued and then ends, unless something
+    /// outside the transport holds its sender (a loopback's peer); the
+    /// background tasks are ended; and the link's sockets, ports and leases
+    /// are released, so a port can be bound again.
+    /// A send already under way when the stop begins may still finish, and
+    /// lets go of the link as it returns. Stop is idempotent, and one called
+    /// while another runs waits for it: a first stop's future kept alive but
+    /// never polled again holds every later stop up, until it is dropped,
+    /// which hands the stop to the next. A transport that can start again
+    /// after a stop says so in its own documentation.
+    fn stop(&self) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 
     /// Synchronously abort background work and release owned transport resources.
     ///
@@ -698,6 +804,39 @@ pub trait TransportPort: Send + Sync {
     ///
     /// Wrappers must delegate.
     fn max_npdu_changes(&self) -> Option<watch::Receiver<NpduLimits>> {
+        None
+    }
+
+    /// How many times the link has come back after it was lost while the
+    /// transport runs, for a transport that can tell, or `None`, the
+    /// default, for one that can't.
+    ///
+    /// The receiver's value is a count that rises by one each time the link
+    /// is back; a change is all a stack needs to read from it. Anything the
+    /// stack broadcast while the link was down may have gone nowhere, so it
+    /// may send it again: `bacnet_client`'s `BACnetClient`, once it has
+    /// asked for the local network's number, asks again then if no answer
+    /// has taught it yet (#2572).
+    ///
+    /// BACnet/SC counts each hub connection its recovery makes after the
+    /// connection it had was lost, to the same hub or the failover hub; a
+    /// move back to the primary hub while the failover hub still serves is
+    /// no return. B/IP reports one in every mode, counted across restarts;
+    /// it moves, for a foreign device, with each registration the BBMD
+    /// takes after an attempt was refused or unanswered or the lease
+    /// lapsed, and with the next success, a renewal included, after the
+    /// BBMD refused a broadcast with a Distribute-Broadcast-To-Network NAK;
+    /// a start's first attempt succeeding is no return, since the
+    /// broadcasts made before it were held for it. A B/IPv6 foreign device counts each registration the
+    /// BBMD takes after a broadcast went to it unproven: before any
+    /// success, after a refusal, while a registration had gone unanswered
+    /// for 3 s, or refused by that NAK (B/IPv6 holds none, so a start's
+    /// first registration can count). MS/TP, Ethernet and B/IPv6 outside
+    /// foreign mode keep the default: an MS/TP node rejoining the token
+    /// ring is not reported.
+    ///
+    /// Wrappers must delegate.
+    fn link_returns(&self) -> Option<watch::Receiver<u64>> {
         None
     }
 

@@ -1,12 +1,15 @@
 use super::*;
-use crate::event_enrollment::{
-    CommittedEventEnrollmentDelivery, CommittedEventEnrollmentResult,
-    EventEnrollmentReliabilityCause, EventEnrollmentReliabilityResult, EventEnrollmentTransition,
+use crate::event_enrollment::{EventEnrollmentReliabilityCause, EventEnrollmentReliabilityResult};
+use bacnet_device_core::event::commit_intrinsic_transition;
+use bacnet_device_core::event::enrollment::CommittedEventEnrollmentDelivery;
+use bacnet_device_core::event::enrollment::CommittedEventEnrollmentResult;
+use bacnet_device_core::event::{
+    CommittedHistorySnapshot, CommittedNotificationPayload, MessageTexts, SampledEventClock,
+    read_committed_history_snapshot,
 };
-use crate::server::event_notification_payload::CommittedNotificationPayload;
-use crate::server::event_timestamp::SampledEventClock;
 use bacnet_objects::event::{
-    EventStateChange, EventTransitionCommit, EventTransitionCommitError, TransitionOutcome,
+    EventStateChange, EventTransition, EventTransitionCommit, EventTransitionCommitError,
+    TransitionOutcome,
 };
 use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
@@ -209,7 +212,7 @@ async fn commit_and_capture_history_notification(
     let (db, oid) = atomic_history_database(timestamps, messages, clocked);
     let committed = {
         let mut guard = db.write().await;
-        BACnetServer::<TestTransport>::commit_intrinsic_transition(
+        commit_intrinsic_transition(
             &mut guard,
             &oid,
             TransitionOutcome {
@@ -218,6 +221,7 @@ async fn commit_and_capture_history_notification(
                 distribute: true,
             },
         )
+        .ok()
     };
 
     let (transport, sent) = recording_transport();
@@ -255,30 +259,6 @@ fn empty_message_reads() -> [IndexedHistoryRead; 3] {
     std::array::from_fn(|_| empty_message_read())
 }
 
-fn committed_enrollment_normal(
-    oid: ObjectIdentifier,
-    change: EventStateChange,
-) -> CommittedEventEnrollmentDelivery {
-    CommittedEventEnrollmentDelivery {
-        result: CommittedEventEnrollmentResult::Normal(EventEnrollmentTransition {
-            enrollment_oid: oid,
-            monitored_oid: oid,
-            change,
-            event_type: EventType::OUT_OF_RANGE,
-            distribute: true,
-        }),
-        ack_required: true,
-        recipient_clock: SampledEventClock::Unavailable,
-        event_type: EventType::OUT_OF_RANGE,
-        event_values: CommittedNotificationPayload::for_test(NotificationParameters::OutOfRange {
-            exceeding_value: 1.0,
-            status_flags: StatusFlags::empty(),
-            deadband: 0.0,
-            exceeded_limit: 1.0,
-        }),
-    }
-}
-
 fn committed_enrollment_reliability(oid: ObjectIdentifier) -> CommittedEventEnrollmentDelivery {
     CommittedEventEnrollmentDelivery {
         result: CommittedEventEnrollmentResult::Reliability(EventEnrollmentReliabilityResult {
@@ -286,10 +266,10 @@ fn committed_enrollment_reliability(oid: ObjectIdentifier) -> CommittedEventEnro
             monitored_oid: Some(oid),
             previous_reliability: bacnet_types::enums::Reliability::NO_FAULT_DETECTED,
             new_reliability: bacnet_types::enums::Reliability::OVER_RANGE,
-            state_change: Some(EventStateChange {
+            state_change: EventStateChange {
                 from: EventState::NORMAL,
                 to: EventState::FAULT,
-            }),
+            },
             distribute: true,
             cause: EventEnrollmentReliabilityCause::FaultAlgorithm,
         }),
@@ -303,6 +283,10 @@ fn committed_enrollment_reliability(oid: ObjectIdentifier) -> CommittedEventEnro
                 property_values: Vec::new(),
             },
         ),
+        history_snapshot: CommittedHistorySnapshot {
+            timestamp: BACnetTimeStamp::SequenceNumber(23),
+            message_text: None,
+        },
     }
 }
 
@@ -310,7 +294,8 @@ fn committed_enrollment_reliability(oid: ObjectIdentifier) -> CommittedEventEnro
 /// notification's message text: none for the empty entry it commits by
 /// default, the configured text otherwise (#1507). An object that doesn't
 /// serve the property sends no text, while a malformed entry or a refused
-/// read suppresses the notification.
+/// read suppresses the notification. This is the read the core's commit
+/// makes for each delivery, with message texts optional (#2319 PR 2b).
 #[test]
 fn event_enrollment_projection_reads_committed_message_without_mutation() {
     let configured = IndexedHistoryRead::Value(PropertyValue::CharacterString("high".into()));
@@ -342,24 +327,12 @@ fn event_enrollment_projection_reads_committed_message_without_mutation() {
         .unwrap();
 
         let before = db.reserve_event_sequence_number().number();
-        let resolved =
-            crate::server::event_notifications::resolve_committed_event_enrollment_transition(
-                &db,
-                committed_enrollment_normal(
-                    oid,
-                    EventStateChange {
-                        from: EventState::NORMAL,
-                        to: EventState::HIGH_LIMIT,
-                    },
-                ),
-            );
-        let message_text = resolved.map(|(_, _, transition)| match transition.history_source {
-            crate::server::event_notifications::NotificationHistorySource::Committed {
-                snapshot,
-                ..
-            } => snapshot.message_text,
-            _ => panic!("an enrollment projects its committed history"),
-        });
+        let history = read_committed_history_snapshot(
+            db.get(&oid).unwrap(),
+            EventTransition::ToOffnormal,
+            MessageTexts::Optional,
+        );
+        let message_text = history.map(|snapshot| snapshot.message_text);
         assert_eq!(message_text, expected, "{instance}");
         assert_eq!(db.reserve_event_sequence_number().number(), before);
     }
@@ -398,15 +371,10 @@ fn malformed_or_unreadable_event_enrollment_history_fails_closed_without_mutatio
         .unwrap();
 
         assert!(
-            crate::server::event_notifications::resolve_committed_event_enrollment_transition(
-                &db,
-                committed_enrollment_normal(
-                    oid,
-                    EventStateChange {
-                        from: EventState::NORMAL,
-                        to: EventState::HIGH_LIMIT,
-                    },
-                ),
+            read_committed_history_snapshot(
+                db.get(&oid).unwrap(),
+                EventTransition::ToOffnormal,
+                MessageTexts::Optional,
             )
             .is_none()
         );
@@ -440,12 +408,15 @@ fn committed_reliability_effective_type_does_not_reread_configured_event_type() 
         .unwrap();
 
         assert!(
-            crate::server::event_notifications::resolve_committed_event_enrollment_transition(
-                &db,
-                committed_enrollment_reliability(oid),
+            read_committed_history_snapshot(
+                db.get(&oid).unwrap(),
+                EventTransition::ToFault,
+                MessageTexts::Optional,
             )
             .is_some()
         );
+        let notification = committed_enrollment_reliability(oid).into_notification();
+        assert_eq!(notification.event_type, EventType::CHANGE_OF_RELIABILITY);
         assert_eq!(db.reserve_event_sequence_number().number(), 0);
     }
 }
@@ -469,7 +440,7 @@ fn malformed_or_missing_required_projection_commits_locally_but_cannot_emit() {
         }))
         .unwrap();
 
-        let committed = BACnetServer::<TestTransport>::commit_intrinsic_transition(
+        let committed = commit_intrinsic_transition(
             &mut db,
             &oid,
             TransitionOutcome {

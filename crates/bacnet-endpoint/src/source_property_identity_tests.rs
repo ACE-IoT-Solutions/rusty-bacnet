@@ -1,9 +1,10 @@
 //! A source records only the concrete identity established by a valid ACK.
 use super::*;
+use bacnet_transport::test_transport::TestTransport;
 use bacnet_types::error::RemoteError;
 
 fn start_object(
-    session: &EndpointSession<BusPort>,
+    session: &EndpointSession<TestTransport>,
     mac: &[u8],
     object: ObjectIdentifier,
 ) -> tokio::task::JoinHandle<Result<ReadPropertyACK, Error>> {
@@ -16,13 +17,13 @@ fn start_object(
     })
 }
 fn start_alias(
-    session: &EndpointSession<BusPort>,
+    session: &EndpointSession<TestTransport>,
     mac: &[u8],
     kind: ObjectType,
 ) -> tokio::task::JoinHandle<Result<ReadPropertyACK, Error>> {
     start_object(session, mac, oid(kind, ObjectIdentifier::WILDCARD_INSTANCE))
 }
-async fn released(session: &EndpointSession<BusPort>) {
+async fn released(session: &EndpointSession<TestTransport>) {
     eventually(
         WAIT,
         "every lease and source operation is released",
@@ -49,8 +50,8 @@ fn value_free(record: &BACnetAuditNotification) {
 
 #[tokio::test(start_paused = true)]
 async fn source_read_alias_success_records_peer_concrete_object_both_roles_modes() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     for role in [SessionRole::ClientOnly, SessionRole::Both] {
         for confirmed in [false, true] {
             let mut session = session(database(confirmed), role, &sink);
@@ -90,9 +91,10 @@ async fn source_read_alias_success_records_peer_concrete_object_both_roles_modes
                 }
                 assert_eq!(record.result, None);
                 assert_eq!(record.invoke_id, Some(invoke));
-                assert_eq!(
-                    record.source_timestamp,
-                    Some(BACnetTimeStamp::SequenceNumber(sequence as u16))
+                assert_stamp(
+                    &record.source_timestamp,
+                    role == SessionRole::Both,
+                    sequence as u16,
                 );
                 if let Some(invoke_id) = delivery {
                     send(
@@ -117,8 +119,8 @@ async fn source_read_alias_success_records_peer_concrete_object_both_roles_modes
 
 #[tokio::test(start_paused = true)]
 async fn source_read_alias_failure_keeps_requested_identity_without_trusting_bad_ack() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
     let mut sequence = 0;
@@ -193,9 +195,9 @@ async fn source_read_alias_failure_keeps_requested_identity_without_trusting_bad
 
 #[tokio::test(start_paused = true)]
 async fn source_read_alias_cancelled_retry_resolves_identity_on_original_recipient_snapshot() {
-    let (mut peer, mut requests) = network().await;
-    let (mut old, mut old_records) = network().await;
-    let (mut new, mut new_records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (old, mut old_records) = network().await;
+    let (new, mut new_records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &old);
     session.client_config.apdu_retries = 1;
     session.start().await.unwrap();
@@ -267,8 +269,8 @@ async fn source_read_alias_cancelled_retry_resolves_identity_on_original_recipie
 #[tokio::test(start_paused = true)]
 async fn source_read_range_concrete_device_ack_establishes_target_device_for_this_record() {
     use bacnet_services::read_range::{ReadRangeAck, ReadRangeRequest};
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
     let client = session.cloned_client_handle().unwrap();

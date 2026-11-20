@@ -65,10 +65,8 @@ impl BACnetServer {
         let point = point.to_rust();
         crate::py_async::future_into_py(py, async move {
             let db = {
-                let guard = inner.lock().await;
-                let server = guard
-                    .as_ref()
-                    .ok_or_else(|| PyRuntimeError::new_err("server not started"))?;
+                let guard = inner.read().await;
+                let server = guard.server()?;
                 server.database().clone()
             };
             let result = {

@@ -26,29 +26,75 @@ use identity::IdentityView;
 use std::borrow::Cow;
 use std::sync::OnceLock;
 
-#[derive(Clone, Copy)]
+/// What a full client executes beside a full server on one node (#2617):
+/// I-Am and I-Have, which its discovery takes in, and the COV
+/// notifications of its subscriptions, of one object or of several
+/// (#2654), whose confirmed forms it acknowledges. The server already lists
+/// both event notifications, whose confirmed form it acknowledges.
+pub(crate) const NODE_CLIENT_SERVICES: &[ServiceSupported] = &[
+    ServiceSupported::I_AM,
+    ServiceSupported::I_HAVE,
+    ServiceSupported::CONFIRMED_COV_NOTIFICATION,
+    ServiceSupported::UNCONFIRMED_COV_NOTIFICATION,
+    ServiceSupported::CONFIRMED_COV_NOTIFICATION_MULTIPLE,
+    ServiceSupported::UNCONFIRMED_COV_NOTIFICATION_MULTIPLE,
+];
+
+/// What the Device's Protocol_Services_Supported lists, fixed when the
+/// server starts and carried by every read (two octets).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DeviceExecution {
-    FullServer,
-    Endpoint { writes: bool, reinitialize: bool },
+    /// A full server. With `time_sync` it executes TimeSynchronization and
+    /// UTCTimeSynchronization once a Device clock is installed: its policy
+    /// [executes](crate::server::TimeSyncPolicy::executes) them (#2617).
+    FullServer { time_sync: bool },
+    /// A full server on a node's seat beside the node's client role, which
+    /// executes [`NODE_CLIENT_SERVICES`] too: the Device lists what the
+    /// whole node executes (Clause 12.11.14). `time_sync` as for
+    /// [`FullServer`](Self::FullServer).
+    Node { time_sync: bool },
 }
 
+const _: () = assert!(std::mem::size_of::<DeviceExecution>() == 2);
+
+/// The Device's COV subscription lists every profile serves (Table 12-13,
+/// notes 9 and 18): the server runs SubscribeCOVPropertyMultiple too.
+const COV_LISTS: &[P] = &[
+    P::ACTIVE_COV_SUBSCRIPTIONS,
+    P::ACTIVE_COV_MULTIPLE_SUBSCRIPTIONS,
+];
+
 impl DeviceExecution {
+    /// A full server's profile, beside a node's client role when `node`,
+    /// executing time synchronization as `policy` does.
+    pub(crate) fn server(node: bool, policy: &crate::server::TimeSyncPolicy) -> Self {
+        let time_sync = policy.executes();
+        if node {
+            Self::Node { time_sync }
+        } else {
+            Self::FullServer { time_sync }
+        }
+    }
+
+    /// Whether the profile executes both time-synchronization services
+    /// once a Device clock is installed.
+    fn time_sync(self) -> bool {
+        match self {
+            Self::FullServer { time_sync } | Self::Node { time_sync } => time_sync,
+        }
+    }
+
+    /// What the profile executes, with both time-synchronization services
+    /// only when it executes them and `clock`, a Device clock, is installed.
     pub(crate) fn services(self, clock: bool) -> impl Iterator<Item = ServiceSupported> {
+        let clock = clock && self.time_sync();
         let services = match self {
-            Self::FullServer => EXECUTED_SERVICES.to_vec(),
-            Self::Endpoint {
-                writes,
-                reinitialize,
-            } => {
-                let mut services = vec![ServiceSupported::READ_PROPERTY];
-                if writes {
-                    services.push(ServiceSupported::WRITE_PROPERTY);
-                }
-                if reinitialize {
-                    services.push(ServiceSupported::REINITIALIZE_DEVICE);
-                }
-                services
-            }
+            Self::FullServer { .. } => EXECUTED_SERVICES.to_vec(),
+            Self::Node { .. } => EXECUTED_SERVICES
+                .iter()
+                .chain(NODE_CLIENT_SERVICES)
+                .copied()
+                .collect(),
         };
         services.into_iter().filter(move |service| {
             clock
@@ -99,11 +145,12 @@ impl<'a> DeviceReadContext<'a> {
             identity: self.identity,
         }
     }
-    /// Only full-server service bits depend on clock availability. Cache both
-    /// answers for this request; Device time values and metadata stay live.
+    /// Only a server's time-synchronization bits depend on clock
+    /// availability, and only while it executes those services. Cache the
+    /// clock answer for this request; Device time values and metadata stay
+    /// live.
     fn clock_available(&self) -> bool {
-        matches!(self.execution, DeviceExecution::FullServer)
-            && *self.clock.get_or_init(|| self.db.clock_frame().is_some())
+        self.execution.time_sync() && *self.clock.get_or_init(|| self.db.clock_frame().is_some())
     }
     pub(crate) fn with_identity(
         mut self,
@@ -157,8 +204,8 @@ impl DeviceReadView<'_> {
     fn is_device(&self) -> bool {
         self.object.object_identifier().object_type() == ObjectType::DEVICE
     }
-    fn cov_present(&self) -> bool {
-        matches!(self.context.execution, DeviceExecution::FullServer)
+    fn cov_present(&self, property: P) -> bool {
+        COV_LISTS.contains(&property)
     }
 }
 
@@ -206,14 +253,14 @@ impl BACnetObject for DeviceReadView<'_> {
                 })
             }
             // The server's bindings, as the request sampled them for the
-            // local Device, the identity's (#1369, #2227). Any other Device, and an endpoint,
-            // which keeps no bindings to serve, read an empty list.
+            // local Device, the identity's (#1369, #2227). Any other Device
+            // reads an empty list.
             P::DEVICE_ADDRESS_BINDING => Ok(self
                 .context
                 .live
                 .and_then(|live| live.resolve(self.object_identifier(), property))
                 .unwrap_or_else(|| PropertyValue::List(Vec::new()))),
-            _ if self.cov_present() => Ok(self
+            _ if self.cov_present(property) => Ok(self
                 .context
                 .live
                 .and_then(|live| live.resolve(self.object_identifier(), property))
@@ -258,18 +305,13 @@ impl BACnetObject for DeviceReadView<'_> {
                 PropertyWriteCapability::ReadOnly,
             ));
         }
-        if self.cov_present() {
-            for property in [
-                P::ACTIVE_COV_SUBSCRIPTIONS,
-                P::ACTIVE_COV_MULTIPLE_SUBSCRIPTIONS,
-            ] {
-                rows.push(PropertyMetadata::new(
-                    property,
-                    PropertyConformance::Optional,
-                    None,
-                    PropertyWriteCapability::ReadOnly,
-                ));
-            }
+        for &property in COV_LISTS {
+            rows.push(PropertyMetadata::new(
+                property,
+                PropertyConformance::Optional,
+                None,
+                PropertyWriteCapability::ReadOnly,
+            ));
         }
         rows.sort_by_key(|row| row.property_identifier.to_raw());
         Cow::Owned(rows)

@@ -8,7 +8,7 @@ use alloc::{string::String, vec::Vec};
 
 use super::{
     BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference, BACnetPropertyStates,
-    BACnetPropertyValue,
+    BACnetPropertyValue, OpaqueChoice,
 };
 use crate::enums::{
     AccessEvent, EventState, EventType, LifeSafetyMode, LifeSafetyOperation, LifeSafetyState,
@@ -61,6 +61,13 @@ pub struct EventNotificationRequest {
 // ---------------------------------------------------------------------------
 
 /// Notification parameter variants for eventValues.
+///
+/// Each variant but the last is one alternative of the Clause 21
+/// `BACnetNotificationParameters` CHOICE, under the context tag its doc
+/// gives. An alternative under a tag the 2020 production gives none (7 and
+/// 12, which it deprecates and reserves, or a later revision's, 23 and up)
+/// decodes as [`Self::Opaque`], so one choice this stack doesn't model
+/// doesn't cost the rest of the notification.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NotificationParameters {
     /// \[0\] Change of bitstring.
@@ -254,6 +261,16 @@ pub enum NotificationParameters {
         /// Date and time when the timer expires; `None` when absent.
         expiration_time: Option<(Date, Time)>,
     },
+    /// An alternative under a context tag the 2020 production doesn't
+    /// assign (7, 12, or 23 to 254), kept as received, primitive or
+    /// constructed, as the log record CHOICEs keep theirs.
+    ///
+    /// Every alternative the 2020 production assigns is constructed, but a
+    /// later revision's need not be, so the form is kept with the octets.
+    /// The encoder writes it back unchanged. It refuses a tag that has a
+    /// variant here, 20 (left out, matching the event type that reports no
+    /// values) and 255, and a body that isn't complete tagged values.
+    Opaque(OpaqueChoice),
 }
 
 /// CHOICE within ChangeOfValue notification parameters.

@@ -82,7 +82,7 @@ env:
   # else in the workspace turns on (#906). bacnet-cli's `tui` is a default
   # feature (#974), so every workspace run has it. bacnet-benchmarks/console
   # is left out: it needs tokio_unstable.
-  LINUX_FEATURES: bacnet-types/serde,bacnet-encoding/heapless,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-mstp-core/alloc,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless,bacnet-router-core/bip,bacnet-router-core/mstp,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-transport/serial,bacnet-transport/serial-gpio,bacnet-transport/ethernet,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-integration-tests/ethernet,bacnet-integration-tests/sc-tls,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/serial,bacnet-cli/mcp
+  LINUX_FEATURES: bacnet-types/serde,bacnet-encoding/heapless,bacnet-mstp-codec/bytes,bacnet-mstp-codec/heapless,bacnet-mstp-core/alloc,bacnet-bip-codec/bytes,bacnet-bip-codec/heapless,bacnet-router-core/bip,bacnet-router-core/mstp,bacnet-transport/ipv6,bacnet-transport/sc-tls,bacnet-transport/serial,bacnet-transport/serial-gpio,bacnet-transport/ethernet,bacnet-client/ipv6,bacnet-client/sc-tls,bacnet-server/sc-tls,bacnet-endpoint/sc-tls,bacnet-integration-tests/ipv6,bacnet-integration-tests/ethernet,bacnet-integration-tests/sc-tls,bacnet-ops/serial,bacnet-cli/sc-tls,bacnet-cli/pcap,bacnet-cli/serial,bacnet-cli/mcp,firmware-link/reporting-multiple
 
 jobs:
   # Whether this push to dev can skip the Lean jobs (#1466): see
@@ -208,6 +208,7 @@ jobs:
       - name: Changelog fragments
         run: |
           python3 -m unittest discover -s scripts -p 'test_changelog.py'
+          python3 -m unittest discover -s scripts -p 'test_xd_strip.py'
           python3 scripts/changelog.py check
 
   clippy:
@@ -293,11 +294,12 @@ jobs:
       # bacnet-device-core with alloc and without std, tests included: Test
       # runs those tests, and no run above lints them (#1613, #1615, #2178).
       # bacnet-objects' capability features and bacnet-device-core's
-      # structured-writes on, as std has them (#2215, #2210);
+      # structured-writes, cov-multiple, event-reporting and event-enrollment
+      # on, as std has them (#2215, #2210, #2320, #2303, #2319);
       # check-default-features.sh lints them off.
       - name: Clippy (no_std crates with alloc, all targets)
         if: ${{ !cancelled() }}
-        run: cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services -p bacnet-objects -p bacnet-device-core --no-default-features --features alloc,bacnet-objects/event-reporting,bacnet-objects/durable-writes,bacnet-device-core/structured-writes --all-targets --locked -- -D warnings
+        run: cargo clippy -p bacnet-types -p bacnet-encoding -p bacnet-services -p bacnet-objects -p bacnet-device-core --no-default-features --features alloc,bacnet-objects/event-reporting,bacnet-objects/durable-writes,bacnet-device-core/structured-writes,bacnet-device-core/cov-multiple,bacnet-device-core/event-reporting,bacnet-device-core/event-enrollment --all-targets --locked -- -D warnings
       # And without alloc either, the allocation-free profile (#1614).
       - name: Clippy (no_std crates without alloc, all targets)
         if: ${{ !cancelled() }}
@@ -390,23 +392,31 @@ jobs:
       # hashbrown's maps (#1615).
       # The tests themselves still link std; check-no-std.sh shows the code
       # needs none. bacnet-objects' capability features and
-      # bacnet-device-core's structured-writes are on, as std has them
-      # (#2215, #2210).
+      # bacnet-device-core's structured-writes, cov-multiple, event-reporting
+      # and event-enrollment are on, as std has them (#2215, #2210, #2320,
+      # #2303, #2319).
       - name: no_std crates' tests (alloc, without std)
         if: ${{ !cancelled() }}
-        run: cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services -p bacnet-objects -p bacnet-device-core --no-default-features --features alloc,bacnet-objects/event-reporting,bacnet-objects/durable-writes,bacnet-device-core/structured-writes --locked --profile ci
+        run: cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services -p bacnet-objects -p bacnet-device-core --no-default-features --features alloc,bacnet-objects/event-reporting,bacnet-objects/durable-writes,bacnet-device-core/structured-writes,bacnet-device-core/cov-multiple,bacnet-device-core/event-reporting,bacnet-device-core/event-enrollment --locked --profile ci
       # And with them all off, as the objects firmware image builds it: the
       # tests that need a capability compile out, and
       # capability_features_tests checks no object lends one (#2215). With
       # bacnet-device-core over it, structured-writes off too, so its
-      # structured writes are refused (#2210), and the image's host
-      # scenario: the configuration that ships.
+      # structured writes are refused (#2210), and the images' host
+      # scenarios, the points image's among them (#2445): the configuration
+      # that ships.
       - name: bacnet-objects and bacnet-device-core tests (alloc, capability features and structured-writes off)
         if: ${{ !cancelled() }}
-        run: cargo nextest run -p bacnet-objects -p bacnet-device-core -p firmware-link --no-default-features --features alloc,firmware-link/reporting --locked --profile ci
+        run: cargo nextest run -p bacnet-objects -p bacnet-device-core -p firmware-link --no-default-features --features alloc,firmware-link/reporting,firmware-link/points --locked --profile ci
+      # The enrollment image's host scenario as that image builds it, with
+      # bacnet-device-core's event-enrollment on (#2319): apart from the
+      # step above, which keeps it off for the others.
+      - name: firmware-link enrollment scenario (as its image builds it)
+        if: ${{ !cancelled() }}
+        run: cargo nextest run -p firmware-link --no-default-features --features alloc,firmware-link/enrollment --locked --profile ci
       - name: no_std crates' doctests (alloc, without std)
         if: ${{ !cancelled() }}
-        run: cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services -p bacnet-objects -p bacnet-device-core --no-default-features --features alloc,bacnet-objects/event-reporting,bacnet-objects/durable-writes,bacnet-device-core/structured-writes --locked
+        run: cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services -p bacnet-objects -p bacnet-device-core --no-default-features --features alloc,bacnet-objects/event-reporting,bacnet-objects/durable-writes,bacnet-device-core/structured-writes,bacnet-device-core/cov-multiple,bacnet-device-core/event-reporting,bacnet-device-core/event-enrollment --locked
       # Without alloc either (#1614): the allocation-free profile's code, and
       # tests/no_alloc_subset.rs, which counts the subset's allocations: none.
       - name: no_std crates' tests (without alloc)
@@ -527,7 +537,7 @@ jobs:
       - name: Install cargo-audit and cargo-deny
         run: bash scripts/ci/install-tools.sh cargo-audit cargo-deny
       - name: Cargo Audit
-        run: cargo audit --color always
+        run: cargo audit --deny unsound --color always
       - name: Cargo Deny
         if: ${{ !cancelled() }}
         run: cargo deny --all-features check

@@ -8,6 +8,7 @@
 
 use bacnet_types::error::{DecodeError, DecodingKind, Error};
 mod encode;
+pub mod tree;
 
 #[cfg(feature = "alloc")]
 pub use encode::{encode_closing_tag, encode_opening_tag, encode_tag};
@@ -103,7 +104,7 @@ impl Tag {
 
 /// Maximum tag length sanity limit (1 MB). BACnet APDUs are at most ~64KB
 /// segmented; 1MB is generous. Prevents memory exhaustion from malformed packets.
-const MAX_TAG_LENGTH: u32 = 1_048_576;
+pub(crate) const MAX_TAG_LENGTH: u32 = 1_048_576;
 
 /// Maximum nesting depth for context tags to prevent stack overflow from crafted packets.
 pub const MAX_CONTEXT_NESTING_DEPTH: usize = 32;

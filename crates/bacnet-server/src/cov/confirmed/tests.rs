@@ -426,19 +426,65 @@ async fn revisits_drain_once_and_forget_removed_references() {
     assert_eq!(revisits.next().await, vec![a.key().clone()]);
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_passed_hold_off_is_owed_once_per_context() {
-    let mut table = holding_off(Duration::from_millis(30));
-    let (a, _) = context(&mut table);
-    let context = a.key().multiple_context().unwrap().clone();
-    assert!(!table.take_owed_context(&context), "nothing failed");
-    let flight = begin(&mut table, &a, &[&a]).unwrap();
-    table.delivered(&flight, Delivery::Failed);
-    assert!(!table.take_owed_context(&context), "still holding off");
-    tokio::time::advance(Duration::from_millis(30)).await;
-    assert!(table.take_owed_context(&context));
-    assert!(!table.take_owed_context(&context), "owed once");
-    assert!(table.context_idle(&context, &[]));
+/// References owed an invoke ID (#2661) wait once each, in the order first
+/// owed; one refused again during its look keeps its place, one served
+/// gives it up, and one removed while it waits is dropped and counted.
+#[test]
+fn owed_references_keep_their_places() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut table = CovSubscriptionTable::new();
+    let keys: Vec<_> = (1..=4)
+        .map(|process| {
+            let mut sub = single();
+            sub.subscriber_process_identifier = process;
+            table.subscribe(sub).unwrap().key().clone()
+        })
+        .collect();
+    let [a, b, c, d] = <[_; 4]>::try_from(keys).unwrap();
+    let revisits = Arc::clone(table.revisits());
+    assert!(revisits.owe([c.clone(), a.clone(), b.clone()]));
+    assert!(!revisits.owe([a.clone()]), "one wait per reference");
+    assert_eq!(revisits.owed(), [c.clone(), a.clone(), b.clone()]);
+
+    // Room for two: the two oldest are looked at; `c` is refused again.
+    let mut room = 2_usize;
+    let looked = revisits.take_owed(|_| {
+        let go = room > 0;
+        room = room.saturating_sub(1);
+        go
+    });
+    assert_eq!(looked, [c.clone(), a.clone()]);
+    assert!(revisits.owe([c.clone()]));
+    revisits.looked(&looked);
+    assert_eq!(revisits.owed(), [c.clone(), b.clone()], "`c` first again");
+    // `a` was served: owed again later, it waits behind the others.
+    revisits.owe([d.clone(), a.clone()]);
+    assert_eq!(
+        revisits.owed(),
+        [c.clone(), b.clone(), d.clone(), a.clone()]
+    );
+
+    // `c` can't go (its peer is full, say): those behind it still do, and
+    // it keeps the head. Refused an in-flight slot during its look, `b`
+    // keeps its place too; a first send (`d`, served) is not queued.
+    let looked = revisits.take_owed(|key| key != &c && key != &a);
+    assert_eq!(looked, [b.clone(), d.clone()]);
+    revisits.keep_waiting(&b);
+    revisits.looked(&looked);
+    revisits.keep_waiting(&d);
+    assert_eq!(revisits.owed(), [c.clone(), b.clone(), a.clone()]);
+
+    assert!(table.unsubscribe(&b));
+    assert_eq!(revisits.owed(), [c, a]);
+    let counters = table.counters();
+    assert_eq!(counters.owed_id_revisits_queued.load(Relaxed), 7);
+    assert_eq!(counters.owed_id_revisits_delivered.load(Relaxed), 4);
+    assert_eq!(counters.owed_id_revisits_dropped.load(Relaxed), 1);
+    assert_eq!(
+        revisits.take_owed(|_| false),
+        Vec::new(),
+        "no room, no look"
+    );
 }
 
 #[tokio::test(start_paused = true)]

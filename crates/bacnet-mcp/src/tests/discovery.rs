@@ -156,6 +156,46 @@ async fn parallel_broad_calls_are_one_a_minute() {
     lab.stop().await;
 }
 
+/// The destination network of each Who-Is broadcast one discover call
+/// with `args` sends: `None` for a local broadcast.
+async fn who_is_destinations(lab: &mut Lab, args: Value) -> Vec<Option<u16>> {
+    use bacnet_encoding::apdu::Apdu;
+    use bacnet_types::enums::UnconfirmedServiceChoice;
+    let log = lab.inbox.sent();
+    log.clear();
+    let result = lab.agent.call("bacnet_discover", args.clone()).await;
+    assert_eq!(reason(&result), None, "{args}: {result}");
+    log.broadcasts()
+        .into_iter()
+        .filter(|frame| {
+            matches!(frame.apdu(), Apdu::UnconfirmedRequest(request)
+                if request.service_choice == UnconfirmedServiceChoice::WHO_IS)
+        })
+        .map(|frame| frame.decode_npdu().destination.map(|to| to.network))
+        .collect()
+}
+
+/// The tool's default scope is a local broadcast (#2560): its Who-Is
+/// names no destination network, so no router passes it on. Network and
+/// global are the agent's explicit choices, sent to that network's number
+/// and to every network's.
+#[tokio::test(start_paused = true)]
+async fn the_default_scope_is_a_local_broadcast_on_the_wire() {
+    let policy = Policy {
+        broad_discovery: true,
+        ..Policy::default()
+    };
+    let mut lab = Lab::start(policy).await;
+    lab.agent.initialize().await;
+    let narrow = json!({ "range": "1000-1999", "wait_s": 1 });
+    assert_eq!(who_is_destinations(&mut lab, narrow).await, [None]);
+    let remote = json!({ "scope": "network", "network": 5, "range": "1-5", "wait_s": 1 });
+    assert_eq!(who_is_destinations(&mut lab, remote).await, [Some(5)]);
+    let every = json!({ "scope": "global", "range": "1-5", "wait_s": 1 });
+    assert_eq!(who_is_destinations(&mut lab, every).await, [Some(0xFFFF)]);
+    lab.stop().await;
+}
+
 /// A network outside 1 to 65534 is refused before anything is charged.
 #[tokio::test(start_paused = true)]
 async fn a_network_number_is_checked_first() {
@@ -283,6 +323,46 @@ async fn a_long_indexed_object_list_resumes() {
     // count again at each resumption.
     let sent = lab.sends().len();
     assert_eq!(sent, 2 + 154 + (calls - 1), "{sent} requests");
+    lab.stop().await;
+}
+
+/// An element-by-element read slower than both lifetimes, its calls 200 s
+/// apart: kept from its last progress, it goes on to the end, each element
+/// read once, and the list it completes is then served from the cache.
+#[tokio::test(start_paused = true)]
+async fn a_slow_indexed_read_completes_and_is_kept() {
+    let mut lab = Lab::start_lab(short_budget(), Duration::from_millis(50), 300, true).await;
+    lab.agent.initialize().await;
+    let mut cursor = Value::Null;
+    let mut calls = 0;
+    loop {
+        calls += 1;
+        let mut args = json!({ "device": "1201", "types": ["analog-input"] });
+        if !cursor.is_null() {
+            args["cursor"] = cursor.clone();
+        }
+        let result = lab.agent.call("bacnet_list_objects", args).await;
+        let body = result["structuredContent"].clone();
+        if body["list"]["complete"] == json!(true) {
+            break;
+        }
+        cursor = body["next_cursor"].clone();
+        assert!(calls < 20, "the list never finishes: {body}");
+        tokio::time::sleep(Duration::from_secs(200)).await;
+    }
+    // Longer than either lifetime: 300 s for a list, 600 s for a read.
+    assert!(calls >= 5, "{calls} calls");
+    // One whole read, one count, each of the 304 elements once, and the
+    // count again at each resumption.
+    let sent = lab.sends().len();
+    assert_eq!(sent, 2 + 304 + (calls - 1), "{sent} requests");
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    let again = lab
+        .agent
+        .call("bacnet_list_objects", json!({ "device": "1201" }))
+        .await;
+    assert_eq!(again["structuredContent"]["list"]["cached"], json!(true));
+    assert_eq!(lab.sends().len(), sent, "served from the cache");
     lab.stop().await;
 }
 

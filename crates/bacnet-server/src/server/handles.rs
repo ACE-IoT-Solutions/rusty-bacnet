@@ -35,6 +35,15 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         &self.db
     }
 
+    /// The pool the server's confirmed notifications take their invoke IDs
+    /// and workers from: on a node's seat, the node's source Audit sends
+    /// through it too, so the server completes and joins those records
+    /// (#2617).
+    #[doc(hidden)]
+    pub fn notification_pool(&self) -> &Arc<NotificationTransactions> {
+        &self.notification_transactions
+    }
+
     /// Read one local property through the server's ReadProperty evaluator.
     ///
     /// Device wildcard reads target the configured identity; removal returns
@@ -75,11 +84,8 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         array_index: Option<u32>,
     ) -> Result<PropertyValue, Error> {
         let db = self.db.read().await;
-        let view = crate::device_view::DeviceReadContext::new(
-            &db,
-            crate::device_view::DeviceExecution::FullServer,
-        )
-        .with_identity(Some(&self.config.device));
+        let view = crate::device_view::DeviceReadContext::new(&db, self.execution)
+            .with_identity(Some(&self.config.device));
         // The local read resolves the Network_Port wildcard to the registered
         // port, but plans a Group's members without it.
         let scope = bacnet_device_core::read::ReadScope {
@@ -157,7 +163,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         array_index: Option<u32>,
         value: &[u8],
         priority: Option<u8>,
-        source: crate::LocalCommandSource,
+        source: bacnet_device_core::write::local::LocalCommandSource,
     ) -> Result<(), Error> {
         self.active_network()?;
         let value = {
@@ -197,12 +203,12 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     pub async fn generate_pics(&self, pics_config: &crate::pics::PicsConfig) -> crate::pics::Pics {
         let db = self.db.read().await;
         crate::pics::PicsGenerator::new(&db, &self.config, pics_config)
-            .for_server()
+            .for_server(self.execution)
             .generate()
     }
 }
 
-impl<T: TransportPort + bacnet_transport::bip::AsBip + 'static> BACnetServer<T> {
+impl<T: TransportPort + 'static> BACnetServer<T> {
     /// How this server's foreign-device registration is going (#938):
     /// whether it holds a live lease, the time left on it, and the last
     /// attempt's result and outcome, a BBMD's refusal included. It reads
@@ -216,6 +222,35 @@ impl<T: TransportPort + bacnet_transport::bip::AsBip + 'static> BACnetServer<T> 
             .as_bip()?
             .bvlc_client_snapshot()
             .foreign_registration)
+    }
+
+    /// Get a snapshot of discovery rate-limiting counters.
+    pub fn discovery_counters(&self) -> DiscoveryCounters {
+        self.discovery_limiter.counters()
+    }
+
+    /// Get a snapshot of COV operational and telemetry counters.
+    pub fn cov_counters(&self) -> CovCounters {
+        self.cov_counters.snapshot()
+    }
+
+    /// Sample lifetime mutation authorization decisions, including after `stop()`.
+    /// Counts decisions, not completed handlers or response delivery; see
+    /// [`MutationDecisionCounters`](crate::mutation::MutationDecisionCounters).
+    pub fn mutation_decision_counters(&self) -> crate::mutation::MutationDecisionCounters {
+        self.mutation_decisions.snapshot()
+    }
+
+    /// Remove COV subscriptions using this current immediate MAC and routed source.
+    /// Cleanup of an obsolete router leaves subscriptions renewed onto another route.
+    /// Only removed entries release their contribution to the shared quota group.
+    pub async fn remove_peer_subscriptions(
+        &self,
+        mac: &[u8],
+        network: Option<&NpduAddress>,
+    ) -> usize {
+        let mut table = self.cov_table.write().await;
+        table.remove_peer_subscriptions(mac, network)
     }
 }
 

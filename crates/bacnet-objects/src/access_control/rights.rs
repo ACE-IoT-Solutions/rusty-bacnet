@@ -30,8 +30,8 @@ pub const MAX_ACCESS_RULES: usize = 1024;
 /// [`set_positive_access_rules`](Self::set_positive_access_rules) and
 /// [`set_negative_access_rules`](Self::set_negative_access_rules), and peers
 /// write them whole, one element at a time, or resize them at index 0, with
-/// the setters' checks. Enable (property 133, `LOG_ENABLE` in
-/// `PropertyIdentifier`) switches the whole object: while it is FALSE every
+/// the setters' checks. Enable (property 133, `PropertyIdentifier::ENABLE`)
+/// switches the whole object: while it is FALSE every
 /// rule in both arrays counts as disabled (Clause 12.34.8). The optional
 /// Accompaniment row (#1393) is served once the application sets it with
 /// [`set_accompaniment`](Self::set_accompaniment). The object stores the
@@ -48,7 +48,11 @@ pub const MAX_ACCESS_RULES: usize = 1024;
 /// serving it, and serves the saved values when built again (#1392). A saved
 /// value wins over the configured one: the setter for a property a write set
 /// ([`property_saved`](Self::property_saved)) checks its argument but leaves
-/// the property alone. To change a saved value, write the property.
+/// the property alone. To change a saved value, write the property. A
+/// setter that does change a property while a peer's write to the object
+/// is being saved makes that staged write give way: the write is then made
+/// on what the setter left (#2526). One given the value already served
+/// changes nothing, and leaves the staged write alone.
 pub struct AccessRightsObject {
     oid: ObjectIdentifier,
     name: String,
@@ -103,8 +107,9 @@ impl AccessRightsObject {
     /// a write has set Enable and it was saved, the saved value wins and
     /// this does nothing.
     pub fn set_enable(&mut self, enable: bool) {
-        if !self.keeps_saved(PropertyIdentifier::LOG_ENABLE) {
+        if !self.keeps_saved(PropertyIdentifier::ENABLE) && self.enable != enable {
             self.enable = enable;
+            self.changed();
         }
     }
 
@@ -140,8 +145,11 @@ impl AccessRightsObject {
         rules: impl IntoIterator<Item = BACnetAccessRule>,
     ) -> Result<(), Error> {
         let rules = checked_rules(rules)?;
-        if !self.keeps_saved(PropertyIdentifier::POSITIVE_ACCESS_RULES) {
+        if !self.keeps_saved(PropertyIdentifier::POSITIVE_ACCESS_RULES)
+            && self.positive_access_rules != rules
+        {
             self.positive_access_rules = rules;
+            self.changed();
         }
         Ok(())
     }
@@ -154,8 +162,11 @@ impl AccessRightsObject {
         rules: impl IntoIterator<Item = BACnetAccessRule>,
     ) -> Result<(), Error> {
         let rules = checked_rules(rules)?;
-        if !self.keeps_saved(PropertyIdentifier::NEGATIVE_ACCESS_RULES) {
+        if !self.keeps_saved(PropertyIdentifier::NEGATIVE_ACCESS_RULES)
+            && self.negative_access_rules != rules
+        {
             self.negative_access_rules = rules;
+            self.changed();
         }
         Ok(())
     }
@@ -197,8 +208,11 @@ impl AccessRightsObject {
         if let Some(reference) = &accompaniment {
             check_accompaniment(reference)?;
         }
-        if !self.keeps_saved(PropertyIdentifier::ACCOMPANIMENT) {
+        if !self.keeps_saved(PropertyIdentifier::ACCOMPANIMENT)
+            && self.accompaniment != accompaniment
+        {
             self.accompaniment = accompaniment;
+            self.changed();
         }
         Ok(())
     }
@@ -340,8 +354,8 @@ impl BACnetObject for AccessRightsObject {
                 Ok(PropertyValue::Unsigned(self.global_identifier))
             }
             // Table 12-39's Enable row is property 133, which the enum names
-            // after the log objects' Log_Enable.
-            p if p == PropertyIdentifier::LOG_ENABLE => Ok(PropertyValue::Boolean(self.enable)),
+            // after the log objects' Enable.
+            p if p == PropertyIdentifier::ENABLE => Ok(PropertyValue::Boolean(self.enable)),
             p if p == PropertyIdentifier::POSITIVE_ACCESS_RULES => {
                 common::read_array(rule_values(&self.positive_access_rules), array_index)
             }
@@ -388,7 +402,7 @@ impl BACnetObject for AccessRightsObject {
             // implementation's choice (Clause 12.1.2 leaves it open): a head
             // end provisions access rights over the network. With
             // persistence, each is saved before it is served.
-            p if p == PropertyIdentifier::LOG_ENABLE
+            p if p == PropertyIdentifier::ENABLE
                 || p == PropertyIdentifier::POSITIVE_ACCESS_RULES
                 || p == PropertyIdentifier::NEGATIVE_ACCESS_RULES =>
             {
@@ -433,6 +447,11 @@ mod persistence_tests;
 #[cfg(test)]
 #[path = "rights_staging_tests.rs"]
 mod staging_tests;
+
+// std: the stage's save runs on the writer thread (#2526).
+#[cfg(all(test, feature = "std"))]
+#[path = "rights_step_tests.rs"]
+mod step_tests;
 
 #[cfg(test)]
 #[path = "rights_fold_tests.rs"]

@@ -4,7 +4,8 @@
 use std::collections::HashMap;
 use std::sync::PoisonError;
 
-use bacnet_ops::engine::{Wanted, timed_out, unreachable};
+use bacnet_ops::DeviceAddress;
+use bacnet_ops::client::Wanted;
 use bacnet_ops::parse::{parse_object_specifier, parse_object_type};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
@@ -19,7 +20,7 @@ use super::{Spec, next, schema, start};
 use crate::context::{CachedNames, Call, Cleaned, Ctx, Device, LIST_CAP, Names};
 use crate::errors::ToolError;
 use crate::untrusted::{clean, envelope_cleaned};
-use crate::value::{object_text, row_text};
+use crate::value::{object_text, reading_text};
 
 pub(super) const NAME: &str = "bacnet_find_object";
 
@@ -29,11 +30,15 @@ pub(super) const SPEC: Spec = Spec {
     description: "Find objects across the devices already discovered (call bacnet_discover \
                   first), within this server's reach: by name or description (a \
                   case-insensitive substring of the device-reported text), by object \
-                  (type:instance) or by object types. Each device's Object_List is read once \
-                  and kept 5 minutes; matching by name or description reads each candidate's \
-                  name, one request an object, so narrow with types or range. Paged: call again \
-                  with next_cursor. A device whose list couldn't be read whole is listed under \
-                  incomplete, and one that failed under skipped. Read-only.",
+                  (type:instance or type,instance) or by object types. Each device's \
+                  Object_List is read once and kept 5 minutes; matching by name or description \
+                  reads each candidate's name, one request an object, so narrow with types or \
+                  range. Paged: call again with next_cursor. A device whose list couldn't be \
+                  read whole is listed under incomplete, and one that failed under skipped. \
+                  It sends no Who-Has: it searches the devices bacnet_discover found, which by \
+                  default asks this network alone, so the last page of a search that matched \
+                  nothing carries a note saying how to reach devices behind routers. \
+                  Read-only.",
     input,
     output,
     idempotent: true,
@@ -119,6 +124,11 @@ fn output() -> Value {
                 },
                 "required": ["device", "why"],
             },
+        },
+        "note": {
+            "type": "string",
+            "description": "On the last page of a search that matched nothing: it covered \
+                            only the devices discovered so far, and how to discover further",
         },
         "skipped": {
             "type": "array",
@@ -238,29 +248,38 @@ impl Query {
     }
 }
 
+/// The position's bit that says an earlier page matched something, so the
+/// last page knows whether the whole search found nothing (#2596).
+const MATCHED: u64 = 1 << 31;
+
+/// The position's bits for the index: a device lists far fewer objects.
+const INDEX: u64 = MATCHED - 1;
+
 /// Where a page resumes: a device instance and an index into its
-/// candidates, packed into the cursor's position.
-fn pack(device: u32, index: usize) -> u64 {
-    (u64::from(device) << 32) | u64::try_from(index).unwrap_or(u64::from(u32::MAX))
+/// candidates, and whether any page so far matched, packed into the
+/// cursor's position, which the cursor seals as it is.
+fn pack(device: u32, index: usize, matched: bool) -> u64 {
+    let index = u64::try_from(index).unwrap_or(INDEX).min(INDEX);
+    (u64::from(device) << 32) | index | if matched { MATCHED } else { 0 }
 }
 
-fn unpack(position: u64) -> (u32, usize) {
+fn unpack(position: u64) -> (u32, usize, bool) {
     let device = u32::try_from(position >> 32).unwrap_or(u32::MAX);
-    let index = usize::try_from(position & u64::from(u32::MAX)).unwrap_or(usize::MAX);
-    (device, index)
+    let index = usize::try_from(position & INDEX).unwrap_or(usize::MAX);
+    (device, index, position & MATCHED != 0)
 }
 
 /// The cached names of `object` on `device`, if fresh and holding what
 /// the query needs.
 fn cached<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
-    device: u32,
+    device: &DeviceAddress,
     object: &ObjectIdentifier,
     description: bool,
 ) -> Option<Names> {
     let names = ctx.names.lock().unwrap_or_else(PoisonError::into_inner);
     let kept = names
-        .get(&device)
+        .get(device)
         .filter(|kept| kept.at.elapsed() < crate::context::LIST_TTL)?
         .objects
         .get(object)?;
@@ -296,12 +315,12 @@ fn shown(kept: &Cleaned, cap: usize, source: String) -> Value {
 /// [`LIST_CAP`].
 fn remember<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
-    device: u32,
+    device: &DeviceAddress,
     object: ObjectIdentifier,
     read: Names,
 ) {
     let mut names = ctx.names.lock().unwrap_or_else(PoisonError::into_inner);
-    let entry = names.entry(device).or_insert_with(|| CachedNames {
+    let entry = names.entry(device.clone()).or_insert_with(|| CachedNames {
         at: Instant::now(),
         objects: HashMap::new(),
     });
@@ -319,13 +338,13 @@ fn remember<T: TransportPort + 'static>(
     while names.values().map(|kept| kept.objects.len()).sum::<usize>() > NAMES_TOTAL {
         let oldest = names
             .iter()
-            .filter(|(kept_device, _)| **kept_device != device)
+            .filter(|(kept_device, _)| *kept_device != device)
             .min_by_key(|(_, kept)| kept.at)
-            .map(|(device, _)| *device);
+            .map(|(device, _)| device.clone());
         match oldest {
             Some(oldest) => drop(names.remove(&oldest)),
             None => {
-                if let Some(entry) = names.get_mut(&device) {
+                if let Some(entry) = names.get_mut(device) {
                     entry.objects.remove(&object);
                 }
                 break;
@@ -336,13 +355,19 @@ fn remember<T: TransportPort + 'static>(
         let oldest = names
             .iter()
             .min_by_key(|(_, kept)| kept.at)
-            .map(|(device, _)| *device);
+            .map(|(device, _)| device.clone());
         match oldest {
             Some(oldest) => drop(names.remove(&oldest)),
             None => break,
         }
     }
 }
+
+/// What an empty search says (#2596): the miss is the discovered devices',
+/// not the site's, and a discovery that names its scope reaches further.
+pub(crate) const NOTHING_FOUND: &str = "nothing matched on the devices discovered so far: \
+     bacnet_discover asks this network alone unless its scope is network or global, so a \
+     device behind a router is searched only once a discovery has reached it";
 
 /// What a page found, and where it stopped.
 #[derive(Default)]
@@ -362,9 +387,9 @@ pub(super) async fn run<T: TransportPort + 'static>(
 ) -> Result<Value, ToolError> {
     let query = Query::parse(&args)?;
     let range = args.range.as_deref().map(parse_range).transpose()?;
-    let (from_device, from_index) = unpack(start(ctx, NAME, args.cursor.as_deref(), raw)?);
-    let engine = ctx.engine()?;
-    let mut devices = engine.devices().await;
+    let (from_device, from_index, matched) = unpack(start(ctx, NAME, args.cursor.as_deref(), raw)?);
+    let client = ctx.client()?;
+    let mut devices = client.devices().await;
     devices.retain(|found| {
         let instance = found.object_identifier.instance_number();
         range.is_none_or(|(low, high)| (low..=high).contains(&instance))
@@ -391,28 +416,53 @@ pub(super) async fn run<T: TransportPort + 'static>(
             page.resume = Some((instance, first));
             break;
         }
+        page.searched.push(instance);
+        // By its instance, as the other tools name it: one claimed twice is
+        // skipped, naming both addresses. Pinned to the row the policy let
+        // through above.
+        let handle = match crate::context::pinned(client, &entry).await {
+            Ok(handle) => handle,
+            Err(error) => {
+                let error = ToolError::device(instance, &error).json();
+                page.skipped
+                    .push(json!({ "device": instance, "error": error }));
+                continue;
+            }
+        };
+        let address = handle.address();
+        call.reached(&address, instance);
         let device = Device {
             instance,
-            network: entry.source_network.unwrap_or(0),
+            network: address.network(),
+            address,
             entry,
+            handle,
         };
-        call.reached(instance);
-        page.searched.push(instance);
         search(ctx, call, &query, &device, first, &mut page).await;
         if page.resume.is_some() {
             break;
         }
     }
-    Ok(json!({
+    // Whether the whole search, not this page alone, has matched; on its
+    // last page, nothing so is the note's case.
+    let matched = matched || !page.matches.is_empty();
+    let nothing = !matched && page.resume.is_none();
+    let mut body = json!({
         "matches": page.matches,
         "devices": total,
         "searched": page.searched,
         "incomplete": page.incomplete,
         "skipped": page.skipped,
         "truncated": page.resume.is_some(),
-        "next_cursor": page.resume.map(|(device, index)| next(ctx, NAME, raw, pack(device, index))),
+        "next_cursor": page
+            .resume
+            .map(|(device, index)| next(ctx, NAME, raw, pack(device, index, matched))),
         "limits": ctx.limits(Some(page_size(ctx))),
-    }))
+    });
+    if nothing {
+        body["note"] = json!(NOTHING_FOUND);
+    }
+    Ok(body)
 }
 
 /// Search one device from its `first` candidate, adding to `page`; sets
@@ -421,7 +471,7 @@ async fn search<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
     call: &Call,
     query: &Query,
-    device: &Device,
+    device: &Device<T>,
     first: usize,
     page: &mut Page,
 ) {
@@ -459,10 +509,6 @@ async fn search<T: TransportPort + 'static>(
         .copied()
         .filter(|object| query.candidate(object))
         .collect();
-    let engine = match ctx.engine() {
-        Ok(engine) => engine,
-        Err(_) => return,
-    };
     let cap = ctx.policy.caps.text;
     let mut properties = vec![PropertyIdentifier::OBJECT_NAME];
     if query.description.is_some() {
@@ -473,19 +519,20 @@ async fn search<T: TransportPort + 'static>(
             page.resume = Some((instance, at));
             return;
         }
-        let mut names = cached(ctx, instance, object, query.description.is_some());
+        let mut names = cached(ctx, &device.address, object, query.description.is_some());
         if names.is_none() && query.reads_text() {
             if call.out_of_time() {
                 page.resume = Some((instance, at));
                 return;
             }
-            match engine
-                .read(instance, *object, Wanted::List(&properties))
-                .await
-            {
+            let read = device
+                .handle
+                .read_object(*object, Wanted::List(&properties))
+                .await;
+            match read {
                 Ok(read) => {
                     let kept = |property| {
-                        row_text(&read.rows, property).map(|text| {
+                        reading_text(&read.readings, property).map(|text| {
                             let (text, truncated) = clean(&text, MATCH_CAP);
                             Cleaned { text, truncated }
                         })
@@ -497,7 +544,7 @@ async fn search<T: TransportPort + 'static>(
                             .is_some()
                             .then(|| kept(PropertyIdentifier::DESCRIPTION)),
                     };
-                    remember(ctx, instance, *object, found.clone());
+                    remember(ctx, &device.address, *object, found.clone());
                     names = Some(found);
                 }
                 // The device stopped answering part way through its names:
@@ -505,8 +552,8 @@ async fn search<T: TransportPort + 'static>(
                 // next device, with no cursor back to it, so a silent device
                 // doesn't make every later page wait out its timeout again.
                 // Search it alone (range) to try it again.
-                Err(error) if unreachable(&error) => {
-                    if timed_out(&error) {
+                Err(error) if error.unreachable() => {
+                    if error.timed_out() {
                         call.timed_out();
                     }
                     page.incomplete.push(json!({

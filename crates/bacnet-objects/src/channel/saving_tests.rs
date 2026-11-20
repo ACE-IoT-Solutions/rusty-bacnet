@@ -11,6 +11,7 @@ use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bytes::BytesMut;
 
 use super::ChannelObject;
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use crate::durable::{DurableWrites, PendingWrite, StageStep};
 use crate::traits::BACnetObject;
 use crate::write_config::test_storage::MemoryConfig;
@@ -25,7 +26,7 @@ const NUMBER: PropertyIdentifier = PropertyIdentifier::CHANNEL_NUMBER;
 const GROUPS: PropertyIdentifier = PropertyIdentifier::CONTROL_GROUPS;
 const INHIBIT: PropertyIdentifier = PropertyIdentifier::ALLOW_GROUP_DELAY_INHIBIT;
 
-fn member(instance: u32) -> BACnetDeviceObjectPropertyReference {
+pub(super) fn member(instance: u32) -> BACnetDeviceObjectPropertyReference {
     BACnetDeviceObjectPropertyReference {
         object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, instance).unwrap(),
         property_identifier: 85,
@@ -46,7 +47,7 @@ fn unsigned_list(values: &[u64]) -> PropertyValue {
 
 /// Channel 1 kept in `storage`, configured as an application would: one
 /// member with a 10 ms delay, number 4, groups [2] and inhibit off.
-fn channel(storage: &Arc<MemoryConfig>) -> ChannelObject {
+pub(super) fn channel(storage: &Arc<MemoryConfig>) -> ChannelObject {
     let persistence = Arc::clone(storage) as Arc<dyn WriteConfigPersistence>;
     let mut channel = ChannelObject::with_persistence(1, "CH", 4, persistence).unwrap();
     channel.set_members(vec![member(1)]).unwrap();
@@ -150,6 +151,7 @@ fn a_write_that_cannot_be_saved_is_refused_and_the_old_value_stays() {
 
 /// A WritePropertyMultiple's writes to one Channel stage one save of what
 /// they leave together, and each takes its step (#1423).
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_requests_writes_stage_one_save() {
     let storage = MemoryConfig::new();
@@ -251,4 +253,145 @@ fn clearing_the_written_config_lets_the_configured_one_apply() {
     assert_eq!(read(&rebuilt, GROUPS), unsigned_list(&[2]));
     drop(rebuilt);
     assert_eq!(read(&channel(&storage), GROUPS), unsigned_list(&[2]));
+}
+
+#[cfg(feature = "durable-writes")]
+pub(super) fn pending(
+    property: PropertyIdentifier,
+    index: Option<u32>,
+    value: PropertyValue,
+) -> PendingWrite {
+    PendingWrite {
+        property,
+        array_index: index,
+        value,
+    }
+}
+
+/// Stage `writes` on `channel` and wait for the save; the wait releases it.
+#[cfg(feature = "durable-writes")]
+pub(super) fn staged(
+    channel: &mut ChannelObject,
+    writes: &[PendingWrite],
+) -> crate::durable::SaveWait {
+    let StageStep::Staged(wait) = channel.stage_writes(writes) else {
+        panic!("the writes didn't stage");
+    };
+    wait.block();
+    wait
+}
+
+#[cfg(feature = "durable-writes")]
+pub(super) fn make(channel: &mut ChannelObject, write: &PendingWrite) -> Result<(), Error> {
+    let PendingWrite {
+        property,
+        array_index,
+        value,
+    } = write.clone();
+    channel.write_property(property, array_index, value, None)
+}
+
+/// A step keeps only its write, so each write is worked out again on the
+/// configuration served as it is made (#2526): every claim, the later ones
+/// included, serves its request's prefix and takes its step, and storage
+/// ends where the stage saved it, with one save.
+#[cfg(feature = "durable-writes")]
+#[test]
+fn each_claim_makes_its_write_on_the_configuration_served() {
+    let storage = MemoryConfig::new();
+    let mut channel = channel(&storage);
+    let writes = [
+        pending(MEMBERS, Some(0), PropertyValue::Unsigned(3)),
+        pending(DELAYS, Some(3), PropertyValue::Unsigned(30)),
+        pending(DELAYS, Some(1), PropertyValue::Unsigned(5)),
+        pending(MEMBERS, Some(2), member_value(&member(7))),
+        pending(DELAYS, Some(2), PropertyValue::Unsigned(20)),
+    ];
+    let served: [(u64, [u64; 3]); 5] = [
+        (3, [10, 0, 0]),
+        (3, [10, 0, 30]),
+        (3, [5, 0, 30]),
+        (3, [5, 0, 30]),
+        (3, [5, 20, 30]),
+    ];
+    let wait = staged(&mut channel, &writes);
+    let saved = storage.saved();
+    for (at, (write, (size, delays))) in writes.iter().zip(served).enumerate() {
+        make(&mut channel, write).unwrap();
+        let members = channel.read_property(MEMBERS, Some(0)).unwrap();
+        assert_eq!(members, PropertyValue::Unsigned(size), "write {at}");
+        assert_eq!(read(&channel, DELAYS), unsigned_list(&delays), "write {at}");
+        assert_eq!(
+            channel.has_staged_write(),
+            at + 1 < writes.len(),
+            "write {at}"
+        );
+    }
+    let second = channel.read_property(MEMBERS, Some(2)).unwrap();
+    assert_eq!(second, member_value(&member(7)));
+    channel.release_staged_write(&wait);
+    channel.wait_for_saves();
+    assert_eq!(storage.saved(), saved);
+    assert_eq!(storage.saves(), 1);
+}
+
+/// A Channel dropped part way through a request puts storage back to what
+/// it served then: the writes it made, not the configuration before the
+/// request nor the one the stage saved (#1363).
+#[cfg(feature = "durable-writes")]
+#[test]
+fn a_drop_part_way_puts_storage_back_to_the_writes_made() {
+    let storage = MemoryConfig::new();
+    let mut channel = channel(&storage);
+    let delay = |value| pending(DELAYS, Some(1), PropertyValue::Unsigned(value));
+    let writes = [delay(5), delay(6)];
+    let delays = |storage: &MemoryConfig| match storage.saved() {
+        Some(WriteConfigSnapshot::Channel(saved)) => saved.members.map(|m| m.execution_delay),
+        other => panic!("not a Channel's: {other:?}"),
+    };
+    let _wait = staged(&mut channel, &writes);
+    assert_eq!(delays(&storage), Some(vec![6]));
+    make(&mut channel, &writes[0]).unwrap();
+    drop(channel);
+    assert_eq!(delays(&storage), Some(vec![5]));
+    assert_eq!(storage.saves(), 2);
+}
+
+/// A later write of a request is checked against the configuration the
+/// earlier ones leave, not the one served: a delay past the end of a member
+/// list the request shortens stops the stage, and is refused as made.
+#[cfg(feature = "durable-writes")]
+#[test]
+fn a_later_write_is_checked_against_the_configuration_the_earlier_ones_leave() {
+    let storage = MemoryConfig::new();
+    let mut channel = channel(&storage);
+    channel
+        .set_members(vec![member(1), member(2), member(3)])
+        .unwrap();
+    channel.set_execution_delay(vec![10, 20, 30]).unwrap();
+    let shorter = PropertyValue::List(vec![member_value(&member(4)), member_value(&member(5))]);
+    let writes = [
+        pending(MEMBERS, None, shorter),
+        pending(DELAYS, Some(3), PropertyValue::Unsigned(9)),
+    ];
+    let wait = staged(&mut channel, &writes);
+    let two = Some(WriteConfigSnapshot::Channel(ChannelWriteConfig {
+        members: Some(ChannelMembers {
+            references: vec![member(4), member(5)],
+            execution_delay: vec![10, 20],
+        }),
+        ..ChannelWriteConfig::default()
+    }));
+    assert_eq!(storage.saved(), two);
+    make(&mut channel, &writes[0]).unwrap();
+    let error = make(&mut channel, &writes[1]).unwrap_err();
+    assert!(
+        matches!(error, Error::Remote(RemoteError::Error { code, .. })
+            if code == ErrorCode::INVALID_ARRAY_INDEX),
+        "{error:?}"
+    );
+    channel.release_staged_write(&wait);
+    channel.wait_for_saves();
+    assert_eq!(storage.saved(), two);
+    assert_eq!(storage.saves(), 1);
 }

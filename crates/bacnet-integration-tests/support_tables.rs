@@ -7,9 +7,10 @@
 //!   in a database and read back through the PICS generator, which says
 //!   whether CreateObject and DeleteObject reach the type;
 //! - services: the full server's `EXECUTED_SERVICES` and the PICS initiator
-//!   list, the client's `SENT_SERVICES`, the shared endpoint's responder lists,
-//!   and the Python client's methods in the type stub, matched to services by
-//!   name, with every other method on an explicit list ([`python_services`]);
+//!   list (an endpoint session with a server role runs that server), the
+//!   client's `SENT_SERVICES`, and the Python client's methods in the type
+//!   stub, matched to services by name, with every other method on an
+//!   explicit list ([`python_services`]);
 //! - data links: the Cargo features of `bacnet-transport`, resolved through the
 //!   manifests for the Python wheel (`rusty-bacnet`) and for each release
 //!   target of the CLI (`TARGETS` in `scripts/release/third_party_notices.py`,
@@ -57,12 +58,11 @@ const DATA_LINKS: &[(&str, DataLinkSupport, Option<&str>)] = &[
 const NON_LINK_FEATURES: &[&str] = &["default", "serial-gpio", "test-support"];
 
 /// Method-name endings that still send the service the name starts with, as
-/// in `who_has_by_id` or `acknowledge_alarm_request`.
+/// in `who_has_by_id` or `acknowledge_alarm`.
 const PYTHON_METHOD_SUFFIXES: &[&str] = &[
     "",
     "_typed",
     "_request",
-    "_directed",
     "_by_id",
     "_by_name",
     "_replies",
@@ -75,8 +75,13 @@ const PYTHON_METHOD_SUFFIXES: &[&str] = &[
 /// `BACnetClient` methods in the stub whose name names no service, so they
 /// count for none. Some send a service another method already names
 /// (`discover` and `who_is`, `unsubscribe_cov` and `subscribe_cov`,
-/// `read_log_page` and `read_range`); the rest send none: lifecycle,
-/// accessors, event streams, and BVLL or network-layer messages. Generation
+/// `unsubscribe_cov_property` and `subscribe_cov_property`,
+/// `read_log_page` and `read_range`, `export_223_experimental` and the
+/// ReadProperty and ReadPropertyMultiple readers, and `device`, whose
+/// `Device` handle's calls send those two and WriteProperty, #2561); the
+/// rest send
+/// none: lifecycle, accessors (`write_policy`, `resolve_scope`), event
+/// streams, and BVLL or network-layer messages. Generation
 /// fails on a method that is neither here nor named after a service, and on
 /// an entry here the stub no longer has.
 const PYTHON_OTHER_METHODS: &[&str] = &[
@@ -86,12 +91,18 @@ const PYTHON_OTHER_METHODS: &[&str] = &[
     "stop",
     "discover",
     "unsubscribe_cov",
+    "unsubscribe_cov_property",
     "read_log_page",
+    "export_223_experimental",
+    "write_policy",
+    "device",
+    "resolve_scope",
     "i_have_events",
     "cov_notifications",
     "network_reports",
     "connection_events",
     "frames",
+    "i_am_arrivals",
     "discovered_devices",
     "get_device",
     "clear_devices",
@@ -102,6 +113,12 @@ const PYTHON_OTHER_METHODS: &[&str] = &[
     "sc_npdu_drop_counts",
     "sc_peer_info",
     "discover_routers",
+    "routing_table",
+    "configure_routed_path_max_npdu",
+    "clear_routed_path_limit",
+    "routed_path_limits",
+    "too_long_reject_drops",
+    "below_minimum_reject_drops",
     "read_bdt",
     "write_bdt",
     "read_fdt",
@@ -229,17 +246,11 @@ fn services(python: &BTreeSet<u8>) -> Result<Vec<Value>> {
     let executed = bits(bacnet_objects::device::EXECUTED_SERVICES);
     let initiated = bits(PicsGenerator::INITIATED_SERVICES);
     let sent = bits(bacnet_client::client::SENT_SERVICES);
-    let responder = bits(bacnet_endpoint::RESPONDER_SERVICES);
-    let opt_in: BTreeMap<u8, &str> = bacnet_endpoint::RESPONDER_OPT_IN_SERVICES
-        .iter()
-        .map(|opt_in| (opt_in.service.to_raw(), opt_in.method))
-        .collect();
     let mut rows = Vec::new();
     for raw in 0..=u8::MAX {
-        let used = [&executed, &initiated, &sent, &responder, python]
+        let used = [&executed, &initiated, &sent, python]
             .iter()
-            .any(|set| set.contains(&raw))
-            || opt_in.contains_key(&raw);
+            .any(|set| set.contains(&raw));
         if !used {
             continue;
         }
@@ -248,11 +259,6 @@ fn services(python: &BTreeSet<u8>) -> Result<Vec<Value>> {
             .ok_or_else(|| format!("service bit {raw} has no PICS name"))?;
         let kind =
             kind(service).ok_or_else(|| format!("{label}: neither confirmed nor unconfirmed"))?;
-        let endpoint = if responder.contains(&raw) {
-            json!("always")
-        } else {
-            opt_in.get(&raw).map_or(Value::Null, |method| json!(method))
-        };
         rows.push((
             (kind != "confirmed", label),
             object([
@@ -263,7 +269,6 @@ fn services(python: &BTreeSet<u8>) -> Result<Vec<Value>> {
                 ("serverExecutes", json!(executed.contains(&raw))),
                 ("serverInitiates", json!(initiated.contains(&raw))),
                 ("clientSends", json!(sent.contains(&raw))),
-                ("endpoint", endpoint),
                 ("pythonSends", json!(python.contains(&raw))),
             ]),
         ));

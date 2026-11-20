@@ -1,6 +1,8 @@
 //! A routed confirmed request names one device on one remote network (#1278).
 use super::*;
+use crate::client::Station;
 use crate::discovery::{DiscoveredDevice, RoutedDeviceConfig};
+use bacnet_transport::test_transport::TestTransport;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier, Segmentation, UnconfirmedServiceChoice};
 use bacnet_types::primitives::ObjectIdentifier;
 
@@ -18,7 +20,7 @@ fn not_one_device() -> [(u16, Vec<u8>); 3] {
 }
 
 async fn client() -> (
-    BACnetClient<CaptureTransport>,
+    BACnetClient<TestTransport>,
     mpsc::Sender<ReceivedNpdu>,
     mpsc::UnboundedReceiver<SentFrame>,
 ) {
@@ -37,16 +39,17 @@ fn object() -> ObjectIdentifier {
 }
 
 /// A device-table row behind `ROUTER` at `dnet`/`dadr`, as discovery would
-/// hold it, so the `_from_device` and `_to_device` methods route to it.
+/// hold it, so `resolve_device` names the station behind it.
 fn routed_row(dnet: u16, dadr: &[u8]) -> DiscoveredDevice {
     DiscoveredDevice {
         object_identifier: ObjectIdentifier::new(ObjectType::DEVICE, ROUTED_DEVICE).unwrap(),
         mac_address: MacAddr::from_slice(&ROUTER),
         max_apdu_length: 1476,
-        segmentation_supported: Segmentation::NONE,
+        segmentation_supported: Segmentation::NO_SEGMENTATION,
         max_segments_accepted: None,
         vendor_id: 0,
         last_seen: std::time::Instant::now(),
+        last_announced: None,
         source_network: Some(dnet),
         source_address: Some(MacAddr::from_slice(dadr)),
     }
@@ -63,26 +66,33 @@ async fn routed_confirmed_request_to_no_single_device_fails_before_any_state() {
         let pv = PropertyIdentifier::PRESENT_VALUE;
         let results = [
             client
-                .confirmed_request_routed(
-                    &ROUTER,
-                    dnet,
-                    &dadr,
+                .confirmed_request(
+                    &Station::routed(&ROUTER, dnet, &dadr),
                     ConfirmedServiceChoice::READ_PROPERTY,
                     &[0x0c],
                 )
                 .await
                 .map(drop),
             client
-                .read_property_routed(&ROUTER, dnet, &dadr, object(), pv, None)
+                .read_property(&Station::routed(&ROUTER, dnet, &dadr), object(), pv, None)
                 .await
                 .map(drop),
-            client
-                .read_property_from_device(ROUTED_DEVICE, object(), pv, None)
-                .await
-                .map(drop),
-            client
-                .subscribe_cov_to_device(ROUTED_DEVICE, 1, object(), false, Some(60))
-                .await,
+            // By instance: the lookup or the request refuses the row.
+            match client.resolve_device(ROUTED_DEVICE).await {
+                Ok(to) => client
+                    .read_property(&to, object(), pv, None)
+                    .await
+                    .map(drop),
+                Err(error) => Err(error),
+            },
+            match client.resolve_device(ROUTED_DEVICE).await {
+                Ok(to) => {
+                    client
+                        .subscribe_cov(&to, 1, object(), false, Some(60))
+                        .await
+                }
+                Err(error) => Err(error),
+            },
         ];
         for result in results {
             assert!(
@@ -173,7 +183,7 @@ async fn add_routed_device_refuses_a_destination_no_request_could_reach() {
         remote_network,
         remote_mac,
         max_apdu_length: 1476,
-        segmentation_supported: Segmentation::NONE,
+        segmentation_supported: Segmentation::NO_SEGMENTATION,
         max_segments_accepted: None,
     };
     let too_long = vec![3; bacnet_npdu::MAX_MAC_LEN + 1];
@@ -184,13 +194,13 @@ async fn add_routed_device_refuses_a_destination_no_request_could_reach() {
     ] {
         let result = client.add_routed_device(config(dnet, dadr)).await;
         assert!(matches!(result, Err(Error::Encoding(_))), "{result:?}");
-        assert!(client.get_device(ROUTED_DEVICE).await.is_none());
+        assert!(client.get_device(ROUTED_DEVICE).await.unwrap().is_none());
     }
     let longest = vec![3; bacnet_npdu::MAX_MAC_LEN];
     client
         .add_routed_device(config(u16::MAX - 1, longest))
         .await
         .unwrap();
-    assert!(client.get_device(ROUTED_DEVICE).await.is_some());
+    assert!(client.get_device(ROUTED_DEVICE).await.unwrap().is_some());
     client.stop().await.unwrap();
 }

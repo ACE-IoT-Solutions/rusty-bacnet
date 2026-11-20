@@ -6,14 +6,11 @@ impl BACnetServer {
     /// Local telemetry, not a trace bridge or durable audit log. Raises
     /// RuntimeError("server not started") before start and after stop.
     fn dcc_outcome_counters<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&self.inner);
+        let inner = self.inner.clone();
         crate::py_async::future_into_py(py, async move {
             let counters = {
-                let guard = inner.lock().await;
-                guard
-                    .as_ref()
-                    .ok_or_else(|| PyRuntimeError::new_err("server not started"))?
-                    .dcc_outcome_counters()
+                let guard = inner.read().await;
+                guard.server()?.dcc_outcome_counters()
             };
             Ok(std::collections::HashMap::from([
                 ("accepted_total", counters.accepted_total),

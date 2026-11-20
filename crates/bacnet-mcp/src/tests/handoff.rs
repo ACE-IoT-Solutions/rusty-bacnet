@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bacnet_ops::limits::Account;
-use bacnet_ops::safety::ledger::{Ledger, Origin, State};
-use bacnet_ops::safety::{Effect, Gate, Occupancy, Planned, Stored, Tier, WriteSpec, run_id};
+use bacnet_tool::safety::ledger::{Ledger, Origin, State};
+use bacnet_tool::safety::{Effect, Gate, Occupancy, Planned, Stored, Tier, WriteSpec, run_id};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use serde_json::{Map, json};
@@ -51,7 +51,8 @@ fn hold_the_gate(lab: &Lab, hold: Duration) -> tokio::task::JoinHandle<()> {
         // The pre-read went at once and holds the gate for 500 ms; this
         // queues behind it, and the write's own turn behind this.
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let turn = limits.turn(LAB).await;
+        let at = bacnet_ops::DeviceAddress::local(&super::LAB_MAC).unwrap();
+        let turn = limits.turn(&at).await;
         tokio::time::sleep(hold).await;
         drop(turn);
     })
@@ -135,6 +136,7 @@ async fn a_panicking_write_task_settles_its_entry() {
     let path = workspace.dir.clone();
     let item = Planned {
         spec: WriteSpec {
+            address: bacnet_ops::DeviceAddress::local(&super::LAB_MAC).unwrap(),
             device: LAB,
             object: ObjectIdentifier::new(ObjectType::ANALOG_OUTPUT, 1).unwrap(),
             property: PropertyIdentifier::PRESENT_VALUE,
@@ -159,7 +161,12 @@ async fn a_panicking_write_task_settles_its_entry() {
         let mut ledger = Ledger::open(&path)
             .unwrap()
             .written_by(Origin::mcp("tester"));
-        ledger.begin(&item, run_id(), "t");
+        ledger.begin(
+            &item,
+            run_id(),
+            "t",
+            bacnet_tool::safety::ledger::Place::default(),
+        );
         ledger.save().unwrap();
         panic!("the write task panics after recording its entry");
     };

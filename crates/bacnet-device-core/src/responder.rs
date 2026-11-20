@@ -1,6 +1,6 @@
 //! [`Responder`]: the staged steps strung together for a host with nothing
 //! to await between them, such as firmware that owns its database.
-use crate::clock::{self, Basis, DeviceClock};
+use crate::clock::{self, Basis, DeviceClock, Zone};
 use crate::discovery;
 use crate::read::{self, ReadFailure, ReadOverlay, ReadPropertyMultipleBudget, ReadScope, RpmPlan};
 use crate::reply::{self, SEGMENTED, emit};
@@ -224,11 +224,11 @@ impl Responder {
     /// It refuses an identity that claims segmentation support: the core
     /// aborts every segmented request and every reply too long for one APDU,
     /// so an I-Am naming segmentation would overstate it. Give it
-    /// `Segmentation::NONE`, the [`DeviceIdentity`] default. It also refuses
+    /// `Segmentation::NO_SEGMENTATION`, the [`DeviceIdentity`] default. It also refuses
     /// a `read_work` of zero, which no ReadProperty fits, and an RPM budget
     /// [`ReadPropertyMultipleBudget::validate`] refuses.
     pub fn new(identity: DeviceIdentity, limits: Limits) -> Result<Self, Error> {
-        if identity.segmentation() != Segmentation::NONE {
+        if identity.segmentation() != Segmentation::NO_SEGMENTATION {
             return Err(Error::Encoding(
                 "bacnet-device-core segments neither way: the Device identity must claim no segmentation"
                     .into(),
@@ -286,14 +286,33 @@ impl Responder {
         date: Date,
         time: Time,
     ) -> Result<(), Error> {
-        let clock = self
-            .clock
-            .as_mut()
-            .map(|clocked| &mut clocked.clock)
-            .ok_or(Error::range("the responder has no clock"))?;
+        let clock = self.clock_mut()?;
         clock.set(basis, date, time)?;
         clock.lend(db);
         Ok(())
+    }
+
+    /// Move the Device's clock to `zone`, when daylight saving starts or
+    /// ends or the host corrects its UTC_Offset, and lend it to `db` again:
+    /// the Device's UTC_Offset, Daylight_Savings_Status, Local_Date and
+    /// Local_Time, and every object's clock, read the new zone from this
+    /// call on. A synchronized clock stays synchronized
+    /// ([`SyncedClock::set_zone`](clock::SyncedClock::set_zone)). Refused,
+    /// changing nothing, when the responder has no clock or the clock
+    /// refuses the zone.
+    pub fn set_zone(&mut self, db: &mut ObjectDatabase, zone: Zone) -> Result<(), Error> {
+        let clock = self.clock_mut()?;
+        clock.set_zone(zone)?;
+        clock.lend(db);
+        Ok(())
+    }
+
+    /// The Device's clock, to set.
+    fn clock_mut(&mut self) -> Result<&mut DeviceClock, Error> {
+        self.clock
+            .as_mut()
+            .map(|clocked| &mut clocked.clock)
+            .ok_or(Error::range("the responder has no clock"))
     }
 
     /// The Device identity this responder answers for.
@@ -411,6 +430,18 @@ impl Responder {
         request: Inbound,
         out: &mut BytesMut,
     ) -> Written {
+        // Without a clock, no Recipient_List entry the device's event
+        // distribution couldn't honour (decision 14); a build without it
+        // sends no event notification, and the filter would only cost it.
+        #[cfg(feature = "event-reporting")]
+        let mut clockless;
+        #[cfg(feature = "event-reporting")]
+        let observer: Option<&mut dyn WriteCommitObserver> = if self.clock.is_none() {
+            clockless = write::ClocklessRecipients(observer);
+            Some(&mut clockless)
+        } else {
+            observer.map(|observer| observer as &mut dyn WriteCommitObserver)
+        };
         let origin = request.source.as_ref();
         let confirmed = match decode_apdu(request.apdu) {
             Ok(Apdu::ConfirmedRequest(confirmed)) if confirmed.segmented => {

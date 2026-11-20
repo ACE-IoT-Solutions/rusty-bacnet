@@ -100,8 +100,10 @@ pub(crate) enum Fault {
     UpgradeRefused(u16),
     /// The hub went silent past the heartbeat timeout.
     HeartbeatTimeout,
-    /// The hub closed the connection.
+    /// The hub closed the connection with a Disconnect-Request.
     PeerClose,
+    /// The hub closed the WebSocket with this close status.
+    WebSocketClosed(u16),
     /// This node closed it.
     LocalClose,
     /// A reply to the Connect-Request that was malformed or not an accept.
@@ -164,6 +166,9 @@ impl From<ScDisconnectCause> for Fault {
             ScDisconnectCause::UpgradeRefused { http_status, .. } => {
                 Self::UpgradeRefused(http_status)
             }
+            ScDisconnectCause::WebSocketClosed { close_status, .. } => {
+                Self::WebSocketClosed(close_status)
+            }
             ScDisconnectCause::MalformedResult | ScDisconnectCause::UnexpectedConnectReply => {
                 Self::BadReply
             }
@@ -193,6 +198,8 @@ pub(crate) struct CertSummary {
 pub(crate) struct ScFailure {
     /// Why.
     pub(crate) fault: Fault,
+    /// The BACnet error code that names it (Annex AB.7.5), when one does.
+    pub(crate) code: Option<ErrorCode>,
     /// The error's text, shown as is.
     pub(crate) detail: String,
     /// The certificates a refused hub presented, leaf first; untrusted.
@@ -204,6 +211,7 @@ impl ScFailure {
     pub(crate) fn from_error(error: &Error) -> Self {
         Self {
             fault: Fault::from_error(error),
+            code: ScDisconnectCause::from_error(error).error_code(),
             detail: error.to_string(),
             presented: presented(error),
         }
@@ -266,6 +274,8 @@ pub(crate) enum LinkEvent {
         hub: ScActiveHub,
         /// Why.
         fault: Fault,
+        /// The BACnet error code that names it, when one does.
+        code: Option<ErrorCode>,
     },
     /// A dial to `hub` failed.
     ConnectFailed {
@@ -273,6 +283,8 @@ pub(crate) enum LinkEvent {
         hub: ScActiveHub,
         /// Why.
         fault: Fault,
+        /// The BACnet error code that names it, when one does.
+        code: Option<ErrorCode>,
     },
     /// Dialling `hub` again after `backoff`.
     Reconnecting {
@@ -291,6 +303,8 @@ pub(crate) enum LinkEvent {
     PrimaryRestoreFailed {
         /// Why.
         fault: Fault,
+        /// The BACnet error code that names it, when one does.
+        code: Option<ErrorCode>,
     },
     /// Reconnection stopped.
     GaveUp {
@@ -307,10 +321,12 @@ impl LinkEvent {
             E::Connected { hub, hub_vmac, .. } => Self::Connected { hub, hub_vmac },
             E::Disconnected { hub, cause, .. } => Self::Disconnected {
                 hub,
+                code: cause.error_code(),
                 fault: cause.into(),
             },
             E::ConnectFailed { hub, cause, .. } => Self::ConnectFailed {
                 hub,
+                code: cause.error_code(),
                 fault: cause.into(),
             },
             E::ReconnectAttempt {
@@ -326,6 +342,7 @@ impl LinkEvent {
             E::FailoverEngaged => Self::FailoverEngaged,
             E::PrimaryRestored => Self::PrimaryRestored,
             E::PrimaryRestoreFailed { cause, .. } => Self::PrimaryRestoreFailed {
+                code: cause.error_code(),
                 fault: cause.into(),
             },
             E::ReconnectGaveUp { attempts, .. } => Self::GaveUp { attempts },
@@ -367,17 +384,9 @@ pub(crate) fn hub_name(hub: ScActiveHub) -> &'static str {
     }
 }
 
-/// A VMAC as `02:00:00:00:00:01`.
-pub(crate) fn vmac_text(vmac: &[u8]) -> String {
-    vmac.iter()
-        .map(|octet| format!("{octet:02x}"))
-        .collect::<Vec<_>>()
-        .join(":")
-}
-
 /// A UUID in its 8-4-4-4-12 form.
 pub(crate) fn uuid_text(uuid: &[u8; 16]) -> String {
-    let hex: String = uuid.iter().map(|octet| format!("{octet:02x}")).collect();
+    let hex = bacnet_ops::octets::hex(uuid);
     format!(
         "{}-{}-{}-{}-{}",
         &hex[..8],
@@ -391,6 +400,7 @@ pub(crate) fn uuid_text(uuid: &[u8; 16]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::profile::sc::Vmac;
     use bacnet_transport::sc::{ScCertificateRejection, ScTlsAlert};
 
     #[test]
@@ -420,7 +430,7 @@ mod tests {
 
     #[test]
     fn identities_print_as_operators_write_them() {
-        assert_eq!(vmac_text(&[2, 0, 0, 0, 0, 0x1a]), "02:00:00:00:00:1a");
+        assert_eq!(Vmac([2, 0, 0, 0, 0, 0x1a]).to_string(), "02:00:00:00:00:1a");
         let uuid = [
             0x6f, 0x1c, 0x2a, 0x9e, 0x44, 0x07, 0x4b, 0x3d, 0x9a, 0x51, 0x0e, 0x7c, 0x88, 0x21,
             0xd4, 0x0b,

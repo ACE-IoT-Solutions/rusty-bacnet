@@ -1,5 +1,6 @@
 //! Shared Device declarations and stock object construction.
 mod network_port;
+use crate::common::numbered_name;
 use crate::prelude::*;
 use crate::{
     database::ObjectDatabase,
@@ -31,7 +32,7 @@ pub use network_port::NetworkPortEntry;
 /// assert_eq!(identity.vendor_id(), 42);
 /// # Ok::<(), bacnet_types::error::Error>(())
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceIdentity {
     instance: u32,
     vendor_id: u16,
@@ -47,9 +48,8 @@ pub struct DeviceIdentity {
 impl DeviceIdentity {
     /// Creates an identity with endpoint-composed defaults.
     ///
-    /// Defaults: `max_apdu = 1476`, `segmentation = NONE`,
-    /// `services = [READ_PROPERTY]` (narrow endpoint reality, no superset),
-    /// no ports, zero UUID (B/IP-only may keep zeros; SC dial requires
+    /// Defaults: `max_apdu = 1476`, `segmentation = NO_SEGMENTATION`,
+    /// `services = [READ_PROPERTY]`, no ports, zero UUID (B/IP-only may keep zeros; SC dial requires
     /// [`with_device_uuid`](Self::with_device_uuid)). Returns
     /// [`Error::Range`] for an instance past 4194303, or for 4194303 itself,
     /// which no object may have (Clause 12.1.1, #2171).
@@ -59,7 +59,7 @@ impl DeviceIdentity {
             instance,
             vendor_id,
             max_apdu_length: 1476,
-            segmentation_supported: Segmentation::NONE,
+            segmentation_supported: Segmentation::NO_SEGMENTATION,
             apdu_segment_timeout_ms: 5000,
             services: vec![ServiceSupported::READ_PROPERTY],
             network_ports: Vec::new(),
@@ -85,30 +85,28 @@ impl DeviceIdentity {
 
     /// Overrides segmentation support for a matching full server.
     ///
-    /// Narrow EndpointSession roles require NONE and reject any other identity
-    /// before ingress starts. A full server uses this declaration with the
-    /// segment timeout supplied by this identity.
+    /// An EndpointSession still requires NO_SEGMENTATION and refuses any
+    /// other identity before its link starts. A full server uses this
+    /// declaration with the segment timeout supplied by this identity.
     pub fn with_segmentation(mut self, segmentation: Segmentation) -> Self {
         self.segmentation_supported = segmentation;
         self
     }
 
     /// Sets the Device and full-server segment timeout. EndpointSession roles
-    /// require segmentation NONE; client timers remain caller-owned.
+    /// require segmentation NO_SEGMENTATION; client timers remain caller-owned.
     pub fn with_apdu_segment_timeout_ms(mut self, timeout_ms: u64) -> Self {
         self.apdu_segment_timeout_ms = timeout_ms;
         self
     }
 
-    /// Overrides the services profile (must equal what roles can do; no superset).
+    /// Overrides the services profile: the Protocol_Services_Supported of a
+    /// Device [`build_database`](Self::build_database) builds (default
+    /// `[READ_PROPERTY]`). List only services the device executes.
     ///
-    /// Default `[READ_PROPERTY]` matches the narrow endpoint responder.
-    /// `EndpointSession::with_device_writes` adds `WRITE_PROPERTY` and
-    /// `EndpointSession::with_reinitialize` adds `REINITIALIZE_DEVICE`; other
-    /// service bits are rejected. Server-role startup also rejects missing
-    /// ReadProperty or unsupported bits with neither opt-in, before ingress starts.
-    /// ClientOnly has no responder and retains this as a local declaration.
-    /// Broader executing profiles require a matching full server.
+    /// An endpoint session with a server role doesn't use it: its full
+    /// server lists what the node executes (#2617). A client-only session
+    /// keeps it as a local declaration.
     pub fn with_services(mut self, services: &[ServiceSupported]) -> Self {
         self.services = services.to_vec();
         self
@@ -333,12 +331,14 @@ impl DeviceIdentity {
                 "Device max-APDU must be at least 50".into(),
             ));
         }
-        if self.segmentation_supported.to_raw() > Segmentation::NONE.to_raw() {
+        if self.segmentation_supported.to_raw() > Segmentation::NO_SEGMENTATION.to_raw() {
             return Err(Error::Encoding(
                 "invalid Device segmentation support".into(),
             ));
         }
-        if self.segmentation_supported != Segmentation::NONE && self.apdu_segment_timeout_ms == 0 {
+        if self.segmentation_supported != Segmentation::NO_SEGMENTATION
+            && self.apdu_segment_timeout_ms == 0
+        {
             return Err(Error::Encoding(
                 "APDU_Segment_Timeout must be positive when segmentation is supported".into(),
             ));
@@ -378,7 +378,7 @@ impl DeviceIdentity {
                 )));
             }
         }
-        if self.segmentation_supported != Segmentation::NONE
+        if self.segmentation_supported != Segmentation::NO_SEGMENTATION
             && device.read_property(P::APDU_SEGMENT_TIMEOUT, None)?
                 != PropertyValue::Unsigned(self.apdu_segment_timeout_ms)
         {
@@ -418,8 +418,9 @@ impl DeviceIdentity {
     /// Constructs the ObjectDatabase (Device + Network-Port + DEVICE_UUID).
     ///
     /// Truth direction: identity -> database. For extra application objects
-    /// use [`build_database_with_extra`]: it seeds `Object_List` with
-    /// Device + ports + extras upfront so no post-add mutation is needed.
+    /// use [`build_database_with_extra`]. The Device's Object_List is the
+    /// database's own ([`ObjectDatabase::object_list`]): the Device, then the
+    /// ports.
     pub fn build_database(&self) -> Result<ObjectDatabase, Error> {
         let mut device = DeviceObject::new(DeviceConfig {
             identity: self.clone(),
@@ -429,16 +430,11 @@ impl DeviceIdentity {
         })?;
         device.set_services_supported(&self.services);
         device.set_device_uuid(self.device_uuid);
-        let device_oid = device.object_identifier();
 
-        let mut oids = vec![device_oid];
         let mut ports = Vec::new();
         for entry in &self.network_ports {
-            let port = entry.build_object()?;
-            oids.push(port.object_identifier());
-            ports.push(port);
+            ports.push(entry.build_object()?);
         }
-        device.set_object_list(oids);
 
         let mut db = ObjectDatabase::new();
         db.add(Box::new(device))?;
@@ -451,10 +447,11 @@ impl DeviceIdentity {
 
 /// Builds a database from an identity plus extra application objects.
 ///
-/// Truth direction stays identity-first: the Device `Object_List` is seeded
-/// with Device + ports + every extra OID upfront, so no post-add mutation
-/// (and no device/network-port fork) is needed. Extra objects are boxed
-/// `BACnetObject`s (e.g. Analog Input for proofs).
+/// Truth direction stays identity-first. The Device's Object_List is the
+/// database's own ([`ObjectDatabase::object_list`]), which follows every
+/// later add and remove: the Device, the ports, then the extra objects in
+/// order. Extra objects are boxed `BACnetObject`s (e.g. Analog Input for
+/// proofs).
 ///
 /// ```
 /// use bacnet_objects::device_identity::{build_database_with_extra, DeviceIdentity};
@@ -493,8 +490,8 @@ pub fn build_database_with_extra(
         oids.push(obj.object_identifier());
     }
     // The database replaces an object added under an identifier it already
-    // holds, which would drop the Device or a declared port and leave the
-    // identifier listed twice. Refuse before anything is added (#2250).
+    // holds, which would silently drop the Device, a declared port or an
+    // earlier extra object. Refuse before anything is added (#2250).
     let mut seen = crate::collections::HashSet::with_capacity(oids.len());
     if !oids.iter().all(|oid| seen.insert(*oid)) {
         return Err(Error::protocol(
@@ -502,7 +499,6 @@ pub fn build_database_with_extra(
             bacnet_types::enums::ErrorCode::OBJECT_IDENTIFIER_ALREADY_EXISTS,
         ));
     }
-    device.set_object_list(oids);
 
     let mut db = ObjectDatabase::new();
     db.add(Box::new(device))?;
@@ -513,30 +509,6 @@ pub fn build_database_with_extra(
         db.add(obj)?;
     }
     Ok(db)
-}
-
-/// `<prefix><instance>`, the default Object_Name of the Device
-/// ([`DeviceIdentity::new`], `device-`) and of a declared Network Port
-/// (`port-`), with the decimal digits written by hand: `format!` would link
-/// `core::fmt` into every no_std image that builds a Device database (#2187).
-fn numbered_name(prefix: &str, instance: u32) -> String {
-    // u32::MAX has ten digits.
-    let mut digits = [0u8; 10];
-    let mut start = digits.len();
-    let mut rest = instance;
-    loop {
-        start -= 1;
-        // `rest % 10` is below ten, so the cast keeps it whole.
-        digits[start] = b'0' + (rest % 10) as u8;
-        rest /= 10;
-        if rest == 0 {
-            break;
-        }
-    }
-    let mut name = String::with_capacity(prefix.len() + digits.len() - start);
-    name.push_str(prefix);
-    name.extend(digits[start..].iter().copied().map(char::from));
-    name
 }
 
 impl Default for DeviceIdentity {

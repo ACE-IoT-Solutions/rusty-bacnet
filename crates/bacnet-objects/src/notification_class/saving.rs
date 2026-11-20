@@ -15,12 +15,12 @@
 //! A staged write its request releases without making is dropped, and the
 //! class at once queues a save of the list it serves, so storage goes back to
 //! that list. A staged write whose request vanished without releasing it, as
-//! when `stop()` aborts a request or an application drops a local write's
-//! future, is dropped the same way once
-//! [`STAGED_WRITE_LIFETIME`](crate::durable::STAGED_WRITE_LIFETIME) has
+//! when a handler panics between its stage and its release, is dropped the
+//! same way once
+//! `STAGED_WRITE_LIFETIME` has
 //! passed since its save finished: by the next write that stages, or by the
 //! server's once-a-second operation task, which calls
-//! [`DurableWrites::expire_staged`]. The class saves nothing else between
+//! [`expire_staged`](crate::durable::DurableWrites::expire_staged). The class saves nothing else between
 //! writes.
 //!
 //! Neither runs once the server has stopped. So `stop()`, once it has
@@ -43,6 +43,7 @@
 
 use crate::prelude::*;
 use alloc::sync::Arc;
+#[cfg(feature = "durable-writes")]
 use core::time::Duration;
 
 use bacnet_types::constructed::BACnetDestination;
@@ -53,8 +54,12 @@ use bacnet_types::primitives::PropertyValue;
 use super::persistence::{NotificationClassPersistence, NotificationClassSnapshot};
 use super::{MAX_RECIPIENT_LIST_DESTINATIONS, NotificationClass, recipient_list};
 use crate::common;
-use crate::durable::staged::{self, StagedSaves};
-use crate::durable::{DurableWrites, PendingWrite, SaveWait, SaveWriter, StageStep};
+use crate::durable::SaveWriter;
+#[cfg(feature = "durable-writes")]
+use crate::durable::staged;
+use crate::durable::staged::StagedSaves;
+#[cfg(feature = "durable-writes")]
+use crate::durable::{DurableWrites, PendingWrite, SaveWait, StageStep};
 use crate::write_config::description;
 
 /// What a saved write leaves: the property it sets, as the class holds it.
@@ -147,6 +152,29 @@ impl NotificationClass {
     /// Description a write set, now or before a restart (#2364).
     pub(super) fn description_saved(&self) -> bool {
         self.storage.is_some() && self.description_written
+    }
+
+    /// Drop the Description a write saved (#2364): storage keeps none from
+    /// now on, so [`set_description`](Self::set_description) applies again.
+    /// The text served now stays until it, or a write, changes it. Saves before it
+    /// returns; a save that fails keeps the written Description and returns
+    /// storage's error. Does nothing without storage or a saved Description.
+    /// Call it before the object joins the database, as the setters are,
+    /// not under the database guard: it waits for its save.
+    pub fn clear_written_description(&mut self) -> Result<(), Error> {
+        if !self.description_saved() {
+            return Ok(());
+        }
+        let mut cleared = self.snapshot();
+        cleared.description = None;
+        let storage = self.storage.as_mut().expect("checked above");
+        storage.save_now(cleared)?;
+        self.description_written = false;
+        // A write staged before this gives way, and keeps the cleared state
+        // as what is served.
+        self.kept_writes = self.kept_writes.wrapping_add(1);
+        self.with_storage(|_| ());
+        Ok(())
     }
 
     /// What storage holds for the state the class serves.
@@ -251,6 +279,7 @@ fn apply(snapshot: &mut NotificationClassSnapshot, next: &Next) {
     }
 }
 
+#[cfg(feature = "durable-writes")]
 impl DurableWrites for NotificationClass {
     fn stage_write(
         &mut self,

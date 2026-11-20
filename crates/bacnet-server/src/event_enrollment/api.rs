@@ -1,27 +1,9 @@
 use bacnet_objects::database::ObjectDatabase;
-use bacnet_objects::event::EventStateChange;
-use bacnet_types::enums::EventType;
-use bacnet_types::primitives::ObjectIdentifier;
 
-use super::{EventEnrollmentEvaluationReport, evaluate_event_enrollments_for_delivery};
-
-/// A state transition detected during event enrollment evaluation.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EventEnrollmentTransition {
-    /// The EventEnrollment object that detected the transition.
-    pub enrollment_oid: ObjectIdentifier,
-    /// The monitored object whose property triggered the transition.
-    pub monitored_oid: ObjectIdentifier,
-    /// The detected state change. `from == to` is a genuine same-state
-    /// transition emitted by applicable event algorithms.
-    pub change: EventStateChange,
-    /// The event type that was evaluated.
-    pub event_type: EventType,
-    /// Whether `Event_Enable` permits distributing a notification for this
-    /// transition. The transition is reported and `Event_State` persisted
-    /// either way; a cleared bit suppresses only the outbound notification.
-    pub distribute: bool,
-}
+use super::{
+    EventEnrollmentEvaluationReport, EventEnrollmentTransition,
+    evaluate_event_enrollments_for_delivery,
+};
 
 /// Evaluate all EventEnrollment objects in the database.
 ///
@@ -39,7 +21,9 @@ pub struct EventEnrollmentTransition {
 /// seconds; the lifecycle passes its (clamped to >= 1)
 /// `event_enrollment_interval_secs`. The conversion is never-fire-early, and
 /// the pending countdown retains no residual seconds: in-memory state plus
-/// builder-config interval means no mid-run rescale exists.
+/// builder-config interval means no mid-run rescale exists. The core takes
+/// the interval as a `u32`; one above `u32::MAX` goes in as `u32::MAX`,
+/// which rounds every delay to the same passes.
 pub fn evaluate_event_enrollments(
     db: &mut ObjectDatabase,
     interval_secs: u64,
@@ -56,5 +40,19 @@ pub fn evaluate_event_enrollments_report(
     db: &mut ObjectDatabase,
     interval_secs: u64,
 ) -> EventEnrollmentEvaluationReport {
-    evaluate_event_enrollments_for_delivery(db, interval_secs).report
+    let evaluation = evaluate_event_enrollments_for_delivery(db, core_interval(interval_secs));
+    super::log_suppressed_deliveries(&evaluation.suppressed);
+    evaluation.report
 }
+
+/// The server's interval in seconds as the core takes it, saturating at
+/// `u32::MAX`. Saturating changes no delay: every Time_Delay is at most
+/// `u32::MAX` seconds, so above that any non-zero delay is one pass either
+/// way, and zero is none.
+pub(crate) fn core_interval(interval_secs: u64) -> u32 {
+    u32::try_from(interval_secs).unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+#[path = "api_tests.rs"]
+mod tests;

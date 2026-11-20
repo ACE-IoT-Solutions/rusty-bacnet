@@ -185,6 +185,7 @@ async fn a_browse_read_without_a_session_fails_under_its_request() {
     let read = Command::Browse {
         req: 9,
         device: 100,
+        at: "10.0.0.100:47808".parse().unwrap(),
         read: crate::tui::point::BrowseRead::Device,
     };
     forward_browse(None, read, 9, 3, &sink).await;
@@ -209,6 +210,7 @@ async fn a_manage_request_without_a_session_is_refused_under_its_request() {
         req: 7,
         request: Box::new(Request {
             device: 100,
+            at: "10.0.0.100:47808".parse().unwrap(),
             action: Action::Reinit {
                 state: bacnet_types::enums::ReinitializedState::WARMSTART,
             },
@@ -273,6 +275,7 @@ async fn a_watch_command_waits_for_room_in_a_full_session_queue() {
             object: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
             property: PropertyIdentifier::PRESENT_VALUE,
         },
+        at: None,
     };
     forward_watch(Some(&active), add, 7, &sink).await;
     let WorkerEvent::Session { generation, event } = events.recv().await.unwrap() else {

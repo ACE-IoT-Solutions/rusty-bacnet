@@ -13,6 +13,9 @@ use bacnet_objects::audit::{
 use bacnet_objects::color::{
     ColorOutputPersistence, ColorOutputSnapshot, ColorOutputValue, FileColorOutputPersistence,
 };
+use bacnet_objects::load_control::{
+    FileLoadControlPersistence, LoadControlPersistence, LoadControlSnapshot,
+};
 use bacnet_objects::log_persistence::{
     FileLogPersistence, LogAcquisitionSettings, LogPersistence, LogReportingSettings, LogSnapshot,
 };
@@ -24,10 +27,11 @@ use bacnet_objects::notification_forwarder::{
 };
 use bacnet_objects::object_profile::{FileTagsPersistence, TagsPersistence, TagsSnapshot};
 use bacnet_objects::write_config::{
-    ChannelMembers, ChannelWriteConfig, FileWriteConfigPersistence, ReportingWriteConfig,
-    TimerStateChange, TimerWriteConfig, WriteConfigPersistence, WriteConfigSnapshot,
+    AlgorithmWriteConfig, ChannelMembers, ChannelWriteConfig, FileWriteConfigPersistence,
+    ReportingWriteConfig, TimerStateChange, TimerWriteConfig, WriteConfigPersistence,
+    WriteConfigSnapshot,
 };
-use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits, LogStatus};
+use bacnet_types::bitstring::{DaysOfWeek, EventTransitionBits, LimitEnable, LogStatus};
 use bacnet_types::constructed::{
     BACnetAccessRule, BACnetAuditLogDatum, BACnetAuditLogRecord, BACnetAuditLogRecordResult,
     BACnetDestination, BACnetDeviceObjectPropertyReference, BACnetDeviceObjectReference,
@@ -84,6 +88,49 @@ fn save_forwarder(path: &Path, snapshot: ForwarderSnapshot) {
         .expect("the sample saves");
 }
 
+/// A Load Control shedding a percent short of compliance, with a written
+/// Description: every field of `RBNLCT01` present (#2479).
+pub fn load_control(path: &Path) {
+    save_load_control(path, Vec::new());
+}
+
+/// [`load_control`] with two written Shed_Levels elements: `RBNLCT02`
+/// (#2502).
+pub fn written_levels_load_control(path: &Path) {
+    save_load_control(path, vec![(1, 3), (3, 9)]);
+}
+
+fn save_load_control(path: &Path, shed_levels: Vec<(u32, u64)>) {
+    // Built from its default: the snapshot is non-exhaustive (#2502).
+    let mut snapshot = LoadControlSnapshot::default();
+    snapshot.state = bacnet_types::enums::ShedState::SHED_NON_COMPLIANT;
+    snapshot.requested_shed_level = bacnet_types::constructed::BACnetShedLevel::Percent(80);
+    snapshot.start_time = (
+        Date {
+            year: 126,
+            month: 11,
+            day: 11,
+            day_of_week: 3,
+        },
+        Time {
+            hour: 10,
+            minute: 5,
+            second: 0,
+            hundredths: 0,
+        },
+    );
+    snapshot.shed_duration = 30;
+    snapshot.duty_window = 10;
+    snapshot.agreed_duty_window = 15;
+    snapshot.enable = true;
+    snapshot.description = Some("Chillers".into());
+    snapshot.shed_levels = shed_levels;
+    FileLoadControlPersistence::new(path)
+        .unwrap()
+        .save(oid(ObjectType::LOAD_CONTROL), &snapshot)
+        .expect("the sample saves");
+}
+
 pub fn notification_class(path: &Path) {
     save_class(path, None);
 }
@@ -105,33 +152,63 @@ fn save_class(path: &Path, description: Option<&str>) {
 }
 
 pub fn tags(path: &Path) {
+    save_tags(path, ObjectType::ANALOG_INPUT, None);
+}
+
+/// A Lighting Output's Tags with a written Description: `RBNTAG02` (#2364).
+pub fn described_tags(path: &Path) {
+    save_tags(path, ObjectType::LIGHTING_OUTPUT, Some("Lobby"));
+}
+
+fn save_tags(path: &Path, kind: ObjectType, description: Option<&str>) {
     let snapshot = TagsSnapshot {
         tags: Some(vec![
             BACnetNameValue::semantic("exhaust"),
             BACnetNameValue::valued("floor", PropertyValue::Unsigned(3)),
             BACnetNameValue::valued("gain", PropertyValue::Real(0.5)),
         ]),
+        description: description.map(Into::into),
     };
     FileTagsPersistence::new(path)
         .unwrap()
-        .save(oid(ObjectType::ANALOG_INPUT), &snapshot)
+        .save(oid(kind), &snapshot)
         .expect("the sample saves");
 }
 
 pub fn color(path: &Path) {
-    let snapshot = ColorOutputSnapshot {
+    save_color(path, ObjectType::COLOR, &color_snapshot(None));
+}
+
+/// A Color object's output with a written Description: `RBNCLR03` (#2364).
+pub fn described_color(path: &Path) {
+    save_color(path, ObjectType::COLOR, &color_snapshot(Some("Lobby")));
+}
+
+fn color_snapshot(description: Option<&str>) -> ColorOutputSnapshot {
+    ColorOutputSnapshot {
         present_value: Some(ColorOutputValue::Xy(BACnetXyColor::new(0.25, 0.5))),
         default: Some(ColorOutputValue::Xy(BACnetXyColor::new(0.0, 0.0))),
-    };
-    save_color(path, ObjectType::COLOR, &snapshot);
+        description: description.map(Into::into),
+    }
 }
 
 pub fn color_temperature(path: &Path) {
-    let snapshot = ColorOutputSnapshot {
+    let snapshot = temperature_snapshot(None);
+    save_color(path, ObjectType::COLOR_TEMPERATURE, &snapshot);
+}
+
+/// A Color Temperature object's output with a written Description (#2364).
+pub fn described_color_temperature(path: &Path) {
+    let snapshot = temperature_snapshot(Some("Lobby"));
+    save_color(path, ObjectType::COLOR_TEMPERATURE, &snapshot);
+}
+
+fn temperature_snapshot(description: Option<&str>) -> ColorOutputSnapshot {
+    ColorOutputSnapshot {
         present_value: Some(ColorOutputValue::Kelvin(4_000)),
         default: Some(ColorOutputValue::Kelvin(2_700)),
-    };
-    save_color(path, ObjectType::COLOR_TEMPERATURE, &snapshot);
+        description: description.map(Into::into),
+    }
 }
 
 fn save_color(path: &Path, kind: ObjectType, snapshot: &ColorOutputSnapshot) {
@@ -203,6 +280,189 @@ pub fn reporting_write_config(path: &Path) {
 pub fn described_reporting_write_config(path: &Path) {
     let snapshot = reporting_config(Some("Lobby"));
     save_write_config(path, ObjectType::ANALOG_INPUT, &snapshot);
+}
+
+/// An Analog Input's written reporting settings and every event algorithm
+/// parameter it keeps (#2331 PR 2): kind 6.
+pub fn parameters_reporting_write_config(path: &Path) {
+    let snapshot = with_parameters(reporting_config(None));
+    save_write_config(path, ObjectType::ANALOG_INPUT, &snapshot);
+}
+
+/// The same with a written Description: kind 5 around kind 6.
+pub fn described_parameters_reporting_write_config(path: &Path) {
+    let snapshot = with_parameters(reporting_config(Some("Lobby")));
+    save_write_config(path, ObjectType::ANALOG_INPUT, &snapshot);
+}
+
+/// The states of the Multi-state Input the list samples are for.
+pub const MULTI_STATE_SAMPLE_STATES: u32 = 8;
+
+/// A Multi-state Input's written reporting settings, time delays and
+/// Alarm_Values (#2331 PR 3): kind 6 with its list row.
+pub fn alarm_values_reporting_write_config(path: &Path) {
+    let snapshot = with_alarm_values(reporting_config(None));
+    save_write_config(path, ObjectType::MULTI_STATE_INPUT, &snapshot);
+}
+
+/// The same with a written Description: kind 5 around kind 6.
+pub fn described_alarm_values_reporting_write_config(path: &Path) {
+    let snapshot = with_alarm_values(reporting_config(Some("Lobby")));
+    save_write_config(path, ObjectType::MULTI_STATE_INPUT, &snapshot);
+}
+
+/// `snapshot`, reporting settings, with every parameter a Multi-state Input
+/// keeps written: a list of three states, the last the object's highest.
+fn with_alarm_values(mut snapshot: WriteConfigSnapshot) -> WriteConfigSnapshot {
+    let WriteConfigSnapshot::Reporting(settings) = &mut snapshot else {
+        unreachable!("reporting settings");
+    };
+    let mut algorithm = AlgorithmWriteConfig::default();
+    algorithm.time_delay = Some(30);
+    algorithm.time_delay_normal = Some(5);
+    algorithm.alarm_values = Some(vec![3, 1, MULTI_STATE_SAMPLE_STATES]);
+    settings.algorithm = algorithm;
+    snapshot
+}
+
+/// A Multi-state Input's written reporting settings, time delays,
+/// Alarm_Values and State_Text (#2414): kind 6 with the list row and the
+/// labels row. The labels give the object one state more than the eight it
+/// is built with, and the list names it, as a peer that adds a state and
+/// lists it leaves storage.
+pub fn state_text_reporting_write_config(path: &Path) {
+    let snapshot = with_state_text(reporting_config(None));
+    save_write_config(path, ObjectType::MULTI_STATE_INPUT, &snapshot);
+}
+
+/// The same with a written Description: kind 5 around kind 6.
+pub fn described_state_text_reporting_write_config(path: &Path) {
+    let snapshot = with_state_text(reporting_config(Some("Lobby")));
+    save_write_config(path, ObjectType::MULTI_STATE_INPUT, &snapshot);
+}
+
+fn with_state_text(snapshot: WriteConfigSnapshot) -> WriteConfigSnapshot {
+    let mut snapshot = with_alarm_values(snapshot);
+    let WriteConfigSnapshot::Reporting(settings) = &mut snapshot else {
+        unreachable!("reporting settings");
+    };
+    let states = MULTI_STATE_SAMPLE_STATES + 1;
+    settings.algorithm.alarm_values = Some(vec![3, 1, states]);
+    // Labels past ASCII, and the added state's left empty.
+    let labels = (1..states).map(|state| format!("Stufe {state} ä"));
+    settings.algorithm.state_text = Some(labels.chain([String::new()]).collect());
+    snapshot
+}
+
+/// An Access Door's written reporting settings, time delays and its three
+/// lists of door alarm states (#2331 PR 4): kind 6 with all three list
+/// rows.
+pub fn door_lists_reporting_write_config(path: &Path) {
+    let snapshot = with_door_lists(reporting_config(None));
+    save_write_config(path, ObjectType::ACCESS_DOOR, &snapshot);
+}
+
+/// The same with a written Description: kind 5 around kind 6.
+pub fn described_door_lists_reporting_write_config(path: &Path) {
+    let snapshot = with_door_lists(reporting_config(Some("Lobby")));
+    save_write_config(path, ObjectType::ACCESS_DOOR, &snapshot);
+}
+
+/// An Access Zone's written reporting settings, time delays and
+/// Alarm_Values (#2331 PR 4): the list row under a zone's rule.
+pub fn zone_alarm_values_reporting_write_config(path: &Path) {
+    let mut snapshot = reporting_config(None);
+    let WriteConfigSnapshot::Reporting(settings) = &mut snapshot else {
+        unreachable!("reporting settings");
+    };
+    let mut algorithm = AlgorithmWriteConfig::default();
+    algorithm.time_delay = Some(30);
+    algorithm.time_delay_normal = Some(5);
+    // A named occupancy state and the two ends of the proprietary ones.
+    algorithm.alarm_values = Some(vec![4, 64, 65_535]);
+    settings.algorithm = algorithm;
+    save_write_config(path, ObjectType::ACCESS_ZONE, &snapshot);
+}
+
+/// An Event Enrollment's written reporting settings, Time_Delay_Normal,
+/// Event_Parameters and Fault_Parameters (#2331 PR 5): kind 6 with the two
+/// rows that hold a value in its BACnet encoding.
+pub fn enrollment_parameters_reporting_write_config(path: &Path) {
+    let snapshot = with_enrollment_parameters(reporting_config(None));
+    save_write_config(path, ObjectType::EVENT_ENROLLMENT, &snapshot);
+}
+
+/// The same with a written Description: kind 5 around kind 6.
+pub fn described_enrollment_parameters_reporting_write_config(path: &Path) {
+    let snapshot = with_enrollment_parameters(reporting_config(Some("Lobby")));
+    save_write_config(path, ObjectType::EVENT_ENROLLMENT, &snapshot);
+}
+
+/// `snapshot`, reporting settings, with every parameter an Event
+/// Enrollment keeps written: change-of-state parameters with a list of
+/// states, and fault-life-safety ones with a list and a reference.
+fn with_enrollment_parameters(mut snapshot: WriteConfigSnapshot) -> WriteConfigSnapshot {
+    use bacnet_types::constructed::{
+        BACnetDeviceObjectPropertyReference, BACnetEventParameter, BACnetPropertyStates,
+        FaultParameters,
+    };
+    use bacnet_types::enums::LifeSafetyState;
+    let WriteConfigSnapshot::Reporting(settings) = &mut snapshot else {
+        unreachable!("reporting settings");
+    };
+    let mut algorithm = AlgorithmWriteConfig::default();
+    algorithm.time_delay_normal = Some(5);
+    algorithm.event_parameters = Some(BACnetEventParameter::ChangeOfState {
+        time_delay: 30,
+        list_of_values: vec![
+            BACnetPropertyStates::State(3),
+            BACnetPropertyStates::BooleanValue(true),
+            BACnetPropertyStates::UnsignedValue(70_000),
+        ],
+    });
+    algorithm.fault_parameters = Some(FaultParameters::FaultLifeSafety {
+        fault_values: vec![LifeSafetyState::FAULT, LifeSafetyState::from_raw(300)],
+        mode_property_reference: BACnetDeviceObjectPropertyReference::new_local(
+            ObjectIdentifier::new(ObjectType::LIFE_SAFETY_POINT, 2).unwrap(),
+            PropertyIdentifier::MODE.to_raw(),
+        ),
+    });
+    settings.algorithm = algorithm;
+    snapshot
+}
+
+/// `snapshot`, reporting settings, with every parameter an Access Door
+/// keeps written: named door alarm states and the two ends of the
+/// proprietary ones.
+fn with_door_lists(mut snapshot: WriteConfigSnapshot) -> WriteConfigSnapshot {
+    let WriteConfigSnapshot::Reporting(settings) = &mut snapshot else {
+        unreachable!("reporting settings");
+    };
+    let mut algorithm = AlgorithmWriteConfig::default();
+    algorithm.time_delay = Some(30);
+    algorithm.time_delay_normal = Some(5);
+    algorithm.alarm_values = Some(vec![3, 4, 256]);
+    algorithm.fault_values = Some(vec![5]);
+    algorithm.masked_alarm_values = Some(vec![7, 65_535]);
+    settings.algorithm = algorithm;
+    snapshot
+}
+
+/// `snapshot`, reporting settings, with every parameter an analog object
+/// keeps written.
+fn with_parameters(mut snapshot: WriteConfigSnapshot) -> WriteConfigSnapshot {
+    let WriteConfigSnapshot::Reporting(settings) = &mut snapshot else {
+        unreachable!("reporting settings");
+    };
+    let mut algorithm = AlgorithmWriteConfig::default();
+    algorithm.time_delay = Some(30);
+    algorithm.time_delay_normal = Some(5);
+    algorithm.high_limit = Some(80.5);
+    algorithm.low_limit = Some(-12.25);
+    algorithm.deadband = Some(1.5);
+    algorithm.limit_enable = Some(LimitEnable::HIGH_LIMIT_ENABLE);
+    settings.algorithm = algorithm;
+    snapshot
 }
 
 fn reporting_config(description: Option<&str>) -> WriteConfigSnapshot {

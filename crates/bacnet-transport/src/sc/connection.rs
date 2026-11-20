@@ -1,5 +1,6 @@
 //! BACnet/SC connection state machine.
 
+use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::error::Error;
 use bytes::Bytes;
 use tracing::{debug, warn};
@@ -449,6 +450,7 @@ impl ScConnection {
                         error_code,
                         ..
                     }) => {
+                        // Class and code by name, the number as fallback (#2463).
                         if self.malformed_diag.should_emit_now() {
                             let suppressed = self.malformed_diag.take_suppressed();
                             if suppressed > 0 {
@@ -456,16 +458,16 @@ impl ScConnection {
                                     "BACnet/SC BVLC-Result NAK: function={:#x} \
                                      error_class={} error_code={} (suppressed {suppressed} similar diagnostics)",
                                     result_for.to_raw(),
-                                    error_class,
-                                    error_code
+                                    ErrorClass::from_raw(error_class),
+                                    ErrorCode::from_raw(error_code)
                                 );
                             } else {
                                 warn!(
                                     "BACnet/SC BVLC-Result NAK: function={:#x} \
                                      error_class={} error_code={}",
                                     result_for.to_raw(),
-                                    error_class,
-                                    error_code
+                                    ErrorClass::from_raw(error_class),
+                                    ErrorCode::from_raw(error_code)
                                 );
                             }
                         }
@@ -536,5 +538,13 @@ impl<W: super::WebSocketPort> super::ScTransport<W> {
     /// applications read the state through `connection_state_changes()`.
     pub(crate) fn connection(&self) -> Option<&std::sync::Arc<tokio::sync::Mutex<ScConnection>>> {
         self.connection.as_ref()
+    }
+
+    /// The running receive task's abort handle. Test-only.
+    pub(crate) fn recv_task_handle(&self) -> tokio::task::AbortHandle {
+        let task = self.recv_task.lock().unwrap();
+        task.as_ref()
+            .expect("SC start spawns recv task")
+            .abort_handle()
     }
 }

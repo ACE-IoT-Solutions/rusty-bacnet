@@ -61,11 +61,12 @@ and the builders' `.policy(..)` replaces their four setters. Each `.policy(..)`
 call replaces the policy before it, so put every decision in one policy, for
 example one `FnPolicy` chain. The `MutationAuthorizer`,
 `LifeSafetyOperationAuthorizer`, `AuditNotificationAuthorizer` and
-`UnconfirmedAuditNotificationAuthorizer` aliases are gone; the shared endpoint's
-Device-write callback type is now `mutation::DeviceWriteAuthorizer`. Decision
-counters behave as before: only a policy that decides mutations makes the server
-decode a mutation for authorization first, as an installed mutation authorizer
-did.
+`UnconfirmedAuditNotificationAuthorizer` aliases are gone. The shared endpoint's
+Device-write callback (`mutation::DeviceWriteAuthorizer` in 0.14 and 0.15) is gone
+too (#2617): an endpoint session runs this server, so its policy decides those
+writes as well. Decision counters behave as before: only a policy that decides
+mutations makes the server decode a mutation for authorization first, as an
+installed mutation authorizer did.
 
 ## Mutation policy modes
 
@@ -262,7 +263,7 @@ suit the property), up to the first that fails them. It drops the guard, asks th
 policy about each kept element in wire order up to the first denial, stages the
 allowed elements an object saves first (a Notification Forwarder's or Notification
 Class's list, an Access Rights object's rule arrays, Enable or Accompaniment, an
-Audit Log's Log_Enable or Buffer_Size) so their saves run with no guard held, and
+Audit Log's Enable or Buffer_Size) so their saves run with no guard held, and
 only then takes the write lock and applies the elements. The handler checks each
 element again under the lock and applies the recorded decision when it reaches it
 instead of asking again. The policy is still asked once per element, but it can be
@@ -289,9 +290,11 @@ SERVICES / SERVICE_REQUEST_DENIED.
   `set_present_value_local`, life-safety arming) stay ungated by design — the
   same documented bypass contract as the RB-09 precedent. No raw
   server-receive path skips `mutations::Request`.
-- The shared endpoint has a separate narrow [Device-write authorizer](rust-api.md#authorized-endpoint-device-writes);
-  the server policy does not configure it. Python endpoints set it with their
-  `device_write_policy` callable (#2033).
+- An endpoint session with a server role runs a full server, which takes
+  the policy of the builder given to `with_server`, and without one is
+  read-only (#2617). Python endpoints take `mutation_policy` with the
+  values above; without one their server is read-only too.
+
 - DeviceCommunicationControl and ReinitializeDevice keep their separate
   configuration paths.
 

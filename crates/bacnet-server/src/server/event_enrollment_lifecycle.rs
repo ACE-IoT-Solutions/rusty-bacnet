@@ -1,4 +1,3 @@
-use super::event_notifications::resolve_committed_event_enrollment_transition;
 use super::*;
 
 /// Owned handles and settings the event-enrollment task moves into its loop.
@@ -31,7 +30,7 @@ pub(super) fn spawn_event_enrollment_task<T: TransportPort + 'static>(
         period,
         config,
     } = task;
-    let evaluation_interval_secs = period.as_secs().max(1);
+    let evaluation_interval_secs = crate::event_enrollment::core_interval(period.as_secs()).max(1);
     let owner = notification_transactions.audit_owner_lease();
     super::heap_futures::spawn_boxed(move || async move {
         let _owner = owner;
@@ -41,27 +40,44 @@ pub(super) fn spawn_event_enrollment_task<T: TransportPort + 'static>(
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            // Evaluate, commit, and project every result in enrollment order
-            // while one database guard is held. The projector consumes
-            // committed timestamp/ACK/clock inputs only; it neither stages
-            // another timestamp nor repeats transition actions. The guard is
-            // dropped before the first send.
-            let (report, outbound) = {
+            // Evaluate and commit every enrollment, in database order, while
+            // one database guard is held. Each delivery carries the
+            // timestamp, message text, ACK policy and clock it committed, so
+            // sending it stages no timestamp and repeats no transition
+            // action. The guard is dropped before the first send.
+            let report = {
                 let mut db_guard = db.write().await;
                 let evaluation = crate::event_enrollment::evaluate_event_enrollments_for_delivery(
                     &mut db_guard,
                     evaluation_interval_secs,
                 );
-                let outbound = evaluation
-                    .deliveries
-                    .into_iter()
-                    .filter_map(|committed| {
-                        resolve_committed_event_enrollment_transition(&db_guard, committed)
-                    })
-                    .filter(|(_, distribute, _)| *distribute)
-                    .map(|(oid, _, transition)| (oid, transition))
-                    .collect::<Vec<_>>();
-                (evaluation.report, outbound)
+                crate::event_enrollment::log_suppressed_deliveries(&evaluation.suppressed);
+                // Each delivery joins its recipients' lanes under this guard,
+                // in commit order (#2537); nothing here waits for them.
+                let delivery = EventDelivery {
+                    db: &db,
+                    network: &network,
+                    comm_state: &comm_state,
+                    learned_routers: &learned_routers,
+                    notification_transactions: &notification_transactions,
+                    device_bindings: &device_bindings,
+                    suppressions: &suppressions,
+                    retry_timeout_ms: config.cov_retry_timeout_ms,
+                    local_apdu_capacity: u32::from(config.device.max_apdu_length()),
+                    device: crate::local_device::initiating_device(&config.device),
+                };
+                for committed in evaluation.deliveries {
+                    if committed.distribute() {
+                        BACnetServer::<T>::enqueue_event_notification(
+                            &delivery,
+                            &mut db_guard,
+                            &committed.enrollment_oid(),
+                            committed.into_notification(),
+                            None,
+                        );
+                    }
+                }
+                evaluation.report
             };
             for transition in &report.transitions {
                 debug!(
@@ -74,25 +90,6 @@ pub(super) fn spawn_event_enrollment_task<T: TransportPort + 'static>(
                 );
             }
             crate::event_enrollment::log_evaluation_report(&report);
-            for (oid, transition) in outbound {
-                BACnetServer::<T>::build_and_send_event_notification_with_bindings(
-                    &EventDelivery {
-                        db: &db,
-                        network: &network,
-                        comm_state: &comm_state,
-                        learned_routers: &learned_routers,
-                        notification_transactions: &notification_transactions,
-                        device_bindings: &device_bindings,
-                        suppressions: &suppressions,
-                        retry_timeout_ms: config.cov_retry_timeout_ms,
-                        local_apdu_capacity: u32::from(config.device.max_apdu_length()),
-                        device: crate::local_device::initiating_device(&config.device),
-                    },
-                    &oid,
-                    transition,
-                )
-                .await;
-            }
         }
     })
 }

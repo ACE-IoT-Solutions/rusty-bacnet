@@ -44,8 +44,8 @@ use crate::traits::BACnetObject;
 /// a write route changes it.
 const REFUSED_ROWS: usize = 686;
 /// Rows Out_Of_Service opens. A `WhenOutOfService` row added or dropped
-/// changes it.
-const OUT_OF_SERVICE_ROWS: usize = 48;
+/// changes it: the Integer Value's Reliability made it 49 (#2446).
+const OUT_OF_SERVICE_ROWS: usize = 49;
 /// Rows only the command's writer may correct (Value_Source). A
 /// `WhenCommandOwner` row added or dropped changes it.
 const OWNER_ROWS: usize = 8;
@@ -68,7 +68,7 @@ const STATE_REFUSED: &[(ObjectType, P, &str)] = &[
     (
         ObjectType::AUDIT_LOG,
         P::BUFFER_SIZE,
-        "Buffer_Size changes only while Log_Enable is FALSE, and a new Audit Log is enabled",
+        "Buffer_Size changes only while Enable is FALSE, and a new Audit Log is enabled",
     ),
 ];
 

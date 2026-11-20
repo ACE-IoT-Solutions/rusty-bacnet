@@ -11,7 +11,7 @@ import enum
 import ipaddress
 import os
 import pathlib
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from typing import Any, Awaitable, Literal, NotRequired, Optional, TypedDict, Union
 
 UNSPECIFIED: Literal[255]
@@ -217,7 +217,7 @@ class PropertyIdentifier:
     EVENT_MESSAGE_TEXTS_CONFIG: PropertyIdentifier
     LOG_BUFFER: PropertyIdentifier
     LOG_DEVICE_OBJECT_PROPERTY: PropertyIdentifier
-    LOG_ENABLE: PropertyIdentifier
+    ENABLE: PropertyIdentifier
     LOG_INTERVAL: PropertyIdentifier
     PROTOCOL_REVISION: PropertyIdentifier
     RECORD_COUNT: PropertyIdentifier
@@ -523,7 +523,7 @@ class PropertyIdentifier:
     BBMD_BROADCAST_DISTRIBUTION_TABLE: PropertyIdentifier
     BBMD_FOREIGN_DEVICE_TABLE: PropertyIdentifier
     CHANGES_PENDING: PropertyIdentifier
-    COMMAND_NP: PropertyIdentifier
+    COMMAND: PropertyIdentifier
     FD_BBMD_ADDRESS: PropertyIdentifier
     FD_SUBSCRIPTION_LIFETIME: PropertyIdentifier
     LINK_SPEED: PropertyIdentifier
@@ -602,11 +602,36 @@ class PropertyIdentifier:
     CERTIFICATE_SIGNING_REQUEST_FILE: PropertyIdentifier
     COMMAND_VALIDATION_RESULT: PropertyIdentifier
     ISSUER_CERTIFICATE_FILES: PropertyIdentifier
+    MAX_BVLC_LENGTH_ACCEPTED: PropertyIdentifier
+    MAX_NPDU_LENGTH_ACCEPTED: PropertyIdentifier
+    OPERATIONAL_CERTIFICATE_FILE: PropertyIdentifier
+    CURRENT_HEALTH: PropertyIdentifier
+    SC_CONNECT_WAIT_TIMEOUT: PropertyIdentifier
+    SC_DIRECT_CONNECT_ACCEPT_ENABLE: PropertyIdentifier
+    SC_DIRECT_CONNECT_ACCEPT_URIS: PropertyIdentifier
+    SC_DIRECT_CONNECT_BINDING: PropertyIdentifier
+    SC_DIRECT_CONNECT_CONNECTION_STATUS: PropertyIdentifier
+    SC_DIRECT_CONNECT_INITIATE_ENABLE: PropertyIdentifier
+    SC_DISCONNECT_WAIT_TIMEOUT: PropertyIdentifier
+    SC_FAILED_CONNECTION_REQUESTS: PropertyIdentifier
+    SC_FAILOVER_HUB_CONNECTION_STATUS: PropertyIdentifier
+    SC_FAILOVER_HUB_URI: PropertyIdentifier
+    SC_HUB_CONNECTOR_STATE: PropertyIdentifier
+    SC_HUB_FUNCTION_ACCEPT_URIS: PropertyIdentifier
+    SC_HUB_FUNCTION_BINDING: PropertyIdentifier
+    SC_HUB_FUNCTION_CONNECTION_STATUS: PropertyIdentifier
+    SC_HUB_FUNCTION_ENABLE: PropertyIdentifier
+    SC_HEARTBEAT_TIMEOUT: PropertyIdentifier
+    SC_PRIMARY_HUB_CONNECTION_STATUS: PropertyIdentifier
+    SC_PRIMARY_HUB_URI: PropertyIdentifier
+    SC_MAXIMUM_RECONNECT_TIME: PropertyIdentifier
+    SC_MINIMUM_RECONNECT_TIME: PropertyIdentifier
     COLOR_OVERRIDE: PropertyIdentifier
     COLOR_REFERENCE: PropertyIdentifier
     DEFAULT_COLOR: PropertyIdentifier
     DEFAULT_COLOR_TEMPERATURE: PropertyIdentifier
     OVERRIDE_COLOR_REFERENCE: PropertyIdentifier
+    WRITE_EVERY_SCHEDULED_ACTION: PropertyIdentifier
     COLOR_COMMAND: PropertyIdentifier
     HIGH_END_TRIM: PropertyIdentifier
     LOW_END_TRIM: PropertyIdentifier
@@ -681,7 +706,7 @@ class ErrorCode(enum.IntEnum):
     INVALID_FILE_START_POSITION: ErrorCode
     INVALID_OPERATOR_NAME: ErrorCode
     INVALID_PARAMETER_DATA_TYPE: ErrorCode
-    INVALID_TIME_STAMP: ErrorCode
+    INVALID_TIMESTAMP: ErrorCode
     KEY_GENERATION_ERROR: ErrorCode
     MISSING_REQUIRED_PARAMETER: ErrorCode
     NO_OBJECTS_OF_SPECIFIED_TYPE: ErrorCode
@@ -818,6 +843,84 @@ class ErrorCode(enum.IntEnum):
     PAYLOAD_EXPECTED: ErrorCode
     UNEXPECTED_DATA: ErrorCode
     NODE_DUPLICATE_VMAC: ErrorCode
+    HTTP_UNEXPECTED_RESPONSE_CODE: ErrorCode
+    HTTP_NO_UPGRADE: ErrorCode
+    HTTP_RESOURCE_NOT_LOCAL: ErrorCode
+    HTTP_PROXY_AUTHENTICATION_FAILED: ErrorCode
+    HTTP_RESPONSE_TIMEOUT: ErrorCode
+    HTTP_RESPONSE_SYNTAX_ERROR: ErrorCode
+    HTTP_RESPONSE_VALUE_ERROR: ErrorCode
+    HTTP_RESPONSE_MISSING_HEADER: ErrorCode
+    HTTP_WEBSOCKET_HEADER_ERROR: ErrorCode
+    HTTP_UPGRADE_REQUIRED: ErrorCode
+    HTTP_UPGRADE_ERROR: ErrorCode
+    HTTP_TEMPORARY_UNAVAILABLE: ErrorCode
+    HTTP_NOT_A_SERVER: ErrorCode
+    HTTP_ERROR: ErrorCode
+    WEBSOCKET_SCHEME_NOT_SUPPORTED: ErrorCode
+    WEBSOCKET_UNKNOWN_CONTROL_MESSAGE: ErrorCode
+    WEBSOCKET_CLOSE_ERROR: ErrorCode
+    WEBSOCKET_CLOSED_BY_PEER: ErrorCode
+    WEBSOCKET_ENDPOINT_LEAVES: ErrorCode
+    WEBSOCKET_PROTOCOL_ERROR: ErrorCode
+    WEBSOCKET_DATA_NOT_ACCEPTED: ErrorCode
+    WEBSOCKET_CLOSED_ABNORMALLY: ErrorCode
+    WEBSOCKET_DATA_INCONSISTENT: ErrorCode
+    WEBSOCKET_DATA_AGAINST_POLICY: ErrorCode
+    WEBSOCKET_FRAME_TOO_LONG: ErrorCode
+    WEBSOCKET_EXTENSION_MISSING: ErrorCode
+    WEBSOCKET_REQUEST_UNAVAILABLE: ErrorCode
+    WEBSOCKET_ERROR: ErrorCode
+    TLS_CLIENT_CERTIFICATE_ERROR: ErrorCode
+    TLS_SERVER_CERTIFICATE_ERROR: ErrorCode
+    TLS_CLIENT_AUTHENTICATION_FAILED: ErrorCode
+    TLS_SERVER_AUTHENTICATION_FAILED: ErrorCode
+    TLS_CLIENT_CERTIFICATE_EXPIRED: ErrorCode
+    TLS_SERVER_CERTIFICATE_EXPIRED: ErrorCode
+    TLS_CLIENT_CERTIFICATE_REVOKED: ErrorCode
+    TLS_SERVER_CERTIFICATE_REVOKED: ErrorCode
+    TLS_ERROR: ErrorCode
+    DNS_UNAVAILABLE: ErrorCode
+    DNS_NAME_RESOLUTION_FAILED: ErrorCode
+    DNS_RESOLVER_FAILURE: ErrorCode
+    DNS_ERROR: ErrorCode
+    TCP_CONNECT_TIMEOUT: ErrorCode
+    TCP_CONNECTION_REFUSED: ErrorCode
+    TCP_CLOSED_BY_LOCAL: ErrorCode
+    TCP_CLOSED_OTHER: ErrorCode
+    TCP_ERROR: ErrorCode
+    IP_ADDRESS_NOT_REACHABLE: ErrorCode
+    IP_ERROR: ErrorCode
+    CERTIFICATE_EXPIRED: ErrorCode
+    CERTIFICATE_INVALID: ErrorCode
+    CERTIFICATE_MALFORMED: ErrorCode
+    CERTIFICATE_REVOKED: ErrorCode
+    UNKNOWN_CERTIFICATE_KEY: ErrorCode
+    REFERENCED_PORT_IN_ERROR: ErrorCode
+    NOT_ENABLED: ErrorCode
+    ADJUST_SCOPE_REQUIRED: ErrorCode
+    AUTH_SCOPE_REQUIRED: ErrorCode
+    BIND_SCOPE_REQUIRED: ErrorCode
+    CONFIG_SCOPE_REQUIRED: ErrorCode
+    CONTROL_SCOPE_REQUIRED: ErrorCode
+    EXTENDED_SCOPE_REQUIRED: ErrorCode
+    INCORRECT_CLIENT: ErrorCode
+    INSTALL_SCOPE_REQUIRED: ErrorCode
+    INSUFFICIENT_SCOPE: ErrorCode
+    NO_DEFAULT_SCOPE: ErrorCode
+    NO_POLICY: ErrorCode
+    REVOKED_TOKEN: ErrorCode
+    OVERRIDE_SCOPE_REQUIRED: ErrorCode
+    INACTIVE_TOKEN: ErrorCode
+    UNKNOWN_AUDIENCE: ErrorCode
+    UNKNOWN_CLIENT: ErrorCode
+    UNKNOWN_SCOPE: ErrorCode
+    VIEW_SCOPE_REQUIRED: ErrorCode
+    INCORRECT_AUDIENCE: ErrorCode
+    INCORRECT_CLIENT_ORIGIN: ErrorCode
+    INVALID_ARRAY_SIZE: ErrorCode
+    INCORRECT_ISSUER: ErrorCode
+    INVALID_TOKEN: ErrorCode
 
     @classmethod
     def from_raw(cls, value: int) -> ErrorCode:
@@ -883,9 +986,35 @@ class AbortReason(enum.IntEnum):
     OUT_OF_RESOURCES: AbortReason
     TSM_TIMEOUT: AbortReason
     APDU_TOO_LONG: AbortReason
+    INCONSISTENT_ATTRIBUTES: AbortReason
 
     @classmethod
     def from_raw(cls, value: int) -> AbortReason:
+        """The member for ``value``; a pseudo-member when it has no name."""
+        ...
+    def to_raw(self) -> int:
+        """The raw integer value."""
+        ...
+
+
+class Polarity(enum.IntEnum):
+    """BACnet polarity of a Binary Input or Output (Clause 12, BACnetPolarity).
+
+    An ``enum.IntEnum`` (#2580): members are ints, compare equal to their
+    numbers and hash like them, so an int works wherever a member does, as in
+    ``add_binary_input(polarity=...)``, ``add_binary_output(polarity=...)``
+    and ``set_polarity_local``. A value without a name is a pseudo-member:
+    ``Polarity(7)`` and ``Polarity.from_raw(7)`` both give one, equal to 7,
+    with ``name`` None and repr ``Polarity(7)``, which those calls refuse
+    with VALUE_OUT_OF_RANGE. A number outside 0 to 4294967295 raises
+    ValueError.
+    """
+
+    NORMAL: Polarity
+    REVERSE: Polarity
+
+    @classmethod
+    def from_raw(cls, value: int) -> Polarity:
         """The member for ``value``; a pseudo-member when it has no name."""
         ...
     def to_raw(self) -> int:
@@ -933,8 +1062,8 @@ class EngineeringUnits(enum.IntEnum):
     OHM_METER_SQUARED_PER_METER: EngineeringUnits
     OHM_METERS: EngineeringUnits
     MILLIOHMS: EngineeringUnits
-    KILOHMS: EngineeringUnits
-    MEGOHMS: EngineeringUnits
+    KILOOHMS: EngineeringUnits
+    MEGAOHMS: EngineeringUnits
     MICROSIEMENS: EngineeringUnits
     MILLISIEMENS: EngineeringUnits
     SIEMENS: EngineeringUnits
@@ -1173,6 +1302,153 @@ class EngineeringUnits(enum.IntEnum):
     DEGREES_PLATO: EngineeringUnits
     SPECIFIC_GRAVITY: EngineeringUnits
     EUROPEAN_BREWING_CONVENTION: EngineeringUnits
+    PER_DAY: EngineeringUnits
+    PER_MILLISECOND: EngineeringUnits
+    YARDS: EngineeringUnits
+    MILES: EngineeringUnits
+    NAUTICAL_MILES: EngineeringUnits
+    METRIC_TONNES: EngineeringUnits
+    SHORT_TONS: EngineeringUnits
+    LONG_TONS: EngineeringUnits
+    GRAMS_PER_HOUR: EngineeringUnits
+    GRAMS_PER_DAY: EngineeringUnits
+    KILOGRAMS_PER_DAY: EngineeringUnits
+    SHORT_TONS_PER_SECOND: EngineeringUnits
+    SHORT_TONS_PER_MINUTE: EngineeringUnits
+    SHORT_TONS_PER_HOUR: EngineeringUnits
+    SHORT_TONS_PER_DAY: EngineeringUnits
+    METRIC_TONNES_PER_SECOND: EngineeringUnits
+    METRIC_TONNES_PER_MINUTE: EngineeringUnits
+    METRIC_TONNES_PER_HOUR: EngineeringUnits
+    METRIC_TONNES_PER_DAY: EngineeringUnits
+    LONG_TONS_PER_SECOND: EngineeringUnits
+    LONG_TONS_PER_MINUTE: EngineeringUnits
+    LONG_TONS_PER_HOUR: EngineeringUnits
+    LONG_TONS_PER_DAY: EngineeringUnits
+    BTUS_PER_SECOND: EngineeringUnits
+    BTUS_PER_MINUTE: EngineeringUnits
+    BTUS_PER_DAY: EngineeringUnits
+    KILO_BTUS_PER_SECOND: EngineeringUnits
+    KILO_BTUS_PER_MINUTE: EngineeringUnits
+    KILO_BTUS_PER_DAY: EngineeringUnits
+    MEGA_BTUS_PER_SECOND: EngineeringUnits
+    MEGA_BTUS_PER_MINUTE: EngineeringUnits
+    MEGA_BTUS_PER_HOUR: EngineeringUnits
+    MEGA_BTUS_PER_DAY: EngineeringUnits
+    JOULES_PER_SECOND: EngineeringUnits
+    JOULES_PER_MINUTE: EngineeringUnits
+    JOULES_PER_DAY: EngineeringUnits
+    KILOJOULES_PER_SECOND: EngineeringUnits
+    KILOJOULES_PER_MINUTE: EngineeringUnits
+    KILOJOULES_PER_HOUR: EngineeringUnits
+    KILOJOULES_PER_DAY: EngineeringUnits
+    MEGAJOULES_PER_SECOND: EngineeringUnits
+    MEGAJOULES_PER_MINUTE: EngineeringUnits
+    MEGAJOULES_PER_HOUR: EngineeringUnits
+    MEGAJOULES_PER_DAY: EngineeringUnits
+    DEGREES_CELSIUS_PER_DAY: EngineeringUnits
+    DEGREES_FAHRENHEIT_PER_DAY: EngineeringUnits
+    DELTA_DEGREES_CELSIUS: EngineeringUnits
+    MILLION_CUBIC_FEET_PER_MINUTE: EngineeringUnits
+    MILLION_CUBIC_FEET_PER_DAY: EngineeringUnits
+    IMPERIAL_GALLONS_PER_SECOND: EngineeringUnits
+    LITERS_PER_DAY: EngineeringUnits
+    US_GALLONS_PER_SECOND: EngineeringUnits
+    US_GALLONS_PER_DAY: EngineeringUnits
+    PERCENT_PER_MINUTE: EngineeringUnits
+    PERCENT_PER_HOUR: EngineeringUnits
+    PERCENT_PER_DAY: EngineeringUnits
+    PER_MILLION: EngineeringUnits
+    PER_BILLION: EngineeringUnits
+    MICROGRAMS_PER_KILOGRAM: EngineeringUnits
+    NANOGRAMS_PER_KILOGRAM: EngineeringUnits
+    MILLIGRAMS_PER_MILLILITER: EngineeringUnits
+    MICROGRAMS_PER_MILLILITER: EngineeringUnits
+    NANOGRAMS_PER_MILLILITER: EngineeringUnits
+    KILOGRAMS_PER_LITER: EngineeringUnits
+    NANOGRAMS_PER_LITER: EngineeringUnits
+    MILLIGRAMS_PER_CUBIC_CENTIMETER: EngineeringUnits
+    MICROGRAMS_PER_CUBIC_CENTIMETER: EngineeringUnits
+    NANOGRAMS_PER_CUBIC_CENTIMETER: EngineeringUnits
+    BTU_PER_HOUR_PER_WATT: EngineeringUnits
+    BTU_PER_WATT_HOUR_SEASONAL: EngineeringUnits
+    COEFFICIENT_OF_PERFORMANCE: EngineeringUnits
+    COEFFICIENT_OF_PERFORMANCE_SEASONAL: EngineeringUnits
+    KILOWATT_PER_TON_REFRIGERATION: EngineeringUnits
+    LUMENS_PER_WATT: EngineeringUnits
+    POUND_FORCE_FEET: EngineeringUnits
+    POUND_FORCE_INCHES: EngineeringUnits
+    OUNCE_FORCE_INCHES: EngineeringUnits
+    POUNDS_FORCE_PER_SQUARE_INCH_ABSOLUTE: EngineeringUnits
+    POUNDS_FORCE_PER_SQUARE_INCH_GAUGE: EngineeringUnits
+    MICROSIEMENS_PER_CENTIMETER: EngineeringUnits
+    MILLISIEMENS_PER_CENTIMETER: EngineeringUnits
+    MILLISIEMENS_PER_METER: EngineeringUnits
+    MILLIONS_OF_US_GALLONS: EngineeringUnits
+    MILLIONS_OF_IMPERIAL_GALLONS: EngineeringUnits
+    MILLILITERS_PER_MINUTE: EngineeringUnits
+    MILS_PER_YEAR: EngineeringUnits
+    MILLIMETERS_PER_YEAR: EngineeringUnits
+    PULSES_PER_MINUTE: EngineeringUnits
+    ACTIVE_ENERGY_PULSE_VALUE: EngineeringUnits
+    REACTIVE_ENERGY_PULSE_VALUE: EngineeringUnits
+    APPARENT_ENERGY_PULSE_VALUE: EngineeringUnits
+    VOLT_SQUARED_HOUR_PULSE_VALUE: EngineeringUnits
+    AMPERE_SQUARED_HOUR_PULSE_VALUE: EngineeringUnits
+    CUBIC_METER_PULSE_VALUE: EngineeringUnits
+    GIGAWATTS: EngineeringUnits
+    BITS_PER_SECOND: EngineeringUnits
+    KILOBITS_PER_SECOND: EngineeringUnits
+    MEGABITS_PER_SECOND: EngineeringUnits
+    GIGABITS_PER_SECOND: EngineeringUnits
+    BYTES_PER_SECOND: EngineeringUnits
+    KILOBYTES_PER_SECOND: EngineeringUnits
+    MEGABYTES_PER_SECOND: EngineeringUnits
+    GIGABYTES_PER_SECOND: EngineeringUnits
+    VOLUME1: EngineeringUnits
+    VOLUME2: EngineeringUnits
+    VOLUME3: EngineeringUnits
+    VOLUME4: EngineeringUnits
+    VOLUME5: EngineeringUnits
+    VOLUME6: EngineeringUnits
+    VOLUME7: EngineeringUnits
+    VOLUME8: EngineeringUnits
+    VOLUME9: EngineeringUnits
+    VOLUME10: EngineeringUnits
+    VOLUMETRIC_FLOW1: EngineeringUnits
+    VOLUMETRIC_FLOW2: EngineeringUnits
+    VOLUMETRIC_FLOW3: EngineeringUnits
+    VOLUMETRIC_FLOW4: EngineeringUnits
+    VOLUMETRIC_FLOW5: EngineeringUnits
+    VOLUMETRIC_FLOW6: EngineeringUnits
+    VOLUMETRIC_FLOW7: EngineeringUnits
+    VOLUMETRIC_FLOW8: EngineeringUnits
+    VOLUMETRIC_FLOW9: EngineeringUnits
+    VOLUMETRIC_FLOW10: EngineeringUnits
+    SITE_UNIT1: EngineeringUnits
+    SITE_UNIT2: EngineeringUnits
+    SITE_UNIT3: EngineeringUnits
+    SITE_UNIT4: EngineeringUnits
+    SITE_UNIT5: EngineeringUnits
+    SITE_UNIT6: EngineeringUnits
+    SITE_UNIT7: EngineeringUnits
+    SITE_UNIT8: EngineeringUnits
+    SITE_UNIT9: EngineeringUnits
+    SITE_UNIT10: EngineeringUnits
+    PARTICLES_PER_CUBIC_FOOT: EngineeringUnits
+    PARTICLES_PER_CUBIC_METER: EngineeringUnits
+    PICOCURIES_PER_LITER: EngineeringUnits
+    BECQUERELS_PER_CUBIC_METER: EngineeringUnits
+    GRAINS_OF_WATER_PER_POUND_DRY_AIR: EngineeringUnits
+    DEGREE_HOURS_CELSIUS: EngineeringUnits
+    DEGREE_HOURS_FAHRENHEIT: EngineeringUnits
+    DEGREE_MINUTES_CELSIUS: EngineeringUnits
+    DEGREE_MINUTES_FAHRENHEIT: EngineeringUnits
+    DEGREE_SECONDS_CELSIUS: EngineeringUnits
+    DEGREE_SECONDS_FAHRENHEIT: EngineeringUnits
+    MICROSECONDS: EngineeringUnits
+    NANOSECONDS: EngineeringUnits
+    PICOSECONDS: EngineeringUnits
 
     @classmethod
     def from_raw(cls, value: int) -> EngineeringUnits:
@@ -1275,17 +1551,17 @@ class ReinitializedState:
 class Segmentation:
     """BACnet segmentation support options (Clause 20.1.2.4)."""
 
-    BOTH: Segmentation
-    TRANSMIT: Segmentation
-    RECEIVE: Segmentation
-    NONE: Segmentation
+    SEGMENTED_BOTH: Segmentation
+    SEGMENTED_TRANSMIT: Segmentation
+    SEGMENTED_RECEIVE: Segmentation
+    NO_SEGMENTATION: Segmentation
 
     @staticmethod
     def from_raw(value: int) -> Segmentation: ...
     def to_raw(self) -> int: ...
     @property
     def name(self) -> str | None:
-        """The constant's name (``"BOTH"``), or None for a value without one."""
+        """The constant's name (``"SEGMENTED_BOTH"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1494,6 +1770,53 @@ class LifeSafetyOperation:
     @property
     def name(self) -> str | None:
         """The constant's name (``"NONE"``), or None for a value without one."""
+        ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+    def __reduce__(self) -> tuple[Any, tuple[int]]:
+        """Rebuild with ``from_raw(to_raw())``, for ``copy`` and ``pickle``."""
+        ...
+
+
+class Reliability:
+    """BACnet reliability (Clause 12), for ``BACnetServer.set_reliability_local``.
+
+    Vendor values run from 64 to 65535; use ``Reliability.from_raw(n)`` for one.
+    """
+
+    NO_FAULT_DETECTED: Reliability
+    NO_SENSOR: Reliability
+    OVER_RANGE: Reliability
+    UNDER_RANGE: Reliability
+    OPEN_LOOP: Reliability
+    SHORTED_LOOP: Reliability
+    NO_OUTPUT: Reliability
+    UNRELIABLE_OTHER: Reliability
+    PROCESS_ERROR: Reliability
+    MULTI_STATE_FAULT: Reliability
+    CONFIGURATION_ERROR: Reliability
+    COMMUNICATION_FAILURE: Reliability
+    MEMBER_FAULT: Reliability
+    MONITORED_OBJECT_FAULT: Reliability
+    TRIPPED: Reliability
+    LAMP_FAILURE: Reliability
+    ACTIVATION_FAILURE: Reliability
+    RENEW_DHCP_FAILURE: Reliability
+    RENEW_FD_REGISTRATION_FAILURE: Reliability
+    RESTART_AUTO_NEGOTIATION_FAILURE: Reliability
+    RESTART_FAILURE: Reliability
+    PROPRIETARY_COMMAND_FAILURE: Reliability
+    FAULTS_LISTED: Reliability
+    REFERENCED_OBJECT_FAULT: Reliability
+    MULTI_STATE_OUT_OF_RANGE: Reliability
+
+    @staticmethod
+    def from_raw(value: int) -> Reliability: ...
+    def to_raw(self) -> int: ...
+    @property
+    def name(self) -> str | None:
+        """The constant's name (``"NO_SENSOR"``), or None for a value without one."""
         ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
@@ -1726,6 +2049,20 @@ class NameValue(TypedDict):
 # ``(hour, minute, second, hundredths)``; 255 marks an unspecified field.
 BACnetDate = tuple[int, int, int, int]
 BACnetTime = tuple[int, int, int, int]
+
+
+class ShedLevel(TypedDict):
+    """A Load Control shed level (``BACnetShedLevel``), the form a typed
+    read of Requested_Shed_Level gives: a ``percent`` or a ``level`` with an
+    ``int`` value, or an ``amount`` of kilowatts with a ``float``."""
+
+    kind: Literal["percent", "level", "amount"]
+    value: int | float
+
+
+# What a Load Control's ``shed`` callable answers (#2479): where the loads
+# stand, then the expected and the actual level, in the requested choice.
+ShedStatus = tuple[Literal["waiting", "shedding", "compliant"], ShedLevel, ShedLevel]
 # One Weekly_Schedule or exception entry: the time and the value from then.
 TimeValue = tuple[BACnetTime, PropertyValue]
 
@@ -1972,7 +2309,16 @@ class AuditTimeChangeDatum(TypedDict):
     time_change: float
 
 
-AuditLogDatum = AuditLogStatusDatum | AuditNotificationDatum | AuditTimeChangeDatum
+class AuditOtherDatum(TypedDict):
+    """A datum under a tag the standard doesn't assign, as received (#2483)."""
+
+    kind: Literal["other"]
+    tag: int
+    constructed: bool
+    data: bytes
+
+
+AuditLogDatum = AuditLogStatusDatum | AuditNotificationDatum | AuditTimeChangeDatum | AuditOtherDatum
 
 
 class AuditLogRecord(TypedDict):
@@ -2128,10 +2474,17 @@ class PropertyValue:
       Each element keeps its octets, so the value
       writes back unchanged. A value that isn't those elements, to the last
       octet, follows the rules below.
-    - Other context-tagged content (a Load Control's shed levels, an Event
-      Enrollment's Event_Parameters), or content this type has no form for
-      (a UCS-4, DBCS or JIS string, bad UTF-8, an ENUMERATED past 32 bits),
-      is ``application_data`` holding the octets exactly as served.
+    - Other content with a context tag (a Lighting Output's
+      Lighting_Command, a vendor's proprietary property) is ``tagged``
+      (#2618): ``value`` is the tree of its tags, a list of ``TagNode``, and
+      ``octets`` are the octets exactly as served, so a write sends them
+      back unchanged. Every tag reads without the property's datatype
+      (Clause 20.2.1.6); a context-tagged primitive's contents stay
+      ``bytes``, since only the property's datatype says what they are.
+    - Content this type has no form for (a UCS-4, DBCS or JIS string, bad
+      UTF-8, an ENUMERATED past 32 bits, anywhere in the value), or a tree
+      past the decoder's 10,000 elements, is ``application_data`` holding
+      the octets exactly as served.
     - A whole read (no ``array_index``) of a property the stack's
       classification table marks as an array or list on that object type
       (every BACnetARRAY and BACnetLIST of the 2020 object tables) is a
@@ -2204,13 +2557,25 @@ class PropertyValue:
     def application_data(bytes: bytes) -> PropertyValue:
         """Create an ApplicationData value from pre-encoded application-layer bytes (e.g. a framed BACnetEventParameter)."""
         ...
+    @staticmethod
+    def tagged(octets: bytes) -> PropertyValue:
+        """The value ``octets`` encode, as their tags: what a read of a value
+        with no typed form and a context tag gives (#2618). ``value`` is a
+        list of ``TagNode``; the octets are kept as given, so a write sends
+        them unchanged. Octets that don't read as tagged elements (cut short,
+        a closing tag that closes nothing, opening tags nested past 32, more
+        than 10,000 elements), or hold an application value this type has no
+        form for, raise ValueError. A ``list`` of tagged values keeps its
+        items tagged."""
+        ...
 
     @property
     def tag(self) -> str:
         """Type tag: 'null', 'boolean', 'unsigned', 'signed', 'real', 'double',
         'octet_string', 'character_string', 'bit_string', 'enumerated',
-        'date', 'time', 'object_identifier', 'list', 'application_data', or
-        one typed constructed element: 'destination', 'port_permission',
+        'date', 'time', 'object_identifier', 'list', 'application_data',
+        'tagged' (a value read as its tags, ``value`` a list of ``TagNode``),
+        or one typed constructed element: 'destination', 'port_permission',
         'read_access_specification', 'read_access_result', 'action_list',
         'device_object_reference', 'authentication_factor_format',
         'stage_limit_value', 'access_rule', 'device_object_property_reference',
@@ -2226,6 +2591,7 @@ class PropertyValue:
         """The Python-native value (int, float, str, bytes, bool, dict, tuple,
         ObjectIdentifier, BitString, list, or None); ``application_data`` is ``bytes``
         (except a DateTime Value's set Priority_Array slot, ``[date, time]``),
+        ``tagged`` a list of ``TagNode``,
         and a typed constructed element the form its typed write takes, or
         the form docs/python-api.md gives it. A date is ``(year, month, day,
         day_of_week)`` with the full year, or 255 for an unspecified year,
@@ -2257,6 +2623,58 @@ class PropertyValue:
     def __hash__(self) -> int: ...
 
 
+class TagNode:
+    """One tagged element of a value read as its tags (#2618), frozen:
+    ``PropertyValue.tagged`` values hold a list of them.
+
+    BACnet tags read without knowing a value's datatype (Clause 20.2.1.6):
+    an application tag names its datatype, every primitive gives its length,
+    and a constructed element sits between an opening and a closing tag of
+    one number. A context tag's meaning is the property's to say, so a
+    context-tagged primitive keeps its contents as ``bytes``.
+
+    Two nodes are equal when they hold the same octets, and equal nodes hash
+    alike. ``copy`` and ``pickle`` rebuild a node from its octets.
+    """
+
+    @property
+    def tag_class(self) -> Literal["application", "context"]:
+        """The tag's class (Clause 20.2.1.1)."""
+        ...
+    @property
+    def tag_number(self) -> int:
+        """The tag number, 0 to 254: an application tag's datatype (0 NULL,
+        1 BOOLEAN, 2 Unsigned, 3 Signed, 4 REAL, 5 Double, 6 OCTET STRING, 7
+        CharacterString, 8 BIT STRING, 9 ENUMERATED, 10 Date, 11 Time, 12
+        BACnetObjectIdentifier; Clause 20.2.1.4), or a context tag's field."""
+        ...
+    @property
+    def constructed(self) -> bool:
+        """Whether it is the members between an opening and a closing tag
+        (Clause 20.2.1.3.2)."""
+        ...
+    @property
+    def value(self) -> PropertyValue | bytes | list[TagNode]:
+        """An application primitive's ``PropertyValue`` (the value a bare
+        read of it gives, without names from a property), a context
+        primitive's contents as ``bytes``, or a constructed element's
+        members."""
+        ...
+    @property
+    def octets(self) -> bytes:
+        """The element's octets exactly as read: its tag and contents, or its
+        opening tag through its closing tag."""
+        ...
+    def __repr__(self) -> str:
+        """A short description, not code: ``<TagNode application 4 real
+        1.5>``, ``<TagNode context 0, 1 octet>`` or ``<TagNode context 1
+        constructed, 3 members>``. A long value is cut short, and contents
+        are counted, not shown."""
+        ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+
 class DiscoveredDevice:
     """A device discovered via Who-Is / I-Am."""
 
@@ -2279,7 +2697,11 @@ class DiscoveredDevice:
     def vendor_id(self) -> int: ...
 
     @property
-    def seconds_since_seen(self) -> float: ...
+    def seconds_since_seen(self) -> float:
+        """Seconds since the device was last heard from when this object was
+        made: its latest I-Am, or its latest answer to one of this client's
+        confirmed requests."""
+        ...
 
     @property
     def source_network(self) -> Optional[int]: ...
@@ -2290,8 +2712,829 @@ class DiscoveredDevice:
     def __repr__(self) -> str: ...
 
 
+class Inventory223Experimental:
+    """A device's objects as the experimental Standard 223 export read them
+    (``BACnetClient.export_223_experimental``). Device text is kept exactly
+    as the device sent it. Refuses ``copy`` and ``pickle``."""
+
+    @property
+    def device_instance(self) -> int:
+        """The device instance."""
+        ...
+
+    @property
+    def device_name(self) -> Optional[str]:
+        """The Device object's Object_Name, exactly as the device sent it;
+        None when it couldn't be read."""
+        ...
+
+    @property
+    def objects(self) -> tuple[Object223Experimental, ...]:
+        """The objects read, in Object_List order, as a tuple."""
+        ...
+
+    @property
+    def stopped(self) -> Optional[str]:
+        """Why the reading stopped early, None when it didn't: a request to the
+        device timed out or its link failed while its objects were being
+        read, so the objects after that point are missing."""
+        ...
+
+    def to_turtle(
+        self, base_iri: Optional[str] = None, write_priority: Optional[int] = None
+    ) -> str:
+        """The inventory as Turtle. ``base_iri`` defaults to
+        ``http://example.org/bacnet/``; each device's nodes go under
+        ``<base_iri>device-<instance>/``. ``write_priority`` (1 to 16) goes in
+        the reference of every commandable point. A bad base IRI or a
+        priority outside 1 to 16 raises ValueError saying which rule failed;
+        a priority outside 0 to 255 raises OverflowError."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+class Object223Experimental:
+    """One object of an ``Inventory223Experimental``: a point, or an object
+    whose read failed, which has only its identifier and ``error``."""
+
+    @property
+    def object_identifier(self) -> ObjectIdentifier:
+        """The object."""
+        ...
+
+    @property
+    def name(self) -> Optional[str]:
+        """Its Object_Name; None when its read failed."""
+        ...
+
+    @property
+    def description(self) -> Optional[str]:
+        """Its Description; None when it has none or couldn't be read."""
+        ...
+
+    @property
+    def units(self) -> Optional[EngineeringUnits]:
+        """The Units of an analog object or an integer value; None for other
+        objects or when its read failed."""
+        ...
+
+    @property
+    def number_of_states(self) -> Optional[int]:
+        """A multi-state object's Number_Of_States; None for other objects or
+        when its read failed."""
+        ...
+
+    @property
+    def state_texts(self) -> list[str]:
+        """A multi-state object's State_Text, state 1 first; empty for other
+        objects, when it has none or when its read failed. An entry that
+        wasn't a string is ""."""
+        ...
+
+    @property
+    def commandable(self) -> bool:
+        """Whether it has a Priority_Array: always for an output, and for a
+        value when the device gave one. The Turtle makes such a point
+        actuatable."""
+        ...
+
+    @property
+    def error(self) -> Optional[str]:
+        """Why its read failed, None when it didn't: the device's error, which
+        names the property when the object lacked its Object_Name, the Units
+        of an analog object or an integer value, or a multi-state object's
+        Number_Of_States. The Turtle skips such an object."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+class Value:
+    """One value a high-level call read or sent (#2561): typed (``value``),
+    as text (``text``), as plain data (``data``) and as octets (``raw``).
+
+    A value class: two are equal when they hold the same octets, text and
+    data (what they are a value of isn't compared), equal values hash
+    alike, comparing with anything else gives NotImplemented, and one
+    copies and pickles. It keeps nothing of the client or
+    the device it came from. ``value`` is the typed Python form, so there
+    are no ``as_float``-style accessors: ``reading.value.value`` is the
+    float, int, str or other value itself."""
+
+    @property
+    def value(self) -> PropertyValue:
+        """The value as a ``PropertyValue``, shaped as ``read_property`` of
+        the same property returns it (a Priority_Array slot as a read of
+        that slot by its index)."""
+        ...
+
+    @property
+    def text(self) -> str:
+        """The value as text, as the ``bacnet`` tool writes it: every digit
+        of a number, a state or enumeration by its name (``"active"``),
+        ``"null"`` for NULL. A ``read_many`` that reads the object's units
+        or state texts in the same call names them (``"21.5 °C"``,
+        ``"2 (Heat)"``); a single ``read`` names neither."""
+        ...
+
+    @property
+    def data(self) -> Any:
+        """The value as plain data, the shape of the ``bacnet`` tool's JSON:
+        None, a bool, an int, a float (a REAL as the shortest decimal that
+        reads back as it) or a str, or a dict or list of them; an
+        enumeration is ``{"value": 1, "name": "active"}``. A new copy each
+        time."""
+        ...
+
+    @property
+    def raw(self) -> bytes:
+        """The value's octets as the device sent them, or as a write sends
+        them: application-tagged."""
+        ...
+
+    def __str__(self) -> str:
+        """``text``."""
+        ...
+
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+
+class Reading:
+    """One property as a bulk read read it (#2561): ``value``, or ``error``
+    when the device gave none. Exactly one of the two is None. Refuses
+    ``copy`` and ``pickle``; its ``value`` copies and pickles."""
+
+    @property
+    def object_id(self) -> ObjectIdentifier:
+        """The object read."""
+        ...
+
+    @property
+    def property_id(self) -> PropertyIdentifier:
+        """The property read."""
+        ...
+
+    @property
+    def array_index(self) -> Optional[int]:
+        """The array element read, None for the whole property."""
+        ...
+
+    @property
+    def value(self) -> Optional[Value]:
+        """The value; None when the device gave none (see ``error``)."""
+        ...
+
+    @property
+    def error(self) -> Optional[BacnetError]:
+        """Why the device gave no value, as the exception a typed read of
+        the property would raise, never raised here: a
+        ``BacnetProtocolError`` with ``error_class`` and ``error_code`` for
+        an unknown property or object, a reject or abort error, or a
+        ``BacnetError`` for an answer that left the property out. None when
+        the device gave a value."""
+        ...
+
+    @property
+    def text(self) -> Optional[str]:
+        """The value's text; None when the device gave no value."""
+        ...
+
+    @property
+    def ok(self) -> bool:
+        """True when the device gave a value."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+class Readings:
+    """What ``Device.read_many`` or ``Device.read_object`` read (#2561): a
+    ``Reading`` each property, in the order asked for, and whether the
+    device stopped answering part way. Iterating it gives the readings;
+    ``len`` and an index work too. Refuses ``copy`` and ``pickle``."""
+
+    @property
+    def readings(self) -> tuple[Reading, ...]:
+        """The readings, in the order asked for; after ``stopped``, those
+        read before the device stopped answering."""
+        ...
+
+    @property
+    def via(self) -> Optional[Literal["rpm", "rp", "mixed"]]:
+        """How the values were read: ``"rpm"`` (ReadPropertyMultiple),
+        ``"rp"`` (ReadProperty each) or ``"mixed"``; None when nothing was
+        read."""
+        ...
+
+    @property
+    def stopped(self) -> Optional[BacnetError]:
+        """Set when the read ended after it began: the device stopped
+        answering (the ``BacnetTimeoutError`` or ``BacnetTransportError`` a
+        single read would have raised), or the client's own link failed a
+        later request (a ``BacnetError``). Never raised here. The
+        properties after ``readings`` weren't read. Always None for
+        ``read_object``."""
+        ...
+
+    def get(
+        self,
+        object: ObjectIdentifier | str,
+        property: PropertyIdentifier | str | None = None,
+        *,
+        index: Optional[int] = None,
+    ) -> Optional[Reading]:
+        """The first reading of ``property`` of ``object`` (its
+        Present_Value when ``property`` is left out), in the forms
+        ``Device.read`` takes; None when the read holds none."""
+        ...
+
+    def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[Reading]: ...
+    def __getitem__(self, index: int) -> Reading: ...
+    def __repr__(self) -> str: ...
+
+
+class ObjectList:
+    """A device's Object_List as read (``Device.objects``, #2561).
+    Iterating it gives the ``ObjectIdentifier``s; ``len``, an index and
+    ``in`` (an ``ObjectIdentifier`` or text such as ``"ai:1"``) work too.
+    Refuses ``copy`` and ``pickle``."""
+
+    @property
+    def objects(self) -> tuple[ObjectIdentifier, ...]:
+        """The objects, in the device's order."""
+        ...
+
+    @property
+    def indexed(self) -> bool:
+        """True when the list was read an element at a time, because the
+        device couldn't send it in one answer."""
+        ...
+
+    @property
+    def stopped(self) -> Optional[str]:
+        """Why an element-by-element read ended early, as text; None when
+        the whole list was read. ``objects`` then holds the elements before
+        it."""
+        ...
+
+    def __len__(self) -> int: ...
+    def __iter__(self) -> Iterator[ObjectIdentifier]: ...
+    def __getitem__(self, index: int) -> ObjectIdentifier: ...
+    def __contains__(self, object: ObjectIdentifier | str) -> bool: ...
+    def __repr__(self) -> str: ...
+
+
+class DeviceSummary:
+    """A device's summary (``Device.summary``, #2561): its instance, and
+    the Device object's identifying properties (name, vendor, model,
+    firmware, protocol revision, what it supports). Refuses ``copy`` and
+    ``pickle``."""
+
+    @property
+    def instance(self) -> int:
+        """The device instance."""
+        ...
+
+    @property
+    def name(self) -> Optional[str]:
+        """The device's Object_Name with control characters removed, for
+        display; None when the device gave none. Text the device supplied."""
+        ...
+
+    @property
+    def readings(self) -> Readings:
+        """The properties read: one the device refused has its ``error``
+        set."""
+        ...
+
+    def value(self, property: PropertyIdentifier | str) -> Optional[Value]:
+        """The ``Value`` of ``property`` of the Device object
+        (``"vendor-name"``, ``PropertyIdentifier.MODEL_NAME``); None when
+        the summary doesn't read it or the device gave none."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+class Discovered:
+    """One device that answered a ``BACnetClient.discover()`` (#2561). A
+    ``BACnetClient.device()`` target, which pins the handle to ``address``.
+    Refuses ``copy`` and ``pickle``."""
+
+    @property
+    def address(self) -> str:
+        """Where the device answers, as text ``device()`` reads back:
+        ``"192.168.1.10:47808"``, ``"mstp:5"``, ``"bip6:0x0004D2"``, an SC
+        VMAC in hex, or a routed station as ``"2:0x05"``."""
+        ...
+
+    @property
+    def network(self) -> int:
+        """The network it is on: 0 for this client's own, else the number
+        of the remote network a router passed its answer on from."""
+        ...
+
+    @property
+    def instance(self) -> int:
+        """Its Device instance."""
+        ...
+
+    @property
+    def duplicate(self) -> bool:
+        """True when another address claims the same instance: name this
+        one by its address, or by this row, never by the instance."""
+        ...
+
+    @property
+    def entry(self) -> DiscoveredDevice:
+        """Its row in the discovery table: the largest APDU it takes, its
+        segmentation support and its vendor."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+class PriorityView:
+    """An object's commands as read: its Priority_Array's sixteen slots,
+    the slot in control, Relinquish_Default and Present_Value
+    (``Device.priority_array`` and ``Device.relinquish``, #2561). Refuses ``copy`` and ``pickle``; its values
+    copy and pickle."""
+
+    @property
+    def object_id(self) -> ObjectIdentifier:
+        """The object read."""
+        ...
+
+    @property
+    def slots(self) -> tuple[Optional[Value], ...]:
+        """The sixteen slots, priority 1 first (``slots[7]`` is priority 8):
+        each a ``Value``, or None for an empty slot."""
+        ...
+
+    @property
+    def in_control(self) -> Optional[int]:
+        """The slot in control: the lowest-numbered priority holding a
+        command. None when every slot is empty, so Present_Value follows
+        Relinquish_Default."""
+        ...
+
+    @property
+    def relinquish_default(self) -> Optional[Value]:
+        """Relinquish_Default; None when the device gave none."""
+        ...
+
+    @property
+    def present_value(self) -> Value:
+        """Present_Value."""
+        ...
+
+    def slot(self, priority: int) -> Optional[Value]:
+        """The command at ``priority`` (an int from 1 to 16), None when its
+        slot is empty. Another int raises ValueError, a bool or a non-int
+        TypeError."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+class Written:
+    """A write the device acknowledged, as it was sent (#2561): what
+    ``Device.write`` returns, and a ``BacnetReadBackError``'s and a
+    ``BacnetNoPriorityArrayError``'s ``written``. Refuses ``copy`` and
+    ``pickle``."""
+
+    @property
+    def address(self) -> str:
+        """The device's address the write went to: ``"ip:port"``,
+        ``"mstp:N"``, a B/IPv6 VMAC (``"bip6:0x0004D2"``), or on BACnet/SC
+        its VMAC in hex (``"02:00:00:00:00:04"``), or a routed station as
+        ``"2:0x05"``: text ``BACnetClient.device`` reads back."""
+        ...
+
+    @property
+    def object_id(self) -> ObjectIdentifier:
+        """The object written."""
+        ...
+
+    @property
+    def property_id(self) -> PropertyIdentifier:
+        """The property written."""
+        ...
+
+    @property
+    def array_index(self) -> Optional[int]:
+        """The array index written, None for the whole property."""
+        ...
+
+    @property
+    def value(self) -> Value:
+        """The value as sent: NULL for a relinquish."""
+        ...
+
+    @property
+    def priority(self) -> Optional[int]:
+        """The priority sent: the one asked for, or 16 for a property the
+        standard makes commandable when none was. None when none was sent:
+        a property that isn't commandable, or one that may be, written
+        without one (the device then takes it at 16 if it is)."""
+        ...
+
+    @property
+    def commandable(self) -> Literal["always", "optional", "never"]:
+        """Whether the property takes priorities, as its object type and
+        identifier say with nothing read: ``"always"`` (an output's
+        Present_Value), ``"optional"`` (a value object's, commandable only
+        when the object has a Priority_Array) or ``"never"``."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+class WritePreview:
+    """What ``Device.write`` of the same arguments would do, read first and
+    sent nowhere (``Device.preview_write``, #2561). Refuses ``copy`` and
+    ``pickle``."""
+
+    @property
+    def address(self) -> str:
+        """Where the read went, and the write would go, as
+        ``Device.address`` writes it."""
+        ...
+
+    @property
+    def object_id(self) -> ObjectIdentifier:
+        """The object it would write."""
+        ...
+
+    @property
+    def property_id(self) -> PropertyIdentifier:
+        """The property it would write."""
+        ...
+
+    @property
+    def array_index(self) -> Optional[int]:
+        """The array index it would write, None for the whole property."""
+        ...
+
+    @property
+    def value(self) -> Value:
+        """The value as it would be sent."""
+        ...
+
+    @property
+    def priority(self) -> Optional[int]:
+        """The slot it would take: the priority asked for, or 16, on a
+        property the read found commandable; None on one it found isn't."""
+        ...
+
+    @property
+    def occupancy(self) -> Literal["empty", "held", "not-commandable", "unknown"]:
+        """Who holds that slot now: ``"empty"``, ``"held"`` (the write
+        replaces a command, without telling whoever sent it),
+        ``"not-commandable"``, or ``"unknown"`` when the device wouldn't
+        give its slots."""
+        ...
+
+    @property
+    def before(self) -> Optional[Value]:
+        """What the write replaces: the slot's command when one holds it,
+        or the property's value for one that isn't commandable. None for an
+        empty slot, or when the device refused the read."""
+        ...
+
+    @property
+    def effect(self) -> Literal["changes", "unchanged", "not-present-value", "unknown"]:
+        """What the write does to Present_Value: ``"changes"`` (see
+        ``changes_from`` and ``changes_to``), ``"unchanged"`` (a stronger
+        slot keeps control when ``held_by`` names one),
+        ``"not-present-value"`` for a write to another property, or
+        ``"unknown"``."""
+        ...
+
+    @property
+    def changes_from(self) -> Optional[str]:
+        """Present_Value's text now, when ``effect`` is ``"changes"``."""
+        ...
+
+    @property
+    def changes_to(self) -> Optional[str]:
+        """Present_Value's text after the write, when ``effect`` is
+        ``"changes"``."""
+        ...
+
+    @property
+    def held_by(self) -> Optional[int]:
+        """The stronger priority that keeps control, when ``effect`` is
+        ``"unchanged"`` because of one."""
+        ...
+
+    @property
+    def priorities(self) -> Optional[PriorityView]:
+        """The object's commands as read, for a commandable property."""
+        ...
+
+    @property
+    def denied(self) -> Optional[BacnetWriteDeniedError]:
+        """The ``BacnetWriteDeniedError`` that ``Device.write`` would
+        raise, never raised here, when the client's write policy refuses
+        the priority; else None."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+class Device:
+    """One device, as a ``BACnetClient`` reaches it: what ``await
+    client.device(target)`` returns (#2561). Its methods are the high-level
+    calls.
+
+    Made from an address (``"192.168.1.10"``, ``"mstp:5"``, ``"2:0x05"``, a
+    ``discover()`` row) it is pinned there. Made from an instance (``1234``,
+    ``"2:1234"``) it follows the instance: when the device stops answering
+    at its address and one other address claims the instance, the handle
+    moves there. Its calls go to the device one at a time.
+
+    An object is an ``ObjectIdentifier`` or text (``"ai:1"``,
+    ``"analog-input:1"``); a property a ``PropertyIdentifier`` or text
+    (``"pv"``, ``"present-value"``, ``"priority-array[8]"``). A wrong type
+    raises TypeError and text the grammar refuses ValueError, when the call
+    is made.
+
+    A handle belongs to its client and keeps nothing of it between calls,
+    so a ``Device`` left alive never holds a ``stop()`` back. After the
+    client's ``stop()`` a call raises RuntimeError, as any call on a stopped
+    client does, and ``address`` and ``instance`` say what was last known.
+    After the client starts again, the next call makes the handle again
+    from what it was named by, and it works as before: an address at once,
+    an instance by looking it up afresh, which raises ``BacnetLookupError``
+    until the client has heard from the device again. Refuses ``copy`` and
+    ``pickle``."""
+
+    @property
+    def address(self) -> str:
+        """Where the device answers now, as text ``BACnetClient.device``
+        reads back: a pinned handle's address, or where a following handle
+        last reached its instance."""
+        ...
+
+    @property
+    def instance(self) -> Optional[int]:
+        """The device instance, when known: from discovery, the instance
+        the handle follows, or an earlier ``summary()`` or
+        ``resolve_instance()``. None for a handle made from an address
+        nothing has named yet."""
+        ...
+
+    @property
+    def follows(self) -> bool:
+        """True when the handle follows its instance, False when it is
+        pinned to its address."""
+        ...
+
+    def cov_support(self) -> Literal["unknown", "not-offered", "offered", "accepted", "refused"]:
+        """What is known of the device's COV support, with nothing sent:
+        ``"not-offered"`` or ``"offered"`` from the services ``summary()``
+        read, ``"accepted"`` or ``"refused"`` from a subscription a watch
+        made, else ``"unknown"``, as it is while the client is stopped."""
+        ...
+
+    def read(
+        self,
+        object: ObjectIdentifier | str,
+        property: PropertyIdentifier | str | None = None,
+        *,
+        index: Optional[int] = None,
+    ) -> Awaitable[Value]:
+        """Read one property: one ReadProperty.
+
+        ``property`` is Present_Value when left out, and ``index`` an array
+        element (0 is an array's size). With no ``property``, ``object``
+        may be both as text: ``"ai:1 pv"``. The text of the value names no
+        units and no state: ``read_many`` with the object's units or state
+        texts in the same call names them.
+
+        On await, the device's refusal raises ``BacnetProtocolError``,
+        ``BacnetRejectError`` or ``BacnetAbortError``; no answer
+        ``BacnetTimeoutError`` (where ``read_property`` raises
+        ``BacnetAbortError``, reason 10); a following handle whose device
+        can't be placed any more ``BacnetLookupError``. ALL, REQUIRED and
+        OPTIONAL raise ValueError: ``read_object`` reads those."""
+        ...
+
+    def read_many(
+        self,
+        properties: Iterable[
+            str
+            | ObjectIdentifier
+            | tuple[ObjectIdentifier | str, PropertyIdentifier | str]
+            | tuple[ObjectIdentifier | str, PropertyIdentifier | str, int]
+        ],
+    ) -> Awaitable[Readings]:
+        """Read many properties of any of the device's objects, in batches
+        of ReadPropertyMultiple (up to 16 objects and 32 properties each;
+        ReadProperty each once the device has refused that), in the order
+        asked for.
+
+        Each item is text (``"ai:1 pv"``, ``"ai:1"``), an
+        ``ObjectIdentifier`` (its Present_Value), or an ``(object,
+        property)`` or ``(object, property, index)`` tuple of the forms
+        ``read`` takes. A value's text names its object's units, and its
+        state by the object's texts, when the same call reads them.
+
+        A property the device refuses, or one of an object it doesn't
+        have, never raises: its ``Reading.error`` is set and the rest
+        stand. A device that stops answering part way ends the read with
+        what was read, and ``Readings.stopped`` says so; so does a later
+        request the client's own link fails (a route lost, a send
+        refused). A read raises only when nothing could be read: a bad item
+        TypeError or ValueError when the call is made; on await a device
+        that can't be placed ``BacnetLookupError``, and a link that fails
+        the first request what a single read raises for it (a
+        ``BacnetError``)."""
+        ...
+
+    def read_object(
+        self,
+        object: ObjectIdentifier | str,
+        properties: Optional[Iterable[PropertyIdentifier | str]] = None,
+    ) -> Awaitable[Readings]:
+        """Read one object's properties in one ReadPropertyMultiple (or by
+        ReadProperty each once the device has refused that): every property
+        when ``properties`` is left out, else those listed, whole
+        properties only. A property the device refused has its
+        ``Reading.error`` set. A device that stops answering raises
+        ``BacnetTimeoutError`` and keeps nothing, since an object's rows go
+        together: ``stopped`` is always None."""
+        ...
+
+    def write(
+        self,
+        object: ObjectIdentifier | str,
+        property: PropertyIdentifier | str,
+        value: str | int | float | PropertyValue,
+        *,
+        priority: Optional[int] = None,
+        index: Optional[int] = None,
+    ) -> Awaitable[Written]:
+        """Write one property: one WriteProperty, acknowledged.
+
+        ``value`` is text in the value grammar, read for the property's
+        datatype (``"72.5"``, ``"active"``, ``'"a string"'`` in quotes,
+        ``"72.5@8"`` with a priority), an int or a float (read as its
+        text; a bool raises TypeError), or a typed ``PropertyValue``, sent
+        as it is. The priority is ``priority``, or the one the text names,
+        or both when they agree. A property the standard makes commandable
+        (an output's Present_Value) goes at the priority given, or at 16;
+        one that may be (a value object's) at the priority given, or with
+        none; any other with none. ``Written.priority`` says what went.
+
+        Raised with nothing sent: TypeError or ValueError when the call is
+        made, for a wrong type, bad text or a priority outside 1 to 16; on
+        await ValueError for a value the property's datatype refuses, two
+        different priorities, a priority on a property that isn't
+        commandable, NULL to a commandable Present_Value (use
+        ``relinquish``) and any write to Priority_Array; and
+        ``BacnetWriteDeniedError`` for a priority the client's
+        ``write_policy`` refuses (1, 2, 5 and 6 unless allowed). Then the
+        device's refusal raises the usual protocol, reject or abort error,
+        and no answer ``BacnetTimeoutError``: the write may or may not have
+        been applied, and is never sent again."""
+        ...
+
+    def preview_write(
+        self,
+        object: ObjectIdentifier | str,
+        property: PropertyIdentifier | str,
+        value: str | int | float | PropertyValue,
+        *,
+        priority: Optional[int] = None,
+        index: Optional[int] = None,
+    ) -> Awaitable[WritePreview]:
+        """What ``write`` of the same arguments would do, read first and
+        sent nowhere: the slot it takes and who holds it, whether a
+        stronger slot keeps Present_Value where it is, and what
+        Present_Value becomes. One request. It raises what ``write`` raises
+        before sending, except for the write policy, which
+        ``WritePreview.denied`` reports instead."""
+        ...
+
+    def relinquish(self, object: ObjectIdentifier | str, priority: int) -> Awaitable[PriorityView]:
+        """Release a command: NULL written to ``object``'s Present_Value at
+        ``priority``, so the next slot down, or Relinquish_Default, takes
+        over; then the object's priorities as read just after. One
+        WriteProperty, then one ReadPropertyMultiple, or a ReadProperty of
+        each of the three properties when the device refuses that.
+
+        ``priority`` is required and is an int from 1 to 16: a bool, a
+        float or anything else raises ``TypeError``, and another int
+        ``ValueError``, when the call is made. On await, with nothing sent:
+        an object type with no Priority_Array (an input, or a Channel)
+        raises ``ValueError``, and a priority the client's ``write_policy``
+        refuses (1, 2, 5 and 6 by default) ``BacnetWriteDeniedError``. Then
+        the device's refusal of the write raises the usual protocol, reject
+        or abort error, and no answer ``BacnetTimeoutError``. A relinquish
+        the device acknowledged whose read after it failed raises
+        ``BacnetReadBackError``, and one whose read says the object has no
+        Priority_Array ``BacnetNoPriorityArrayError``; both say what was
+        written (``written``), which needs no second send."""
+        ...
+
+    def priority_array(self, object: ObjectIdentifier | str) -> Awaitable[PriorityView]:
+        """Read ``object``'s commands: its Priority_Array,
+        Relinquish_Default and Present_Value in one ReadPropertyMultiple (a
+        ReadProperty of each when the device refuses that). An object type
+        with no Priority_Array raises ``ValueError`` on await with nothing
+        sent; a device that says the object has none
+        ``BacnetNoPriorityArrayError``; no answer ``BacnetTimeoutError``."""
+        ...
+
+    def objects(self) -> Awaitable[ObjectList]:
+        """The device's Object_List: whole, or an element at a time when
+        the device can't send it in one answer."""
+        ...
+
+    def summary(self) -> Awaitable[DeviceSummary]:
+        """The device's summary: its name, vendor, model, firmware,
+        protocol revision and what it supports, in one request. A handle
+        that doesn't know its instance reads that first."""
+        ...
+
+    def resolve_instance(self) -> Awaitable[int]:
+        """The device instance: as known (``instance``), or from one read
+        of the Device object by the wildcard instance, remembered
+        afterwards."""
+        ...
+
+    def moved_to(self) -> Awaitable[Optional[str]]:
+        """For a pinned handle whose instance is known: the one other
+        address its instance is heard at now, while its own has gone quiet,
+        as text ``BACnetClient.device`` reads back; else None. Always None
+        for a following handle, which moves itself. Sends nothing."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
+class WritePolicy:
+    """Which command priorities a ``BACnetClient``'s ``relinquish`` may use,
+    given with its ``write_policy=`` keyword (#2561).
+
+    ``WritePolicy()`` refuses 1 and 2 (life safety, Table 19-1), 5
+    (critical equipment) and 6 (minimum on and off times, Clause 19.2.3):
+    the four a program should not reach by accident. ``allow_priorities``
+    gives a policy that allows some of them as well. The check costs no
+    traffic: a refused call raises ``BacnetWriteDeniedError`` and sends
+    nothing. ``write_property`` and the other typed calls don't look at
+    it. Frozen (the class too: ``GUARDED`` can't be reassigned), equal to
+    another policy refusing the same priorities, and hashable.
+
+    Usage::
+
+        policy = WritePolicy().allow_priorities([1])
+        async with BACnetClient(write_policy=policy) as client:
+            await client.relinquish("192.168.1.100:47808", oid, 1)
+    """
+
+    GUARDED: tuple[int, ...]
+    """The priorities the default refuses: ``(1, 2, 5, 6)``."""
+
+    def __init__(self) -> None:
+        """The default policy, refusing ``GUARDED``."""
+        ...
+
+    def allow_priorities(self, priorities: Iterable[int]) -> WritePolicy:
+        """The same policy, allowing ``priorities`` (ints from 1 to 16) as
+        well; this one is unchanged. One that isn't an int raises TypeError,
+        a bool included, and an int outside 1 to 16 ValueError."""
+        ...
+
+    def allows(self, priority: int) -> bool:
+        """Whether a relinquish at ``priority`` may go."""
+        ...
+
+    @property
+    def refused(self) -> tuple[int, ...]:
+        """The priorities refused, 1 first."""
+        ...
+
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+    def __repr__(self) -> str: ...
+
+
 class CovNotification:
-    """A Change-of-Value notification received from a remote device."""
+    """A Change-of-Value notification about one object received from a remote
+    device: a ConfirmedCOVNotification or UnconfirmedCOVNotification, which
+    ``subscribe_cov`` and ``subscribe_cov_property`` subscriptions bring."""
+
+    @property
+    def kind(self) -> Literal["object"]:
+        """``"object"``; a ``CovNotificationMultiple`` reads ``"multiple"``."""
+        ...
 
     @property
     def subscriber_process_identifier(self) -> int: ...
@@ -2327,8 +3570,67 @@ class CovNotification:
     def __repr__(self) -> str: ...
 
 
+class CovNotificationMultiple:
+    """A Change-of-Value notification about several objects received from a
+    remote device: a ConfirmedCOVNotificationMultiple or
+    UnconfirmedCOVNotificationMultiple, which ``subscribe_cov_property_multiple``
+    subscriptions bring (#2654). It arrives on ``cov_notifications()`` beside
+    ``CovNotification`` objects, in the order they came."""
+
+    @property
+    def kind(self) -> Literal["multiple"]:
+        """``"multiple"``; a ``CovNotification`` reads ``"object"``."""
+        ...
+
+    @property
+    def subscriber_process_identifier(self) -> int: ...
+
+    @property
+    def initiating_device_identifier(self) -> ObjectIdentifier: ...
+
+    @property
+    def time_remaining(self) -> int: ...
+
+    @property
+    def timestamp(
+        self,
+    ) -> Optional[tuple[tuple[int, int, int, int], tuple[int, int, int, int]]]:
+        """When the last change the notification conveys happened, as
+        ``((year, month, day, day_of_week), (hour, minute, second,
+        hundredths))``, the year in full; ``None`` when no value carries a
+        time of change."""
+        ...
+
+    @property
+    def delivery(self) -> str: ...
+
+    @property
+    def source_mac(self) -> bytes: ...
+
+    @property
+    def source_network(self) -> Optional[int]: ...
+
+    @property
+    def source_address(self) -> Optional[bytes]: ...
+
+    @property
+    def objects(self) -> Any:
+        """The objects reported, in order: dicts with
+        ``monitored_object_identifier`` and ``values``. Each value is a dict
+        with ``property_id``, ``array_index``, ``value`` (as in
+        ``CovNotification.values``) and ``time_of_change``, an ``(hour,
+        minute, second, hundredths)`` tuple, or ``None`` when the
+        subscription didn't ask for timestamps. One property may appear more
+        than once, a timestamped one changing several times."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
 class CovNotificationIterator:
-    """Async iterator yielding ``CovNotification`` objects. One that falls behind
+    """Async iterator yielding ``CovNotification`` and
+    ``CovNotificationMultiple`` objects, in the order they arrived; ``kind``
+    tells them apart. One that falls behind
     the client's COV channel loses the oldest and adds them to ``missed``. A
     cancel that lands while a notification is being delivered, as a timed-out
     ``asyncio.wait_for`` does, puts it back: the next ``__anext__`` returns it
@@ -2339,7 +3641,7 @@ class CovNotificationIterator:
     client stops."""
 
     def __aiter__(self) -> CovNotificationIterator: ...
-    def __anext__(self) -> Awaitable[CovNotification]: ...
+    def __anext__(self) -> Awaitable[CovNotification | CovNotificationMultiple]: ...
     @property
     def missed(self) -> int:
         """Notifications lost so far: because this iterator fell behind,
@@ -2403,13 +3705,109 @@ class DiscoveredRouter:
         ...
 
 
+class RoutingTableEntry:
+    """One entry of a router's routing table (#2612), frozen. Refuses
+    ``copy`` and ``pickle``."""
+
+    @property
+    def network(self) -> int:
+        """The network the entry is for."""
+        ...
+    @property
+    def port_id(self) -> int:
+        """The router's identifier for the port that reaches ``network``."""
+        ...
+    @property
+    def port_info(self) -> bytes:
+        """The port information octets, which the standard defines only as an
+        octet string (typically dial-up details for a point-to-point link);
+        empty when the entry has none."""
+        ...
+
+
+class RoutingTable:
+    """A router's routing table, as ``BACnetClient.routing_table()`` read it
+    (#2612), frozen. Refuses ``copy`` and ``pickle``."""
+
+    @property
+    def entries(self) -> list[RoutingTableEntry]:
+        """The entries in the order the router listed them, across every
+        acknowledgement. Empty for a router that answered with an empty
+        table: a router that did not answer raises instead."""
+        ...
+    @property
+    def acks(self) -> int:
+        """How many acknowledgements carried the entries."""
+        ...
+    @property
+    def truncated(self) -> bool:
+        """Whether the call stopped at its ``total`` or ``max_entries`` bound,
+        or lost acknowledgements, rather than after a quiet interval. It
+        covers those cases only: a quiet end does not prove the table whole
+        (on MS/TP, acknowledgements after the first wait for the router's
+        token), so use a larger ``quiet`` on a slow trunk. A late
+        acknowledgement of an earlier query to the same router can also be
+        counted by the next one (nothing pairs answers with questions), so
+        leave a gap between repeated queries; entries are reported as
+        received, so a network number can appear twice."""
+        ...
+
+
+class RoutedPathLimit:
+    """One routed path, a router on the local link and a destination
+    network, with the size limit the client holds for it, as
+    ``BACnetClient.routed_path_limits()`` lists it (#2667), frozen. Its
+    ``repr`` writes the router in the link's own form. Refuses ``copy`` and
+    ``pickle``."""
+
+    @property
+    def router(self) -> bytes:
+        """The router's MAC on the local link, as ``DiscoveredRouter.mac``
+        gives it; the routed-path calls take it back."""
+        ...
+    @property
+    def network(self) -> int:
+        """The destination network."""
+        ...
+    @property
+    def max_npdu(self) -> int:
+        """The limit requests on the path are sized to, in NPDU octets: the
+        configured limit (228 without one), lowered to the learned one."""
+        ...
+    @property
+    def source(self) -> Literal["default", "configured", "learned"]:
+        """Where ``max_npdu`` comes from: ``"default"`` (228 octets),
+        ``"configured"``, or ``"learned"`` from a router's too-long reject
+        when that is lower than the configured limit."""
+        ...
+    @property
+    def configured_max_npdu(self) -> Optional[int]:
+        """The limit set with ``configure_routed_path_max_npdu``, or None."""
+        ...
+    @property
+    def learned_max_npdu(self) -> Optional[int]:
+        """One octet under the smallest frame a router refused as too long on
+        this path, or None; never below 228."""
+        ...
+    @property
+    def below_minimum_reject_seen(self) -> bool:
+        """Whether a too-long reject for a request of 228 NPDU octets or
+        fewer was dropped on this path since its limit was last set or
+        cleared: the sign of a router that carries less than every router
+        must, whose requests end by timeout."""
+        ...
+
+    def __repr__(self) -> str: ...
+
+
 class NetworkReport:
     """A network-layer report this client received (#1850), frozen. Fields
     that don't apply to its ``kind`` are None."""
 
     @property
     def kind(self) -> Literal["i_am_router_to_network", "network_number_is",
-                              "reject_message_to_network", "other"]: ...
+                              "reject_message_to_network", "routing_table",
+                              "other"]: ...
     @property
     def source_mac(self) -> bytes:
         """The link-layer peer that sent it: for an I-Am-Router-To-Network,
@@ -2434,6 +3832,11 @@ class NetworkReport:
     @property
     def configured(self) -> bool | None:
         """Whether a Network-Number-Is sender had its number configured."""
+        ...
+    @property
+    def entries(self) -> list[RoutingTableEntry] | None:
+        """The entries one Initialize-Routing-Table-Ack lists, for the
+        ``"routing_table"`` kind (#2612)."""
         ...
     @property
     def reason(self) -> int | None:
@@ -2589,6 +3992,118 @@ class BacnetBvlcUnexpectedResponseError(BacnetError):
     expected: int
     got: int
 
+class BacnetNetworkRejectError(BacnetError):
+    """Raised when a router answers a network-layer message the client sent
+    with a Reject-Message-To-Network, as ``routing_table()`` reports it
+    (#2612). Silence raises ``BacnetTimeoutError`` instead.
+
+    Attributes:
+        reason: The reject reason octet the router sent.
+        network: The network the router named.
+    """
+    reason: int
+    network: int
+
+class BacnetLookupError(BacnetError, LookupError):
+    """Raised when no device could be placed for the name a call gave
+    (#2561): no address in the discovery table claims the instance and none
+    answered a Who-Is for it, or no router is known for a routed address's
+    network. Also a ``LookupError``. Nothing was sent to the device. The
+    typed ``_from_device`` and ``_to_device`` calls raise it for an
+    instance the table doesn't hold.
+
+    Attributes:
+        target: The device as it was named: an instance (``"1234"``,
+            ``"2:1234"``) or an address (``"2:0x05"``).
+        instance: The instance named (``1234`` for ``"1234"`` or
+            ``"2:1234"``); None when the device was named by an address.
+        candidates: An empty list here.
+    """
+    target: Optional[str]
+    instance: Optional[int]
+    candidates: list[tuple[int, bytes]]
+
+class BacnetAmbiguousDeviceError(BacnetLookupError):
+    """Raised when a call names a device by its instance and two or more
+    addresses in the discovery table claim that instance, so which device is
+    meant is unknown (#2560). A ``BacnetLookupError``. Nothing was sent.
+    Each claimant keeps its own entry in ``discovered_devices()`` and stays
+    reachable by its address; once only one claims the instance, by the
+    purge or a new I-Am, the instance works again.
+
+    Attributes:
+        target: The instance, as text.
+        instance: The device instance the call named.
+        candidates: Every claimant as ``(network, mac)``, ordered by network
+            and then MAC: network 0 is the local network, where ``mac`` is
+            the device's own; on another network it is the device's MAC
+            there. Each is a ``BACnetClient.device()`` target.
+    """
+    instance: int
+    candidates: list[tuple[int, bytes]]
+
+class BacnetPagingError(BacnetError):
+    """Raised when a device breaks a rule of a paged read, so reading on
+    would repeat what was read or never end (#2561): an answer naming an
+    object an earlier answer named, or saying more remain with no new
+    object to go on after. No call of this release's Python API pages yet;
+    the alarm reads to come raise it.
+
+    Attributes:
+        service: The paged service, such as ``"GetEventInformation"``.
+        object_id: The object named again; None when none was.
+    """
+    service: str
+    object_id: Optional[ObjectIdentifier]
+
+class BacnetWriteDeniedError(BacnetError):
+    """Raised when the client's ``write_policy`` refuses the priority a
+    ``write`` or ``relinquish`` names (#2561): 1, 2, 5 or 6 by default.
+    Nothing was sent. The message says how to allow it:
+    ``BACnetClient(write_policy=WritePolicy().allow_priorities([n]))``.
+
+    Attributes:
+        priority: The priority refused, 1 to 16.
+        relinquish: True for a relinquish.
+        object_id: The object named.
+        property_id: The property named (Present_Value for a relinquish).
+        array_index: The array index named, None for the whole property.
+    """
+    priority: int
+    relinquish: bool
+    object_id: ObjectIdentifier
+    property_id: PropertyIdentifier
+    array_index: Optional[int]
+
+class BacnetReadBackError(BacnetError):
+    """Raised when the device acknowledged a ``relinquish``, so it took
+    effect, but the read of the object's priorities after it failed
+    (#2561). Don't send it again: read them with ``priority_array`` once the
+    device answers. ``__cause__`` is why the read failed, such as a
+    ``BacnetTimeoutError``; this class is not one, so a retry on timeouts
+    leaves it alone.
+
+    Attributes:
+        written: The relinquish as the device acknowledged it.
+    """
+    written: Written
+
+class BacnetNoPriorityArrayError(BacnetProtocolError):
+    """Raised when the device says the object has no Priority_Array, so its
+    Present_Value isn't commandable: a value object built without one
+    (#2561). ``error_class`` and ``error_code`` are the device's PROPERTY
+    and UNKNOWN_PROPERTY. After a ``relinquish``, the device took the NULL
+    first as a write to a property that isn't commandable, which changes
+    nothing, and ``written`` holds it.
+
+    Attributes:
+        object_id: The object.
+        written: The relinquish acknowledged before the read; None for
+            ``priority_array``, which writes nothing.
+    """
+    object_id: ObjectIdentifier
+    written: Optional[Written]
+
 class BacnetTransportError(BacnetError, OSError):
     """Raised when a transport socket or I/O operation fails.
 
@@ -2631,9 +4146,12 @@ def decode_log_records(result: ReadRangeResult) -> list[dict[str, Any]]:
     ``event_values`` None or a dict whose ``kind`` names the event type in
     snake case, ``out_of_range``, with each value under its member's name;
     see docs/python-api.md) or ``audit_notification`` (an Audit
-    Log record, as ``audit_log_query`` shows it). A Trend Log record adds
-    ``status_flags`` (a ``BitString`` naming ``IN_ALARM``, ``FAULT``,
-    ``OVERRIDDEN``, ``OUT_OF_SERVICE``), or None.
+    Log record, as ``audit_log_query`` shows it). A choice under a tag the
+    standard doesn't assign, a datum, a member value or event values, is
+    ``other`` with ``tag``, ``constructed`` and ``data`` (its octets as
+    received). A
+    Trend Log record adds ``status_flags`` (a ``BitString`` naming
+    ``IN_ALARM``, ``FAULT``, ``OVERRIDDEN``, ``OUT_OF_SERVICE``), or None.
 
     Raises ValueError for a result that isn't a log's Log_Buffer, or whose
     item data doesn't decode as ``item_count`` records, naming the first
@@ -3078,7 +4596,9 @@ def inspect_sc_pem(
 ) -> ScPemInspection:
     """Inspect bounded PEM bytes synchronously. Time is a signed 64-bit integer second.
 
-    ValueError: malformed/empty/oversized supplied PEM. TypeError: wrong input type,
+    ValueError: malformed/empty/oversized supplied PEM, a private key input holding
+    more than one key, or a key in a form a connect can't use (encrypted, OpenSSH),
+    as SC startup refuses them. TypeError: wrong input type,
     including bool time. OverflowError: time outside the signed 64-bit range.
     DER defects and key/date observations are returned in the report.
     """
@@ -3139,107 +4659,6 @@ class ScPeerInfo:
     @property
     def certificates(self) -> tuple[ScPeerCertificate, ...]: ...
 
-class RouterBipPort:
-    def __init__(
-        self,
-        network_number: int,
-        interface: str = "0.0.0.0",
-        port: int = 0xBAC0,
-        broadcast_address: str = "255.255.255.255",
-        reuse_port: bool = False,
-    ) -> None: ...
-    network_number: int
-    interface: str
-    port: int
-    broadcast_address: str
-    reuse_port: bool
-
-class RouterScPort:
-    def __init__(
-        self,
-        network_number: int,
-        primary_hub: str,
-        local_vmac: bytes,
-        device_uuid: bytes,
-        ca_cert: str,
-        client_cert: str,
-        client_key: str,
-        failover_hub: Optional[str] = None,
-        heartbeat_interval_ms: int = 30000,
-        heartbeat_timeout_ms: int = 60000,
-        reconnect_initial_delay_ms: int = 10000,
-        reconnect_max_delay_ms: int = 600000,
-        reconnect_max_retries: int = 10,
-        reconnect_forever: bool = False,
-        max_npdu_length: int = 1497,
-        max_bvlc_length: int = 5705,
-    ) -> None: ...
-    network_number: int
-    primary_hub: str
-    local_vmac: bytes
-    device_uuid: bytes
-    ca_cert: str
-    client_cert: str
-    client_key: str
-    failover_hub: Optional[str]
-    heartbeat_interval_ms: int
-    heartbeat_timeout_ms: int
-    reconnect_initial_delay_ms: int
-    reconnect_max_delay_ms: int
-    reconnect_max_retries: int
-    reconnect_forever: bool
-    max_npdu_length: int
-    max_bvlc_length: int
-
-class RouterPortHealth:
-    config_index: int
-    network_number: int
-    transport_kind: str
-    identity: str
-    state: str
-    detail: Optional[str]
-    active_hub: Optional[str]
-    last_error: Optional[str]
-    attempt: int
-    since: Optional[float]
-
-class RouterPortCounters:
-    config_index: int
-    network_number: int
-    transport_kind: str
-    identity: str
-    forwarded_unicast: int
-    forwarded_broadcast: int
-    send_errors: int
-    output_full_drops: int
-    no_route_drops: int
-    shutdown_drops: int
-
-class RouterRouteEntry:
-    network_number: int
-    port_index: int
-    directly_connected: bool
-    next_hop_mac: bytes
-    reachability: str
-    last_seen_age_s: Optional[float]
-    busy_remaining_s: Optional[float]
-    flap_count: int
-    last_port_change_age_s: Optional[float]
-
-class AceMixedRouter:
-    @classmethod
-    def from_ports(
-        cls,
-        ports: list[Union[RouterBipPort, RouterScPort]],
-        *,
-        announce_interval_s: Optional[float] = None,
-    ) -> AceMixedRouter: ...
-    async def start(self) -> None: ...
-    async def stop(self) -> None: ...
-    async def local_address(self) -> str: ...
-    async def port_health(self) -> list[RouterPortHealth]: ...
-    async def port_counters(self) -> list[RouterPortCounters]: ...
-    async def routing_table(self) -> list[RouterRouteEntry]: ...
 class ScEvent:
     """One SC hub-connector event (#1829), frozen. Fields that don't apply
     to the event's kind are None.
@@ -3267,16 +4686,32 @@ class ScEvent:
         ...
     @property
     def cause(self) -> Literal["local_close", "peer_close", "heartbeat_timeout",
-                               "websocket", "tls", "nak", "dial_timeout",
-                               "connect_accept_timeout", "upgrade_refused",
-                               "malformed_result", "unexpected_connect_reply",
-                               "rejection_expired", "other"] | None:
+                               "websocket", "websocket_closed", "tls", "nak",
+                               "dial_timeout", "connect_accept_timeout",
+                               "upgrade_refused", "malformed_result",
+                               "unexpected_connect_reply", "rejection_expired",
+                               "other"] | None:
         """Why a ``disconnected`` link ended, or a ``connect_failed`` attempt
-        or ``primary_restore_failed`` probe failed. ``dial_timeout``: the
+        or ``primary_restore_failed`` probe failed. ``peer_close``: a
+        Disconnect-Request from the hub; ``websocket_closed``: the hub closed
+        the WebSocket with ``close_status`` (#2438); ``dial_timeout``: the
         dial (host lookup, TCP, TLS, WebSocket upgrade) ran out of time;
         ``connect_accept_timeout``: the hub never answered the
         Connect-Request; ``upgrade_refused``: the server answered the
-        upgrade with ``http_status`` (#1839)."""
+        upgrade with ``http_status`` (#1839). ``cause_code`` names it."""
+        ...
+    @property
+    def cause_code(self) -> ErrorCode | None:
+        """The BACnet error code that names the cause (Annex AB.7.5): a NAK's
+        own code, or the BACnet/SC connection code for a DNS, TCP, TLS, HTTP
+        or WebSocket failure, such as ``TCP_CONNECTION_REFUSED`` or
+        ``WEBSOCKET_ENDPOINT_LEAVES``. None when no code applies, as for a
+        local close or a heartbeat timeout (#2438)."""
+        ...
+    @property
+    def close_status(self) -> int | None:
+        """The status in the hub's WebSocket close frame, for a
+        ``websocket_closed`` cause, such as 1001 for a hub going away."""
         ...
     @property
     def dial_stage(self) -> Literal["host_lookup", "tcp_connect", "tls",
@@ -3352,65 +4787,89 @@ class ScEventIterator:
         connector, or dropped on the way to a read, as when its event loop closed first."""
         ...
 
-class DirectTarget:
-    """A direct BACnet/IP target with an explicitly preserved UDP port."""
-
-    def __init__(self, address: str) -> None: ...
-    @property
-    def address(self) -> str: ...
-    @property
-    def mac(self) -> bytes: ...
-
-
-class RoutedTarget:
-    """A routed target with an explicit next-hop router, DNET, and DADR."""
-
-    def __init__(self, router: str, network: int, address: bytes) -> None: ...
-    @property
-    def router(self) -> str: ...
-    @property
-    def router_mac(self) -> bytes: ...
-    @property
-    def network(self) -> int: ...
-    @property
-    def address(self) -> bytes: ...
-
-
-Target = Union[str, DirectTarget, RoutedTarget]
-
-
 class Frame:
-    """Frozen raw frame. Pass octets and link to decode_frame for a summary."""
+    """One frame the owner's transport sent or received, frozen at capture.
+
+    The octets are raw; ``decode_frame(frame.octets, frame.link)`` gives the
+    decoded header summary. ``local_address`` and ``peer`` use one form per
+    link (see "Raw frame observation" in docs/python-api.md)."""
+    @property
+    def port_index(self) -> int | None:
+        """Configured mixed-router port index."""
+        ...
+    @property
+    def hub_url(self) -> str | None:
+        """Configured SC hub URL associated with the captured frame."""
+        ...
+    @property
+    def timestamp_unix_ns(self) -> int:
+        """Wall-clock time of capture, in integer Unix nanoseconds."""
+        ...
+    @property
+    def monotonic(self) -> float:
+        """Capture time in seconds on the clock and origin of
+        ``time.monotonic()``, so ``time.monotonic() - frame.monotonic`` is
+        the frame's age. It never decreases within a subscription.
+
+        The first ``frames()`` call in the process pairs the capture clock
+        with ``time.monotonic()`` once, and each capture converts by its
+        offset from that pair. Both read the same OS clock on Linux
+        (``CLOCK_MONOTONIC``), on macOS (``mach_absolute_time``) and on
+        Windows from Python 3.13 (``QueryPerformanceCounter``); neither
+        counts system sleep on Linux or macOS, both count it on Windows. On
+        Windows with Python 3.11 or 3.12, ``time.monotonic()`` reads
+        ``GetTickCount64`` instead: it also counts sleep, but moves in 10-16
+        ms steps, so a value can sit up to one step away from it, and the two
+        counters are not guaranteed to stay in step over a long run."""
+        ...
     @property
     def timestamp(self) -> float:
-        """Monotonic capture seconds from the first subscription in this module.
-        Comparable across subscriptions, not to wall time or Python's clock origin."""
+        """Capture time as POSIX seconds from the wall clock, as
+        ``time.time()``: comparable with other machines' clocks, but a clock
+        adjustment can move it either way, so order frames by ``monotonic``."""
         ...
     @property
-    def direction(self) -> str:
-        """'inbound' or 'outbound'."""
+    def direction(self) -> Literal["inbound", "outbound", "other"]:
+        """``"inbound"`` or ``"outbound"`` (``"other"`` only for a direction a
+        later release adds)."""
         ...
     @property
-    def link(self) -> str:
-        """Link display name, such as 'BACnet/IP'."""
+    def link(self) -> Literal["bip", "ipv6", "sc", "mstp", "other"]:
+        """The link, as the ``transport=`` argument spells it; ``"other"``
+        for a link no Python owner runs."""
         ...
     @property
     def local_address(self) -> str:
-        """Local address at subscription: IPv4 ip:port, otherwise a hex MAC."""
+        """This node's address on the link when the subscription began, in
+        the form ``peer`` uses for that link: ``"ip:port"`` on B/IP,
+        ``"[ip]:port"`` on B/IPv6 (the UDP socket, not the VMAC), the VMAC
+        in colon hex on SC, the station in decimal on MS/TP."""
         ...
     @property
     def peer(self) -> str:
-        """UDP peer, SC hub name, MS/TP station or Ethernet MAC.
-        This is the next hop, not a forwarded frame's original source."""
+        """The other end on the link: the datagram's source or destination
+        on B/IP (``"ip:port"``) and B/IPv6 (``"[ip]:port"``, the form
+        ``resolve_vmac`` takes), the hub connection on SC (``"primary"`` or
+        ``"failover"``, as ``ScEvent.hub``), the station in decimal on
+        MS/TP (``"255"`` for a broadcast). The next hop, not a forwarded
+        frame's original source."""
         ...
     @property
     def octets(self) -> bytes:
-        """Raw link octets, including malformed received datagrams."""
+        """The frame as the link carries it, malformed received datagrams
+        included."""
         ...
     @property
-    def missed(self) -> int:
-        """Cumulative queue overflow at the first delivery attempt.
-        Redelivery after cancellation keeps this snapshot; iterator.missed is live."""
+    def missed_before(self) -> int:
+        """Frames this subscription missed just before this one: dropped by
+        its full queue (which keeps the oldest frames and drops the newest),
+        or lost on the way to Python together with the gap such a frame
+        carried. A frame redelivered after a cancelled read keeps its value.
+        Summed over the frames received, plus any lost after the last one,
+        it is ``FrameIterator.missed``."""
+        ...
+    def __repr__(self) -> str:
+        """Direction, link, peer and length; never the octets."""
         ...
 
 class FrameSummary:
@@ -3418,11 +4877,22 @@ class FrameSummary:
 
     parse_error reports header decoding failures, while problem also reports
     valid protocol refusals. Service parameters are not exhaustively validated.
-    original_source is encoded in a forwarded message; Frame.peer is the actual
-    transport peer. Neither field proves the sender's identity or its path.
+    original_source is the originating address a BBMD wrote into a B/IP
+    Forwarded-NPDU, or a B/IPv6 Forwarded-NPDU or Forwarded-Address-Resolution;
+    Frame.peer is the actual transport peer. Neither field proves the sender's
+    identity or its path. Summaries compare and hash by value. A summary holds
+    its fields only, never the frame's octets: copy and pickle carry those
+    fields and nothing else.
     """
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
     @property
-    def link(self) -> str: ...
+    def link_message(self) -> str:
+        """BVLC function or MS/TP frame type, such as original-unicast-npdu.
+
+        Not the data link; that is Frame.link."""
+        ...
     @property
     def broadcast(self) -> bool: ...
     @property
@@ -3454,13 +4924,14 @@ class FrameSummary:
     @property
     def device(self) -> int | None: ...
 
-def decode_frame(octets: bytes, link: str = "bip") -> FrameSummary:
+def decode_frame(octets: bytes, link: Literal["bip", "ipv6", "sc", "mstp"]) -> FrameSummary:
     """Decode link/NPDU/APDU headers with Rust, without sending traffic.
 
-    link accepts bip, bip6 (or ipv6), sc, mstp and the corresponding Frame.link
-    display names, case-insensitively. Unsupported links, including Ethernet,
-    raise ValueError. Malformed octets return a partial summary with parse_error.
-    Raw input is not redacted, and service payloads are not fully validated.
+    link is required, by position or keyword: pass frame.link. It takes the
+    Frame.link tokens exactly; "other" (a link the decoder doesn't read) and
+    any other text raise ValueError. Malformed octets, or octets of another
+    link, return a partial summary with parse_error. Raw input is not
+    redacted, and service payloads are not fully validated.
     """
     ...
 
@@ -3480,7 +4951,177 @@ class FrameIterator:
         ...
     @property
     def missed(self) -> int:
-        """Frames lost to overflow or failed delivery; readable after close."""
+        """Frames lost so far, live: dropped by the full queue or lost on the
+        way to Python, including any lost after the last frame read, which
+        no ``missed_before`` has reported yet. Readable after close."""
+        ...
+
+class IAmArrival:
+    """One I-Am the owner's link handed it, frozen at arrival (#2612).
+
+    Every I-Am frame received is a record, in arrival order: repeats, and
+    two devices claiming one instance at different addresses, included.
+    ``link_sender`` is who put the frame on this node's link, in
+    ``Frame.peer``'s form; ``link_source`` is the source MAC the stack takes,
+    in the address form the calls take on that link (``"ip:port"``,
+    ``"bip6:0x0004D2"``, an SC VMAC in colon hex, ``"mstp:5"``). See "I-Am
+    arrivals" in docs/python-api.md for who is who on each link. The
+    parameters are kept as sent, odd ones included. A record compares,
+    hashes, copies and pickles by its fields.
+
+    The tap shows frames before the stack filters them, so a record does
+    not prove the discovery table took the I-Am."""
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+    def __repr__(self) -> str:
+        """The instance, ``device_address`` and ``link_sender``."""
+        ...
+    @property
+    def monotonic(self) -> float:
+        """Arrival time on ``time.monotonic()``'s clock and origin, as
+        ``Frame.monotonic`` (with its Windows note)."""
+        ...
+    @property
+    def timestamp(self) -> float:
+        """Arrival time as POSIX seconds from the wall clock, as
+        ``Frame.timestamp``."""
+        ...
+    @property
+    def link(self) -> Literal["bip", "ipv6", "sc", "mstp", "other"]:
+        """The link, as ``Frame.link``."""
+        ...
+    @property
+    def object_identifier(self) -> ObjectIdentifier:
+        """The I-Am's device identifier, of the type it was sent with, as
+        ``DiscoveredDevice.object_identifier``; ``.instance`` is the device
+        instance."""
+        ...
+    @property
+    def max_apdu_length(self) -> int:
+        """Max APDU length accepted, as sent (below 50 included)."""
+        ...
+    @property
+    def segmentation_supported(self) -> Segmentation:
+        """Segmentation supported, as sent (a value outside the
+        enumeration included)."""
+        ...
+    @property
+    def vendor_id(self) -> int:
+        """Vendor identifier, as sent."""
+        ...
+    @property
+    def link_sender(self) -> str:
+        """Who put the frame on this node's link, as ``Frame.peer`` writes
+        it: the UDP source on B/IP and B/IPv6 (for a Forwarded-NPDU the BBMD
+        that forwarded it), ``"primary"`` or ``"failover"`` on SC, the
+        source station in decimal on MS/TP."""
+        ...
+    @property
+    def link_source(self) -> str:
+        """The source MAC the stack takes for the frame: the origin a
+        Forwarded-NPDU carries, else the sender, on B/IP; the source VMAC on
+        B/IPv6 (the original source's when forwarded); the originating VMAC
+        on SC; the source station on MS/TP. The router when
+        ``source_network`` is set: the next hop back, which a node may take
+        as that network's router (Clauses 6.5.3, 6.5.4)."""
+        ...
+    @property
+    def original_source(self) -> Optional[str]:
+        """The originating node's ``"ip:port"`` or ``"[ip]:port"`` a BBMD
+        wrote into a B/IP or B/IPv6 Forwarded-NPDU; None otherwise."""
+        ...
+    @property
+    def forwarded(self) -> bool:
+        """True when the frame carried an origin other than its sender: a
+        BBMD forwarded it. Never on SC or MS/TP."""
+        ...
+    @property
+    def source_network(self) -> Optional[int]:
+        """SNET, when a router relayed the I-Am from another network."""
+        ...
+    @property
+    def source_address(self) -> Optional[bytes]:
+        """SADR, the device's MAC on ``source_network``."""
+        ...
+    @property
+    def destination_network(self) -> int | None:
+        """DNET carried by the received NPDU."""
+        ...
+    @property
+    def destination_address(self) -> bytes | None:
+        """DADR, empty for a network broadcast and absent without a DNET."""
+        ...
+    @property
+    def broadcast(self) -> bool:
+        """A link broadcast or a broadcast on a network. False for an MS/TP
+        I-Am one station unicast to another, which the bus lets this
+        station hear."""
+        ...
+    @property
+    def device_address(self) -> Optional[str]:
+        """The device's address as ``BACnetClient.device()`` takes it:
+        ``link_source`` for a device on this link, ``"5:0x07"`` for one a
+        router relayed. None when those name no one station. The calls that
+        take an ``address`` don't take ``"5:0x07"``: for a routed record,
+        ``read_property``, ``read_property_multiple``, ``read_range``,
+        ``read_log_page``, ``write_property``, ``atomic_read_file`` and
+        ``atomic_write_file`` take
+        ``RoutedTarget(rec.source_network, rec.source_address,
+        router=rec.next_hop_router)``."""
+        ...
+    @property
+    def next_hop_router(self) -> Optional[str]:
+        """The router that relayed it, when ``source_network`` is set: its
+        ``link_source``."""
+        ...
+    @property
+    def forwarding_bbmd(self) -> Optional[str]:
+        """The BBMD that forwarded it, when ``forwarded``: its
+        ``link_sender``."""
+        ...
+    @property
+    def missed_before(self) -> int:
+        """Frames of any kind this subscription lost just before this
+        record, as ``Frame.missed_before``: the tap cannot tell which of
+        them held an I-Am. Summed over the records received, plus any lost
+        after the last one, it is ``IAmArrivalIterator.missed``. An own echo
+        left out is no loss and adds nothing."""
+        ...
+
+class IAmArrivalIterator:
+    """A bounded subscription to the I-Ams the owner's link hands it,
+    with ``FrameIterator``'s semantics: the queue holds frames of every kind
+    (``capacity``), a full queue drops new frames, a cancelled read keeps
+    the next record, and close or owner shutdown wakes pending reads. It
+    never keeps the owner's socket alive. With a subscriber the transport
+    copies every frame once, as for ``frames()``; the decode runs where the
+    records are read, never on the transport's path."""
+    def __aiter__(self) -> IAmArrivalIterator: ...
+    def __anext__(self) -> Awaitable[IAmArrival]: ...
+    def aclose(self) -> Awaitable[None]:
+        """Idempotently stop this subscription, without stopping its owner."""
+        ...
+    @property
+    def missed(self) -> int:
+        """Frames of any kind lost so far, live, as ``FrameIterator.missed``.
+        Readable after close."""
+        ...
+    @property
+    def malformed(self) -> int:
+        """Inbound I-Am frames read so far that made no record: parameters
+        that don't decode, or an SC message naming no originating VMAC.
+        ``frames()`` and ``decode_frame`` show who sent one and why it
+        failed. A frame whose headers don't decode is not counted: it is not
+        known to hold an I-Am. Readable after close."""
+        ...
+    @property
+    def own_echoes(self) -> int:
+        """The owner's own I-Ams come back to it, read so far and left out:
+        on a ``BipEndpoint`` and on the client its ``client()`` returns,
+        those from the endpoint's own address naming its own device
+        instance, whether its broadcast returned or a BBMD sent it back.
+        Always 0 on a standalone ``BACnetClient``, which sends no I-Am and
+        leaves nothing out. Readable after close."""
         ...
 
 class BACnetClient:
@@ -3493,8 +5134,9 @@ class BACnetClient:
     For SC, sc_ca_cert, sc_client_cert, and sc_client_key must be nonempty
     paths; omission, None, or empty strings raise ValueError at construction.
     Their None defaults preserve non-SC use and positional layout only.
-    Async entry loads the explicit site CA and operational cert/key; invalid
-    TLS configuration raises RuntimeError before dialing. No system-root or
+    Async entry loads the explicit site CA and operational cert/key, each file
+    read up to 1 MiB; invalid TLS configuration, a larger file included, raises
+    RuntimeError before dialing. No system-root or
     unauthenticated-client fallback is available.
 
     SC also requires keyword-only sc_device_uuid: exactly 16 bytes, not all zero,
@@ -3512,6 +5154,13 @@ class BACnetClient:
     and join teardown. Cancelling the close Future leaves shutdown running;
     await stop() again to join it. Drain duration depends on outstanding requests.
     Entry is exclusive; entering an already running or closing client fails.
+
+    ``await endpoint.client()`` on a ``BipEndpoint``, ``ScEndpoint`` or
+    ``MstpEndpoint`` gives a client of this class on the endpoint's link
+    (#2617), with every call, on the endpoint's one address. Its endpoint
+    starts it: ``async with`` only enters it, and once stopped it stays
+    stopped (ask the endpoint for another). Its ``stop()`` ends the client
+    role alone.
 
     Usage::
 
@@ -3538,11 +5187,6 @@ class BACnetClient:
     VMAC), or an MS/TP station. ``"[ip]:port"`` raises ValueError: use
     ``resolve_vmac``. So does a ``bip6:`` address on any other transport.
     """
-
-    def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]:
-        """Observe raw frames on the running owner; capacity is 1–65536.
-        Owner shutdown ends this subscription; a restart needs a new one."""
-        ...
 
     def __init__(
         self,
@@ -3585,8 +5229,28 @@ class BACnetClient:
         sc_connect_timeout_ms: int | None = None,
         sc_control_rate_limit: tuple[int, int] | None = None,
         router: Optional[BACnetRouter] = None,
+        write_policy: Optional[WritePolicy] = None,
+        resolve_scope: Literal["local", "global"] | int | None = None,
     ) -> None:
-        """``transport="router"`` with ``router`` (a ``BACnetRouter`` built
+        """``write_policy`` (default None, which is ``WritePolicy()``): the
+        priorities ``Device.write`` and ``relinquish`` may use. The default
+        refuses 1, 2, 5 and 6 with ``BacnetWriteDeniedError``, sending
+        nothing; ``WritePolicy().allow_priorities([...])`` allows some of
+        them too (#2561). ``write_property`` and the other typed calls
+        don't look at it. Anything but a ``WritePolicy`` raises TypeError.
+
+        ``resolve_scope`` (default None, which is ``"local"``): where a
+        ``device()`` handle made from a bare instance (``1234``) sends its
+        one Who-Is when no address claims the instance (#2561): this
+        network alone, ``"global"`` for every network, or a network number
+        from 1 to 65534. A target that names its network (``"5:1234"``)
+        asks there whatever this says. On ``transport="router"``, which has
+        no network of its own, ``"local"`` raises ValueError and None asks
+        nowhere: a bare instance the client hasn't heard from raises
+        ``BacnetLookupError``. Another name or number raises ValueError,
+        another type TypeError.
+
+        ``transport="router"`` with ``router`` (a ``BACnetRouter`` built
         with ``application="client"`` or ``"client_and_server"``): run the
         client on the router's own application entity (#2071), with the
         router's address on each network as its own. Entry takes the client's
@@ -3670,13 +5334,17 @@ class BACnetClient:
         nonzero port; broadcasts and unicast are still handled in the order
         they arrived.
 
-        ``share_wildcard_port`` (B/IP only, default False): share an
-        explicitly requested port with other sockets on this host that bind
-        it the same way. By default the client claims its port, so a second
-        bind of it fails, and ``start()`` raises when another socket holds
-        it. With sharing, broadcasts reach every socket on the port, but
-        each unicast reaches only one of them; prefer
-        ``share_port_by_address`` or separate ports.
+        ``share_wildcard_port`` (B/IP and B/IPv6 only, default False): share
+        an explicitly requested port with other sockets on this host that
+        bind it the same way. By default the client claims its port, so a
+        second bind of it fails, and ``start()`` raises when another socket
+        holds it. With sharing, broadcasts reach every socket on the port,
+        but each unicast reaches only one of them; prefer
+        ``share_port_by_address`` (B/IP) or separate ports. macOS and the
+        BSDs never let two sockets share one address and port this way, so
+        there the keyword only lets a stack bound to ``0.0.0.0`` or ``::``
+        start beside one bound to a specific address (a B/IPv6 foreign
+        device), or the reverse. Another transport raises ValueError.
 
         ``min_request_interval_ms`` (default 0, no pacing; at most
         3,600,000, else ValueError) paces the confirmed requests to each
@@ -3704,7 +5372,7 @@ class BACnetClient:
 
     def read_property(
         self,
-        address: Target,
+        address: str | RoutedTarget,
         object_id: ObjectIdentifier,
         property_id: PropertyIdentifier,
         array_index: Optional[int] = None,
@@ -3715,12 +5383,14 @@ class BACnetClient:
         requests accept a same-type concrete ACK. Malformed/mismatched ACKs raise
         BacnetError; this method returns the property value, not ACK metadata,
         shaped as ``PropertyValue`` describes for read results.
+        ``address`` is a ``str`` on the local link, or a ``RoutedTarget`` for
+        a station behind a router (#2617), as ``RoutedTarget`` describes.
         """
         ...
 
     def write_property(
         self,
-        address: Target,
+        address: str | RoutedTarget,
         object_id: ObjectIdentifier,
         property_id: PropertyIdentifier,
         value: PropertyValue,
@@ -3730,13 +5400,76 @@ class BACnetClient:
         """Write a single property on a remote device.
 
         Priority is None or 1..16. Invalid u8 priorities raise ValueError
-        synchronously; integers outside u8 raise OverflowError.
+        synchronously; integers outside u8 raise OverflowError. The client's
+        ``write_policy`` doesn't apply: this is the low-level write.
+        ``address`` is a ``str`` on the local link, or a ``RoutedTarget`` for
+        a station behind a router (#2617), as ``RoutedTarget`` describes.
         """
+        ...
+
+    # --- Priorities (#2561) ---
+
+    @property
+    def write_policy(self) -> WritePolicy:
+        """The priorities ``Device.write`` and ``relinquish`` may use, as
+        ``write_policy=`` set them."""
+        ...
+
+    @property
+    def resolve_scope(self) -> Literal["local", "global"] | int | None:
+        """Where a ``device()`` handle made from a bare instance asks for
+        it, as ``resolve_scope=`` set it; None on ``transport="router"``
+        given none, which asks nowhere."""
+        ...
+
+    def device(
+        self,
+        target: str | int | Discovered | DiscoveredDevice | tuple[int, bytes],
+    ) -> Awaitable[Device]:
+        """A handle on one device, whose methods are the high-level calls:
+        ``read``, ``read_many``, ``read_object``, ``write``,
+        ``preview_write``, ``relinquish``, ``priority_array``, ``objects``
+        and ``summary`` (#2561).
+
+        ``target`` names the device in the target grammar, not in the
+        ``address`` forms the typed calls take. Most addresses read the
+        same in both: ``"ip:port"``, six hex octets, the ``bip6:`` forms and
+        ``"mstp:N"``. Two don't. **A bare ``"5"`` is device instance 5 here,
+        not MS/TP station 5: write ``"mstp:5"``.** And colon-separated hex
+        of another length than six octets, which ``address`` takes as a
+        MAC, is no address here: it is refused (ValueError), or, for two
+        decimal parts such as ``"10:20"``, read as instance 20 on network
+        10. The forms:
+
+        - an address pins the handle there and sends nothing for a station
+          on this network: ``"192.168.1.10"`` or ``"192.168.1.10:47808"``,
+          ``"mstp:5"``, ``"bip6:0x0004D2"``, an SC VMAC as six hex octets,
+          a routed station as ``"2:0x05"`` (network 2, MAC 05), or a
+          ``(network, mac)`` pair such as a lookup error's candidate. A
+          routed station the client knows no router for asks its network
+          first;
+        - an instance, ``1234`` (an int or text) or ``"2:1234"`` on network
+          2, gives a handle that follows the instance: the one address
+          claiming it, or the one that answers a Who-Is for it, sent where
+          ``resolve_scope`` says for a bare instance (this network alone by
+          default) and to the network named otherwise, waiting up to 3
+          seconds;
+        - a ``discover()`` row or a ``DiscoveredDevice`` pins the handle to
+          its address, knowing its instance.
+
+        A wrong type raises TypeError and text the grammar refuses
+        ValueError, when the call is made. On await: an address the
+        client's link can't reach raises ValueError, as does a local
+        address on ``transport="router"``; an instance no address claims
+        and none answered for, or a routed address with no router known,
+        ``BacnetLookupError``; an instance two or more addresses claim
+        ``BacnetAmbiguousDeviceError``, whose ``candidates`` are each a
+        target."""
         ...
 
     def read_property_multiple(
         self,
-        address: Target,
+        address: str | RoutedTarget,
         specs: list[
             tuple[ObjectIdentifier, list[tuple[PropertyIdentifier, Optional[int]]]]
         ],
@@ -3746,12 +5479,14 @@ class BACnetClient:
         ``specs`` is a list of ``(object_id, [(property_id, array_index), ...])`` tuples.
         Returns ordered object/result dictionaries. Empty request/property lists
         are rejected; this standalone profile still permits property selectors.
+        ``address`` is a ``str`` on the local link, or a ``RoutedTarget``
+        (#2617).
         """
         ...
 
     def write_property_multiple(
         self,
-        address: Target,
+        address: str | RoutedTarget,
         specs: list[
             tuple[
                 ObjectIdentifier,
@@ -3851,42 +5586,85 @@ class BACnetClient:
 
     def who_is(
         self,
-        low_limit: Optional[int] = None,
-        high_limit: Optional[int] = None,
+        *,
+        low: Optional[int] = None,
+        high: Optional[int] = None,
+        scope: Literal["local", "global"] | int | str = "local",
     ) -> Awaitable[None]:
         """Broadcast a Who-Is request. Responses are collected asynchronously;
         use ``discovered_devices()`` to retrieve them.
 
-        Give ``low_limit`` and ``high_limit`` together or not at all, each from
-        0 to 4194303: one alone, ``low_limit`` above ``high_limit``, or a limit
+        ``scope`` says where the broadcast goes (#2560): ``"local"``, the
+        default, is this network alone, which no router passes on;
+        ``"global"`` is every network, which on a large routed site every
+        device answers; a number from 1 to 65534 is that remote network,
+        through its router; and any other text is one station's address in
+        the forms ``device()`` takes (``"192.168.1.10"``, ``"mstp:5"``),
+        asked by unicast (#2561, where ``who_is_directed`` was). Another
+        number, or text that names a device instance or a routed target,
+        raises ``ValueError``, and another type ``TypeError``, before
+        anything is sent; a station the client's link can't reach raises
+        ``ValueError`` on await. A client on ``transport="router"`` has no
+        network of its own, so its Who-Is names a network, or every one: a
+        local or directed one raises ``ValueError`` saying so.
+
+        Give ``low`` and ``high`` together or not at all, each from
+        0 to 4194303: one alone, ``low`` above ``high``, or a limit
         past 4194303 raises ``ValueError`` before anything is sent.
         """
         ...
 
     def discover(
         self,
-        timeout_ms: int = 3000,
-        low_limit: Optional[int] = None,
-        high_limit: Optional[int] = None,
-    ) -> Awaitable[list[DiscoveredDevice]]:
-        """Convenience: send WhoIs, wait ``timeout_ms``, return discovered devices.
+        *,
+        scope: Literal["local", "global"] | int | str = "local",
+        low: Optional[int] = None,
+        high: Optional[int] = None,
+        wait: float = 3.0,
+    ) -> Awaitable[list[Discovered]]:
+        """Find devices: one Who-Is, then the devices that answered it
+        within ``wait`` seconds, one ``Discovered`` an address (#2561).
+        Only this call's answers: a device the client heard earlier that
+        stays quiet now isn't listed (``discovered_devices()`` is the whole
+        table). Each row is a ``device()`` target, and its ``duplicate``
+        says when another address claims the same instance.
 
-        Give ``low_limit`` and ``high_limit`` together or not at all, each from
-        0 to 4194303: one alone, ``low_limit`` above ``high_limit``, or a limit
-        past 4194303 raises ``ValueError`` before anything is sent.
+        The Who-Is goes where ``scope`` says, as for ``who_is()``: this
+        network alone unless it names every network (``"global"``), one
+        remote network by its number, or one station by its address.
+
+        Give ``low`` and ``high`` together or not at all, each from 0 to
+        4194303, to ask only those instances: one alone, ``low`` above
+        ``high``, or a limit past 4194303 raises ``ValueError`` before
+        anything is sent, as does a ``wait`` outside 0 to 3600 seconds.
         """
         ...
 
     def who_has_by_id(
         self,
         object_id: ObjectIdentifier,
-        low_limit: Optional[int] = None,
-        high_limit: Optional[int] = None,
+        *,
+        low: Optional[int] = None,
+        high: Optional[int] = None,
+        scope: Literal["local", "global"] | int | str = "local",
     ) -> Awaitable[None]:
-        """Broadcast Who-Has by object identifier.
+        """Send a Who-Has by object identifier. Answers come through
+        ``i_have_events()``.
 
-        Give ``low_limit`` and ``high_limit`` together or not at all, each from
-        0 to 4194303: one alone, ``low_limit`` above ``high_limit``, or a limit
+        ``scope`` says where it goes, as for ``who_is()`` (#2596):
+        ``"local"``, the default, is this network alone, which no router
+        passes on; ``"global"`` is every network, where every device that
+        hears it searches its objects; a number from 1 to 65534 is that
+        remote network, through its router; any other text is one station's
+        address, asked by unicast (#2561). Another number, or text that
+        names a device instance or a routed target, raises ``ValueError``,
+        and another type ``TypeError``, before anything is sent. A client on
+        ``transport="router"`` has no network of its own, so its Who-Has
+        names a network, or every one: a local or directed one raises
+        ``ValueError`` saying so.
+
+        Give ``low`` and ``high`` together or not at all, each from
+        0 to 4194303: one alone, ``low`` above ``high``, or a limit
         past 4194303 raises ``ValueError`` before anything is sent.
         """
         ...
@@ -3894,30 +5672,40 @@ class BACnetClient:
     def who_has_by_name(
         self,
         name: str,
-        low_limit: Optional[int] = None,
-        high_limit: Optional[int] = None,
+        *,
+        low: Optional[int] = None,
+        high: Optional[int] = None,
+        scope: Literal["local", "global"] | int | str = "local",
     ) -> Awaitable[None]:
-        """Broadcast Who-Has by object name.
-
-        Give ``low_limit`` and ``high_limit`` together or not at all, each from
-        0 to 4194303: one alone, ``low_limit`` above ``high_limit``, or a limit
-        past 4194303 raises ``ValueError`` before anything is sent.
+        """Send a Who-Has by object name, compared exactly. The limits and
+        ``scope`` follow ``who_has_by_id()``'s rules: this network alone
+        unless ``scope`` names every network (``"global"``) or one remote
+        network by its number.
         """
         ...
 
     def who_has_replies(
         self,
         object: ObjectIdentifier | str,
-        low_limit: Optional[int] = None,
-        high_limit: Optional[int] = None,
-        timeout_ms: int = 3000,
+        *,
+        low: Optional[int] = None,
+        high: Optional[int] = None,
+        wait: float = 3.0,
+        scope: Literal["local", "global"] | int | str = "local",
     ) -> Awaitable[list[IHave]]:
-        """Broadcast a Who-Has for ``object`` (an identifier, or a name) and
-        collect the I-Haves that answer it for ``timeout_ms``: one per device
-        and object, in arrival order; an empty list when none answer. The
-        limits follow ``who_has_by_id()``'s rule (#1850). It holds the
-        started client for the whole wait, so ``stop()`` waits up to
-        ``timeout_ms`` for it."""
+        """Send a Who-Has for ``object`` (an identifier, or a name) and
+        collect the I-Haves that answer it from that scope for
+        ``wait`` seconds: one per device, object and station (a station's copy
+        through a router on this client's own network is its local answer),
+        in arrival order; an empty list when none answer. An I-Have heard
+        from elsewhere during the wait is not an answer, and collection stops
+        at 4096 answers, so a list of exactly that many may have been cut
+        short. The limits and ``scope``
+        follow ``who_has_by_id()``'s rules (#1850, #2596): with the default
+        scope an empty list says only that nothing on this network has the
+        object. ``wait`` is 0 to 3600 seconds (``ValueError`` otherwise). It
+        holds the started client for the whole wait, so ``stop()`` waits up
+        to ``wait`` seconds for it."""
         ...
 
     def i_have_events(self) -> Awaitable[IHaveIterator]:
@@ -3927,28 +5715,158 @@ class BACnetClient:
         ...
 
     def discover_routers(
-        self, network: Optional[int] = None, timeout_ms: int = 3000,
+        self, network: Optional[int] = None, *, wait: float = 3.0,
     ) -> Awaitable[list[DiscoveredRouter]]:
         """Broadcast a Who-Is-Router-To-Network for ``network`` (or every
-        network) and collect the routers that answer for ``timeout_ms``, one
+        network) and collect the routers that answer for ``wait`` seconds, one
         per router MAC in the order first heard; for a ``network``, only the
         routers listing it. An empty list when none answer. ``network`` 0 or
-        65535 raises BacnetError (#1850). It holds the started client for
-        the whole wait, so ``stop()`` waits up to ``timeout_ms`` for it."""
+        65535 raises BacnetError (#1850). ``wait`` is 0 to 3600 seconds
+        (``ValueError`` otherwise). It holds the started client for the
+        whole wait, so ``stop()`` waits up to ``wait`` seconds for it."""
+        ...
+
+    def routing_table(
+        self, router: str | bytes, *, wait: float = 3.0, quiet: float = 0.5,
+        total: float = 10.0, max_entries: int = 4096,
+    ) -> Awaitable[RoutingTable]:
+        """Read the routing table of the router at ``router``, a station on
+        this client's own link, without changing it (#2612). The call sends
+        one Initialize-Routing-Table with a port count of zero, which only
+        asks; no argument can make it an update.
+
+        ``router`` is the router's address on the local link: ``bytes`` as
+        given, such as a ``DiscoveredRouter``'s ``mac``, or a string in the
+        binding's address forms (``"ip:port"``, ``"bip6:N"``, hex octets, an
+        MS/TP station). An empty or broadcast address raises ValueError.
+
+        A long table comes as several acknowledgements with nothing to mark
+        the last, so the call returns once ``quiet`` seconds pass after the
+        last acknowledgement from the router (other traffic does not restart
+        it), at ``total`` seconds from the send, or at ``max_entries``
+        entries (at least 1); the last two set ``truncated`` on the result,
+        which covers those bounds only. A quiet end does not prove the table
+        whole: on MS/TP, acknowledgements after the first wait for the
+        router's token, so use a larger ``quiet`` on a slow trunk. A late
+        acknowledgement of an earlier query to the same router can be
+        counted by the next one (nothing pairs answers with questions), so
+        leave a gap between repeated queries; entries are reported as
+        received, not deduplicated.
+
+        An empty table, or an older router's acknowledgement with no data,
+        is a ``RoutingTable`` with no entries. A router that sends nothing
+        within ``wait`` seconds raises BacnetTimeoutError: one that ignores
+        the message looks the same as one that is absent (on B/IP, so does
+        one that answers from another address or port), and neither is an
+        empty table. A Reject-Message-To-Network from the router before any
+        acknowledgement raises BacnetNetworkRejectError; rejects with
+        reasons 1, 2 and 4 concern a DNET and are ignored. Each bound is 0 to
+        3600 seconds and ``wait`` may not exceed ``total`` (ValueError
+        otherwise). A client stopped mid-call raises RuntimeError. Only a
+        router on the local link can be asked; one behind another router
+        cannot. One query runs at a time per client; a second call waits for
+        the first. It holds the started client for the whole wait, so
+        ``stop()`` waits for it."""
+        ...
+
+    def configure_routed_path_max_npdu(
+        self, router: str | bytes, network: int, max_npdu: int,
+    ) -> Awaitable[None]:
+        """Set the size limit, in NPDU octets, of the routed path through
+        ``router`` to ``network``, replacing any limit set or learned before
+        (#2667). Requests to stations on that network through that router are
+        sized to it, and segmented or refused as any request too large for
+        its path is.
+
+        ``router`` is the router's address on the local link, as
+        ``routing_table`` takes it: ``bytes`` such as a ``DiscoveredRouter``'s
+        ``mac``, or a string in the binding's address forms (a B/IPv6 socket
+        address is first asked its VMAC). ``network`` is 1 to 65534. A limit
+        under 228 is taken, for an older router that carries less than the
+        standard asks; one that could carry no request at all (under 66 on
+        B/IP, 61 on MS/TP) raises ValueError, as do a bad router or network.
+        An ``int`` outside 0 to 65535 raises OverflowError, and a ``bool``
+        for ``network`` or ``max_npdu`` TypeError.
+
+        The call waits for a request active on the path, or one queued for
+        it, but not out the hold a request with no answer leaves (the APDU
+        timeout times the attempts): the change applies at once, and the next
+        request still waits the hold out, sized to the new limit. Nothing goes
+        through the path. RuntimeError before start and after stop."""
+        ...
+
+    def clear_routed_path_limit(self, router: str | bytes, network: int) -> Awaitable[None]:
+        """Put the routed path through ``router`` to ``network`` back on the
+        default, 228 octets, dropping the limit set or learned for it
+        (#2667). Takes ``router`` and ``network`` as
+        ``configure_routed_path_max_npdu`` does and waits the same way.
+        Nothing goes through the path. RuntimeError before start and after
+        stop."""
+        ...
+
+    def routed_path_limits(self) -> Awaitable[list[RoutedPathLimit]]:
+        """Every routed path that holds more than the default, by router and
+        then network (#2667): a limit set by hand, one learned from a
+        router's too-long reject, or a dropped below-minimum reject
+        (``below_minimum_reject_seen``). A path held only by that mark may be
+        dropped when the client's table of 256 paths is full. Sends nothing.
+        RuntimeError before start and after stop."""
+        ...
+
+    def too_long_reject_drops(self) -> Awaitable[int]:
+        """How many too-long rejects (Reject-Message-To-Network, reason 4) the
+        client dropped since start, on every path, because they could answer
+        a larger frame of an earlier request (#2651). These clear by
+        themselves. RuntimeError before start and after stop."""
+        ...
+
+    def below_minimum_reject_drops(self) -> Awaitable[int]:
+        """How many too-long rejects the client dropped since start, on every
+        path, because the request they landed on sent nothing above 228 NPDU
+        octets (#2665). A rise can mean a router that carries less than that:
+        its requests end by timeout until ``configure_routed_path_max_npdu``
+        sets the path's limit; ``routed_path_limits()`` marks the paths.
+        RuntimeError before start and after stop."""
         ...
 
     def network_reports(self) -> Awaitable[NetworkReportIterator]:
-        """Follow the I-Am-Router-To-Network, Network-Number-Is and
-        Reject-Message-To-Network messages the client receives from now on
-        (#1850). RuntimeError before start and after stop."""
+        """Follow the I-Am-Router-To-Network, Network-Number-Is,
+        Reject-Message-To-Network and Initialize-Routing-Table-Ack (query
+        answers, #2612) messages the client receives from now on (#1850).
+        RuntimeError before start and after stop."""
+        ...
+
+    def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]:
+        """Observe the raw frames this client's own transport sends and
+        receives from now on (B/IP, B/IPv6, SC or MS/TP), ``capacity``
+        frames queued at most (1 to 65536, else ValueError). RuntimeError
+        before start and after stop; a router application client
+        (``transport="router"``) has no link of its own and raises
+        ValueError. Stop ends the iterator; a restart needs a new one."""
+        ...
+
+    def i_am_arrivals(self, capacity: int = 1024) -> Awaitable[IAmArrivalIterator]:
+        """Follow every I-Am this client's own transport receives from now
+        on (B/IP, B/IPv6, SC or MS/TP), one ``IAmArrival`` each (#2612),
+        from a tap queue of ``capacity`` frames of every kind (1 to 65536,
+        else ValueError). A standalone client sends no I-Am, so nothing is
+        left out: an I-Am from its own address (another node using it, or
+        one a NAT site reuses) is a record. A client an endpoint's
+        ``client()`` returns follows the endpoint's rule, and is how
+        ``ScEndpoint`` and ``MstpEndpoint`` give arrivals. RuntimeError before start and after stop;
+        a router application client raises ValueError. Stop ends the
+        iterator."""
         ...
 
     def discovered_devices(self) -> Awaitable[list[DiscoveredDevice]]:
-        """Return all devices discovered so far."""
+        """Return all devices discovered so far, one per address: a device
+        instance two addresses claim is listed for each (#2560)."""
         ...
 
     def get_device(self, instance: int) -> Awaitable[Optional[DiscoveredDevice]]:
-        """Look up a discovered device by instance number."""
+        """Look up a discovered device by instance number: None when no
+        address claims it, ``BacnetAmbiguousDeviceError`` when two or more
+        do."""
         ...
 
     def clear_devices(self) -> Awaitable[None]:
@@ -3985,20 +5903,6 @@ class BACnetClient:
         The three arguments should match the sender's Device object properties
         (``vendor_id`` is 0-65535). Raises ``ValueError`` if a string cannot be
         encoded, or ``OverflowError`` for a ``vendor_id`` that doesn't fit.
-        """
-        ...
-
-    def who_is_directed(
-        self,
-        address: str,
-        low_limit: Optional[int] = None,
-        high_limit: Optional[int] = None,
-    ) -> Awaitable[None]:
-        """Send a Who-Is to a specific device address (unicast).
-
-        Give ``low_limit`` and ``high_limit`` together or not at all, each from
-        0 to 4194303: one alone, ``low_limit`` above ``high_limit``, or a limit
-        past 4194303 raises ``ValueError`` before anything is sent.
         """
         ...
 
@@ -4041,7 +5945,12 @@ class BACnetClient:
         property_id: PropertyIdentifier,
         array_index: Optional[int] = None,
     ) -> Awaitable[PropertyValue]:
-        """Read a property from a device by instance number (auto-routing)."""
+        """Read a property from a device by instance number (auto-routing).
+
+        Like every ``_from_device`` and ``_to_device`` method, it raises
+        ``BacnetAmbiguousDeviceError`` before sending anything when two or
+        more addresses claim the instance.
+        """
         ...
 
     def read_property_multiple_from_device(
@@ -4089,17 +5998,46 @@ class BACnetClient:
         """
         ...
 
+    def export_223_experimental(
+        self, device_instance: int, *, types: Optional[list[ObjectType]] = None
+    ) -> Awaitable[Inventory223Experimental]:
+        """Read a device's objects for the experimental Standard 223 export
+        (#2436): its summary, its Object_List, then the objects of the
+        selected types a few a request. ``to_turtle()`` on the result writes
+        the Turtle.
+
+        The device is looked up in the discovery table, as the
+        ``_from_device`` methods look it up. ``types`` narrows the objects read
+        (analog, binary and multi-state inputs, outputs and values, and
+        integer values; all ten by default). Another type or an empty list
+        raises ValueError before anything is sent.
+
+        A device that doesn't answer the summary read, or a failed read of the
+        Object_List, raises the usual error; so does a device that can't send
+        the list whole, is read element by element, and fails an element; a
+        note on that exception names the element. A device that goes silent
+        while its objects are read gives an inventory with ``stopped`` set and
+        the objects read before it. ``stop()``, and leaving ``async with``,
+        wait for a running export to finish.
+        """
+        ...
+
     def add_device(
         self, device_instance: int, address: str
     ) -> Awaitable[None]:
-        """Add a device to the discovery table manually (useful when address is known without WhoIs)."""
+        """Add a device to the discovery table manually (useful when address is known without WhoIs).
+
+        The table holds one device per address: adding an instance at an
+        address that holds another replaces it, so ``get_device()`` no longer
+        finds the instance that was there (#2560).
+        """
         ...
 
     # --- COV subscriptions ---
 
     def subscribe_cov(
         self,
-        address: Target,
+        address: str | RoutedTarget,
         subscriber_process_identifier: int,
         monitored_object_identifier: ObjectIdentifier,
         confirmed: bool,
@@ -4109,21 +6047,78 @@ class BACnetClient:
 
         lifetime=None or 0 is indefinite; positive values are seconds.
         Use unsubscribe_cov for cancellation. confirmed always supplies the mode.
+        ``address`` is a ``str`` on the local link, or a ``RoutedTarget`` for
+        a station behind a router (#2588), as ``RoutedTarget`` describes. A
+        routed device notifies back through its router, so its notifications
+        have ``source_network`` and ``source_address`` set to the station's
+        network and MAC.
         """
         ...
 
     def unsubscribe_cov(
         self,
-        address: Target,
+        address: str | RoutedTarget,
         subscriber_process_identifier: int,
         monitored_object_identifier: ObjectIdentifier,
     ) -> Awaitable[None]:
-        """Cancel a COV subscription."""
+        """Cancel a COV subscription.
+
+        ``address`` is a ``str`` or a ``RoutedTarget``, as for
+        ``subscribe_cov``. The device finds the subscription by the address
+        the request came from and the process and object, so name the target
+        the subscription named: the same ``RoutedTarget``, or the same
+        ``str``. The same device reached another way, such as by its own
+        ``ip:port`` after a routed subscription, answers with success and
+        keeps the subscription.
+        """
+        ...
+
+    def subscribe_cov_property(
+        self,
+        address: str | RoutedTarget,
+        subscriber_process_identifier: int,
+        monitored_object_identifier: ObjectIdentifier,
+        property_identifier: PropertyIdentifier,
+        confirmed: bool,
+        lifetime: int,
+        array_index: Optional[int] = None,
+        cov_increment: Optional[float] = None,
+    ) -> Awaitable[None]:
+        """Subscribe to Change-of-Value notifications for one property of an
+        object (SubscribeCOVProperty, #2588).
+
+        ``address`` is a ``str`` or a ``RoutedTarget``, as for
+        ``subscribe_cov``. ``lifetime`` is required, 1 or more seconds: such
+        a subscription can't be indefinite, so 0 raises ValueError before
+        anything is sent; renew by subscribing again before it runs out.
+        ``array_index`` names one element of an array property;
+        ``cov_increment`` overrides the object's own increment for a numeric
+        property. Notifications arrive on ``cov_notifications()``. Give each
+        subscription a process identifier of its own: an object subscription
+        and a property subscription on one object with one identifier send
+        notifications that can't be told apart.
+        """
+        ...
+
+    def unsubscribe_cov_property(
+        self,
+        address: str | RoutedTarget,
+        subscriber_process_identifier: int,
+        monitored_object_identifier: ObjectIdentifier,
+        property_identifier: PropertyIdentifier,
+        array_index: Optional[int] = None,
+    ) -> Awaitable[None]:
+        """Cancel a single-property COV subscription.
+
+        Name the target, process, object, property and array index the
+        subscription named: the device finds it by those and the address
+        the request came from, as for ``unsubscribe_cov``.
+        """
         ...
 
     def subscribe_cov_property_multiple(
         self,
-        address: str,
+        address: str | RoutedTarget,
         subscriber_process_identifier: int,
         specs: list[
             tuple[
@@ -4137,6 +6132,10 @@ class BACnetClient:
     ) -> Awaitable[None]:
         """Subscribe to COV notifications for multiple properties on multiple objects.
 
+        ``address`` is a ``str`` or a ``RoutedTarget``, as for
+        ``subscribe_cov`` (#2588). The notifications such a subscription
+        brings arrive on ``cov_notifications()`` as ``CovNotificationMultiple``
+        objects.
         ``specs`` is ``[(object_id, [(property_id, array_index, cov_increment, timestamped), ...]), ...]``.
         ``issue_confirmed_notifications`` is required, including for cancellation requests.
         For subscriptions and re-subscriptions, ``lifetime`` and ``max_notification_delay`` are both required.
@@ -4152,7 +6151,19 @@ class BACnetClient:
         ...
 
     def cov_notifications(self) -> Awaitable[CovNotificationIterator]:
-        """Get an async iterator for incoming COV notifications."""
+        """Get an async iterator for incoming COV notifications of both kinds:
+        ``CovNotification`` (one object) and ``CovNotificationMultiple``
+        (several objects, from ``subscribe_cov_property_multiple``). The client
+        acknowledges a confirmed one of either kind whether or not it knows the
+        subscription; match one by its ``subscriber_process_identifier`` and
+        source.
+        An unsubscribed sender's broadcast can bring a
+        ``CovNotificationMultiple`` too, so check ``kind`` (or use
+        ``isinstance``) before reading a ``CovNotification``'s fields. A
+        segmented COV-multiple request is answered with an Abort (the client
+        does not support segmentation; tracked in #2646), and a confirmed
+        notification sent again, its answer lost, is published again.
+        """
         ...
 
     # --- Object management ---
@@ -4215,7 +6226,7 @@ class BACnetClient:
 
     # --- Alarms and events ---
 
-    def acknowledge_alarm_request(
+    def acknowledge_alarm(
         self,
         address: str,
         acknowledging_process_identifier: int,
@@ -4229,21 +6240,6 @@ class BACnetClient:
 
         ``timestamp`` must echo the original event notification timestamp;
         ``time_of_acknowledgment`` is selected by the caller.
-        """
-        ...
-
-    def acknowledge_alarm(
-        self,
-        address: str,
-        acknowledging_process_identifier: int,
-        event_object_identifier: ObjectIdentifier,
-        event_state_acknowledged: EventState,
-        acknowledgment_source: str,
-    ) -> Awaitable[None]:
-        """Deprecated compatibility method.
-
-        This method fabricates sequence-number zero for both timestamps. Use
-        ``acknowledge_alarm_request`` for a lossless request.
         """
         ...
 
@@ -4297,7 +6293,7 @@ class BACnetClient:
 
     def read_range(
         self,
-        address: str,
+        address: str | RoutedTarget,
         object_id: ObjectIdentifier,
         property_id: PropertyIdentifier,
         array_index: Optional[int] = None,
@@ -4328,12 +6324,14 @@ class BACnetClient:
         with BacnetReadRangeViolationError, whose ``rule`` names it;
         ``"lenient"`` keeps it and lists the rules in ``violations`` (#1531).
         Decode a log's records with ``decode_log_records``.
+        ``address`` is a ``str`` on the local link, or a ``RoutedTarget`` for
+        a station behind a router (#2617), as ``RoutedTarget`` describes.
         """
         ...
 
     def read_log_page(
         self,
-        address: str,
+        address: str | RoutedTarget,
         object_id: ObjectIdentifier,
         cursor: LogCursor = None,
         page_size: int = 100,
@@ -4356,7 +6354,9 @@ class BACnetClient:
         the failing one; an answer that breaks a rule the reader can't
         tolerate, such as an echo that doesn't match, raises
         BacnetReadRangeViolationError. A non-log object or a ``page_size``
-        outside 1..=32767 raises ValueError before I/O.
+        outside 1..=32767 raises ValueError before I/O. ``address`` is a
+        ``str`` on the local link, or a ``RoutedTarget`` (#2617); every
+        request of a page, the count reads included, goes there.
         """
         ...
 
@@ -4364,7 +6364,7 @@ class BACnetClient:
 
     def atomic_read_file(
         self,
-        address: str,
+        address: str | RoutedTarget,
         file_identifier: ObjectIdentifier,
         access_method: str,
         start_position: int = 0,
@@ -4377,12 +6377,15 @@ class BACnetClient:
         then ``start_position`` and ``data`` for stream access, or
         ``start_record``, ``record_count`` and ``records`` for record access.
         An acknowledgment in the other access method, or with more octets or
-        records than requested, raises BacnetError."""
+        records than requested, raises BacnetError. ``address`` is a ``str``
+        on the local link, or a ``RoutedTarget`` for a station behind a
+        router (#2613), as ``RoutedTarget`` describes: the answer, segmented
+        or not, and a reject, error or abort come back as from a local read."""
         ...
 
     def atomic_write_file(
         self,
-        address: str,
+        address: str | RoutedTarget,
         file_identifier: ObjectIdentifier,
         access_method: str,
         start_position: int = 0,
@@ -4395,7 +6398,9 @@ class BACnetClient:
         Returns the decoded acknowledgment: ``access_method``, then
         ``start_position`` for stream access or ``start_record`` for record
         access, where the device says the write took place. An
-        acknowledgment in the other access method raises BacnetError."""
+        acknowledgment in the other access method raises BacnetError.
+        ``address`` is a ``str`` or a ``RoutedTarget``, as for
+        ``atomic_read_file`` (#2613)."""
         ...
 
     # --- List manipulation ---
@@ -4783,7 +6788,7 @@ class ForwarderSaveCounters(TypedDict):
     failed_saves: int
 
 class EventNotificationCounters(TypedDict):
-    """Undelivered event notifications, zero at each start; independent u64 totals, saturating at 2**64-1."""
+    """Undelivered event notifications, and confirmed ones that waited for an invoke ID or COV fanouts that stopped waiting; zero at each start; independent u64 totals, saturating at 2**64-1."""
     notification_class_missing: int
     recipient_list_unavailable: int
     recipient_list_invalid: int
@@ -4791,7 +6796,7 @@ class EventNotificationCounters(TypedDict):
     device_recipient_unbound: int
     recipient_unroutable: int
     confirmed_broadcast_recipient: int
-    confirmed_no_invoke_id: int
+    confirmed_waited_for_invoke_id: int
     confirmed_rejected: int
     confirmed_unanswered: int
     unconfirmed_send_failed: int
@@ -4799,6 +6804,10 @@ class EventNotificationCounters(TypedDict):
     received_not_forwarded: int
     forwarding_cap_dropped: int
     received_not_logged: int
+    lane_full: int
+    lanes_entries_full: int
+    lanes_full: int
+    cov_wait_expired: int
 
 class DccOutcomeCounters(TypedDict):
     """Independent u64 lifetime totals, saturating at 2**64-1; not an audit log."""
@@ -4866,6 +6875,50 @@ class ReinitializeRequest:
 
     @property
     def invoke_id(self) -> int: ...
+
+    def __repr__(self) -> str: ...
+
+
+class ShedRequest:
+    """A Load Control shed request handed to the ``shed`` callable of
+    ``BACnetServer.add_load_control`` (#2479). Not copyable or picklable."""
+
+    @property
+    def requested(self) -> ShedLevel:
+        """Requested_Shed_Level."""
+        ...
+
+    @property
+    def shed_level(self) -> Optional[int]:
+        """For a level request, the index in ``shed_levels`` of the level
+        whose action it selects: the one requested, or the nearest below.
+        None for a percent or an amount, or with no level at or below it."""
+        ...
+
+    @property
+    def start_time(self) -> tuple[BACnetDate, BACnetTime]:
+        """Start_Time."""
+        ...
+
+    @property
+    def shed_duration(self) -> int:
+        """Shed_Duration, in minutes."""
+        ...
+
+    @property
+    def duty_window(self) -> int:
+        """Duty_Window, in minutes."""
+        ...
+
+    @property
+    def full_duty_baseline(self) -> Optional[float]:
+        """Full_Duty_Baseline in kilowatts, or None while none is served."""
+        ...
+
+    @property
+    def started(self) -> bool:
+        """Whether Start_Time has come."""
+        ...
 
     def __repr__(self) -> str: ...
 
@@ -5009,8 +7062,9 @@ class BACnetServer:
     For SC, sc_ca_cert, sc_client_cert, and sc_client_key must be nonempty
     paths; omission, None, or empty strings raise ValueError at construction.
     Their None defaults preserve non-SC use and positional layout only.
-    start() loads the explicit site CA and operational cert/key before dialing
-    or draining registrations. Local TLS configuration errors raise RuntimeError;
+    start() loads the explicit site CA and operational cert/key, each file read
+    up to 1 MiB, before dialing or draining registrations. Local TLS
+    configuration errors, a larger file included, raise RuntimeError;
     repair the files and retry on the same server. Later startup failures do not
     have a general registration rollback guarantee.
 
@@ -5021,7 +7075,7 @@ class BACnetServer:
     lifetime. No generation, persistence, change detection, or version/variant
     enforcement is provided. Non-SC transports ignore this option.
 
-    Segmentation defaults to NONE. When enabled, apdu_segment_timeout_ms must
+    Segmentation defaults to NO_SEGMENTATION. When enabled, apdu_segment_timeout_ms must
     be positive; it supplies Device APDU_SEGMENT_TIMEOUT, response SegmentACK
     waits, and the 4*Tseg receive inactivity timer. A separate 16-second
     no-progress resource limit aborts abandoned request transfers with OTHER.
@@ -5029,6 +7083,14 @@ class BACnetServer:
     ``device_instance`` takes 0 to 4194302. Instance 4194303 is reserved, as
     no object may have it, so it, or anything larger, raises ValueError at
     construction (#2171).
+
+    ``await endpoint.server()`` returns this class too (#2617): the server
+    the endpoint's session runs on the endpoint's one address, with its
+    objects and the endpoint's server keywords. Its runtime calls work as
+    here. Its ``start()`` and ``stop()`` raise RuntimeError, since the
+    endpoint starts it and the endpoint's ``close()`` stops it, after which
+    its calls raise RuntimeError too; so do its ``add_*`` and ``configure_*``
+    calls, since the endpoint configures it before its start.
 
     Usage::
 
@@ -5098,9 +7160,11 @@ class BACnetServer:
         registered_network_port: Optional[int] = None,
         cov_policy: CovPolicy | None = None,
         time_sync_policy: TimeSyncPolicy | None = None,
+        utc_offset_minutes: int = 0,
+        daylight_savings: bool = False,
         share_port_by_address: bool = False,
         share_wildcard_port: bool = False,
-        segmentation_supported: Segmentation = Segmentation.NONE,
+        segmentation_supported: Segmentation = Segmentation.NO_SEGMENTATION,
         apdu_segment_timeout_ms: int = 5000,
         bbmd: Optional[Bbmd] = None,
         foreign_device: Optional[ForeignDevice] = None,
@@ -5162,13 +7226,24 @@ class BACnetServer:
         can share the port. Needs an explicit interface and a nonzero port;
         broadcasts and unicast are still handled in the order they arrived.
 
-        ``share_wildcard_port`` (B/IP only, default False): share an
-        explicitly requested port with other sockets on this host that bind
-        it the same way. By default the server claims its port, so a second
-        bind of it fails, and ``start()`` raises when another socket holds
-        it. With sharing, broadcasts reach every socket on the port, but
-        each unicast reaches only one of them; prefer
-        ``share_port_by_address`` or separate ports.
+        ``share_wildcard_port`` (B/IP and B/IPv6 only, default False): share
+        an explicitly requested port with other sockets on this host that
+        bind it the same way. By default the server claims its port, so a
+        second bind of it fails, and ``start()`` raises when another socket
+        holds it. With sharing, broadcasts reach every socket on the port,
+        but each unicast reaches only one of them; prefer
+        ``share_port_by_address`` (B/IP) or separate ports. macOS and the
+        BSDs never let two sockets share one address and port this way, so
+        there the keyword only lets a stack bound to ``0.0.0.0`` or ``::``
+        start beside one bound to a specific address (a B/IPv6 foreign
+        device), or the reverse. Another transport raises ValueError.
+
+        ``utc_offset_minutes`` / ``daylight_savings`` (keyword-only,
+        default 0 and False): the zone the Device clock starts in, as
+        ``set_clock_zone`` takes them and checked the same way, at
+        construction. Every ``start()`` begins in it, so the Schedule pass
+        that runs as the server starts already judges local time there;
+        ``set_clock_zone`` changes it while the server runs, until ``stop()``.
 
         ``bbmd`` / ``foreign_device`` (at most one, else ValueError): run
         the device as a BBMD (B/IP only), or register it with a BBMD on
@@ -5220,7 +7295,7 @@ class BACnetServer:
         ...
 
     # --- Analog objects ---
-    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
+    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, high_limit: float | None = None, low_limit: float | None = None, deadband: float | None = None, limit_enable: BitString | None = None, time_delay: int | None = None, time_delay_normal: int | None = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
         """``tags``, ``profile_location`` and ``profile_name`` provision the
         optional Tags, Profile_Location and Profile_Name rows; each is served
         only when given. Tags takes writes over the network, the other two
@@ -5236,17 +7311,71 @@ class BACnetServer:
         Event_Algorithm_Inhibit pair) and a written Description in that
         file: such a write is saved before it is answered, refused when it
         can't be, and served again after a restart; a Description past
-        16 KiB is refused with NO_SPACE_TO_WRITE_PROPERTY.
+        16 KiB is refused with NO_SPACE_TO_WRITE_PROPERTY. The analog,
+        binary and multi-state builders keep the event algorithm parameters
+        a peer writes there too, and the restarted object's event detection
+        uses them: Time_Delay and Time_Delay_Normal on all nine, High_Limit,
+        Low_Limit, Deadband and Limit_Enable on the analog ones, Alarm_Value
+        on a Binary Input or Value, and Alarm_Values on a Multi-state Input
+        or Value. The three multi-state builders keep a written State_Text
+        there too, and with it the state count, which the restarted object
+        takes over ``number_of_states``; with ``storage_path`` a write
+        leaving more than 1,024 labels or a label past 512 octets of UTF-8
+        is refused with NO_SPACE_TO_WRITE_PROPERTY. ``add_access_door``,
+        ``add_access_zone`` and ``add_event_enrollment`` keep theirs too,
+        as each says.
         ``clear_written_reporting=True`` drops what was saved first,
-        Description included, so the object starts from its defaults. A file that
-        doesn't load raises BacnetError. Every analog, binary and multi-state
-        builder takes both, as do ``add_access_door``, ``add_access_zone``,
-        ``add_event_enrollment`` and ``add_alert_enrollment``."""
+        Description and parameters included, so the object starts from its
+        defaults. A file that doesn't load, or holds a value the object
+        refuses on the wire, raises BacnetError, with the clear too: the
+        file is read before it is cleared. One such value doesn't:
+        saved Alarm_Values naming a state past the object's count are
+        restored as written. A peer that added a state and listed it
+        leaves the State_Text that added it saved beside the list, so the
+        count comes back with it. A list naming a state past the count can
+        still arise two ways: a file holding no State_Text (one saved
+        before State_Text was kept among them) on an object now built with
+        a smaller ``number_of_states``, and an ``alarm_values`` keyword,
+        checked against ``number_of_states`` before the file is read,
+        beside a restored State_Text with fewer states. Either way the
+        object serves the list. A Multi-state Input reports no fault and
+        alarms on the states it has; a Multi-state Value reports
+        CONFIGURATION_ERROR and is in FAULT, raising no OFFNORMAL on any
+        listed state, until a list within its states is written. Every analog, binary and
+        multi-state builder takes both, as do ``add_access_door``,
+        ``add_access_zone``, ``add_event_enrollment`` and
+        ``add_alert_enrollment``.
+
+        The parameter keywords configure those parameters (#2410):
+        ``high_limit``, ``low_limit`` and ``deadband`` (floats),
+        ``limit_enable`` (a ``BitString`` of two bits, low limit first, the
+        form a read of Limit_Enable gives: ``BitString(6, b"\\x40")`` enables
+        the high limit alone), and ``time_delay`` and ``time_delay_normal``
+        (seconds) on the analog builders; ``alarm_value`` (0 or 1, for
+        INACTIVE or ACTIVE) and the delays on a Binary Input or Value;
+        ``alarm_values`` (a list of states) and the delays on a Multi-state
+        Input or Value; the delays alone on a Binary or Multi-state Output.
+        None leaves the object's default. Each value is checked as a write
+        of the property is, and one the object refuses raises
+        BacnetProtocolError: VALUE_OUT_OF_RANGE for a non-finite limit, a
+        negative deadband, an ``alarm_value`` past 1 or a state of 0 or
+        past ``number_of_states``, and INVALID_DATA_ENCODING for a
+        ``limit_enable`` that isn't two bits wide. A negative delay raises
+        OverflowError.
+        The keywords apply before storage attaches, so they are never saved:
+        a value a peer wrote and the file holds is served over its keyword,
+        and the keyword applies again on a start that passes
+        ``clear_written_reporting=True``. A ``write_property_local`` of a
+        parameter after the builder call is kept like a peer's write. An
+        ``alarm_values`` keyword is checked against ``number_of_states``,
+        so a restored State_Text with fewer states (#2414) leaves it naming
+        a state past the count: a Multi-state Value then reports
+        CONFIGURATION_ERROR."""
         ...
-    def add_analog_output(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
-        """Profile keywords as on ``add_analog_input``."""
+    def add_analog_output(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, high_limit: float | None = None, low_limit: float | None = None, deadband: float | None = None, limit_enable: BitString | None = None, time_delay: int | None = None, time_delay_normal: int | None = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
+        """Profile and parameter keywords as on ``add_analog_input``."""
         ...
-    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
+    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, high_limit: float | None = None, low_limit: float | None = None, deadband: float | None = None, limit_enable: BitString | None = None, time_delay: int | None = None, time_delay_normal: int | None = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
         """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
 
         ``present_value_access`` is ``"commandable"`` (writes go through
@@ -5256,30 +7385,46 @@ class BACnetServer:
         object: the writer of the last Present_Value write, who alone may
         then correct it. A commandable object tracks its sources through
         Priority_Array already, so asking it to track raises ValueError.
-        Profile keywords as on ``add_analog_input``."""
+        Profile and parameter keywords as on ``add_analog_input``."""
         ...
 
     # --- Binary objects ---
-    def add_binary_input(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
-        """Profile keywords as on ``add_analog_input``."""
+    def add_binary_input(self, instance: int, name: str, *, polarity: Polarity | int = 0, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, alarm_value: int | None = None, time_delay: int | None = None, time_delay_normal: int | None = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
+        """Profile and parameter keywords as on ``add_analog_input``.
+
+        ``polarity`` is a ``Polarity`` or its number: NORMAL (0, the default)
+        or REVERSE (1), which inverts the state ``set_physical_input_local``
+        reports on its way to Present_Value. Any other int, negative
+        included, raises BacnetProtocolError VALUE_OUT_OF_RANGE. Clients can
+        read Polarity but not write it; ``set_polarity_local`` changes it
+        later."""
         ...
-    def add_binary_output(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
-        """Profile keywords as on ``add_analog_input``."""
+    def add_binary_output(self, instance: int, name: str, *, polarity: Polarity | int = 0, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, time_delay: int | None = None, time_delay_normal: int | None = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
+        """Profile and parameter keywords as on ``add_analog_input``.
+
+        ``polarity`` is a ``Polarity`` or its number: NORMAL (0, the default)
+        or REVERSE (1), which inverts the state ``physical_output_local``
+        gives for the commanded Present_Value. Any other int, negative
+        included, raises BacnetProtocolError VALUE_OUT_OF_RANGE. Clients can
+        read Polarity but not write it; ``set_polarity_local`` changes it
+        later."""
         ...
-    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
+    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, alarm_value: int | None = None, time_delay: int | None = None, time_delay_normal: int | None = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
         """Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
-        Access, Value_Source and profile keywords as on ``add_analog_value``."""
+        Access, Value_Source and profile keywords as on ``add_analog_value``,
+        parameter keywords as on ``add_analog_input``."""
         ...
 
     # --- Multi-state objects ---
-    def add_multistate_input(self, instance: int, name: str, number_of_states: int, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
-        """Profile keywords as on ``add_analog_input``."""
+    def add_multistate_input(self, instance: int, name: str, number_of_states: int, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, alarm_values: list[int] | None = None, time_delay: int | None = None, time_delay_normal: int | None = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
+        """Profile and parameter keywords as on ``add_analog_input``."""
         ...
-    def add_multistate_output(self, instance: int, name: str, number_of_states: int, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
-        """Profile keywords as on ``add_analog_input``."""
+    def add_multistate_output(self, instance: int, name: str, number_of_states: int, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, time_delay: int | None = None, time_delay_normal: int | None = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
+        """Profile and parameter keywords as on ``add_analog_input``."""
         ...
-    def add_multistate_value(self, instance: int, name: str, number_of_states: int, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
-        """Access, Value_Source and profile keywords as on ``add_analog_value``."""
+    def add_multistate_value(self, instance: int, name: str, number_of_states: int, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, alarm_values: list[int] | None = None, time_delay: int | None = None, time_delay_normal: int | None = None, storage_path: Optional[str] = None, clear_written_reporting: bool = False) -> None:
+        """Access, Value_Source and profile keywords as on ``add_analog_value``,
+        parameter keywords as on ``add_analog_input``."""
         ...
 
     # --- Date/time/pattern objects ---
@@ -5666,7 +7811,7 @@ class BACnetServer:
         Peers can write Action (DIRECT until written).
 
         Controlled_Variable_Reference and Manipulated_Variable_Reference read
-        as ``application_data`` holding the context-tagged reference; while
+        as a ``tagged`` value holding the context-tagged reference; while
         unset they name instance 4194303 (an Analog Input and an Analog Output
         respectively), and writing a reference to that instance unsets them.
         A null written to any Loop reference succeeds and changes nothing.
@@ -5730,7 +7875,86 @@ class BACnetServer:
         load raises BacnetError.
         """
         ...
-    def add_load_control(self, instance: int, name: str) -> None: ...
+    def add_load_control(
+        self,
+        instance: int,
+        name: str,
+        *,
+        shed_levels: Optional[Sequence[tuple[int, str]]] = None,
+        shed: Optional[Callable[[ShedRequest], ShedStatus]] = None,
+        stop: Optional[Callable[[], object]] = None,
+        full_duty_baseline: Optional[float] = None,
+        state_description: Optional[str] = None,
+        agreed_duty_window: Optional[int] = None,
+        storage_path: Optional[str] = None,
+        clear_written_shed_levels: bool = False,
+    ) -> None:
+        """Add a Load Control object (#2479).
+
+        ``shed_levels`` sets Shed_Levels and Shed_Level_Descriptions as
+        ``(level, description)`` pairs in order of increasing shed; a level
+        of 0, the no-shed level, raises BacnetProtocolError with
+        VALUE_OUT_OF_RANGE. Clients may rewrite a level but not resize the
+        array.
+
+        ``shed`` is the application's route for the loads. The object calls
+        it with a ``ShedRequest`` each time it looks at a request, on every
+        write that changes it, on a change of its shed levels or baseline
+        through ``set_load_control_shed_levels_local`` or
+        ``set_load_control_full_duty_baseline_local``, and on the server's
+        once-a-second pass while
+        one is pending or under way, and it answers ``(progress, expected,
+        actual)``: ``"waiting"``, ``"shedding"`` or ``"compliant"``, then
+        the expected and actual levels as ``ShedLevel`` mappings in the
+        requested choice. ``stop`` (optional, needs ``shed``) is called with
+        no arguments once a request ``shed`` was asked about ends, removal
+        of the object and a start that fails or is cancelled included. Make
+        it idempotent: it may come with no loads shed, and twice with no
+        ``shed`` between. Without ``shed`` nothing is shed: a request runs
+        SHED_NON_COMPLIANT from Start_Time to its end.
+
+        Both run with the server's object database locked: they must return
+        at once, may not await, and may not start a binding operation (it
+        raises RuntimeError), nor wait on the event loop or another thread
+        for one. An exception, or an answer of another shape (a coroutine
+        from either callable included, closed unawaited), is shown through
+        ``sys.unraisablehook``; ``shed`` then counts as nothing shed, and the
+        request ends anyway after ``stop``.
+        A callable that isn't callable raises TypeError, and ``stop``
+        without ``shed`` ValueError.
+
+        ``full_duty_baseline`` (kilowatts, finite and not negative, or
+        BacnetProtocolError) and ``state_description`` serve those optional
+        properties, read-only; the baseline reaches ``shed`` as
+        ``ShedRequest.full_duty_baseline``. ``agreed_duty_window`` (minutes,
+        0 when omitted) is the Duty_Window a request takes when no client
+        wrote one, and the one a finished request returns to.
+
+        With ``storage_path`` the object keeps its shed request in that file
+        (#2497): the request properties, the agreed Duty_Window, the shed
+        state, Enable, and a Description and the Shed_Levels elements a
+        client wrote (#2502). A rebuilt object looks at a request that was
+        pending or being shed again, as though Start_Time had just been
+        written, and calls ``shed`` for it; one that was being shed calls
+        ``stop`` when it ends. A write that cannot be saved is refused with
+        DEVICE / OPERATIONAL_PROBLEM. The shed levels, baseline and state
+        description are configuration the file does not keep: give them as
+        keywords at every start, so a restored request is put to ``shed``
+        with them. A written Shed_Levels element wins over the
+        ``shed_levels`` keyword's level for it, one past the end of the
+        keyword's array is dropped, and ``set_load_control_shed_levels_local``
+        drops them all; ``clear_written_shed_levels=True`` drops them first,
+        so the keyword applies whole (a refused level raises with the file
+        untouched; without ``storage_path`` the keyword does nothing).
+        Without ``shed_levels`` the written ones
+        are neither served nor dropped: the file keeps them for a start that
+        gives the levels. The
+        ``set_load_control_*_local`` methods work only once the server runs,
+        after that first look, so use them for changes while it runs. Give
+        each Load Control its own file; one that holds another object's
+        request raises BacnetError.
+        """
+        ...
     def add_program(self, instance: int, name: str) -> None: ...
 
     # --- Lighting ---
@@ -5751,8 +7975,9 @@ class BACnetServer:
     ) -> None:
         """Add a Lighting Output object.
 
-        Its Lighting_Command reads and writes as ``application_data`` holding
-        the context-tagged BACnetLightingCommand, operation NONE
+        Its Lighting_Command reads as a ``tagged`` value, and writes as
+        ``application_data``, holding the context-tagged BACnetLightingCommand,
+        operation NONE
         (``b"\\x09\\x00"``) until written. An ``octet_string`` or any other
         datatype is refused with INVALID_DATA_TYPE, and a command its operation
         can't take with VALUE_OUT_OF_RANGE. The object carries each command
@@ -5833,8 +8058,13 @@ class BACnetServer:
         The file keeps a Default_Color written over the network too, which
         wins over ``default_color`` at the next start; such a write is
         refused when it can't be saved. ``clear_written_default=True`` drops
-        a saved one first, so ``default_color`` applies again. A file that
-        doesn't load raises BacnetError."""
+        a saved one first, so ``default_color`` applies again. The file
+        keeps a Description a client writes as well, across restarts: it is
+        saved before the write is answered, refused with DEVICE /
+        OPERATIONAL_PROBLEM when it can't be, and refused with RESOURCES /
+        NO_SPACE_TO_WRITE_PROPERTY past 16 KiB. ``clear_written_default``
+        leaves a saved Description in place. A file that doesn't load
+        raises BacnetError."""
         ...
     def add_color_temperature(
         self,
@@ -5861,7 +8091,7 @@ class BACnetServer:
         ``default_color_temperature`` (4000 unless given, clamped to the
         limits), ``storage_path`` and ``clear_written_default`` work as on
         ``add_color``, with 0 keeping the temperature from before the
-        restart."""
+        restart; the file keeps a written Description the same way."""
         ...
     def add_channel(
         self,
@@ -5996,7 +8226,14 @@ class BACnetServer:
 
         ``storage_path`` and ``clear_written_reporting`` keep the reporting
         settings and Description a peer writes in that file, as on
-        ``add_analog_input``.
+        ``add_analog_input``, and the door's event algorithm parameters:
+        Time_Delay, Time_Delay_Normal, Alarm_Values, Fault_Values and
+        Masked_Alarm_Values. A list a peer wrote is served again after a
+        restart, over its keyword here, and the door's event detection uses
+        it; ``clear_written_reporting=True`` drops it, so the keyword
+        applies again. A saved list is held to what a write is, so a file
+        naming NORMAL or a number outside the enumeration raises
+        BacnetError.
         """
         ...
     def add_access_credential(
@@ -6115,7 +8352,7 @@ class BACnetServer:
 
         ``positive_access_rules`` and ``negative_access_rules`` set the two
         rule arrays as ``AccessRule`` mappings, and ``enable`` sets Enable
-        (``PropertyIdentifier.LOG_ENABLE``, property 133), whose FALSE
+        (``PropertyIdentifier.ENABLE``, property 133), whose FALSE
         disables every rule. Peers can write all three over the network. A
         wrong shape or type raises TypeError, an unknown or missing key or a
         device that isn't a Device raises ValueError, and a location naming
@@ -6221,7 +8458,13 @@ class BACnetServer:
 
         ``storage_path`` and ``clear_written_reporting`` keep the reporting
         settings and Description a peer writes in that file, as on
-        ``add_analog_input``.
+        ``add_analog_input``, and the zone's event algorithm parameters:
+        Time_Delay, Time_Delay_Normal and Alarm_Values. A list a peer wrote
+        is served again after a restart, over ``alarm_values`` here, and
+        the zone's event detection uses it;
+        ``clear_written_reporting=True`` drops it, so the keyword applies
+        again. A saved list is held to what a write is, so a file naming
+        NORMAL or a number outside the enumeration raises BacnetError.
         """
         ...
     def add_credential_data_input(
@@ -6271,6 +8514,13 @@ class BACnetServer:
         name: str,
         event_type: EventType = ...,
         *,
+        object_property_reference: tuple[ObjectIdentifier, PropertyIdentifier]
+        | tuple[ObjectIdentifier, PropertyIdentifier, Optional[int]]
+        | DeviceObjectPropertyReference
+        | None = None,
+        event_parameters: Optional[PropertyValue] = None,
+        fault_parameters: Optional[PropertyValue] = None,
+        time_delay_normal: Optional[int] = None,
         storage_path: Optional[str] = None,
         clear_written_reporting: bool = False,
     ) -> None:
@@ -6291,7 +8541,38 @@ class BACnetServer:
 
         ``storage_path`` and ``clear_written_reporting`` keep the reporting
         settings and Description a peer writes in that file, as on
-        ``add_analog_input``.
+        ``add_analog_input``. The file keeps a written Event_Parameters,
+        Fault_Parameters and Time_Delay_Normal too, and the restarted
+        enrollment is evaluated with them: Event_Type and Fault_Type follow
+        the restored parameters. Time_Delay is a member of
+        Event_Parameters and is kept with them. With ``storage_path``,
+        Event_Parameters or Fault_Parameters whose encoding is past 64 KiB
+        are refused with NO_SPACE_TO_WRITE_PROPERTY; without it the
+        enrollment takes them as before.
+
+        ``object_property_reference`` names the property the enrollment
+        monitors, as an ``(object, property)`` or ``(object, property,
+        array_index)`` tuple or a ``DeviceObjectPropertyReference`` mapping,
+        the forms ``add_trend_log`` takes for ``reference``. Peers can't
+        write it, so it applies at every start and is never saved; without
+        it the enrollment monitors nothing.
+
+        The parameter keywords configure those three (#2426):
+        ``event_parameters`` and ``fault_parameters``, each a
+        ``PropertyValue`` in the form ``write_property_local`` takes for the
+        property (the encoding through ``PropertyValue.application_data``,
+        or a value a read of the property returned), and
+        ``time_delay_normal`` (seconds). None leaves the enrollment's
+        default. Each value is checked as a write of the property is, and
+        one the enrollment refuses raises BacnetProtocolError, such as
+        octets that aren't one whole parameter value. A negative delay
+        raises OverflowError. A keyword value is not held to the 64 KiB
+        cap, which only a saved write meets. The keywords apply before storage attaches,
+        so they are never saved: a value a peer wrote and the file holds is
+        served over its keyword, and the keyword applies again on a start
+        that passes ``clear_written_reporting=True``. A
+        ``write_property_local`` of a parameter after the builder call is
+        kept like a peer's write.
         """
         ...
 
@@ -6380,7 +8661,7 @@ class BACnetServer:
     def add_pulse_converter(self, instance: int, name: str, units: EngineeringUnits | int = 62) -> None:
         """Add a Pulse Converter (Clause 12.23) to the server (before starting).
 
-        Input_Reference reads as ``application_data`` holding the
+        Input_Reference reads as a ``tagged`` value holding the
         context-tagged reference; while unset it reads as Accumulator
         4194303's Present_Value, and writing a reference to instance 4194303
         unsets it. A null written to it succeeds and changes nothing.
@@ -6465,16 +8746,22 @@ class BACnetServer:
         An added object the database won't take raises ValueError: "duplicate
         object name: ..." for a name another object holds, or "object
         refused: ..." for any other reason, an instance of 4194303 among them
-        (#2171).
+        (#2171). An endpoint's server (``await endpoint.server()``) raises
+        RuntimeError: it started with its endpoint.
         """
         ...
 
     def stop(self) -> Awaitable[None]:
-        """Join admitted work and release the owned transport.
+        """Join admitted work and release the owned transport. An endpoint's
+        server (``await endpoint.server()``) raises RuntimeError: the
+        endpoint's ``close()`` stops it.
 
         Cancelling the returned Future retains shutdown ownership. Call stop()
         again to join it; a cleanup error also retains the owner for retry.
-        Local mutation is rejected once shutdown starts.
+        Local mutation is rejected once shutdown starts. Calls already running
+        return first: a local write waiting for its event notifications (a
+        Device recipient's I-Am) does so within cov_retry_timeout_ms. Other
+        calls run beside such a write rather than waiting for it.
 
         A Notification Forwarder, Notification Class or Audit Log write staged
         for a request that stop() cut short is dropped, and stop() waits, with
@@ -6581,13 +8868,95 @@ class BACnetServer:
         Analog, Binary or Multi-state Value takes the same datatype as its Input
         counterpart; a commandable one raises OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED
         (use ``write_property_local`` with a priority). Binary values are
-        BACnet logical values after Polarity, not raw hardware/interface levels.
+        BACnet logical values after Polarity, not raw hardware/interface levels
+        (a raw Binary Input state goes through ``set_physical_input_local``).
         An object with Out_Of_Service set rejects this update to preserve
         network simulation ownership. A Life Safety Point or Zone takes an
         Enumerated BACnetLifeSafetyState (standard, or 256..=65535) whether or
         not Out_Of_Service is set, since clients never write its Present_Value;
         Tracking_Value, Silenced and Operation_Expected stay as they are. Other
         object types are not writable through this method.
+        """
+        ...
+
+    def set_reliability_local(
+        self,
+        object_id: ObjectIdentifier,
+        reliability: Reliability,
+    ) -> Awaitable[None]:
+        """Set the Reliability the application works out for an object, such as
+        NO_SENSOR when its hardware reports a missing sensor.
+
+        The built-in Inputs, Outputs and Values, the Integer Value, Loop,
+        Schedule, Life Safety Point and Zone, Access Zone, Credential Data Input
+        and Accumulator take it. Status_Flags' FAULT follows the change, and a
+        COV subscriber is notified of it. The value stays until the application
+        sets another: the object's own evaluation doesn't clear it. Like the
+        other ``*_local`` inputs it is not audited.
+
+        An object with Out_Of_Service set, whose Reliability a client may be
+        simulating, raises WRITE_ACCESS_DENIED, and so does one whose
+        Reliability_Evaluation_Inhibit is TRUE. A value outside
+        BACnetReliability (11, 26 to 63, or past 65535) raises
+        VALUE_OUT_OF_RANGE. An unknown object raises UNKNOWN_OBJECT and one that
+        takes no Reliability OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED. Raises
+        RuntimeError before ``start()``.
+        """
+        ...
+
+    def set_physical_input_local(
+        self,
+        object_id: ObjectIdentifier,
+        on: bool,
+    ) -> Awaitable[None]:
+        """Report the state the application read from a Binary Input's
+        physical input, ``True`` for ON.
+
+        In service Present_Value becomes that state through Polarity: ACTIVE
+        for ON under NORMAL (0), INACTIVE for ON under REVERSE (1). A logical
+        value goes through ``set_present_value_local`` instead. This route is
+        taken while Out_Of_Service is set too: Present_Value then keeps a
+        client's simulated value, and the return to service derives it from
+        the latest input. Event and COV processing see the logical
+        Present_Value. An unknown object raises UNKNOWN_OBJECT and any object
+        other than a Binary Input OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED.
+        Raises RuntimeError before ``start()``.
+        """
+        ...
+
+    def set_polarity_local(
+        self,
+        object_id: ObjectIdentifier,
+        polarity: Polarity | int,
+    ) -> Awaitable[None]:
+        """Set the Polarity of a Binary Input or Binary Output: a ``Polarity``
+        or its number, NORMAL (0) or REVERSE (1). Clients can't write it.
+
+        In service a Binary Input derives Present_Value again from the
+        physical input it last took, and a Binary Output drives its physical
+        output from its unchanged Present_Value with the new Polarity; out of
+        service neither changes until the return to service. Any other int,
+        negative included, raises VALUE_OUT_OF_RANGE before anything is
+        awaited, an unknown object UNKNOWN_OBJECT and any other object
+        OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED. Raises RuntimeError before
+        ``start()``.
+        """
+        ...
+
+    def physical_output_local(
+        self,
+        object_id: ObjectIdentifier,
+    ) -> Awaitable[bool]:
+        """The state to drive a Binary Output's physical output to, ``True``
+        for ON.
+
+        In service it is the commanded Present_Value through Polarity: ON for
+        ACTIVE under NORMAL, OFF for ACTIVE under REVERSE. While
+        Out_Of_Service is set it stays at the state it had when
+        Out_Of_Service was set, though commands keep moving Present_Value. An
+        unknown object raises UNKNOWN_OBJECT and any object other than a
+        Binary Output OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED. Raises
+        RuntimeError before ``start()``.
         """
         ...
 
@@ -6711,11 +9080,69 @@ class BACnetServer:
         """
         ...
 
+    def set_load_control_shed_levels_local(
+        self,
+        object_id: ObjectIdentifier,
+        shed_levels: Sequence[tuple[int, str]],
+    ) -> Awaitable[None]:
+        """Replace a running Load Control's Shed_Levels and Shed_Level_Descriptions (#2497).
+
+        ``shed_levels`` is the ``add_load_control`` shape, ``(level,
+        description)`` pairs in order of increasing shed, and may be a
+        different number from before. A level of 0 raises
+        BacnetProtocolError with VALUE_OUT_OF_RANGE and changes nothing; an
+        unknown object raises UNKNOWN_OBJECT and any object other than a
+        Load Control OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED. A request under
+        way is put to ``shed`` again, and stays in its state unless the
+        answer moves it; what that moves is reported through COV and saved
+        with the request. Storage keeps only the elements a client wrote
+        (#2502), not these levels: give them as ``add_load_control``
+        keywords at every start, so a restored request is put to ``shed``
+        with them. These replace the written elements, which win over the
+        keywords' levels until then, and storage drops those in a save
+        nobody waits for. If that save fails, the file holds the older state,
+        written elements included, until a retry succeeds, and a restart
+        before then serves them: the running server's next look tries again,
+        and later tries back off to once every 64 s. Not audited, like
+        ``set_reliability_local``.
+        """
+        ...
+
+    def set_load_control_full_duty_baseline_local(
+        self,
+        object_id: ObjectIdentifier,
+        kilowatts: Optional[float],
+    ) -> Awaitable[None]:
+        """Set a running Load Control's Full_Duty_Baseline in kilowatts, or clear it with None (#2497).
+
+        A negative or non-finite value raises VALUE_OUT_OF_RANGE; the other
+        errors are those of ``set_load_control_shed_levels_local``. A request
+        under way is put to ``shed`` again with the new
+        ``ShedRequest.full_duty_baseline``. Not audited.
+        """
+        ...
+
+    def set_load_control_state_description_local(
+        self,
+        object_id: ObjectIdentifier,
+        text: Optional[str],
+    ) -> Awaitable[None]:
+        """Set a running Load Control's State_Description, or clear it with None (#2497).
+
+        The errors are those of ``set_load_control_shed_levels_local``. A
+        SubscribeCOVProperty on State_Description hears of the change; the
+        request is not looked at again. Clearing it sends a subscriber
+        nothing, and the call is not audited.
+        """
+        ...
+
     def report_device_reset_local(self) -> Awaitable[None]:
         """Record a reset the application makes for its own reasons: a
         DEVICE_RESET Audit record from this device, with no invoke ID
         (#1564). A peer's accepted restart is recorded already. RuntimeError
-        when the server is not running."""
+        when the server is not running. On an endpoint's server (#2617) the
+        record goes through the endpoint's ``source_audit_reporter``, as its
+        peers' resets do, and nothing is recorded without one."""
         ...
 
     def purge_audit_log(self, object_id: ObjectIdentifier) -> Awaitable[None]:
@@ -6810,6 +9237,33 @@ class BACnetServer:
         """
         ...
 
+    def set_clock_zone(
+        self, utc_offset_minutes: int, daylight_savings: bool
+    ) -> Awaitable[None]:
+        """Change the Device clock's zone while the server runs.
+
+        ``utc_offset_minutes`` becomes the Device's UTC_Offset: minutes west
+        of UTC, east negative, a multiple of 15 within -1440..=1440.
+        ``daylight_savings`` becomes its Daylight_Savings_Status, which puts
+        local time an hour ahead. A server starts in the zone its
+        constructor's keywords of the same names give, and the change lasts
+        until ``stop()``.
+
+        The clock keeps its UTC instant, and one a TimeSynchronization set
+        stays set, so Local_Date and Local_Time move by the difference
+        between the zones. Schedules, calendars, Notification Class
+        recipient windows and new timestamps follow at their next look at
+        the clock; timestamps already recorded stay. A request sees the old
+        pair or the new, never one of each. Both properties stay read-only
+        to a peer.
+
+        An offset outside that range or off the 15-minute grid raises
+        ValueError when called, and an int past 16 bits OverflowError;
+        nothing changes. The awaitable raises RuntimeError before start and
+        after stop, and ValueError if the local date would leave 1900..=2154.
+        """
+        ...
+
     def comm_state(self) -> Awaitable[EnableDisable]:
         """Get the DeviceCommunicationControl state.
 
@@ -6854,7 +9308,13 @@ class BACnetServer:
         because they exceed the local APDU size, received_not_forwarded
         counts received event notifications no Notification Forwarder took,
         and forwarding_cap_dropped counts destinations dropped because one
-        notification already had 64 across the forwarders.
+        notification already had 64 across the forwarders. Each destination's
+        notifications wait in a lane of their own to go out in order:
+        lane_full counts notifications dropped because their destination
+        already had 64 waiting, lanes_entries_full those dropped with 1,024
+        waiting in all, and lanes_full those dropped with 256 destinations
+        waiting. cov_wait_expired counts changes whose COV notifications went
+        out before their event notifications had, past the APDU timeout.
         Fields are sampled independently. Raises
         RuntimeError before start and after stop.
         """
@@ -6964,8 +9424,8 @@ class ScHub:
     ``ca_cert`` must name trusted issuer CA PEM certificates for mutual TLS.
     Omitted, None, or empty values raise ValueError at construction. The None
     default retains the existing positional layout only; there is no insecure
-    mode. Invalid/unreadable credentials raise BacnetError from start(), before
-    binding. Connections require TLS 1.3 and a valid trusted client certificate.
+    mode. Invalid/unreadable credentials, or a file over 1 MiB, raise BacnetError
+    from start(), before binding. Connections require TLS 1.3 and a valid trusted client certificate.
 
     ``device_uuid`` is required, keyword-only and copied from bytes/bytearray into
     owned storage. Missing/None, wrong length or all-zero UUID raises ValueError
@@ -7084,11 +9544,95 @@ class ScHub:
 
 
 # ---------------------------------------------------------------------------
+# Core types: a station behind a router (#2612)
+# ---------------------------------------------------------------------------
+
+class RoutedTarget:
+    """A station on another BACnet network (#2612), where ``BACnetClient``'s
+    ``read_property``, ``read_property_multiple``, ``read_range``,
+    ``read_log_page``, ``write_property``, ``atomic_read_file``,
+    ``atomic_write_file``, ``subscribe_cov``, ``unsubscribe_cov``,
+    ``subscribe_cov_property``, ``unsubscribe_cov_property`` and
+    ``subscribe_cov_property_multiple`` take an ``address`` (#2617, #2613,
+    #2588); the other typed calls take a local address only:
+    ``RoutedTarget(network, address, router=None)``, in that order. A
+    ``str`` address always names a station on the local link.
+
+    ``network`` is the station's network number, an ``int`` from 1 to 65534
+    (ValueError outside it, OverflowError outside 0 to 65535, TypeError for
+    a ``bool``). ``address`` is the station's MAC on that network, 1 to 18
+    octets: ``bytes`` as given, such as a ``DiscoveredDevice``'s
+    ``source_address``, or a string in the binding's address forms:
+    ``"ip:port"`` (a B/IP station's MAC is its IPv4 address and UDP port on
+    any B/IP network, local or not), ``"bip6:N"`` or ``"bip6:0x..."`` (a
+    B/IPv6 VMAC), two or more hex octets ``"aa:bb:..."``, or one octet in
+    decimal as ``"N"`` or ``"mstp:N"`` (0 to 254), so
+    ``RoutedTarget(5, "10") == RoutedTarget(5, b"\\x0a")``. The string forms
+    refuse 255 (MS/TP's broadcast); ``b"\\xff"`` is taken, a station on an
+    ARCNET network, whose broadcast is 0. A ``router`` that is a broadcast
+    or group address on the local link raises BacnetError when a call is
+    made, before anything is sent.
+
+    ``router`` is the next hop's address on the local link, in the same
+    forms or as ``bytes``, such as a routed ``DiscoveredDevice``'s
+    ``mac_address``, or ``BACnetClient.discover_routers()``' ``mac``; each
+    request goes through it. Without one, the client uses the route it
+    knows: the router its discovery table names for the station, after
+    one Who-Is to the station's network when it has none, as
+    ``BACnetClient.device()`` does. A station that doesn't answer raises
+    ``BacnetLookupError``, and for 30 seconds a call to it with no router
+    raises at once without asking again, unless an I-Am from it arrives
+    first; calls made together for one station share one Who-Is. To scan
+    stations that never announce themselves, such as MS/TP slaves, pass
+    ``router`` from ``BACnetClient.discover_routers()``: without it each
+    costs one 3-second Who-Is wait. A station on the client's own network,
+    once it knows the number, is sent to directly either way. Other values raise ValueError, a type
+    other than ``str`` or ``bytes`` TypeError, and so does a call in another
+    order, since ``network`` takes an ``int``.
+
+    Frozen; compares and hashes by its network and octets, however they were
+    written; copies and pickles.
+    """
+
+    def __init__(
+        self,
+        network: int,
+        address: str | bytes,
+        router: str | bytes | None = None,
+    ) -> None: ...
+    @property
+    def network(self) -> int: ...
+    @property
+    def address(self) -> bytes:
+        """The station's MAC on its network."""
+        ...
+    @property
+    def router(self) -> bytes | None:
+        """The router's MAC on the local link, or None for the route the
+        client knows."""
+        ...
+
+
+# ---------------------------------------------------------------------------
 # Endpoint (RB-19): one transport above both roles
 # ---------------------------------------------------------------------------
 
 class EndpointStatus(TypedDict):
-    """Bounded endpoint snapshot: liveness, identity, transport, leases, policy counts."""
+    """Bounded endpoint snapshot: liveness, identity, transport, leases, policy counts.
+
+    The ``*_full_drops`` keys count what a full queue had no room for, by
+    class; a full queue never ends the session (#2635).
+    ``unconfirmed_full_drops`` counts unconfirmed requests (I-Am, Who-Is,
+    notifications) past their share of the request queue, which keeps a
+    quarter for confirmed requests; ``confirmed_full_drops`` confirmed
+    requests for the endpoint's own roles dropped unanswered, which their
+    requesters send again (one the client's seat refuses counts in
+    ``client_seat_full_drops``);
+    ``answer_full_drops`` answers and segments (one no lease holds may not
+    take the last quarter of the answer queue); ``policy_full_drops``
+    refused APDUs (malformed, an unknown PDU type). Each queue of
+    ``queue_capacity`` 2 or more keeps at least one slot in reserve; a
+    capacity of 1 keeps none."""
     is_running: bool
     device_instance: int
     vendor_id: int
@@ -7100,7 +9644,22 @@ class EndpointStatus(TypedDict):
     no_server_role: int
     no_client_role: int
     unclaimed_terminal: int
-    responder_declined: int
+    unconfirmed_full_drops: int
+    confirmed_full_drops: int
+    answer_full_drops: int
+    policy_full_drops: int
+    client_seat_apdus: int
+    """APDUs handed to the client on the link (#2617), over the session's run."""
+    client_seat_full_drops: int
+    """APDUs the client's queue refused, never waited for: those it had no room for, and those its tiers held back (copies of unconfirmed requests use at most half of it, confirmed requests to the client all but the quarter kept for its answers). On an endpoint with no server role, a confirmed request refused here is counted here, not in ``confirmed_full_drops``."""
+    client_seat_control_full_drops: int
+    """Network controls dropped the same way."""
+    server_seat_apdus: int
+    """APDUs handed to the endpoint's server (#2617), over the session's run."""
+    server_seat_full_drops: int
+    """APDUs the server's queue refused, never waited for, as the client's
+    are counted: a confirmed request counted here went unanswered, and its
+    requester's retry is its recovery."""
 
 class ReadRangeResult(TypedDict):
     object_id: ObjectIdentifier
@@ -7160,160 +9719,6 @@ class ReadAccessResult(TypedDict):
     object_id: ObjectIdentifier
     results: list[ReadPropertyResult]
 
-class EndpointClient:
-    """Client role cloned from a running endpoint (no lifecycle).
-
-    Initiates ``read_property``, ``read_range``, ``read_property_multiple`` and direct B/IP ``write_property`` through the owner's single transport.
-    After the owner closes, calls fail closed with ``BacnetError``.
-    """
-
-    def read_property(
-        self,
-        address: str,
-        object_id: ObjectIdentifier,
-        property_id: PropertyIdentifier,
-        array_index: Optional[int] = None,
-    ) -> Awaitable[PropertyValue]:
-        """Read a property through the shared transport.
-
-        ACK object/property/index must match. Device/Network Port instance 4194303
-        requests accept a same-type concrete ACK. Malformed/mismatched ACKs raise
-        BacnetError; this method returns the property value, not ACK metadata,
-        shaped as ``PropertyValue`` describes for read results.
-        """
-        ...
-
-    def write_property(
-        self,
-        address: str,
-        object_id: ObjectIdentifier,
-        property_id: PropertyIdentifier,
-        value: PropertyValue,
-        priority: Optional[int] = None,
-        array_index: Optional[int] = None,
-        *,
-        commandability: Literal["commandable", "noncommandable"],
-    ) -> Awaitable[None]:
-        """Write to a direct IPv4 B/IP peer through the shared requester.
-
-        Commandability is required even without a source Reporter. It controls
-        Audit filtering, never the wire priority. Omitted commandable priority
-        means effective 16, including NULL. Invalid literals, priority, raw TLV
-        framing and APDU size raise ValueError synchronously (out-of-u8 priorities
-        raise OverflowError). Empty encoded lists are valid. Eligible source
-        records preserve complete 0–32-byte values and omit longer values.
-        After source admission, caller cancellation does not cancel the attempt.
-        """
-        ...
-
-    def read_property_multiple(
-        self,
-        address: str,
-        specs: list[tuple[ObjectIdentifier, list[tuple[PropertyIdentifier, Optional[int]]]]],
-    ) -> Awaitable[list[ReadAccessResult]]:
-        """Read 1–64 explicit property occurrences on concrete objects.
-
-        Empty lists, ALL/REQUIRED/OPTIONAL and wildcard instances raise ValueError
-        before address parsing or I/O. Index zero is valid. Complete ordered ACK
-        correlation permits an inline error to omit its requested index; successful
-        values must echo it. Byte limits and malformed/mismatched ACKs raise
-        BacnetError. Returned dictionaries share standalone RPM conversion.
-        """
-        ...
-
-    def read_range(
-        self,
-        address: str,
-        object_id: ObjectIdentifier,
-        property_id: PropertyIdentifier,
-        array_index: Optional[int] = None,
-        range_type: Optional[Literal["position", "sequence", "time"]] = None,
-        reference_index: Optional[int] = None,
-        reference_seq: Optional[int] = None,
-        count: Optional[int] = None,
-        *,
-        reference_time: ReferenceTime | None = None,
-        validation: Literal["strict", "lenient"] = "strict",
-    ) -> Awaitable[ReadRangeResult]:
-        """Read a range of items from a list or log object.
-
-        ``range_type`` is ``"position"``, ``"sequence"``, ``"time"`` or
-        ``None`` (all-items). ``"time"`` reads the ``count`` items newer than
-        ``reference_time`` (older, for a negative count): a naive
-        ``datetime.datetime`` in the device's local time, or a
-        ``((year, month, day, day_of_week), (hour, minute, second,
-        hundredths))`` pair; an aware datetime raises ValueError, since the
-        device's zone isn't known here (#1533). Invalid selectors, array index
-        zero, missing or zero counts and a time that isn't specific raise
-        ValueError before I/O; a count outside INTEGER16 (-32768..=32767)
-        raises OverflowError before address parsing or I/O (#1360).
-        Position/sequence reference zero is valid; omitted references default
-        to zero.
-
-        ``validation="strict"`` refuses an answer that breaks a ReadRange rule
-        with BacnetReadRangeViolationError, whose ``rule`` names it;
-        ``"lenient"`` keeps it and lists the rules in ``violations`` (#1531).
-        Decode a log's records with ``decode_log_records``.
-        """
-        ...
-
-    def read_log_page(
-        self,
-        address: str,
-        object_id: ObjectIdentifier,
-        cursor: LogCursor = None,
-        page_size: int = 100,
-    ) -> Awaitable[LogPage]:
-        """Read one page of a log's Log_Buffer from ``cursor`` (#1530).
-
-        ``cursor`` is ``None`` or ``"oldest"`` (the oldest record, found from
-        Record_Count and Total_Record_Count), ``("sequence", n)``,
-        ``("position", n)`` or ``("time", reference_time)``; lists work
-        too, so a checkpoint survives JSON. Loop on ``page["next"]`` until
-        ``page["done"]``, then keep ``next`` as the checkpoint. One request
-        is outstanding at a time. A first record past the one asked for sets
-        ``gap``; when the log drops the record asked for, the read starts
-        over from the oldest. A page answered from before the one asked for,
-        or none where the counts say records are, raises
-        BacnetLogNotAdvancingError: such a device's sequence numbers are
-        inconsistent, so read it from ``("position", 1)``. ``wrapped`` marks
-        a page that reached the top of the sequence range. A page whose
-        records don't decode raises BacnetError, dropping the records before
-        the failing one; an answer that breaks a rule the reader can't
-        tolerate, such as an echo that doesn't match, raises
-        BacnetReadRangeViolationError. A non-log object or a ``page_size``
-        outside 1..=32767 raises ValueError before I/O.
-        """
-        ...
-
-    def service_scope(self) -> dict[str, Any]:
-        """Narrow scope: initiates reads and direct B/IP ``write_property``."""
-        ...
-
-class EndpointServer:
-    """Server role cloned from a running endpoint (no lifecycle).
-
-    The responder executes ``read_property`` automatically, WriteProperty to
-    the local Device through the owner's ``device_write_policy``, and
-    ReinitializeDevice through the owner's ``on_reinitialize``, the one
-    Python callback that runs under a native lock; this handle exposes
-    liveness plus the MS/TP deferred-reply seam.
-    """
-
-    def is_session_alive(self) -> bool:
-        """True while the owning endpoint is alive and open."""
-        ...
-
-    def suspend_next_reply(self) -> None:
-        """Arm one-shot deferred-reply suspension (MS/TP wiring)."""
-        ...
-
-    def service_scope(self) -> dict[str, Any]:
-        """Narrow scope: executes ``read_property``, plus ``write_property``
-        when the owner has ``device_write_policy`` and
-        ``reinitialize_device`` when it has ``on_reinitialize``."""
-        ...
-
 class BipEndpoint:
     """B/IP endpoint: one UDP socket that both initiates and executes.
 
@@ -7330,6 +9735,16 @@ class BipEndpoint:
     Setup errors are delivered by awaiting start/context entry. BIPv6/Ethernet
     have no endpoint owner.
 
+    The server role is a full ``BACnetServer`` (#2617), from
+    ``await endpoint.server()``: it executes the services a standalone server
+    does, answers Who-Is and Who-Has, and lists those services in the
+    Device's Protocol_Services_Supported. Without ``mutation_policy`` it is
+    read-only: a peer's write, create or delete is denied with SERVICES /
+    SERVICE_REQUEST_DENIED, and reads, discovery, COV subscriptions and alarm
+    acknowledgments are answered. Time synchronization is off on every
+    endpoint until ``time_sync_policy`` turns it on, whatever the
+    ``mutation_policy``: a default that differs from ``BACnetServer()``'s.
+
     ``device_instance`` takes 0 to 4194302. Instance 4194303 is reserved, as
     no object may have it, so it, or anything larger, raises ValueError at
     construction (#2171).
@@ -7340,11 +9755,6 @@ class BipEndpoint:
     # foreign_device= or bbmd=). None stays unbound. Each mode answers/learns
     # local Network Number controls. Only explicit
     # registration supplies configured provenance; an unregistered owner starts unknown.
-
-    def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]:
-        """Observe raw frames on the running owner; capacity is 1–65536.
-        Owner shutdown ends this subscription; a restart needs a new one."""
-        ...
 
     def __init__(
         self,
@@ -7358,11 +9768,10 @@ class BipEndpoint:
         network_port_instance: int = 1,
         max_apdu: int = 1476,
         segmentation: Optional[Segmentation] = None,
-        services: Optional[list[int]] = None,
         device_uuid: Optional[Union[bytes, bytearray]] = None,
-        queue_capacity: int = 16,
+        queue_capacity: int = 256,
         apdu_timeout_ms: int = 6000,
-        apdu_retries: int = 0,
+        apdu_retries: int = 3,
         registered_network_port: Optional[int] = None,
         *,
         read_work_limit: int = 256,
@@ -7375,19 +9784,46 @@ class BipEndpoint:
         on_reinitialize: Optional[ReinitializeHandler] = None,
         after_reinitialize: Optional[AfterReinitialize] = None,
         reinit_password: Optional[str] = None,
-        device_write_policy: Optional[MutationHandler] = None,
+        mutation_policy: Literal["permissive", "deny_all"] | MutationHandler | None = None,
+        cov_policy: CovPolicy | None = None,
+        time_sync_policy: TimeSyncPolicy | None = None,
         source_audit_reporter: Optional[ObjectIdentifier] = None,
         audit_recipient: Optional[AuditRecipientInput] = None,
         audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str]]] = None,
     ) -> None:
-        """``source_audit_reporter`` / ``audit_recipient`` /
+        """``mutation_policy`` (#2617): who may change the endpoint's
+        objects, as ``BACnetServer``'s keyword of the same name takes it:
+        ``"permissive"`` (any peer), ``"deny_all"`` (no peer, COV
+        subscriptions included) or a callable that gets a ``MutationContext``
+        for each mutation and returns a bool, with that keyword's fail-closed
+        rules. Without it (None, the default) the server is read-only: every
+        write, create and delete is denied, and reads, discovery, COV
+        subscriptions and alarm acknowledgments are answered. Given one, the
+        server is the one ``BACnetServer`` with that policy is, but for time
+        synchronization. ``cov_policy``: the server's ``CovPolicy``, read as
+        ``BACnetServer``'s is. ``time_sync_policy``: None, the default, leaves
+        TimeSynchronization and UTCTimeSynchronization off whatever the
+        ``mutation_policy``, a default that differs from ``BACnetServer()``'s,
+        which takes every valid request; a ``TimeSyncPolicy`` dict, read as
+        ``BACnetServer``'s is, turns them on (``{}`` takes every valid
+        request). The application changes its objects through
+        ``await endpoint.server()``, whose COV and event notifications follow
+        as on a standalone server, and records its own resets through that
+        server's ``report_device_reset_local()``. ``ScEndpoint`` and
+        ``MstpEndpoint`` take all three too.
+
+        ``source_audit_reporter`` / ``audit_recipient`` /
         ``audit_device_bindings`` (#2348): the Audit Reporter, added with
         ``add_audit_reporter``, through which the session reports the
-        ReinitializeDevice resets, backups and restores it carries out,
-        ``report_device_reset_local()`` calls and the client role's reads,
-        each filtered by the Reporter's level and operations. It needs
-        ``device_write_policy`` and ``audit_recipient`` (the Device's Audit
-        recipient); the bindings are ``(Device identifier, "ipv4:port")``
+        ReinitializeDevice resets, backups and restores the server carries
+        out, its server's ``report_device_reset_local()`` calls and the reads
+        and writes of its ``client()`` (#2617), each filtered by the
+        Reporter's level and
+        operations. It needs ``audit_recipient`` (the Device's Audit
+        recipient) and a ``mutation_policy`` that decides writes, so that no
+        peer redirects the audit trail unasked: none (read-only),
+        ``"deny_all"`` or a callable, never ``"permissive"`` (ValueError).
+        The bindings are ``(Device identifier, "ipv4:port")``
         routes to recipient Devices, or ``"network:0xMAC"`` for one behind a
         router on that network (#2371; network 1 to 65534, MAC 1 to 18
         octets). A Reporter identifier of another type and
@@ -7399,22 +9835,15 @@ class BipEndpoint:
         ReinitializeDevice, as ``BACnetServer``'s keywords do (#1566);
         ``reinit_password`` (needs ``on_reinitialize``, else ValueError; 1 to
         20 characters, else ValueError) is the password a request must
-        carry. The callable runs on the session's
-        one dispatch task, so a slow one stalls every request.
-        ``device_write_policy``: a callable that decides each WriteProperty
-        to the local Device's Description or installed Audit recipient
-        (#2033). It gets a ``MutationContext`` and returns a bool, with the
-        fail-closed rules of ``BACnetServer``'s ``mutation_policy`` callable:
-        an exception, a non-bool or interpreter shutdown denies with SERVICES
-        / SERVICE_REQUEST_DENIED. Without it the endpoint executes no
-        WriteProperty. It runs with no lock held, but on the session's one
-        dispatch task, so it too should decide quickly: while it runs, other
-        requests and ``close()`` wait for it.
+        carry. Without ``on_reinitialize`` the server denies every
+        ReinitializeDevice.
         ``bbmd`` / ``foreign_device`` (at most one, else ValueError): run
         the endpoint as a BBMD, or register it as a foreign device (#938).
-        ``read_work_limit``: result rows one ReadProperty served by the
-        server role may expand, a Group's member rows included; a read past it
-        is aborted with OUT_OF_RESOURCES. Zero raises ValueError.
+        ``read_work_limit``: the server's ReadPropertyMultiple budget of
+        result rows, ``BACnetServer``'s ``rpm_max_result_elements``: a
+        ReadProperty counts its own row and a Group's member rows, a
+        ReadPropertyMultiple every result, and one past it is aborted with
+        OUT_OF_RESOURCES. Zero raises ValueError.
         ``share_port_by_address`` (default False): bind the interface address
         itself, so endpoints on other addresses of this host can share the
         port. Needs an explicit interface and a nonzero port; broadcasts and
@@ -7431,22 +9860,25 @@ class BipEndpoint:
         unconfirmed requests aren't paced."""
         ...
 
-    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, high_limit: float | None = None, low_limit: float | None = None, deadband: float | None = None, limit_enable: BitString | None = None, time_delay: int | None = None, time_delay_normal: int | None = None) -> None:
         """Profile keywords as on ``BACnetServer.add_analog_input``: each
-        provisions its optional row, served only when given."""
+        provisions its optional row, served only when given. The parameter
+        keywords set those parameters as there, with the same checks."""
         ...
-    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, high_limit: float | None = None, low_limit: float | None = None, deadband: float | None = None, limit_enable: BitString | None = None, time_delay: int | None = None, time_delay_normal: int | None = None) -> None:
         """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
-        Access, Value_Source and profile keywords as on
+        Access, Value_Source, profile and parameter keywords as on
         ``BACnetServer.add_analog_value``; tracking on a commandable object
         raises ValueError."""
         ...
-    def add_binary_input(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
-        """Profile keywords as on ``add_analog_input``."""
+    def add_binary_input(self, instance: int, name: str, *, polarity: Polarity | int = 0, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, alarm_value: int | None = None, time_delay: int | None = None, time_delay_normal: int | None = None) -> None:
+        """Profile keywords as on ``add_analog_input``, ``polarity``,
+        ``alarm_value`` and the delays as on ``BACnetServer.add_binary_input``."""
         ...
-    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, alarm_value: int | None = None, time_delay: int | None = None, time_delay_normal: int | None = None) -> None:
         """Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
-        Access, Value_Source and profile keywords as on ``add_analog_value``."""
+        Access, Value_Source and profile keywords as on ``add_analog_value``,
+        ``alarm_value`` and the delays as on ``BACnetServer.add_binary_value``."""
         ...
     def add_audit_reporter(self, instance: int, name: str, *, audit_level: Literal["none", "audit_config", "audit_all"], auditable_operations: int, issue_confirmed_notifications: bool = False) -> None:
         """Add an Audit Reporter for ``source_audit_reporter`` to select
@@ -7491,12 +9923,27 @@ class BipEndpoint:
         _exc_tb: Any = None,
     ) -> Awaitable[None]: ...
 
-    def client(self) -> Awaitable[EndpointClient]:
-        """Clone the client role (RuntimeError before start/after close)."""
+    def client(self) -> Awaitable[BACnetClient]:
+        """The ``BACnetClient`` on this endpoint's socket (#2617): the
+        standalone class, with all its calls, on the endpoint's one address.
+        While it runs, each call returns the same object; once its ``stop()``
+        has finished, a fresh one. Its ``stop()`` and ``async with`` exit end
+        the client role alone; the endpoint's close stops it too, and calls
+        in flight end as a stopping client's do. RuntimeError before start,
+        after close, and while the last client is still stopping or its stop
+        failed (the error names the cause). On an endpoint built with
+        ``source_audit_reporter``, the endpoint audits the client's reads
+        and writes (#2617)."""
         ...
 
-    def server(self) -> Awaitable[EndpointServer]:
-        """Clone the server role (RuntimeError before start/after close)."""
+    def server(self) -> Awaitable[BACnetServer]:
+        """The ``BACnetServer`` the endpoint's session runs on its socket
+        (#2617): the standalone class, with its runtime calls, on the
+        endpoint's one address and its objects. Each call returns a new
+        handle on the one server. Its ``start()`` and ``stop()`` raise
+        RuntimeError: the endpoint starts it, and the endpoint's
+        ``close()`` stops it, after which its calls raise RuntimeError
+        rather than wait. RuntimeError before start and after close."""
         ...
 
     def local_address(self) -> Awaitable[str]:
@@ -7512,19 +9959,45 @@ class BipEndpoint:
         ``BACnetClient``. RuntimeError before start and after close."""
         ...
 
-    def broadcast_i_am(self) -> Awaitable[None]:
-        """Broadcast one I-Am consistent with the composed identity."""
+    def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]:
+        """Observe the raw frames on the endpoint's own socket from now on,
+        beside both roles' traffic, ``capacity`` frames queued at most (1 to
+        65536, else ValueError). RuntimeError before start and after close.
+        Close ends the iterator; a restart needs a new one."""
         ...
 
-    def report_device_reset_local(self) -> Awaitable[None]:
-        """Record a reset the application makes for its own reasons: a
-        DEVICE_RESET Audit record from this device, with no invoke ID, through
-        the session's source Reporter when it has one, as
-        ``BACnetServer.report_device_reset_local`` does (#1837): with
-        ``source_audit_reporter`` set, a DEVICE_RESET naming this device as
-        source and target, filtered by that Reporter's level and operations;
-        without one, nothing. A peer's accepted restart is recorded already.
-        RuntimeError when the endpoint is not running."""
+    def i_am_arrivals(self, capacity: int = 1024) -> Awaitable[IAmArrivalIterator]:
+        """Follow every I-Am the endpoint's socket receives from now on, as
+        ``BACnetClient.i_am_arrivals`` does (#2612). The endpoint's own I-Am
+        come back to it, from its own address and naming its own device
+        instance, is left out and counted in ``own_echoes``; another
+        instance from that address is a record. RuntimeError before start
+        and after close. Close ends the iterator."""
+        ...
+
+    def read_bdt(self, address: str) -> Awaitable[list[tuple[str, str]]]:
+        """Read the Broadcast Distribution Table of the BBMD at ``address``
+        (``"ip"`` or ``"ip:port"``) through this endpoint's own socket, beside
+        the roles' traffic (#2612), as ``BACnetClient.read_bdt`` does: the
+        same ``("ip:port", "mask")`` rows, and the same errors: a NAK raises
+        BacnetBvlcNakError with its ``result_code`` (0x0020 from a node that
+        is no BBMD), no answer within 3 seconds BacnetTimeoutError. A bad
+        address raises ValueError before I/O; RuntimeError before start and
+        after close, and for a read that ``close()`` cuts off (``close()``
+        doesn't wait for one). A cancelled read gives its request up, so the
+        same read can start again at once; the same read beside one still
+        running is refused, as ``BACnetClient``'s is."""
+        ...
+
+    def read_fdt(self, address: str) -> Awaitable[list[FdtEntry]]:
+        """Read the Foreign Device Table of the BBMD at ``address`` through
+        this endpoint's own socket (#2612), as ``BACnetClient.read_fdt``
+        does, with the errors of ``read_bdt``. The BVLC writes stay on
+        ``BACnetClient``."""
+        ...
+
+    def broadcast_i_am(self) -> Awaitable[None]:
+        """Broadcast one I-Am consistent with the composed identity."""
         ...
 
     @property
@@ -7559,14 +10032,15 @@ class ScEndpoint:
         network_port_instance: int = 2,
         max_apdu: int = 1476,
         segmentation: Optional[Segmentation] = None,
-        services: Optional[list[int]] = None,
-        queue_capacity: int = 16,
+        queue_capacity: int = 256,
         read_work_limit: int = 256,
         min_request_interval_ms: int = 0,
         on_reinitialize: Optional[ReinitializeHandler] = None,
         after_reinitialize: Optional[AfterReinitialize] = None,
         reinit_password: Optional[str] = None,
-        device_write_policy: Optional[MutationHandler] = None,
+        mutation_policy: Literal["permissive", "deny_all"] | MutationHandler | None = None,
+        cov_policy: CovPolicy | None = None,
+        time_sync_policy: TimeSyncPolicy | None = None,
         source_audit_reporter: Optional[ObjectIdentifier] = None,
         audit_recipient: Optional[AuditRecipientInput] = None,
         audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str]]] = None,
@@ -7575,8 +10049,9 @@ class ScEndpoint:
         sc_connect_timeout_ms: int | None = None,
     ) -> None:
         """``read_work_limit``, ``min_request_interval_ms``,
-        ``on_reinitialize``, ``after_reinitialize``, ``reinit_password`` and
-        ``device_write_policy`` are as for ``BipEndpoint``.
+        ``on_reinitialize``, ``after_reinitialize``, ``reinit_password``,
+        ``mutation_policy``, ``cov_policy`` and ``time_sync_policy`` are as
+        for ``BipEndpoint``.
 
         ``source_audit_reporter`` / ``audit_recipient`` /
         ``audit_device_bindings``: as on ``BipEndpoint`` (#2357), each
@@ -7597,22 +10072,25 @@ class ScEndpoint:
         ``connection_status()``."""
         ...
 
-    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, high_limit: float | None = None, low_limit: float | None = None, deadband: float | None = None, limit_enable: BitString | None = None, time_delay: int | None = None, time_delay_normal: int | None = None) -> None:
         """Profile keywords as on ``BACnetServer.add_analog_input``: each
-        provisions its optional row, served only when given."""
+        provisions its optional row, served only when given. The parameter
+        keywords set those parameters as there, with the same checks."""
         ...
-    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, high_limit: float | None = None, low_limit: float | None = None, deadband: float | None = None, limit_enable: BitString | None = None, time_delay: int | None = None, time_delay_normal: int | None = None) -> None:
         """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
-        Access, Value_Source and profile keywords as on
+        Access, Value_Source, profile and parameter keywords as on
         ``BACnetServer.add_analog_value``; tracking on a commandable object
         raises ValueError."""
         ...
-    def add_binary_input(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
-        """Profile keywords as on ``add_analog_input``."""
+    def add_binary_input(self, instance: int, name: str, *, polarity: Polarity | int = 0, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, alarm_value: int | None = None, time_delay: int | None = None, time_delay_normal: int | None = None) -> None:
+        """Profile keywords as on ``add_analog_input``, ``polarity``,
+        ``alarm_value`` and the delays as on ``BACnetServer.add_binary_input``."""
         ...
-    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, alarm_value: int | None = None, time_delay: int | None = None, time_delay_normal: int | None = None) -> None:
         """Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
-        Access, Value_Source and profile keywords as on ``add_analog_value``."""
+        Access, Value_Source and profile keywords as on ``add_analog_value``,
+        ``alarm_value`` and the delays as on ``BACnetServer.add_binary_value``."""
         ...
     def add_audit_reporter(self, instance: int, name: str, *, audit_level: Literal["none", "audit_config", "audit_all"], auditable_operations: int, issue_confirmed_notifications: bool = False) -> None:
         """Add an Audit Reporter for ``source_audit_reporter`` to select
@@ -7657,14 +10135,33 @@ class ScEndpoint:
         _exc_tb: Any = None,
     ) -> Awaitable[None]: ...
 
-    def client(self) -> Awaitable[EndpointClient]:
-        """Clone the client role."""
+    def client(self) -> Awaitable[BACnetClient]:
+        """The ``BACnetClient`` on this endpoint's hub connection (#2617): the
+        standalone class, with all its calls, on the endpoint's one address.
+        While it runs, each call returns the same object; once its ``stop()``
+        has finished, a fresh one. Its ``stop()`` and ``async with`` exit end
+        the client role alone; the endpoint's close stops it too, and calls
+        in flight end as a stopping client's do. RuntimeError before start,
+        after close, and while the last client is still stopping or its stop
+        failed (the error names the cause). On an endpoint built with
+        ``source_audit_reporter``, the endpoint audits the client's reads
+        and writes (#2617).
+
+        It starts after the hub link is up, so its ``connection_events()``
+        begins at that call, after the first ``connected``: read the link's
+        state at once with its ``connection_status()``, or use this
+        endpoint's ``connection_events()``, whose first call holds the
+        events from the start."""
         ...
 
-    def server(self) -> Awaitable[EndpointServer]:
-        """Clone the server role."""
+    def server(self) -> Awaitable[BACnetServer]:
+        """The ``BACnetServer`` the endpoint's session runs on its hub
+        connection (#2617), as ``BipEndpoint.server()`` gives one."""
         ...
 
+    def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]:
+        """Observe plaintext BVLC-SC messages on the running endpoint's hub link."""
+        ...
     def local_address(self) -> Awaitable[str]:
         """VMAC hex for this SC node."""
         ...
@@ -7693,17 +10190,6 @@ class ScEndpoint:
         or after close."""
         ...
 
-    def report_device_reset_local(self) -> Awaitable[None]:
-        """Record a reset the application makes for its own reasons: a
-        DEVICE_RESET Audit record from this device, with no invoke ID, through
-        the session's source Reporter when it has one, as
-        ``BACnetServer.report_device_reset_local`` does (#1837): with
-        ``source_audit_reporter`` set (#2357), a DEVICE_RESET naming this
-        device as source and target, filtered by that Reporter's level and
-        operations; without one, nothing. A peer's accepted restart is
-        recorded already. RuntimeError when the endpoint is not running."""
-        ...
-
     @property
     def device_instance(self) -> int: ...
     @property
@@ -7730,11 +10216,10 @@ class MstpEndpoint:
         mstp_max_info_frames: int = 1,
         max_apdu: int = 480,
         segmentation: Optional[Segmentation] = None,
-        services: Optional[list[int]] = None,
         device_uuid: Optional[Union[bytes, bytearray]] = None,
-        queue_capacity: int = 16,
+        queue_capacity: int = 256,
         apdu_timeout_ms: int = 6000,
-        apdu_retries: int = 0,
+        apdu_retries: int = 3,
         *,
         read_work_limit: int = 256,
         min_request_interval_ms: int = 0,
@@ -7747,14 +10232,17 @@ class MstpEndpoint:
         on_reinitialize: Optional[ReinitializeHandler] = None,
         after_reinitialize: Optional[AfterReinitialize] = None,
         reinit_password: Optional[str] = None,
-        device_write_policy: Optional[MutationHandler] = None,
+        mutation_policy: Literal["permissive", "deny_all"] | MutationHandler | None = None,
+        cov_policy: CovPolicy | None = None,
+        time_sync_policy: TimeSyncPolicy | None = None,
         source_audit_reporter: Optional[ObjectIdentifier] = None,
         audit_recipient: Optional[AuditRecipientInput] = None,
         audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str]]] = None,
     ) -> None:
         """``read_work_limit``, ``min_request_interval_ms``,
-        ``on_reinitialize``, ``after_reinitialize``, ``reinit_password`` and
-        ``device_write_policy`` are as for ``BipEndpoint``. Here
+        ``on_reinitialize``, ``after_reinitialize``, ``reinit_password``,
+        ``mutation_policy``, ``cov_policy`` and ``time_sync_policy`` are as
+        for ``BipEndpoint``. Here
         ``after_reinitialize`` runs once the SimpleACK is queued, before the
         token sends it: stopping the endpoint at once can drop the reply, so
         wait a short while first.
@@ -7783,22 +10271,25 @@ class MstpEndpoint:
         endpoint's own."""
         ...
 
-    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_analog_input(self, instance: int, name: str, units: EngineeringUnits | int = 62, present_value: float = 0.0, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, high_limit: float | None = None, low_limit: float | None = None, deadband: float | None = None, limit_enable: BitString | None = None, time_delay: int | None = None, time_delay_normal: int | None = None) -> None:
         """Profile keywords as on ``BACnetServer.add_analog_input``: each
-        provisions its optional row, served only when given."""
+        provisions its optional row, served only when given. The parameter
+        keywords set those parameters as there, with the same checks."""
         ...
-    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_analog_value(self, instance: int, name: str, units: EngineeringUnits | int = 62, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, high_limit: float | None = None, low_limit: float | None = None, deadband: float | None = None, limit_enable: BitString | None = None, time_delay: int | None = None, time_delay_normal: int | None = None) -> None:
         """Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
-        Access, Value_Source and profile keywords as on
+        Access, Value_Source, profile and parameter keywords as on
         ``BACnetServer.add_analog_value``; tracking on a commandable object
         raises ValueError."""
         ...
-    def add_binary_input(self, instance: int, name: str, *, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
-        """Profile keywords as on ``add_analog_input``."""
+    def add_binary_input(self, instance: int, name: str, *, polarity: Polarity | int = 0, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, alarm_value: int | None = None, time_delay: int | None = None, time_delay_normal: int | None = None) -> None:
+        """Profile keywords as on ``add_analog_input``, ``polarity``,
+        ``alarm_value`` and the delays as on ``BACnetServer.add_binary_input``."""
         ...
-    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None) -> None:
+    def add_binary_value(self, instance: int, name: str, *, present_value_access: Literal["commandable", "writable", "read_only"] = "commandable", value_source_tracking: bool = False, audit_level: Literal["default", "none", "audit_config", "audit_all"] | None = None, auditable_operations: int | None = None, audit_priority_filter: int | Literal["inherit"] | None = None, tags: Optional[list[NameValue]] = None, profile_location: Optional[str] = None, profile_name: Optional[str] = None, alarm_value: int | None = None, time_delay: int | None = None, time_delay_normal: int | None = None) -> None:
         """Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
-        Access, Value_Source and profile keywords as on ``add_analog_value``."""
+        Access, Value_Source and profile keywords as on ``add_analog_value``,
+        ``alarm_value`` and the delays as on ``BACnetServer.add_binary_value``."""
         ...
     def add_audit_reporter(self, instance: int, name: str, *, audit_level: Literal["none", "audit_config", "audit_all"], auditable_operations: int, issue_confirmed_notifications: bool = False) -> None:
         """Add an Audit Reporter for ``source_audit_reporter`` to select
@@ -7843,12 +10334,26 @@ class MstpEndpoint:
         _exc_tb: Any = None,
     ) -> Awaitable[None]: ...
 
-    def client(self) -> Awaitable[EndpointClient]:
-        """Clone the client role."""
+    def client(self) -> Awaitable[BACnetClient]:
+        """The ``BACnetClient`` on this endpoint's serial link (#2617): the
+        standalone class, with all its calls, on the endpoint's one address.
+        While it runs, each call returns the same object; once its ``stop()``
+        has finished, a fresh one. Its ``stop()`` and ``async with`` exit end
+        the client role alone; the endpoint's close stops it too, and calls
+        in flight end as a stopping client's do. RuntimeError before start,
+        after close, and while the last client is still stopping or its stop
+        failed (the error names the cause). On an endpoint built with
+        ``source_audit_reporter``, the endpoint audits the client's reads
+        and writes (#2617).
+
+        Its requests wait for this node's token, as the server role's
+        answers do."""
         ...
 
-    def server(self) -> Awaitable[EndpointServer]:
-        """Clone the server role."""
+    def server(self) -> Awaitable[BACnetServer]:
+        """The ``BACnetServer`` the endpoint's session runs on its serial
+        link (#2617), as ``BipEndpoint.server()`` gives one. Its answers
+        wait for this node's token, as the client's requests do."""
         ...
 
     def local_address(self) -> Awaitable[str]:
@@ -7863,17 +10368,6 @@ class MstpEndpoint:
         """Broadcast one I-Am (MS/TP local broadcast)."""
         ...
 
-    def report_device_reset_local(self) -> Awaitable[None]:
-        """Record a reset the application makes for its own reasons: a
-        DEVICE_RESET Audit record from this device, with no invoke ID, through
-        the session's source Reporter when it has one, as
-        ``BACnetServer.report_device_reset_local`` does (#1837): with
-        ``source_audit_reporter`` set (#2357), a DEVICE_RESET naming this
-        device as source and target, filtered by that Reporter's level and
-        operations; without one, nothing. A peer's accepted restart is
-        recorded already. RuntimeError when the endpoint is not running."""
-        ...
-
     @property
     def device_instance(self) -> int: ...
     @property
@@ -7882,6 +10376,113 @@ class MstpEndpoint:
 # ---------------------------------------------------------------------------
 # Owned B/IP routing (#1858)
 # ---------------------------------------------------------------------------
+
+class RouterBipPort:
+    def __init__(
+        self,
+        network_number: int,
+        interface: str = "0.0.0.0",
+        port: int = 0xBAC0,
+        broadcast_address: str = "255.255.255.255",
+        reuse_port: bool = False,
+    ) -> None: ...
+    network_number: int
+    interface: str
+    port: int
+    broadcast_address: str
+    reuse_port: bool
+
+class RouterScPort:
+    def __init__(
+        self,
+        network_number: int,
+        primary_hub: str,
+        local_vmac: bytes,
+        device_uuid: bytes,
+        ca_cert: str,
+        client_cert: str,
+        client_key: str,
+        failover_hub: Optional[str] = None,
+        heartbeat_interval_ms: int = 30000,
+        heartbeat_timeout_ms: int = 60000,
+        reconnect_initial_delay_ms: int = 10000,
+        reconnect_max_delay_ms: int = 600000,
+        reconnect_max_retries: int = 10,
+        reconnect_forever: bool = False,
+        max_npdu_length: int = 1497,
+        max_bvlc_length: int = 5705,
+    ) -> None: ...
+    network_number: int
+    primary_hub: str
+    local_vmac: bytes
+    device_uuid: bytes
+    ca_cert: str
+    client_cert: str
+    client_key: str
+    failover_hub: Optional[str]
+    heartbeat_interval_ms: int
+    heartbeat_timeout_ms: int
+    reconnect_initial_delay_ms: int
+    reconnect_max_delay_ms: int
+    reconnect_max_retries: int
+    reconnect_forever: bool
+    max_npdu_length: int
+    max_bvlc_length: int
+
+class RouterPortHealth:
+    config_index: int
+    network_number: int
+    transport_kind: str
+    identity: str
+    state: str
+    detail: Optional[str]
+    active_hub: Optional[str]
+    last_error: Optional[str]
+    attempt: int
+    since: Optional[float]
+
+class RouterPortCounters:
+    config_index: int
+    network_number: int
+    transport_kind: str
+    identity: str
+    forwarded_unicast: int
+    forwarded_broadcast: int
+    send_errors: int
+    output_full_drops: int
+    no_route_drops: int
+    shutdown_drops: int
+
+class RouterRouteEntry:
+    network_number: int
+    port_index: int
+    directly_connected: bool
+    next_hop_mac: bytes
+    reachability: str
+    last_seen_age_s: Optional[float]
+    busy_remaining_s: Optional[float]
+    flap_count: int
+    last_port_change_age_s: Optional[float]
+
+class AceMixedRouter:
+    @classmethod
+    def from_ports(
+        cls,
+        ports: list[Union[RouterBipPort, RouterScPort]],
+        *,
+        announce_interval_s: Optional[float] = None,
+        isolate_sc_ports: bool = False,
+    ) -> AceMixedRouter: ...
+    async def start(self) -> None: ...
+    async def stop(self) -> None: ...
+    def frames(self, port_index: int, capacity: int = 1024) -> Awaitable[FrameIterator]:
+        """Observe future frames on one running port, indexed in configuration order.
+        SC records contain plaintext BVLC-SC messages across primary/failover changes."""
+        ...
+    async def local_address(self) -> str: ...
+    async def port_health(self) -> list[RouterPortHealth]: ...
+    async def port_counters(self) -> list[RouterPortCounters]: ...
+    async def routing_table(self) -> list[RouterRouteEntry]: ...
 
 class BipRouterPort:
     """Immutable unopened B/IP port configuration; network_number is 1..65534.

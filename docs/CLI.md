@@ -49,9 +49,10 @@ macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 |------|---------|-------------|
 | `-i, --interface <IP>` | (see below) | Network interface IP to bind |
 | `-p, --port <PORT>` | `47808` | BACnet UDP port |
-| `--share-port` | off | Share `--port` with other programs on this host that bind it the same way; BACnet/IP only. See [Port sharing](#port-sharing) |
+| `--share-port` | off | Share `--port` with other programs on this host that bind it the same way; BACnet/IP and BACnet/IPv6 only. See [Port sharing](#port-sharing) |
 | `-b, --broadcast <IP>` | `255.255.255.255` | Broadcast address for WhoIs |
 | `-t, --timeout <MS>` | `6000` | APDU timeout in milliseconds |
+| `--routed-path-limit <ROUTER/NETWORK=MAX_NPDU>` | | Size requests to `NETWORK` through the router at `ROUTER` to at most `MAX_NPDU` octets of NPDU for this run (without it, 228); repeat it for more paths, before the command. See [Routed path limits](#routed-path-limits) |
 | `--min-interval-ms <MS>` | `0` | Least time from the latest confirmed request to a device finishing (or being sent, while it is still outstanding) to the next, at most 3600000, so paging or polling leaves a slow device room for others |
 | `--foreign-bbmd <ADDR>` | | Run as a foreign device registered with this BBMD (`ip`, `host`, or either with `:port`), so broadcasts reach its network. With `--ipv6`, an IPv6 address (`ip`, `[ip]` or `[ip]:port`) or a host name, and `--device-instance`. See [Foreign-device mode](#foreign-device-mode) |
 | `--ttl <N>` | `300` | Time-to-live in seconds of a foreign-device registration, for `--foreign-bbmd`, `register` and `discover --bbmd` |
@@ -68,9 +69,9 @@ macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 | `--sc-failover-url <URL>` | | SC failover hub, used when the primary can't be reached or its reconnects run out; turns on `--sc-reconnect` |
 | `--sc-reconnect` | off (a profile: on) | Redial a lost SC hub with backoff: 10 s doubling to 10 min, 10 attempts |
 | `--sc-connect-timeout <MS>` | 10000 | Bound on each SC hub dial and handshake, 1 to 600000 ms |
-| `--sc-ca <FILE>` | required for SC | Trusted site CA certificate(s) in PEM; no system-root fallback |
-| `--sc-cert <FILE>` | | SC TLS certificate PEM |
-| `--sc-key <FILE>` | | SC TLS private key PEM |
+| `--sc-ca <FILE>` | required for SC | Trusted site CA certificate(s) in PEM; no system-root fallback; read up to 1 MiB |
+| `--sc-cert <FILE>` | | SC TLS certificate PEM (read up to 1 MiB) |
+| `--sc-key <FILE>` | | SC TLS private key PEM: one unencrypted key (read up to 1 MiB) |
 | `--sc-vmac <HEX>` | | SC local VMAC as 12 hex digits or separated bytes |
 | `--sc-device-uuid <UUID>` | | SC device UUID as 32 hex digits or hyphenated text |
 | `--mstp <PORT>` | | Join an MS/TP trunk as a master station on this serial port; needs `--mstp-mac` and the `serial` feature. See [MS/TP](#mstp) |
@@ -80,14 +81,16 @@ macOS and Windows ones don't yet (see [MS/TP](#mstp)).
 | `--mstp-max-info-frames <N>` | `1` | Frames this station sends each time it holds the token (Max_Info_Frames), 1 to 255 |
 | `--mstp-rt-priority <N>` | | Linux only: run the station's token handling under `SCHED_FIFO` at priority N, 1 to 99. See [MS/TP](#mstp) |
 | `--mstp-cpus <CPUS>` | | Linux only: pin the station's token handling to these CPUs, such as `2,3` |
-| `--format <FMT>` | auto | Output format: `table` or `json` |
+| `--format <FMT>` | auto | Output format: `table` or `json`; `csv` too for [`inventory`](#device-inventory) |
 | `--json` | | JSON output shorthand |
 | `-v` | | Verbosity (`-v`, `-vv`, `-vvv`) |
 | `--allow-write` | | Let a command that changes a device run; see [Write guard](#write-guard) |
 | `--no-tui` | | With no command, print the usage instead of opening the terminal UI; see [Plain `bacnet`](#plain-bacnet) |
 | `--yes` | | Confirm communication control and reinitialize without typing the target; needed when stdin is not a terminal |
 
-Output auto-detects: tables in TTY, JSON when piped.
+Output auto-detects: tables in TTY, JSON when piped. Log lines (warnings, and
+more with `-v`) go to stderr in every mode, so stdout carries only the
+command's output and a warning can't corrupt its JSON.
 
 **Device text:** strings a device supplies (values, object names, state
 texts, event messages) are cleaned in table and text output, as the terminal
@@ -102,8 +105,9 @@ JSON string to a terminal should clean it first.
 
 **Interface selection:** A one-shot command without `--interface` binds `0.0.0.0`. The terminal UI on BACnet/IP without `-i` lists the available network interfaces in a dialog; named B/IP profiles use their saved interface.
 
-<a id="port-sharing"></a>**Port sharing:** on BACnet/IP the CLI claims its
-`--port` (#2366). When another program on this host already holds the port
+<a id="port-sharing"></a>**Port sharing:** on BACnet/IP and BACnet/IPv6 the
+CLI claims its `--port` (#2366, #2385). When another program on this host
+already holds the port
 (a BACnet device, a BMS, another `bacnet`), the CLI fails at once with an
 error naming the port, rather than binding beside it. Give the CLI another
 port (`-p 47809`, or `-p 0` for one the OS picks, which hears only the
@@ -112,8 +116,16 @@ to bind beside it as earlier releases did. With sharing, broadcasts reach
 both programs, but each unicast to the port reaches only one of them (on
 Linux the one that bound last), so either program's replies can go astray.
 The other program must share the port too, and macOS and the BSDs never let
-two programs share a port on `0.0.0.0` this way. `--share-port` has no
-effect with `-p 0`, nor on B/IPv6, BACnet/SC or MS/TP. A named B/IP profile
+two programs share a port on `0.0.0.0` this way. On BACnet/IPv6 (`--ipv6`)
+the port is claimed and shared the same way, with or without
+`--foreign-bbmd`: a second B/IPv6 program on the host and port, which earlier
+releases let in, now needs `--share-port` on both, and then both hear the
+multicast groups while each unicast reaches only one. On macOS and the BSDs
+two normal B/IPv6 programs on one port never both started, with or without
+the flag; what changed there is that a normal one and a foreign device
+(`--foreign-bbmd`) on one port, which used to both start in either order, now
+need `--share-port` on whichever starts later. `--share-port` has no
+effect with `-p 0`, nor on BACnet/SC or MS/TP. A named B/IP profile
 keeps the choice as `share_port = true` in its `[bip]` table; `bacnet tui
 --profile NAME --share-port` turns it on for that run, and `bacnet mcp serve
 --profile NAME` refuses the flag, as it refuses every transport flag, so set
@@ -159,6 +171,54 @@ BVLC commands `bdt`, `fdt`, `register` and `unregister` address local B/IP peers
 and refuse routed targets. On BACnet/SC, device
 tables show a VMAC as hex octets (`02:00:00:00:00:01`), which every target argument takes back.
 
+<a id="routed-path-limits"></a>**Routed path limits.** The client sizes every
+request through a router to a limit for that path, the router and the
+destination network: 228 octets of NPDU, the least every router must carry
+(Table 6-1), unless set by hand or lowered by the router. A router that
+refuses a request as too long (reason 4, in its Reject-Message-To-Network)
+lowers its path's limit, except for a request of 228 octets or fewer, which no
+router that follows the standard refuses: the client doesn't believe such a
+reject, logs a warning, and the request runs on to its answer or its timeout
+(#2665). An older router that really carries less than 228 octets therefore
+shows as timeouts. Set its path's limit for the run with
+`--routed-path-limit ROUTER/NETWORK=MAX_NPDU`, before the command:
+
+```bash
+bacnet --routed-path-limit 192.168.1.20:47808/5=128 read 5:1234 ai:1 pv
+```
+
+`ROUTER` is the router's address on this network in any target form,
+`ip:port` or `ip` on B/IP, `mstp:N` on MS/TP, `bip6:0x...` or `[ipv6]:port` on
+B/IPv6, hex octets on BACnet/SC, as `whois-router` prints it; `NETWORK` is 1
+to 65534. Repeat the flag for more paths, each path once. A limit below 228 is
+taken; one that leaves no request the 50-octet minimum APDU after the routed
+header (under 66 on B/IP, 61 on MS/TP) is refused before the command sends
+anything, and so are a router named as a device or as a station behind a
+router (`1234`, `5:0x0a`) and one path named twice, however its router is
+written. A path's limit lasts for the run only. `tui`, `mcp`, plain `bacnet`,
+`capture`, `sc-check` and `mstp-ports` refuse the flag rather than ignore it.
+
+After the command, the CLI prints the client's routed paths to stderr when
+something happened that the command line didn't ask for: a path learned a
+limit from a router, or the client dropped a too-long reject. With `-v` it
+prints them whenever a path holds a limit. Stdout stays the command's own
+output. With table output it is a table, one row a path (the router in the
+link's own form, the network, the limit in force, where it comes from:
+`default`, `configured` or `learned`, the configured and learned limits, and
+whether a small request was refused there), and a line with the two counts of
+rejects the client did not believe. With JSON output it is one line:
+
+```json
+{"routed_paths":[{"router":"192.168.1.20:47808","network":5,"max_npdu":228,"source":"default","configured_max_npdu":null,"learned_max_npdu":null,"below_minimum_reject_seen":true}],"too_long_reject_drops":0,"below_minimum_reject_drops":4,"hint":"a router refused a request of 228 NPDU octets or fewer as too long, ..."}
+```
+
+`too_long_reject_drops` counts rejects that could answer a larger frame of an
+earlier request on the same path, and clears by itself;
+`below_minimum_reject_drops` counts rejects for a request of 228 octets or
+fewer. When the command timed out after such a reject, `hint` (a `Hint:` line
+in a table) names the flag to set for each path that drew one; otherwise it is
+`null`.
+
 **B/IPv6 targets are VMACs.** A B/IPv6 node is addressed by its 3-octet VMAC,
 not its IPv6 address (Clause U.1.3), and a device's VMAC is its device instance
 (Clause H.7.2), so `bip6:1234` reaches device 1234 without discovery. The CLI
@@ -186,7 +246,7 @@ before the CLI binds a socket.
 
 | Class | Commands (aliases) | Needs |
 |---|---|---|
-| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `alarm-summary`, `enrollment-summary`, `file-read`, `bdt`, `fdt`, `whois-router`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `mstp-ports`, `capture`, `sc-check`, `tui`, `mcp`, `help` | nothing |
+| read | `discover` (`whois`), `find` (`whohas`), `read` (`rp`), `readm` (`rpm`), `read-range` (`rr`), `alarms`, `alarm-summary`, `enrollment-summary`, `file-read`, `bdt`, `fdt`, `whois-router`, `routing-table`, `subscribe` (`cov`) with a finite lifetime (the default), `register`, `mstp-ports`, `capture`, `sc-check`, `tui`, `mcp`, `help` | nothing |
 | write | `write` (`wp`), `writem` (`wpm`), `create-object`, `delete-object`, `file-write`, `ack-alarm` (`ack`), `time-sync` (`ts`), `unregister`, `subscribe --lifetime 0` | `--allow-write` |
 | device management | `control` (`dcc`), `reinit` | `--allow-write`, plus `--yes` or the typed confirmation |
 
@@ -352,9 +412,11 @@ interface; `0.0.0.0` binds all interfaces.
 **Profiles and connection lifecycle.** Press `p` to open the profile dialog,
 `x` to disconnect or cancel a connection attempt, and `c` to reconnect. A
 profile reconnect opens its preview again. Disconnect must finish before
-another profile can be loaded or edited. Failed connection attempts keep the
-TUI open. Rows, duplicates and running operations are reset between sessions;
-late events from a previous session cannot repopulate the new one. If a
+another profile can be loaded or edited. Disconnecting a BACnet/SC session
+sends the hub a Disconnect-Request and a close with status 1000 (#2520).
+Failed connection attempts keep the TUI open. Rows, duplicates and running
+operations are reset between sessions; late events from a previous session
+cannot repopulate the new one. If a
 Who-Is cancellation cannot enter a command queue, its status shows the
 failure; Ctrl-C retries immediately and `x` disconnects. The queued Who-Is
 may still run until cancellation is accepted or the connection is retired.
@@ -515,7 +577,7 @@ expires according to its TTL plus grace (J.5.2.2–J.5.2.3).
 
 | Field | Values |
 |---|---|
-| Scope | Local broadcast, global broadcast, directed (one address), or remote network |
+| Scope | Local broadcast (the default), global broadcast, directed (one address), or remote network |
 | Target | For directed: `IP` or `IP:port` on BACnet/IP; `bip6:N`, `bip6:0xVMAC` or `[IPv6]:port` on BACnet/IPv6, where the address is resolved to the VMAC of the node there before the Who-Is goes; an SC VMAC as 12 hex digits on BACnet/SC. For remote network: the network number |
 | Range | Blank for every instance, `N`, or `LOW-HIGH` (0 to 4194303) |
 | Listen | Seconds to show the request as running while replies arrive (1 to 60, default 3) |
@@ -532,7 +594,9 @@ otherwise left out. Each column is as wide as its header or its widest cell,
 so a wide terminal leaves the spare room at the right; instance and address
 are never cut. The filter also matches the router. When two addresses answer
 for the same instance, a `DUPLICATE` banner names both (a routed one as
-`2:0x05 via ROUTER`). If the UI falls behind a burst of I-Am traffic, events
+`2:0x05 via ROUTER`) until only one does; the table keeps the row it showed
+first, and a request naming that instance fails with both addresses, so name
+the device by its address. If the UI falls behind a burst of I-Am traffic, events
 are dropped rather than queued without limit; the status bar's `drop` counter shows how many, and the
 table is refreshed from the client's discovery table afterwards.
 
@@ -547,7 +611,7 @@ table is refreshed from the client's discovery table afterwards.
 | `/` | Filter rows by instance, address, network or vendor; Enter keeps the filter, Esc clears it |
 | `Enter` | Browse the selected device |
 | `1` / `2` / `3` / `4` / `5` / `6` / `7` / `8` | The devices / Browse, the open device's browser / the watch list / the Network screen (BBMD tables on B/IP; the Networks tab on every transport) / the SC screen / the MS/TP screen / Capture / the agent pane, the attached agents' MCP calls and the write requests waiting for you (only while the profile's MCP listener runs; otherwise `8` stays and says so). The status bar's strip numbers those that apply to the session (Network once connected, SC on SC, MS/TP with a serial port, Agents with a listener), with the one shown in brackets. `1` keeps an open browser as it was, and `2` shows it again; with no device open, `2` stays on the devices and says so |
-| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd [ADDRESS]`, `find NAME`, `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`, `mstp scan SECS`, `mstp scan cancel`, `dcc enable`, `dcc ACTION [MINUTES|forever]`, `reinit STATE`; the footer shows the syntax of the commands matching what is typed |
+| `:` | Command bar: `watch DEVICE OBJECT [PROPERTY]`, `csv on`, `csv off`, `writem DEVICE OBJECT PROPERTY VALUE[@P] ...`, `bbmd [ADDRESS]`, `find NAME`, `find --dnet N NAME`, `find --global NAME`, `mstp rotation MS`, `mstp hold MS`, `mstp listen SECS`, `mstp scan SECS`, `mstp scan cancel`, `dcc enable`, `dcc ACTION [MINUTES|forever]`, `reinit STATE`; the footer shows the syntax of the commands matching what is typed |
 | `W` | Arm a write session, or disarm the armed one |
 | `w` / `n` | On an open object, in a write session: write a property / relinquish a priority slot |
 | `u` | The session ledger |
@@ -660,10 +724,15 @@ matches BBMDs by address, so a BBMD reached at an address other than its own
 BDT entry (behind NAT, its global address in peers' tables and its private one
 in its own) shows as two rows, one flagged with no entry for itself.
 
-**Who-Has and the Networks tab.** `:find NAME` broadcasts a Who-Has for the
-object named NAME (the rest of the line, exactly as typed, apostrophes and
-runs of spaces included; a name that is one quoted word, `"Zone  Temp"`, is
-unwrapped, and `:find ""` closes the panel like `:find` alone) and lists the
+**Who-Has and the Networks tab.** `:find NAME` broadcasts a Who-Has on this
+network alone for the object named NAME (the rest of the line, exactly as
+typed, apostrophes and runs of spaces included; a name that is one quoted
+word, `"Zone  Temp"`, is unwrapped, and `:find ""` closes the panel like
+`:find` alone). `:find --dnet N NAME` asks one remote network and
+`:find --global NAME` every network, as the one-shot `find` does (#2596); a
+name that starts with `--` is quoted. With no answer yet, the panel of a
+search of this network alone says that only this network was asked and how to
+widen it. The panel lists the
 devices whose I-Have answers it in a panel below the device table (beside
 it from 160 columns, when both fit at their content widths): the
 device, the object as the browser labels it (`analog-input 3`), the object's
@@ -698,12 +767,20 @@ Connect-Request/Accept), marks the one that failed and says what to try: an
 untrusted CA, an expired or future-dated certificate (with clock skew when it
 is close), a key mismatch, a missing client-authentication key usage, a proxy
 that drops the upgrade or refuses it with an HTTP status (which the hint
-names), a dial that stalls (placed on the step it stalled in), a hub that
-never answers the Connect-Request, or a duplicate VMAC. A failed connect opens
+names), an upgrade answer with a bad WebSocket header, a malformed one or
+one with an HTTP version or status it cannot accept, an address with no
+route (#2463), a dial that stalls (placed on the step it stalled in), a hub
+that never answers the Connect-Request, or a duplicate VMAC. Below the hint it
+names the failure's BACnet error code (Annex AB.7.5), such as
+`TCP_CONNECTION_REFUSED` or `WEBSOCKET_ENDPOINT_LEAVES` for a hub that closed
+the WebSocket going away, and the timeline's line for a failure ends with it
+(#2438). A failed connect opens
 the doctor. Connects, losses, reconnect attempts, failover, each failed probe
 of the primary while on the failover hub, and the primary's return go on the
 screen's timeline and in the log pane, and the status bar
-names the hub in use. The one-shot `--sc` commands report errors as before.
+names the hub in use. The one-shot `--sc` commands, and `bacnet mcp serve` on
+an SC profile, end a failed dial's error line with the same code, as in
+`(BACnet/SC error code TCP_CONNECTION_REFUSED)`.
 
 **Joining an MS/TP trunk.** An MS/TP session adds a master to the trunk's
 token ring, which every station on it notices, so the TUI asks before it opens
@@ -929,7 +1006,7 @@ in a batch, because a failed batch names the failing write without its
 priority.
 
 The command bar splits its line into words itself (all but `:find`, which
-takes the rest of the line). Single or double quotes group words, and a
+takes the rest of the line after a `--dnet N` or `--global`). Single or double quotes group words, and a
 backslash makes the quote, whitespace character or backslash after it plain
 text; a quote left open is an error. A quoted or escaped VALUE is a
 CharacterString, with any priority after the last quote or escape:
@@ -1002,8 +1079,13 @@ write to one array element (`state-text[2]`) keeps that element's old value and
 reverts just that element; if the element couldn't be read before the write,
 revert leaves the entry and says the old value is unknown. Writing index 0 (the
 array's length) is a resize, which is never reverted. Element and whole writes
-to one array revert to the array as it was before the first of them. A
-device not yet discovered (after a restart, say) is looked for first. Reverting
+to one array revert to the array as it was before the first of them. Each
+entry keeps the address its write went to, and a revert goes back there, so
+two devices sharing an instance keep their entries apart (#2560): after a
+restart a device on this network is written to at once, with no Who-Is, and
+one behind a router whose route was lost is asked for on its own network
+first. An entry from an earlier release, which kept only the instance, is
+looked for by that instance first, as before. Reverting
 needs a connection but not an armed session. Quitting with entries in the
 ledger, or with a write session request still out, opens the exit guard: `r`
 reverts all and quits, `k` keeps them, records that in the audit log and quits
@@ -1035,8 +1117,8 @@ status bar shows `PASSIVE`. On B/IP (broadcast or unicast, not multicast) it
 binds a receive-only UDP listener on the chosen interface and port, and the
 link state reads `listening` once the bind succeeds. Router announcements
 fill the Networks tab, and `:find NAME` filters the I-Haves overheard so far,
-and new ones, by exact name without sending a Who-Has; object names are
-learned from those I-Haves. Foreign-device settings are
+and new ones, by exact name without sending a Who-Has (so `--dnet` and
+`--global` are refused there); object names are learned from those I-Haves. Foreign-device settings are
 ignored: there is no registration, renewal, responder or send path. B/IPv6,
 BACnet/SC, B/IP multicast and participant MS/TP sessions are refused in this
 mode; the MS/TP monitor (`--mstp-monitor`) still works. The listener sees only
@@ -1188,14 +1270,21 @@ walks through setting up an agent host.
 ### Device Discovery
 
 ```bash
-bacnet discover                          # discover all devices
+bacnet discover                          # discover the devices on this network
 bacnet discover 1000-2000                # discover devices in instance range
 bacnet discover --wait 5                 # wait 5 seconds for responses (default: 3)
 bacnet discover --target 192.168.1.100   # directed (unicast) WhoIs
-bacnet discover --dnet 2                 # target a specific remote network
+bacnet discover --dnet 2                 # one remote network, through its router
+bacnet discover --global 1000-2000       # every network: a global broadcast
 bacnet discover --bbmd 10.0.0.1          # register once as a foreign device, then discover
 bacnet --foreign-bbmd 10.0.0.1 discover  # discover through the BBMD as a foreign device
 ```
+
+With no scope flag the Who-Is is a local broadcast: it reaches every device
+on this BACnet network, across BBMDs and to foreign devices, but no router
+passes it on, so devices behind routers don't hear it (#2560). `--dnet N`
+asks one remote network and `--global` every network. On a large routed site
+every device answers a global Who-Is, so give it a range, or name the network.
 
 **Discover flags:**
 
@@ -1203,24 +1292,61 @@ bacnet --foreign-bbmd 10.0.0.1 discover  # discover through the BBMD as a foreig
 |------|---------|-------------|
 | `--wait <N>` | `3` | Seconds to wait for responses |
 | `--target <ADDR>` | | Send directed WhoIs to a specific IP address |
-| `--dnet <N>` | | Target a specific remote network number |
+| `--dnet <N>` | | Broadcast on one remote network (1 to 65534) instead, through its router |
+| `--global` | | Broadcast on every network instead: a global broadcast, which every router passes on |
 | `--bbmd <ADDR>` | | Register once as a foreign device with this BBMD, for the global `--ttl`, before discovering (BIP only). The Who-Is still goes out as a local broadcast; `--foreign-bbmd` sends it through the BBMD |
 
+`--target`, `--dnet` and `--global` are one choice: give at most one.
+
 ```bash
-bacnet find "Zone Temp"           # find objects by name (WhoHas)
-bacnet find "Zone Temp" --wait 5  # wait 5 seconds for responses
+bacnet find "Zone Temp"                 # find objects by name on this network (WhoHas)
+bacnet find "Zone Temp" --wait 5        # wait 5 seconds for responses
+bacnet find "Zone Temp" --dnet 2        # one remote network, through its router
+bacnet find "Zone Temp" --global        # every network: a global broadcast
+bacnet find "Zone Temp" --target 192.168.1.100   # directed (unicast) WhoHas
 ```
 
 The name is one word: quote one with spaces. `--name "Zone Temp"` says the
 same; giving both, or neither, is a usage error (exit 2).
 
-`find` sends its Who-Has as a global broadcast, so routers pass it to every
-network, and prints every I-Have that answers within the wait, one row per device
-and object. With `--json` it prints an array, empty when nothing answered:
+`find` takes the scope flags `discover` takes (#2596). With none, the Who-Has
+is a local broadcast: it reaches every device on this BACnet network, across
+BBMDs and to foreign devices, but no router passes it on. `--dnet N` asks one
+remote network, `--global` every network, and `--target` one station on this
+network; give at most one, and `--dnet` refuses 0 and 65535 as `discover`
+does. Every device that hears a Who-Has searches its objects for the name, so
+on a large routed site ask the network that holds the object.
+
+`find` prints every I-Have that answers within the wait from the scope it
+asked, one row per device, object and station: an I-Have heard from
+elsewhere during the wait is not an answer, and a station's copy through a
+router on this client's own network is its local answer, as `discover` shows
+it. Each row says where the answer came
+from as `discover` writes a device: the station's address, or for a device
+behind a router the router's address, with the network (`DNET`) and the routed
+station (`2:0x05`). With `--json` it prints an array, empty when nothing
+answered; `network` and `station` appear only for a routed answer:
 
 ```json
-[{ "device": 1234, "object": "ANALOG_INPUT:7", "name": "Zone Temp" }]
+[{ "device": 1234, "object": "ANALOG_INPUT:7", "name": "Zone Temp", "address": "192.168.1.20:47808" }]
 ```
+
+When a search of this network alone finds nothing, `find` adds a note on
+stderr, in either output format, that only this network was asked and that
+`--dnet` or `--global` asks further: a miss there doesn't mean the site has no
+such object. The JSON on stdout stays the array, and the exit status is 0, as
+for a `discover` that finds nothing. `find` stops collecting at 4,096 answers
+and says so on stderr: the list may then be cut short.
+
+**Find flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name <NAME>` | | The object name, as a flag instead of the positional NAME |
+| `--wait <N>` | `3` | Seconds to wait for responses |
+| `--target <ADDR>` | | Send a directed WhoHas to one station on this network |
+| `--dnet <N>` | | Broadcast on one remote network (1 to 65534) instead, through its router |
+| `--global` | | Broadcast on every network instead: a global broadcast, which every router passes on |
 
 ```bash
 bacnet whois-router                      # routers and the networks they reach
@@ -1244,6 +1370,7 @@ bacnet read-range 192.168.1.100 trend-log:1     # defaults to log-buffer
 bacnet read-range 192.168.1.100 trend-log:1 --position 1 --count 50
 bacnet read-range 192.168.1.100 trend-log:1 --sequence 1200 --count -20   # backward
 bacnet read-range 192.168.1.100 trend-log:1 --time 2026-10-05T09:00 --count 50
+bacnet read-range 192.168.1.100 trend-log,1 --time "2026-10-05 1 09:00:00.00"  # the RDF forms
 bacnet read-range 192.168.1.100 trend-log:1 --all --count 100            # the whole log
 bacnet --min-interval-ms 50 read-range 192.168.1.100 trend-log:1 --all --sequence 1201
 ```
@@ -1303,6 +1430,13 @@ Text output names what the device sent:
 - a list or array whole, every element, in brackets; an indexed read of an
   array as its one element (`weekly-schedule[3]` is Wednesday), and index 0
   as the array's size;
+- a value with a context tag and no decoded form (a vendor's property, a
+  Lighting_Command) as its tags, in wire order (#2618): each context field
+  by its tag, a constructed one with its members in parentheses, and
+  application values decoded inside, `[0] [raw 02], [1] (1.5, "hi"), 7`.
+  A context-tagged primitive's octets stay `[raw …]`, since only the
+  property's datatype says what they are, and so does an application value
+  inside that doesn't decode;
 - anything that doesn't decode as hex, `[raw 0e 0f]`, the one spelling every
   command uses for undecoded octets.
 
@@ -1332,6 +1466,7 @@ names' spelling:
 | Date, Time | `{"date": "2026-10-19"}`, `{"time": "07:00"}` |
 | Object identifier | `{"type": "analog-input", "type_number": 0, "instance": 1}` |
 | Constructed element | `{"element": "daily-schedule", "text": "Mon 07:00 = 72.5"}`: its kind and the text form |
+| A value shown as its tags | `{"element": "tagged", "text": "[0] [raw 02]", "fields": {"data": {"raw": "0902"}}}`: the tags as text, and the value's octets under `fields.data` |
 | Several values, a list or array | an array of the above |
 | Octets that don't decode | `{"raw": "0e0f"}` |
 
@@ -1345,14 +1480,18 @@ join it later without removing `text`. The kinds are `access-rule`,
 `event-parameter`, `name-value`, `object-property-reference`,
 `port-permission`, `prescale`, `property-access-result`,
 `read-access-result`, `read-access-specification`, `recipient`, `scale`,
-`shed-level`, `special-event`, `stage-limit-value`, `time-stamp` and
-`value-source`.
+`shed-level`, `special-event`, `stage-limit-value`, `tagged`, `time-stamp`
+and `value-source`.
 
 An `event-parameter` element also has `fields`, an object of the value's
 members by their snake-case names in wire order, each in the forms above:
 `algorithm` first (an enumerated named as its event type), then the
 algorithm's members, references as `device-object-property-reference`
-elements and change-of-state values as `property-state` elements:
+elements and change-of-state values as `property-state` elements (a state is
+named where its enumeration is known; one carried through the extended-value
+choice reads `sc-connection-state connected` or `sc-hub-connector-state
+connected-to-failover` for choices 258 and 259, and any other as
+`extended-value 260 2`, its tag then its value):
 
 ```json
 {
@@ -1451,6 +1590,240 @@ anything that doesn't decode ends the list as `[raw ..]`.
 
 **Aliases:** `rp` = read, `rpm` = readm, `rr` = read-range
 
+### Device inventory
+
+```bash
+bacnet inventory 192.168.1.100                           # every object: name, units, states
+bacnet inventory 1234 --values                           # with each Present_Value and Status_Flags
+bacnet inventory 2:1234 --types ai,ao,msv --values       # some object types only
+bacnet inventory 192.168.1.100 --format csv > ahu1.csv   # one row an object
+bacnet inventory 192.168.1.100 --values --json > ahu1.json
+```
+
+`inventory` lists a device's objects as point records: for each object its
+name, description, units, state texts and whether it takes commands. It
+reads every object the device's Object_List names, of any type, a vendor's
+included.
+
+**Inventory flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--types <TYPES>` | Only these object types, comma-separated, by the target grammar's names (`ai`, `msv`, `trend-log` and so on) |
+| `--values` | Also read each object's Present_Value and Status_Flags |
+| `--settings` | Also read each object's COV_Increment, Min_Pres_Value, Max_Pres_Value and Relinquish_Default, where its type has them |
+| `--format table\|json\|csv`, `--json` | How to print; a table at a terminal and JSON through a pipe unless given |
+| `--csv-exact` | With `--format csv`: write device text exactly, without the formula guard |
+
+- **What is read.** Object_Name and Description of every object; Units of
+  the analog and integer types, Accumulator and Pulse Converter; a binary
+  object's Active_Text and Inactive_Text; a multi-state object's
+  Number_Of_States and State_Text. An output is commandable by its type; a
+  value object, or an object of a type this release doesn't know, is
+  commandable when it has a Priority_Array, which is read to find out. An
+  optional property an object lacks is left empty. A property that should
+  have read and didn't is listed with the device's error under the object's
+  problems and never fails the command; an object the device refuses is a
+  row whose properties are all problems.
+- **What it costs.** The device summary, the Object_List, then one
+  ReadPropertyMultiple for each batch, filled in Object_List order up to
+  16 objects or 32 properties, whichever comes first: 10 analog inputs, 8
+  binary inputs or analog values, 6 multi-state values, 16 objects of a
+  type that reads only its name and description. N objects of one type
+  that each read p properties take N divided by the batch's size, rounded
+  up, where the size is the smaller of 16 and 32/p rounded down: 31 analog
+  inputs, at three properties each, take 4 requests. That is about N/8 + 2
+  requests for a typical controller, N/5 + 2 with `--values`, one at a
+  time. A target
+  given by address costs one more, a read of the Device object by the
+  wildcard instance. A device that can't send a batch's answer for its
+  size is asked for that batch an object at a time, and for at most half
+  as many objects a batch from then on, down to one: at most four such
+  refused batches. A device that
+  refuses ReadPropertyMultiple costs one refused request, then a
+  ReadProperty a property: 13 for the summary, one for the Object_List, and
+  two to five an object (two more with `--values`).
+- **Output.** Stdout carries only the data, and a one-line summary goes to
+  stderr in every format. The table cleans device text for the screen
+  (control characters as spaces), and shows the values' and settings'
+  columns when they were read and a problems column when any object has
+  one. JSON keeps device text exactly as the device sent it, and so does
+  CSV but for its formula guard (below).
+- **Exit status.** 0 when every object was read, also when the device has
+  none of the selected types (stderr says so). 1 when the device doesn't
+  answer or refuses its Object_List, or an Object_List read element by
+  element fails partway (the error names the element: `Object_List element
+  3 of 40: ...`), with nothing on stdout; and 1 when it goes silent
+  while its objects are read: what was read is still printed, and stderr
+  says how many objects were not read.
+
+`--json` prints one document. `device.properties` holds the summary by
+property name; each value is its text under `value` and its typed form under
+`decoded`, as in [value output](#value-output). `cov` is what is known of
+SubscribeCOV at the device (`unknown`, `not-offered`, `offered`, `accepted`
+or `refused`). `unread` lists the objects not read when `stopped`, the
+error's text, is set:
+
+```json
+{
+  "address": "192.168.1.100:47808",
+  "device": {
+    "instance": 1234,
+    "name": "AHU-1",
+    "properties": { "vendor-name": { "value": "\"Acme\"", "decoded": "Acme" } }
+  },
+  "cov": "offered",
+  "points": [
+    {
+      "device": "192.168.1.100:47808",
+      "device_instance": 1234,
+      "object": { "type": "analog-input", "type_number": 0, "instance": 1 },
+      "name": "Zone Temp",
+      "description": "Room 101",
+      "units": { "value": 64, "name": "degrees-fahrenheit", "symbol": "°F" },
+      "state_texts": { "active": null, "inactive": null, "states": [] },
+      "number_of_states": null,
+      "commandable": false,
+      "relinquish_default": null,
+      "cov_increment": null,
+      "min_present_value": null,
+      "max_present_value": null,
+      "present_value": { "value": "72.5 °F", "decoded": 72.5 },
+      "status_flags": { "value": "none", "decoded": { "bits": "0000", "names": [] } },
+      "problems": []
+    }
+  ],
+  "unread": [],
+  "stopped": null
+}
+```
+
+Every record has every field, `null` where there is nothing to say. A
+problem is `{"property": "units", "error": "PROPERTY:UNKNOWN_PROPERTY"}`.
+Property names, in `problems` and as the keys of `device.properties`, are
+in kebab case (`units`, `vendor-name`).
+The field names are stable.
+
+`--format csv` prints a header and one row an object, the columns always
+these and in this order:
+
+```text
+device,device_instance,object,name,description,units,state_texts,number_of_states,commandable,relinquish_default,cov_increment,min_present_value,max_present_value,present_value,status_flags,problems
+192.168.1.100:47808,1234,analog-input:1,Zone Temp,"Room 101, east",degrees-fahrenheit,,,false,,,,,72.5 °F,none,
+192.168.1.100:47808,1234,multi-state-value:1,Mode,,,Off|Low|High,3,true,,,,,2 (Low),none,
+```
+
+- `object` is `type:instance`, the form the other commands take; `units` is
+  the unit's name; the values are their text, as the table shows them.
+- `state_texts` joins a binary object's Inactive_Text and Active_Text, or a
+  multi-state object's State_Text from state 1, with `|`. A `|` or a `\`
+  inside a text is written `\|` or `\\`.
+- `problems` joins each `property: error` with `; `.
+- A field holding a comma, a double quote or a line break is put in double
+  quotes with its quotes doubled (RFC 4180); other fields are bare, and an
+  empty field means nothing to say. Rows end with a line feed.
+- A spreadsheet runs a cell that starts with `=`, `+`, `-`, `@`, a tab or
+  a carriage return as a formula. So a `name`, `description` or
+  `state_texts` cell that starts with one (for `state_texts`, the joined
+  cell) gets an apostrophe before it, which a spreadsheet shows as text:
+  `=1+1` is written `'=1+1`. Leading spaces and line breaks before such a
+  character don't hide it. A program that reads the CSV back sees the
+  apostrophe in guarded cells: use `--csv-exact` or JSON for machine use.
+  A value cell holding device text is guarded
+  the same way, though a string value prints in double quotes and so
+  never starts with one. Numbers (`-40`), addresses, objects, units and
+  `problems` are never changed. `--csv-exact` turns the guard off and
+  writes device text exactly; JSON is always exact.
+
+### Standard 223 export (experimental)
+
+```bash
+bacnet export 223-experimental 192.168.1.100 > ahu1.ttl
+bacnet export 223-experimental 1234 --base-iri https://example.com/site/ -o ahu1.ttl
+bacnet export 223-experimental 192.168.1.100 --types ai,ao,msv,integer-value --write-priority 8
+```
+
+Proposed ASHRAE Standard 223 is a semantic model of a building: its
+equipment, how the equipment connects, and the properties it observes and
+actuates. Its draft ontology ties a model's property to a BACnet point with
+an external reference. `export 223-experimental` writes that part for one
+device, as Turtle: one 223 property for each analog, binary and multi-state
+input, output and value and each integer value, with a reference naming
+the device, the object by identifier and by name, and `present-value`.
+`--types` narrows the objects read, by the target grammar's type names
+(`ai`, `msv`, `integer-value` and so on); by default it reads all ten
+types.
+
+- Inputs become observable properties, outputs and values with a
+  Priority_Array actuatable ones, and values without one plain properties.
+  Analog points and integer values are quantifiable; binary points use the
+  ontology's neutral logical kind; each multi-state point gets an
+  enumeration kind of its own, one member a state, named by its State_Text.
+- The units of analog points and integer values go out as QUDT units and
+  quantity kinds where the export's table maps them (about 90 common HVAC,
+  lighting and energy units).
+- `--write-priority N` (1 to 16) names a command priority in the reference
+  of every actuatable point. Present_Value itself is never read or written.
+- Node names come from object identifiers, so they don't change when an
+  object is renamed: `<BASE>device-1234/analog-input-3.present-value`. The
+  default base, `http://example.org/bacnet/`, is a documentation domain;
+  pass your own with `--base-iri`. The base must be ASCII, start with a
+  scheme (`http:`, `urn:` and so on), hold no space, control character,
+  backtick or any of `<>"{}|^\`, use `%` only in a two-digit hex escape,
+  hold at most one `#`, and end in `/` or `#`. Give each site or
+  internetwork a base of its own: a device instance is unique only within
+  one internetwork, so two sites' exports under one base can name
+  different devices with the same node.
+- Stdout carries only the Turtle, or nothing with `-o FILE`, which writes a
+  new file and refuses one that exists. A summary goes to stderr either
+  way; `--format` and `--json` don't apply. When the device has no object
+  of the selected types, the model is empty, the header and stderr say so,
+  and the exit status is 0.
+- It reads as [`inventory`](#device-inventory) does, the ten exported
+  types only: the device summary, its Object_List and one
+  ReadPropertyMultiple for each batch of exported objects, six to ten
+  objects a request, one at a time. A device that refuses
+  ReadPropertyMultiple costs one refused request, then a ReadProperty a
+  property: 13 for the summary, and 3 per analog input or output, 4 per
+  analog value, integer value, binary input or output or multi-state input
+  or output, and 5 per binary or multi-state value. A target given by
+  address costs one more: a read of its Device object by the wildcard
+  instance, to learn the device's instance number. If the device stops
+  answering partway, the export writes what was read, says so in its
+  header, and exits 1.
+
+**Limits.** The draft and this export can change between releases, which
+is why the command name says experimental.
+
+- It is a point list, not a building model: no equipment, connections or
+  sensors. An integrator adds them.
+- Shape validation warns that each observable property has no sensor
+  observing it, and that each actuatable property has no equipment it
+  actuates. Both are expected for a point list.
+- The draft's identifier pattern refuses instance 0. An object or a device
+  numbered 0 has no identifier string in its reference; its name still
+  identifies it, and a comment marks the gap.
+- A unit the table doesn't map is exported with QUDT's unknown quantity
+  kind and no unit, since the draft requires a quantity kind on every
+  quantifiable property, plus a comment naming the BACnet unit. The header
+  counts these points.
+- An object that can't give its Object_Name (one the device refuses
+  altogether, say), the Units of an analog object or an integer value, or
+  a multi-state object's Number_Of_States is skipped, with a comment where
+  it would have been. The header counts the skipped objects.
+- Device text (names, descriptions, state texts) is kept exactly, escaped
+  so the file stays ASCII, except U+0000, which a string literal can't
+  hold: it becomes U+FFFD, and the header counts each one.
+
+The header comment names the Open223 ontology copy the mapping was written
+against. The project's golden exports were validated against that copy,
+which is kept in `testdata/open223/`; `scripts/check-223.py` validates any
+export (`-o FILE`) against its shapes with pySHACL. A live export isn't
+validated as it is written.
+
+The MCP server offers the same export to agents as the tool
+`bacnet_export_223` ([MCP server](mcp.md#standard-223-export-experimental)).
+
 ### Writing Properties
 
 ```bash
@@ -1475,8 +1848,11 @@ Every `write` needs `--allow-write` (see [Write guard](#write-guard)).
 **Write multiple properties (WritePropertyMultiple):** each object is followed
 by its comma-separated `property=value` writes, each value with an optional
 `@priority`. Like `write`, it needs `--allow-write` and takes routed targets.
-A value can't contain a comma, since the comma separates the writes. The
-TUI's `:writem` command takes a different grammar, `OBJECT PROPERTY VALUE`
+A comma ends a write only when a property and an `=` follow it, so a value
+may hold commas: `pv=object:ai,1`, `ef=in-alarm,fault`. A value that holds a
+comma, a real property name and an `=` (`desc=heat, mode=auto` writes
+Description `heat` and Mode `auto`) needs quotes, which a comma never splits:
+`desc='"heat, mode=auto"'`. The TUI's `:writem` command takes a different grammar, `OBJECT PROPERTY VALUE`
 groups separated by spaces; the one-shot takes `OBJECT prop=value,...`.
 
 ```bash
@@ -1498,9 +1874,14 @@ bacnet --allow-write writem 192.168.1.100 av:1 pv=72.5@8,desc='"Zone Temp"' av:2
 | `enumerated:N` | `enumerated:3` | Enumerated |
 | `date:YYYY-MM-DD` | `date:2024-03-15` | Date (use `*` for unspecified) |
 | `time:HH:MM:SS[.hh]` | `time:14:30:00` | Time (use `*` for unspecified) |
-| `object:type:inst` | `object:ai:1` | ObjectIdentifier |
+| `object:type:inst` | `object:ai:1`, `object:ai,1` | ObjectIdentifier |
 
 Inline priority: append `@N` to any value (e.g., `72.5@8`, `null@16`).
+`write` refuses a value whose `@N` differs from its `--priority`, sending
+nothing, since which one was meant is unknown; the same priority in both
+is fine.
+[Input Forms](#input-forms) lists every form an object, a date or a time
+takes, the coming BACnet RDF encoding's among them.
 
 **Values by name.** `write` and `writem` know the property they write, so
 a value can be typed as [Value output](#value-output) prints it, and a value
@@ -1521,13 +1902,13 @@ read pastes back as a write:
   (`active (On)`); a multi-state state by number, its text allowed after
   it (`2 (Heat)`);
 - a named bit string by its set bits, `in-alarm,fault` or `in-alarm |
-  fault` (quote a `|` for the shell; `writem` needs the `|` form, since a
-  comma separates its writes), as 0/1 digits first bit first (`1100`), or
+  fault` (quote a `|` for the shell; `writem` takes the comma form too, as no
+  property name follows the comma), as 0/1 digits first bit first (`1100`), or
   `none` for no bit set (an empty value is refused, so a blank field never
   clears every bit); a bit string without names as `bits(0101)`;
-- a date as `2026-10-19`, with a weekday (`2026-10-19 Mon`), `*` for any
-  field, the special months and days by name (`*-even-months-last-day`),
-  or `any date`; a time as `07:00`, `14:30:05` or `14:30:05.25`, `*` for any
+- a date as `2026-10-19`, with a weekday (`2026-10-19 Mon`, or as a digit,
+  Monday 1, `2026-10-19 1`), `*` for any field, the special months and days
+  by name (`*-even-months-last-day`), or `any date`; a time as `07:00`, `14:30:05` or `14:30:05.25`, `*` for any
   field, or `any time`; hundredths are two digits (`.05`, `.50`). The
   `date:` and `time:` prefixes take the same forms;
 - a date-time as a date then a time, `2026-10-19 Mon 07:00`, or
@@ -1558,7 +1939,7 @@ written as above:
 | Element | JSON |
 |---------|------|
 | Day | `[["07:00", 72.5], ["18:00", null]]`; an entry may also be `{"time": "07:00", "value": 72.5}` |
-| Calendar entry | `{"kind": "date", "date": "2026-12-25"}`, `{"kind": "date_range", "start_date": "2026-07-01", "end_date": "2026-07-04"}` or `{"kind": "week_n_day", "month": 12, "week_of_month": 1, "day_of_week": 1}` (`null` or 255 for any) |
+| Calendar entry | `{"kind": "date", "date": "2026-12-25"}`, `{"kind": "date_range", "start_date": "2026-07-01", "end_date": "2026-07-04"}` or `{"kind": "week_n_day", "month": 12, "week_of_month": 1, "day_of_week": 1}` (`null` or 255 for any); a week-n-day may instead be one text, `{"kind": "week_n_day", "week_n_day": "12,1,1"}` (`*` for any; see [Input Forms](#input-forms)) |
 | Special event | `{"period": <calendar entry or "calendar:1">, "time_values": <day>, "priority": 10}` |
 | Destination | `{"recipient": "device:99", "process_identifier": 7}`, optionally with `valid_days` (`["mon", "tue"]` or Python's bit number), `from_time`, `to_time`, `issue_confirmed_notifications` and `transitions` (`["to-offnormal"]` or a number); left out, a destination covers every day, all day, every transition, unconfirmed. A recipient may also be `{"kind": "device", "object_identifier": "device:99"}` or `{"kind": "address", "network_number": 5, "mac_address": "0a:00:00:64:ba:c0"}` |
 
@@ -1824,6 +2205,43 @@ named. With `--json` it prints an array, empty when no router answered:
 A device on one of those networks is then a routed target, such as
 `bacnet read 2:1234 ai:1 pv` for device 1234 on network 2.
 
+```bash
+bacnet routing-table 192.168.1.1:47808           # one router's whole table
+bacnet --json routing-table 192.168.1.1:47808 --wait 5
+```
+
+`routing-table` reads the table of one router on the local network, at the
+address `whois-router` printed, and changes nothing: it sends an
+Initialize-Routing-Table with a port count of zero, a query the command
+cannot turn into an update. Each entry is a network and the router's
+identifier for the port that reaches it (`port_id`), with the port
+information octets in hex only when the entry has any (the standard leaves
+them an octet string, typically dial-up details). `--wait` is the seconds to
+wait for the first answer (default 3); the command then listens up to ten
+seconds more for the rest. A long table comes as several answers with
+nothing to mark the last, so the command lists what arrived until the
+router has been quiet for half a second since its last answer, or the time
+is up. `--json` prints an object:
+
+```json
+{ "router": "192.168.1.1:47808",
+  "entries": [{ "network": 1, "port_id": 1, "port_info": null },
+              { "network": 2, "port_id": 2, "port_info": null }],
+  "truncated": false }
+```
+
+`truncated` is `true` when the time or size bound ended the answer. It
+covers those bounds only: on MS/TP the answers after the first wait for the
+router's token, so a quiet end does not prove the table whole. A router
+that sends nothing is an error that names the time waited, not an empty
+table: an older router that ignores the message and an address with no
+router look alike, and on B/IP so does a router that answers from another
+address or port than the one asked. A router that refuses with a
+Reject-Message-To-Network is an error that names the reason (rejects for a
+network number are ignored, as this message has none). An older router's
+answer with no data counts as an empty table. A router behind another
+router cannot be asked, because the query is a local message.
+
 ### BBMD Management
 
 These commands are BACnet/IP only.
@@ -1898,8 +2316,8 @@ router gives the registration, `--nat-global-address IP:PORT` lets the TUI's
 Network screen find our FDT entry there; it is a display hint only, and changes
 neither the registration nor anything else sent. While the transport manages the
 registration, `register` and `unregister` to that BBMD are refused; use
-another BBMD or a normal-mode CLI. With `--foreign-bbmd`, log lines go to
-stderr so they can't corrupt JSON output.
+another BBMD or a normal-mode CLI. Log lines go to stderr here as in every
+mode, so they can't corrupt JSON output.
 
 #### Multicast mode
 
@@ -2009,9 +2427,17 @@ quote paths containing spaces in a shell. TLS 1.3-only remains local policy.
 
 SC construction rejects missing/empty CA paths, unreadable/empty/malformed or
 unusable CA PEM, and invalid or mismatched local cert/key before DNS/TCP dialing.
+The files load through `ScNodeTlsConfig::from_pem_files` (#2600), and each
+refusal starts with the flag of the file at fault (`--sc-ca: the CA bundle holds
+no certificate, so nothing would be trusted`, `--sc-key: no PKCS#8, SEC1 or
+PKCS#1 private key found`). Each file is read up to 1 MiB. The key file must
+hold exactly one unencrypted PKCS#8, SEC1 or PKCS#1 key, in PEM that is well
+formed throughout; an encrypted key (`ENCRYPTED PRIVATE KEY`, or OpenSSL's
+older `Proc-Type: 4,ENCRYPTED` form) and an OpenSSH key are named as such, and
+`bacnet sc-check` decodes the key by the same rule.
 Failures retain nonzero exit status and stderr diagnostics, not a successful JSON
-result. SC tracing (including connection-close warnings) also goes to stderr so
-it cannot corrupt JSON stdout. Before any DNS or TCP, the credential lint of
+result. SC tracing (including connection-close warnings) goes to stderr, as
+every mode's does, so it cannot corrupt JSON stdout. Before any DNS or TCP, the credential lint of
 [`bacnet sc-check`](sc-check.md#before-a-dial) refuses an expired or
 not-yet-valid operational certificate, an unreadable one, and a key that does
 not match it, with the reason on stderr; its warnings (expiry within 30 days, a
@@ -2189,6 +2615,71 @@ All BACnet object types are also accepted by full name in kebab-case (e.g., `ana
 | `all` | ALL (reads all properties via RPM) |
 
 All BACnet properties are also accepted by full name in kebab-case (e.g., `present-value`, `reliability`, `notification-class`) or by numeric value. Array indices use bracket syntax: `ol[3]`, `pa[8]`.
+
+## Input Forms
+
+The one-shot CLI, the TUI (its `:` command bar and write form) and the MCP
+server (tool arguments, resource URIs, prompts) read objects, dates, times
+and constructed values with one parser (`bacnet_ops::parse`), so a form one
+of them takes, they all take. Beside the forms we print, the parser takes the
+text forms of the coming BACnet RDF encoding, so a value copied from an RDF
+model can be typed in. That encoding isn't published yet (it is due as an
+addendum to Standard 135; the forms here come from its public drafts), so
+these forms may still change, and the parser will follow them when it is
+published. What we print is unchanged.
+
+| Value | Forms | Also taken, in the RDF encoding's form |
+|-------|-------|-----------------------------------------|
+| Object | `type:instance`: `analog-input:3`, `ai:3`, `ANALOG_INPUT:3`, `128:5` | `type,instance`: `analog-input,3`, `128,5` |
+| Date | `2026-11-10`, with a weekday by name (`2026-11-10 Tue`), `*` for any field, the special months and days by name (`*-even-months-last-day`), `any date` | a weekday digit, Monday 1, or `*` for any: `2026-11-10 2`, `2026-11-10 *`, `*-*-* *` |
+| Time | `16:35`, `16:35:05`, `16:35:05.25`, `*` for any field, `any time` | `16:35:00.00`, `*:*:*.*` (the forms above already take these) |
+| Date-time | a date then a time, `2026-11-10 Tue 16:35`; `unspecified` | `2026-11-10 2 16:35:00.00` |
+| Week-n-day, in a calendar entry | `{"kind": "week_n_day", "month": 11, "week_of_month": 4, "day_of_week": 4}` (`null` or 255 for any) | `{"kind": "week_n_day", "week_n_day": "11,4,4"}` (`*` for any field: `*,*,1` is every Monday) |
+| `read-range --time`, and an MCP log tool's `from` and `to` | `2026-10-05T09:00[:SS[.hh]]`, a space for the `T` | `2026-11-10 2 16:35:00.00` |
+
+- **Objects.** The type is a name in any case, with `-` or `_`, one of the
+  [shorthands](#object-type-shorthand), or a number, 0 to 1023, for a type
+  without a name. The instance is 0 to 4194303; a larger one is refused
+  (`instance number 4194304 exceeds max 4194303`), whichever form names it.
+  Either form works wherever an object is typed: each command's OBJECT, each
+  object of `readm` and `writem`, the TUI's `:watch` and `:writem`, an MCP
+  tool's `object`, a resource URI (`bacnet://device/1201/object/analog-input,3`),
+  the `investigate_point` prompt, an `object:` value (`object:ai,1`), and a
+  JSON `"calendar,1"` period or `"device,99"` recipient.
+- **Commas in `writem`.** The one-shot `writem` ends a write at a comma only
+  when a property and an `=` follow it, so an `object:` value takes either
+  form (`pv=object:ai,1`), as do a comma-separated bit or enumeration list
+  and a date with commas. Text that holds a comma, a property name and an `=`
+  needs quotes: `desc='"heat, mode=auto"'` is one Description write.
+- **Weekdays.** A weekday after a date, by name or by digit, is kept as
+  typed and not checked against the date, as a name always has been:
+  `2026-11-10 3` writes that date with Wednesday, though it is a Tuesday. The
+  `read-range --time` and MCP log windows work out the weekday from the
+  date, so there a digit naming another day is refused, and `*` takes the
+  date's own.
+- **Week-n-day.** The month is 1 to 14 (13 and 14 the odd and the even
+  months), the week of the month 1 to 9, the day 1 (Monday) to 7. Give the
+  three numbers or the one `week_n_day` text, not both. The text works in a
+  Date_List entry and in an Exception_Schedule period alike.
+- **Python** takes typed values rather than these texts:
+  `ObjectIdentifier(ObjectType.ANALOG_INPUT, 3)`, dates as tuples, and the
+  calendar entry mapping with numbers ([Python API](python-api.md)).
+
+**Forms we print.** Each output keeps its own form of an object:
+
+| Where | Form | Example |
+|-------|------|---------|
+| An object identifier value, as `read` shows it, and the TUI's lists | a label | `analog-input 3` |
+| MCP tool results and resource URIs | `type:instance`, kebab case | `analog-input:3` |
+| One-shot CLI rows (`find`, and the object of `read`, `readm` and `read-range`) | `TYPE:instance` | `ANALOG_INPUT:3`, `128:5` |
+| JSON `decoded` | an object | `{"type": "analog-input", "type_number": 0, "instance": 3}` |
+| [Standard 223 export](#standard-223-export-experimental) | `type,instance`; instance 0 is left out | `analog-input,3` |
+| Python `repr` | the constructor | `ObjectIdentifier(ANALOG_INPUT, 3)` |
+
+All of these but the label read back as input. Dates print as
+`2026-11-10 Tue`, times as `16:35` with seconds and hundredths when they
+aren't zero, and the wire view as `2026-11-10` and `16:35:00.00`; every date,
+time and date-time printed reads back.
 
 ## Pre-built Binaries
 

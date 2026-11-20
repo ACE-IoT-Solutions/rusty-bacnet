@@ -1,7 +1,7 @@
 //! End-to-end integration tests: real BACnetClient ↔ real BACnetServer over loopback UDP.
 #![forbid(unsafe_code)]
 
-use bacnet_client::client::BACnetClient;
+use bacnet_client::client::{BACnetClient, Broadcast};
 use bacnet_encoding::apdu::{Apdu, ConfirmedRequest as ConfirmedRequestPdu, encode_apdu};
 use bacnet_network::layer::NetworkLayer;
 use bacnet_npdu::NetworkPriority;
@@ -34,11 +34,11 @@ async fn make_server_with_dcc_policy(
     let mut db = ObjectDatabase::new();
 
     // Device object (instance 1234)
-    let mut device = DeviceObject::new(DeviceConfig {
+    let device = DeviceObject::new(DeviceConfig {
         identity: bacnet_objects::DeviceIdentity::new(1234, 555)
             .expect("valid Device identity")
             .with_name("Integration Test Device")
-            .with_segmentation(Segmentation::BOTH),
+            .with_segmentation(Segmentation::SEGMENTED_BOTH),
         vendor_name: "Rusty BACnet".into(),
         ..DeviceConfig::default()
     })
@@ -50,13 +50,6 @@ async fn make_server_with_dcc_policy(
 
     // BinaryValue (instance 1, default = inactive)
     let bv = BinaryValueObject::new(1, "Fan Status").unwrap();
-
-    let ai_oid = ai.object_identifier();
-    let bv_oid = bv.object_identifier();
-    let dev_oid = device.object_identifier();
-
-    // Update device object-list
-    device.set_object_list(vec![dev_oid, ai_oid, bv_oid]);
 
     db.add(Box::new(device)).unwrap();
     db.add(Box::new(ai)).unwrap();
@@ -73,7 +66,7 @@ async fn make_server_with_dcc_policy(
         // this shared fixture advertises both. The other suites are
         // indifferent to it beyond the I-Am/Device property now saying
         // SEGMENTED_BOTH.
-        .device(bacnet_objects::DeviceIdentity::new(1234, 555).unwrap().with_segmentation(Segmentation::BOTH))
+        .device(bacnet_objects::DeviceIdentity::new(1234, 555).unwrap().with_segmentation(Segmentation::SEGMENTED_BOTH))
         .database(db)
         .build()
         .await

@@ -7,6 +7,7 @@ use std::time::Duration;
 use bacnet_bip_codec::BvlcResultCode;
 use bacnet_bip_core::node::{AttemptOutcome, ExchangeCounters, NodeCounters, Operation};
 
+use super::link_returns::LinkReturns;
 use super::node::NodeHandle;
 use crate::bbmd_lookup::BbmdLookupFailure;
 
@@ -243,6 +244,8 @@ pub(super) struct ClientRecord {
     snapshot: Mutex<BvlcClientSnapshot>,
     /// The running node, which knows the registration's lease and schedule.
     node: Mutex<Weak<NodeHandle>>,
+    /// A foreign device's link returns (#2572), kept across restarts.
+    pub(super) returns: LinkReturns,
 }
 
 impl ClientRecord {
@@ -256,6 +259,7 @@ impl ClientRecord {
 
     /// The transport started: clear the last-attempt status.
     pub(super) fn start(&self) {
+        self.returns.restart();
         let mut snapshot = self.lock();
         snapshot.reset_status();
         snapshot.running = true;
@@ -264,6 +268,11 @@ impl ClientRecord {
     /// The node the transport started runs the registration.
     pub(super) fn attach(&self, node: &Arc<NodeHandle>) {
         *self.node_slot() = Arc::downgrade(node);
+    }
+
+    /// The running node, or `None` while the transport is stopped.
+    pub(super) fn node(&self) -> Option<Arc<NodeHandle>> {
+        self.node_slot().upgrade()
     }
 
     /// The transport stopped: clear the last-attempt status.
@@ -285,8 +294,7 @@ impl ClientRecord {
     /// taken, since the node takes this record's under its own.
     pub(super) fn live_snapshot(&self) -> BvlcClientSnapshot {
         let mut snapshot = self.snapshot();
-        let node = self.node_slot().upgrade();
-        if let Some(node) = node {
+        if let Some(node) = self.node() {
             node.fill_registration(&mut snapshot.foreign_registration);
         }
         snapshot

@@ -1,6 +1,6 @@
 ---
 title: "Python shared endpoints"
-description: "The B/IP, SC and MS/TP endpoints and their client and server roles, generated from the type stub."
+description: "The B/IP, SC and MS/TP endpoints and what their status reports, generated from the type stub."
 ---
 
 :::note[On `dev` after the release]
@@ -28,6 +28,16 @@ cancellation can race publication, so always await close for cleanup.
 Setup errors are delivered by awaiting start/context entry. BIPv6/Ethernet
 have no endpoint owner.
 
+The server role is a full `BACnetServer` (#2617), from
+`await endpoint.server()`: it executes the services a standalone server
+does, answers Who-Is and Who-Has, and lists those services in the
+Device's Protocol\_Services\_Supported. Without `mutation_policy` it is
+read-only: a peer's write, create or delete is denied with SERVICES /
+SERVICE\_REQUEST\_DENIED, and reads, discovery, COV subscriptions and alarm
+acknowledgments are answered. Time synchronization is off on every
+endpoint until `time_sync_policy` turns it on, whatever the
+`mutation_policy`: a default that differs from `BACnetServer()`'s.
+
 `device_instance` takes 0 to 4194302. Instance 4194303 is reserved, as
 no object may have it, so it, or anything larger, raises ValueError at
 construction (#2171).
@@ -36,15 +46,6 @@ Properties:
 
 - `device_instance: int`
 - `vendor_id: int`
-
-### BipEndpoint.frames
-
-```python
-def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]
-```
-
-Observe raw frames on the running owner; capacity is 1–65536.
-Owner shutdown ends this subscription; a restart needs a new one.
 
 ### BipEndpoint.__init__
 
@@ -61,11 +62,10 @@ def __init__(
     network_port_instance: int = 1,
     max_apdu: int = 1476,
     segmentation: Optional[Segmentation] = None,
-    services: Optional[list[int]] = None,
     device_uuid: Optional[Union[bytes, bytearray]] = None,
-    queue_capacity: int = 16,
+    queue_capacity: int = 256,
     apdu_timeout_ms: int = 6000,
-    apdu_retries: int = 0,
+    apdu_retries: int = 3,
     registered_network_port: Optional[int] = None,
     *,
     read_work_limit: int = 256,
@@ -78,21 +78,48 @@ def __init__(
     on_reinitialize: Optional[ReinitializeHandler] = None,
     after_reinitialize: Optional[AfterReinitialize] = None,
     reinit_password: Optional[str] = None,
-    device_write_policy: Optional[MutationHandler] = None,
+    mutation_policy: Literal["permissive", "deny_all"] | MutationHandler | None = None,
+    cov_policy: CovPolicy | None = None,
+    time_sync_policy: TimeSyncPolicy | None = None,
     source_audit_reporter: Optional[ObjectIdentifier] = None,
     audit_recipient: Optional[AuditRecipientInput] = None,
     audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str]]] = None,
 ) -> None
 ```
 
+`mutation_policy` (#2617): who may change the endpoint's
+objects, as `BACnetServer`'s keyword of the same name takes it:
+`"permissive"` (any peer), `"deny_all"` (no peer, COV
+subscriptions included) or a callable that gets a `MutationContext`
+for each mutation and returns a bool, with that keyword's fail-closed
+rules. Without it (None, the default) the server is read-only: every
+write, create and delete is denied, and reads, discovery, COV
+subscriptions and alarm acknowledgments are answered. Given one, the
+server is the one `BACnetServer` with that policy is, but for time
+synchronization. `cov_policy`: the server's `CovPolicy`, read as
+`BACnetServer`'s is. `time_sync_policy`: None, the default, leaves
+TimeSynchronization and UTCTimeSynchronization off whatever the
+`mutation_policy`, a default that differs from `BACnetServer()`'s,
+which takes every valid request; a `TimeSyncPolicy` dict, read as
+`BACnetServer`'s is, turns them on (`{}` takes every valid
+request). The application changes its objects through
+`await endpoint.server()`, whose COV and event notifications follow
+as on a standalone server, and records its own resets through that
+server's `report_device_reset_local()`. `ScEndpoint` and
+`MstpEndpoint` take all three too.
+
 `source_audit_reporter` / `audit_recipient` /
 `audit_device_bindings` (#2348): the Audit Reporter, added with
 `add_audit_reporter`, through which the session reports the
-ReinitializeDevice resets, backups and restores it carries out,
-`report_device_reset_local()` calls and the client role's reads,
-each filtered by the Reporter's level and operations. It needs
-`device_write_policy` and `audit_recipient` (the Device's Audit
-recipient); the bindings are `(Device identifier, "ipv4:port")`
+ReinitializeDevice resets, backups and restores the server carries
+out, its server's `report_device_reset_local()` calls and the reads
+and writes of its `client()` (#2617), each filtered by the
+Reporter's level and
+operations. It needs `audit_recipient` (the Device's Audit
+recipient) and a `mutation_policy` that decides writes, so that no
+peer redirects the audit trail unasked: none (read-only),
+`"deny_all"` or a callable, never `"permissive"` (ValueError).
+The bindings are `(Device identifier, "ipv4:port")`
 routes to recipient Devices, or `"network:0xMAC"` for one behind a
 router on that network (#2371; network 1 to 65534, MAC 1 to 18
 octets). A Reporter identifier of another type and
@@ -104,22 +131,15 @@ format (#2357) or the routed form.
 ReinitializeDevice, as `BACnetServer`'s keywords do (#1566);
 `reinit_password` (needs `on_reinitialize`, else ValueError; 1 to
 20 characters, else ValueError) is the password a request must
-carry. The callable runs on the session's
-one dispatch task, so a slow one stalls every request.
-`device_write_policy`: a callable that decides each WriteProperty
-to the local Device's Description or installed Audit recipient
-(#2033). It gets a `MutationContext` and returns a bool, with the
-fail-closed rules of `BACnetServer`'s `mutation_policy` callable:
-an exception, a non-bool or interpreter shutdown denies with SERVICES
-/ SERVICE\_REQUEST\_DENIED. Without it the endpoint executes no
-WriteProperty. It runs with no lock held, but on the session's one
-dispatch task, so it too should decide quickly: while it runs, other
-requests and `close()` wait for it.
+carry. Without `on_reinitialize` the server denies every
+ReinitializeDevice.
 `bbmd` / `foreign_device` (at most one, else ValueError): run
 the endpoint as a BBMD, or register it as a foreign device (#938).
-`read_work_limit`: result rows one ReadProperty served by the
-server role may expand, a Group's member rows included; a read past it
-is aborted with OUT\_OF\_RESOURCES. Zero raises ValueError.
+`read_work_limit`: the server's ReadPropertyMultiple budget of
+result rows, `BACnetServer`'s `rpm_max_result_elements`: a
+ReadProperty counts its own row and a Group's member rows, a
+ReadPropertyMultiple every result, and one past it is aborted with
+OUT\_OF\_RESOURCES. Zero raises ValueError.
 `share_port_by_address` (default False): bind the interface address
 itself, so endpoints on other addresses of this host can share the
 port. Needs an explicit interface and a nonzero port; broadcasts and
@@ -148,11 +168,18 @@ def add_analog_input(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    high_limit: float | None = None,
+    low_limit: float | None = None,
+    deadband: float | None = None,
+    limit_enable: BitString | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
 ) -> None
 ```
 
 Profile keywords as on `BACnetServer.add_analog_input`: each
-provisions its optional row, served only when given.
+provisions its optional row, served only when given. The parameter
+keywords set those parameters as there, with the same checks.
 
 ### BipEndpoint.add_analog_value
 
@@ -171,11 +198,17 @@ def add_analog_value(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    high_limit: float | None = None,
+    low_limit: float | None = None,
+    deadband: float | None = None,
+    limit_enable: BitString | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
 ) -> None
 ```
 
 Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
-Access, Value\_Source and profile keywords as on
+Access, Value\_Source, profile and parameter keywords as on
 `BACnetServer.add_analog_value`; tracking on a commandable object
 raises ValueError.
 
@@ -187,13 +220,18 @@ def add_binary_input(
     instance: int,
     name: str,
     *,
+    polarity: Polarity | int = 0,
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    alarm_value: int | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
 ) -> None
 ```
 
-Profile keywords as on `add_analog_input`.
+Profile keywords as on `add_analog_input`, `polarity`,
+`alarm_value` and the delays as on `BACnetServer.add_binary_input`.
 
 ### BipEndpoint.add_binary_value
 
@@ -211,11 +249,15 @@ def add_binary_value(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    alarm_value: int | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
 ) -> None
 ```
 
 Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
-Access, Value\_Source and profile keywords as on `add_analog_value`.
+Access, Value\_Source and profile keywords as on `add_analog_value`,
+`alarm_value` and the delays as on `BACnetServer.add_binary_value`.
 
 ### BipEndpoint.add_audit_reporter
 
@@ -294,18 +336,33 @@ def __aexit__(
 ### BipEndpoint.client
 
 ```python
-def client(self) -> Awaitable[EndpointClient]
+def client(self) -> Awaitable[BACnetClient]
 ```
 
-Clone the client role (RuntimeError before start/after close).
+The `BACnetClient` on this endpoint's socket (#2617): the
+standalone class, with all its calls, on the endpoint's one address.
+While it runs, each call returns the same object; once its `stop()`
+has finished, a fresh one. Its `stop()` and `async with` exit end
+the client role alone; the endpoint's close stops it too, and calls
+in flight end as a stopping client's do. RuntimeError before start,
+after close, and while the last client is still stopping or its stop
+failed (the error names the cause). On an endpoint built with
+`source_audit_reporter`, the endpoint audits the client's reads
+and writes (#2617).
 
 ### BipEndpoint.server
 
 ```python
-def server(self) -> Awaitable[EndpointServer]
+def server(self) -> Awaitable[BACnetServer]
 ```
 
-Clone the server role (RuntimeError before start/after close).
+The `BACnetServer` the endpoint's session runs on its socket
+(#2617): the standalone class, with its runtime calls, on the
+endpoint's one address and its objects. Each call returns a new
+handle on the one server. Its `start()` and `stop()` raise
+RuntimeError: the endpoint starts it, and the endpoint's
+`close()` stops it, after which its calls raise RuntimeError
+rather than wait. RuntimeError before start and after close.
 
 ### BipEndpoint.local_address
 
@@ -332,6 +389,59 @@ def foreign_registration(self) -> Awaitable[ForeignRegistrationStatus]
 How the foreign-device registration is going (#938), as for
 `BACnetClient`. RuntimeError before start and after close.
 
+### BipEndpoint.frames
+
+```python
+def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]
+```
+
+Observe the raw frames on the endpoint's own socket from now on,
+beside both roles' traffic, `capacity` frames queued at most (1 to
+65536, else ValueError). RuntimeError before start and after close.
+Close ends the iterator; a restart needs a new one.
+
+### BipEndpoint.i_am_arrivals
+
+```python
+def i_am_arrivals(self, capacity: int = 1024) -> Awaitable[IAmArrivalIterator]
+```
+
+Follow every I-Am the endpoint's socket receives from now on, as
+`BACnetClient.i_am_arrivals` does (#2612). The endpoint's own I-Am
+come back to it, from its own address and naming its own device
+instance, is left out and counted in `own_echoes`; another
+instance from that address is a record. RuntimeError before start
+and after close. Close ends the iterator.
+
+### BipEndpoint.read_bdt
+
+```python
+def read_bdt(self, address: str) -> Awaitable[list[tuple[str, str]]]
+```
+
+Read the Broadcast Distribution Table of the BBMD at `address`
+(`"ip"` or `"ip:port"`) through this endpoint's own socket, beside
+the roles' traffic (#2612), as `BACnetClient.read_bdt` does: the
+same `("ip:port", "mask")` rows, and the same errors: a NAK raises
+BacnetBvlcNakError with its `result_code` (0x0020 from a node that
+is no BBMD), no answer within 3 seconds BacnetTimeoutError. A bad
+address raises ValueError before I/O; RuntimeError before start and
+after close, and for a read that `close()` cuts off (`close()`
+doesn't wait for one). A cancelled read gives its request up, so the
+same read can start again at once; the same read beside one still
+running is refused, as `BACnetClient`'s is.
+
+### BipEndpoint.read_fdt
+
+```python
+def read_fdt(self, address: str) -> Awaitable[list[FdtEntry]]
+```
+
+Read the Foreign Device Table of the BBMD at `address` through
+this endpoint's own socket (#2612), as `BACnetClient.read_fdt`
+does, with the errors of `read_bdt`. The BVLC writes stay on
+`BACnetClient`.
+
 ### BipEndpoint.broadcast_i_am
 
 ```python
@@ -339,21 +449,6 @@ def broadcast_i_am(self) -> Awaitable[None]
 ```
 
 Broadcast one I-Am consistent with the composed identity.
-
-### BipEndpoint.report_device_reset_local
-
-```python
-def report_device_reset_local(self) -> Awaitable[None]
-```
-
-Record a reset the application makes for its own reasons: a
-DEVICE\_RESET Audit record from this device, with no invoke ID, through
-the session's source Reporter when it has one, as
-`BACnetServer.report_device_reset_local` does (#1837): with
-`source_audit_reporter` set, a DEVICE\_RESET naming this device as
-source and target, filtered by that Reporter's level and operations;
-without one, nothing. A peer's accepted restart is recorded already.
-RuntimeError when the endpoint is not running.
 
 ## ScEndpoint
 
@@ -390,14 +485,15 @@ def __init__(
     network_port_instance: int = 2,
     max_apdu: int = 1476,
     segmentation: Optional[Segmentation] = None,
-    services: Optional[list[int]] = None,
-    queue_capacity: int = 16,
+    queue_capacity: int = 256,
     read_work_limit: int = 256,
     min_request_interval_ms: int = 0,
     on_reinitialize: Optional[ReinitializeHandler] = None,
     after_reinitialize: Optional[AfterReinitialize] = None,
     reinit_password: Optional[str] = None,
-    device_write_policy: Optional[MutationHandler] = None,
+    mutation_policy: Literal["permissive", "deny_all"] | MutationHandler | None = None,
+    cov_policy: CovPolicy | None = None,
+    time_sync_policy: TimeSyncPolicy | None = None,
     source_audit_reporter: Optional[ObjectIdentifier] = None,
     audit_recipient: Optional[AuditRecipientInput] = None,
     audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str]]] = None,
@@ -408,8 +504,9 @@ def __init__(
 ```
 
 `read_work_limit`, `min_request_interval_ms`,
-`on_reinitialize`, `after_reinitialize`, `reinit_password` and
-`device_write_policy` are as for `BipEndpoint`.
+`on_reinitialize`, `after_reinitialize`, `reinit_password`,
+`mutation_policy`, `cov_policy` and `time_sync_policy` are as
+for `BipEndpoint`.
 
 `source_audit_reporter` / `audit_recipient` /
 `audit_device_bindings`: as on `BipEndpoint` (#2357), each
@@ -442,11 +539,18 @@ def add_analog_input(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    high_limit: float | None = None,
+    low_limit: float | None = None,
+    deadband: float | None = None,
+    limit_enable: BitString | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
 ) -> None
 ```
 
 Profile keywords as on `BACnetServer.add_analog_input`: each
-provisions its optional row, served only when given.
+provisions its optional row, served only when given. The parameter
+keywords set those parameters as there, with the same checks.
 
 ### ScEndpoint.add_analog_value
 
@@ -465,11 +569,17 @@ def add_analog_value(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    high_limit: float | None = None,
+    low_limit: float | None = None,
+    deadband: float | None = None,
+    limit_enable: BitString | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
 ) -> None
 ```
 
 Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
-Access, Value\_Source and profile keywords as on
+Access, Value\_Source, profile and parameter keywords as on
 `BACnetServer.add_analog_value`; tracking on a commandable object
 raises ValueError.
 
@@ -481,13 +591,18 @@ def add_binary_input(
     instance: int,
     name: str,
     *,
+    polarity: Polarity | int = 0,
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    alarm_value: int | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
 ) -> None
 ```
 
-Profile keywords as on `add_analog_input`.
+Profile keywords as on `add_analog_input`, `polarity`,
+`alarm_value` and the delays as on `BACnetServer.add_binary_input`.
 
 ### ScEndpoint.add_binary_value
 
@@ -505,11 +620,15 @@ def add_binary_value(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    alarm_value: int | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
 ) -> None
 ```
 
 Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
-Access, Value\_Source and profile keywords as on `add_analog_value`.
+Access, Value\_Source and profile keywords as on `add_analog_value`,
+`alarm_value` and the delays as on `BACnetServer.add_binary_value`.
 
 ### ScEndpoint.add_audit_reporter
 
@@ -588,18 +707,42 @@ def __aexit__(
 ### ScEndpoint.client
 
 ```python
-def client(self) -> Awaitable[EndpointClient]
+def client(self) -> Awaitable[BACnetClient]
 ```
 
-Clone the client role.
+The `BACnetClient` on this endpoint's hub connection (#2617): the
+standalone class, with all its calls, on the endpoint's one address.
+While it runs, each call returns the same object; once its `stop()`
+has finished, a fresh one. Its `stop()` and `async with` exit end
+the client role alone; the endpoint's close stops it too, and calls
+in flight end as a stopping client's do. RuntimeError before start,
+after close, and while the last client is still stopping or its stop
+failed (the error names the cause). On an endpoint built with
+`source_audit_reporter`, the endpoint audits the client's reads
+and writes (#2617).
+
+It starts after the hub link is up, so its `connection_events()`
+begins at that call, after the first `connected`: read the link's
+state at once with its `connection_status()`, or use this
+endpoint's `connection_events()`, whose first call holds the
+events from the start.
 
 ### ScEndpoint.server
 
 ```python
-def server(self) -> Awaitable[EndpointServer]
+def server(self) -> Awaitable[BACnetServer]
 ```
 
-Clone the server role.
+The `BACnetServer` the endpoint's session runs on its hub
+connection (#2617), as `BipEndpoint.server()` gives one.
+
+### ScEndpoint.frames
+
+```python
+def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]
+```
+
+Observe plaintext BVLC-SC messages on the running endpoint's hub link.
 
 ### ScEndpoint.local_address
 
@@ -649,21 +792,6 @@ Snapshot the SC hub link without I/O (#1946), as
 `BACnetClient.connection_status()` does. RuntimeError before start
 or after close.
 
-### ScEndpoint.report_device_reset_local
-
-```python
-def report_device_reset_local(self) -> Awaitable[None]
-```
-
-Record a reset the application makes for its own reasons: a
-DEVICE\_RESET Audit record from this device, with no invoke ID, through
-the session's source Reporter when it has one, as
-`BACnetServer.report_device_reset_local` does (#1837): with
-`source_audit_reporter` set (#2357), a DEVICE\_RESET naming this
-device as source and target, filtered by that Reporter's level and
-operations; without one, nothing. A peer's accepted restart is
-recorded already. RuntimeError when the endpoint is not running.
-
 ## MstpEndpoint
 
 MS/TP endpoint: one serial owner that both initiates and executes.
@@ -693,11 +821,10 @@ def __init__(
     mstp_max_info_frames: int = 1,
     max_apdu: int = 480,
     segmentation: Optional[Segmentation] = None,
-    services: Optional[list[int]] = None,
     device_uuid: Optional[Union[bytes, bytearray]] = None,
-    queue_capacity: int = 16,
+    queue_capacity: int = 256,
     apdu_timeout_ms: int = 6000,
-    apdu_retries: int = 0,
+    apdu_retries: int = 3,
     *,
     read_work_limit: int = 256,
     min_request_interval_ms: int = 0,
@@ -710,7 +837,9 @@ def __init__(
     on_reinitialize: Optional[ReinitializeHandler] = None,
     after_reinitialize: Optional[AfterReinitialize] = None,
     reinit_password: Optional[str] = None,
-    device_write_policy: Optional[MutationHandler] = None,
+    mutation_policy: Literal["permissive", "deny_all"] | MutationHandler | None = None,
+    cov_policy: CovPolicy | None = None,
+    time_sync_policy: TimeSyncPolicy | None = None,
     source_audit_reporter: Optional[ObjectIdentifier] = None,
     audit_recipient: Optional[AuditRecipientInput] = None,
     audit_device_bindings: Optional[list[tuple[ObjectIdentifier, str]]] = None,
@@ -718,8 +847,9 @@ def __init__(
 ```
 
 `read_work_limit`, `min_request_interval_ms`,
-`on_reinitialize`, `after_reinitialize`, `reinit_password` and
-`device_write_policy` are as for `BipEndpoint`. Here
+`on_reinitialize`, `after_reinitialize`, `reinit_password`,
+`mutation_policy`, `cov_policy` and `time_sync_policy` are as
+for `BipEndpoint`. Here
 `after_reinitialize` runs once the SimpleACK is queued, before the
 token sends it: stopping the endpoint at once can drop the reply, so
 wait a short while first.
@@ -760,11 +890,18 @@ def add_analog_input(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    high_limit: float | None = None,
+    low_limit: float | None = None,
+    deadband: float | None = None,
+    limit_enable: BitString | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
 ) -> None
 ```
 
 Profile keywords as on `BACnetServer.add_analog_input`: each
-provisions its optional row, served only when given.
+provisions its optional row, served only when given. The parameter
+keywords set those parameters as there, with the same checks.
 
 ### MstpEndpoint.add_analog_value
 
@@ -783,11 +920,17 @@ def add_analog_value(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    high_limit: float | None = None,
+    low_limit: float | None = None,
+    deadband: float | None = None,
+    limit_enable: BitString | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
 ) -> None
 ```
 
 Optional AV Audit rows: None is absent; priority 'inherit' is present NULL.
-Access, Value\_Source and profile keywords as on
+Access, Value\_Source, profile and parameter keywords as on
 `BACnetServer.add_analog_value`; tracking on a commandable object
 raises ValueError.
 
@@ -799,13 +942,18 @@ def add_binary_input(
     instance: int,
     name: str,
     *,
+    polarity: Polarity | int = 0,
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    alarm_value: int | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
 ) -> None
 ```
 
-Profile keywords as on `add_analog_input`.
+Profile keywords as on `add_analog_input`, `polarity`,
+`alarm_value` and the delays as on `BACnetServer.add_binary_input`.
 
 ### MstpEndpoint.add_binary_value
 
@@ -823,11 +971,15 @@ def add_binary_value(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    alarm_value: int | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
 ) -> None
 ```
 
 Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
-Access, Value\_Source and profile keywords as on `add_analog_value`.
+Access, Value\_Source and profile keywords as on `add_analog_value`,
+`alarm_value` and the delays as on `BACnetServer.add_binary_value`.
 
 ### MstpEndpoint.add_audit_reporter
 
@@ -906,18 +1058,32 @@ def __aexit__(
 ### MstpEndpoint.client
 
 ```python
-def client(self) -> Awaitable[EndpointClient]
+def client(self) -> Awaitable[BACnetClient]
 ```
 
-Clone the client role.
+The `BACnetClient` on this endpoint's serial link (#2617): the
+standalone class, with all its calls, on the endpoint's one address.
+While it runs, each call returns the same object; once its `stop()`
+has finished, a fresh one. Its `stop()` and `async with` exit end
+the client role alone; the endpoint's close stops it too, and calls
+in flight end as a stopping client's do. RuntimeError before start,
+after close, and while the last client is still stopping or its stop
+failed (the error names the cause). On an endpoint built with
+`source_audit_reporter`, the endpoint audits the client's reads
+and writes (#2617).
+
+Its requests wait for this node's token, as the server role's
+answers do.
 
 ### MstpEndpoint.server
 
 ```python
-def server(self) -> Awaitable[EndpointServer]
+def server(self) -> Awaitable[BACnetServer]
 ```
 
-Clone the server role.
+The `BACnetServer` the endpoint's session runs on its serial
+link (#2617), as `BipEndpoint.server()` gives one. Its answers
+wait for this node's token, as the client's requests do.
 
 ### MstpEndpoint.local_address
 
@@ -943,210 +1109,25 @@ def broadcast_i_am(self) -> Awaitable[None]
 
 Broadcast one I-Am (MS/TP local broadcast).
 
-### MstpEndpoint.report_device_reset_local
-
-```python
-def report_device_reset_local(self) -> Awaitable[None]
-```
-
-Record a reset the application makes for its own reasons: a
-DEVICE\_RESET Audit record from this device, with no invoke ID, through
-the session's source Reporter when it has one, as
-`BACnetServer.report_device_reset_local` does (#1837): with
-`source_audit_reporter` set (#2357), a DEVICE\_RESET naming this
-device as source and target, filtered by that Reporter's level and
-operations; without one, nothing. A peer's accepted restart is
-recorded already. RuntimeError when the endpoint is not running.
-
-## EndpointClient
-
-Client role cloned from a running endpoint (no lifecycle).
-
-Initiates `read_property`, `read_range`, `read_property_multiple` and direct B/IP `write_property` through the owner's single transport.
-After the owner closes, calls fail closed with `BacnetError`.
-
-### EndpointClient.read_property
-
-```python
-def read_property(
-    self,
-    address: str,
-    object_id: ObjectIdentifier,
-    property_id: PropertyIdentifier,
-    array_index: Optional[int] = None,
-) -> Awaitable[PropertyValue]
-```
-
-Read a property through the shared transport.
-
-ACK object/property/index must match. Device/Network Port instance 4194303
-requests accept a same-type concrete ACK. Malformed/mismatched ACKs raise
-BacnetError; this method returns the property value, not ACK metadata,
-shaped as `PropertyValue` describes for read results.
-
-### EndpointClient.write_property
-
-```python
-def write_property(
-    self,
-    address: str,
-    object_id: ObjectIdentifier,
-    property_id: PropertyIdentifier,
-    value: PropertyValue,
-    priority: Optional[int] = None,
-    array_index: Optional[int] = None,
-    *,
-    commandability: Literal["commandable", "noncommandable"],
-) -> Awaitable[None]
-```
-
-Write to a direct IPv4 B/IP peer through the shared requester.
-
-Commandability is required even without a source Reporter. It controls
-Audit filtering, never the wire priority. Omitted commandable priority
-means effective 16, including NULL. Invalid literals, priority, raw TLV
-framing and APDU size raise ValueError synchronously (out-of-u8 priorities
-raise OverflowError). Empty encoded lists are valid. Eligible source
-records preserve complete 0–32-byte values and omit longer values.
-After source admission, caller cancellation does not cancel the attempt.
-
-### EndpointClient.read_property_multiple
-
-```python
-def read_property_multiple(
-    self,
-    address: str,
-    specs: list[tuple[ObjectIdentifier, list[tuple[PropertyIdentifier, Optional[int]]]]],
-) -> Awaitable[list[ReadAccessResult]]
-```
-
-Read 1–64 explicit property occurrences on concrete objects.
-
-Empty lists, ALL/REQUIRED/OPTIONAL and wildcard instances raise ValueError
-before address parsing or I/O. Index zero is valid. Complete ordered ACK
-correlation permits an inline error to omit its requested index; successful
-values must echo it. Byte limits and malformed/mismatched ACKs raise
-BacnetError. Returned dictionaries share standalone RPM conversion.
-
-### EndpointClient.read_range
-
-```python
-def read_range(
-    self,
-    address: str,
-    object_id: ObjectIdentifier,
-    property_id: PropertyIdentifier,
-    array_index: Optional[int] = None,
-    range_type: Optional[Literal["position", "sequence", "time"]] = None,
-    reference_index: Optional[int] = None,
-    reference_seq: Optional[int] = None,
-    count: Optional[int] = None,
-    *,
-    reference_time: ReferenceTime | None = None,
-    validation: Literal["strict", "lenient"] = "strict",
-) -> Awaitable[ReadRangeResult]
-```
-
-Read a range of items from a list or log object.
-
-`range_type` is `"position"`, `"sequence"`, `"time"` or
-`None` (all-items). `"time"` reads the `count` items newer than
-`reference_time` (older, for a negative count): a naive
-`datetime.datetime` in the device's local time, or a
-`((year, month, day, day_of_week), (hour, minute, second, hundredths))` pair; an aware datetime raises ValueError, since the
-device's zone isn't known here (#1533). Invalid selectors, array index
-zero, missing or zero counts and a time that isn't specific raise
-ValueError before I/O; a count outside INTEGER16 (-32768..=32767)
-raises OverflowError before address parsing or I/O (#1360).
-Position/sequence reference zero is valid; omitted references default
-to zero.
-
-`validation="strict"` refuses an answer that breaks a ReadRange rule
-with BacnetReadRangeViolationError, whose `rule` names it;
-`"lenient"` keeps it and lists the rules in `violations` (#1531).
-Decode a log's records with `decode_log_records`.
-
-### EndpointClient.read_log_page
-
-```python
-def read_log_page(
-    self,
-    address: str,
-    object_id: ObjectIdentifier,
-    cursor: LogCursor = None,
-    page_size: int = 100,
-) -> Awaitable[LogPage]
-```
-
-Read one page of a log's Log\_Buffer from `cursor` (#1530).
-
-`cursor` is `None` or `"oldest"` (the oldest record, found from
-Record\_Count and Total\_Record\_Count), `("sequence", n)`,
-`("position", n)` or `("time", reference_time)`; lists work
-too, so a checkpoint survives JSON. Loop on `page["next"]` until
-`page["done"]`, then keep `next` as the checkpoint. One request
-is outstanding at a time. A first record past the one asked for sets
-`gap`; when the log drops the record asked for, the read starts
-over from the oldest. A page answered from before the one asked for,
-or none where the counts say records are, raises
-BacnetLogNotAdvancingError: such a device's sequence numbers are
-inconsistent, so read it from `("position", 1)`. `wrapped` marks
-a page that reached the top of the sequence range. A page whose
-records don't decode raises BacnetError, dropping the records before
-the failing one; an answer that breaks a rule the reader can't
-tolerate, such as an echo that doesn't match, raises
-BacnetReadRangeViolationError. A non-log object or a `page_size`
-outside 1..=32767 raises ValueError before I/O.
-
-### EndpointClient.service_scope
-
-```python
-def service_scope(self) -> dict[str, Any]
-```
-
-Narrow scope: initiates reads and direct B/IP `write_property`.
-
-## EndpointServer
-
-Server role cloned from a running endpoint (no lifecycle).
-
-The responder executes `read_property` automatically, WriteProperty to
-the local Device through the owner's `device_write_policy`, and
-ReinitializeDevice through the owner's `on_reinitialize`, the one
-Python callback that runs under a native lock; this handle exposes
-liveness plus the MS/TP deferred-reply seam.
-
-### EndpointServer.is_session_alive
-
-```python
-def is_session_alive(self) -> bool
-```
-
-True while the owning endpoint is alive and open.
-
-### EndpointServer.suspend_next_reply
-
-```python
-def suspend_next_reply(self) -> None
-```
-
-Arm one-shot deferred-reply suspension (MS/TP wiring).
-
-### EndpointServer.service_scope
-
-```python
-def service_scope(self) -> dict[str, Any]
-```
-
-Narrow scope: executes `read_property`, plus `write_property`
-when the owner has `device_write_policy` and
-`reinitialize_device` when it has `on_reinitialize`.
-
 ## EndpointStatus
 
 `class EndpointStatus(TypedDict)`
 
 Bounded endpoint snapshot: liveness, identity, transport, leases, policy counts.
+
+The `*_full_drops` keys count what a full queue had no room for, by
+class; a full queue never ends the session (#2635).
+`unconfirmed_full_drops` counts unconfirmed requests (I-Am, Who-Is,
+notifications) past their share of the request queue, which keeps a
+quarter for confirmed requests; `confirmed_full_drops` confirmed
+requests for the endpoint's own roles dropped unanswered, which their
+requesters send again (one the client's seat refuses counts in
+`client_seat_full_drops`);
+`answer_full_drops` answers and segments (one no lease holds may not
+take the last quarter of the answer queue); `policy_full_drops`
+refused APDUs (malformed, an unknown PDU type). Each queue of
+`queue_capacity` 2 or more keeps at least one slot in reserve; a
+capacity of 1 keeps none.
 
 Keys:
 
@@ -1161,7 +1142,15 @@ Keys:
 - `no_server_role: int`
 - `no_client_role: int`
 - `unclaimed_terminal: int`
-- `responder_declined: int`
+- `unconfirmed_full_drops: int`
+- `confirmed_full_drops: int`
+- `answer_full_drops: int`
+- `policy_full_drops: int`
+- `client_seat_apdus: int`: APDUs handed to the client on the link (#2617), over the session's run.
+- `client_seat_full_drops: int`: APDUs the client's queue refused, never waited for: those it had no room for, and those its tiers held back (copies of unconfirmed requests use at most half of it, confirmed requests to the client all but the quarter kept for its answers). On an endpoint with no server role, a confirmed request refused here is counted here, not in `confirmed_full_drops`.
+- `client_seat_control_full_drops: int`: Network controls dropped the same way.
+- `server_seat_apdus: int`: APDUs handed to the endpoint's server (#2617), over the session's run.
+- `server_seat_full_drops: int`: APDUs the server's queue refused, never waited for, as the client's are counted: a confirmed request counted here went unanswered, and its requester's retry is its recovery.
 
 ## ReadRangeResult
 

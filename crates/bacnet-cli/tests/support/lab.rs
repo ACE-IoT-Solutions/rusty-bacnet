@@ -28,7 +28,7 @@ pub fn lab_identity(instance: u32) -> DeviceIdentity {
 
 /// A database of the lab Device and `objects`, listed in its Object_List.
 fn database(instance: u32, objects: Vec<Box<dyn BACnetObject>>) -> ObjectDatabase {
-    let mut device = DeviceObject::new(DeviceConfig {
+    let device = DeviceObject::new(DeviceConfig {
         identity: lab_identity(instance),
         vendor_name: "Rusty Lab".into(),
         model_name: "Bench-1".into(),
@@ -37,9 +37,6 @@ fn database(instance: u32, objects: Vec<Box<dyn BACnetObject>>) -> ObjectDatabas
         ..Default::default()
     })
     .expect("lab Device object");
-    let mut list = vec![device.object_identifier()];
-    list.extend(objects.iter().map(|object| object.object_identifier()));
-    device.set_object_list(list);
     let mut db = ObjectDatabase::new();
     db.add(Box::new(device)).unwrap();
     for object in objects {
@@ -116,6 +113,19 @@ pub fn large_database(instance: u32, count: u32) -> ObjectDatabase {
                 AnalogValueObject::new(n, format!("Point {n}"), EngineeringUnits::NO_UNITS)
                     .unwrap(),
             ) as Box<dyn BACnetObject>
+        })
+        .collect();
+    database(instance, points)
+}
+
+/// A device with one analog value for each of `names`, from instance 1,
+/// besides its Device object.
+pub fn named_database(instance: u32, names: &[&str]) -> ObjectDatabase {
+    let points = (1u32..)
+        .zip(names)
+        .map(|(n, name)| {
+            Box::new(AnalogValueObject::new(n, *name, EngineeringUnits::NO_UNITS).unwrap())
+                as Box<dyn BACnetObject>
         })
         .collect();
     database(instance, points)

@@ -14,12 +14,18 @@ from pathlib import Path
 
 import rusty_bacnet
 from rusty_bacnet import (
+    BACnetClient,
+    BACnetServer,
     BipEndpoint,
-    EndpointClient,
-    EndpointServer,
     MstpEndpoint,
     ScEndpoint,
 )
+
+# The calls that take a RoutedTarget where they take an address (#2617, #2588).
+ROUTED_CALLS = ("read_property", "read_property_multiple", "read_range", "read_log_page",
+                "write_property", "write_property_multiple", "atomic_read_file", "atomic_write_file",
+                "subscribe_cov", "unsubscribe_cov", "subscribe_cov_property",
+                "unsubscribe_cov_property", "subscribe_cov_property_multiple")
 
 
 def installed_stub() -> ast.Module:
@@ -71,13 +77,10 @@ class EndpointStubParityTests(unittest.TestCase):
     def test_endpoint_classes_present_in_runtime_and_stub(self):
         tree = installed_stub()
         classes = stub_classes(tree)
-        # TypedDicts (EndpointStatus) exist in the stub only, like ScHubStatus.
-        for name in ("EndpointStatus",):
-            with self.subTest(symbol=name):
-                self.assertIn(name, classes)
+        # The TypedDict EndpointStatus exists in the stub only, like
+        # ScHubStatus.
+        self.assertIn("EndpointStatus", classes)
         for name in (
-            "EndpointClient",
-            "EndpointServer",
             "BipEndpoint",
             "ScEndpoint",
             "MstpEndpoint",
@@ -85,6 +88,12 @@ class EndpointStubParityTests(unittest.TestCase):
             with self.subTest(symbol=name):
                 self.assertIn(name, classes)
                 self.assertTrue(hasattr(rusty_bacnet, name), f"runtime missing {name}")
+        # The narrow role classes are gone: endpoint.client() is a
+        # BACnetClient and endpoint.server() a BACnetServer (#2617).
+        for gone in ("EndpointClient", "EndpointServer", "EndpointCov"):
+            with self.subTest(gone=gone):
+                self.assertNotIn(gone, classes)
+                self.assertFalse(hasattr(rusty_bacnet, gone))
 
     def test_runtime_signatures_match_stub(self):
         tree = installed_stub()
@@ -93,35 +102,35 @@ class EndpointStubParityTests(unittest.TestCase):
             (BipEndpoint, ["device_instance", "device_name", "vendor_id", "interface",
                            "port", "broadcast_address", "network_number",
                            "network_port_instance", "max_apdu", "segmentation",
-                           "services", "device_uuid", "queue_capacity",
+                           "device_uuid", "queue_capacity",
                            "apdu_timeout_ms", "apdu_retries", "registered_network_port",
                            "read_work_limit", "share_port_by_address", "share_wildcard_port",
                            "min_request_interval_ms", "bbmd", "foreign_device", "multicast",
                            "on_reinitialize", "after_reinitialize", "reinit_password",
-                           "device_write_policy", "source_audit_reporter",
+                           "mutation_policy", "cov_policy", "time_sync_policy", "source_audit_reporter",
                            "audit_recipient", "audit_device_bindings"]),
             (ScEndpoint, ["device_instance", "sc_hub", "sc_vmac", "sc_ca_cert",
                           "sc_client_cert", "sc_client_key", "sc_device_uuid",
                           "device_name", "vendor_id", "sc_heartbeat_interval_ms",
                           "sc_heartbeat_timeout_ms", "network_number",
                           "network_port_instance", "max_apdu", "segmentation",
-                          "services", "queue_capacity", "read_work_limit",
+                          "queue_capacity", "read_work_limit",
                           "min_request_interval_ms", "on_reinitialize",
                           "after_reinitialize", "reinit_password",
-                          "device_write_policy", "source_audit_reporter",
+                          "mutation_policy", "cov_policy", "time_sync_policy", "source_audit_reporter",
                           "audit_recipient", "audit_device_bindings", "reconnect",
                           "sc_failover_hub", "sc_connect_timeout_ms"]),
             (MstpEndpoint, ["device_instance", "serial_port", "device_name", "vendor_id",
                             "mstp_baud", "mstp_mac", "mstp_max_master",
                             "mstp_max_info_frames", "max_apdu", "segmentation",
-                            "services", "device_uuid", "queue_capacity",
+                            "device_uuid", "queue_capacity",
                             "apdu_timeout_ms", "apdu_retries", "read_work_limit",
                             "min_request_interval_ms", "mstp_extended_frames",
                             "mstp_echo", "mstp_echo_grace_ms",
                             "mstp_transmit_latency_pad_ms", "mstp_usage_timeout_ms",
                             "mstp_reply_timeout_ms", "on_reinitialize",
                             "after_reinitialize", "reinit_password",
-                            "device_write_policy", "source_audit_reporter",
+                            "mutation_policy", "cov_policy", "time_sync_policy", "source_audit_reporter",
                             "audit_recipient", "audit_device_bindings"]),
         ]
         for cls, expected in cases:
@@ -133,7 +142,8 @@ class EndpointStubParityTests(unittest.TestCase):
                 # Kinds too: a parameter that turns keyword-only (or stops
                 # being so) on either side fails here.
                 self.assertEqual(runtime_arg_kinds(cls), stub_arg_kinds(method))
-                for keyword in ("read_work_limit", "min_request_interval_ms"):
+                for keyword in ("read_work_limit", "min_request_interval_ms",
+                                "mutation_policy", "cov_policy", "time_sync_policy"):
                     self.assertEqual(
                         inspect.signature(cls).parameters[keyword].kind,
                         inspect.Parameter.KEYWORD_ONLY,
@@ -145,13 +155,13 @@ class EndpointStubParityTests(unittest.TestCase):
         # Native Future-returning owner methods.
         for cls, methods in (
             (BipEndpoint, ["start", "close", "client", "server", "local_address",
-                           "status", "foreign_registration", "broadcast_i_am",
-                           "report_device_reset_local"]),
+                           "status", "foreign_registration", "read_bdt", "read_fdt",
+                           "broadcast_i_am"]),
             (ScEndpoint, ["start", "close", "client", "server", "local_address",
-                          "status", "broadcast_i_am", "report_device_reset_local",
+                          "status", "broadcast_i_am",
                           "connection_events", "connection_status"]),
             (MstpEndpoint, ["start", "close", "client", "server", "local_address",
-                            "status", "broadcast_i_am", "report_device_reset_local"]),
+                            "status", "broadcast_i_am"]),
         ):
             for name in methods:
                 with self.subTest(cls=cls.__name__, method=name):
@@ -160,6 +170,10 @@ class EndpointStubParityTests(unittest.TestCase):
                     self.assertIsInstance(method, ast.FunctionDef)
                     self.assertIsInstance(method.returns, ast.Subscript)
                     self.assertEqual(ast.unparse(method.returns.value), "Awaitable")
+                    if name == "client":
+                        self.assertEqual(ast.unparse(method.returns), "Awaitable[BACnetClient]")
+                    if name == "server":
+                        self.assertEqual(ast.unparse(method.returns), "Awaitable[BACnetServer]")
         # Sync pending seam.
         for cls in (BipEndpoint, ScEndpoint, MstpEndpoint):
             for name in (
@@ -178,17 +192,22 @@ class EndpointStubParityTests(unittest.TestCase):
                         runtime_arg_kinds(getattr(cls, name)), stub_arg_kinds(method)
                     )
         # The object builders take the server builders' keywords (#1867),
-        # keyword-only.
+        # and their event algorithm parameter keywords (#2410), keyword-only.
         value_keywords = ["present_value_access", "value_source_tracking", "audit_level",
                           "auditable_operations", "audit_priority_filter"]
         profile_keywords = ["tags", "profile_location", "profile_name"]
+        delays = ["time_delay", "time_delay_normal"]
+        analog = ["high_limit", "low_limit", "deadband", "limit_enable"] + delays
+        binary = ["alarm_value"] + delays
         builders = {
             "add_analog_input": (["instance", "name", "units", "present_value"],
-                                 profile_keywords),
+                                 profile_keywords + analog),
             "add_analog_value": (["instance", "name", "units"],
-                                 value_keywords + profile_keywords),
-            "add_binary_input": (["instance", "name"], profile_keywords),
-            "add_binary_value": (["instance", "name"], value_keywords + profile_keywords),
+                                 value_keywords + profile_keywords + analog),
+            "add_binary_input": (["instance", "name"],
+                                 ["polarity"] + profile_keywords + binary),
+            "add_binary_value": (["instance", "name"],
+                                 value_keywords + profile_keywords + binary),
         }
         positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
         keyword = inspect.Parameter.KEYWORD_ONLY
@@ -219,15 +238,25 @@ class EndpointStubParityTests(unittest.TestCase):
                 self.assertIsNone(stub_defaults["audit_level"])
                 self.assertIsNone(stub_defaults["auditable_operations"])
                 self.assertIsNotNone(stub_defaults["issue_confirmed_notifications"])
-        # Roles.
-        self.assertEqual(
-            list(inspect.signature(EndpointClient.read_property).parameters),
-            ["self", "address", "object_id", "property_id", "array_index"],
-        )
-        stub_method(classes["EndpointClient"], "read_property")
-        self.assertTrue(hasattr(EndpointServer, "is_session_alive"))
-        stub_method(classes["EndpointServer"], "is_session_alive")
-        stub_method(classes["EndpointServer"], "suspend_next_reply")
+        # Roles: the client's routed calls take a str or a RoutedTarget.
+        for name in ROUTED_CALLS:
+            with self.subTest(method=name):
+                node = stub_method(classes["BACnetClient"], name)
+                self.assertEqual(ast.unparse(node.args.args[1].annotation), "str | RoutedTarget")
+                self.assertEqual(runtime_arg_kinds(getattr(BACnetClient, name)),
+                                 stub_arg_kinds(node))
+        # The server role is the standalone class, whose runtime calls the
+        # endpoint's server has.
+        for name in ("read_property", "write_property_local", "set_present_value_local",
+                     "set_reliability_local", "comm_state", "start", "stop"):
+            with self.subTest(method=name):
+                self.assertTrue(callable(getattr(BACnetServer, name)))
+                stub_method(classes["BACnetServer"], name)
+        # The local changes are the server's, not the endpoint's (#2617).
+        for cls in (BipEndpoint, ScEndpoint, MstpEndpoint):
+            for gone in ("set_present_value_local", "set_reliability_local"):
+                with self.subTest(cls=cls.__name__, gone=gone):
+                    self.assertFalse(hasattr(cls, gone))
 
     def test_repo_and_installed_stubs_agree(self):
         repo_stub = (
@@ -244,9 +273,9 @@ class EndpointStubParityTests(unittest.TestCase):
                 "class BipEndpoint",
                 "class ScEndpoint",
                 "class MstpEndpoint",
-                "class EndpointClient",
-                "class EndpointServer",
                 "class EndpointStatus",
+
+                "class RoutedTarget",
             ):
                 with self.subTest(symbol=symbol):
                     self.assertIn(symbol, repo_text)

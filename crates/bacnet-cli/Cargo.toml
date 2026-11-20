@@ -25,6 +25,7 @@ bacnet-transport = { workspace = true, features = ["ipv6"] }
 bacnet-network.workspace = true
 bacnet-client = { workspace = true, features = ["ipv6"] }
 bacnet-ops.workspace = true
+bacnet-tool.workspace = true
 # `bacnet mcp serve` (the `mcp` feature, #2066).
 bacnet-mcp = { workspace = true, optional = true, features = ["stdio"] }
 bytes = { workspace = true, features = ["std"] }
@@ -39,7 +40,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # SC-TLS optional deps
 tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
-rustls-pki-types = { version = "1", optional = true }
 time = { version = "0.3.54", features = ["formatting"], optional = true }
 
 # Only for the TUI: the platform config directory that holds its profiles,
@@ -73,11 +73,16 @@ unicode-segmentation = { version = "1.13", optional = true }
 tempfile = "3"
 # The decode tests' frame builders (`bacnet_ops::decode::testing`).
 bacnet-ops = { workspace = true, features = ["test-support"] }
+# Existing filesystem fault-injection hooks used by safety tests.
+bacnet-tool = { workspace = true, features = ["test-support"] }
 bacnet-objects = { workspace = true, features = ["std"] }
 bacnet-server.workspace = true
+# The source a local write takes (`write::local::LocalCommandSource`).
+bacnet-device-core = { workspace = true, features = ["std"] }
 rcgen.workspace = true
 futures-util.workspace = true
 insta = "1.48"
+proptest.workspace = true
 # The scripted MS/TP ring the monitor screen's tests play (#970).
 bacnet-transport = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
@@ -113,7 +118,6 @@ sc-tls = [
     "bacnet-ops/sc-tls",
     "dep:tokio-rustls",
     "dep:rustls",
-    "dep:rustls-pki-types",
     "dep:time",
 ]
 pcap = ["dep:pcap", "dep:ctrlc", "dep:libc"]

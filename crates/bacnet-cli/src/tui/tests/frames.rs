@@ -29,7 +29,7 @@ fn populated() -> App {
     }
     let mut routed = routed_row(2001, (2, &[5]), "10.0.1.1:47808", 24, 7);
     routed.max_apdu = 480;
-    routed.segmentation = bacnet_types::enums::Segmentation::BOTH;
+    routed.segmentation = bacnet_types::enums::Segmentation::SEGMENTED_BOTH;
     worker(&mut app, WorkerEvent::Discovered(routed));
 
     press(&mut app, KeyCode::Char('d'));
@@ -82,13 +82,8 @@ fn devices_table_filtered_and_sorted() {
 fn duplicate_instance_banner() {
     for (w, h) in SIZES {
         let mut app = populated();
-        worker(
-            &mut app,
-            WorkerEvent::Collision {
-                retained: row(1002, "10.0.1.22:47808", 5, 9),
-                incoming: row(1002, "10.0.1.99:47808", 5, 13),
-            },
-        );
+        let second = row(1002, "10.0.1.99:47808", 5, 13);
+        worker(&mut app, WorkerEvent::Discovered(second));
         assert_snapshot!(format!("duplicate_{w}x{h}"), screen(&mut app, w, h));
     }
 }

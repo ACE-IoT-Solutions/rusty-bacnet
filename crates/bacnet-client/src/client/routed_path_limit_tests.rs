@@ -1,9 +1,11 @@
+use crate::client::Station;
 use std::sync::Arc;
 
 use bacnet_encoding::apdu::{self, Apdu, SegmentAck, SimpleAck, encode_apdu};
 use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu};
 use bacnet_npdu::{NetworkMessageType, RejectMessageReason};
-use bacnet_transport::port::{ReceivedNpdu, TransportPort, TransportProvenance};
+use bacnet_transport::port::{ReceivedNpdu, TransportProvenance};
+use bacnet_transport::test_transport::TestTransport;
 use bacnet_types::MacAddr;
 use bacnet_types::enums::ConfirmedServiceChoice;
 use bacnet_types::error::Error;
@@ -17,78 +19,51 @@ use super::{BACnetClient, ClientConfig, routed_path_limits::MAX_ROUTED_PATH_ENTR
 pub(super) const DNET: u16 = 100;
 
 pub(super) struct SentFrame {
-    npdu: Bytes,
-    destination: MacAddr,
+    pub(super) npdu: Bytes,
+    pub(super) destination: MacAddr,
 }
 
-pub(super) struct CaptureTransport {
-    local_mac: MacAddr,
-    inbound_rx: Option<mpsc::Receiver<ReceivedNpdu>>,
-    outbound_tx: mpsc::UnboundedSender<SentFrame>,
-    max_apdu: u16,
-}
-
-impl TransportPort for CaptureTransport {
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        self.inbound_rx
-            .take()
-            .ok_or_else(|| Error::Encoding("capture transport already started".into()))
-    }
-
-    async fn stop(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        self.outbound_tx
-            .send(SentFrame {
-                npdu: Bytes::copy_from_slice(npdu),
-                destination: MacAddr::from_slice(mac),
-            })
-            .map_err(|_| Error::Encoding("capture observer closed".into()))
-    }
-
-    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        self.send_unicast(npdu, &[]).await
-    }
-
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        1476
-    }
-
-    fn local_mac(&self) -> &[u8] {
-        &self.local_mac
-    }
-
-    fn egress_apdu_limit(&self) -> u16 {
-        self.max_apdu
-    }
-}
-
+/// A link with `max_apdu` as its egress limit, fed by the returned sender,
+/// whose every send (either kind) comes out of the returned receiver.
+///
+/// The receiver holds every frame, retransmissions included. A test that runs
+/// the client on a short APDU timeout (40 or 100 ms) runs on paused time:
+/// there the timers move only when every task is idle, so a stalled runner
+/// cannot expire one before the scripted reply lands. On the wall clock a
+/// stall past 40 ms let the client resend a segment, as it should, and the
+/// test read that copy as its next request.
 pub(super) fn harness(
     local_mac: &[u8],
     max_apdu: u16,
 ) -> (
-    CaptureTransport,
+    TestTransport,
     mpsc::Sender<ReceivedNpdu>,
     mpsc::UnboundedReceiver<SentFrame>,
 ) {
     let (inbound_tx, inbound_rx) = mpsc::channel(64);
     let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
     (
-        CaptureTransport {
-            local_mac: MacAddr::from_slice(local_mac),
-            inbound_rx: Some(inbound_rx),
-            outbound_tx,
-            max_apdu,
-        },
+        TestTransport::builder()
+            .local_mac(local_mac)
+            .inbound(inbound_rx)
+            .egress_limit(max_apdu)
+            .on_send(move |frame| {
+                let sent = outbound_tx
+                    .send(SentFrame {
+                        npdu: frame.npdu,
+                        destination: frame.mac,
+                    })
+                    .map_err(|_| Error::Encoding("capture observer closed".into()));
+                async move { sent }
+            })
+            .build(),
         inbound_tx,
         outbound_rx,
     )
 }
 
 pub(super) fn routed_request(
-    client: Arc<BACnetClient<CaptureTransport>>,
+    client: Arc<BACnetClient<TestTransport>>,
     router: Vec<u8>,
     dnet: u16,
     dadr: Vec<u8>,
@@ -96,10 +71,8 @@ pub(super) fn routed_request(
 ) -> JoinHandle<Result<Bytes, Error>> {
     tokio::spawn(async move {
         client
-            .confirmed_request_routed(
-                &router,
-                dnet,
-                &dadr,
+            .confirmed_request(
+                &Station::routed(&router, dnet, &dadr),
                 ConfirmedServiceChoice::WRITE_PROPERTY,
                 &service_data,
             )
@@ -119,7 +92,7 @@ pub(super) fn confirmed_request(
     request
 }
 
-async fn inject_apdu(
+pub(super) async fn inject_apdu(
     inbound: &mpsc::Sender<ReceivedNpdu>,
     immediate_source: &[u8],
     routed_source: Option<(u16, &[u8])>,
@@ -202,7 +175,7 @@ pub(super) async fn inject_reason_4(
     .await;
 }
 
-async fn inject_simple_ack(
+pub(super) async fn inject_simple_ack(
     inbound: &mpsc::Sender<ReceivedNpdu>,
     router: &[u8],
     dnet: u16,
@@ -221,7 +194,7 @@ async fn inject_simple_ack(
     .await;
 }
 
-async fn finish_segmented(
+pub(super) async fn finish_segmented(
     inbound: &mpsc::Sender<ReceivedNpdu>,
     outbound: &mut mpsc::UnboundedReceiver<SentFrame>,
     router: &[u8],
@@ -327,10 +300,8 @@ async fn subminimum_path_cap_fails_before_registration_or_emission() {
         .unwrap();
 
     let result = client
-        .confirmed_request_routed(
-            &router,
-            DNET,
-            &dadr,
+        .confirmed_request(
+            &Station::routed(&router, DNET, &dadr),
             ConfirmedServiceChoice::READ_PROPERTY,
             &[0x0c],
         )
@@ -363,10 +334,12 @@ async fn configured_capacity_exhaustion_fails_before_registration_or_emission() 
     }
 
     let result = client
-        .confirmed_request_routed(
-            &[0xff, 0xfe],
-            u16::try_from(MAX_ROUTED_PATH_ENTRIES + 1).unwrap(),
-            &[3],
+        .confirmed_request(
+            &Station::routed(
+                &[0xff, 0xfe],
+                u16::try_from(MAX_ROUTED_PATH_ENTRIES + 1).unwrap(),
+                &[3],
+            ),
             ConfirmedServiceChoice::READ_PROPERTY,
             &[0x0c],
         )
@@ -383,7 +356,8 @@ async fn configured_capacity_exhaustion_fails_before_registration_or_emission() 
     client.stop().await.unwrap();
 }
 
-#[tokio::test]
+// Paused time: see `harness`.
+#[tokio::test(start_paused = true)]
 async fn reason_4_completes_exact_caller_learns_bound_and_does_not_retry() {
     let router = vec![2];
     let dadr = vec![3];
@@ -636,7 +610,8 @@ async fn same_path_serializes_while_a_second_router_remains_concurrent() {
     client.stop().await.unwrap();
 }
 
-#[tokio::test]
+// Paused time: see `harness`.
+#[tokio::test(start_paused = true)]
 async fn cancelled_generation_quarantines_delayed_reason_4_before_next_send() {
     let router = vec![2];
     let dadr = vec![3];

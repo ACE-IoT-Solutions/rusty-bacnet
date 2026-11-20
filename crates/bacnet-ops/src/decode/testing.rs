@@ -121,7 +121,7 @@ pub fn i_am(instance: u32) -> Apdu {
     IAmRequest {
         object_identifier: ObjectIdentifier::new(ObjectType::DEVICE, instance).unwrap(),
         max_apdu_length: 1476,
-        segmentation_supported: Segmentation::NONE,
+        segmentation_supported: Segmentation::NO_SEGMENTATION,
         vendor_id: 260,
     }
     .encode(&mut request);
@@ -172,6 +172,25 @@ pub fn sc_npdu(npdu: &[u8], destination: Option<Vmac>) -> Vec<u8> {
         dest_options: Vec::new(),
         data_options: Vec::new(),
         payload: Bytes::copy_from_slice(npdu),
+    };
+    let mut out = BytesMut::new();
+    encode_sc_message(&mut out, &message);
+    out.to_vec()
+}
+
+/// A BACnet/SC BVLC-Result NAK to a Connect-Request, carrying `error_code`
+/// in the COMMUNICATION class.
+pub fn sc_nak(error_code: u16) -> Vec<u8> {
+    let mut payload = vec![ScFunction::ConnectRequest.to_raw(), 0x01, 0x00, 0x00, 0x07];
+    payload.extend_from_slice(&error_code.to_be_bytes());
+    let message = ScMessage {
+        function: ScFunction::Result,
+        message_id: 0x1234,
+        originating_vmac: None,
+        destination_vmac: None,
+        dest_options: Vec::new(),
+        data_options: Vec::new(),
+        payload: Bytes::from(payload),
     };
     let mut out = BytesMut::new();
     encode_sc_message(&mut out, &message);

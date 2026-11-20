@@ -9,7 +9,8 @@ use bacnet_transport::{
     mstp::{
         LoopbackSerial, MstpConfig, MstpDiagnostics, MstpExecutionMode, MstpTransport, SerialPort,
     },
-    port::{ReceivedNpdu, TransportPort},
+    port::TransportPort,
+    test_transport::{SendMode, TestTransport},
 };
 use bacnet_types::enums::EngineeringUnits;
 use bacnet_types::error::Error;
@@ -172,54 +173,37 @@ impl SerialPort for ObservedSerial {
     }
 }
 
-pub struct GatedTransport {
-    inner: AnyTransport,
-    gates: Arc<Gates>,
-}
-impl TransportPort for GatedTransport {
-    fn supports_local_nonrouter_number_controls(&self) -> bool {
-        self.inner.supports_local_nonrouter_number_controls()
-    }
-    fn bip_port(&self) -> Option<bacnet_transport::port::BipPort> {
-        self.inner.bip_port()
-    }
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        self.inner.start().await
-    }
-    async fn stop(&mut self) -> Result<(), Error> {
-        if self.gates.hold_stop {
-            self.gates.stop_started.add_permits(1);
-            self.gates.stop_release.acquire().await.unwrap().forget();
-        }
-        self.inner.stop().await
-    }
-    fn abort(&mut self) {
-        self.inner.abort();
-    }
-    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        self.inner.send_unicast(npdu, mac).await
-    }
-    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        self.inner.send_broadcast(npdu).await?;
-        if self.gates.hold_send && npdu.starts_with(&[1, 0x80, 0x13]) {
-            let _signal = SignalOnDrop(&self.gates.send_dropped);
-            self.gates.queued.add_permits(1);
-            std::future::pending::<()>().await;
-        }
-        Ok(())
-    }
-    fn local_mac(&self) -> &[u8] {
-        self.inner.local_mac()
-    }
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        self.inner.local_receive_apdu_capacity()
-    }
-    fn egress_apdu_limit(&self) -> u16 {
-        self.inner.egress_apdu_limit()
-    }
-    fn is_broadcast_mac(&self, mac: &[u8]) -> bool {
-        self.inner.is_broadcast_mac(mac)
-    }
+/// `inner` with the gates' holds: a stop that waits for `stop_release`, and a
+/// local Number control broadcast that, once it has reached the link, stays
+/// pending. Everything else is the real transport's.
+pub fn gated_transport(inner: AnyTransport, gates: Arc<Gates>) -> TestTransport {
+    let send_gates = gates.clone();
+    TestTransport::builder()
+        .inner(inner)
+        .unicast(SendMode::Forward)
+        .broadcast(SendMode::ForwardFirst)
+        .before_stop(move || {
+            let gates = gates.clone();
+            async move {
+                if gates.hold_stop {
+                    gates.stop_started.add_permits(1);
+                    gates.stop_release.acquire().await.unwrap().forget();
+                }
+                Ok(())
+            }
+        })
+        .on_send(move |frame| {
+            let gates = send_gates.clone();
+            async move {
+                if frame.broadcast && gates.hold_send && frame.npdu.starts_with(&[1, 0x80, 0x13]) {
+                    let _signal = SignalOnDrop(&gates.send_dropped);
+                    gates.queued.add_permits(1);
+                    std::future::pending::<()>().await;
+                }
+                Ok(())
+            }
+        })
+        .build()
 }
 
 /// The three application owners of one MS/TP link's local Number controls.
@@ -232,12 +216,12 @@ pub enum Role {
 }
 
 pub enum Owner {
-    Server(Box<BACnetServer<GatedTransport>>),
-    Endpoint(Box<EndpointSession<GatedTransport>>),
-    Client(Box<BACnetClient<GatedTransport>>),
+    Server(Box<BACnetServer<TestTransport>>),
+    Endpoint(Box<EndpointSession<TestTransport>>),
+    Client(Box<BACnetClient<TestTransport>>),
 }
 impl Owner {
-    async fn start(role: Role, transport: GatedTransport, link: &Link) -> Self {
+    async fn start(role: Role, transport: TestTransport, link: &Link) -> Self {
         let mut db = ObjectDatabase::new();
         let mut analog =
             AnalogInputObject::new(1, "number-progress", EngineeringUnits::SQUARE_METERS).unwrap();
@@ -253,6 +237,7 @@ impl Owner {
                 let mut session =
                     EndpointSession::new(transport, SessionRole::Both, Default::default())
                         .unwrap()
+                        .device(bacnet_endpoint::DeviceIdentity::new(901, 42).unwrap())
                         .with_database(db);
                 link.bounded(session.start()).await.unwrap();
                 Self::Endpoint(Box::new(session))
@@ -314,6 +299,19 @@ impl Peer {
     }
     pub async fn number(&mut self, number: u16) {
         let frame = self.data().await;
+        Self::assert_number(&frame, number);
+    }
+    /// The node's Network-Number-Is for `number`, awaited for up to
+    /// `limit` of paused time: the answer to a broadcast question, which
+    /// the node holds for a wait longer than `bounded` allows (#2597).
+    pub async fn number_within(&mut self, number: u16, limit: Duration) {
+        let link = self.link.clone();
+        match tokio::time::timeout(limit, self.next_data()).await {
+            Ok(frame) => Self::assert_number(&frame, number),
+            Err(_) => panic!("no Network-Number-Is in {limit:?}; {}", link.report()),
+        }
+    }
+    fn assert_number(frame: &MstpFrame, number: u16) {
         assert_eq!(frame.frame_type, FrameType::BACNET_DATA_NOT_EXPECTING_REPLY);
         assert_eq!(frame.destination, BROADCAST);
         assert_eq!(
@@ -328,28 +326,29 @@ impl Peer {
     /// be an unexpected frame there (Clause 9.5.6.8) and cost the token.
     pub async fn data(&mut self) -> MstpFrame {
         let link = self.link.clone();
-        link.bounded(async {
-            self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
-            loop {
-                let frame = self.writes.recv().await.expect("serial owner disappeared");
-                assert_eq!(frame.source, NODE);
-                match frame.frame_type {
-                    FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
-                    | FrameType::BACNET_DATA_EXPECTING_REPLY => return frame,
-                    FrameType::POLL_FOR_MASTER if frame.destination == PEER => {
-                        self.frame(FrameType::REPLY_TO_POLL_FOR_MASTER, NODE, &[])
-                            .await
-                            .unwrap();
-                    }
-                    FrameType::TOKEN if frame.destination == PEER => {
-                        self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
-                    }
-                    FrameType::POLL_FOR_MASTER | FrameType::REPLY_POSTPONED => {}
-                    other => panic!("unexpected frame {other:?}"),
+        link.bounded(self.next_data()).await
+    }
+    /// [`Self::data`] without its hang backstop.
+    async fn next_data(&mut self) -> MstpFrame {
+        self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
+        loop {
+            let frame = self.writes.recv().await.expect("serial owner disappeared");
+            assert_eq!(frame.source, NODE);
+            match frame.frame_type {
+                FrameType::BACNET_DATA_NOT_EXPECTING_REPLY
+                | FrameType::BACNET_DATA_EXPECTING_REPLY => return frame,
+                FrameType::POLL_FOR_MASTER if frame.destination == PEER => {
+                    self.frame(FrameType::REPLY_TO_POLL_FOR_MASTER, NODE, &[])
+                        .await
+                        .unwrap();
                 }
+                FrameType::TOKEN if frame.destination == PEER => {
+                    self.frame(FrameType::TOKEN, NODE, &[]).await.unwrap();
+                }
+                FrameType::POLL_FOR_MASTER | FrameType::REPLY_POSTPONED => {}
+                other => panic!("unexpected frame {other:?}"),
             }
-        })
-        .await
+        }
     }
     /// Wait until the node passes the token to the peer, answering its
     /// polls on the way: a master sends a request only while it holds the
@@ -424,7 +423,7 @@ impl Peer {
         }
     }
 }
-pub async fn transport(mode: MstpExecutionMode, gates: Arc<Gates>) -> (GatedTransport, Peer) {
+pub async fn transport(mode: MstpExecutionMode, gates: Arc<Gates>) -> (TestTransport, Peer) {
     let (serial, peer) = LoopbackSerial::pair();
     let (tx, writes) = mpsc::unbounded_channel();
     let link = Link::default();
@@ -457,7 +456,7 @@ pub async fn transport(mode: MstpExecutionMode, gates: Arc<Gates>) -> (GatedTran
         while drain_serial.read(&mut buf).await.is_ok() {}
     });
     (
-        GatedTransport { inner, gates },
+        gated_transport(inner, gates),
         Peer {
             serial,
             writes,

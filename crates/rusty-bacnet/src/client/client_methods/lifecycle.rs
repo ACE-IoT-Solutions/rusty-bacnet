@@ -42,7 +42,9 @@ impl BACnetClient {
         sc_failover_hub=None,
         sc_connect_timeout_ms=None,
         sc_control_rate_limit=None,
-        router=None
+        router=None,
+        write_policy=None,
+        resolve_scope=None
     ))]
     fn new(
         interface: &str,
@@ -83,7 +85,11 @@ impl BACnetClient {
         sc_connect_timeout_ms: Option<u64>,
         sc_control_rate_limit: Option<(u32, u32)>,
         router: Option<PyRef<'_, crate::router::PyBACnetRouter>>,
+        write_policy: Option<PyRef<'_, crate::high_level::PyWritePolicy>>,
+        resolve_scope: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        let resolve_scope =
+            crate::high_level::resolve_scope_arg(resolve_scope.as_ref(), transport)?;
         let router = crate::router::application::stack_router(
             transport,
             router,
@@ -105,7 +111,7 @@ impl BACnetClient {
             sc_connect_timeout_ms,
         )?;
         crate::bip_options::only_on_bip("share_port_by_address", share_port_by_address, transport)?;
-        crate::bip_options::only_on_bip("share_wildcard_port", share_wildcard_port, transport)?;
+        crate::bip_options::share_wildcard_port(share_wildcard_port, transport)?;
         let crate::bip_options::IpModes {
             bip: bip_mode,
             bip6_foreign,
@@ -139,6 +145,7 @@ impl BACnetClient {
         let min_request_interval_ms = parse_min_request_interval_ms(min_request_interval_ms)?;
         Ok(Self {
             inner: Arc::new(state::ClientState::default()),
+            seated: false,
             transport_type: transport.to_string(),
             interface: interface.to_string(),
             port,
@@ -180,14 +187,24 @@ impl BACnetClient {
             },
             router,
             min_request_interval_ms,
+            write_policy: write_policy.map_or_else(Default::default, |policy| policy.0),
+            resolve_scope,
         })
     }
 
-    /// Start the client (called by `async with`).
+    /// Start the client (called by `async with`). A client from
+    /// `endpoint.client()` is already started on the endpoint's link: this
+    /// only enters it, and raises RuntimeError once it is stopped (#2617).
     fn __aenter__<'py>(slf: Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         crate::logging_bridge::refresh_at_start(py);
         let self_ref = slf.clone().unbind();
         let inner = slf.borrow().inner.clone();
+        if slf.borrow().seated {
+            return crate::py_async::future_into_py(py, async move {
+                drop(started(&inner).await?);
+                Ok(self_ref)
+            });
+        }
         let transport_type = slf.borrow().transport_type.clone();
         let interface_str = slf.borrow().interface.clone();
         let port = slf.borrow().port;
@@ -215,6 +232,8 @@ impl BACnetClient {
         let mstp = slf.borrow().mstp.clone();
         let min_request_interval_ms = slf.borrow().min_request_interval_ms;
         let router = slf.borrow().router.clone();
+        let write_policy = slf.borrow().write_policy;
+        let resolve_scope = slf.borrow().resolve_scope;
 
         crate::py_async::future_into_py(py, async move {
             let mut slot = state::starting(&inner).await?;
@@ -249,6 +268,7 @@ impl BACnetClient {
                     let mut builder = client::BACnetClient::bip6_builder()
                         .interface(interface)
                         .port(port)
+                        .share_wildcard_port(share_wildcard_port)
                         .apdu_timeout_ms(timeout_ms)
                         .min_request_interval_ms(min_request_interval_ms);
                     if let Some(instance) = ipv6_device_instance {
@@ -350,7 +370,7 @@ impl BACnetClient {
                 }
             }
             .map_err(to_py_err)?;
-            *slot = Some(c);
+            *slot = Some(state::Started::new(c, write_policy, resolve_scope));
             Ok(self_ref)
         })
     }
@@ -370,6 +390,8 @@ impl BACnetClient {
     ///
     /// Cancelling this Future leaves shutdown running. A later stop joins that
     /// same task. Draining depends on request completion or cancellation.
+    /// On a client from `endpoint.client()` this ends the client role alone:
+    /// the endpoint keeps its link and its server role (#2617).
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         crate::py_async::future_into_py(py, crate::unit_result(state::close(self.inner.clone())))
     }

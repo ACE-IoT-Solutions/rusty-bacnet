@@ -44,7 +44,8 @@ pub struct ServerConfig {
     /// this host, as before #2366. Off by default: the transport claims the
     /// port, so a second bind of it fails. See
     /// `BipTransport::set_share_wildcard_port` for what sharing costs. Only
-    /// the B/IP builder reads it; a transport passed to `start` has its own.
+    /// the B/IP builder reads it; a transport passed to `start` has its own
+    /// (on B/IPv6, `Bip6Transport::set_share_wildcard_port`, #2385).
     pub share_wildcard_port: bool,
     /// Device declarations shared by stock objects, discovery and active limits.
     /// Startup resolves its receive ceiling against the owned transport. An
@@ -57,7 +58,35 @@ pub struct ServerConfig {
     /// completed, before the next retry. The transport bounds the send itself.
     /// It is also the base of the COV hold-off after a failed confirmed report,
     /// one full retry cycle: this timeout times the attempts (#896).
+    ///
+    /// It also caps how long a change's COV notifications wait for its event
+    /// notifications to be handed off (#889, #2537), past which they go and
+    /// the wait is counted in
+    /// [`EventNotificationCounters::cov_wait_expired`](crate::server::EventNotificationCounters::cov_wait_expired),
+    /// for a peer's write, a local write, a local authorization, the
+    /// intrinsic-reporting sweep and the Staging plan a start-up or local
+    /// write starts. On a server with a transport of its own it is this
+    /// setting, not the Device's APDU_Timeout property (which defaults to
+    /// 6000 ms), that times them. On a node's seat both are the node's
+    /// APDU timeout, the session's `apdu_timeout_ms` (#2617).
+    ///
+    /// Starting a server with 0 fails, with an error naming this field:
+    /// every report's deadline would be the instant it begins. Any other
+    /// value is accepted, but a very small one makes the timing tight. A
+    /// report's deadline, the hold-off after a failed one and the cutoff
+    /// at which its worker ends all shrink with the timeout, and a worker
+    /// delayed on a loaded host, by the COV table's lock for example, can
+    /// outlive its deadline, so the table treats a report still being sent
+    /// as abandoned (#2412). Keep it well above how long a loaded host
+    /// takes to answer.
     pub cov_retry_timeout_ms: u64,
+    /// How many times a confirmed request the server initiates is sent
+    /// again after `cov_retry_timeout_ms` passes with no answer: COV and
+    /// event notifications, and the writes and reads its Command and Channel
+    /// objects make in other devices (default 3, Clause 12.11.29's suggested
+    /// Number_Of_APDU_Retries). A server on a node's seat takes the node's
+    /// (#2617).
+    pub notification_retries: u8,
     /// Opt-in inbound time-sync restrictions; default allows all, with no step cap.
     pub time_sync_policy: TimeSyncPolicy,
     /// Optional fast, nonblocking observer invoked after the clock changes.
@@ -84,6 +113,12 @@ pub struct ServerConfig {
     /// with [`Error::protocol`]: a panic or an [`Error::reject`] is answered
     /// SERVICES / OTHER.
     pub on_reinitialize: Option<ReinitializeHandler>,
+    /// Told of each ReinitializeDevice the server accepts, after its own
+    /// Audit record, under the same database guard: a node's source Audit
+    /// on its seat records it too (#2617). Set by the node, not by an
+    /// application.
+    #[doc(hidden)]
+    pub accepted_reinitialize_audit: Option<super::reinitialize::EndpointReinitializeAudit>,
     /// Local mutation authorization mode (default: permissive). SC mTLS channel/peer
     /// authentication is not service authorization. See [`MutationPolicy`].
     /// `DenyAll` denies every covered mutation without asking
@@ -120,7 +155,8 @@ pub struct ServerConfig {
     /// Enable periodic fault detection / reliability evaluation.
     /// When true, the server invokes every object's opt-in, object-owned
     /// reliability evaluation hook every 10 seconds. Stock objects currently
-    /// inherit the no-op default.
+    /// inherit the no-op default. A Reliability a hook changes commits the
+    /// event transition it causes in the same pass, as a write does.
     ///
     /// This governs reliability evaluation only. Event Enrollment evaluation
     /// is configured separately via [`enable_event_enrollment`](Self::enable_event_enrollment).
@@ -202,6 +238,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("share_wildcard_port", &self.share_wildcard_port)
             .field("device", &self.device)
             .field("cov_retry_timeout_ms", &self.cov_retry_timeout_ms)
+            .field("notification_retries", &self.notification_retries)
             .field("time_sync_policy", &self.time_sync_policy)
             .field("mutation_policy", &self.mutation_policy)
             .field(
@@ -237,6 +274,18 @@ impl std::fmt::Debug for ServerConfig {
 }
 
 impl ServerConfig {
+    /// Refuse a zero `cov_retry_timeout_ms`, whose confirmed reports would
+    /// have a deadline equal to their start (#2412). No other value is
+    /// refused.
+    pub(crate) fn validate_cov_retry_timeout(&self) -> Result<(), bacnet_types::error::Error> {
+        if self.cov_retry_timeout_ms == 0 {
+            return Err(bacnet_types::error::Error::Encoding(
+                "cov_retry_timeout_ms is 0; it must be at least 1 millisecond".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// The installed policy, if it decides mutations
     /// ([`ServerPolicy::decides_mutations`]). `None` takes the no-policy
     /// path: allowed without decoding for authorization.
@@ -251,7 +300,7 @@ impl ServerConfig {
     pub(crate) fn cov_flight_timing(&self) -> bacnet_device_core::cov::FlightTiming {
         bacnet_device_core::cov::FlightTiming::new(
             bacnet_time::Duration::from_millis(self.cov_retry_timeout_ms),
-            super::DEFAULT_APDU_RETRIES,
+            self.notification_retries,
         )
     }
 }
@@ -275,9 +324,11 @@ impl Default for ServerConfig {
             share_port_by_address: false,
             share_wildcard_port: false,
             cov_retry_timeout_ms: 3000,
+            notification_retries: super::DEFAULT_APDU_RETRIES,
             time_sync_policy: TimeSyncPolicy::default(),
             on_time_sync: None,
             on_reinitialize: None,
+            accepted_reinitialize_audit: None,
             mutation_policy: MutationPolicy::default(),
             policy: None,
             audit_notification_sink: None,
@@ -448,6 +499,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             db: None,
             transport: None,
             configured_device_bindings: Vec::new(),
+            clock_zone: super::ClockConfig::default(),
         }
     }
 }

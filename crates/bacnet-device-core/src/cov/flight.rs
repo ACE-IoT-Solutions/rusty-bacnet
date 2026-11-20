@@ -131,6 +131,23 @@ pub struct Token {
     pub(super) ticket: u64,
 }
 
+impl Token {
+    /// The token of the `n`th event notification a reporter queues. No COV
+    /// flight is numbered 0, so it never names a COV report.
+    #[cfg(feature = "event-reporting")]
+    pub(crate) fn event(n: u64) -> Self {
+        Self {
+            flight: 0,
+            ticket: n,
+        }
+    }
+
+    /// Whether this names an event notification, not a COV report.
+    pub(crate) fn is_event(self) -> bool {
+        self.flight == 0
+    }
+}
+
 #[cfg(test)]
 impl Token {
     /// A token for tests that need one without a table.
@@ -363,6 +380,26 @@ impl CovTable {
         self.flights.get(&entry.flight)?.holding_until(now)
     }
 
+    /// End of the hold-off on the coordinate of the failed report `token`,
+    /// for the step that asks right after it reported the failure
+    /// ([`hold_off`](super::multiple_report::hold_off)): the end
+    /// [`delivered`](Self::delivered) recorded if it counted the failure.
+    ///
+    /// `None` when the report's flight is gone (it was fenced, or went with
+    /// its coordinate), and while the flight has a report marked: this one
+    /// past its deadline and not yet ended, or a later one. Otherwise the
+    /// end of the flight's last counted hold-off, in force or passed, until
+    /// a context's owed follow-up is taken. That is this report's own after
+    /// a counted failure. After an ignored one it can be another report's:
+    /// the hold-off of the report that replaced this one past its deadline,
+    /// or, for an ordinary subscription, whose hold-off nothing takes, an
+    /// older one long passed.
+    #[cfg(feature = "cov-multiple")]
+    pub(crate) fn failed_hold_until(&self, token: Token) -> Option<Instant> {
+        let state = self.flights.get(&token.flight)?;
+        state.hold_until.filter(|_| state.ticket == 0)
+    }
+
     /// Whether an idle context still owes the follow-up of a failed report,
     /// whose hold-off has passed by `now`. Taking it clears it: the caller
     /// fans every reference of the context out, since the failed report's
@@ -452,25 +489,42 @@ impl CovTable {
         })
     }
 
+    /// When the confirmed report `token` names ends itself if no outcome
+    /// arrives: the deadline [`begin_confirmed`](Self::begin_confirmed) gave
+    /// it. `None` once the report was settled, fenced or removed; one nobody
+    /// settled keeps its deadline, by then past, until a later call ends it.
+    /// A host that keeps something for the report's worker, as it lodges a
+    /// claim on timestamped changes, ends it at this same instant.
+    pub fn report_deadline(&self, token: Token) -> Option<Instant> {
+        self.flights
+            .get(&token.flight)
+            .filter(|state| state.ticket == token.ticket)
+            .and_then(FlightState::outstanding_deadline)
+    }
+
     /// End the report `token` names, as `outcome` says, at `now`. A report
     /// that was fenced, removed with its coordinate, or that passed its
     /// deadline is no longer known, and its outcome changes nothing.
     ///
     /// An unconfirmed report that was [`Sent`](Delivery::Sent) commits its
     /// observation, unless a later report of its subscription completed
-    /// first. An [`Acknowledged`](Delivery::Acknowledged) confirmed report
+    /// first. One that ended otherwise returns its reference when a later
+    /// evaluation measured a change from it and found nothing to report: that
+    /// change is owed a fresh look, from what was delivered (#2508). An
+    /// [`Acknowledged`](Delivery::Acknowledged) confirmed report
     /// commits the observations it carried, and returns the references owed
     /// a fresh look: changes to them were held while it was outstanding.
     /// They are those it completed or, for a COV-multiple context, every
-    /// reference of the context. Every other outcome returns none.
+    /// reference of the context. Every other confirmed outcome returns
+    /// none.
     pub fn delivered(
         &mut self,
         token: Token,
         outcome: Delivery,
         now: Instant,
     ) -> Vec<CovSubscriptionKey> {
-        if self.deliver_unconfirmed(token, outcome, now) {
-            return Vec::new();
+        if let Some(owed) = self.deliver_unconfirmed(token, outcome, now) {
+            return owed;
         }
         let hold_off = self.timing.hold_off();
         let Some(state) = self.flights.get_mut(&token.flight) else {
@@ -577,6 +631,12 @@ impl CovTable {
                 .map(|entry| entry.key().clone())
                 .collect();
             self.fenced.revisit.extend(keys);
+        }
+        // A hold-off in force goes with the flight: the context starts
+        // again without one.
+        let held = self.flights.get(&replaced);
+        if held.is_some_and(|state| state.holding_until(now).is_some()) {
+            self.fenced.released.push(context.clone());
         }
         self.fence_flight(replaced);
     }

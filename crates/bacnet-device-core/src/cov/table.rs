@@ -39,6 +39,10 @@ pub struct Fenced {
     /// Multiple contexts an admission refreshed: their lifetime, maximum
     /// notification delay and subscriber APDU size may have changed.
     pub contexts: Vec<MultipleContextKey>,
+    /// Multiple contexts whose hold-off after a failed report went with
+    /// the flight a re-subscription replaced: the new flight holds nothing
+    /// off, so what a host kept waiting for that hold-off waits no more.
+    pub released: Vec<MultipleContextKey>,
 }
 
 impl Fenced {
@@ -48,6 +52,7 @@ impl Fenced {
             && self.removed.is_empty()
             && self.revisit.is_empty()
             && self.contexts.is_empty()
+            && self.released.is_empty()
     }
 }
 
@@ -209,6 +214,14 @@ impl CovTable {
     /// What mutations removed, replaced or fenced since the last call.
     pub fn take_fenced(&mut self) -> Fenced {
         core::mem::take(&mut self.fenced)
+    }
+
+    /// What [`Self::take_fenced`] would take, left in place: for the
+    /// crate's own steps that keep other state in line with the table
+    /// before the host takes the rest.
+    #[cfg(feature = "cov-multiple")]
+    pub(crate) fn fenced(&self) -> &Fenced {
+        &self.fenced
     }
 
     /// Get the number of active subscriptions for a peer.

@@ -120,7 +120,8 @@ alloc_only! {
     pub use event_log_record::{decode_event_log_record, encode_event_log_record};
     pub use event_notification::{
         decode_event_notification, decode_event_notification_tolerant, decode_notification_parameters,
-        encode_event_notification, encode_notification_parameters,
+        encode_event_notification, encode_event_notification_of, encode_notification_parameters,
+        encode_notification_parameters_of, notification_forms, ALL_NOTIFICATION_FORMS,
     };
     pub use event_notification_subscription::{
         decode_event_notification_subscription, encode_event_notification_subscription,
@@ -137,6 +138,7 @@ alloc_only! {
     pub use lighting_command::{
         decode_lighting_command, decode_lighting_command_value, encode_lighting_command,
     };
+    pub use log_fields::is_record_too_deep;
     pub use log_multiple_record::{decode_log_multiple_record, encode_log_multiple_record};
     pub use log_record::{decode_log_record, encode_log_record};
     pub use timer_state_change::{
@@ -189,9 +191,10 @@ alloc_only! {
 
 /// Upper bound on decoded SEQUENCE OF / list lengths, mirroring the socket-
 /// facing posture of `bacnet-services`' `MAX_DECODED_ITEMS`. Prevents memory
-/// exhaustion from malformed framed payloads.
-#[cfg(feature = "alloc")]
-const MAX_FRAMED_ITEMS: usize = 10_000;
+/// exhaustion from malformed framed payloads. The tag tree's element bound,
+/// `tags::tree::MAX_TAG_TREE_NODES`, is this one too; a constant links no
+/// code, so it is in every profile.
+pub(crate) const MAX_FRAMED_ITEMS: usize = 10_000;
 
 // ---------------------------------------------------------------------------
 // BACnetPropertyStates (Clause 21 CHOICE) — spec-tagged framing

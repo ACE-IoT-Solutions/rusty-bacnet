@@ -57,7 +57,6 @@ fn timed_endpoint(
         max_apdu,
         None,
         None,
-        None,
         16,
         6000,
         0,
@@ -69,6 +68,8 @@ fn timed_endpoint(
         timing.transmit_latency_pad_ms,
         timing.usage_timeout_ms,
         timing.reply_timeout_ms,
+        None,
+        None,
         None,
         None,
         None,
@@ -238,6 +239,12 @@ fn read_name_frame(invoke_id: u8) -> Vec<u8> {
         property_array_index: None,
     }
     .encode(&mut service);
+    request_frame(invoke_id, ConfirmedServiceChoice::READ_PROPERTY, service)
+}
+
+/// The confirmed request `service` with `parameters`, from a requester that
+/// accepts 1476-octet APDUs, in a Data Expecting Reply frame from the peer.
+fn request_frame(invoke_id: u8, service: ConfirmedServiceChoice, parameters: BytesMut) -> Vec<u8> {
     let mut apdu = BytesMut::new();
     encode_apdu(
         &mut apdu,
@@ -250,8 +257,8 @@ fn read_name_frame(invoke_id: u8) -> Vec<u8> {
             invoke_id,
             sequence_number: None,
             proposed_window_size: None,
-            service_choice: ConfirmedServiceChoice::READ_PROPERTY,
-            service_request: service.freeze(),
+            service_choice: service,
+            service_request: parameters.freeze(),
         }),
     )
     .unwrap();
@@ -326,6 +333,7 @@ fn an_extended_endpoint_answers_a_long_read_in_an_extended_frame() {
             units: 62,
             present_value: 0.0,
             profile: None,
+            parameters: Default::default(),
         })
         .unwrap();
     let built = Python::attach(|py| Py::new(py, built).unwrap());
@@ -364,4 +372,206 @@ fn an_extended_endpoint_answers_a_long_read_in_an_extended_frame() {
     let read = ReadPropertyACK::decode(&ack.service_ack).unwrap();
     assert_eq!(read.property_identifier, PropertyIdentifier::OBJECT_NAME);
     assert!(read.property_value.len() > 1_400);
+}
+
+/// The Python wrapper builds the MS/TP session's full server (#2617):
+/// without `mutation_policy` it is read-only, so a peer's WriteProperty is
+/// denied and its SubscribeCOV acknowledged; with `"deny_all"` the
+/// SubscribeCOV is denied too. `await endpoint.server()` is that server: a
+/// local write through it is what the peer reads, and after the close its
+/// calls raise.
+#[test]
+fn the_wrapper_builds_the_full_server_on_the_mstp_session() {
+    use bacnet_encoding::primitives::encode_property_value;
+    use bacnet_services::cov::SubscribeCOVRequest;
+    use bacnet_services::write_property::WritePropertyRequest;
+    use bacnet_types::enums::{ErrorClass, ErrorCode};
+    use bacnet_types::primitives::PropertyValue;
+    Python::initialize();
+    let subscribe = || {
+        let mut parameters = BytesMut::new();
+        SubscribeCOVRequest {
+            subscriber_process_identifier: 1,
+            monitored_object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1)
+                .unwrap(),
+            issue_confirmed_notifications: Some(false),
+            lifetime: Some(60),
+        }
+        .encode(&mut parameters)
+        .unwrap();
+        request_frame(4, ConfirmedServiceChoice::SUBSCRIBE_COV, parameters)
+    };
+    let write = || {
+        let mut value = BytesMut::new();
+        encode_property_value(&mut value, &PropertyValue::Boolean(true)).unwrap();
+        let mut parameters = BytesMut::new();
+        WritePropertyRequest {
+            object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
+            property_identifier: PropertyIdentifier::OUT_OF_SERVICE,
+            property_array_index: None,
+            property_value: value.to_vec(),
+            priority: None,
+        }
+        .encode(&mut parameters)
+        .unwrap();
+        request_frame(5, ConfirmedServiceChoice::WRITE_PROPERTY, parameters)
+    };
+    let read = || {
+        let mut parameters = BytesMut::new();
+        ReadPropertyRequest {
+            object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap(),
+            property_identifier: PropertyIdentifier::PRESENT_VALUE,
+            property_array_index: None,
+        }
+        .encode(&mut parameters);
+        request_frame(6, ConfirmedServiceChoice::READ_PROPERTY, parameters)
+    };
+    let denied = |reply: Apdu, service: ConfirmedServiceChoice| match reply {
+        Apdu::Error(error) => {
+            assert_eq!(error.service_choice, service);
+            assert_eq!(error.error_class, ErrorClass::SERVICES);
+            assert_eq!(error.error_code, ErrorCode::SERVICE_REQUEST_DENIED);
+        }
+        reply => panic!("{service:?}: {reply:?}"),
+    };
+    for deny_all in [false, true] {
+        let peer = Arc::new(std::sync::Mutex::new(None));
+        let mut built = Python::attach(|py| {
+            let policy = pyo3::types::PyString::new(py, "deny_all");
+            PyMstpEndpoint::new(
+                8011,
+                "injected-serial",
+                "Full server",
+                555,
+                38400,
+                SESSION_MAC,
+                127,
+                1,
+                480,
+                None,
+                None,
+                16,
+                6000,
+                0,
+                256,
+                0,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                deny_all.then_some(policy.as_any()),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+        })
+        .unwrap();
+        built.config.serial_opener = Some(Arc::new({
+            let peer = peer.clone();
+            move |_| {
+                let (serial, other) = LoopbackSerial::pair();
+                *peer.lock().unwrap() = Some(other);
+                Ok(TestSerial::Peer(serial))
+            }
+        }));
+        built
+            .push_pending(PendingObject::AnalogInput {
+                instance: 1,
+                name: "AI 1".into(),
+                units: 62,
+                present_value: 0.0,
+                profile: None,
+                parameters: Default::default(),
+            })
+            .unwrap();
+        let globals = Python::attach(|py| {
+            let globals = PyDict::new(py);
+            globals
+                .set_item("endpoint", Py::new(py, built).unwrap())
+                .unwrap();
+            let ai1 = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
+            globals
+                .set_item("ai1", crate::types::PyObjectIdentifier::from_rust(ai1))
+                .unwrap();
+            let seven = crate::types::PyPropertyValue::from_rust(PropertyValue::Real(7.0));
+            globals.set_item("seven", seven).unwrap();
+            globals.unbind()
+        });
+        let run = |script: &std::ffi::CStr| {
+            Python::attach(|py| {
+                if let Err(error) = py.run(script, Some(globals.bind(py)), None) {
+                    panic!("{error}");
+                }
+            });
+        };
+        run(pyo3::ffi::c_str!(
+            r#"
+import asyncio
+async def go():
+    global server
+    await endpoint.start()
+    server = await endpoint.server()
+    assert type(server).__name__ == "BACnetServer", type(server)
+    await server.set_present_value_local(ai1, seven)
+asyncio.run(go())
+"#
+        ));
+        let peer = peer.lock().unwrap().take().expect("serial opened at start");
+        let ask = |frame: Vec<u8>| {
+            let (_, npdu) = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    peer.write(&frame).await.unwrap();
+                    answer_to_peer(&peer).await
+                });
+            decode_apdu(decode_npdu(npdu.into()).unwrap().payload).unwrap()
+        };
+        // The write first: an acknowledged subscription sends its first
+        // notification to the peer, which would come before a later answer.
+        let read = ask(read());
+        let wrote = ask(write());
+        let subscribed = ask(subscribe());
+        run(pyo3::ffi::c_str!(
+            r#"
+async def end():
+    await endpoint.close()
+    try:
+        await server.set_present_value_local(ai1, seven)
+    except RuntimeError as error:
+        assert "came from is closed" in str(error), repr(error)
+    else:
+        raise AssertionError("a closed endpoint's server ran a call")
+asyncio.run(end())
+"#
+        ));
+        let Apdu::ComplexAck(ack) = read else {
+            panic!("ReadProperty: {read:?}");
+        };
+        let mut seven = BytesMut::new();
+        encode_property_value(&mut seven, &PropertyValue::Real(7.0)).unwrap();
+        assert_eq!(
+            ReadPropertyACK::decode(&ack.service_ack)
+                .unwrap()
+                .property_value,
+            seven.to_vec()
+        );
+        denied(wrote, ConfirmedServiceChoice::WRITE_PROPERTY);
+        match (deny_all, subscribed) {
+            (false, Apdu::SimpleAck(ack)) => {
+                assert_eq!(ack.invoke_id, 4);
+                assert_eq!(ack.service_choice, ConfirmedServiceChoice::SUBSCRIBE_COV);
+            }
+            (true, reply) => denied(reply, ConfirmedServiceChoice::SUBSCRIBE_COV),
+            (deny_all, reply) => panic!("deny_all {deny_all}: {reply:?}"),
+        }
+    }
 }

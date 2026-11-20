@@ -132,6 +132,13 @@ pub const CAPABILITY_ROWS: &[(&str, Row)] = &[
         Row::Command(|o| format!("{:?}", o.timed().map(|t| t.start_output()))),
     ),
     (
+        "Timed::retire",
+        Row::Command(|o| {
+            let retirement = bacnet_objects::traits::Retirement::Released;
+            format!("{:?}", o.timed().map(|t| t.retire(retirement)))
+        }),
+    ),
+    (
         "Timed::cov_snapshot",
         Row::Command(|o| {
             let name = |t: &mut dyn bacnet_objects::traits::Timed| {
@@ -291,7 +298,7 @@ pub const CAPABILITY_ROWS: &[(&str, Row)] = &[
         Row::Command(|o| {
             let outcome = o
                 .event_reporting_mut()
-                .map(|r| r.evaluate_intrinsic_reporting());
+                .map(|r| r.evaluate_intrinsic_reporting(bacnet_time::Instant::from_secs(3)));
             format!("{outcome:?}")
         }),
     ),
@@ -300,7 +307,7 @@ pub const CAPABILITY_ROWS: &[(&str, Row)] = &[
         Row::Command(|o| {
             let outcome = o
                 .event_reporting_mut()
-                .map(|r| r.tick_intrinsic_reporting());
+                .map(|r| r.tick_intrinsic_reporting(bacnet_time::Instant::from_secs(4)));
             format!("{outcome:?}")
         }),
     ),
@@ -339,6 +346,13 @@ pub const CAPABILITY_ROWS: &[(&str, Row)] = &[
         Row::Query(|o| {
             let report = o.event_reporting().map(|r| r.buffer_ready_report());
             format!("{report:?}")
+        }),
+    ),
+    (
+        "EventReporting::next_due",
+        Row::Query(|o| {
+            let due = o.event_reporting().map(|r| r.next_due());
+            format!("{due:?}")
         }),
     ),
     (
@@ -531,6 +545,14 @@ pub const CAPABILITY_ROWS: &[(&str, Row)] = &[
     (
         "LogBuffer::refresh_window",
         Row::Command(|o| format!("{:?}", o.log_buffer_mut().map(|l| l.refresh_window()))),
+    ),
+    // The step itself, by address: a view lends the stored object's.
+    (
+        "LogBuffer::notification_logger",
+        Row::Query(|o| {
+            let logger = o.log_buffer().map(|l| l.notification_logger() as usize);
+            format!("{logger:?}")
+        }),
     ),
     // The two reads go through the shared accessor, the one AuditLogQuery's
     // and the forwarder's read guards lend, so a read-only view runs them.

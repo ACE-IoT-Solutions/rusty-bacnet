@@ -43,7 +43,10 @@ std = [
 # reports. The event properties still read and write. It also gates keeping
 # the reporting settings peers write on the analog, binary and multi-state
 # objects, Access Door and Zone, and Event and Alert Enrollment (#2331), and
-# their written Description (#2364): `with_reporting_persistence`, the
+# their written Description (#2364), and the analog, binary and multi-state
+# objects', Access Door's, Access Zone's and Event Enrollment's written
+# event algorithm parameters (#2331):
+# `with_reporting_persistence`, the
 # analog, binary and multi-state objects' three setters
 # (`set_notification_class`, `set_event_enable`, `set_notify_type`),
 # `written_reporting`, `clear_written_reporting` and
@@ -51,7 +54,9 @@ std = [
 event-reporting = []
 # `durable-writes`: `durable_writes()`, the staged saves a host makes off
 # the database lock. Off, a write to an object with storage saves on the
-# writer's own path, as one nobody staged does.
+# writer's own path, as one nobody staged does, and the built-in objects
+# don't implement `DurableWrites` at all: an object's staging code is not
+# compiled, which keeps it out of a firmware image (#2538).
 durable-writes = []
 # no_std with a global allocator. Saves run on the caller's thread, and the
 # hash maps, locks and float rounding come from hashbrown, spinning_top and
@@ -79,6 +84,8 @@ targets = []
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
+# The instants intrinsic reporting's delays are due at (#2303).
+bacnet-time = { workspace = true }
 bacnet-types = { workspace = true }
 bacnet-encoding = { workspace = true }
 bytes = { workspace = true }
@@ -99,6 +106,25 @@ proptest.workspace = true
 name = "write_property_clocked"
 path = "tests/write_property_clocked.rs"
 required-features = ["event-reporting"]
+
+# A staged request's memory, measured by an allocator of its own (#2414).
+[[test]]
+name = "staged_memory"
+path = "tests/staged_memory.rs"
+required-features = ["event-reporting", "durable-writes"]
+
+# What making a staged request's writes copies, counted the same way (#2526).
+[[test]]
+name = "staged_commit_copies"
+path = "tests/staged_commit_copies.rs"
+required-features = ["event-reporting", "durable-writes"]
+
+# How long a staged request takes at the caps: an ignored, release-build
+# measurement run by hand (#2546).
+[[test]]
+name = "staged_timing"
+path = "tests/staged_timing.rs"
+required-features = ["event-reporting", "durable-writes"]
 
 [lints]
 workspace = true

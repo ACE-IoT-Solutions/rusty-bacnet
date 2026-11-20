@@ -58,6 +58,16 @@ pub use persistence::{NotificationClassPersistence, NotificationClassSnapshot};
 pub use recipient_list::MAX_RECIPIENT_LIST_DESTINATIONS;
 pub use window::{always_in_window, in_window};
 
+/// Decode `value` as a whole-list Recipient_List write would: the framed
+/// wire form or a list of encoded destinations. Anything else, a malformed
+/// destination included, is refused with PROPERTY / INVALID_DATA_TYPE, and
+/// a list past [`MAX_RECIPIENT_LIST_DESTINATIONS`] with RESOURCES /
+/// NO_SPACE_TO_WRITE_PROPERTY naming the first element past it. For a host
+/// that judges a write's destinations before the class takes it (#2303).
+pub fn decode_recipient_list(value: &PropertyValue) -> Result<Vec<BACnetDestination>, Error> {
+    recipient_list::decode_borrowed(value)
+}
+
 /// BACnet NotificationClass object.
 ///
 /// Stores notification routing configuration: which priorities, acknowledgement
@@ -446,6 +456,20 @@ pub fn lookup_notification_recipients(
     today: DaysOfWeek,
     current_time: &Time,
 ) -> RecipientLookupOutcome {
+    let window = Some((today, *current_time));
+    lookup_notification_recipients_at(db, notification_class, transition, window)
+}
+
+/// [`lookup_notification_recipients`] for a device that may not know the
+/// day and time: with `window` `None` (no clock, or one not yet set), only a
+/// destination open every day, all day ([`always_in_window`]) is selected,
+/// so a destination's window is never judged on a guessed time (#2303).
+pub fn lookup_notification_recipients_at(
+    db: &ObjectDatabase,
+    notification_class: u32,
+    transition: EventTransition,
+    window: Option<(DaysOfWeek, Time)>,
+) -> RecipientLookupOutcome {
     let Some(nc) = find_notification_class(db, notification_class) else {
         return RecipientLookupOutcome::NotificationClassMissing;
     };
@@ -461,7 +485,7 @@ pub fn lookup_notification_recipients(
         return RecipientLookupOutcome::NoConfiguredDestinations;
     }
 
-    let recipients = filter_destinations(destinations, transition, today, current_time);
+    let recipients = filter_destinations(destinations, transition, window);
     if recipients.is_empty() {
         RecipientLookupOutcome::NoMatchingDestinations
     } else {
@@ -565,13 +589,15 @@ fn routed_destinations(
 fn filter_destinations(
     destinations: Vec<BACnetDestination>,
     transition: EventTransition,
-    today: DaysOfWeek,
-    current_time: &Time,
+    window: Option<(DaysOfWeek, Time)>,
 ) -> Vec<(BACnetRecipient, u32, bool)> {
     let transition_mask = transition.bit_mask();
     destinations
         .into_iter()
-        .filter(|dest| in_window(dest, today, current_time))
+        .filter(|dest| match &window {
+            Some((today, now)) => in_window(dest, *today, now),
+            None => always_in_window(dest),
+        })
         .filter(|dest| dest.transitions.intersects(transition_mask))
         .map(|dest| {
             (
@@ -600,7 +626,7 @@ pub fn filter_recipient_list(
     let Ok(destinations) = routed_destinations(recipient_list_value) else {
         return Vec::new();
     };
-    filter_destinations(destinations, transition, today, current_time)
+    filter_destinations(destinations, transition, Some((today, *current_time)))
 }
 
 #[cfg(test)]

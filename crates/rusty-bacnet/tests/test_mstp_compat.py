@@ -71,7 +71,8 @@ MSTP_KEYWORD_ONLY = [
 CLIENT_KEYWORD_ONLY = MSTP_KEYWORD_ONLY + [
     "sc_device_uuid", "share_port_by_address", "share_wildcard_port", "min_request_interval_ms", "ipv6_device_instance",
     "bbmd", "foreign_device", "multicast", "reconnect", "sc_npdu_per_origin_limit", "sc_failover_hub",
-    "sc_connect_timeout_ms", "sc_control_rate_limit", "router",
+    "sc_connect_timeout_ms", "sc_control_rate_limit", "router", "write_policy",
+    "resolve_scope",
 ]
 SERVER_KEYWORD_ONLY = ["mutation_policy", "dcc_policy", "dcc_source_restriction", "dcc_disable_rate_limit"] + MSTP_KEYWORD_ONLY + [
     "max_confirmed_in_flight", "max_unconfirmed_in_flight",
@@ -88,6 +89,7 @@ SERVER_KEYWORD_ONLY = ["mutation_policy", "dcc_policy", "dcc_source_restriction"
     "event_information_max_objects", "event_information_max_returned_summaries",
     "event_information_max_service_ack_bytes",
     "sc_device_uuid", "registered_network_port", "cov_policy", "time_sync_policy",
+    "utc_offset_minutes", "daylight_savings",
     "share_port_by_address", "share_wildcard_port", "segmentation_supported", "apdu_segment_timeout_ms",
     "bbmd", "foreign_device", "multicast", "sc_npdu_per_origin_limit", "sc_control_rate_limit",
     "on_reinitialize", "after_reinitialize", "router",

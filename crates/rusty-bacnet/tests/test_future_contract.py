@@ -90,15 +90,15 @@ class NativeFutureTests(unittest.IsolatedAsyncioTestCase):
             entered = await self.future_result("BipEndpoint", "__aenter__", endpoint.__aenter__())
             self.assertIs(entered, endpoint)
             role = await self.future_result("BipEndpoint", "client", endpoint.client())
-            self.assertIsInstance(role, rb.EndpointClient)
+            self.assertIsInstance(role, rb.BACnetClient)
             owner_role = await self.future_result("BipEndpoint", "server", endpoint.server())
-            self.assertIsInstance(owner_role, rb.EndpointServer)
+            self.assertIsInstance(owner_role, rb.BACnetServer)
             oid = rb.ObjectIdentifier(rb.ObjectType.DEVICE, 858)
-            value = await self.future_result("EndpointClient", "read_property",
+            value = await self.future_result("BACnetClient", "read_property",
                                             role.read_property(address, oid, rb.PropertyIdentifier.OBJECT_NAME))
             self.assertIsInstance(value, rb.PropertyValue)
             with self.assertRaises(ValueError):
-                role.read_property_multiple("invalid-address", [])
+                await role.read_property_multiple("invalid-address", [])
             await self.future_result("BipEndpoint", "__aexit__", endpoint.__aexit__(None, None, None))
         finally:
             await endpoint.close()
@@ -153,12 +153,14 @@ class NativeFutureInventoryTests(unittest.TestCase):
             "BACnetClient": sorted((source / "client/client_methods").glob("*.rs")),
             "BACnetServer": sorted((source / "server/server_methods").glob("*.rs")),
             "ScHub": [source / "hub.rs"],
-            "EndpointClient": [source / "endpoint/roles.rs"],
             "CovNotificationIterator": [source / "types/cov.rs"],
             # endpoint/builders.rs holds the methods the three owners share.
-            **{name: [source / f"endpoint/{stem}.rs", source / "endpoint/builders.rs"]
-               for name, stem in (
-                ("BipEndpoint", "bip"), ("ScEndpoint", "sc"), ("MstpEndpoint", "mstp"))},
+            **{name: [source / f"endpoint/{stem}.rs" for stem in (*stems, "builders")]
+               for name, stems in (
+                ("BipEndpoint", ("bip", "bip_observation")),
+                ("ScEndpoint", ("sc",)),
+                ("MstpEndpoint", ("mstp",)),
+            )},
         }
         classes = installed_classes()
         for name, paths in groups.items():

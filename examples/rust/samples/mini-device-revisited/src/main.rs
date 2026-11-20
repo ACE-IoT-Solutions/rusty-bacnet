@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use socket2::{Domain, Protocol, Socket, Type};
 
-use bacnet_client::client::BACnetClient;
+use bacnet_client::client::{BACnetClient, Broadcast};
 use bacnet_encoding::primitives::decode_application_value;
 use bacnet_objects::analog::{AnalogInputObject, AnalogValueObject};
 use bacnet_objects::binary::{BinaryInputObject, BinaryValueObject};
@@ -305,7 +305,6 @@ async fn iam_announcement_task(
 
 fn build_database(args: &Args) -> Result<ObjectDatabase, Box<dyn std::error::Error>> {
     let mut db = ObjectDatabase::new();
-    let device_oid = ObjectIdentifier::new(ObjectType::DEVICE, args.instance)?;
 
     // --- Read-only analogInput:1 (input objects reject Present_Value writes) ---
     let mut read_only_ai =
@@ -344,14 +343,11 @@ fn build_database(args: &Args) -> Result<ObjectDatabase, Box<dyn std::error::Err
     )?;
     db.add(Box::new(commandable_bv))?;
 
-    // Device object-list must enumerate all objects — scanners (Yabe, Contemporary Controls)
-    // walk this property to populate their object tree.
-    let mut point_oids = db.list_objects();
-    point_oids.sort_by_key(|o| (o.object_type().to_raw(), o.instance_number()));
-    let mut object_list = vec![device_oid];
-    object_list.extend(point_oids);
-
-    let mut device = DeviceObject::new(DeviceConfig {
+    // Scanners (Yabe, Contemporary Controls) walk the Device's Object_List
+    // to populate their object tree. The database keeps it: the Device
+    // first, then every object in the order it was added, following any
+    // later CreateObject or DeleteObject.
+    let device = DeviceObject::new(DeviceConfig {
         identity: bacnet_objects::DeviceIdentity::new(args.instance, VENDOR_ID)
             .expect("valid Device identity")
             .with_name(args.name.clone())
@@ -362,7 +358,6 @@ fn build_database(args: &Args) -> Result<ObjectDatabase, Box<dyn std::error::Err
         application_software_version: env!("CARGO_PKG_VERSION").into(),
         ..DeviceConfig::default()
     })?;
-    device.set_object_list(object_list);
     db.add(Box::new(device))?;
 
     Ok(db)
@@ -467,7 +462,7 @@ async fn discovery_self_check(
         Err(e) => warn!("unicast self-check failed: {e}"),
     }
 
-    if let Err(e) = client.who_is(None).await {
+    if let Err(e) = client.who_is(Broadcast::Global, None).await {
         warn!("Who-Is self-check failed: {e}");
         let _ = client.stop().await;
         return;

@@ -14,10 +14,14 @@ bacnet_enum! {
     const IPV4 = 5;
     const ZIGBEE = 6;
     const VIRTUAL = 7;
-    /// Removed in version 1, revision 18 (Clause 21 production comment).
+    /// Dropped from the standard in protocol revision 18 (Clause 21); named so
+    /// an older device's value still decodes.
     const NON_BACNET = 8;
     const IPV6 = 9;
     const SERIAL = 10;
+    /// BACnet/SC. Added after revision 22 (135-2020); ASHRAE's revision 24
+    /// data types name it.
+    const SECURE_CONNECT = 11;
 }
 
 bacnet_enum! {
@@ -38,9 +42,36 @@ bacnet_enum! {
     const RENEW_FD_REGISTRATION = 2;
     const RESTART_SLAVE_DISCOVERY = 3;
     const RENEW_DHCP = 4;
-    const RESTART_AUTONEG = 5;
+    const RESTART_AUTONEGOTIATION = 5;
     const DISCONNECT = 6;
     const RESTART_PORT = 7;
+    // 8-9: added after revision 22 (135-2020); ASHRAE's revision 24 data
+    // types name them.
+    const GENERATE_CSR_FILE = 8;
+    const VALIDATE_CHANGES = 9;
+}
+
+bacnet_enum! {
+    /// State of a BACnet/SC connection, the value of the property-states
+    /// choice `sc-connection-state` (extended choice 258). Added after
+    /// revision 22 (135-2020); ASHRAE's revision 24 data types name it.
+    pub struct SCConnectionState(u32);
+
+    const NOT_CONNECTED = 0;
+    const CONNECTED = 1;
+    const DISCONNECTED_WITH_ERRORS = 2;
+    const FAILED_TO_CONNECT = 3;
+}
+
+bacnet_enum! {
+    /// State of a BACnet/SC hub connector, the value of the property-states
+    /// choice `sc-hub-connector-state` (extended choice 259). Added after
+    /// revision 22 (135-2020); ASHRAE's revision 24 data types name it.
+    pub struct SCHubConnectorState(u32);
+
+    const NO_HUB_CONNECTION = 0;
+    const CONNECTED_TO_PRIMARY = 1;
+    const CONNECTED_TO_FAILOVER = 2;
 }
 
 bacnet_enum! {
@@ -51,15 +82,6 @@ bacnet_enum! {
     const LEARNED = 1;
     const LEARNED_CONFIGURED = 2;
     const CONFIGURED = 3;
-}
-
-bacnet_enum! {
-    /// Network reachability status (Clause 6.6.1).
-    pub struct NetworkReachability(u32);
-
-    const REACHABLE = 0;
-    const BUSY = 1;
-    const UNREACHABLE = 2;
 }
 
 bacnet_enum! {

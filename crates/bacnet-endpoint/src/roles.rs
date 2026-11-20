@@ -1,20 +1,21 @@
-//! Session-bound role handles above the sibling client/server roles.
+//! The session-bound handle of the narrow client role.
 //!
-//! [`ClientRoleHandle`] exposes unsegmented reads and direct B/IP WriteProperty initiation;
-//! [`ServerRoleHandle`] exposes inbound handling, session liveness, the
-//! one-shot deferred-reply arm, and notification admit-complete. Neither
-//! handle exposes lifecycle: `start`/`stop` exist only on
-//! [`EndpointSession`](crate::session::EndpointSession), and the owner-only
-//! shutdown helpers are `pub(crate)`.
+//! [`ClientRoleHandle`] exposes unsegmented reads and direct B/IP
+//! WriteProperty initiation. It exposes no lifecycle: `start`/`stop` exist
+//! only on [`EndpointSession`](crate::session::EndpointSession), and the
+//! owner-only shutdown helper is `pub(crate)`. The server role is the full
+//! server the session owns and
+//! [`EndpointSession::server`](crate::session::EndpointSession::server)
+//! borrows (#2617).
 //!
-//! Both handles are `Send + Sync` (statically asserted below), so a handle
+//! The handle is `Send + Sync` (statically asserted below), so a handle
 //! cloned out of the session may move across tasks and survive the session
 //! drop as a value — every call then fails closed via the [`Weak`] token.
 //!
 //! ```compile_fail,E0599
 //! // No lifecycle on roles: `start` exists only on `EndpointSession`.
-//! # use bacnet_endpoint::roles::ServerRoleHandle;
-//! # async fn forbidden(handle: ServerRoleHandle) {
+//! # use bacnet_endpoint::roles::ClientRoleHandle;
+//! # async fn forbidden(handle: ClientRoleHandle) {
 //! handle.start().await;
 //! # }
 //! ```
@@ -23,9 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use bacnet_encoding::apdu::{Apdu, decode_apdu};
-use bacnet_endpoint_core::coordinator::{
-    AdmissionOutcome, CanonicalPeer, OutboundTransactionCoordinator,
-};
+use bacnet_endpoint_core::coordinator::{AdmissionOutcome, OutboundTransactionCoordinator};
 pub use bacnet_endpoint_core::endpoint_ingress::EndpointApduDestination;
 use bacnet_network::layer::ReceivedApdu;
 use bacnet_transport::port::DataAttribute;
@@ -34,10 +33,6 @@ use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
 use bacnet_client::EndpointRequester;
-use bacnet_server::server::{
-    __endpoint_EndpointResponder as EndpointResponder,
-    __endpoint_NotificationTransactions as NotificationTransactions,
-};
 
 fn shutdown_error() -> Error {
     Error::Encoding("endpoint shutdown".into())
@@ -52,14 +47,6 @@ pub struct SessionToken {
     open: AtomicBool,
     /// Shared device-wide outbound lease pool (client + server notifications).
     pub coordinator: Arc<OutboundTransactionCoordinator>,
-    /// RB-17 one-shot deferred-reply arm (MS/TP `ReplyPostponed` wiring).
-    ///
-    /// When set, the session dispatch strips the one-use prompt reply sender
-    /// from the next `reply_tx`-bearing inbound request before the responder
-    /// sees it, forcing the token-owned egress path with identical
-    /// addressing/invoke ID. Consumed exactly once via [`take_suspend`](Self::take_suspend);
-    /// broadcasts (no `reply_tx`) never consume the arm.
-    suspend_next: AtomicBool,
 }
 
 impl SessionToken {
@@ -68,7 +55,6 @@ impl SessionToken {
         Arc::new(Self {
             open: AtomicBool::new(true),
             coordinator,
-            suspend_next: AtomicBool::new(false),
         })
     }
 
@@ -80,22 +66,6 @@ impl SessionToken {
     #[doc(hidden)]
     pub fn is_open(&self) -> bool {
         self.open.load(Ordering::Acquire)
-    }
-
-    /// Arms one-shot deferred-reply suspension (RB-17 MS/TP wiring).
-    ///
-    /// Test + slow-application seam: the next `reply_tx`-bearing inbound
-    /// request is answered token-owned via egress (after the MAC releases
-    /// `ReplyPostponed`) instead of promptly via `reply_tx`.
-    #[doc(hidden)]
-    pub fn suspend_next_reply(&self) {
-        self.suspend_next.store(true, Ordering::Release);
-    }
-
-    /// Consumes the suspension arm exactly once (single dispatch consumer).
-    #[doc(hidden)]
-    pub fn take_suspend(&self) -> bool {
-        self.suspend_next.swap(false, Ordering::AcqRel)
     }
 }
 
@@ -118,9 +88,11 @@ pub enum Commandability {
 /// shutdown"`). `Send + Sync`, so clones may outlive the session borrow and
 /// move across tasks.
 ///
-/// Service scope is unsegmented RP/RR/RPM and direct B/IP WriteProperty.
-/// Explicit destinations preserve data attributes and ingress provenance. When source Audit
-/// reporting is selected, only direct B/IP IPv4 unicast targets are admitted.
+/// Service scope is unsegmented RP/RR/RPM, the paged log read over them, and
+/// direct B/IP WriteProperty. Explicit destinations preserve data attributes
+/// and ingress provenance. When source Audit reporting is selected, an
+/// audited read goes to a direct unicast on the link or to one station
+/// behind a router (#2371).
 /// Audited calls are session-owned before egress: dropping their caller does not
 /// cancel an admitted request or its terminal observation. Other calls retain
 /// caller-owned cancellation. Stop/drop may discard undelivered source records.
@@ -329,10 +301,13 @@ impl ClientRoleHandle {
         .await
     }
 
-    /// Explicit RPM destination and pass-through attributes. Audited operations
-    /// require direct B/IP IPv4 unicast, which includes a routed destination
-    /// naming the session's own network number once it is known (#1403); all
-    /// responses remain unsegmented.
+    /// Explicit RPM destination and pass-through attributes, under the
+    /// one-device rule of
+    /// [`read_property_with_destination`](Self::read_property_with_destination).
+    /// An audited operation goes to a direct unicast or to one station behind
+    /// a router (#2371), a routed destination naming the session's own
+    /// network number once it is known going direct (#1403); all responses
+    /// remain unsegmented.
     pub async fn read_property_multiple_with_destination(
         &self,
         destination: EndpointApduDestination,
@@ -376,44 +351,17 @@ impl ClientRoleHandle {
         property_array_index: Option<u32>,
         range: Option<bacnet_services::read_range::RangeSpec>,
     ) -> Result<bacnet_services::read_range::ReadRangeAck, Error> {
-        self.read_range_with_destination(
-            EndpointApduDestination::Direct {
-                destination_mac: bacnet_types::MacAddr::from_slice(destination_mac),
-            },
-            Vec::new(),
-            object_identifier,
-            property_identifier,
-            property_array_index,
-            range,
-        )
-        .await
-    }
-
-    /// Explicit destination and pass-through attributes for ReadRange.
-    /// Routed destinations are available when source reporting is not selected
-    /// for the operation, under the same one-device rule as
-    /// [`read_property_with_destination`](Self::read_property_with_destination).
-    /// A routed destination naming the session's own network number, once it
-    /// is known, goes direct and can be audited (#1403). Responses remain
-    /// unsegmented.
-    pub async fn read_range_with_destination(
-        &self,
-        destination: EndpointApduDestination,
-        data_attributes: Vec<DataAttribute>,
-        object_identifier: ObjectIdentifier,
-        property_identifier: PropertyIdentifier,
-        property_array_index: Option<u32>,
-        range: Option<bacnet_services::read_range::RangeSpec>,
-    ) -> Result<bacnet_services::read_range::ReadRangeAck, Error> {
         let request = bacnet_services::read_range::ReadRangeRequest {
             object_identifier,
             property_identifier,
             property_array_index,
             range,
         };
-        self.read_range_checked(
-            destination,
-            data_attributes,
+        self.read_range_with_destination(
+            EndpointApduDestination::Direct {
+                destination_mac: bacnet_types::MacAddr::from_slice(destination_mac),
+            },
+            Vec::new(),
             request,
             bacnet_services::read_range::ReadRangeValidation::Strict,
         )
@@ -431,7 +379,7 @@ impl ClientRoleHandle {
         request: &bacnet_services::read_range::ReadRangeRequest,
         validation: bacnet_services::read_range::ReadRangeValidation,
     ) -> Result<bacnet_services::read_range::ReadRangeReply, Error> {
-        self.read_range_checked(
+        self.read_range_with_destination(
             EndpointApduDestination::Direct {
                 destination_mac: bacnet_types::MacAddr::from_slice(destination_mac),
             },
@@ -442,23 +390,14 @@ impl ClientRoleHandle {
         .await
     }
 
-    /// Read one page of `log`'s Log_Buffer from `cursor`, as
-    /// [`bacnet_client::log_reader::read_log_page`] does; each request is
-    /// audited like any other read, and paced by the session's
-    /// [`min_request_interval_ms`](crate::session::SessionConfig::min_request_interval_ms)
-    /// as a paced `BACnetClient`'s are.
-    pub async fn read_log_page(
-        &self,
-        destination_mac: &[u8],
-        log: ObjectIdentifier,
-        cursor: bacnet_client::log_reader::LogCursor,
-        page_size: u16,
-    ) -> Result<bacnet_client::log_reader::LogPage, Error> {
-        bacnet_client::log_reader::read_log_page(self, destination_mac, log, cursor, page_size)
-            .await
-    }
-
-    async fn read_range_checked(
+    /// [`read_range_with`](Self::read_range_with) to an explicit destination,
+    /// with pass-through attributes, under the one-device rule of
+    /// [`read_property_with_destination`](Self::read_property_with_destination).
+    /// A routed destination naming the session's own network number, once
+    /// it is known, goes direct (#1403). An audited read of a station behind
+    /// a router names it by its network and MAC (#2371). Responses remain
+    /// unsegmented.
+    pub async fn read_range_with_destination(
         &self,
         destination: EndpointApduDestination,
         data_attributes: Vec<DataAttribute>,
@@ -481,6 +420,46 @@ impl ClientRoleHandle {
         self.requester
             .read_range_with_destination(destination, data_attributes, request, validation)
             .await
+    }
+
+    /// Read one page of `log`'s Log_Buffer from `cursor`, as
+    /// [`bacnet_client::log_reader::read_log_page`] does; each request is
+    /// audited like any other read, and paced by the session's
+    /// [`min_request_interval_ms`](crate::session::SessionConfig::min_request_interval_ms)
+    /// as a paced `BACnetClient`'s are.
+    pub async fn read_log_page(
+        &self,
+        destination_mac: &[u8],
+        log: ObjectIdentifier,
+        cursor: bacnet_client::log_reader::LogCursor,
+        page_size: u16,
+    ) -> Result<bacnet_client::log_reader::LogPage, Error> {
+        bacnet_client::log_reader::read_log_page(self, destination_mac, log, cursor, page_size)
+            .await
+    }
+
+    /// [`read_log_page`](Self::read_log_page) to an explicit destination,
+    /// with pass-through attributes: every request of the page, the count
+    /// reads included, goes to `destination` as
+    /// [`read_property_with_destination`](Self::read_property_with_destination)
+    /// and [`read_range_with_destination`](Self::read_range_with_destination)
+    /// send it (#2612).
+    pub async fn read_log_page_with_destination(
+        &self,
+        destination: EndpointApduDestination,
+        data_attributes: Vec<DataAttribute>,
+        log: ObjectIdentifier,
+        cursor: bacnet_client::log_reader::LogCursor,
+        page_size: u16,
+    ) -> Result<bacnet_client::log_reader::LogPage, Error> {
+        let to = Destined {
+            handle: self,
+            destination,
+            data_attributes,
+        };
+        // The reader hands each request the MAC it was given; `Destined`
+        // sends every one to its own destination instead.
+        bacnet_client::log_reader::read_log_page(&to, &[], log, cursor, page_size).await
     }
 
     /// Completes one pre-admitted response (session dispatch only).
@@ -538,111 +517,47 @@ impl bacnet_client::log_reader::LogRequester for ClientRoleHandle {
     }
 }
 
-/// Server role: narrow responder + shared notification pool.
-///
-/// Service scope stays narrow: `ReadProperty`, optionally authorized local
-/// Device.Description `WriteProperty`, optionally `ReinitializeDevice` through
-/// its handler, and `Reject`/`Abort`. Full
-/// `bacnet-server` parity is a later packet. No
-/// lifecycle methods on this handle; the session owner drives dispatch +
-/// `close()`. `Send + Sync`; every method fails closed after shutdown.
-#[derive(Clone)]
-pub struct ServerRoleHandle {
-    token: Weak<SessionToken>,
-    responder: Arc<EndpointResponder>,
-    notifications: Arc<NotificationTransactions>,
+/// A paged log read's requests to one explicit destination, fixed for the
+/// page: the MAC the reader passes is unused.
+struct Destined<'a> {
+    handle: &'a ClientRoleHandle,
+    destination: EndpointApduDestination,
+    data_attributes: Vec<DataAttribute>,
 }
 
-impl ServerRoleHandle {
-    #[doc(hidden)]
-    pub fn new(
-        token: &Arc<SessionToken>,
-        responder: Arc<EndpointResponder>,
-        notifications: Arc<NotificationTransactions>,
-    ) -> Self {
-        Self {
-            token: Arc::downgrade(token),
-            responder,
-            notifications,
-        }
-    }
-
-    fn check_open(&self) -> Result<(), Error> {
-        let session = self.token.upgrade().ok_or_else(shutdown_error)?;
-        if !session.is_open() {
-            return Err(shutdown_error());
-        }
-        Ok(())
-    }
-
-    /// Returns `true` while the owning session is alive and open.
-    ///
-    /// Test seam proving no detached role outlives the endpoint: after the
-    /// session drops, [`Weak::upgrade`] fails and this returns `false`.
-    /// Cloned handles survive as values but report `false` and fail closed.
-    pub fn is_session_alive(&self) -> bool {
-        self.token.upgrade().is_some_and(|s| s.is_open())
-    }
-
-    /// Arms one-shot deferred-reply suspension (RB-17 MS/TP wiring).
-    ///
-    /// The next ordinary non-direct `reply_tx`-bearing request handled while this arm is
-    /// set answers token-owned via egress (after the MAC releases
-    /// `ReplyPostponed`) instead of promptly via `reply_tx`. Fails closed
-    /// once the owning session shuts down. Broadcasts (no `reply_tx`) never
-    /// consume the arm; neither do direct provenance or capability-bearing envelopes.
-    pub fn suspend_next_reply(&self) -> Result<(), Error> {
-        let session = self.token.upgrade().ok_or_else(shutdown_error)?;
-        if !session.is_open() {
-            return Err(shutdown_error());
-        }
-        session.suspend_next_reply();
-        Ok(())
-    }
-
-    /// Handles one inbound request via the wire invoke ID directly.
-    ///
-    /// Session dispatch only. Never touches the outbound coordinator pool.
-    /// Preserves the envelope's identity and response capability for the responder.
-    /// Honors a pending RB-17 suspension arm identically to session dispatch:
-    /// ordinary prompt work drops `reply_tx` and answers token-owned via egress.
-    /// Direct/capability-bearing envelopes retain checked original-route policy.
-    pub async fn handle_inbound(&self, mut received: ReceivedApdu) -> Result<bool, Error> {
-        self.check_open()?;
-        if !received.provenance.is_direct_peer()
-            && received.direct_response.is_none()
-            && received.reply_tx.is_some()
-            && self.token.upgrade().is_some_and(|s| s.take_suspend())
-        {
-            let _ = received.reply_tx.take();
-        }
-        self.responder.handle(received).await
-    }
-
-    /// Completes one already-admitted notification lease (dispatch only).
-    ///
-    /// The session's single [`admit_once`] owns exact-once claim; this
-    /// releases the exact lease without re-admitting. Returns `false` after
-    /// shutdown.
-    pub fn complete_notification_pre_admitted(
+impl bacnet_client::log_reader::LogRequester for Destined<'_> {
+    async fn read_unsigned(
         &self,
-        admission: bacnet_endpoint_core::coordinator::Admission,
-        apdu: &Apdu,
-    ) -> bool {
-        if self.check_open().is_err() {
-            return false;
-        }
-        self.notifications.complete_pre_admitted(admission, apdu)
+        _mac: &[u8],
+        log: ObjectIdentifier,
+        property: PropertyIdentifier,
+    ) -> Result<u64, Error> {
+        let ack = self
+            .handle
+            .read_property_with_destination(
+                self.destination.clone(),
+                self.data_attributes.clone(),
+                log,
+                property,
+                None,
+            )
+            .await?;
+        bacnet_client::log_reader::unsigned_value(&ack.property_value)
     }
 
-    /// Internal close for the session owner only.
-    ///
-    /// Owner-only seam (`pub(crate)`): retained for owner-driven shutdown
-    /// without exposing lifecycle on the handle.
-    #[allow(dead_code)]
-    pub(crate) fn close_for_owner(&self) {
-        self.responder.close();
-        self.notifications.close();
+    async fn read_range_lenient(
+        &self,
+        _mac: &[u8],
+        request: &bacnet_services::read_range::ReadRangeRequest,
+    ) -> Result<bacnet_services::read_range::ReadRangeReply, Error> {
+        self.handle
+            .read_range_with_destination(
+                self.destination.clone(),
+                self.data_attributes.clone(),
+                request.clone(),
+                bacnet_services::read_range::ReadRangeValidation::Lenient,
+            )
+            .await
     }
 }
 
@@ -650,26 +565,7 @@ fn assert_send_sync<T: Send + Sync>() {}
 
 const _: fn() = || {
     assert_send_sync::<ClientRoleHandle>();
-    assert_send_sync::<ServerRoleHandle>();
 };
-
-/// Derives the canonical peer for one received envelope (direct vs routed),
-/// given `local_network`, the session's known network number, if any: an
-/// envelope relayed with that number as its SNET is the direct station at
-/// its SADR ([`CanonicalPeer::from_source`], #1465).
-///
-/// RB-07 compat: provenance is preserved by the caller and never gates here.
-#[doc(hidden)]
-pub fn inbound_canonical_peer(
-    received: &ReceivedApdu,
-    local_network: Option<u16>,
-) -> CanonicalPeer {
-    CanonicalPeer::from_source(
-        received.source_mac.as_slice(),
-        received.source_network.as_ref(),
-        local_network,
-    )
-}
 
 /// Decodes one terminal/segment APDU, preserving the full envelope for the
 /// caller (source/dest, raw + effective group, attributes, provenance).

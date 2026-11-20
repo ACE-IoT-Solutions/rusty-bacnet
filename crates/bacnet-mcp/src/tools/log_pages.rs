@@ -5,7 +5,8 @@
 //! the next call.
 
 use bacnet_client::log_reader::{LogCursor, LogPage};
-use bacnet_ops::engine::{Engine, timed_out};
+use bacnet_ops::Device;
+use bacnet_ops::parse::parse_weekday_digit;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::ObjectType;
 use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
@@ -34,8 +35,11 @@ pub(super) fn input(object: &str) -> Value {
     let time = |what: &str| {
         json!({
             "type": "string",
-            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]{1,2})?)?$",
-            "description": format!("{what}, the device's local time: YYYY-MM-DDTHH:MM[:SS[.hh]]"),
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ]| [1-7*] )[0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]{1,2})?)?$",
+            "description": format!(
+                "{what}, the device's local time: YYYY-MM-DDTHH:MM[:SS[.hh]], or with the \
+                 weekday digit (Monday 1) before the time, 2026-11-10 2 16:35:00.00"
+            ),
         })
     };
     schema::input(
@@ -192,10 +196,20 @@ impl Args {
     }
 }
 
-/// A local date and time argument.
+/// A local date and time argument: `YYYY-MM-DDTHH:MM[:SS[.hh]]`, a space
+/// for the `T`, or the coming BACnet RDF encoding's date-time string, with a
+/// weekday digit (Monday 1) or `*` between the date and the time
+/// (`2026-11-10 2 16:35:00.00`). The weekday is the date's own; a digit
+/// that names another day is refused.
 fn parse_time(field: &'static str, text: &str) -> Result<(Date, Time), ToolError> {
     let bad = || ToolError::invalid(field, format!("'{text}' is not YYYY-MM-DDTHH:MM[:SS[.hh]]"));
     let (date, time) = text.split_once(['T', ' ']).ok_or_else(bad)?;
+    let (typed_weekday, time) = match time.split_once(' ') {
+        Some((word, time)) if text[date.len()..].starts_with(' ') => {
+            (Some(parse_weekday_digit(word).ok_or_else(bad)?), time)
+        }
+        _ => (None, time),
+    };
     let mut ymd = date.splitn(3, '-').map(str::parse::<u16>);
     let (Some(Ok(year)), Some(Ok(month)), Some(Ok(day))) = (ymd.next(), ymd.next(), ymd.next())
     else {
@@ -235,11 +249,21 @@ fn parse_time(field: &'static str, text: &str) -> Result<(Date, Time), ToolError
     {
         return Err(bad());
     }
+    let day_of_week = weekday(year, month, day);
+    if let Some(typed) = typed_weekday
+        && typed != Date::UNSPECIFIED
+        && typed != day_of_week
+    {
+        return Err(ToolError::invalid(
+            field,
+            format!("'{text}': {date} is weekday {day_of_week} (Monday 1), not {typed}"),
+        ));
+    }
     let date = Date {
         year: u8::try_from(year - 1900).map_err(|_| bad())?,
         month: u8::try_from(month).map_err(|_| bad())?,
         day: u8::try_from(day).map_err(|_| bad())?,
-        day_of_week: weekday(year, month, day),
+        day_of_week,
     };
     let time = Time {
         hour,
@@ -354,7 +378,7 @@ impl Pager {
     /// failed (kept as `stopped`). A first page that fails fails the call.
     pub(super) async fn next<T: TransportPort + 'static>(
         &mut self,
-        engine: &Engine<T>,
+        device: &Device<T>,
         call: &Call,
     ) -> Result<Option<LogPage>, ToolError> {
         if self.full() || (self.pages > 0 && call.out_of_time()) {
@@ -362,14 +386,11 @@ impl Pager {
             return Ok(None);
         }
         let want = u16::try_from((self.limit - self.count).min(PAGE)).unwrap_or(1);
-        let page = match engine
-            .read_trend(self.device, self.log, self.cursor, want)
-            .await
-        {
+        let page = match device.read_trend(self.log, self.cursor, want).await {
             Ok(page) => page,
             Err(error) if self.pages == 0 => return Err(ToolError::device(self.device, &error)),
             Err(error) => {
-                if timed_out(&error) {
+                if error.timed_out() {
                     call.timed_out();
                 }
                 self.stopped = Some(ToolError::device(self.device, &error).json());
@@ -492,6 +513,32 @@ mod tests {
             "2026-10-25",
             "1899-01-01T00:00",
             "2026-10-25T07:00:00.123",
+        ] {
+            assert!(parse_time("from", bad).is_err(), "{bad}");
+        }
+    }
+
+    /// The coming BACnet RDF encoding's date-time string, a weekday digit
+    /// or `*` between the date and the time, reads as the same time.
+    #[test]
+    fn times_take_the_rdf_weekday_digit() {
+        let plain = parse_time("from", "2026-11-10 16:35:00.00").unwrap();
+        for text in ["2026-11-10 2 16:35:00.00", "2026-11-10 * 16:35:00.00"] {
+            assert_eq!(parse_time("from", text).unwrap(), plain, "{text}");
+        }
+        // 10 November 2026 is a Tuesday, weekday 2.
+        let ToolError::Invalid { message, .. } =
+            parse_time("from", "2026-11-10 3 16:35").unwrap_err()
+        else {
+            panic!("an invalid argument");
+        };
+        assert!(message.contains("is weekday 2"), "{message}");
+        for bad in [
+            "2026-11-10 0 16:35",
+            "2026-11-10 8 16:35",
+            "2026-11-10 Tue 16:35",
+            "2026-11-10T2 16:35",
+            "2026-11-10 2",
         ] {
             assert!(parse_time("from", bad).is_err(), "{bad}");
         }

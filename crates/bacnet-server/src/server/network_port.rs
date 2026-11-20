@@ -140,7 +140,7 @@ impl<T: TransportPort + 'static> StartingNetwork<T> {
         self.network.take().expect("startup network owned")
     }
     pub(super) async fn cleanup(mut self) -> Result<(), Error> {
-        let mut network = self.network.take().expect("startup network owned");
+        let network = self.network.take().expect("startup network owned");
         self.runtime
             .spawn(async move { network.stop().await })
             .await
@@ -149,7 +149,7 @@ impl<T: TransportPort + 'static> StartingNetwork<T> {
 }
 impl<T: TransportPort + 'static> Drop for StartingNetwork<T> {
     fn drop(&mut self) {
-        if let Some(mut network) = self.network.take() {
+        if let Some(network) = self.network.take() {
             self.runtime.spawn(async move {
                 if let Err(error) = network.stop().await {
                     tracing::warn!(%error, "cancelled startup cleanup failed");
@@ -231,14 +231,24 @@ pub(super) fn spawn_number_worker<T: TransportPort + 'static>(
         crate::network_number::NetworkNumberOwner::new(selected.map(|oid| (Arc::clone(db), oid)))
             .publishing_to(network.local_network_number().clone());
     super::heap_futures::spawn_boxed(move || async move {
-        while let Some(control) = controls.recv().await {
-            let before = network.local_network_number().get();
-            let reply = owner.handle(control).await;
-            if network.local_network_number().get() != before
-                && let Some(audit) = audit.as_ref().and_then(std::sync::Weak::upgrade)
-            {
-                audit.number_changed();
-            }
+        use crate::network_number::NumberTurn;
+        loop {
+            // A control, or the answer a broadcast question left waiting
+            // (#2597).
+            let reply = match owner.next(&mut controls).await {
+                NumberTurn::Closed => break,
+                NumberTurn::Control(control) => {
+                    let before = network.local_network_number().get();
+                    let reply = owner.handle(control).await;
+                    if network.local_network_number().get() != before
+                        && let Some(audit) = audit.as_ref().and_then(std::sync::Weak::upgrade)
+                    {
+                        audit.number_changed();
+                    }
+                    reply
+                }
+                NumberTurn::Answer(answer) => answer,
+            };
             if let Some(npdu) = reply
                 && let Err(error) = network.transport().send_broadcast(&npdu).await
             {

@@ -4,9 +4,9 @@ use std::sync::PoisonError;
 use std::time::Duration;
 
 use bacnet_client::discovery::DiscoveredDevice;
-use bacnet_ops::engine::{Wanted, WhoIsScope};
+use bacnet_ops::client::{Discover, Wanted};
 use bacnet_ops::label::kebab;
-use bacnet_services::who_is::DeviceInstanceRange;
+use bacnet_ops::{DeviceAddress, OpsError};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::ObjectIdentifier;
@@ -18,7 +18,7 @@ use super::{Spec, next, schema, start};
 use crate::context::{Call, Ctx};
 use crate::errors::ToolError;
 use crate::untrusted::envelope;
-use crate::value::row_text;
+use crate::value::reading_text;
 
 pub(super) const NAME: &str = "bacnet_discover";
 
@@ -176,8 +176,8 @@ pub(super) async fn run<T: TransportPort + 'static>(
     let first = start(ctx, NAME, args.cursor.as_deref(), raw)? as usize;
     // A later page lists what the first one found; it sends nothing. A
     // passive server sends nothing either, so it only lists.
-    let send = args.send.unwrap_or(ctx.engine.is_some()) && args.cursor.is_none();
-    if send && ctx.engine.is_none() {
+    let send = args.send.unwrap_or(ctx.client.is_some()) && args.cursor.is_none();
+    if send && ctx.client.is_none() {
         return Err(ToolError::refused(
             "passive",
             "the server is passive: it sends no Who-Is and only lists devices already heard, \
@@ -204,11 +204,10 @@ pub(super) async fn run<T: TransportPort + 'static>(
         }
     };
     if send {
-        who_is(ctx, &args, network, range).await?;
-        tokio::time::sleep(wait).await;
+        who_is(ctx, &args, network, range, wait).await?;
     }
-    let mut devices = match &ctx.engine {
-        Some(engine) => engine.devices().await,
+    let mut devices = match &ctx.client {
+        Some(client) => client.devices().await,
         // Passive: no client, so nothing is known.
         None => Vec::new(),
     };
@@ -238,18 +237,20 @@ pub(super) async fn run<T: TransportPort + 'static>(
         let instance = found.object_identifier.instance_number();
         let mut row = device_row(ctx, found);
         if args.names
-            && let Some(engine) = &ctx.engine
+            && let Some(client) = &ctx.client
         {
             let object = found.object_identifier;
-            let name = engine
-                .read(
-                    instance,
-                    object,
-                    Wanted::List(&[PropertyIdentifier::OBJECT_NAME]),
-                )
-                .await
-                .ok()
-                .and_then(|read| row_text(&read.rows, PropertyIdentifier::OBJECT_NAME));
+            // By its instance, as before: one claimed twice gets no name.
+            // Pinned to the row the policy let through above.
+            let read = match crate::context::pinned(client, found).await {
+                Ok(device) => device
+                    .read_object(object, Wanted::List(&[PropertyIdentifier::OBJECT_NAME]))
+                    .await
+                    .ok(),
+                Err(_) => None,
+            };
+            let name =
+                read.and_then(|read| reading_text(&read.readings, PropertyIdentifier::OBJECT_NAME));
             let source = format!("device {instance} device:{instance} object-name");
             row["name"] = name.map_or(Value::Null, |name| envelope(&name, source, cap));
         }
@@ -264,7 +265,7 @@ pub(super) async fn run<T: TransportPort + 'static>(
         "next_cursor": resume.map(|at| next(ctx, NAME, raw, at as u64)),
         "limits": ctx.limits(Some(page)),
     });
-    if ctx.engine.is_none() {
+    if ctx.client.is_none() {
         body["note"] = json!("passive: nothing is sent, and only devices already heard are listed");
     }
     Ok(body)
@@ -277,8 +278,8 @@ pub(crate) fn device_row<T: TransportPort + 'static>(
     found: &DiscoveredDevice,
 ) -> Value {
     let routed = found.source_network.zip(found.source_address.as_deref());
-    let (address, router) = match &ctx.engine {
-        Some(engine) => engine.address_style().locate(&found.mac_address, routed),
+    let (address, router) = match &ctx.client {
+        Some(client) => client.address_style().locate(&found.mac_address, routed),
         None => (String::new(), None),
     };
     json!({
@@ -293,26 +294,34 @@ pub(crate) fn device_row<T: TransportPort + 'static>(
     })
 }
 
-/// Send the Who-Is the arguments ask for, if the policy allows it.
+/// Send the Who-Is the arguments ask for, if the policy allows it, and
+/// listen `wait` for the answers, which land in the discovery table.
 async fn who_is<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
     args: &Args,
     network: Option<u16>,
     range: Option<(u32, u32)>,
+    wait: Duration,
 ) -> Result<(), ToolError> {
-    let engine = ctx.engine()?;
-    let scope = match (args.scope, network, &args.address) {
+    let client = ctx.client()?;
+    let request = match (args.scope, network, &args.address) {
         (Scope::Local, ..) => {
             ctx.allow_network(0)?;
-            WhoIsScope::Local
+            Discover::local()
         }
         (Scope::Network, Some(network), _) => {
             ctx.allow_network(network)?;
-            WhoIsScope::Network(network)
+            Discover::network(network)
         }
         (Scope::Directed, _, Some(address)) => {
             ctx.allow_network(0)?;
-            WhoIsScope::Directed(address)
+            // The address, checked before anything is charged.
+            let invalid = |message: String| ToolError::invalid("address", message);
+            let mac = client
+                .station_mac(address)
+                .await
+                .map_err(|e| invalid(e.to_string()))?;
+            Discover::directed(DeviceAddress::local(&mac).map_err(invalid)?)
         }
         (Scope::Global, ..) => {
             if ctx.policy.networks.is_some() {
@@ -322,39 +331,42 @@ async fn who_is<T: TransportPort + 'static>(
                      limit which it may reach",
                 ));
             }
-            WhoIsScope::Global
+            Discover::global()
         }
         _ => unreachable!("checked by the caller"),
     };
-    // A directed Who-Is's address, checked before anything is charged, and
-    // whether the discovery table knows a device there.
-    let known_station = match scope {
-        WhoIsScope::Directed(address) => {
-            let mac = engine.station_mac(address).await.map_err(|e| match e {
-                bacnet_types::error::Error::Encoding(message) => {
-                    ToolError::invalid("address", message)
-                }
-                other => ToolError::invalid("address", other.to_string()),
-            })?;
-            engine
-                .devices()
-                .await
-                .iter()
-                .any(|found| found.is_local() && found.mac_address.as_slice() == mac.as_slice())
-        }
+    // Whether the discovery table knows a device at a directed Who-Is's
+    // station.
+    let known_station = match request.scope() {
+        bacnet_ops::Scope::Directed(station) => client
+            .devices()
+            .await
+            .iter()
+            .any(|found| found.is_local() && found.mac_address.as_slice() == station.mac()),
         _ => false,
     };
     if broad(ctx, args.scope, range, known_station)? {
         broad_allowed(ctx)?;
     }
-    let range = range
-        .map(|(low, high)| DeviceInstanceRange::new(low, high))
-        .transpose()
-        .map_err(|e| ToolError::invalid("range", e.to_string()))?;
-    engine.who_is(scope, range).await.map_err(|e| match e {
-        bacnet_types::error::Error::Encoding(message) => ToolError::invalid("address", message),
-        other => ToolError::Failed(other.to_string()),
-    })
+    let request = match range {
+        Some((low, high)) => request.range(low..=high),
+        None => request,
+    };
+    client
+        .discover(request.wait(wait))
+        .await
+        .map(drop)
+        .map_err(|e| match e {
+            // The argument the refused text came from.
+            OpsError::Parse { what, reason, .. } => {
+                let field = match what {
+                    "range" | "network" => what,
+                    _ => "address",
+                };
+                ToolError::invalid(field, reason)
+            }
+            other => ToolError::Failed(other.to_string()),
+        })
 }
 
 /// Whether a Who-Is is broad, after refusing one that would make devices

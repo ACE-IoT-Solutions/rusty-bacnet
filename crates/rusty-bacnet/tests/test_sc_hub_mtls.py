@@ -1,6 +1,7 @@
 """Installed-native Python hub/node authentication; no system trust or persistent keys.
 
-OpenSSL CLI creates a temporary site CA and distinct operational certificates.
+OpenSSL CLI creates a site CA and distinct operational certificates once per
+session (openssl_fixture.py); each class gets copies in its own temporary root.
 TLS negatives use independent stdlib TLS peers, not SC reconnect timeouts.
 """
 import asyncio
@@ -11,7 +12,6 @@ import itertools
 import os
 import socket
 import ssl
-import subprocess
 import tempfile
 import threading
 import unittest
@@ -22,6 +22,7 @@ from rusty_bacnet import (
     PropertyIdentifier, ScHub,
 )
 
+from openssl_fixture import site_authority
 from port_retry import rerun_on_lost_port
 
 # Deterministic test provisioning only, not defaults for deployed devices.
@@ -48,43 +49,9 @@ class MtlsFixture(unittest.IsolatedAsyncioTestCase):
         cls.addClassCleanup(cls.temp.cleanup)
         cls.root = Path(cls.temp.name)
 
-        def run(*args):
-            subprocess.run(["openssl", *args], cwd=cls.root, check=True,
-                           capture_output=True, timeout=10)
-
-        # Explicit CA constraints; leaves are never substituted for trust anchors.
-        for ca in ("site", "foreign"):
-            run("req", "-x509", "-newkey", "ec", "-pkeyopt",
-                "ec_paramgen_curve:prime256v1", "-nodes", "-days", "2",
-                "-subj", f"/CN={ca}", "-keyout", f"{ca}.key", "-out", f"{ca}.pem",
-                "-addext", "basicConstraints=critical,CA:TRUE",
-                "-addext", "keyUsage=critical,keyCertSign,cRLSign")
-        (cls.root / "index").write_text("")
-        (cls.root / "serial").write_text("1000\n")
-        (cls.root / "ca.cnf").write_text(
-            "[ca]\ndefault_ca=issuer\n[issuer]\ndatabase=index\n"
-            "serial=serial\nnew_certs_dir=.\ncertificate=site.pem\n"
-            "private_key=site.key\ndefault_md=sha256\npolicy=policy\n"
-            "unique_subject=no\n[policy]\ncommonName=supplied\n"
-            "[leaf]\nbasicConstraints=critical,CA:FALSE\n"
-            "keyUsage=critical,digitalSignature\n"
-            "extendedKeyUsage=serverAuth,clientAuth\n"
-            "subjectAltName=DNS:localhost,IP:127.0.0.1\n")
-        for name in ("hub", "server", "client", "wrong", "expired", "future"):
-            run("req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
-                "-nodes", "-subj", f"/CN={name}", "-keyout", f"{name}.key",
-                "-out", f"{name}.csr")
-            if name in ("expired", "future"):
-                start, end = (("20000101000000Z", "20010101000000Z") if name == "expired"
-                              else ("20990101000000Z", "21000101000000Z"))
-                run("ca", "-batch", "-config", "ca.cnf", "-extensions", "leaf",
-                    "-in", f"{name}.csr", "-out", f"{name}.pem", "-notext",
-                    "-startdate", start, "-enddate", end)
-            else:
-                ca = "foreign" if name == "wrong" else "site"
-                run("x509", "-req", "-in", f"{name}.csr", "-CA", f"{ca}.pem",
-                    "-CAkey", f"{ca}.key", "-CAcreateserial", "-days", "1",
-                    "-extfile", "ca.cnf", "-extensions", "leaf", "-out", f"{name}.pem")
+        # Made once per session and copied, so each class still has its own root.
+        site_authority().provide(cls.root, "foreign", "hub", "server", "client",
+                                 "wrong", "expired", "future")
 
     def path(self, name):
         return str(self.root / name)
@@ -262,14 +229,17 @@ class HubMtlsTests(MtlsFixture):
                               ("invalid.pem", "-----BEGIN CERTIFICATE-----\nYQ==\n-----END CERTIFICATE-----\n")]:
             (self.root / name).write_text(content)
         cases = [({"ca_cert": self.path(name)}, message) for name, message in [
-            ("empty.pem", "no CA certificates"), ("garbage.pem", "no CA certificates"),
-            ("invalid.pem", "failed to add CA cert"), ("missing.pem", "failed to read CA cert")]]
-        cases += [({"ca_cert": str(self.root)}, "failed to read CA cert"),
-                  ({"cert": self.path("empty.pem")}, "no server certificates"),
-                  ({"cert": self.path("missing.pem")}, "failed to read server cert"),
-                  ({"key": self.path("garbage.pem")}, "failed to parse server key"),
-                  ({"key": self.path("missing.pem")}, "failed to read server key"),
-                  ({"key": self.path("client.key")}, "TLS server config error")]
+            ("empty.pem", "the CA bundle holds no certificate"),
+            ("garbage.pem", "the CA bundle holds no certificate"),
+            ("invalid.pem", "certificate 0 of the CA bundle can't be used"),
+            ("missing.pem", "can't read the CA bundle file")]]
+        cases += [({"ca_cert": str(self.root)}, "can't read the CA bundle file"),
+                  ({"cert": self.path("empty.pem")}, "the certificate chain holds no certificate"),
+                  ({"cert": self.path("missing.pem")}, "can't read the certificate chain file"),
+                  ({"key": self.path("garbage.pem")}, "no PKCS#8, SEC1 or PKCS#1 private key found"),
+                  ({"key": self.path("missing.pem")}, "can't read the private key file"),
+                  ({"key": self.path("client.key")},
+                   "the private key doesn't belong to the chain's leaf certificate")]
         for overrides, message in cases:
             with self.subTest(overrides=overrides):
                 # Holding an already-bound port proves TLS validation precedes
@@ -378,9 +348,9 @@ class NodeMtlsTests(MtlsFixture):
     async def test_invalid_local_files_do_not_dial_or_drain(self):
         cases = []
         for field, label, read_error in [
-            ("sc_ca_cert", "CERTIFICATE", "CA cert"),
-            ("sc_client_cert", "CERTIFICATE", "client cert"),
-            ("sc_client_key", "PRIVATE KEY", "client key"),
+            ("sc_ca_cert", "CERTIFICATE", "the CA bundle"),
+            ("sc_client_cert", "CERTIFICATE", "the certificate chain"),
+            ("sc_client_key", "PRIVATE KEY", "the private key"),
         ]:
             for kind, contents in [("empty", ""), ("garbage", "not PEM"),
                                    ("bad-base64", f"-----BEGIN {label}-----\n%%%\n-----END {label}-----\n"),
@@ -388,9 +358,10 @@ class NodeMtlsTests(MtlsFixture):
                 name = f"{field}-{kind}.pem"
                 (self.root / name).write_text(contents)
                 cases.append(({field: self.path(name)}, "TLS config error:"))
-            cases.extend([({field: self.path("does-not-exist.pem")}, f"failed to read {read_error}"),
-                          ({field: str(self.root)}, f"failed to read {read_error}")])
-        cases.append(({"sc_client_key": self.path("client.key")}, "TLS client auth error"))
+            cases.extend([({field: self.path("does-not-exist.pem")}, f"can't read {read_error} file"),
+                          ({field: str(self.root)}, f"can't read {read_error} file")])
+        cases.append(({"sc_client_key": self.path("client.key")},
+                      "the private key doesn't belong to the chain's leaf certificate"))
         for api in (BACnetClient, BACnetServer):
             for overrides, message in cases:
                 with self.subTest(api=api.__name__, overrides=overrides), socket.socket() as listener:
@@ -437,7 +408,7 @@ class NodeMtlsTests(MtlsFixture):
                 await self.start_node(node)
             self.assertEqual(pending_count(), 1)
             Path(paths[field]).write_bytes((self.root / source).read_bytes())
-        with self.assertRaisesRegex(RuntimeError, "TLS client auth error"):
+        with self.assertRaisesRegex(RuntimeError, "private key doesn't belong"):
             await self.start_node(node)
         self.assertEqual(pending_count(), 1)
         node.add_binary_input(1, "Added after failure")
@@ -718,7 +689,8 @@ class NodeIdentityMtlsTests(MtlsFixture):
                         for _ in range(8):
                             opcode, data = await self.frame(reader, False)
                             if opcode == 8:
-                                self.assertEqual(data, b"")  # Hub's replacement Close(None).
+                                # The replacement close says 1000 (#2463).
+                                self.assertEqual(data, b"\x03\xe8")
                                 break
                             self.assertEqual(opcode, 2)
                             self.assertEqual(data[0], 1)

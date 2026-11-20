@@ -9,6 +9,1982 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries for the next release are fragment files in [`changelog.d/`](changelog.d/), assembled here when a version is released. Add one per change instead of editing this file: [`changelog.d/README.md`](changelog.d/README.md) has the format, and `python3 scripts/changelog.py preview` shows the section they make.
 
+## [0.16.0] - 2026-11-20
+
+ACE 0.16.0 brings the upstream shared-endpoint client and server to the private
+`ace-rusty-bacnet` distribution. One socket can serve requests while the client
+discovers devices, reads routing tables, and accesses properties and atomic files
+through an explicit or learned router. I-Am arrivals preserve the destination
+network and address. Mixed routers and SC endpoints expose plaintext frames
+on their SC hub links with integer Unix nanoseconds.
+
+**Migrating from ACE 0.15.3.** Use the `BACnetClient` and `BACnetServer`
+returned by `endpoint.client()` and `endpoint.server()`. Pass direct addresses
+as strings and routed stations as `RoutedTarget(network, address, router=next_hop)`.
+Use `frame.monotonic` for elapsed time, `frame.timestamp` for POSIX seconds, and
+`frame.missed_before` for the loss immediately preceding each frame.
+
+### Migration notes
+
+- **Custom intrinsic reporters (Rust API, #2303):** the server wakes early
+  only for a due instant already pending at its last sweep, so a custom
+  `EventReporting` that seeds one less than a second after a write is served
+  by the next periodic sweep, up to a second late. The built-in detectors
+  seed whole seconds of Time_Delay. ([377a462](https://github.com/jscott3201/rusty-bacnet/commit/377a4622d71bd48d99dd12bf2a5ff14d23ee6807))
+
+- **Intrinsic delays (Rust API, #2303):** pass your monotonic `now`
+  (`bacnet_objects::event::Instant`, re-exported) to the intrinsic
+  evaluation and tick, the detectors and `event::after_write`/`sweep`, and
+  sweep again at `event::next_due(db, now)`. A custom `EventReporting` keeps
+  its own due instant and returns it from `next_due`; a wrapper must forward
+  `next_due`, or its delays end at whole-second sweeps. ([377a462](https://github.com/jscott3201/rusty-bacnet/commit/377a4622d71bd48d99dd12bf2a5ff14d23ee6807))
+
+- **Event reporting (Rust API, #2303):** add `bacnet-device-core` (with
+  `std`) and import `handle_acknowledge_alarm`, `AcceptedAcknowledgeAlarm`,
+  `AcknowledgmentNotificationContext`, `handle_get_event_information`,
+  `GetEventInformationBudget` and `ReliabilityChange` from
+  `bacnet_device_core::event`, not from `bacnet_server::handlers`,
+  `bacnet_server::server` and `bacnet_server::fault_detection`. ([7f52442](https://github.com/jscott3201/rusty-bacnet/commit/7f52442efc3dd808667925fa7b8b067fd9ffd652))
+
+- **Event reporting logs (Rust API, #2303):** `FaultDetector::new` takes no
+  argument: its `comm_timeout` was never read. A direct caller of
+  `handle_get_event_information` no longer gets a warning logged when an
+  object's summary doesn't project; `handle_get_event_information_configured`
+  returns that object and the reason as `EventInformationFailure::Projection`. ([7f52442](https://github.com/jscott3201/rusty-bacnet/commit/7f52442efc3dd808667925fa7b8b067fd9ffd652))
+
+- **Reporter invoke IDs (Rust API, #2303):** implement
+  `InvokeIds::take(&mut self, to, service: ConfirmedServiceChoice)`; the
+  `Reporter` passes ConfirmedCOVNotification or
+  ConfirmedCOVNotificationMultiple. ([377a462](https://github.com/jscott3201/rusty-bacnet/commit/377a4622d71bd48d99dd12bf2a5ff14d23ee6807))
+
+- **Reporter event path (Rust API, #2303):** `Reporter::changed` and
+  `Reporter::on_deadline` take `&mut ObjectDatabase` (a COV-only host may
+  call `on_cov_deadline` with a shared one), and `event::distribute_event`
+  takes a `RecipientWindow`: `RecipientWindow::Frame { fallback: Some(..) }`
+  keeps the old fallback. ([5e2da52](https://github.com/jscott3201/rusty-bacnet/commit/5e2da52a5ebd53a2b9a05b1f0340a83470de5fbe))
+
+- **Event Enrollment (Rust API, #2319):** `bacnet_server::event_enrollment::encode_out_of_range_params` and its four siblings are gone: they wrote the evaluator's private legacy layout, no standard form. The report types (`EventEnrollmentEvaluationReport` and the rest) keep their `bacnet_server::event_enrollment` paths and are bacnet-device-core's, re-exported; a host without the server takes them from `bacnet_device_core::event::enrollment` (its `event-enrollment` feature, which `std` turns on). ([e1129be](https://github.com/jscott3201/rusty-bacnet/commit/e1129be30cb21eb8c9e7709c9f2a0730defba0f5))
+
+- **Event Enrollment (Rust API, #2319):** `EventEnrollmentReliabilityResult::state_change` is an `EventStateChange`, not an `Option`, since a pass commits a Reliability change only with its transition, and `event_type()` returns the `EventType` itself; drop the `Some(..)` and the unwraps. ([4e1e7ca](https://github.com/jscott3201/rusty-bacnet/commit/4e1e7ca2f4163317ddd5599041616740a210064f))
+
+- **Access Door and Zone list setters (Rust API, #2331):** on an object
+  keeping its reporting settings, the three list setters no longer replace
+  a list a peer wrote; call `clear_written_reporting` first to apply the
+  application's own. A custom `WriteConfigPersistence` must keep
+  `AlgorithmWriteConfig`'s new `fault_values` and `masked_alarm_values`. An
+  older release refuses a door's or zone's file holding a parameter: clear
+  before a downgrade. ([8e2efff](https://github.com/jscott3201/rusty-bacnet/commit/8e2efffa69067489d421da22cf8ad10a0098d449))
+
+- **Written configuration (Rust API, #2331):** `ReportingWriteConfig` gains
+  the field `algorithm`. A custom `WriteConfigPersistence` that stores the
+  fields itself must keep it; one that stores `snapshot::write_config::encode`'s
+  octets needs no change. Older files still load. An older release refuses a
+  file holding a parameter (kind 6): run `clear_written_reporting` before a
+  downgrade. ([39907f6](https://github.com/jscott3201/rusty-bacnet/commit/39907f6f5e4981ed4d40fd3e505399c2198f31ed))
+
+- **Event Enrollment parameter setters (Rust API, #2331):** on an
+  enrollment keeping its reporting settings, the three parameter setters no
+  longer replace a value a peer wrote; call `clear_written_reporting` first
+  to apply the application's own. A custom `WriteConfigPersistence` must
+  keep `AlgorithmWriteConfig`'s new `event_parameters` and
+  `fault_parameters`. An older release refuses an enrollment's file holding
+  a parameter: clear before a downgrade. ([2142f35](https://github.com/jscott3201/rusty-bacnet/commit/2142f359ee095fcac17b79c6629f1eaddc434ccd))
+
+- **Alarm_Values setter (Rust API, #2331):** on a Multi-state Input or
+  Value keeping its reporting settings, `set_alarm_values` no longer
+  replaces a list a peer wrote; call `clear_written_reporting` first to
+  apply the application's own. A custom `WriteConfigPersistence` must keep
+  `AlgorithmWriteConfig`'s new `alarm_value` and `alarm_values`. An older
+  release refuses a file holding either: clear before a downgrade. ([2850978](https://github.com/jscott3201/rusty-bacnet/commit/2850978cf41b4569d76c918d085dc60bbdbd31dd))
+
+- **Snapshot formats (Rust API, #2364):** `TagsSnapshot` and
+  `ColorOutputSnapshot` gain `description`, and the second is no longer
+  `Copy`: clone it. A `TagsPersistence` or `ColorOutputPersistence` backend
+  of your own must store and return it. Files holding one are `RBNTAG02` or
+  `RBNCLR03`, which older builds refuse. With storage, a Device, lighting
+  output or colour object now refuses a written Description past 16 KiB,
+  and a saved one wins over `set_description` until
+  `clear_written_description`. ([e4d7d04](https://github.com/jscott3201/rusty-bacnet/commit/e4d7d0430757c5ee1f903c20142edcf30482e8a9))
+
+- **Claimed B/IPv6 port (#2385):** two B/IPv6 stacks on one host and port no
+  longer both start. Give each its own port, or set `share_wildcard_port`
+  (Python's keyword, CLI `--share-port`) on each: both then hear the groups,
+  but each unicast reaches one. macOS never let two normal nodes share; there
+  a normal node and a foreign device on one port now need it on the later one. ([265c965](https://github.com/jscott3201/rusty-bacnet/commit/265c9656e9ffa60cd9f5978095376c1dd299db0a))
+
+- **Server (Rust API, #2412):** a `ServerConfig` with `cov_retry_timeout_ms: 0` no longer starts; set it to at least 1, or leave the 3,000 ms default. ([ace368d](https://github.com/jscott3201/rusty-bacnet/commit/ace368da2c6ed2aaeb98cf82f8c7b26355a44bfd))
+
+- **State_Text kept (Rust API, #2414):** on a Multi-state Input, Output or
+  Value keeping its reporting settings, `set_number_of_states` no longer
+  changes a count a peer set through State_Text; call
+  `clear_written_reporting` first to apply the application's own. A custom
+  `WriteConfigPersistence` must keep `AlgorithmWriteConfig`'s new
+  `state_text`. An older release refuses a file holding it: clear before a
+  downgrade. ([6f5187c](https://github.com/jscott3201/rusty-bacnet/commit/6f5187cefac903ced35d97eab84444f6878380dc))
+
+- **Multi-state alarm values (Rust API, #2415):** `set_alarm_values` on
+  `MultiStateInputObject` and `MultiStateValueObject` returns
+  `Result<(), Error>`. Set it, with any count it needs, before
+  `with_reporting_persistence`; after that call a restored State_Text may
+  leave fewer states than the list names, so handle that refusal rather
+  than end the start with `?`. A saved list wins without that check. ([6f5187c](https://github.com/jscott3201/rusty-bacnet/commit/6f5187cefac903ced35d97eab84444f6878380dc))
+
+- **Typed names (CLI, TUI, MCP, #2435):** type and expect `enable` for
+  `log-enable`, `command` for `command-np`, `restart-autonegotiation` for
+  `restart-autoneg`, `kiloohms` and `megaohms` for `kilohms` and `megohms`,
+  and `segmented-both`, `segmented-transmit`, `segmented-receive` and
+  `no-segmentation` for `both`, `transmit`, `receive` and `none`; the old
+  names are refused. The TUI device list keeps its short labels. ([ab6c201](https://github.com/jscott3201/rusty-bacnet/commit/ab6c2017f24f2c3f32dc5a83d93b48f07cc4014b))
+
+- **Enum names (Rust and Python API, #2435):** rename `Segmentation::BOTH`,
+  `TRANSMIT`, `RECEIVE`, `NONE` to `SEGMENTED_BOTH`, `SEGMENTED_TRANSMIT`,
+  `SEGMENTED_RECEIVE`, `NO_SEGMENTATION`; `KILOHMS` and `MEGOHMS` to
+  `KILOOHMS` and `MEGAOHMS`; `RESTART_AUTONEG` to `RESTART_AUTONEGOTIATION`;
+  `LOG_ENABLE` to `ENABLE`; `COMMAND_NP` to `COMMAND`. Drop any use of
+  `NetworkReachability`. ([ab6c201](https://github.com/jscott3201/rusty-bacnet/commit/ab6c2017f24f2c3f32dc5a83d93b48f07cc4014b))
+
+- **SC disconnect causes (Rust and Python API, #2438):** `PeerClose`
+  (`peer_close`) now means a Disconnect-Request only. A WebSocket the hub
+  closes or drops is `WebSocketClosed { close_status }` (`websocket_closed`),
+  or `WebSocket(Closed)` or `WebSocket(StreamEnded)` (`websocket`). A read
+  that ends in a reset, end of file, abort or broken pipe moved from
+  `WebSocket(Receive)` to `WebSocket(StreamEnded)`. ([fbe43ed](https://github.com/jscott3201/rusty-bacnet/commit/fbe43ed02650c7a46dec3995ff927cb53cf1b3eb))
+
+- **SC dial error kinds (Rust and Python API, #2438):** match `TcpRefused`
+  beside `TcpDial`. A real dial whose upgrade answer lacked or mis-stated the
+  subprotocol reported `WebSocketHandshake` (`websocket-handshake`); it now
+  reports `HubSubprotocolMissing` or `HubSubprotocol`, and their `Direct`
+  counterparts on a direct dial. ([fbe43ed](https://github.com/jscott3201/rusty-bacnet/commit/fbe43ed02650c7a46dec3995ff927cb53cf1b3eb))
+
+- **Local writes (Rust API, #2446):** import `LocalCommandSource` from
+  `bacnet_device_core::write::local` (add `bacnet-device-core` to your
+  dependencies); `bacnet_server::LocalCommandSource` and the
+  `bacnet_server::command_source` module are gone. `write_local` and
+  `write_local_encoded` take it as before. ([927a762](https://github.com/jscott3201/rusty-bacnet/commit/927a762963820df4db2a2989f7ef6974c3eb0eac))
+
+- Replace `bacnet_ops::export::s223::qudt_unit` with `bacnet_types::qudt::qudt_unit` (enable `bacnet-types`'s `qudt` feature) (#2448). ([0c35e91](https://github.com/jscott3201/rusty-bacnet/commit/0c35e91146c1c2e6673c2167995ba471274565ef))
+
+- **SC dial error kinds (Rust and Python API, #2463):** match
+  `AddressUnreachable` beside `TcpDial`, and `WebSocketHeader`,
+  `UpgradeResponseSyntax` and `UpgradeResponseValue` beside
+  `WebSocketHandshake`. Dials that reported `tcp-dial` or
+  `websocket-handshake` for those faults now report `address-unreachable`,
+  `websocket-header`, `upgrade-response-syntax` or `upgrade-response-value`
+  (Python's `cause_detail`). ([80468bc](https://github.com/jscott3201/rusty-bacnet/commit/80468bcf7e9ba9059b1262c066121e4905e854df))
+
+- **Load Control (Rust API, #2464):** `LoadControlObject::set_actual_shed_level`
+  is gone. Implement `bacnet_objects::load_control::LoadShedder` for the loads
+  and install it with `set_shedder`: its `shed` returns a `ShedStatus` with the
+  progress and the expected and actual levels, and its `stop` ends shedding.
+  Set Shed_Levels and their descriptions with `set_shed_levels`. ([902d59a](https://github.com/jscott3201/rusty-bacnet/commit/902d59af843c9c41709b4b0a563e5ee37c1a16df))
+
+- **Enum spellings (Rust and Python API, #2471):** rename
+  `ErrorCode::INVALID_TIME_STAMP` to `INVALID_TIMESTAMP` (Python
+  `ErrorCode.INVALID_TIMESTAMP`) and `LifeSafetyMode::PRE_ARMED` to
+  `PREARMED`. Output that printed `invalid-time-stamp` or `pre-armed` now
+  prints `invalid-timestamp` or `prearmed`. `FromStr` and names typed into the
+  CLI, TUI or MCP server ignore separators, so the old spellings still parse
+  there. ([50120c5](https://github.com/jscott3201/rusty-bacnet/commit/50120c5e267cff969863129e027aa67d0284adf4))
+
+- **Unknown choices (Rust API, #2474):** a `match` on `NotificationParameters`,
+  `LogDatum`, `LogValue`, `LogData` or `EventLogDatum` needs an `Opaque` arm:
+  a choice a later revision adds, its octets kept as received, which the
+  encoders write back unchanged. Replace `LogDatum::from(value)` or
+  `value.into()` with `LogDatum::try_from(value)`, whose error is the opaque
+  member value, which has no Trend Log datum. ([4a15f6c](https://github.com/jscott3201/rusty-bacnet/commit/4a15f6c75c6df95e84b1a6534bd9d2fa60085a97))
+
+- **Saved log records (#2474):** a log snapshot an older build saved with a
+  record nested one level deeper than a ReadRange-ACK carries now loads
+  without that record, logging a warning; such a record made every page
+  that carried it fail to decode. The records older than it each take the
+  next number up. ([4a15f6c](https://github.com/jscott3201/rusty-bacnet/commit/4a15f6c75c6df95e84b1a6534bd9d2fa60085a97))
+
+- **Audit Log (Rust API, #2483):** a `match` on `BACnetAuditLogDatum` needs
+  an `Opaque` arm. An Audit Log snapshot an older build saved with a record
+  nested deeper than an AuditLogQuery-ACK carries now loads without that
+  record, logging a warning; each older record's sequence number moves up by
+  the number of newer records dropped. ([3e71ec5](https://github.com/jscott3201/rusty-bacnet/commit/3e71ec53ce554d76499cc1fa30e160c569d3e351))
+
+- **Load Control storage (Rust API, #2502):** `LoadControlSnapshot` gains
+  `shed_levels`, the Shed_Levels elements a peer wrote, and is
+  `#[non_exhaustive]`: build one from `LoadControlSnapshot::default()` and set
+  its fields; a custom `LoadControlPersistence` stores the new one. A file
+  holding written levels is `RBNLCT02`, which older builds refuse; files
+  without keep their octets. A saved element wins over `set_shed_levels`:
+  call `clear_written_shed_levels` first to apply yours. ([6730d6c](https://github.com/jscott3201/rusty-bacnet/commit/6730d6c2c5376d9ee2060715b52c7edb94dd780b))
+
+- **CovTable::delivered (Rust API, #2508):** a host that runs `evaluate`
+  itself evaluates again the references `delivered` returns for an
+  unconfirmed report that ended unsent, as it does those an Ack returns:
+  a change measured from that report found nothing then and needs a look
+  against what was delivered. `bacnet-server` and the `Reporter` do this. ([1a8b9c7](https://github.com/jscott3201/rusty-bacnet/commit/1a8b9c779919eba29d6d892855ce8879e65fa7ef))
+
+- **Reporter invoke IDs (Rust API, #2512):** a host whose `InvokeIds::take`
+  refuses because IDs it shares with other work are all out calls
+  `Reporter::invoke_ids_released(free)` when some come back, for as long as
+  `Reporter::owes_invoke_id()` holds (not only until one report gets an ID);
+  `next_deadline` no longer comes due for those reports by itself. IDs the
+  reporter gives back itself, and a host's own bound on them, need no call. ([1a8b9c7](https://github.com/jscott3201/rusty-bacnet/commit/1a8b9c779919eba29d6d892855ce8879e65fa7ef))
+
+- **Event notification counters (Rust and Python API, #2537):** read
+  `confirmed_waited_for_invoke_id` where you read `confirmed_no_invoke_id`.
+  It counts confirmed notifications that waited for an invoke ID, since none
+  is dropped for want of one any more; no counter replaces the old drops. ([d70a1ef](https://github.com/jscott3201/rusty-bacnet/commit/d70a1ef0f4d26f7f6ede6ae03c547269ad8c6ae1))
+
+- Rust `acknowledge_alarm(mac, process, oid, state, source)` becomes `acknowledge_alarm(mac, &AcknowledgeAlarmRequest)` (the old `acknowledge_alarm_request` name); Python adds `timestamp` and `time_of_acknowledgment`. `from_legacy_bool(true/false)` becomes `SUCCESSES_ONLY` / `ALL`. bacnet-ops `hex(bytes)` becomes `octets::hex`, and the colon form `octets::hex_sep(bytes, ":")` (#2559). ([092032b](https://github.com/jscott3201/rusty-bacnet/commit/092032ba532012e984e1301a0ac1cff381a96ccc))
+
+- Drop `AsBip` bounds and imports and call `TransportPort::as_bip`; a transport that wrapped another overrides `data_link`, `bip_transport` and `bip6_transport` to forward to it (#2560). ([2505fb1](https://github.com/jscott3201/rusty-bacnet/commit/2505fb14d913455ec5a602201d67889e67fb9753))
+
+- **bacnet-tool (Rust API, #2560):** depend on `bacnet-tool` and import
+  `bacnet_tool::{safety, class, bbmd}` and `bacnet_tool::decode::tree` for
+  the old `bacnet_ops` paths; frame summaries stay in `bacnet_ops::decode`.
+  Call `bacnet_tool::bbmd::read_bdt(&client, bbmd)` (and `read_fdt`, `bip`,
+  `registration_bbmd`) for the `Engine` methods.
+  [Moved to bacnet-tool](docs/rust-api.md#moved-to-bacnet-tool) has the
+  full table. ([fc09455](https://github.com/jscott3201/rusty-bacnet/commit/fc09455b62fb8c8a4cc2aa69843e49623296f8eb))
+
+- **bacnet discover (CLI, #2560):** add `--global` to reach every network as
+  before, or `--dnet N` for one network; on a large routed site keep a range
+  on a global Who-Is. ([06e23bf](https://github.com/jscott3201/rusty-bacnet/commit/06e23bf22d93004a984acc350eb841630eee95c6))
+
+- **Discovery table by address (Rust API, #2560):** handle the `Result` from
+  `get_device` (`Error::AmbiguousDevice` lists each claimant); call `DeviceTable::find` for `get(instance)` and
+  `get(network, mac)`, network 0 local, for `get_by_mac` and
+  `get_by_network_address`; read `instance` and `claimants` from
+  `DeviceCollisionEvent`; give each device its own address, as one MAC
+  holds one. Python: catch `BacnetAmbiguousDeviceError`. ([2b8812a](https://github.com/jscott3201/rusty-bacnet/commit/2b8812a30e55ef8b7f1c48573232453702ab01d7))
+
+- **Discovery rows (Rust API, #2560):** a `DiscoveredDevice` built as a
+  struct literal sets `last_announced`: when the device last sent an I-Am,
+  or `None` for a row registered by hand. ([7b2de78](https://github.com/jscott3201/rusty-bacnet/commit/7b2de78105b5da2ff2e01524342cda825d16c2f4))
+
+- **bacnet-ops Client (Rust API, #2560):** rename `Engine` to `Client`,
+  the `bacnet_ops::engine` paths to `bacnet_ops::client`, and drop the
+  `Arc`; read through `client.device(target).await?` instead of passing an
+  instance to each read; pass a `DeviceAddress` to the `RequestLimits`
+  gates and `Reader`.
+  [Engine becomes Client](docs/rust-api.md#engine-becomes-client) has the
+  full table. ([7b2de78](https://github.com/jscott3201/rusty-bacnet/commit/7b2de78105b5da2ff2e01524342cda825d16c2f4))
+
+- **ops discovery (Rust API, #2560):** write `client.discover(scope, range,
+  wait)` as `client.discover(Discover::from(scope).range(low..=high).wait(wait))`,
+  and `client.who_is(scope, range)` as `discover`, or as
+  `bacnet_ops::raw::who_is(client.low_level(), &scope, range)`, which
+  carries no rate cap. `Scope::Directed` takes a `DeviceAddress`: build it
+  with `DeviceAddress::local(&client.station_mac(text).await?)`. ([06e23bf](https://github.com/jscott3201/rusty-bacnet/commit/06e23bf22d93004a984acc350eb841630eee95c6))
+
+- **ops device lookup (Rust API, #2560):** name a device behind a router
+  with its network (`5:1234`), or set `with_resolve_scope(ResolveScope::Global)`
+  (or a network) on the client, or `.resolve_scope(..)` on its connect
+  builder; a miss is `OpsError::UnknownDevice`, whose new `asked` field says
+  where the Who-Is went. ([06e23bf](https://github.com/jscott3201/rusty-bacnet/commit/06e23bf22d93004a984acc350eb841630eee95c6))
+
+- **bacnet-ops priorities (Rust API, #2560):** `label::priority_label(n)` is
+  `Priority::new(n)?.purpose()` and `label::PRIORITIES` is
+  `Priority::COUNT`; `parse_value_with_priority` and
+  `parse_value_for_with_priority` return `Option<Priority>` (`.get()` for
+  the number); `bacnet_tool::safety::Effect` is `bacnet_ops::write::Effect`,
+  its `held_by` an `Option<Priority>`, and it gains `Unknown`. Match
+  `OpsError::Denied`, `ReadBack` and `NoPriorityArray` where you match
+  every variant. ([70ccf8d](https://github.com/jscott3201/rusty-bacnet/commit/70ccf8d7659df92dcc3cf9e153b7cb13e6008e8d))
+
+- **bacnet-ops raw layer (Rust API, #2560):** import `Reader`, `Halt`,
+  `RpmFailure`, `rpm_failure`, `rpm_rows`, `unreachable` and `timed_out`
+  from `bacnet_ops::raw`; match `ReadVia::Mixed`; `MAX_BATCH` and
+  `MAX_BATCH_PROPERTIES` are gone; `DeviceSummary` is only `PartialEq`;
+  give `read_event_information` a fetch whose error is `From<PagingFault>`;
+  `bip6_vmac` fails with `VmacLookup`. ([11d3974](https://github.com/jscott3201/rusty-bacnet/commit/11d397452fdbccad16afabbf58f2e6f250abab73))
+
+- **bacnet-ops reads (Rust API, #2560):** `device.read(object, wanted)` is
+  `read_object`, a `Result<ObjectRead, OpsError>`; `read_property` is
+  `read((object, property))`, a `Value` whose `raw` holds the octets;
+  `read_many` returns `Result<Readings, OpsError>`; match `OpsError`, with
+  `e.unreachable()` and `e.timed_out()`; rename `RowError` to
+  `PropertyError`.
+  [Values, readings and OpsError](docs/rust-api.md#values-readings-and-opserror)
+  has the table. ([11d3974](https://github.com/jscott3201/rusty-bacnet/commit/11d397452fdbccad16afabbf58f2e6f250abab73))
+
+- **bacnet-ops watch (Rust API, #2560):** import `Hub`, `Lease`,
+  `Snapshot`, `WatchOptions` and the other hub types from `watch::hub`;
+  the snapshot's `State` and `Source` are `watch::hub::Phase` and `Source`.
+  Build a `watch::Point` with `device.point("ai:1")`: it names a
+  `DeviceAddress`, not an instance. Match `Why` and `WatchError` with a
+  wildcard arm. Applications call `client.watch(points)`.
+  [Watching points](docs/rust-api.md#watching-points) has the table. ([6c9572b](https://github.com/jscott3201/rusty-bacnet/commit/6c9572be2d412cdbfefe4b56f9a05de742e40624))
+
+- **Python discovery (#2560):** pass `scope="global"` to `who_is()` or
+  `discover()` to reach devices behind routers as before, or a network
+  number for one network. A client on `transport="router"` must pass one:
+  a local Who-Is there raises `ValueError`, as the router's application has
+  no network of its own. ([06e23bf](https://github.com/jscott3201/rusty-bacnet/commit/06e23bf22d93004a984acc350eb841630eee95c6))
+
+- **223 export (Rust API, #2560):** read with `device.inventory(&s223::inventory_options(types)?)`
+  and write `to_turtle(&s223::Model::from(&inventory), ..)`. `Entry` is `Result<Point, Skipped>`,
+  `Detail::Full` is `point_list_options()`, `inventory_object` is `point_record`,
+  `read_inventory` is `bacnet_ops::raw::read_inventory`, and `WritePriority` is
+  `bacnet_ops::Priority`. The table is in [the Rust API notes](docs/rust-api.md#inventory). ([9fc4489](https://github.com/jscott3201/rusty-bacnet/commit/9fc4489512b5f1cb81601630de07e445a833fcc0))
+
+- **bacnet-tool writes by address (Rust API, #2560):** give each
+  `WriteSpec` the device's `address` beside `device`; read
+  `Preview::address`; call `safety::turn(client, rate, &address, instance)`
+  (fails with `safety::Unsent`) and `safety::reach` for `find`; pass the
+  address and the client's own network number to `plan::undo_preview`.
+  Ledger entries gain an optional `address`. Every `Caller` implements
+  `may_look`; `revert_refusal` is optional. ([414f7a5](https://github.com/jscott3201/rusty-bacnet/commit/414f7a5f38ee6417f6432c55c5fb3fd9f7e18180))
+
+- **discover (Python API, #2561):** `discover(timeout_ms=3000, low_limit=a, high_limit=b)` is `discover(wait=3.0, low=a, high=b)`. Rows are `Discovered`: use `row.instance`, `row.address`, `row.network` and `row.entry` (the old `DiscoveredDevice`). `who_is_directed(address, ...)` is `who_is(scope=address, ...)`; an MS/TP station is `"mstp:5"`. ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- **Discovery parameters (Python API, #2561):** rename `low_limit=`/`high_limit=` to `low=`/`high=` on `who_is` and the Who-Has calls, and `timeout_ms=3000` to `wait=3.0` (seconds, 0 to 3600) on `who_has_replies` and `discover_routers`. Pass them and `scope` by keyword: `who_has_replies(obj, 1, 9)` is `who_has_replies(obj, low=1, high=9)`. ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- **Lookup errors (Python API, #2561):** `except BacnetError` still catches an unknown device; code that told it apart by message can catch `BacnetLookupError`, which also catches `BacnetAmbiguousDeviceError`. Each of its `candidates`, a `(network, mac)` pair, is a `client.device()` target. ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- **Targets (Python API, #2561):** `device()` reads the target grammar, not `address` forms. `ip:port`, six hex octets, `bip6:` forms and `mstp:N` mean the same; a bare `"5"` is device instance 5, not MS/TP station 5 (write `"mstp:5"`), and other colon-hex lengths are refused or, as `"10:20"`, read as network and instance. ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- **Discovery scope (Rust API, #2588):** `who_is(range)` is
+  `who_is(Broadcast::Global, range)`, `who_is_network(n, range)` is
+  `who_is(Broadcast::Network(n), range)`, `who_has(object, range)` is
+  `who_has(Broadcast::Global, object, range)`, and `who_has_replies` takes
+  the scope first. A Who-Is or Who-Has encoded by hand for
+  `broadcast_unconfirmed` is `Broadcast::Local`. ([c91a65a](https://github.com/jscott3201/rusty-bacnet/commit/c91a65ae557d60ed130b7729c41211cf86b9f7dc))
+
+- **Managed COV (Rust API, #2588):** `CovTarget` is `Station`:
+  `CovTarget::local(mac)` is `Station::local(mac)`, `CovTarget::routed(r, n, a)`
+  is `Station::routed(r, n, a)` and `CovTarget::of_device(&d)` is
+  `Station::from(&d)`. `manage_cov_subscription` and
+  `manage_cov_property_subscription` take `&station`; cancel with
+  `unsubscribe_cov` or `unsubscribe_cov_property` to the same station in
+  place of `unsubscribe_cov_target` and `unsubscribe_cov_property_target`. ([54fec70](https://github.com/jscott3201/rusty-bacnet/commit/54fec70edf9743ae8ac68a0abf42c27375ceafd0))
+
+- **Client by instance (Rust API, #2588):**
+  `client.read_property_from_device(i, ..)` is
+  `client.read_property(&client.resolve_device(i).await?, ..)`, and likewise
+  for each `_from_device` and `_to_device` call. The lookup now comes first,
+  so an unknown or contested instance is refused before an invalid
+  WritePropertyMultiple, GetEventInformation, GetEnrollmentSummary or write
+  priority is. ([54fec70](https://github.com/jscott3201/rusty-bacnet/commit/54fec70edf9743ae8ac68a0abf42c27375ceafd0))
+
+- **Client (Rust API, #2588):** `read_property_routed(router, net, mac, ..)`
+  is `read_property(&Station::routed(router, net, mac), ..)`, and
+  `confirmed_request_routed` is `confirmed_request` to such a `Station`. A
+  call's first argument is now `&impl ToStation`: a slice, array, `Vec` or
+  `MacAddr` passes as before; `mac.as_ref()` and a type that only derefs to
+  `[u8]` (`Bytes`, `Box<[u8]>`, `Cow<[u8]>`) are written `&mac[..]`. ([4bb6390](https://github.com/jscott3201/rusty-bacnet/commit/4bb6390203157de727e82711c1ee7fe6495fa635))
+
+- **WriteGroup (Rust API, #2588):**
+  `write_group(&WriteGroupDestination::LocalBroadcast, &req)` is
+  `write_group(Broadcast::Local, &req)`; `RemoteBroadcast(n)` is
+  `Broadcast::Network(n)` and `GlobalBroadcast` is `Broadcast::Global`.
+  `write_group(&WriteGroupDestination::Device(mac), &req)` is
+  `write_group_directed(&mac, &req)`. Network 0 and 65535 are refused as
+  before: `Broadcast::Local` and `Broadcast::Global` are those. ([079a601](https://github.com/jscott3201/rusty-bacnet/commit/079a60156bd5d808d0f57ee9afffdab20ecbe45d))
+
+- **MCP (#2589):** follow `next` from `bacnet://devices` for later pages. A saved `bacnet://devices/after/{instance}` URI is refused; the page URI now also carries the network and the MAC in hex. ([51ac4dc](https://github.com/jscott3201/rusty-bacnet/commit/51ac4dc15aae7daad426eab3e25a55b8969e3d82))
+
+- **bacnet find (CLI and TUI, #2596):** add `--global` to search every
+  network as before, or `--dnet N` for one network; in the TUI write
+  `:find --global NAME`, and quote a name that starts with `--`. ([dea8ae7](https://github.com/jscott3201/rusty-bacnet/commit/dea8ae70f76fa7723e0742a20b5314f54d39df9c))
+
+- **who_has_replies (Rust API, #2596):** `BACnetClient::who_has_replies` can
+  now return more than one row per device and object: one heard directly
+  and through a router, through two routers, or from two devices sharing an
+  instance; the list stops at 4096. Dedupe by device and object for one row
+  each. ([dea8ae7](https://github.com/jscott3201/rusty-bacnet/commit/dea8ae70f76fa7723e0742a20b5314f54d39df9c))
+
+- **Python Who-Has (#2596):** pass `scope="global"` to `who_has_by_id()`,
+  `who_has_by_name()` or `who_has_replies()` to search behind routers as
+  before, or a network number for one network. A client on
+  `transport="router"` must pass one, as for `who_is()`. ([dea8ae7](https://github.com/jscott3201/rusty-bacnet/commit/dea8ae70f76fa7723e0742a20b5314f54d39df9c))
+
+- **Network number controls (Rust API, #2597):** match
+  `NumberControl::WhatIs { broadcast }` where you matched
+  `NumberControl::WhatIs`. ([b52231c](https://github.com/jscott3201/rusty-bacnet/commit/b52231cfb4a69f1a6fbe0083d43edf9bb9798746))
+
+- **SC TLS material (Rust API, #2600):** match `ScTlsConfigError` variants instead of `Error::Encoding` text from `from_der`, or convert with `?` (into `bacnet_types::error::Error`, or `OpsError::Tls`). Load PEM with `from_pem`/`from_pem_files` instead of `sc_tls::pem`, or decode DER with `rustls::pki_types::pem::PemObject`. Keep one unencrypted key per key file. Python code matching the old SC messages matches the new ones (see [docs/python-api.md](docs/python-api.md)). ([e554a52](https://github.com/jscott3201/rusty-bacnet/commit/e554a52f8cbb0537138099335ddd0bbfe9dc8e08))
+
+- **Breaking (ACE Python API, #2612).** Use `BACnetClient` and `BACnetServer` handles from the endpoint, strings for direct addresses, and `RoutedTarget(network, address, router=next_hop)`. For captured frames use `monotonic` for elapsed time, `timestamp` for POSIX seconds, and `missed_before` for the per-frame gap. ([918be9b](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/918be9bc7cc23eb1909d1e66461cfdcd436b8ce3))
+
+- **ClientRoleHandle (Rust API, #2612):** pass
+  `read_range_with_destination` a `ReadRangeRequest { object_identifier,
+  property_identifier, property_array_index, range }` and
+  `ReadRangeValidation::Strict` in place of the four fields, and take `.ack`
+  of the `ReadRangeReply` it returns for the `ReadRangeAck` it returned. ([04332ff](https://github.com/jscott3201/rusty-bacnet/commit/04332fffa0d9c3dfd647b66b2e763b04dcf3d452))
+
+- **Frame decoder (Rust API, #2612):** `bacnet_ops::decode::DecodedApdu::device` is
+  replaced by `i_am: Option<Result<IAmRequest, String>>`, the decoded I-Am or why it
+  failed: `apdu.i_am.and_then(Result::ok).map(|i_am| i_am.object_identifier.instance_number())`
+  gives what `device` held. `FrameSummary.device` is unchanged. ([7e517bc](https://github.com/jscott3201/rusty-bacnet/commit/7e517bcda693d61a4701ceaf19bfd5cbc90d9976))
+
+- **Rust API (#2612).** Include the new `dest_address` member when constructing a `DecodedNpdu` literal. ([918be9b](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/918be9bc7cc23eb1909d1e66461cfdcd436b8ce3))
+
+- **Frame summaries (Rust API, #2614):** read `FrameSummary::link_message`
+  where you read `link`. A `FrameSummary` literal or pattern names the new
+  `original_source` and `parse_error` fields (or ends in `..`), a `Link`
+  literal names `original_source`, and a `match` on `Framing` needs a
+  wildcard arm. ([2b0b6e2](https://github.com/jscott3201/rusty-bacnet/commit/2b0b6e20f3096ade362caace07fc10755876c744))
+
+- **Endpoint client (Python API, #2617):** `EndpointClient`'s calls keep
+  their names on the `BACnetClient` from `endpoint.client()`; drop
+  `write_property`'s `commandability=` and `service_scope()` (table in
+  [docs/python-api.md](docs/python-api.md#migration-endpointclient-to-the-endpoints-bacnetclient-2617)).
+  With `source_audit_reporter`, a write's `priority` makes it a command at
+  that priority for Audit. ([394fd79](https://github.com/jscott3201/rusty-bacnet/commit/394fd7907925881c45a9461171e9d9d61d6ca2bb))
+
+- **Endpoint server (Rust API, #2617):** `server()` borrows the session's
+  `BACnetServer` in place of the narrow role's handle, so a call that used
+  the handle now reaches the server; for another task, clone what it needs
+  from the server, such as `server().database()`, in place of
+  `cloned_server_handle()`. Give the session its database and Device
+  identity, not the builder. ([5a09b1a](https://github.com/jscott3201/rusty-bacnet/commit/5a09b1a2a9daff080fd9ffd25062313f273c1957))
+
+- **Endpoint server role handle (Rust API, #2617):** use `server()`, which
+  borrows the full server, where you used `ServerRoleHandle`, and
+  `is_running()` for `is_session_alive()`. For `RESPONDER_SERVICES` and
+  `RESPONDER_OPT_IN_SERVICES` read the Device's Protocol_Services_Supported,
+  or `bacnet_objects::device::EXECUTED_SERVICES`
+  ([table](docs/rust-api.md#the-narrow-server-role-is-gone)). ([1084357](https://github.com/jscott3201/rusty-bacnet/commit/10843571a8057c0687f4a031f8adf78375354987))
+
+- **Endpoint mutation policy (Python API, #2617):** `device_write_policy=f`
+  becomes `mutation_policy=f`, asked about every mutation of every object. A
+  0.15.0 callable such as `return context.source_network is None` then lets
+  every local peer write any writable property (WriteProperty and each
+  WritePropertyMultiple element), change the Device's Description, create
+  and delete objects, and use the list services, AtomicWriteFile and
+  WriteGroup. ([373144f](https://github.com/jscott3201/rusty-bacnet/commit/373144f0546c02e0ae4279c4e2e073c46da4e50d))
+
+- **Endpoint server calls (Python API, #2617):** drop `services=`. Read the
+  Device's Protocol_Services_Supported for `service_scope()`, and use
+  `status()` or a server call for `is_session_alive()`. `status()` drops
+  `responder_declined`: `server_seat_apdus` and `server_seat_full_drops`
+  count what the server was handed and what its full queue dropped (table in
+  [docs/python-api.md](docs/python-api.md#migration-endpointserver-to-the-endpoints-bacnetserver-2617)). ([373144f](https://github.com/jscott3201/rusty-bacnet/commit/373144f0546c02e0ae4279c4e2e073c46da4e50d))
+
+- **Endpoint mutation policy, the reverse (Python API, #2617):** a renamed
+  callable that checked only `property_identifier` now allows that property
+  on every object, not only the Device, and denies the COV subscriptions the
+  read-only default allows. Check `object_identifier` too, allow what you
+  mean to by `context.service`, and deny the rest, or leave
+  `mutation_policy` out for the read-only server. ([373144f](https://github.com/jscott3201/rusty-bacnet/commit/373144f0546c02e0ae4279c4e2e073c46da4e50d))
+
+- **Endpoint wire behaviour (Python, #2617):** an endpoint is now
+  discoverable: a scanner-style endpoint answers a global Who-Is with its
+  I-Am, so it appears in other tools' device lists. A tool that read its
+  Protocol_Services_Supported to learn what it may write must try the write:
+  the read-only server denies writes it lists. ([373144f](https://github.com/jscott3201/rusty-bacnet/commit/373144f0546c02e0ae4279c4e2e073c46da4e50d))
+
+- **Endpoint server role counters (Rust API, #2617):** a monitor that read
+  `PolicyCountersSnapshot::responder_declined` or the full-queue drops of a
+  session with a server role reads `server_seat_counters()` for what the
+  server's seat dropped, and the server's own counters (`server()`'s
+  `request_admission_counters()` and the rest) for what it refused. ([0162ee1](https://github.com/jscott3201/rusty-bacnet/commit/0162ee10afa817d734bc5c37bd686cacfd76e7c0))
+
+- **Endpoint server role (Rust API, #2617):** compose a server-role session
+  with `device(identity)`, or make a node that only asks a
+  `SessionRole::ClientOnly` session. In place of `with_device_writes`, give
+  `with_server` a builder whose `ServerPolicy` decides writes; move a
+  reinitialize handler and password and a `read_work_limit` (as
+  `read_property_multiple_budget`) onto that builder
+  ([table](docs/rust-api.md#the-narrow-server-role-is-gone)). ([0162ee1](https://github.com/jscott3201/rusty-bacnet/commit/0162ee10afa817d734bc5c37bd686cacfd76e7c0))
+
+- **Endpoint wire behaviour (Rust API, #2617):** an endpoint session with a
+  server role is now discoverable: it answers a global Who-Is with its I-Am
+  and serves every read. A node that only asks stays silent as a
+  `SessionRole::ClientOnly` session. A tool that read Protocol_Services_Supported
+  to learn what it may write must try the write: the read-only server denies
+  writes it lists. ([0162ee1](https://github.com/jscott3201/rusty-bacnet/commit/0162ee10afa817d734bc5c37bd686cacfd76e7c0))
+
+- **Endpoint stop (Rust API, #2617):** let go of every database guard before
+  `EndpointSession::stop()` where storage must be settled when it returns.
+  With one held, a task settles the objects once it is free; a runtime shut
+  down first drops that task, and storage is put back only as the objects
+  drop. After stop, let a runtime turn pass before `Arc::try_unwrap` of the
+  database: the server lets go of its handle from a task. ([1084357](https://github.com/jscott3201/rusty-bacnet/commit/10843571a8057c0687f4a031f8adf78375354987))
+
+- **Endpoint ingress (Rust API, #2617):** `IngressReceivers` is `#[non_exhaustive]` with a new field.
+  Code outside `bacnet-endpoint-core` that destructures it ends the pattern with `..`; it was never
+  built outside the crate. ([c0f0ceb](https://github.com/jscott3201/rusty-bacnet/commit/c0f0ceb83b4a8dc64a8233209a6fb14f7805f01c))
+
+- **Endpoint full server (Rust API, #2617):** compose the session with
+  `device(identity)` before `with_server`. Leave the builder's identity unset,
+  or set the session's, and give a database whose Device declares the
+  session's largest APDU and APDU timing, or the object model's defaults,
+  which the server replaces. Set the timing on `SessionConfig`. ([569fbac](https://github.com/jscott3201/rusty-bacnet/commit/569fbac89a320669284bfcad1038c94b8c7b697c))
+
+- **Server config (Rust API, #2617):** a `ServerConfig` written out field by
+  field adds `notification_retries: 3` (the value the server always used), or
+  ends with `..ServerConfig::default()`. ([569fbac](https://github.com/jscott3201/rusty-bacnet/commit/569fbac89a320669284bfcad1038c94b8c7b697c))
+
+- **Device-write authorizer (Rust API, #2617):** where you built a
+  `DeviceWriteAuthorizer`, decide the same writes in a `ServerPolicy`
+  (`FnPolicy::new().mutation(..)`, which sees the same
+  `MutationAuthorizationContext`) on the server builder you give the session's
+  `with_server`; it is asked about every covered mutation of every object
+  ([table](docs/rust-api.md#the-narrow-server-role-is-gone)). ([1864cd6](https://github.com/jscott3201/rusty-bacnet/commit/1864cd6be4b31ce3cb52714c7050202704f7957a))
+
+- **Endpoint timing (Rust and Python, #2617):** `SessionConfig::default()`
+  now has `apdu_timeout_ms: 6000, apdu_retries: 3` (was 1000 and 0);
+  `BipEndpoint` and `MstpEndpoint` default to `apdu_retries=3` (was 0, the
+  timeout stays 6000), and `ScEndpoint` takes the session's. Set the old
+  values where a call must fail fast; a seated server and the Device take
+  them too. ([569fbac](https://github.com/jscott3201/rusty-bacnet/commit/569fbac89a320669284bfcad1038c94b8c7b697c))
+
+- **Endpoint full client timing (Rust and Python, #2617):** the session's
+  timing also sets an endpoint full client's segment timeout, and how long
+  the next request through the same router to the same network waits after
+  a routed request that lost a frame: the timeout times (retries + 1), up to
+  24 s at the new defaults where it was 1 s at the old Rust ones. ([569fbac](https://github.com/jscott3201/rusty-bacnet/commit/569fbac89a320669284bfcad1038c94b8c7b697c))
+
+- **Transport stop (Rust API, #2617):** a `TransportPort` implementation changes `fn stop(&mut self)` to `fn stop(&self)`: keep what the stop takes behind a lock only start and stop use, and fail every later send (`bacnet_transport::port::stopped()` gives the error). Callers that held a transport or layer mutably only to stop it can drop the `mut`. Stop an `EndpointSession` once, with its full client alive or not: the "drop it, then stop again" error is gone. ([3054b8e](https://github.com/jscott3201/rusty-bacnet/commit/3054b8e4fd92d729ed4abdb6feac138b169531f4))
+
+- **Tagged values (Python API, #2618):** a read with a context tag may be
+  `"tagged"` or, holding something `PropertyValue` can't or over 10,000
+  elements, still `"application_data"`: accept both, read octets from
+  `.octets`, and compare by `.octets`, since a value written as
+  `application_data` reads back `tagged` and unequal. A failed typed read
+  is `tagged`. CLI JSON scripts read `decoded.fields.data.raw`. ([6bb6b50](https://github.com/jscott3201/rusty-bacnet/commit/6bb6b5069573a1fe5074cf0255d1739856fea1c6))
+
+- **Endpoint full queues (Rust API, #2635):** drop matches on
+  `ClassifierExit::PolicyRouteFull`, `PolicyReason::RouteFull` and
+  `SessionExit::Ingress` (never produced): a full queue no longer ends the
+  session or reaches policy; read its drops from `policy_counters()` or
+  `EndpointIngress::full_drop_counters()`. Build a `PolicyCountersSnapshot`
+  with `Default` instead of a literal. Set `queue_capacity` to 16 to keep
+  the old size. ([d10ae5e](https://github.com/jscott3201/rusty-bacnet/commit/d10ae5e6b46a9b78a6294afafe3343b6d99a5e3a))
+
+- **Endpoint bursts and older peers (#2635):** a request or answer a full
+  endpoint queue drops costs its requester one APDU timeout, in full for a
+  peer with a long timeout or no retries. The endpoints' client roles
+  default to no retries, so a dropped answer fails that call when its
+  timeout runs out; where bursts are expected, raise `queue_capacity` and
+  `apdu_retries`. ([d10ae5e](https://github.com/jscott3201/rusty-bacnet/commit/d10ae5e6b46a9b78a6294afafe3343b6d99a5e3a))
+
+- **COV notifications (Rust API, #2654):** the stream's item is a `COVEvent`:
+  `let n: ReceivedCOVNotification = rx.recv().await?` becomes
+  `if let COVEvent::Object(n) = rx.recv().await? { .. }`, and
+  `COVEvent::Multiple` carries a `ReceivedCOVNotificationMultiple`. An ack
+  policy reads `event.delivery()` and the other shared fields through
+  methods; pass the event to `Station::is_source_of`. ([e0fa3cb](https://github.com/jscott3201/rusty-bacnet/commit/e0fa3cbcb695150987a7c56f903fc2068b50b94a))
+
+- **COV notifications (Python API, #2654):** check `notification.kind`, or
+  `isinstance`, before reading a single-object field such as
+  `monitored_object_identifier` or `values`: a `CovNotificationMultiple` has
+  `objects` instead. ([e0fa3cb](https://github.com/jscott3201/rusty-bacnet/commit/e0fa3cbcb695150987a7c56f903fc2068b50b94a))
+
+- **Routed path limits (Rust API, #2667):** a `configure_routed_path_max_npdu` call with a limit under the APDU minimum plus the routed header now returns `Error::Encoding` instead of failing each later request; pass at least the value the error names. ([bbc8b5c](https://github.com/jscott3201/rusty-bacnet/commit/bbc8b5c803c633aa14a2bacbbdc954615c380a38))
+
+- **Device (Rust API, #2669):** `DeviceObject::set_object_list` and
+  `DeviceObject::set_database_revision` are gone: the database keeps both for
+  the local Device. Drop list-building code; read the list with
+  `ObjectDatabase::object_list`, and keep a saved revision with
+  `ObjectDatabase::set_database_revision` once the database is built. ([171799d](https://github.com/jscott3201/rusty-bacnet/commit/171799d3c704bad52968ff9e99ade26080b1b752))
+
+### Security
+
+- The inventory's CSV writes a name, description or state text that a spreadsheet would run as a
+  formula (it starts with `=`, `+`, `-`, `@`, a tab or a carriage return) behind an apostrophe;
+  `CsvOptions::with_exact` and `bacnet inventory --csv-exact` turn the guard off (#2560). ([9fc4489](https://github.com/jscott3201/rusty-bacnet/commit/9fc4489512b5f1cb81601630de07e445a833fcc0))
+
+- Since 0.15.0 the decode tree of a DeviceCommunicationControl or
+  ReinitializeDevice request its decoder refused could show numbers read
+  from the password's octets: opening-tag labels' tag numbers and
+  trailing-octet counts, after a password that claims too few (#2618). ([e91cc68](https://github.com/jscott3201/rusty-bacnet/commit/e91cc6862d3c00d04a9501a48d42e4e7339df22f))
+
+- The frame decode tree (TUI capture, MCP `bacnet_decode`) shows all the
+  parameters of a DeviceCommunicationControl or ReinitializeDevice request
+  its decoder refuses, or of its first segment, as one hidden leaf with a
+  fixed reason: the password shows only in whether the decoder takes it
+  (#2618). ([e91cc68](https://github.com/jscott3201/rusty-bacnet/commit/e91cc6862d3c00d04a9501a48d42e4e7339df22f))
+
+- Require heapless 0.9.4 or later for allocation-free codecs and firmware to pick up nine memory-safety fixes. Update rustix to 1.1.6 in the workspace lockfile for its extended-attribute buffer fix. ([918be9b](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/918be9bc7cc23eb1909d1e66461cfdcd436b8ce3))
+
+- Accept the chrono and humantime maintenance warnings for the MCP server and optional Tokio Console benchmark through the December 19, 2026 review. The release audit continues to reject unsound dependencies. ([918be9b](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/918be9bc7cc23eb1909d1e66461cfdcd436b8ce3))
+
+### Added
+
+- **Rust and Python API:** `EndpointSession::report_device_reset_local()`
+  records a reset the application makes itself through the session's
+  source Audit Reporter, as `BACnetServer`'s does; in Python, the
+  endpoint's server records it so, through `await endpoint.server()`
+  (#1837, #2617). ([2c53090](https://github.com/jscott3201/rusty-bacnet/commit/2c53090dcf11b70054d7be9ef243d195f9f9dd25))
+
+- With `event-reporting`, a bacnet-device-core `Responder` built without a Device clock refuses a Recipient_List write holding a destination that isn't open every day, all day, as it couldn't honour its window; the server, with the system clock, still stores them (#2303). ([744e6db](https://github.com/jscott3201/rusty-bacnet/commit/744e6db048797b1f848b804ebc77ecb5e8f37107))
+
+- `bacnet_objects::notification_class::decode_recipient_list` and `bacnet_device_core::write::check_clockless_recipients`, for a host that judges Recipient_List destinations before a class takes them, such as one running AddListElement itself (#2303). ([744e6db](https://github.com/jscott3201/rusty-bacnet/commit/744e6db048797b1f848b804ebc77ecb5e8f37107))
+
+- **Breaking (Rust API):** bacnet-device-core's `Reporter` reports intrinsic events when built with `ReportConfig::with_sweep`: event notifications through its outbox and confirmed table, AcknowledgeAlarm, GetEventInformation and a local `acknowledge_local` (#2303). ([5e2da52](https://github.com/jscott3201/rusty-bacnet/commit/5e2da52a5ebd53a2b9a05b1f0340a83470de5fbe))
+
+- Test-only: CI links a `reporting` firmware image, bacnet-device-core's
+  `Reporter` with COV and intrinsic event reporting on bare metal, about
+  120 KB of flash over the objects image on a Cortex-M3, in a 512 KiB
+  layout (#2303). ([239ed1d](https://github.com/jscott3201/rusty-bacnet/commit/239ed1d0b09c7b83aea601e5b6949d43af50196c))
+
+- bacnet-device-core's `event-enrollment` feature (`alloc` is enough) has Event Enrollment's pass, `event::enrollment::evaluate_event_enrollments_for_delivery`, moved from bacnet-server: it commits in database order, and each delivery carries its committed history for `into_notification()` (#2319). ([e1129be](https://github.com/jscott3201/rusty-bacnet/commit/e1129be30cb21eb8c9e7709c9f2a0730defba0f5))
+
+- bacnet-device-core's `Reporter` runs the Event Enrollment pass with `ReportConfig::with_event_enrollment(period)` and sends what it commits as intrinsic events go, and the firmware link test gains an `enrollment` image with its own size budget (#2319). ([4e1e7ca](https://github.com/jscott3201/rusty-bacnet/commit/4e1e7ca2f4163317ddd5599041616740a210064f))
+
+- An Access Door or Access Zone built `with_reporting_persistence` keeps
+  the event algorithm parameters a peer writes (the two time delays and
+  the alarm, fault and masked lists) until `clear_written_reporting`
+  (#2331). **Python API:** `storage_path` covers them; a saved list goes
+  over its keyword. ([8e2efff](https://github.com/jscott3201/rusty-bacnet/commit/8e2efffa69067489d421da22cf8ad10a0098d449))
+
+- Analog Input, Output and Value objects built `with_reporting_persistence`
+  keep the event algorithm parameters a peer writes (the two time delays,
+  the limits, Deadband and Limit_Enable), saved before the reply, until
+  `clear_written_reporting` (#2331). **Python API:** `storage_path` covers
+  them. ([39907f6](https://github.com/jscott3201/rusty-bacnet/commit/39907f6f5e4981ed4d40fd3e505399c2198f31ed))
+
+- An Event Enrollment built `with_reporting_persistence` keeps a written
+  Event_Parameters, Fault_Parameters and Time_Delay_Normal until
+  `clear_written_reporting`, and is evaluated with them after a restart
+  (#2331). **Python API:** `add_event_enrollment`'s `storage_path` covers
+  them. ([2142f35](https://github.com/jscott3201/rusty-bacnet/commit/2142f359ee095fcac17b79c6629f1eaddc434ccd))
+
+- Binary and multi-state Input, Output and Value objects built
+  `with_reporting_persistence` keep the event algorithm parameters a peer
+  writes (the two time delays, Alarm_Value, Alarm_Values), as the analog
+  objects do, until `clear_written_reporting` (#2331). **Python API:**
+  `storage_path` covers them. ([2850978](https://github.com/jscott3201/rusty-bacnet/commit/2850978cf41b4569d76c918d085dc60bbdbd31dd))
+
+- **Python API:** `BipEndpoint` takes `source_audit_reporter`,
+  `audit_recipient` and `audit_device_bindings`, and gains
+  `add_audit_reporter`, so its ReinitializeDevice operations and its
+  server's `report_device_reset_local()` calls are recorded (#2348). ([f3b6462](https://github.com/jscott3201/rusty-bacnet/commit/f3b6462ef79e6d98fa6218c9c115e543fa8b9382))
+
+- **Breaking (Rust API):** The three logs, Notification Class,
+  Notification Forwarder and Access Rights keep a peer-written Description
+  in their own storage files, saved before the reply; a saved one wins
+  over `set_description` (#2364). **Python API:** the same `storage_path`. ([c4b7bf3](https://github.com/jscott3201/rusty-bacnet/commit/c4b7bf3c561e7d97d9845b31ef3382cacd636343))
+
+- **Breaking (Rust API):** The objects that keep written reporting
+  settings, and Timer and Channel, keep a peer-written Description in the
+  same file, saved before the reply; a saved one wins over
+  `set_description` until the object's clear (#2364). **Python API:** the
+  same `storage_path`. ([4fe2416](https://github.com/jscott3201/rusty-bacnet/commit/4fe2416c9e93e485154554873920df8c5292985d))
+
+- **Breaking (Rust API):** Device and the two lighting outputs keep a
+  peer-written Description in their Tags storage, and the Color objects in
+  their output file; an endpoint's Device does too.
+  `clear_written_description` drops a saved one (#2364). **Python API:**
+  the colour builders' `storage_path`. ([e4d7d04](https://github.com/jscott3201/rusty-bacnet/commit/e4d7d0430757c5ee1f903c20142edcf30482e8a9))
+
+- A host can set the Device clock's zone, for daylight saving or a corrected
+  UTC offset, without losing a synchronization: the builders' `clock_zone`,
+  `BACnetServer::set_clock_zone` and `clock_zone`, and in the device core
+  `set_zone` on `SyncedClock`, `Responder` and `Reporter` (#2395). ([56a61f3](https://github.com/jscott3201/rusty-bacnet/commit/56a61f3f9b979b712f38eec3594495a66377b740))
+
+- **Python API:** `BACnetServer(utc_offset_minutes=..., daylight_savings=...)`
+  starts the Device clock in a zone, and `set_clock_zone(utc_offset_minutes,
+  daylight_savings)` changes it while the server runs; the clock keeps its
+  UTC instant (#2395). ([56a61f3](https://github.com/jscott3201/rusty-bacnet/commit/56a61f3f9b979b712f38eec3594495a66377b740))
+
+- **Python API:** the analog, binary and multi-state builders take keywords
+  for the event algorithm parameters they keep, such as `high_limit`,
+  `alarm_value` and `time_delay`. They apply before storage attaches, so a
+  peer's saved write still goes over them and they are never saved (#2410). ([7d88c59](https://github.com/jscott3201/rusty-bacnet/commit/7d88c59ec75af834cfcf52908f784fd7b386f2b5))
+
+- A Multi-state Input, Output or Value built `with_reporting_persistence`
+  keeps a written State_Text (`AlgorithmWriteConfig::state_text`), and so
+  its state count, until `clear_written_reporting`: a list naming a state a
+  peer added comes back with it (#2414). **Python API:** `storage_path`
+  covers it. ([6f5187c](https://github.com/jscott3201/rusty-bacnet/commit/6f5187cefac903ced35d97eab84444f6878380dc))
+
+- **Python API:** `add_event_enrollment` takes `object_property_reference`,
+  `event_parameters`, `fault_parameters` and `time_delay_normal` keywords.
+  The parameter keywords apply before storage attaches, so a peer's saved
+  write still goes over them and they are never saved (#2426). ([54bc841](https://github.com/jscott3201/rusty-bacnet/commit/54bc8410e07a55e54bf0bd2194010a5ebc0e1f93))
+
+- `ErrorCode` names the BACnet/SC connection codes 152 to 199 (HTTP,
+  WebSocket, TLS, DNS, TCP and IP), so the CLI, TUI, MCP server and Python
+  show them by name, and `ScDisconnectCause::error_code()` gives the code for
+  a hub connection's failure (#2434). ([deb4c84](https://github.com/jscott3201/rusty-bacnet/commit/deb4c84afaf30cbfdeae1d3a8473a340201bc5d7))
+
+- The enumeration tables name 204 values added after the 2020 edition: 145
+  engineering units, 30 error codes (200 to 229), 25 properties (24 BACnet/SC
+  Network Port, one schedule), abort reason 12, network type 11 and Network
+  Port commands 8 and 9 (#2435). ([9606123](https://github.com/jscott3201/rusty-bacnet/commit/96061238dceeb1ff261cc7d5ae347ed7ae4a3c52))
+
+- Engineering units 47910 and 47918 are named
+  `MILLISIEMENS_PER_CENTIMETER` and `ACTIVE_ENERGY_PULSE_VALUE`, with
+  the pulse-value name beside the other pulse-value units (#2435). ([ab6c201](https://github.com/jscott3201/rusty-bacnet/commit/ab6c2017f24f2c3f32dc5a83d93b48f07cc4014b))
+
+- **Experimental:** `bacnet export 223-experimental` writes a device's analog,
+  binary and multi-state objects as a proposed ASHRAE Standard 223 point list
+  in Turtle, from `bacnet_ops::export::s223`; the draft and the output can
+  change ([docs](docs/CLI.md#standard-223-export-experimental), #2436). ([24fdf31](https://github.com/jscott3201/rusty-bacnet/commit/24fdf3167a728b6b21ccb15a91208bf12c4ce745))
+
+- **Experimental (MCP):** the tool `bacnet_export_223` gives agents a
+  device's points as a proposed ASHRAE Standard 223 point list in Turtle,
+  paged with a cursor through the client's limits, each page with a
+  summary ([docs](docs/mcp.md#standard-223-export-experimental), #2436). ([4c05a32](https://github.com/jscott3201/rusty-bacnet/commit/4c05a32254ce9341aaaa3b7617fd710a311cd297))
+
+- **Python API (experimental):** `BACnetClient.export_223_experimental()`
+  reads a device's points into an `Inventory223Experimental`, whose
+  `to_turtle()` writes the same Standard 223 point list as the CLI
+  ([docs](docs/python-api.md#standard-223-export-experimental), #2436). ([fd7bc3b](https://github.com/jscott3201/rusty-bacnet/commit/fd7bc3bafca59a3fc60bb1e72406ab852c9910ba))
+
+- **Python API:** `ScEvent.cause_code` names an SC failure's error code, and
+  a hub that closes the WebSocket with a status reads as cause
+  `websocket_closed` with that status in `ScEvent.close_status` (#2438). ([fbe43ed](https://github.com/jscott3201/rusty-bacnet/commit/fbe43ed02650c7a46dec3995ff927cb53cf1b3eb))
+
+- The TUI's SC doctor and timeline, and the error line of a failed
+  BACnet/SC dial in the CLI and in `bacnet mcp serve`, name the failure's
+  error code (#2438). ([fbe43ed](https://github.com/jscott3201/rusty-bacnet/commit/fbe43ed02650c7a46dec3995ff927cb53cf1b3eb))
+
+- `bacnet_types::points` describes a device's analog, binary and multi-state points as plain data, and `bacnet_objects::points::build_database` builds an object database from such a list; a refusal names the point and the property at fault (#2445). ([420a0d6](https://github.com/jscott3201/rusty-bacnet/commit/420a0d6ad9e174c6574625f5887529662cf29c85))
+
+- Two Rust examples, `point_list_server` and `point_list_endpoint`, build their object databases from a point list ([examples](examples/rust/README.md), #2445). ([1d4fb5f](https://github.com/jscott3201/rusty-bacnet/commit/1d4fb5fb1c99434e61f0962dd5eff4a16970fac7))
+
+- Test-only: CI links a `points` firmware image, whose database the
+  point-list builder makes with the nine analog, binary and multi-state
+  types: about 50 KB of flash over the objects image on a Cortex-M3, 7 KB
+  of it the builder and the rest the ten types it links (#2445, #2456). ([b44e49b](https://github.com/jscott3201/rusty-bacnet/commit/b44e49b97bb40e9f3532eaf43662b2a70ef6777a))
+
+- **Experimental:** the 223 export's inventory in `bacnet-ops` holds the `bacnet_types::points` types, and `Detail::Full` reads everything a point list holds (#2445). ([1d4fb5f](https://github.com/jscott3201/rusty-bacnet/commit/1d4fb5fb1c99434e61f0962dd5eff4a16970fac7))
+
+- The Analog Input, Output and Value objects gain `set_cov_increment`, the binary ones `set_active_text` and `set_inactive_text`, and the multi-state ones `set_state_texts`, each checked as a write of the property is (#2445). ([420a0d6](https://github.com/jscott3201/rusty-bacnet/commit/420a0d6ad9e174c6574625f5887529662cf29c85))
+
+- The Integer Value takes the Reliability its application sets while in
+  service, and its Status_Flags show the fault (#2446). ([86511b4](https://github.com/jscott3201/rusty-bacnet/commit/86511b44917607a0970d85ca5e2ffdaf19ab1188))
+
+- `bacnet-device-core`'s `write::local::apply` makes the application's own
+  change to an object of its device, an input or a write as the local
+  Device or one of its objects, under the host's guard; `bacnet-server`'s
+  `write_local` family and its `*_local` inputs now make theirs through it
+  (#2446). ([927a762](https://github.com/jscott3201/rusty-bacnet/commit/927a762963820df4db2a2989f7ef6974c3eb0eac))
+
+- `BACnetServer::set_reliability_local` sets the Reliability the
+  application works out for an object, such as NO_SENSOR, and reports the
+  Status_Flags change to COV subscribers; bacnet-device-core's local write
+  takes it too (#2446). ([86511b4](https://github.com/jscott3201/rusty-bacnet/commit/86511b44917607a0970d85ca5e2ffdaf19ab1188))
+
+- bacnet-device-core's `Reporter` makes the application's own changes and
+  reports them: `update`, `set_reliability`, `command`, `relinquish` and
+  `apply_local`, so firmware no longer calls `changed` by hand after each
+  one (#2446). ([86511b4](https://github.com/jscott3201/rusty-bacnet/commit/86511b44917607a0970d85ca5e2ffdaf19ab1188))
+
+- Test-only: the `reporting` firmware image runs a control loop through the
+  `Reporter`'s local writes, which cost it about 2 KB of flash on a
+  Cortex-M3 (#2446). ([9da82a9](https://github.com/jscott3201/rusty-bacnet/commit/9da82a927e179310228cc064de4c172af57d9e3e))
+
+- `bacnet-types`: the new `qudt` feature adds `bacnet_types::qudt`, the table of BACnet engineering units as QUDT unit and quantity-kind local names, with `qudt_unit` and the reverse `engineering_units_from_qudt`. It is const data with no allocation and no dependency (#2448). ([0c35e91](https://github.com/jscott3201/rusty-bacnet/commit/0c35e91146c1c2e6673c2167995ba471274565ef))
+
+- The point list gains an Integer Value family, `PointKind::Integer`, which `build_database` builds in any Present_Value access; `IntegerValueObject` adds `with_access`, Min_Pres_Value and Max_Pres_Value, and a Description setter (#2456). ([0d1c792](https://github.com/jscott3201/rusty-bacnet/commit/0d1c792f5748de87d428676c47697bd236365a10))
+
+- **Python API:** `BACnetServer.set_reliability_local` lets the application
+  report a fault on one of its objects, with Status_Flags and COV following,
+  and a new `Reliability` enumeration names the values (#2469). ([ef92185](https://github.com/jscott3201/rusty-bacnet/commit/ef9218532a1958202043e53784b731bd13ecb347))
+
+- Property states in the extended-value choice read `sc-connection-state connected` and `sc-hub-connector-state connected-to-failover` in the CLI, TUI and MCP output (choices 258 and 259). Display only (#2472). ([63b9ffe](https://github.com/jscott3201/rusty-bacnet/commit/63b9ffee401515db82fae9add30ff2f27d59cffb))
+
+- Dates also take a weekday digit or `*` after the date (`2026-11-10 2`), so
+  the coming BACnet RDF encoding's date-time string parses, and a calendar
+  entry takes a week-n-day as one `month,week,day` text (`11,4,4`); output is
+  unchanged ([docs/CLI.md](docs/CLI.md#input-forms), #2473). ([c6cc795](https://github.com/jscott3201/rusty-bacnet/commit/c6cc79587d7328324c853aa67869b58ae3b92472))
+
+- The CLI, the TUI and the MCP server take an object as `type,instance`
+  (`analog-input,3`, `128,5`) beside `type:instance`, following the coming
+  BACnet RDF encoding, so an identifier copied from an RDF model can be
+  typed in; what they print is unchanged (#2473). ([c6cc795](https://github.com/jscott3201/rusty-bacnet/commit/c6cc79587d7328324c853aa67869b58ae3b92472))
+
+- **Wire:** Load Control serves Full_Duty_Baseline and State_Description,
+  read-only and listed in Property_List, once the application sets them with
+  `set_full_duty_baseline` and `set_state_description`; its `LoadShedder`
+  reads the baseline from `ShedRequest` (#2479). ([d4b1728](https://github.com/jscott3201/rusty-bacnet/commit/d4b1728a5dc153f83617f77494e7b4a08c6fa41b))
+
+- **Python API:** `BACnetServer.add_load_control` takes `shed_levels`, `shed`
+  and `stop` callables for the loads (a new `ShedRequest` in, how the loads
+  stand out), `full_duty_baseline`, `state_description` and
+  `agreed_duty_window`, so a Load Control built from Python sheds (#2479). ([d4b1728](https://github.com/jscott3201/rusty-bacnet/commit/d4b1728a5dc153f83617f77494e7b4a08c6fa41b))
+
+- **Wire:** A Load Control built with `LoadControlObject::with_persistence`
+  keeps its shed request, Enable and a written Description across a restart,
+  decides the request again as the server starts and stops one shed before
+  it; a peer's write of these is saved before it is answered (#2479). ([d4b1728](https://github.com/jscott3201/rusty-bacnet/commit/d4b1728a5dc153f83617f77494e7b4a08c6fa41b))
+
+- **Python API:** A running Load Control's Shed_Levels, Full_Duty_Baseline and
+  State_Description change through `BACnetServer.set_load_control_*_local`
+  (Rust: `set_load_control_*_local`), and `add_load_control` takes
+  `storage_path` to keep a request across a restart (#2497). ([1eddd3a](https://github.com/jscott3201/rusty-bacnet/commit/1eddd3a61460ab0e5b978e98665cc87a87677803))
+
+- **Python API:** `add_load_control(clear_written_shed_levels=True)` drops the
+  Shed_Levels elements a client wrote from the `storage_path` file before
+  `shed_levels` applies (#2502). ([6730d6c](https://github.com/jscott3201/rusty-bacnet/commit/6730d6c2c5376d9ee2060715b52c7edb94dd780b))
+
+- **Wire:** A Load Control with storage keeps the Shed_Levels elements a peer
+  wrote across a restart, where they win over the application's start-up
+  levels until `set_load_control_shed_levels_local` drops them (#2502).
+  **Python API:** the same `storage_path`. ([6730d6c](https://github.com/jscott3201/rusty-bacnet/commit/6730d6c2c5376d9ee2060715b52c7edb94dd780b))
+
+- **Rust API:** `WebSocketPort::close` sends the WebSocket close frames the SC
+  transport now sends, and `WebSocketPort::awaits_disconnect_ack` turns on its
+  wait for a Disconnect-ACK; a custom port that keeps both defaults behaves as
+  before (#2520). ([c958470](https://github.com/jscott3201/rusty-bacnet/commit/c958470e913bf1c0787bbb452589308dd0627ae7))
+
+- bacnet-encoding encodes event notifications limited to a mask of event-value forms, linking only those: `encode_event_notification_of`, `encode_notification_parameters_of`, `notification_forms` and `ALL_NOTIFICATION_FORMS` (#2524). ([8357060](https://github.com/jscott3201/rusty-bacnet/commit/8357060aafbf81e849b0fa1e070b66124451c905))
+
+- **Python API:** `event_notification_counters()`, and Rust's
+  `EventNotificationCounters`, count notifications dropped at a full send
+  lane (`lane_full`, `lanes_entries_full`, `lanes_full`) and COV fanouts that
+  stopped waiting for their event notifications (`cov_wait_expired`) (#2537). ([ceea217](https://github.com/jscott3201/rusty-bacnet/commit/ceea217f521a5ad37b28d2d73a0ab5d211d2f4d2))
+
+- The new `bacnet-tool` crate holds the parts of `bacnet-ops` only the
+  `bacnet` CLI, TUI and MCP server use (write safety, command classes, frame
+  field trees, the BBMD survey), so an application on `bacnet-ops` no longer
+  builds them (#2560). ([fc09455](https://github.com/jscott3201/rusty-bacnet/commit/fc09455b62fb8c8a4cc2aa69843e49623296f8eb))
+
+- `BACnetClient` requests reach a station by its `BACnetAddress`, through
+  the router its discovery-table row names and sized by that row, so either
+  of two devices that claim one instance is reachable (#2560). ([414f7a5](https://github.com/jscott3201/rusty-bacnet/commit/414f7a5f38ee6417f6432c55c5fb3fd9f7e18180))
+
+- `bacnet_ops::DeviceAddress::row` finds the discovery table's row for an
+  address, and `localized` writes a station on the client's own network as
+  the local one (#2560). ([414f7a5](https://github.com/jscott3201/rusty-bacnet/commit/414f7a5f38ee6417f6432c55c5fb3fd9f7e18180))
+
+- `bacnet_ops::DeviceAddress` and `Device` handles, pinned to an address or
+  following an instance: moving when another device takes its address, or
+  after a timeout once only another address answered the Who-Is it sent
+  (one per `QUIET`). `Client::duplicates` and `events` report both
+  (#2560). ([7b2de78](https://github.com/jscott3201/rusty-bacnet/commit/7b2de78105b5da2ff2e01524342cda825d16c2f4))
+
+- `BACnetClient::network_number` gives the number of the client's own
+  network once a Network-Number-Is has taught it; `bacnet_ops` handles take
+  an address written with it as the local station (#2560). ([7b2de78](https://github.com/jscott3201/rusty-bacnet/commit/7b2de78105b5da2ff2e01524342cda825d16c2f4))
+
+- `bacnet_ops::Client::bip()`, `bip6()`, `sc(..)` (with `sc-tls`) and
+  `mstp(..)` (with the new `serial` feature) connect without naming a
+  transport type, and `Client::over` wraps a low-level client (#2560). ([06e23bf](https://github.com/jscott3201/rusty-bacnet/commit/06e23bf22d93004a984acc350eb841630eee95c6))
+
+- `bacnet-ops`: `Device::inventory` lists a device's objects as `PointRecord`s (name, units, state
+  texts, commandability, values when asked), read in batches and written as JSON or CSV; the CLI
+  gains `bacnet inventory <target> [--types] [--values] --format json|csv|table` (#2560). ([9fc4489](https://github.com/jscott3201/rusty-bacnet/commit/9fc4489512b5f1cb81601630de07e445a833fcc0))
+
+- `Device::read_many` in `bacnet-ops` reads many properties in the watch
+  hub's batches: a refused property is an error in its own row, and a
+  device that stops answering keeps what was read (#2560). ([11d3974](https://github.com/jscott3201/rusty-bacnet/commit/11d397452fdbccad16afabbf58f2e6f250abab73))
+
+- `bacnet-ops` writes: `Device::write`, `relinquish`, `priority_array` and
+  `preview_write`, with a checked `Priority` and a `WritePolicy` that
+  refuses priorities 1, 2, 5 and 6 unless the caller allows them, sending
+  nothing (#2560). ([70ccf8d](https://github.com/jscott3201/rusty-bacnet/commit/70ccf8d7659df92dcc3cf9e153b7cb13e6008e8d))
+
+- `TransportPort::data_link`, `bip_transport` and `bip6_transport` report a transport's data link and reach its B/IP or B/IPv6 transport through any wrapper (#2560). ([2505fb1](https://github.com/jscott3201/rusty-bacnet/commit/2505fb14d913455ec5a602201d67889e67fb9753))
+
+- **Python API:** `await client.device(target)` gives a `Device` handle by address, instance or discovery row, with `read`, `read_many`, `read_object`, `write`, `preview_write`, `relinquish`, `priority_array`, `objects` and `summary` taking text or typed arguments (#2561). ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- **Python API:** `Device.relinquish(object, priority)` releases one command slot and returns the slots read back, and `Device.priority_array(object)` reads them, as a `PriorityView` of `Value`s (#2561). ([6eaa008](https://github.com/jscott3201/rusty-bacnet/commit/6eaa0087e0158ca6579fc02000c7f55a06548504))
+
+- **Python API:** `Device.write` and `Device.relinquish` refuse priorities 1, 2, 5 and 6 with `BacnetWriteDeniedError` unless `BACnetClient(write_policy=WritePolicy().allow_priorities([...]))` allows them; `write_property` stays unguarded (#2561). ([6eaa008](https://github.com/jscott3201/rusty-bacnet/commit/6eaa0087e0158ca6579fc02000c7f55a06548504))
+
+- **Python API:** `Device.read_many` returns `Readings`: a refused property is its `Reading.error` and a device going silent is `stopped`, neither raised. `Value` gains `raw`, equality and a hash, and copies and pickles (#2561). ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- **Python API:** `BACnetClient(resolve_scope=...)` says where a `device()` handle made from a bare instance asks for it: this network alone by default, `"global"` or a network number (#2561). ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- `TransportPort::link_returns` counts each time a transport's link comes
+  back: BACnet/SC hub reconnects and failovers, and B/IP and B/IPv6 foreign
+  devices registering again after a loss. Wrappers must delegate it (#2572). ([8a5eb73](https://github.com/jscott3201/rusty-bacnet/commit/8a5eb7332c071684da6423d52f32fe6588bb5742))
+
+- Binary Input and Binary Output apply a configurable Polarity between
+  Present_Value and a named physical side: `set_physical_input_local` takes
+  an input's raw state and `physical_output_local` gives an output's drive
+  state (#2580). **Python API:** the same, and `polarity=` on both builders. ([a1436e4](https://github.com/jscott3201/rusty-bacnet/commit/a1436e49bf4d8f8295a1ae9412234c8a0fb67989))
+
+- **Rust API:** `Broadcast::answered_from` says whether an answer came from
+  where a broadcast to that scope asked, and `who_has_replies` keeps only
+  those answers; bacnet-ops' scopes use the same rule (#2588). ([c91a65a](https://github.com/jscott3201/rusty-bacnet/commit/c91a65ae557d60ed130b7729c41211cf86b9f7dc))
+
+- **Python API:** `subscribe_cov_property` and `unsubscribe_cov_property`
+  subscribe to and cancel one property's COV notifications, to a `str`
+  address or a `RoutedTarget`; `subscribe_cov_property_multiple` takes a
+  `RoutedTarget` too (#2588). ([c91a65a](https://github.com/jscott3201/rusty-bacnet/commit/c91a65ae557d60ed130b7729c41211cf86b9f7dc))
+
+- **Python API:** `subscribe_cov` and `unsubscribe_cov` take a
+  `RoutedTarget`, with the routing rules of the other routed calls; a routed
+  device's notifications name its network and MAC (#2588). ([54fec70](https://github.com/jscott3201/rusty-bacnet/commit/54fec70edf9743ae8ac68a0abf42c27375ceafd0))
+
+- **Rust API:** `VTCloseRequest::validate` and
+  `SubscribeCOVPropertyMultipleRequest::validate` make the checks their
+  `encode` makes without encoding anything (#2588). ([c91a65a](https://github.com/jscott3201/rusty-bacnet/commit/c91a65ae557d60ed130b7729c41211cf86b9f7dc))
+
+- **Rust API:** `Station::is_source_of` says whether a received COV
+  notification came from the station (its network and MAC, whatever router
+  relayed it), the rule the managed COV helpers and bacnet-ops' watch match
+  by; `ManagedCOVSubscription::station` names the station to cancel to (#2588). ([54fec70](https://github.com/jscott3201/rusty-bacnet/commit/54fec70edf9743ae8ac68a0abf42c27375ceafd0))
+
+- **Rust API:** typed `BACnetClient` calls to any station for
+  ConfirmedPrivateTransfer, UnconfirmedPrivateTransfer, the two TextMessage
+  services, LifeSafetyOperation, VT-Open, VT-Close, VT-Data and
+  SubscribeCOVPropertyMultiple; the Python bindings send through them
+  (#2588). ([c91a65a](https://github.com/jscott3201/rusty-bacnet/commit/c91a65ae557d60ed130b7729c41211cf86b9f7dc))
+
+- **Rust API:** `bacnet_ops::Client::find` sends one Who-Has (`Find`) under
+  the rate cap, local unless it names another `Scope`, and returns the
+  objects that answered from that scope; `raw::who_has` and
+  `raw::who_has_replies` send one with no cap (#2596). ([dea8ae7](https://github.com/jscott3201/rusty-bacnet/commit/dea8ae70f76fa7723e0742a20b5314f54d39df9c))
+
+- BACnet/SC TLS configurations load PEM: `ScNodeTlsConfig` and `ScHubTlsConfig` gain `from_pem` and `from_pem_files` with a typed `ScTlsConfigError` naming the file at fault. The CLI and Python bindings use them; `bacnet_ops` re-exports them and adds `OpsError::Tls` (#2600). ([e554a52](https://github.com/jscott3201/rusty-bacnet/commit/e554a52f8cbb0537138099335ddd0bbfe9dc8e08))
+
+- **Python API:** `BipEndpoint.read_bdt()` and `read_fdt()` read a BBMD's
+  tables through the endpoint's own socket, as `BACnetClient`'s do; in Rust,
+  `EndpointSession::bvlc_tables()` hands out a `BvlcTableReader`, whose reads
+  a `BvlcGiveUp` can end from elsewhere (#2612). ([04332ff](https://github.com/jscott3201/rusty-bacnet/commit/04332fffa0d9c3dfd647b66b2e763b04dcf3d452))
+
+- **Python API:** `RoutedTarget(network, address, router=None)` names a
+  station behind a router where a typed read takes an address; a `str` stays
+  a station on the local link (#2612). ([04332ff](https://github.com/jscott3201/rusty-bacnet/commit/04332fffa0d9c3dfd647b66b2e763b04dcf3d452))
+
+- **Python API:** `BACnetClient.i_am_arrivals()` (standalone, or on any endpoint's link)
+  and `BipEndpoint.i_am_arrivals()` yield one `IAmArrival` per I-Am received, repeats
+  and duplicate instances kept, with arrival time, sender, forwarding BBMD and router;
+  Rust has `bacnet_ops::arrival` (#2612). ([7e517bc](https://github.com/jscott3201/rusty-bacnet/commit/7e517bcda693d61a4701ceaf19bfd5cbc90d9976))
+
+- **Python and Rust APIs.** I-Am arrivals preserve the destination network and station encoded in the NPDU, including an empty station address on a network broadcast (#2612). ([918be9b](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/918be9bc7cc23eb1909d1e66461cfdcd436b8ce3))
+
+- **Python API.** Pass a routed target to `write_property_multiple` on standalone and shared clients, using an explicit next hop or the learned route (#2612). ([918be9b](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/918be9bc7cc23eb1909d1e66461cfdcd436b8ce3))
+
+- **Python API:** a read-only routing-table query, `BACnetClient.routing_table(router)`, with `bacnet routing-table` and `BACnetClient::routing_table` in Rust; it sends Initialize-Routing-Table with no ports, so it cannot update a table (#2612). ([29b3a94](https://github.com/jscott3201/rusty-bacnet/commit/29b3a94ce2a9ee53ec066bc30574d795871144be))
+
+- **Python API:** `atomic_read_file` and `atomic_write_file` take a
+  `RoutedTarget`, on a standalone client and an endpoint's, with the routing
+  rules of the other typed calls; segmented answers and error detail are as
+  for a local read (#2613). ([4868a7c](https://github.com/jscott3201/rusty-bacnet/commit/4868a7cd63336965d10532d3412a79c5a72a2048))
+
+- **Rust API:** `EndpointSession::frames` subscribes to a B/IP-built session's
+  frame tap. `TappedFrame` gains `monotonic_timestamp` and `missed_before`, the
+  frames that receiver's full queue dropped just before it, and
+  `FrameTapReceiver` gains `poll_recv` (#2614). ([13ec17a](https://github.com/jscott3201/rusty-bacnet/commit/13ec17ab4cc44b0f7d5f944504dd2414ff853bab))
+
+- **Python API:** `decode_frame(frame.octets, frame.link)` decodes an observed
+  frame's headers through Rust into a `FrameSummary`, telling a parse failure
+  from a protocol refusal and keeping a forwarded message's originating
+  address and the routed addresses (#2614). ([2b0b6e2](https://github.com/jscott3201/rusty-bacnet/commit/2b0b6e20f3096ade362caace07fc10755876c744))
+
+- **Python API:** `BipEndpoint.frames()` and `BACnetClient.frames()` (B/IP,
+  B/IPv6, SC and MS/TP clients) observe raw frames on the owner's own
+  transport, in bounded queues that report each gap, with capture times on
+  `time.monotonic()` and the wall clock (#2614). ([13ec17a](https://github.com/jscott3201/rusty-bacnet/commit/13ec17ab4cc44b0f7d5f944504dd2414ff853bab))
+
+- `EndpointSession::full_client` and `full_client_with` give a full `BACnetClient` on an endpoint's one
+  transport, beside its server role: discovery, segmented reads, files, COV and the link's own calls,
+  with one pool of invoke IDs for the node. `bacnet_ops::Client::over` takes it (#2617). ([c0f0ceb](https://github.com/jscott3201/rusty-bacnet/commit/c0f0ceb83b4a8dc64a8233209a6fb14f7805f01c))
+
+- **Rust API:** `DeviceIdentity` implements `PartialEq` and `Eq` (#2617). ([569fbac](https://github.com/jscott3201/rusty-bacnet/commit/569fbac89a320669284bfcad1038c94b8c7b697c))
+
+- **Python API:** an endpoint's `status()` counts what its client and its
+  server were handed and what a full queue dropped: `client_seat_apdus`,
+  `client_seat_full_drops`, `client_seat_control_full_drops`,
+  `server_seat_apdus` and `server_seat_full_drops` (#2617). ([394fd79](https://github.com/jscott3201/rusty-bacnet/commit/394fd7907925881c45a9461171e9d9d61d6ca2bb))
+
+- **Rust API:** A session with a source Audit Reporter can build a full
+  server: its records go through the server's notifications, a
+  ReinitializeDevice the server accepts is recorded with its requester, and
+  the builder must decide mutations and have no Audit Reporters (#2617). ([5a09b1a](https://github.com/jscott3201/rusty-bacnet/commit/5a09b1a2a9daff080fd9ffd25062313f273c1957))
+
+- An endpoint session with a source Audit Reporter audits its full client's reads and writes, each
+  owned by the session once admitted; past 64 at once a request waits for a slot.
+  `EndpointSession::full_client` and Python's `endpoint.client()` work on audited endpoints (#2617). ([7b48464](https://github.com/jscott3201/rusty-bacnet/commit/7b4846427f327dd998cb0f85ea79d214cbefcdd4))
+
+- On an audited endpoint the client's WriteGroup, subscriptions, object and device management,
+  alarm acknowledgment and life safety requests are not audited yet, and a raw request of an
+  audited service that doesn't decode is refused before it is sent (#2617). ([7b48464](https://github.com/jscott3201/rusty-bacnet/commit/7b4846427f327dd998cb0f85ea79d214cbefcdd4))
+
+- **Breaking (Rust API):** `ServerConfig::notification_retries` (default 3)
+  sets how often the server sends a confirmed notification or remote write
+  again; a server on an endpoint's seat takes the session's (#2617). ([569fbac](https://github.com/jscott3201/rusty-bacnet/commit/569fbac89a320669284bfcad1038c94b8c7b697c))
+
+- **Rust API:** `bacnet_endpoint::session::read_only_server()` is public: the
+  read-only server builder, no peer writing, creating or deleting and time
+  synchronization off, that a session with a server role runs without
+  `with_server`, as the Python endpoints do without `mutation_policy` (#2617). ([373144f](https://github.com/jscott3201/rusty-bacnet/commit/373144f0546c02e0ae4279c4e2e073c46da4e50d))
+
+- **Python API:** `BACnetClient`'s `read_property`, `read_property_multiple`,
+  `read_range`, `read_log_page` and `write_property` take a `RoutedTarget`;
+  with no `router` they use the route the client learns (#2617). ([394fd79](https://github.com/jscott3201/rusty-bacnet/commit/394fd7907925881c45a9461171e9d9d61d6ca2bb))
+
+- **Rust API:** A `BACnetServer` on an endpoint's seat takes Audit Reporters,
+  and follows the network number the session publishes (#2617). ([569fbac](https://github.com/jscott3201/rusty-bacnet/commit/569fbac89a320669284bfcad1038c94b8c7b697c))
+
+- **Rust API:** `build_session_wrapped` on the B/IP and MS/TP endpoint
+  builders and `connect_hub_session_wrapped` on the SC one build a session
+  over a wrapper of the builder's transport, keeping its link calls (#2617). ([394fd79](https://github.com/jscott3201/rusty-bacnet/commit/394fd7907925881c45a9461171e9d9d61d6ca2bb))
+
+- **Rust API:** `bacnet_encoding::tags::tree` reads any value as its tags
+  without its datatype: `TagReader` with no allocator, and `decode_tag_tree`
+  with `alloc`, bounded in depth and size, its faults typed (#2618). ([6bb6b50](https://github.com/jscott3201/rusty-bacnet/commit/6bb6b5069573a1fe5074cf0255d1739856fea1c6))
+
+- **Rust API:** endpoint ingress counts what its full queues drop:
+  `IngressDropCounters`, `EndpointIngress::full_drop_counters`,
+  `DROP_LOG_INTERVAL`, and `EndpointIngress::with_coordinator`, which puts
+  answers to the endpoint's own leases first (#2635). ([d10ae5e](https://github.com/jscott3201/rusty-bacnet/commit/d10ae5e6b46a9b78a6294afafe3343b6d99a5e3a))
+
+- **Python API:** an endpoint's `status()` adds `unconfirmed_full_drops`,
+  `confirmed_full_drops`, `answer_full_drops` and `policy_full_drops`, and
+  `queue_capacity` defaults to 256 (#2635). ([d10ae5e](https://github.com/jscott3201/rusty-bacnet/commit/d10ae5e6b46a9b78a6294afafe3343b6d99a5e3a))
+
+- **Wire:** the client executes ConfirmedCOVNotificationMultiple, which it
+  acknowledges where it used to reject it, and UnconfirmedCOVNotificationMultiple,
+  on its own, on an endpoint node and behind a router's application split; a
+  node's Device lists both (#2654). ([e0fa3cb](https://github.com/jscott3201/rusty-bacnet/commit/e0fa3cbcb695150987a7c56f903fc2068b50b94a))
+
+- **MCP:** the `bacnet://session` resource's `cov` block shows
+  `cov_multiple_ignored` beside `lagged` (#2654). ([e0fa3cb](https://github.com/jscott3201/rusty-bacnet/commit/e0fa3cbcb695150987a7c56f903fc2068b50b94a))
+
+- **Rust API:** bacnet-ops' watch hub counts the COV-multiple notifications it
+  leaves alone, none of which answers one of its watches, in
+  `HubStats::cov_multiple_ignored` (#2654). ([e0fa3cb](https://github.com/jscott3201/rusty-bacnet/commit/e0fa3cbcb695150987a7c56f903fc2068b50b94a))
+
+- **Python API:** `BACnetClient` sets and clears a routed path's size limit, lists the limits with their source (`routed_path_limits()`, also in Rust) and reads both too-long reject counters; the CLI takes `--routed-path-limit ROUTER/NETWORK=MAX_NPDU` and reports routed paths on stderr (#2667). ([bbc8b5c](https://github.com/jscott3201/rusty-bacnet/commit/bbc8b5c803c633aa14a2bacbbdc954615c380a38))
+
+- Routers can isolate selected ports while keeping shared ports reachable. Transit forwarding and route discovery respect the configured port isolation. ([918be9b](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/918be9bc7cc23eb1909d1e66461cfdcd436b8ce3))
+
+- **Python API.** Observe plaintext hub messages on SC endpoints and mixed-router ports, with the configured port and hub identity captured per frame. Closing a subscription preserves its final overflow count. ([918be9b](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/918be9bc7cc23eb1909d1e66461cfdcd436b8ce3))
+
+### Changed
+
+- The client's dispatch loop polls its idle queues only when it has nothing else to do, and the device purge runs as a task of its own: about 760 fewer instructions per ReadProperty round trip in a release-like build (#1978). ([df5da9e](https://github.com/jscott3201/rusty-bacnet/commit/df5da9e6511ec35ed3fd1e1363eccb720a995bd9))
+
+- The analog Input, Output and Value objects share one core for the
+  properties every I/O object has; a firmware image holding all three is
+  up to 2.8 KB of flash smaller, and nothing they serve or save changes
+  (#2182). ([3743c82](https://github.com/jscott3201/rusty-bacnet/commit/3743c82cfc55787fde13449cfa52f61d0510c743))
+
+- The binary Input, Output and Value objects move onto the I/O core the
+  analog objects share; the firmware images holding both families are 344
+  to 3,260 bytes of flash smaller, and nothing the objects serve or save
+  changes (#2182). ([fe5632d](https://github.com/jscott3201/rusty-bacnet/commit/fe5632d4c2acc1c8c2450d6852631bdf628025fb))
+
+- The multi-state Input, Output and Value objects move onto the I/O core
+  the analog and binary objects share; the firmware image holding all nine
+  is about 5.1 KB of flash smaller, the others move by under 200 bytes, and
+  nothing the objects serve or save changes (#2182). ([ee25cd1](https://github.com/jscott3201/rusty-bacnet/commit/ee25cd10c2310788deb94e6f871e9070f4e3027e))
+
+- **Wire:** A Time_Delay runs from the instant its condition began: a
+  transition that a write seeds between the server's one-second sweeps goes
+  out when its delay ends (within 100 ms of it), up to a second later than
+  before, rather than at the next whole-second sweep (#2303). ([377a462](https://github.com/jscott3201/rusty-bacnet/commit/377a4622d71bd48d99dd12bf2a5ff14d23ee6807))
+
+- **Breaking (Rust API):** `EventReporting`'s intrinsic evaluation and tick,
+  and the detectors' `evaluate`, `probe` and `tick`, take a
+  `bacnet_time::Instant`; `next_due` says when a pending transition is due;
+  `bacnet-device-core`'s `event::after_write`, `sweep` and `next_due` take
+  instants (#2303). ([377a462](https://github.com/jscott3201/rusty-bacnet/commit/377a4622d71bd48d99dd12bf2a5ff14d23ee6807))
+
+- **Breaking (Rust API):** `bacnet-device-core` gains an `event-reporting`
+  feature, on with `std`, whose `event` module holds intrinsic reporting's
+  commit and sweep, distribution, AcknowledgeAlarm, GetEventInformation and
+  the fault pass, moved from `bacnet-server`, which runs on them (#2303). ([7f52442](https://github.com/jscott3201/rusty-bacnet/commit/7f52442efc3dd808667925fa7b8b067fd9ffd652))
+
+- **Breaking (Rust API):** `bacnet-device-core`'s `InvokeIds::take` also
+  names the confirmed service the request goes out as, for a host that
+  keeps its transactions by service (#2303). ([377a462](https://github.com/jscott3201/rusty-bacnet/commit/377a4622d71bd48d99dd12bf2a5ff14d23ee6807))
+
+- **Breaking (Rust API):** an Event Enrollment Reliability result in `bacnet_server::event_enrollment`'s report always carries its state change, so `EventEnrollmentReliabilityResult::state_change` and `event_type()` are no longer `Option`s (#2319). ([4e1e7ca](https://github.com/jscott3201/rusty-bacnet/commit/4e1e7ca2f4163317ddd5599041616740a210064f))
+
+- **Rust API:** `bacnet-device-core` has the SubscribeCOVPropertyMultiple
+  service, the capture of timestamped changes and the split of a report to
+  the subscriber's APDU size, behind `cov-multiple`. `bacnet-server` runs
+  on them (#2320). ([a045239](https://github.com/jscott3201/rusty-bacnet/commit/a04523982891db791ad1edb4d4bf09ca45accc33))
+
+- **Wire:** COV-multiple contexts due at once go out in key order from a
+  start that moves per fanout, where the server used a hash order that
+  varied per run. Under a spent notification budget the contexts kept back
+  therefore vary, as before (#2320). ([9e6bb09](https://github.com/jscott3201/rusty-bacnet/commit/9e6bb098106239db36c2094916775ad8502b12ca))
+
+- **Wire:** COV follow-ups (after an Ack, a fence or a
+  Max_Notification_Delay deadline) go out in one fixed order, by monitored
+  object: ordinary and Single notifications, COV-multiple reports, and the
+  untimestamped items inside one. Each varied from run to run (#2320). ([9e6bb09](https://github.com/jscott3201/rusty-bacnet/commit/9e6bb098106239db36c2094916775ad8502b12ca))
+
+- **Rust API:** `bacnet-device-core` has the SubscribeCOVPropertyMultiple
+  path's timestamped histories (`cov::timed`) and read cache
+  (`cov::multiple_reads`), behind a `cov-multiple` feature that `std` turns
+  on. `bacnet-server` runs on them. Unstable until the rest moves (#2320). ([3ea4624](https://github.com/jscott3201/rusty-bacnet/commit/3ea4624a1f72e966122a8270d952caecf52d5bc3))
+
+- **Wire:** a ConfirmedCOVNotificationMultiple acknowledged only after its
+  report's deadline no longer retires the timestamped changes it carried:
+  they go out again with the next report. A report sent at the
+  Max_Notification_Delay deadline lists its items in one fixed order
+  (#2320). ([3ea4624](https://github.com/jscott3201/rusty-bacnet/commit/3ea4624a1f72e966122a8270d952caecf52d5bc3))
+
+- **Rust API:** `bacnet-device-core` decides what a COV-multiple fanout
+  reports (`cov::multiple_report`), and `bacnet-server` sends what it
+  returns. The split, its inputs and `cov::multiple_items` and
+  `cov::multiple_reads` are private to the crate again (#2320). ([9e6bb09](https://github.com/jscott3201/rusty-bacnet/commit/9e6bb098106239db36c2094916775ad8502b12ca))
+
+- **Rust API:** with `cov-multiple`, `bacnet-device-core`'s `Reporter`
+  answers SubscribeCOVPropertyMultiple and queues its reports as
+  `NotifyService::CovMultiple` notifications, with the
+  Max_Notification_Delay deadline in `next_deadline` (#2320). ([9e6bb09](https://github.com/jscott3201/rusty-bacnet/commit/9e6bb098106239db36c2094916775ad8502b12ca))
+
+- **Breaking (Rust API):** on an Access Door or Access Zone built
+  `with_reporting_persistence`, the list setters (`set_alarm_values`,
+  `set_fault_values`, `set_masked_alarm_values`) no longer replace a list
+  a write saved. The non-exhaustive `AlgorithmWriteConfig` also has two
+  new fields (#2331). ([8e2efff](https://github.com/jscott3201/rusty-bacnet/commit/8e2efffa69067489d421da22cf8ad10a0098d449))
+
+- **Breaking (Rust API):** `ReportingWriteConfig` gains `algorithm`, an
+  `AlgorithmWriteConfig` of the written event algorithm parameters, stored
+  as kind 6 of the `RBNWCF01` format; a file without one keeps kind 4
+  (#2331). ([39907f6](https://github.com/jscott3201/rusty-bacnet/commit/39907f6f5e4981ed4d40fd3e505399c2198f31ed))
+
+- **Breaking (Rust API):** on an Event Enrollment built
+  `with_reporting_persistence`, `set_event_parameters`,
+  `set_fault_parameters` and `set_time_delay_normal` no longer replace a
+  value a write saved. The non-exhaustive `AlgorithmWriteConfig` also has
+  two new fields (#2331). ([2142f35](https://github.com/jscott3201/rusty-bacnet/commit/2142f359ee095fcac17b79c6629f1eaddc434ccd))
+
+- **Breaking (Rust API):** `set_alarm_values` on a Multi-state Input or
+  Value built `with_reporting_persistence` gives way to an Alarm_Values
+  list a write saved. `AlgorithmWriteConfig` gains `alarm_value` and
+  `alarm_values`, two more parameters of kind 6 of `RBNWCF01` (#2331). ([2850978](https://github.com/jscott3201/rusty-bacnet/commit/2850978cf41b4569d76c918d085dc60bbdbd31dd))
+
+- Builds without link-time optimization run fewer instructions encoding a ReadProperty request (94 fewer): the `BytesMut` sink's write is inlined. Builds with it are unchanged (#2334). ([37e349b](https://github.com/jscott3201/rusty-bacnet/commit/37e349b4f70649d8b18ff561c11b0274cdd57d76))
+
+- **Binding:** a B/IPv6 transport claims an explicitly requested UDP port,
+  as B/IP does, so a second bind of it on the host fails at once with an
+  error naming the port; `share_wildcard_port` (transport, client builder,
+  Python; CLI `--share-port`) keeps the old sharing (#2385). ([265c965](https://github.com/jscott3201/rusty-bacnet/commit/265c9656e9ffa60cd9f5978095376c1dd299db0a))
+
+- **Breaking (Rust API):** Starting a server with `ServerConfig::cov_retry_timeout_ms` of 0 now fails with an error naming the field, instead of giving every confirmed report a deadline at its own start; any non-zero value is accepted (#2412). ([ace368d](https://github.com/jscott3201/rusty-bacnet/commit/ace368da2c6ed2aaeb98cf82f8c7b26355a44bfd))
+
+- **Breaking (Rust API):** on a multi-state object built
+  `with_reporting_persistence`, `set_number_of_states` gives way to a saved
+  State_Text, and a write leaving over 1,024 labels or a label past 512
+  octets is refused (#2414). ([6f5187c](https://github.com/jscott3201/rusty-bacnet/commit/6f5187cefac903ced35d97eab84444f6878380dc))
+
+- **Breaking (Rust API):** `set_alarm_values` on a Multi-state Input or
+  Value checks its list as a write does and returns `Result`, refusing a
+  zero, a state past Number_Of_States or more than 1,024 entries (#2415). ([6f5187c](https://github.com/jscott3201/rusty-bacnet/commit/6f5187cefac903ced35d97eab84444f6878380dc))
+
+- **Breaking (Rust API):** nine enumeration constants take their 135-2020
+  names: the four `Segmentation` values, engineering units 122 and 123,
+  properties 133 and 417 and Network Port command 5. The unused
+  `NetworkReachability` enumeration is removed (#2435). ([ab6c201](https://github.com/jscott3201/rusty-bacnet/commit/ab6c2017f24f2c3f32dc5a83d93b48f07cc4014b))
+
+- **Breaking (Python API):** the same nine constants are renamed on
+  `Segmentation`, `EngineeringUnits`, `PropertyIdentifier` and
+  `NetworkPortCommand`, and `.name` returns the new names. The CLI, TUI and
+  MCP server print the new kebab-case names and no longer accept the old
+  ones (#2435). ([ab6c201](https://github.com/jscott3201/rusty-bacnet/commit/ab6c2017f24f2c3f32dc5a83d93b48f07cc4014b))
+
+- **Breaking (Rust and Python API):** a WebSocket the SC hub closes or drops
+  is no longer a peer close: it keeps the close status or reads as an
+  abnormal end, and a refused dial and a missing or wrong subprotocol have
+  their own kinds, each with its own error code (#2438). ([fbe43ed](https://github.com/jscott3201/rusty-bacnet/commit/fbe43ed02650c7a46dec3995ff927cb53cf1b3eb))
+
+- Update the MCP SDK (`rmcp`) to 3.9.0, which clears three RustSec advisories (RUSTSEC-2026-0457, -0461, -0462). `bacnet-mcp` builds only the stdio server, without the Streamable HTTP or OAuth code they concern, so none was reachable (#2440). ([d013031](https://github.com/jscott3201/rusty-bacnet/commit/d013031f3cdea08f55ad7b9971d06b70570fa3fb))
+
+- **Wire:** An Integer Value's Reliability takes a client's write while it
+  is out of service, to simulate a fault, and gets the application's value
+  back on the return to service; in service the write is still refused
+  (#2446). ([86511b4](https://github.com/jscott3201/rusty-bacnet/commit/86511b44917607a0970d85ca5e2ffdaf19ab1188))
+
+- **Breaking (Rust API):** `LocalCommandSource`, the source a local write
+  names, moves from `bacnet-server` to `bacnet-device-core`'s
+  `write::local`, which firmware shares (#2446). ([927a762](https://github.com/jscott3201/rusty-bacnet/commit/927a762963820df4db2a2989f7ef6974c3eb0eac))
+
+- **Breaking (Rust API):** `bacnet-ops` reads the 223 export's unit table from `bacnet-types`; `bacnet_ops::export::s223::qudt_unit` is now `bacnet_types::qudt::qudt_unit`. The export's output is unchanged (#2448). ([0c35e91](https://github.com/jscott3201/rusty-bacnet/commit/0c35e91146c1c2e6673c2167995ba471274565ef))
+
+- **Experimental:** the Standard 223 export maps Integer Values as it maps analog values and reads them by default (`EXPORTED_TYPES` is now `[ObjectType; 10]`), so the CLI, Python and MCP exports of a device that has them list them, at one request more each (#2456). ([0d1c792](https://github.com/jscott3201/rusty-bacnet/commit/0d1c792f5748de87d428676c47697bd236365a10))
+
+- **Breaking (Rust and Python API):** an SC dial with no route to the hub, and
+  an upgrade answer with a bad WebSocket header, a malformed one or one with an
+  unusable status line, get their own error kinds and codes; a NAK's message
+  and log line name its error class and code (#2463). ([80468bc](https://github.com/jscott3201/rusty-bacnet/commit/80468bcf7e9ba9059b1262c066121e4905e854df))
+
+- **Wire:** the BACnet/SC hub sends a close frame with a status when it ends a
+  connection on purpose: 1001 on a graceful shutdown, else 1000, also after
+  refusing a Connect-Request, which it used to drop silently. A malformed one
+  gets a close with no status; the direct acceptor sends 1000 too (#2463). ([80468bc](https://github.com/jscott3201/rusty-bacnet/commit/80468bcf7e9ba9059b1262c066121e4905e854df))
+
+- **Breaking (Rust API):** a Load Control's application reports what its
+  loads shed through a `LoadShedder` installed with `set_shedder`, which
+  replaces `set_actual_shed_level` (#2464). ([902d59a](https://github.com/jscott3201/rusty-bacnet/commit/902d59af843c9c41709b4b0a563e5ee37c1a16df))
+
+- **Breaking (Rust and Python API):** error code 14 and life safety mode 7
+  take their 135-2020 spellings, `INVALID_TIMESTAMP` and `PREARMED`; the CLI,
+  TUI, MCP server and Python's `.name` show the new names. Wire values are
+  unchanged (#2471). ([50120c5](https://github.com/jscott3201/rusty-bacnet/commit/50120c5e267cff969863129e027aa67d0284adf4))
+
+- An extended property state the stack doesn't name prints its tag and value, `extended-value 260 2`, where it printed `extended-value 2` (#2472). ([63b9ffe](https://github.com/jscott3201/rusty-bacnet/commit/63b9ffee401515db82fae9add30ff2f27d59cffb))
+
+- **Breaking (Rust API):** The log record encoders, and so `add_record` and
+  log restore, refuse a record nested deeper than a ReadRange-ACK can carry
+  and an opaque primitive over 1 MiB; `is_record_too_deep` tells the first
+  refusal apart (#2474). ([4a15f6c](https://github.com/jscott3201/rusty-bacnet/commit/4a15f6c75c6df95e84b1a6534bd9d2fa60085a97))
+
+- **Breaking (Rust API):** `NotificationParameters`, `LogDatum`, `LogValue`,
+  `LogData` and `EventLogDatum` gain `Opaque(OpaqueChoice)`; `LogDatum`
+  converts from a `LogValue` with `try_from` (#2474). ([4a15f6c](https://github.com/jscott3201/rusty-bacnet/commit/4a15f6c75c6df95e84b1a6534bd9d2fa60085a97))
+
+- **Wire:** Event values under tag 7, 12 or 23 and up (20 is still refused),
+  and log record choices under a tag their CHOICE doesn't assign, now decode,
+  kept as received: the client acknowledges such a confirmed notification,
+  not rejects it; the CLI and MCP show tag and hex, Python bytes (#2474). ([4a15f6c](https://github.com/jscott3201/rusty-bacnet/commit/4a15f6c75c6df95e84b1a6534bd9d2fa60085a97))
+
+- The one-shot `writem` ends a write at a comma only before a property and `=`, so values can hold commas (`pv=object:ai,1`, bit and enumeration lists); quote text holding `, property=` (#2482). ([7b325ac](https://github.com/jscott3201/rusty-bacnet/commit/7b325acdd4189824fc150a5da0fe9c2f387a0d19))
+
+- **Breaking (Rust API):** `BACnetAuditLogDatum` gains `Opaque(OpaqueChoice)`,
+  and the Audit Log record encoder, and so `add_record`, stored audit
+  notifications and log restore, refuse a record nested deeper than an
+  AuditLogQuery-ACK carries (#2483). ([3e71ec5](https://github.com/jscott3201/rusty-bacnet/commit/3e71ec53ce554d76499cc1fa30e160c569d3e351))
+
+- **Wire:** An AuditNotification whose stored record would nest deeper than
+  an AuditLogQuery-ACK carries is refused with its whole batch; before, it
+  was stored and broke every query page that carried it (#2483). ([3e71ec5](https://github.com/jscott3201/rusty-bacnet/commit/3e71ec53ce554d76499cc1fa30e160c569d3e351))
+
+- **Wire:** Event_Parameters under tag 7 or 12, an Audit Log record's datum
+  under a tag above 2, and event values in primitive form under an
+  unassigned tag now decode, kept as received, so a server stores such an
+  Event_Parameters write; the CLI and MCP show tag and hex, Python bytes
+  (#2483). ([3e71ec5](https://github.com/jscott3201/rusty-bacnet/commit/3e71ec53ce554d76499cc1fa30e160c569d3e351))
+
+- **Breaking (Rust API):** `LoadControlSnapshot` gains `shed_levels`, saved
+  as `RBNLCT02`, and is `#[non_exhaustive]`; the new
+  `LoadControlObject::clear_written_shed_levels` drops the saved levels so
+  `set_shed_levels` applies whole (#2502). ([6730d6c](https://github.com/jscott3201/rusty-bacnet/commit/6730d6c2c5376d9ee2060715b52c7edb94dd780b))
+
+- **Breaking (Rust API):** `CovTable::delivered` also names the reference of
+  an unsent unconfirmed report that a later change was measured from, owed a
+  fresh look; `evaluate` measures a change from the newest report still to go
+  (#2508). ([1a8b9c7](https://github.com/jscott3201/rusty-bacnet/commit/1a8b9c779919eba29d6d892855ce8879e65fa7ef))
+
+- **Breaking (Rust API):** the device core's `Reporter` keeps reports owed an
+  invoke ID apart from those owed outbox room and looks at them again only as
+  IDs come back, which a host reports with `invoke_ids_released` while the new
+  `owes_invoke_id` holds; `notification_deadline` is new too (#2512). ([1a8b9c7](https://github.com/jscott3201/rusty-bacnet/commit/1a8b9c779919eba29d6d892855ce8879e65fa7ef))
+
+- **Wire:** a BACnet/SC node closes the WebSockets it ends: 1000 on `stop()`
+  (after the Disconnect-ACK, waited for up to a second), after any NAK or
+  answered Disconnect-Request, no status when a peer stops answering or
+  replies wrongly, and 1003 for a text frame on a direct link (#2520). ([c958470](https://github.com/jscott3201/rusty-bacnet/commit/c958470e913bf1c0787bbb452589308dd0627ae7))
+
+- The firmware event path is about 6 KB smaller on a Cortex-M3: the `Reporter` encodes only the event-value forms intrinsic reporting builds, and an image with no log links no Event Log step (#2524). ([8357060](https://github.com/jscott3201/rusty-bacnet/commit/8357060aafbf81e849b0fa1e070b66124451c905))
+
+- A write of a kept reporting row, State_Text included, copies the object's
+  kept rows twice as it is made, not three or four times, so a large staged
+  request holds the database lock for less time (#2526). ([ae17166](https://github.com/jscott3201/rusty-bacnet/commit/ae171666b789fbbcb5cb627a1b709ad2cfd271e2))
+
+- **Wire:** A Time_Delay that a background change starts (a Schedule pass,
+  membership work, the operation task) counts from the change itself, so
+  its transition can go out up to one sweep period sooner than before
+  (#2535). ([252fb6a](https://github.com/jscott3201/rusty-bacnet/commit/252fb6adf9cd24e5384e4eb2e930f7cfe78cb845))
+
+- **Wire:** A timestamped COV-multiple subscription no longer gets a row
+  showing an object between a write and the event-state transition it
+  causes: that is folded into the newest row the write, or an earlier one
+  to the object in the request, queued, on the server and the core's
+  `Reporter` (#2535). ([9da8ac2](https://github.com/jscott3201/rusty-bacnet/commit/9da8ac2283b392b47a8d9ed310d970701aca8bad))
+
+- **Wire:** The fault-detection, Schedule and operation tasks' COV fanout
+  follows each pass's event notifications in pass order, off their loops and
+  within `cov_retry_timeout_ms` of the commit, as the sweep's does; a
+  destination that holds its lane delays none of their later passes (#2537). ([252fb6a](https://github.com/jscott3201/rusty-bacnet/commit/252fb6adf9cd24e5384e4eb2e930f7cfe78cb845))
+
+- **Wire:** A change's COV notifications wait, capped at
+  `cov_retry_timeout_ms`, until its event notifications are handed to the
+  network, a confirmed one's first send included; they used to wait only
+  until its worker had started (#2537). ([ceea217](https://github.com/jscott3201/rusty-bacnet/commit/ceea217f521a5ad37b28d2d73a0ab5d211d2f4d2))
+
+- **Rust and Python API:** A Device recipient waiting for its I-Am holds one
+  of the 256 lanes and up to 65 of their 1,024 entries, not a queue with a
+  1,024 of its own; one dropped with 1,024 waiting counts in
+  `lanes_entries_full`, not `device_recipient_unbound` (#2537). ([a3c6a7c](https://github.com/jscott3201/rusty-bacnet/commit/a3c6a7cc5f5c3f6bd1de75661295906abd841de9))
+
+- **Wire:** An unbound Device recipient holds its lane while it is looked
+  for, in commit order. A write that made one waits for its I-Am, up to
+  `cov_retry_timeout_ms`, before its COV fanout: `write_local` and
+  `set_present_value_local` return, and a request frees its admission slot,
+  only then (#2537). ([a3c6a7c](https://github.com/jscott3201/rusty-bacnet/commit/a3c6a7cc5f5c3f6bd1de75661295906abd841de9))
+
+- **Wire:** A destination's event notifications go out in commit order,
+  whichever task committed them, and a stalled one holds up only its own.
+  With Staging plans the SimpleACK now precedes the plans' event and COV
+  notifications, and recipient windows are judged at commit (#2537). ([ceea217](https://github.com/jscott3201/rusty-bacnet/commit/ceea217f521a5ad37b28d2d73a0ab5d211d2f4d2))
+
+- **Wire:** A confirmed event notification that finds every invoke ID in use
+  waits for one instead of being dropped. Only its destination's lane waits
+  (#2537). ([d70a1ef](https://github.com/jscott3201/rusty-bacnet/commit/d70a1ef0f4d26f7f6ede6ae03c547269ad8c6ae1))
+
+- **Wire:** A write whose transition goes to a destination whose lane waits
+  for an invoke ID waits up to `cov_retry_timeout_ms` before its COV fanout,
+  counted: `write_local` returns, and a request gives up its admission slot
+  after its reply, only then (#2537). ([d70a1ef](https://github.com/jscott3201/rusty-bacnet/commit/d70a1ef0f4d26f7f6ede6ae03c547269ad8c6ae1))
+
+- **Wire:** The intrinsic-reporting sweep no longer waits for a pass's event
+  notifications: each pass's COV fanout follows them in sweep order, within
+  `cov_retry_timeout_ms` of its commit. A pass finding 64 waiting goes at
+  once, counted in `cov_wait_expired` if its notifications still wait (#2537). ([a3c6a7c](https://github.com/jscott3201/rusty-bacnet/commit/a3c6a7cc5f5c3f6bd1de75661295906abd841de9))
+
+- **Wire:** An object a later waiting sweep pass also reports may be left to
+  that pass, once at most, so its COV report goes within twice
+  `cov_retry_timeout_ms` of the commit that wanted it; an earlier pass's
+  fanout already reading the object can still report a later state (#2537). ([a3c6a7c](https://github.com/jscott3201/rusty-bacnet/commit/a3c6a7cc5f5c3f6bd1de75661295906abd841de9))
+
+- **Breaking (Rust API):** `EventNotificationCounters::confirmed_no_invoke_id`
+  is replaced by `confirmed_waited_for_invoke_id`, the confirmed event
+  notifications that waited for an invoke ID. One that can lease none at all,
+  which takes a panic, is logged and dropped uncounted (#2537). ([d70a1ef](https://github.com/jscott3201/rusty-bacnet/commit/d70a1ef0f4d26f7f6ede6ae03c547269ad8c6ae1))
+
+- **Breaking (Python API):** `event_notification_counters()` has
+  `confirmed_waited_for_invoke_id` in place of `confirmed_no_invoke_id`
+  (#2537). ([d70a1ef](https://github.com/jscott3201/rusty-bacnet/commit/d70a1ef0f4d26f7f6ede6ae03c547269ad8c6ae1))
+
+- A firmware image that reports events but never saves is about 4 KB of flash smaller on the Arm targets and 6 KB on riscv32imac: staged saves now need `bacnet-objects`' `durable-writes` feature (#2538). ([1bfbe28](https://github.com/jscott3201/rusty-bacnet/commit/1bfbe287775144df3abe05d86d53c65fc9403e62))
+
+- A WritePropertyMultiple of many Tags or kept Description writes to one
+  object stages and makes each write in the time and memory of what it
+  changes, not of the object's whole Tags, so a large request holds the
+  database lock for milliseconds rather than seconds (#2546). ([0a8d9cb](https://github.com/jscott3201/rusty-bacnet/commit/0a8d9cbc73ceafceabd03c20c433b8af030c56a3))
+
+- The counting harness judges each row without the system allocator's work (its functions, the copy a moving `realloc` makes and its atomic helpers), which moved rows by hundreds of instructions per request on heap layout alone; it reports that work separately, and allocation calls stay gated (#2555). ([c9e35b4](https://github.com/jscott3201/rusty-bacnet/commit/c9e35b499271cc6442b6c06de5a18c4e5cbdf3dd))
+
+- **Breaking (Rust API, Python API):** `acknowledge_alarm_request` is now
+  `acknowledge_alarm` on `BACnetClient`, bacnet-ops `Destination` and Python.
+  The client's `acknowledge_alarm_request_from_device` is gone: send
+  `acknowledge_alarm` to the station `resolve_device` gives (#2559, #2588). ([092032b](https://github.com/jscott3201/rusty-bacnet/commit/092032ba532012e984e1301a0ac1cff381a96ccc))
+
+- **Breaking (Rust API):** bacnet-ops drops `target::hex` and `safety::hex` for `octets::{hex, hex_sep, hex_upper}`, and adds `target::format_sc_mac` beside `format_mac` (#2559). ([092032b](https://github.com/jscott3201/rusty-bacnet/commit/092032ba532012e984e1301a0ac1cff381a96ccc))
+
+- **Breaking (Rust API):** the `AsBip` trait is gone; `as_bip` is a method on `TransportPort`, and wrappers forward `data_link` and `bip_transport` (#2560). ([2505fb1](https://github.com/jscott3201/rusty-bacnet/commit/2505fb14d913455ec5a602201d67889e67fb9753))
+
+- **Breaking (Rust API):** `bacnet_ops::{safety, class, bbmd}` and
+  `decode::tree` move to `bacnet_tool`, the `Engine` BBMD reads become
+  `bacnet_tool::bbmd` functions, `bacnet_ops::destination` moves to the
+  CLI, and `rpm_rows`, `timestamp_text` and `alarms::cell` in
+  `bacnet_ops` are public (#2560). ([fc09455](https://github.com/jscott3201/rusty-bacnet/commit/fc09455b62fb8c8a4cc2aa69843e49623296f8eb))
+
+- **Breaking (CLI):** `bacnet discover` with no `--dnet`, `--target` or the
+  new `--global` sends a local broadcast, which no router passes on, instead
+  of a global one; `--dnet` refuses 0 and 65535 (#2560). ([06e23bf](https://github.com/jscott3201/rusty-bacnet/commit/06e23bf22d93004a984acc350eb841630eee95c6))
+
+- `bacnet write` refuses a value whose `@N` differs from `--priority`,
+  sending nothing, instead of writing at `--priority`, and refuses a
+  `--priority` outside 1 to 16 as it reads its arguments (#2560). ([70ccf8d](https://github.com/jscott3201/rusty-bacnet/commit/70ccf8d7659df92dcc3cf9e153b7cb13e6008e8d))
+
+- **Breaking (Rust API):** `DeviceCollisionEvent` swaps `retained` and
+  `incoming` for `instance` and `claimants`, and comes again when the contest
+  ends (`is_resolved()`); a second claimant's I-Am is announced as
+  `Discovered` (#2560). ([2b8812a](https://github.com/jscott3201/rusty-bacnet/commit/2b8812a30e55ef8b7f1c48573232453702ab01d7))
+
+- **Breaking (Rust API):** `DataLink` is `#[non_exhaustive]`, so a `match` on it needs a wildcard arm (#2560). ([2505fb1](https://github.com/jscott3201/rusty-bacnet/commit/2505fb14d913455ec5a602201d67889e67fb9753))
+
+- **Breaking (Rust API):** `DeviceTable::get(instance)` becomes
+  `find(instance)`, `get(network, mac)` replaces `get_by_mac` and
+  `get_by_network_address`, and `claiming(instance)` and
+  `DiscoveredDevice::address()` are new; `upsert` leaves other addresses'
+  rows for the instance (#2560). ([2b8812a](https://github.com/jscott3201/rusty-bacnet/commit/2b8812a30e55ef8b7f1c48573232453702ab01d7))
+
+- **Breaking (Rust API):** the client's discovery table is keyed by address
+  (network and MAC): two addresses claiming one instance each keep a row,
+  reachable by address, and `get_device` and `resolve_device` refuse that
+  instance with the new `Error::AmbiguousDevice` (#2560). ([2b8812a](https://github.com/jscott3201/rusty-bacnet/commit/2b8812a30e55ef8b7f1c48573232453702ab01d7))
+
+- **Breaking (Rust API):** `BACnetClient::get_device` returns
+  `Result<Option<DiscoveredDevice>, Error>`, not `Option`; the new
+  `BACnetClient::get_device_at(network, mac)` finds a device by address, and
+  `discovered_devices()` lists one row per address (#2560). ([2b8812a](https://github.com/jscott3201/rusty-bacnet/commit/2b8812a30e55ef8b7f1c48573232453702ab01d7))
+
+- **Breaking (Rust API):** `DiscoveredDevice::last_announced` is when the
+  row's address last sent an I-Am, which answers to requests don't move;
+  `Error::UnknownDevice` names a device the client can't place (#2560). ([7b2de78](https://github.com/jscott3201/rusty-bacnet/commit/7b2de78105b5da2ff2e01524342cda825d16c2f4))
+
+- MCP tools that take a device also take the address of one in the
+  discovery table; `dnet:instance` names the claim on that network, and two
+  networks holding one instance are two devices to the policy and the
+  caches. Nothing is sent to resolve a target (#2560). ([414f7a5](https://github.com/jscott3201/rusty-bacnet/commit/414f7a5f38ee6417f6432c55c5fb3fd9f7e18180))
+
+- MCP refuses a tool call, subscription or watch that names a device by an
+  instance two addresses claim as `ambiguous-device`, naming the claimants
+  (#2560). ([414f7a5](https://github.com/jscott3201/rusty-bacnet/commit/414f7a5f38ee6417f6432c55c5fb3fd9f7e18180))
+
+- A `bacnet_write` confirmation names the device's address and is bound to
+  it: a device named by its instance that moves before the confirmation is
+  refused as stale (#2560). ([414f7a5](https://github.com/jscott3201/rusty-bacnet/commit/414f7a5f38ee6417f6432c55c5fb3fd9f7e18180))
+
+- **MCP:** `bacnet_read` reports a refused array element
+  (`priority-array[8]`) with the same row error as any other refused
+  property (#2560). ([11d3974](https://github.com/jscott3201/rusty-bacnet/commit/11d397452fdbccad16afabbf58f2e6f250abab73))
+
+- MCP watches a point at the address its device answers at: `bacnet_watch`
+  takes a device named by its address while another claims its instance,
+  each row gives the device's `address` (and `uri_ambiguous` when its URI
+  names neither), and a subscription stays at the address it began at
+  (#2560). ([6c9572b](https://github.com/jscott3201/rusty-bacnet/commit/6c9572be2d412cdbfefe4b56f9a05de742e40624))
+
+- **Breaking (Rust and Python API):** the discovery table holds one device
+  per address: an I-Am, `add_device` or `upsert` naming another instance at
+  a known address replaces its row, so `get_device` no longer finds the old
+  instance, and instances aliased at one MAC no longer coexist (#2560). ([2b8812a](https://github.com/jscott3201/rusty-bacnet/commit/2b8812a30e55ef8b7f1c48573232453702ab01d7))
+
+- **Breaking (Rust API):** `bacnet_ops::Engine` is now `bacnet_ops::Client`
+  (cheap to clone; `low_level()` for `client()`) in the module
+  `bacnet_ops::client`, once `engine`. Its reads move to `Device` handles,
+  and gates, turns and the no-RPM memory key on a device's address (#2560). ([7b2de78](https://github.com/jscott3201/rusty-bacnet/commit/7b2de78105b5da2ff2e01524342cda825d16c2f4))
+
+- **Breaking (Rust API):** `bacnet_ops::Client::discover` takes one
+  `Discover` (scope, range, wait), a local broadcast unless it names a
+  network or every network, and fails with `OpsError`; `Scope` replaces
+  `WhoIsScope`, and `raw::who_is` sends one with no rate cap (#2560). ([06e23bf](https://github.com/jscott3201/rusty-bacnet/commit/06e23bf22d93004a984acc350eb841630eee95c6))
+
+- **Breaking (Rust API):** a `bacnet_ops` handle made from a bare instance
+  no address claims asks this network alone, not every network, unless
+  `Client::with_resolve_scope` widens it, and a stalled handle asks again on
+  its device's last network (#2560). ([06e23bf](https://github.com/jscott3201/rusty-bacnet/commit/06e23bf22d93004a984acc350eb841630eee95c6))
+
+- **Breaking (Rust API):** `bacnet-ops` names command priorities with
+  `Priority`: it replaces `label::priority_label` and `label::PRIORITIES`,
+  the value grammar's `@N`, and `Effect::Unchanged`'s `held_by`, and
+  `OpsError` gains `Denied`, `ReadBack` and `NoPriorityArray` (#2560). ([70ccf8d](https://github.com/jscott3201/rusty-bacnet/commit/70ccf8d7659df92dcc3cf9e153b7cb13e6008e8d))
+
+- **Breaking (Rust API):** `bacnet-ops` reads return a `Value` (typed data,
+  text and the octets sent), `Readings` or an `ObjectRead`, and its calls
+  fail with `OpsError`; the raw readers move to `bacnet_ops::raw`, and
+  `RowError` is `PropertyError` (#2560). ([11d3974](https://github.com/jscott3201/rusty-bacnet/commit/11d397452fdbccad16afabbf58f2e6f250abab73))
+
+- **Breaking (Rust API):** `bacnet-ops` watches points by address:
+  `Client::watch` streams `Update`s, each with one `State` holding its
+  reason, for points from `Device::point`; the hub under it moves to
+  `watch::hub`, and a device is given up as moved only when the move is
+  certain (#2560). ([6c9572b](https://github.com/jscott3201/rusty-bacnet/commit/6c9572be2d412cdbfefe4b56f9a05de742e40624))
+
+- **Python API:** `get_device()` and the `_from_device`/`_to_device` methods
+  raise the new `BacnetAmbiguousDeviceError` (`instance`, `candidates`) when
+  two addresses claim the instance, and `discovered_devices()` lists both
+  (#2560). ([2b8812a](https://github.com/jscott3201/rusty-bacnet/commit/2b8812a30e55ef8b7f1c48573232453702ab01d7))
+
+- **Breaking (Python API):** `BACnetClient.who_is()` and `discover()` take
+  `scope="local"` (the default), `"global"` or a network number, and with no
+  scope send a local broadcast instead of a global one (#2560). ([06e23bf](https://github.com/jscott3201/rusty-bacnet/commit/06e23bf22d93004a984acc350eb841630eee95c6))
+
+- An address whose I-Am names another instance is announced as `Lost` for
+  the old instance and then `Discovered` for the new, so device-event
+  subscribers (the TUI, MCP's `bacnet://devices`) drop the old one (#2560). ([2b8812a](https://github.com/jscott3201/rusty-bacnet/commit/2b8812a30e55ef8b7f1c48573232453702ab01d7))
+
+- `bacnet_export_223` (MCP) reads each object as the inventory's point record, so a binary
+  object's texts are read too; a `write_priority` outside 1 to 16 is refused with `priority must
+  be 1-16, got N` (#2560). ([9fc4489](https://github.com/jscott3201/rusty-bacnet/commit/9fc4489512b5f1cb81601630de07e445a833fcc0))
+
+- **Python API:** `export_223_experimental` reads the summary (13 ReadProperty requests without
+  ReadPropertyMultiple) and the objects in batches; an object whose read failed reports `error`
+  `object-name: ...`; a list that fails element by element raises, a note naming the element (#2560). ([9fc4489](https://github.com/jscott3201/rusty-bacnet/commit/9fc4489512b5f1cb81601630de07e445a833fcc0))
+
+- **Breaking (Rust API), Wire:** the Standard 223 export derives from the inventory's records and
+  reads in batches (about N/8 + 2 requests, not N + 2). An object the device fails is skipped with
+  `no readable object-name`, and a list read element by element that fails is an error (#2560). ([9fc4489](https://github.com/jscott3201/rusty-bacnet/commit/9fc4489512b5f1cb81601630de07e445a833fcc0))
+
+- **Breaking (Rust API):** `bacnet_tool::safety` writes go by address:
+  `WriteSpec`, `Preview` and ledger entries carry it; `turn` takes the
+  address and the instance and refuses another device there (`Unsent`),
+  and `reach` replaces `find`. Ledgers without addresses still load
+  (#2560). ([7b2de78](https://github.com/jscott3201/rusty-bacnet/commit/7b2de78105b5da2ff2e01524342cda825d16c2f4))
+
+- The TUI's write and device management confirmations name the device's
+  address, and `writem` with an instance two addresses claim names them
+  (#2560). ([414f7a5](https://github.com/jscott3201/rusty-bacnet/commit/414f7a5f38ee6417f6432c55c5fb3fd9f7e18180))
+
+- The TUI's device table has a row per address: two devices sharing an
+  instance are two rows, each browsed, written to and managed at its own
+  address, and the duplicate banner names every address claiming an
+  instance until only one does (#2560). ([2b8812a](https://github.com/jscott3201/rusty-bacnet/commit/2b8812a30e55ef8b7f1c48573232453702ab01d7))
+
+- The TUI's watch list refuses an instance two devices claim, naming both;
+  an unanswered subscription reads `no answer`, not `COV refused`; a full
+  COV table is tried again; and a device that has certainly moved fails
+  its row, saying where (#2560). ([6c9572b](https://github.com/jscott3201/rusty-bacnet/commit/6c9572be2d412cdbfefe4b56f9a05de742e40624))
+
+- **Breaking (Python API):** `discover(scope="local", low=None, high=None, wait=3.0)` returns one `Discovered` for each device that answered that call, no longer every `DiscoveredDevice` in the table, and `who_is_directed` is gone: `scope=` takes a station address (#2561). ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- **Breaking (Python API):** every discovery call takes keyword-only `low=`, `high=`, `scope=` and, where it waits, `wait=` (0 to 3600 seconds): `who_is`, the Who-Has calls and `discover_routers` drop `low_limit`, `high_limit` and `timeout_ms` (#2561). ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- **Python API:** `export_223_experimental` now shares the client's request limits with the `Device` calls, so their requests to one device go one at a time through the same per-device gate (#2561). ([6eaa008](https://github.com/jscott3201/rusty-bacnet/commit/6eaa0087e0158ca6579fc02000c7f55a06548504))
+
+- **Rust API:** the target grammar's link refusals (`bacnet_ops::target`) name no CLI flag, so the Python binding and MCP show them as they are; the `bacnet` tool adds `--ipv6` or `--mstp` itself. `target::NEEDS_BIP6` and `NEEDS_MSTP` are the refusals' endings (#2561). ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- A local Who-Is or Who-Has the operating system refuses to send on a B/IP link (no route to the broadcast address, say) now names the broadcast address it was going to; the system error, with its code, stays beneath it (#2561). ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- **Breaking (Python API):** a device that cannot be placed raises the new `BacnetLookupError`, also a `LookupError`, from the high-level calls and the typed `_from_device` calls, where the latter raised a bare `BacnetError`; `BacnetAmbiguousDeviceError` is now its subclass (#2561). ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- **Breaking (Rust API):** `who_is` and `who_has` take a `Broadcast` scope
+  (`Local`, `Network(n)` or `Global`) and `who_is_network` is gone; new are
+  `who_has_directed`, `who_am_i` and `who_am_i_directed`. A network
+  broadcast to 0 or 65535 is refused before anything is sent (#2588). ([c91a65a](https://github.com/jscott3201/rusty-bacnet/commit/c91a65ae557d60ed130b7729c41211cf86b9f7dc))
+
+- **Breaking (Rust API):** a request to an empty MAC, by
+  `confirmed_request(&[], ..)`, `unconfirmed_request(&[], ..)` or any typed
+  call, is refused before anything is sent, with the error an address on
+  network 0 with no MAC gets; before, it reached the transport (#2588). ([4bb6390](https://github.com/jscott3201/rusty-bacnet/commit/4bb6390203157de727e82711c1ee7fe6495fa635))
+
+- **Breaking (Rust API):** `BACnetClient`'s by-instance `_from_device` and
+  `_to_device` calls are gone: `resolve_device(instance)` returns the
+  `Station` the discovery table names, which every typed call takes.
+  `CovTarget` folds into `Station`, and the managed COV helpers take any
+  station (#2588). ([54fec70](https://github.com/jscott3201/rusty-bacnet/commit/54fec70edf9743ae8ac68a0abf42c27375ceafd0))
+
+- **Breaking (Rust API):** every typed `BACnetClient` call takes the station
+  it goes to: a MAC as before, a `BACnetAddress`, or a `Station`, which can
+  also name the router. One service description sends each, and the requests
+  on the wire are unchanged (#2588). ([4bb6390](https://github.com/jscott3201/rusty-bacnet/commit/4bb6390203157de727e82711c1ee7fe6495fa635))
+
+- **Breaking (Rust API):** `write_group` takes a `Broadcast` scope, and
+  `write_group_directed` sends to one station, behind a router too;
+  `WriteGroupDestination` is gone (#2588). ([079a601](https://github.com/jscott3201/rusty-bacnet/commit/079a60156bd5d808d0f57ee9afffdab20ecbe45d))
+
+- **Breaking (CLI):** `bacnet find` and the TUI's `:find` ask this network
+  alone by default; `find` takes `--dnet`, `--global` and `--target`, `:find`
+  takes `--dnet N` and `--global`, a local miss notes how to widen it, and
+  each row now carries the address it answered from (#2596). ([dea8ae7](https://github.com/jscott3201/rusty-bacnet/commit/dea8ae70f76fa7723e0742a20b5314f54d39df9c))
+
+- **Breaking (Rust API):** `BACnetClient::who_has_replies` keeps one answer
+  per device, object and source address, so two devices sharing an instance
+  both come back, and stops at `MAX_I_HAVE_REPLIES` (4096);
+  `collect_answers` is that collector for a caller sending its own Who-Has
+  (#2596). ([dea8ae7](https://github.com/jscott3201/rusty-bacnet/commit/dea8ae70f76fa7723e0742a20b5314f54d39df9c))
+
+- **MCP:** the last page of a `bacnet_find_object` search that matched
+  nothing carries a `note`: it searched only the devices discovered so far,
+  by default this network's, and a discovery can reach further (#2596). ([dea8ae7](https://github.com/jscott3201/rusty-bacnet/commit/dea8ae70f76fa7723e0742a20b5314f54d39df9c))
+
+- **Breaking (Python API):** `who_has_by_id()`, `who_has_by_name()` and
+  `who_has_replies()` take `scope=` as `who_is()` does, local by default;
+  `who_has_replies()` keeps answers from that scope only, one per device,
+  object and source address, so two devices sharing an instance both return
+  (#2596). ([dea8ae7](https://github.com/jscott3201/rusty-bacnet/commit/dea8ae70f76fa7723e0742a20b5314f54d39df9c))
+
+- **Wire:** a client, server or endpoint answers a broadcast What-Is-Network-Number
+  after a random wait of 0.5 to 10 seconds, and not at all when another
+  node's matching Network-Number-Is is heard first; a question sent to the
+  node alone is still answered at once (#2597). ([b52231c](https://github.com/jscott3201/rusty-bacnet/commit/b52231cfb4a69f1a6fbe0083d43edf9bb9798746))
+
+- **Breaking (Rust API):** `bacnet_network::network_number::NumberControl::WhatIs`
+  carries `broadcast`; `ANSWER_DELAY_MIN` and `ANSWER_DELAY_MAX` give the
+  bounds of a node's wait before its Network-Number-Is answer (#2597). ([b52231c](https://github.com/jscott3201/rusty-bacnet/commit/b52231cfb4a69f1a6fbe0083d43edf9bb9798746))
+
+- The CLI's `--sc-ca`, `--sc-cert` and `--sc-key` refusals start with the flag and name the fault, and `bacnet sc-check` reports `multiple_private_keys` or `unsupported_private_key` for a key file a connect would refuse (#2600). ([e554a52](https://github.com/jscott3201/rusty-bacnet/commit/e554a52f8cbb0537138099335ddd0bbfe9dc8e08))
+
+- **Breaking (Rust API):** SC TLS `from_der` returns `ScTlsConfigError`, not `Error::Encoding`; `sc_tls::pem` is private; `ScInputErrorKind` gains `MultiplePrivateKeys` and `UnsupportedPrivateKey`. A key file must hold one key in well-formed PEM, for connects and `bacnet sc-check` alike (#2600). ([e554a52](https://github.com/jscott3201/rusty-bacnet/commit/e554a52f8cbb0537138099335ddd0bbfe9dc8e08))
+
+- **Python API:** SC credential errors name the file at fault in new words (a node's after `TLS config error:`, the hub's in its `BacnetError`). The hub checks the CA file first, and nodes and hub check the CA's certificates one at a time (#2600). ([e554a52](https://github.com/jscott3201/rusty-bacnet/commit/e554a52f8cbb0537138099335ddd0bbfe9dc8e08))
+
+- **Python API:** SC credential files are read up to 1 MiB each, a larger one refused at startup, and `inspect_sc_pem` refuses a key input a connect refuses: two keys, an encrypted or OpenSSH key, or malformed PEM anywhere (#2600). ([e554a52](https://github.com/jscott3201/rusty-bacnet/commit/e554a52f8cbb0537138099335ddd0bbfe9dc8e08))
+
+- **Python API:** a BVLC management request cut off by its B/IP transport
+  stopping fails as one made after the stop does, with a not-connected
+  transport error (`BacnetTransportError`), not an encoding error (#2612). ([04332ff](https://github.com/jscott3201/rusty-bacnet/commit/04332fffa0d9c3dfd647b66b2e763b04dcf3d452))
+
+- **Breaking (Rust API):** `bacnet_ops::decode_npdu_layer` keeps an I-Am's decoded
+  parameters (`DecodedApdu::i_am`, replacing `device`) and the SADR, and the frame
+  decoder's `Link` the typed origin and source MAC (#2612). ([7e517bc](https://github.com/jscott3201/rusty-bacnet/commit/7e517bcda693d61a4701ceaf19bfd5cbc90d9976))
+
+- **Wire:** the endpoint client refuses a routed confirmed request whose
+  router is a broadcast or group address on the link before anything is
+  sent; name no router to reach the network by local broadcast (#2612). ([04332ff](https://github.com/jscott3201/rusty-bacnet/commit/04332fffa0d9c3dfd647b66b2e763b04dcf3d452))
+
+- **Breaking (Rust API):** `ClientRoleHandle::read_range_with_destination`
+  takes a `ReadRangeRequest` and a `ReadRangeValidation` and returns the
+  `ReadRangeReply`, as `read_range_with` does, and the new
+  `read_log_page_with_destination` pages a log at any destination (#2612). ([04332ff](https://github.com/jscott3201/rusty-bacnet/commit/04332fffa0d9c3dfd647b66b2e763b04dcf3d452))
+
+- **Breaking (MCP):** `bacnet_decode`'s `summary` renames `link` to
+  `link_message`, the BVLC function or MS/TP frame type, and adds
+  `original_source` and `parse_error` (a header that fails to decode, apart
+  from a valid Error, Reject, Abort or NAK); its output schema declares
+  every summary key (#2614). ([2b0b6e2](https://github.com/jscott3201/rusty-bacnet/commit/2b0b6e20f3096ade362caace07fc10755876c744))
+
+- **Breaking (Rust API):** `bacnet_ops::decode::frame::FrameSummary` renames
+  `link` to `link_message`, adds `original_source`, a forwarded message's
+  originating address, and `parse_error`, set only when a header fails to
+  decode; `Link` adds `original_source`, and `Framing` is non-exhaustive
+  (#2614). ([2b0b6e2](https://github.com/jscott3201/rusty-bacnet/commit/2b0b6e20f3096ade362caace07fc10755876c744))
+
+- **Breaking (Python API):** `await endpoint.client()` on `BipEndpoint`,
+  `ScEndpoint` and `MstpEndpoint` returns a `BACnetClient` on the endpoint's
+  one address, with every call a standalone client has; `EndpointClient` is
+  removed (#2617). ([394fd79](https://github.com/jscott3201/rusty-bacnet/commit/394fd7907925881c45a9461171e9d9d61d6ca2bb))
+
+- **Breaking (Rust API):** `EndpointSession::with_server(builder)` has the
+  session build, own and stop first a full `BACnetServer` on its address;
+  `server()` now borrows that server, and `cloned_server_handle()` is gone
+  (#2617). ([8e80472](https://github.com/jscott3201/rusty-bacnet/commit/8e8047285c229ce76ba04da350722a96fec509f2))
+
+- **Breaking (Python API):** `await endpoint.server()` on `BipEndpoint`,
+  `ScEndpoint` and `MstpEndpoint` returns the `BACnetServer` the endpoint
+  runs on its one address, with a standalone server's calls; the endpoint
+  starts and stops it. `EndpointServer` is removed (#2617). ([373144f](https://github.com/jscott3201/rusty-bacnet/commit/373144f0546c02e0ae4279c4e2e073c46da4e50d))
+
+- **Breaking (Python API):** the endpoints take `BACnetServer`'s
+  `mutation_policy`, `cov_policy` and `time_sync_policy`; without the first
+  their server is read-only, without the last it ignores time
+  synchronization. `device_write_policy`, `services` and the
+  `responder_declined` status key go (#2617). ([373144f](https://github.com/jscott3201/rusty-bacnet/commit/373144f0546c02e0ae4279c4e2e073c46da4e50d))
+
+- **Breaking (wire):** a Python endpoint answers Who-Is, Who-Has and every
+  service a standalone server executes, where it rejected all but
+  ReadProperty and its opt-in Device WriteProperty and ReinitializeDevice;
+  its Device lists that set, with services the read-only server denies
+  (#2617). ([373144f](https://github.com/jscott3201/rusty-bacnet/commit/373144f0546c02e0ae4279c4e2e073c46da4e50d))
+
+- **Breaking (wire):** a Python endpoint answers DeviceCommunicationControl,
+  and ReinitializeDevice without a handler, with an Error
+  (SERVICE_REQUEST_DENIED) where it sent a Reject, and its COV subscribers
+  hear a peer's allowed writes; time synchronization stays off unless asked
+  for (#2617). ([373144f](https://github.com/jscott3201/rusty-bacnet/commit/373144f0546c02e0ae4279c4e2e073c46da4e50d))
+
+- **Rust API:** A session's full server holds at most 64 of the node's 256
+  invoke IDs, so its client keeps the rest. Past that a confirmed COV
+  notification waits for one to come back; one an in-flight limit refused
+  first waits for the next change (#2617). ([5a09b1a](https://github.com/jscott3201/rusty-bacnet/commit/5a09b1a2a9daff080fd9ffd25062313f273c1957))
+
+- **Wire:** An endpoint session's server executes AcknowledgeAlarm and the
+  three COV subscriptions, and acknowledges ConfirmedEventNotification and
+  ConfirmedTextMessage, each of which a 0.15.0 endpoint rejected (#2617). ([0162ee1](https://github.com/jscott3201/rusty-bacnet/commit/0162ee10afa817d734bc5c37bd686cacfd76e7c0))
+
+- **Wire:** On an endpoint session of both roles, the source Audit records'
+  target timestamps are the server clock's date and time, not sequence
+  numbers (#2617). ([0162ee1](https://github.com/jscott3201/rusty-bacnet/commit/0162ee10afa817d734bc5c37bd686cacfd76e7c0))
+
+- **Breaking (wire):** An endpoint session's server runs its background work
+  over the session's database: event detection and intrinsic reporting send
+  notifications, Schedules write their targets and Trend Logs log, where a
+  0.15.0 endpoint only served those objects' properties (#2617). ([0162ee1](https://github.com/jscott3201/rusty-bacnet/commit/0162ee10afa817d734bc5c37bd686cacfd76e7c0))
+
+- **Breaking (Rust API):** An endpoint session with a server role counts the
+  requests its server is handed in `server_seat_counters`, so
+  `PolicyCountersSnapshot`'s `confirmed_full_drops` and
+  `unconfirmed_full_drops` stay 0 there (#2617). ([0162ee1](https://github.com/jscott3201/rusty-bacnet/commit/0162ee10afa817d734bc5c37bd686cacfd76e7c0))
+
+- **Breaking (wire):** An endpoint session given no `with_server` builder is
+  read-only: writes, creates, deletes, ReinitializeDevice and
+  DeviceCommunicationControl get an Error (SERVICE_REQUEST_DENIED) where
+  they got a Reject, and time synchronization is ignored (#2617). ([0162ee1](https://github.com/jscott3201/rusty-bacnet/commit/0162ee10afa817d734bc5c37bd686cacfd76e7c0))
+
+- **Breaking (wire):** An endpoint session with a server role always runs the
+  full server: it answers Who-Is, Who-Has and every read service, where it
+  rejected all but ReadProperty, and its Device lists the server's services,
+  those the read-only server denies included (#2617). ([0162ee1](https://github.com/jscott3201/rusty-bacnet/commit/0162ee10afa817d734bc5c37bd686cacfd76e7c0))
+
+- **Breaking (Rust API):** A session with a server role needs a Device
+  identity: its start refuses one without, before the link starts (#2617). ([0162ee1](https://github.com/jscott3201/rusty-bacnet/commit/0162ee10afa817d734bc5c37bd686cacfd76e7c0))
+
+- **Breaking (Rust API):** An endpoint session's stop settles its objects'
+  saves as a standalone server's stop does: a database guard held at that
+  moment hands the settling to a task, so the stop may return before
+  storage is settled
+  ([details](docs/rust-api.md#endpoint-shutdown-and-the-object-database),
+  #2617). ([1084357](https://github.com/jscott3201/rusty-bacnet/commit/10843571a8057c0687f4a031f8adf78375354987))
+
+- **Breaking (Rust API):** `bacnet_endpoint_core::endpoint_ingress::IngressReceivers` is
+  `#[non_exhaustive]` and has a new field for the client seat (#2617). ([c0f0ceb](https://github.com/jscott3201/rusty-bacnet/commit/c0f0ceb83b4a8dc64a8233209a6fb14f7805f01c))
+
+- **Rust API:** A DeviceCommunicationControl the session's full server accepts
+  binds the whole node: the full and narrow clients' requests and
+  `broadcast_i_am()` fail with the new `Error::InitiationDisabled { sent }`,
+  unless an operator starts a client with `with_node_dcc_override` (#2617). ([569fbac](https://github.com/jscott3201/rusty-bacnet/commit/569fbac89a320669284bfcad1038c94b8c7b697c))
+
+- **Breaking (Rust API):** `EndpointSession::with_server` needs a session
+  identity and serves the node's Device: the smaller largest APDU, the
+  session's APDU timing and, on a `Both` session, the client's services too;
+  a contradicting builder or database is refused (#2617). ([569fbac](https://github.com/jscott3201/rusty-bacnet/commit/569fbac89a320669284bfcad1038c94b8c7b697c))
+
+- `bacnet_ops` reads, batches and watches treat a request the node's
+  DeviceCommunicationControl stopped as the client's own failure, and the
+  `bacnet` tool's write ledger records one stopped before it went out as not
+  sent (#2617). ([569fbac](https://github.com/jscott3201/rusty-bacnet/commit/569fbac89a320669284bfcad1038c94b8c7b697c))
+
+- **Rust API:** A server's start checks its settings (Audit Reporters and
+  their recipient, device bindings, segment timeout, budgets and policies)
+  before the Device identity and the database, so a configuration with
+  several faults may report a different one first (#2617). ([5a09b1a](https://github.com/jscott3201/rusty-bacnet/commit/5a09b1a2a9daff080fd9ffd25062313f273c1957))
+
+- **Breaking (Rust API, Python API):** Endpoint sessions default to a 6000 ms
+  APDU timeout and 3 retries, which time the node's client requests, a seated
+  server's confirmed notifications and its Device's APDU_Timeout and
+  Number_Of_APDU_Retries (#2617). ([569fbac](https://github.com/jscott3201/rusty-bacnet/commit/569fbac89a320669284bfcad1038c94b8c7b697c))
+
+- **Breaking (Rust API):** `TransportPort::stop` and `NetworkLayer::stop` take `&self`, so a link stops while others hold it, and every later send fails with a `NotConnected` transport error. `EndpointSession::stop` with a live full client now finishes in one call (#2617). ([3054b8e](https://github.com/jscott3201/rusty-bacnet/commit/3054b8e4fd92d729ed4abdb6feac138b169531f4))
+
+- The frame decode tree counts nesting within each service parameter, so a
+  value as deep as its decoder takes it keeps its named fields; where a
+  named service's tags don't frame it says `tag walk stopped: ...` as why,
+  except for DeviceCommunicationControl and ReinitializeDevice (#2618). ([e91cc68](https://github.com/jscott3201/rusty-bacnet/commit/e91cc6862d3c00d04a9501a48d42e4e7339df22f))
+
+- **Python API:** the error a read raises for a value whose framing breaks
+  names the innermost tag left open, or the tag at fault, and its offset
+  (#2618). ([6bb6b50](https://github.com/jscott3201/rusty-bacnet/commit/6bb6b5069573a1fe5074cf0255d1739856fea1c6))
+
+- **Breaking (Python API):** a read value with a context tag and no typed
+  form (a vendor property, a typed read that fails to decode) is `tagged`,
+  not one `application_data` blob: `.value` is the tree of its tags as
+  `TagNode` records, `.octets` exactly as served (#2618). ([6bb6b50](https://github.com/jscott3201/rusty-bacnet/commit/6bb6b5069573a1fe5074cf0255d1739856fea1c6))
+
+- **Breaking (CLI JSON):** the CLI, TUI and MCP show a value with a context
+  tag and no decoded form as its tags, not `[raw ..]`; its JSON `decoded` is
+  one `tagged` element, the octets under `fields.data`, where it was a list
+  with a `{"raw": ...}` item per context element (#2618). ([6bb6b50](https://github.com/jscott3201/rusty-bacnet/commit/6bb6b5069573a1fe5074cf0255d1739856fea1c6))
+
+- **Breaking (Rust API):** `SessionConfig::queue_capacity` defaults to 256,
+  `PolicyCountersSnapshot` gains four `*_full_drops` counts and is
+  non-exhaustive, and `ClassifierExit::PolicyRouteFull`,
+  `PolicyReason::RouteFull` and `SessionExit::Ingress` are removed (#2635). ([d10ae5e](https://github.com/jscott3201/rusty-bacnet/commit/d10ae5e6b46a9b78a6294afafe3343b6d99a5e3a))
+
+- **Wire:** A routed request the device answered after a retry or in segments
+  frees its router and network at once instead of holding them for the APDU
+  timeout times the attempts; a stale reason-4 reject it could draw is counted
+  in `BACnetClient::too_long_reject_drops()` (#2651). ([0b475c5](https://github.com/jscott3201/rusty-bacnet/commit/0b475c5b5ed111d6589c133d0b8a8833ed536436))
+
+- **Breaking (Rust API):** `BACnetClient::cov_notifications()` yields a
+  `COVEvent`, `Object` or `Multiple`, so a SubscribeCOVPropertyMultiple
+  subscription's notifications arrive on it in order with the others; the
+  ack policy and `Station::is_source_of` take a `&COVEvent` (#2654). ([e0fa3cb](https://github.com/jscott3201/rusty-bacnet/commit/e0fa3cbcb695150987a7c56f903fc2068b50b94a))
+
+- **Wire:** the COVNotificationMultiple decoder accepts a timestamp and times
+  of change that disagree (the clause asks for both or neither): it decodes
+  with the times it carried, a confirmed one is acknowledged, and it is
+  published. It was rejected. The encoder stays strict (#2654). ([e0fa3cb](https://github.com/jscott3201/rusty-bacnet/commit/e0fa3cbcb695150987a7c56f903fc2068b50b94a))
+
+- **Breaking (Python API):** `cov_notifications()` also yields
+  `CovNotificationMultiple`, with or without a `subscribe_cov_property_multiple`
+  subscription (an unsubscribed broadcast); both classes gain `kind`,
+  `"object"` or `"multiple"` (#2654). ([e0fa3cb](https://github.com/jscott3201/rusty-bacnet/commit/e0fa3cbcb695150987a7c56f903fc2068b50b94a))
+
+- `configure_routed_path_max_npdu` and `clear_routed_path_limit` no longer wait out the hold a routed request with no answer leaves on its path, unless a request is already waiting on the path: the change applies at once, and the next request still waits the hold out, at the new limit (#2667). ([bbc8b5c](https://github.com/jscott3201/rusty-bacnet/commit/bbc8b5c803c633aa14a2bacbbdc954615c380a38))
+
+- **Breaking (Rust API):** `configure_routed_path_max_npdu` refuses a limit that leaves no request the 50-octet minimum APDU after the routed header (under 66 on B/IP, 61 on MS/TP) with `Error::Encoding`; such a limit failed every request before (#2667). ([bbc8b5c](https://github.com/jscott3201/rusty-bacnet/commit/bbc8b5c803c633aa14a2bacbbdc954615c380a38))
+
+### Removed
+
+- **Breaking (Rust API, Python API):** `BACnetSuccessFilter::from_legacy_bool` and the five-argument `acknowledge_alarm`, which made up its timestamps, are removed (#2559). ([092032b](https://github.com/jscott3201/rusty-bacnet/commit/092032ba532012e984e1301a0ac1cff381a96ccc))
+
+- **Breaking (Rust API):** `ServerRoleHandle`, `RESPONDER_SERVICES`,
+  `RESPONDER_OPT_IN_SERVICES`, `ResponderOptIn` and
+  `PolicyCountersSnapshot::responder_declined` are gone with the endpoint's
+  narrow server role (#2617). ([1084357](https://github.com/jscott3201/rusty-bacnet/commit/10843571a8057c0687f4a031f8adf78375354987))
+
+- **Breaking (Rust API):** The endpoint's narrow server settings are gone:
+  `with_device_writes`, `with_reinitialize`, `with_reinit_password`,
+  `SessionConfig::read_work_limit`, and the builders' `device_writes`,
+  `reinitialize`, `reinit_password` and `read_work_limit` (#2617). ([1084357](https://github.com/jscott3201/rusty-bacnet/commit/10843571a8057c0687f4a031f8adf78375354987))
+
+- **Breaking (Rust API):** `bacnet_server::mutation::DeviceWriteAuthorizer`
+  is gone with the endpoint's narrow server role, its only user (#2617). ([1864cd6](https://github.com/jscott3201/rusty-bacnet/commit/1864cd6be4b31ce3cb52714c7050202704f7957a))
+
+- **Breaking (Rust API):** `DeviceObject::set_object_list` and
+  `DeviceObject::set_database_revision`: the database keeps the local
+  Device's Object_List and Database_Revision (`ObjectDatabase::object_list`,
+  `ObjectDatabase::set_database_revision`) (#2669). ([171799d](https://github.com/jscott3201/rusty-bacnet/commit/171799d3c704bad52968ff9e99ade26080b1b752))
+
+### Fixed
+
+- A write to a Timer's State_Change_Values holding a REAL or Double that
+  is not a number is saved once, off the database lock, like any other
+  kept write. It was saved three times, twice with the database held
+  (#2331). ([2142f35](https://github.com/jscott3201/rusty-bacnet/commit/2142f359ee095fcac17b79c6629f1eaddc434ccd))
+
+- **Wire:** A failed ConfirmedCOVNotificationMultiple no longer holds off
+  a subscription made after it: one that replaced or re-made the context
+  while the report was out, or listed its references again inside the
+  hold-off. Its timestamped changes could go out up to 12 s late (#2419). ([c82533b](https://github.com/jscott3201/rusty-bacnet/commit/c82533b7abed8da9fe6dffac8b71c9d7793c4215))
+
+- A WritePropertyMultiple of many reporting-setting writes to one Trend Log,
+  Trend Log Multiple or Event Log no longer holds a copy of its settings per
+  write while its save runs (#2431). ([4f7ca96](https://github.com/jscott3201/rusty-bacnet/commit/4f7ca9687736db0c21c12bdb70b23a521d853c1b))
+
+- An object keeping its written reporting settings no longer leaves storage
+  holding rows it doesn't serve when it changes between a request's staged
+  save and the write: a multi-state state count the application sets, or an
+  Event_Algorithm_Inhibit the server follows (#2431). ([4f7ca96](https://github.com/jscott3201/rusty-bacnet/commit/4f7ca9687736db0c21c12bdb70b23a521d853c1b))
+
+- MCP's `bacnet_list_objects` keeps an Object_List read element by element
+  for ten minutes after its last progress and, once complete, five minutes
+  from then, so a slow read finishes and is reused rather than starting
+  over (#2436). ([4c05a32](https://github.com/jscott3201/rusty-bacnet/commit/4c05a32254ce9341aaaa3b7617fd710a311cd297))
+
+- **Wire:** A Load Control shed whose Device clock is set back before its
+  Start_Time goes back to pending when the loads are waiting, so its
+  Present_Value and SubscribeCOV report change with no write (#2464). ([902d59a](https://github.com/jscott3201/rusty-bacnet/commit/902d59af843c9c41709b4b0a563e5ee37c1a16df))
+
+- **Wire:** While a Load Control's Enable is FALSE, a Start_Time or
+  Shed_Duration write is acknowledged but not kept, and Enable TRUE starts
+  nothing until the next Start_Time write (#2464). ([902d59a](https://github.com/jscott3201/rusty-bacnet/commit/902d59af843c9c41709b4b0a563e5ee37c1a16df))
+
+- **Wire:** When a Load Control request ends, its level, Start_Time,
+  Shed_Duration and Duty_Window return to their idle values; a Start_Time
+  written behind the default level, or after its Shed_Duration has run, is
+  acknowledged and then reads unspecified (#2464). ([902d59a](https://github.com/jscott3201/rusty-bacnet/commit/902d59af843c9c41709b4b0a563e5ee37c1a16df))
+
+- **Wire:** Load Control serves Duty_Window, Enable, Shed_Levels and
+  Shed_Level_Descriptions, so its Property_List grows by four and its
+  SubscribeCOV report gains Duty_Window; Shed_Levels refuses a level of 0,
+  and Status_Flags is required (#2464). ([902d59a](https://github.com/jscott3201/rusty-bacnet/commit/902d59af843c9c41709b4b0a563e5ee37c1a16df))
+
+- **Wire:** Load Control takes the Start_Time write it refused, and a
+  client's shed request runs through pending, compliant and non-compliant on
+  the Device clock; a Start_Time with part of its date or time left out is
+  refused (#2464). ([902d59a](https://github.com/jscott3201/rusty-bacnet/commit/902d59af843c9c41709b4b0a563e5ee37c1a16df))
+
+- The shared datatype table types Audit Reporter's Audit_Priority_Filter as a plain priority filter (no NULL) and drops a Fault_Values entry BitString Value never had; no wire reply changes (#2465). ([de61af6](https://github.com/jscott3201/rusty-bacnet/commit/de61af67e3cffdf0ec890ccf86690f3ad8a70188))
+
+- Removing a Load Control from its database, or replacing it there, during a
+  shed request calls `LoadShedder::stop` through a new
+  `Timed::retire(Retirement)` hook, and a server start that fails or is
+  cancelled releases what it began with `ObjectDatabase::release_outputs`
+  (#2479). ([d4b1728](https://github.com/jscott3201/rusty-bacnet/commit/d4b1728a5dc153f83617f77494e7b4a08c6fa41b))
+
+- A `write_local`, a Command, Channel or Timer run's write, or a `purge_audit_log` dropped or aborted during a durable save now releases its stage at once, not about 10 s later; `purge_audit_log` now fails with an encoding error outside a Tokio runtime (#2493). ([d4ccd21](https://github.com/jscott3201/rusty-bacnet/commit/d4ccd2114ffea42956944c09dce18f2a8728341f))
+
+- `stop()` now waits, for at most 5 s, for a local write dropped while the database guard was taken to let go of its stage, so storage holds what each object serves when `stop()` returns, unless the application still holds the database after those 5 s (#2495). ([41200dd](https://github.com/jscott3201/rusty-bacnet/commit/41200dd6dc7e4cdfde82c498a0189368cebb95e9))
+
+- **Python API:** `on_reinitialize` and `mutation_policy` answers are now read under the same refusal as the callable, so user code run while reading them (an awaitable's `close()`) cannot re-enter the bindings (#2498). ([0c71cad](https://github.com/jscott3201/rusty-bacnet/commit/0c71cadf9aaf21ec489b4665d2b38d37ad9cf4ca))
+
+- **Wire:** `BACnetServer` reports a COV change back to the value a
+  subscriber last heard made while the previous notification was still to
+  go (it sends both), and looks again at a change measured from a
+  notification that then went unsent (#2508). ([1a8b9c7](https://github.com/jscott3201/rusty-bacnet/commit/1a8b9c779919eba29d6d892855ce8879e65fa7ef))
+
+- Rules an application sets in an Access Rights object's rule array while a
+  peer's element write to that array is being saved are no longer replaced
+  by the array the write was worked out on (#2526). ([104f007](https://github.com/jscott3201/rusty-bacnet/commit/104f007717d9335fe7ecbc0cda0c0a3836503007))
+
+- A WritePropertyMultiple with many rule writes to one Access Rights object
+  no longer holds a copy of a rule array per write while its save runs, nor
+  copies both arrays at each write it makes (#2526). ([104f007](https://github.com/jscott3201/rusty-bacnet/commit/104f007717d9335fe7ecbc0cda0c0a3836503007))
+
+- A WritePropertyMultiple with many writes to one Channel, Timer or Load
+  Control no longer holds a copy of its configuration per write while its
+  save runs (#2526). ([d4a020d](https://github.com/jscott3201/rusty-bacnet/commit/d4a020de117216a9f388d2fd5a34d7f9e7660052))
+
+- A staged Shed_Levels write a Load Control refused because the
+  application had shortened its array no longer stays in storage when the
+  object is dropped before its request lets go (#2526). ([d4a020d](https://github.com/jscott3201/rusty-bacnet/commit/d4a020de117216a9f388d2fd5a34d7f9e7660052))
+
+- A WritePropertyMultiple with many Tags element writes to one object no
+  longer holds a copy of the tag list per write while its save runs (#2526). ([5566ece](https://github.com/jscott3201/rusty-bacnet/commit/5566ecefb838d717009569b7315ee6622c776acc))
+
+- **Wire:** ReadProperty and ordinary COV no longer show IN_ALARM without
+  FAULT after a fault clears, and a read after a write's response sees the new
+  Event_State. The EventNotification may now arrive either side of the
+  response; with Staging plans it is handed to the network before it (#2530). ([f94e545](https://github.com/jscott3201/rusty-bacnet/commit/f94e545417b4a2b6d66ea8a4385b1b1c2e0cde39))
+
+- A peer WriteProperty, WritePropertyMultiple or Add/RemoveListElement, the
+  local write API (and the Command, Channel, Timer and WriteGroup writes made
+  through it), Staging target writes and local access authorization commit the
+  event-state transition with the write (#2530). ([f94e545](https://github.com/jscott3201/rusty-bacnet/commit/f94e545417b4a2b6d66ea8a4385b1b1c2e0cde39))
+
+- **Wire:** Fault detection, Schedule passes, membership relinquishes and
+  the operation task commit the event transition with their change: its
+  notification goes out then, not a sweep later, and their COV reports
+  carry FAULT and IN_ALARM together, as does the core's fault pass (#2535). ([252fb6a](https://github.com/jscott3201/rusty-bacnet/commit/252fb6adf9cd24e5384e4eb2e930f7cfe78cb845))
+
+- **Wire:** A state that a background pass makes and another writer undoes
+  within one sweep period is now notified both ways, its entry and its
+  return; before, the sweep's phase decided whether the first transition
+  went out at all (#2535). ([252fb6a](https://github.com/jscott3201/rusty-bacnet/commit/252fb6adf9cd24e5384e4eb2e930f7cfe78cb845))
+
+- **Python API:** A `BACnetServer` call no longer waits behind a local write
+  that waits for its event notifications, such as one for an unbound Device
+  recipient waiting for its I-Am; `stop()` still lets such a write return
+  first, within `cov_retry_timeout_ms` (#2537). ([a3c6a7c](https://github.com/jscott3201/rusty-bacnet/commit/a3c6a7cc5f5c3f6bd1de75661295906abd841de9))
+
+- A Channel or Timer setter given the value the object already holds no longer
+  counts as a configuration change, so a multi-write request to it is saved
+  once instead of again at each later write (#2552). ([7a54356](https://github.com/jscott3201/rusty-bacnet/commit/7a54356e3f44bb0f9f4e4ab5b62633100eed827f))
+
+- One-shot commands reach a routed station named `dnet:0xMAC`, or a device
+  named by its address, even when another device claims its instance: every
+  service they send goes to the target's address (#2560). ([414f7a5](https://github.com/jscott3201/rusty-bacnet/commit/414f7a5f38ee6417f6432c55c5fb3fd9f7e18180))
+
+- `bacnet_revert` checks the policy at the address where it finds each
+  entry's device, so a network the server leaves out is refused, an
+  attached revert goes only to the address confirmed, and it never sends a
+  Who-Is: an entry it can't place is reported not reverted (#2560). ([414f7a5](https://github.com/jscott3201/rusty-bacnet/commit/414f7a5f38ee6417f6432c55c5fb3fd9f7e18180))
+
+- An I-Am a router relays back from the client's own network lands on the
+  device's local row once the network's number is known, and folds away the
+  routed row an earlier relay made, so the instance is not left ambiguous
+  until the purge (#2560). ([2b8812a](https://github.com/jscott3201/rusty-bacnet/commit/2b8812a30e55ef8b7f1c48573232453702ab01d7))
+
+- A device that keeps answering the client's confirmed requests stays in the
+  discovery table without repeating its I-Am; before, the purge dropped it 10
+  to 15 minutes after its last I-Am, and calls by its instance failed (#2560). ([2b8812a](https://github.com/jscott3201/rusty-bacnet/commit/2b8812a30e55ef8b7f1c48573232453702ab01d7))
+
+- The TUI and MCP send no write, revert, DCC or reinitialize to an address
+  the discovery table now gives another device; one to a local address with
+  no row asks the device which it is first. Old ledger entries merge with a
+  new write only where their instance is (#2560). ([414f7a5](https://github.com/jscott3201/rusty-bacnet/commit/414f7a5f38ee6417f6432c55c5fb3fd9f7e18180))
+
+- The `bacnet-ops` target grammar and BBMD reads now work on a mixed (`AnyTransport`) or wrapped transport, which used to be treated as another link (#2560). ([2505fb1](https://github.com/jscott3201/rusty-bacnet/commit/2505fb14d913455ec5a602201d67889e67fb9753))
+
+- `Client::discover` (and Python's `discover`) lists only devices the scope asked covers: an I-Am heard during the wait from another network, or from a station a directed Who-Is did not name, is no longer listed (#2561). ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- **Wire:** The client asks for its network's number once, on first need:
+  one What-Is-Network-Number before its first Who-Is, or when it first
+  stores a routed device while the number is unknown. Learning the number
+  folds a device a router relayed back into its local row (#2572). ([8a5eb73](https://github.com/jscott3201/rusty-bacnet/commit/8a5eb7332c071684da6423d52f32fe6588bb5742))
+
+- **Wire:** A Binary Input coming back into service derives Present_Value
+  from the last state the application supplied, when it has supplied one,
+  instead of keeping a client's simulated value until the next update
+  (#2580). ([a1436e4](https://github.com/jscott3201/rusty-bacnet/commit/a1436e49bf4d8f8295a1ae9412234c8a0fb67989))
+
+- **Breaking (MCP):** `bacnet://devices` pages by instance and address, so a page boundary between two addresses claiming one instance no longer skips one; the page URI is `bacnet://devices/after/{instance}/{network}/{mac}` (#2589). ([51ac4dc](https://github.com/jscott3201/rusty-bacnet/commit/51ac4dc15aae7daad426eab3e25a55b8969e3d82))
+
+- A read the client or its link fails before anything was read (no route, a link refusing the send) fails once with that error, where each property showed it as text; after the first rows a bulk read keeps them and ends with it. Seen in the TUI, watches, MCP and the Python reads (#2610). ([9eb036a](https://github.com/jscott3201/rusty-bacnet/commit/9eb036af1b8d0a6a29841f85097c44578cfce856))
+
+- The TUI capture and MCP `bacnet_decode` report a truncated BACnet/SC
+  BVLC-Result, an unassigned BVLC function (in the field tree `unassigned`,
+  or `withdrawn` for a removed code) or another link's octets as malformed,
+  and keep SNET, DNET and broadcast of a routed frame whose APDU fails
+  (#2614). ([2b0b6e2](https://github.com/jscott3201/rusty-bacnet/commit/2b0b6e20f3096ade362caace07fc10755876c744))
+
+- A segmented answer that answers no request of an endpoint session now
+  reaches its full client, which aborts it as an idle client does; the node
+  sent nothing back before (#2617). ([569fbac](https://github.com/jscott3201/rusty-bacnet/commit/569fbac89a320669284bfcad1038c94b8c7b697c))
+
+- **Wire:** a server whose time-synchronization policy is off, or accepts no source, no longer lists TimeSynchronization and UTCTimeSynchronization in the Device's Protocol_Services_Supported; one that accepts a source lists both. A Group's ReadRange now serves that list as ReadProperty does (#2617). ([93c187f](https://github.com/jscott3201/rusty-bacnet/commit/93c187f0624924986679886e7a69454cb49582e6))
+
+- The frame decode tree (TUI capture, MCP `bacnet_decode`) marks a closing
+  tag that doesn't match, an unclosed one and contents past the end, which
+  it took silently, after what it read; a legacy EVENT_PARAMETERS value its
+  decoder delimits keeps its named fields (#2618). ([e91cc68](https://github.com/jscott3201/rusty-bacnet/commit/e91cc6862d3c00d04a9501a48d42e4e7339df22f))
+
+- A burst of traffic no longer ends an endpoint session: what a full queue
+  can't take is dropped and counted by class, and each queue keeps a reserve
+  for confirmed requests and answers to the endpoint's own requests (#2635). ([d10ae5e](https://github.com/jscott3201/rusty-bacnet/commit/d10ae5e6b46a9b78a6294afafe3343b6d99a5e3a))
+
+- An endpoint's answer queue no longer lets a requester's Abort or
+  Segment-ACK take the room it keeps for answers to the endpoint's own
+  requests (#2640). ([8e80472](https://github.com/jscott3201/rusty-bacnet/commit/8e8047285c229ce76ba04da350722a96fec509f2))
+
+- A message-too-long reject for a segmented routed request now teaches the
+  path's limit from the largest segment it sent, not a smaller final one
+  (#2651). ([0b475c5](https://github.com/jscott3201/rusty-bacnet/commit/0b475c5b5ed111d6589c133d0b8a8833ed536436))
+
+- One-shot `bacnet` commands need much less of the main thread's stack: each
+  command and session is boxed, so a `read` over BACnet/SC needs 288 KiB in a
+  debug build on macOS rather than 640 KiB (#2656). ([94c7f9f](https://github.com/jscott3201/rusty-bacnet/commit/94c7f9f33dd35d58d41f8a3bb6be11007e50a9fb))
+
+- An MCP tool call or resource read needs much less stack in a debug build:
+  the server boxes the work each request nests, so its deepest tests need
+  under 400 KiB on macOS rather than up to 980 KiB, and CI's 1 MiB stack
+  step now covers `bacnet-mcp` (#2656). ([d964162](https://github.com/jscott3201/rusty-bacnet/commit/d964162ba9230c3933973e7ee9be4c5764d2a66c))
+
+- Starting a `BACnetRouter` no longer builds its 150 KB of empty storage on
+  the caller's stack: it is copied from a constant, which saves about 216 KiB
+  of stack in a release build and 184 KiB in a debug one (#2656). ([94c7f9f](https://github.com/jscott3201/rusty-bacnet/commit/94c7f9f33dd35d58d41f8a3bb6be11007e50a9fb))
+
+- **Wire:** A confirmed COV notification that finds no invoke ID free no
+  longer waits for the next change: it is looked at again, in the order
+  refused, once an ID and an in-flight slot come back. A first notification
+  refused by an in-flight limit still waits for the next change (#2661). ([612be08](https://github.com/jscott3201/rusty-bacnet/commit/612be085829246b1481edac71e76d73bde78f75c))
+
+- **Wire:** A reason 4 on a routed request of 228 NPDU octets or fewer (Table 6-1) is dropped and counted in `below_minimum_reject_drops()`; with no configured limit that is every one. A router limiting below 228 now makes requests time out: use `configure_routed_path_max_npdu` (#2665). ([4090ad6](https://github.com/jscott3201/rusty-bacnet/commit/4090ad6b757df827a4b0ff50aeb572f369d22231))
+
+- One-shot CLI commands write their log lines to stderr on every link, so a warning on plain B/IP no longer corrupts `--json` output on stdout (#2667). ([bbc8b5c](https://github.com/jscott3201/rusty-bacnet/commit/bbc8b5c803c633aa14a2bacbbdc954615c380a38))
+
+- **Wire:** The Device's Object_List now lists every object the database
+  holds, following CreateObject, DeleteObject and the application's own adds
+  and removes; Database_Revision moves with each and with a rename, and
+  Trend Logs and Event Enrollments read both as a peer does (#2669). ([171799d](https://github.com/jscott3201/rusty-bacnet/commit/171799d3c704bad52968ff9e99ade26080b1b752))
+
 ## [0.15.3] - 2026-11-15
 
 This release includes the features, security updates and source archive repair

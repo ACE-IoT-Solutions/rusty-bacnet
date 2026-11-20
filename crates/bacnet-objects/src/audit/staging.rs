@@ -1,7 +1,7 @@
 //! Audit Log commits off the database lock (#1270).
 //!
 //! Every commit runs on the log's writer thread ([`crate::durable`]). The
-//! server stages an inbound notification batch, a Log_Enable or Buffer_Size
+//! server stages an inbound notification batch, a Enable or Buffer_Size
 //! write it receives, and an application's purge (#1238): the log builds the
 //! next snapshot and queues its commit, goes on serving the committed state,
 //! and takes the new snapshot only once the commit is durable. The server
@@ -10,7 +10,7 @@
 //! records and receipt are stored. A commit that fails leaves the log as it
 //! was, and the request is refused.
 //!
-//! A request's Log_Enable and Buffer_Size writes are staged together: one
+//! A request's Enable and Buffer_Size writes are staged together: one
 //! commit holds them all, and the log keeps the state each leaves as a step
 //! the request takes when it makes that write. If the request stops before
 //! taking every step, the log keeps what it took and storage is set back to
@@ -26,11 +26,13 @@
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use super::buffer::{Timestamp, apply_change, written_buffer_size};
 use super::*;
-use crate::durable::{
-    DurableWrites, Event, PendingWrite, SaveTicket, SaveWait, SaveWriter, StageStep,
-};
+#[cfg(feature = "durable-writes")]
+use crate::durable::DurableWrites;
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
+use crate::durable::{Event, PendingWrite, SaveTicket, SaveWait, SaveWriter, StageStep};
 
 /// Outcomes of batches settled before their requests came back for them.
 /// Past it the oldest is dropped and its request is refused with
@@ -75,9 +77,11 @@ pub(super) enum StagedKind {
         outcome: ConfirmedAuditNotificationOutcome,
         changed: bool,
     },
+    // Built only by staging, which needs `durable-writes`.
     /// The changes one request makes, in its order, all in one commit. The
     /// request makes them one at a time under the guard, and the log takes
     /// each change's step as it is made; `taken` counts the steps taken.
+    #[cfg_attr(not(feature = "durable-writes"), allow(dead_code))]
     Changes { steps: VecDeque<Step>, taken: usize },
 }
 
@@ -92,7 +96,7 @@ pub(super) struct Step {
 /// takes the staged step if it still builds on the state served.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StagedChange {
-    /// A Log_Enable write of this value.
+    /// A Enable write of this value.
     LogEnable(bool),
     /// A Buffer_Size write of this size.
     BufferSize(u32),
@@ -235,7 +239,7 @@ impl AuditLogObject {
 
     /// The wait for a staged commit that still holds the log: a batch's
     /// while its commit runs, a write's until its request takes or drops it
-    /// (or [`STAGED_WRITE_LIFETIME`](crate::durable::STAGED_WRITE_LIFETIME)
+    /// (or `STAGED_WRITE_LIFETIME`
     /// after its commit finished). A batch whose commit ran is settled, and a
     /// forgotten write dropped.
     fn make_way(&mut self) -> Option<SaveWait> {
@@ -432,6 +436,7 @@ impl AuditLogObject {
     /// the last. A change that cannot be built here, such as a purge without
     /// a valid clock, ends the steps: made under the guard, it then fails as
     /// it would unstaged, and the request makes no later change.
+    #[cfg(feature = "durable-writes")]
     fn stage_changes(&mut self, changes: &[StagedChange]) -> StageStep {
         let Ok(mut state) = self.snapshot_for_next_generation() else {
             return StageStep::Skip;
@@ -469,7 +474,7 @@ impl AuditLogObject {
     }
 }
 
-/// The Log_Enable and Buffer_Size changes `writes` make, in order, each
+/// The Enable and Buffer_Size changes `writes` make, in order, each
 /// judged as the log will be when the request makes it. A write the log will
 /// refuse ends the list, since the request makes no write after it; a write
 /// of the value the log will already hold changes nothing; other properties
@@ -477,6 +482,7 @@ impl AuditLogObject {
 /// the wrong datatype changes nothing either: the server answers it as a
 /// relinquish that leaves the property as it is, and the request goes on
 /// (#1396).
+#[cfg(feature = "durable-writes")]
 fn changes_made(
     mut log_enable: bool,
     mut buffer_size: u32,
@@ -485,14 +491,14 @@ fn changes_made(
     let mut changes = Vec::new();
     for write in writes {
         let change = match (write.property, write.array_index, &write.value) {
-            (PropertyIdentifier::LOG_ENABLE, None, PropertyValue::Boolean(on)) => {
+            (PropertyIdentifier::ENABLE, None, PropertyValue::Boolean(on)) => {
                 if *on == log_enable {
                     continue;
                 }
                 log_enable = *on;
                 StagedChange::LogEnable(*on)
             }
-            (PropertyIdentifier::LOG_ENABLE, None, PropertyValue::Null) => continue,
+            (PropertyIdentifier::ENABLE, None, PropertyValue::Null) => continue,
             (PropertyIdentifier::BUFFER_SIZE, None, value) => {
                 match written_buffer_size(log_enable, value) {
                     Ok(size) if size == buffer_size => continue,
@@ -505,7 +511,7 @@ fn changes_made(
                     Err(_) => break,
                 }
             }
-            (PropertyIdentifier::LOG_ENABLE | PropertyIdentifier::BUFFER_SIZE, ..) => break,
+            (PropertyIdentifier::ENABLE | PropertyIdentifier::BUFFER_SIZE, ..) => break,
             _ => continue,
         };
         changes.push(change);
@@ -513,6 +519,7 @@ fn changes_made(
     changes
 }
 
+#[cfg(feature = "durable-writes")]
 impl DurableWrites for AuditLogObject {
     fn stage_write(
         &mut self,
@@ -527,14 +534,14 @@ impl DurableWrites for AuditLogObject {
         }])
     }
 
-    /// Fold the request's Log_Enable and Buffer_Size writes into one staged
+    /// Fold the request's Enable and Buffer_Size writes into one staged
     /// commit, so a WritePropertyMultiple that turns logging off and then
     /// resizes commits both off the guard.
     fn stage_writes(&mut self, writes: &[PendingWrite]) -> StageStep {
         if !writes.iter().any(|write| {
             matches!(
                 write.property,
-                PropertyIdentifier::LOG_ENABLE | PropertyIdentifier::BUFFER_SIZE
+                PropertyIdentifier::ENABLE | PropertyIdentifier::BUFFER_SIZE
             )
         }) {
             return StageStep::Skip;

@@ -4,22 +4,26 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use bacnet_ops::engine::{Wanted, unreachable};
-use bacnet_ops::format::{self, RawRow, RowError};
+use bacnet_client::discovery::DiscoveredDevice;
+use bacnet_ops::client::Wanted;
+use bacnet_ops::format::{self, RawRow};
 use bacnet_ops::label::kebab;
 use bacnet_ops::limits::charged;
-use bacnet_ops::watch::{Point, Snapshot, Source, State, Watched};
+use bacnet_ops::watch::Watched;
+use bacnet_ops::watch::hub::{Phase, Snapshot, Source};
+use bacnet_ops::{DeviceAddress, PropertyError, PropertyRef, Reading};
 use bacnet_transport::port::TransportPort;
+use bacnet_types::constructed::BACnetAddress;
 use serde_json::{Map, Value, json};
 use tokio::time::Instant;
 
-use super::uri::{self, Uri};
+use super::uri::{self, PointUri, Uri};
 use crate::context::{Call, Ctx, DeviceArg};
-use crate::errors::{ToolError, row_error_json};
+use crate::errors::ToolError;
 use crate::listen::ALARMS_EVERY;
 use crate::tools::read::{Format, result_row};
 use crate::tools::{alarms, describe, discover};
-use crate::value::object_text;
+use crate::value::{object_text, tool_value};
 
 /// How long a device summary is served from the cache.
 const DEVICE_TTL: Duration = Duration::from_secs(300);
@@ -28,60 +32,71 @@ const DEVICE_TTL: Duration = Duration::from_secs(300);
 /// device page is larger keeps that many, so a full alarm sweep fits.
 const CACHE_CAP: usize = 64;
 
-/// A cache of resource bodies by device, at most [`CACHE_CAP`] or the
-/// device page of them.
-pub(crate) type Cache = Mutex<HashMap<u32, (Instant, Value)>>;
+/// A cache of resource bodies by the device's address (#2560), at most
+/// [`CACHE_CAP`] or the device page of them. A resource names a device by
+/// its instance; the body is kept under the address that instance named
+/// when it was read, so another device taking the instance later is read
+/// afresh.
+pub(crate) type Cache = Mutex<HashMap<DeviceAddress, (Instant, Value)>>;
 
-fn cached(cache: &Cache, device: u32, ttl: Duration) -> Option<Value> {
+fn cached(cache: &Cache, device: &DeviceAddress, ttl: Duration) -> Option<Value> {
     let cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
-    let (at, body) = cache.get(&device)?;
+    let (at, body) = cache.get(device)?;
     (at.elapsed() < ttl).then(|| body.clone())
 }
 
-fn keep(cache: &Cache, cap: usize, device: u32, body: &Value) {
+fn keep(cache: &Cache, cap: usize, device: &DeviceAddress, body: &Value) {
     let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
     if cache.len() >= cap.max(CACHE_CAP)
-        && !cache.contains_key(&device)
-        && let Some(oldest) = cache.iter().min_by_key(|(_, (at, _))| *at).map(|(d, _)| *d)
+        && !cache.contains_key(device)
+        && let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, (at, _))| *at)
+            .map(|(d, _)| d.clone())
     {
         cache.remove(&oldest);
     }
-    cache.insert(device, (Instant::now(), body.clone()));
+    cache.insert(device.clone(), (Instant::now(), body.clone()));
 }
 
-/// A point: from the watch hub when it is watched (nothing is sent),
-/// else read once.
+/// A point: from the watch hub when it is watched at the address its
+/// instance names now (nothing is sent), else read once.
 pub(super) async fn point<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
     call: &Call,
-    point: Point,
+    point: PointUri,
 ) -> Result<Value, ToolError> {
-    ctx.device(call, &DeviceArg::Number(point.device)).await?;
-    if let Some(snapshot) = ctx.hub.as_ref().and_then(|hub| hub.peek(&point)) {
+    let device = ctx.device(call, &DeviceArg::Number(point.device)).await?;
+    let watched = point.at(device.address.clone());
+    if let Some(snapshot) = ctx.hub.as_ref().and_then(|hub| hub.peek(&watched)) {
         return Ok(point_body(ctx, &point, &snapshot.rows, Some(&snapshot)));
     }
-    let engine = ctx.engine()?;
     let failed = |error| ToolError::device(point.device, &error);
     let rows: Vec<RawRow> = match point.watched {
         Watched::Object => {
-            engine
-                .read(
-                    point.device,
+            let read = device
+                .handle
+                .read_object(
                     point.object,
-                    Wanted::List(&bacnet_ops::watch::POINT_PROPERTIES),
+                    Wanted::List(&bacnet_ops::watch::hub::POINT_PROPERTIES),
                 )
                 .await
-                .map_err(failed)?
-                .rows
+                .map_err(failed)?;
+            read.readings
+                .into_iter()
+                .map(|reading| (reading.property, reading.value.map(|value| value.raw)))
+                .collect()
         }
         Watched::Property { property, index } => {
-            match engine
-                .read_property(point.device, point.object, property, index)
-                .await
-            {
-                Ok(data) => vec![(property, Ok(data))],
-                Err(error) if unreachable(&error) => return Err(failed(error)),
-                Err(error) => vec![(property, Err(RowError::from(error)))],
+            let wanted = PropertyRef {
+                object: point.object,
+                property,
+                index,
+            };
+            match device.handle.read(wanted).await {
+                Ok(value) => vec![(property, Ok(value.raw))],
+                Err(error) if error.unreachable() => return Err(failed(error)),
+                Err(error) => vec![(property, Err(PropertyError::from(error)))],
             }
         }
     };
@@ -93,7 +108,7 @@ pub(super) async fn point<T: TransportPort + 'static>(
 /// read just now).
 pub(crate) fn point_body<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
-    point: &Point,
+    point: &PointUri,
     rows: &[RawRow],
     watch: Option<&Snapshot>,
 ) -> Value {
@@ -111,12 +126,17 @@ pub(crate) fn point_body<T: TransportPort + 'static>(
     let values: Vec<Value> = rows
         .iter()
         .map(|(property, value)| {
+            let reading = Reading {
+                object: point.object,
+                property: *property,
+                index,
+                value: value.clone().map(|raw| {
+                    tool_value(point.object.object_type(), *property, index, raw, units)
+                }),
+            };
             result_row(
                 point.device,
-                point.object,
-                *property,
-                index,
-                value.clone().map_err(|e| row_error_json(&e)),
+                reading,
                 units,
                 Format::Both,
                 ctx.policy.caps.text,
@@ -159,40 +179,57 @@ pub(crate) fn point_body<T: TransportPort + 'static>(
     body
 }
 
-pub(crate) fn state_name(state: State) -> &'static str {
+pub(crate) fn state_name(state: Phase) -> &'static str {
     match state {
-        State::Starting => "starting",
-        State::Live => "live",
-        // The hub gives a point up only under `MissingDevice::Fail`, which
-        // the server doesn't use; it would be a failed watch.
-        State::Failed | State::Gone => "failed",
-        State::Unreachable => "unreachable",
-        State::Stopped => "stopped",
+        Phase::Starting => "starting",
+        Phase::Live => "live",
+        // The hub gives a point up when its device answers at another
+        // address now (the note says where), or under
+        // `MissingDevice::Fail`, which the server doesn't use: a failed
+        // watch either way.
+        Phase::Failed | Phase::Gone => "failed",
+        Phase::Unreachable => "unreachable",
+        Phase::Stopped => "stopped",
     }
 }
 
+/// The row a device is listed by: its instance, then its address as the
+/// discovery table keys it. No two rows share it. A row with no one
+/// station to name (the table keeps none) falls back to its MAC. The table
+/// never stores such a row, so the fallback cannot run; it only spares a
+/// panic.
+fn row_key(found: &DiscoveredDevice) -> uri::DeviceCursor {
+    let address = found.address().unwrap_or_else(|| BACnetAddress {
+        network_number: 0,
+        mac_address: found.mac_address.clone(),
+    });
+    uri::DeviceCursor::new(found.object_identifier.instance_number(), address)
+}
+
 /// A page of the discovery table, in reach: no device text, nothing sent.
-/// Devices are sorted by instance, and `after` starts the page past that
-/// instance. The cursor is an instance, not a position, so a device found
-/// between two reads shifts nothing already listed. `total` counts every
-/// device in reach, `truncated` says whether more follow this page, and
-/// `next` names the page that holds them.
+/// Devices are sorted by instance, then address (several addresses can
+/// claim one instance), and `after` starts the page past that row. The
+/// cursor names a row, not a position, so a device found between two reads
+/// shifts nothing already listed, and a page boundary inside one instance's
+/// claimants loses none. `total` counts every device in reach, `truncated`
+/// says whether more follow this page, and `next` names the page that
+/// holds them.
 pub(super) async fn devices<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
-    after: Option<u32>,
+    after: Option<&uri::DeviceCursor>,
 ) -> Result<Value, ToolError> {
-    let engine = ctx.engine()?;
-    let mut devices = engine.devices().await;
+    let client = ctx.client()?;
+    let mut devices = client.devices().await;
     devices.retain(|found| {
         ctx.policy.allows_network(found.source_network.unwrap_or(0))
             && ctx
                 .policy
                 .allows_device(found.object_identifier.instance_number())
     });
-    devices.sort_by_key(|found| found.object_identifier.instance_number());
+    devices.sort_by_cached_key(row_key);
     let total = devices.len();
     let start = after.map_or(0, |after| {
-        devices.partition_point(|found| found.object_identifier.instance_number() <= after)
+        devices.partition_point(|found| row_key(found) <= *after)
     });
     let page = ctx.policy.caps.devices;
     let shown = &devices[start..total.min(start.saturating_add(page))];
@@ -211,7 +248,7 @@ pub(super) async fn devices<T: TransportPort + 'static>(
         "hint": "bacnet_discover finds more; this lists only devices already heard",
     });
     if truncated && let Some(last) = shown.last() {
-        body["next"] = json!(uri::devices_after(last.object_identifier.instance_number()));
+        body["next"] = json!(uri::devices_after(&row_key(last)));
     }
     Ok(body)
 }
@@ -222,13 +259,13 @@ pub(super) async fn device<T: TransportPort + 'static>(
     call: &Call,
     device: u32,
 ) -> Result<Value, ToolError> {
-    ctx.device(call, &DeviceArg::Number(device)).await?;
-    if let Some(mut body) = cached(&ctx.described, device, DEVICE_TTL) {
+    let at = ctx.device(call, &DeviceArg::Number(device)).await?.address;
+    if let Some(mut body) = cached(&ctx.described, &at, DEVICE_TTL) {
         body["cached"] = json!(true);
         return Ok(body);
     }
     let mut body = describe::run(ctx, call, describe::Args::of(device)).await?;
-    keep(&ctx.described, ctx.policy.caps.devices, device, &body);
+    keep(&ctx.described, ctx.policy.caps.devices, &at, &body);
     body["cached"] = json!(false);
     Ok(body)
 }
@@ -239,7 +276,6 @@ pub(super) async fn device_alarms<T: TransportPort + 'static>(
     call: &Call,
     device: u32,
 ) -> Result<Value, ToolError> {
-    ctx.device(call, &DeviceArg::Number(device)).await?;
     alarms_of(ctx, call, device, ALARMS_EVERY).await
 }
 
@@ -249,7 +285,8 @@ async fn alarms_of<T: TransportPort + 'static>(
     device: u32,
     ttl: Duration,
 ) -> Result<Value, ToolError> {
-    if let Some(body) = cached(&ctx.alarms, device, ttl) {
+    let at = ctx.device(call, &DeviceArg::Number(device)).await?.address;
+    if let Some(body) = cached(&ctx.alarms, &at, ttl) {
         return Ok(body);
     }
     let mut body = alarms::run(ctx, call, alarms::Args::of(device), &Map::new()).await?;
@@ -264,7 +301,7 @@ async fn alarms_of<T: TransportPort + 'static>(
             map.remove(key);
         }
     }
-    keep(&ctx.alarms, ctx.policy.caps.devices, device, &body);
+    keep(&ctx.alarms, ctx.policy.caps.devices, &at, &body);
     Ok(body)
 }
 
@@ -274,8 +311,8 @@ pub(super) async fn alarms<T: TransportPort + 'static>(
     ctx: &Ctx<T>,
     call: &Call,
 ) -> Result<Value, ToolError> {
-    let engine = ctx.engine()?;
-    let mut devices: Vec<u32> = engine
+    let client = ctx.client()?;
+    let mut devices: Vec<u32> = client
         .devices()
         .await
         .into_iter()
@@ -293,7 +330,10 @@ pub(super) async fn alarms<T: TransportPort + 'static>(
     let mut unread = Vec::new();
     let mut errors = Map::new();
     for device in devices {
-        if call.out_of_time() && cached(&ctx.alarms, device, ALARMS_EVERY).is_none() {
+        let fresh = ctx
+            .known_at(device)
+            .and_then(|at| cached(&ctx.alarms, &at, ALARMS_EVERY));
+        if call.out_of_time() && fresh.is_none() {
             unread.push(device);
             continue;
         }
@@ -321,8 +361,10 @@ pub(crate) async fn refresh_alarms<T: TransportPort + 'static>(ctx: &Ctx<T>, tex
     };
     let account = ctx.account();
     let call = Call::new(ctx.policy.caps.budget, Arc::clone(&account));
-    let events =
-        |device: u32| cached(&ctx.alarms, device, Duration::MAX).map(|body| body["events"].clone());
+    let events = |device: u32| {
+        let at = ctx.known_at(device)?;
+        cached(&ctx.alarms, &at, Duration::MAX).map(|body| body["events"].clone())
+    };
     let work = async {
         let mut changed = false;
         for device in devices {
@@ -402,8 +444,8 @@ pub(super) fn session<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Value {
             "legacy": ctx.subs.legacy_count(),
         },
     });
-    if let Some(engine) = &ctx.engine {
-        let limits = engine.limits();
+    if let Some(client) = &ctx.client {
+        let limits = client.limits();
         body["rate"] = json!({
             "requests_last_10_s": limits.recent(),
             "agents_requests_last_10_s": limits.recent_agents(),
@@ -425,6 +467,7 @@ pub(super) fn session<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Value {
             "requests": stats.requests,
             "throttled_ms": u64::try_from(stats.throttled.as_millis()).unwrap_or(u64::MAX),
             "lagged": stats.lagged,
+            "cov_multiple_ignored": stats.cov_multiple_ignored,
             "lifetime_s": hub.options().lifetime.secs(),
         });
     }
@@ -440,12 +483,12 @@ pub(super) fn ledger<T: TransportPort + 'static>(ctx: &Ctx<T>) -> Value {
             "note": "this server can't write, so its ledger is empty",
         });
     };
-    let entries: Vec<Value> = bacnet_ops::safety::ledger::Ledger::open(&workspace.dir)
+    let entries: Vec<Value> = bacnet_tool::safety::ledger::Ledger::open(&workspace.dir)
         .map(|ledger| ledger.entries().to_vec())
         .unwrap_or_default()
         .into_iter()
         .filter(|e| {
-            e.origin.front_end == bacnet_ops::safety::FrontEnd::Mcp
+            e.origin.front_end == bacnet_tool::safety::FrontEnd::Mcp
                 && e.origin.principal.as_deref() == Some(ctx.principal.as_str())
         })
         .map(|e| {

@@ -5,6 +5,7 @@
 use super::*;
 use bacnet_encoding::apdu::ConfirmedRequest;
 use bacnet_services::device_mgmt::ReinitializeDeviceRequest;
+use bacnet_transport::test_transport::TestTransport;
 use bacnet_types::constructed::BACnetAddress;
 use bacnet_types::enums::ReinitializedState;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -50,8 +51,8 @@ const FAIL: u8 = 3;
 
 /// The session's own address, learned from a frame it sends `peer`.
 async fn session_mac(
-    session: &EndpointSession<BusPort>,
-    peer: &NetworkLayer<BusPort>,
+    session: &EndpointSession<TestTransport>,
+    peer: &NetworkLayer<TestTransport>,
     replies: &mut bacnet_network::layer::ApduReceiver,
 ) -> MacAddr {
     session
@@ -73,7 +74,7 @@ async fn session_mac(
 }
 
 async fn reinitialize(
-    peer: &NetworkLayer<BusPort>,
+    peer: &NetworkLayer<TestTransport>,
     session: &[u8],
     replies: &mut bacnet_network::layer::ApduReceiver,
     state: ReinitializedState,
@@ -112,8 +113,8 @@ async fn reinitialize(
 /// built for a refusal or for ACTIVATE_CHANGES would show as a gap.
 #[tokio::test(start_paused = true)]
 async fn endpoint_records_accepted_reinitialize_requests_only() {
-    let (mut sink, mut records) = network().await;
-    let (mut peer, mut replies) = network().await;
+    let (sink, mut records) = network().await;
+    let (peer, mut replies) = network().await;
     let mut db = database(false);
     db.set_clock_reader(None);
     let mut operations = AuditOperationFlags::empty();
@@ -139,8 +140,8 @@ async fn endpoint_records_accepted_reinitialize_requests_only() {
         .unwrap();
     let mode = Arc::new(AtomicU8::new(ACCEPT));
     let answer = Arc::clone(&mode);
-    let mut session = session(db, SessionRole::Both, &sink)
-        .with_reinitialize(move |_, _| match answer.load(Ordering::SeqCst) {
+    let server = allowing()
+        .on_reinitialize(move |_, _| match answer.load(Ordering::SeqCst) {
             ACCEPT => Ok(()),
             REFUSE => Err(Error::protocol(
                 ErrorClass::DEVICE,
@@ -149,7 +150,8 @@ async fn endpoint_records_accepted_reinitialize_requests_only() {
             PANIC => panic!("reinitialize handler panic"),
             _ => Err(Error::Encoding("disk full".into())),
         })
-        .with_reinit_password("pw");
+        .reinit_password("pw");
+    let mut session = session(db, SessionRole::Both, &sink).with_server(server);
     session.start().await.unwrap();
     let mac = session_mac(&session, &peer, &mut replies).await;
     let requester = BACnetRecipient::Address(BACnetAddress {
@@ -185,11 +187,8 @@ async fn endpoint_records_accepted_reinitialize_requests_only() {
             record.target_device,
             BACnetRecipient::Device(oid(ObjectType::DEVICE, 123))
         );
-        assert_eq!(
-            record.target_timestamp,
-            Some(BACnetTimeStamp::SequenceNumber(sequence)),
-            "{state:?}: no record before this one since the last"
-        );
+        // A refusal's record would arrive first, with another invoke ID.
+        assert_stamp(&record.target_timestamp, true, sequence);
         assert_eq!(record.source_timestamp, None);
         assert_eq!(record.target_object, None);
         assert_eq!(record.target_property, None);
@@ -204,7 +203,7 @@ async fn endpoint_records_accepted_reinitialize_requests_only() {
 
 /// Point the session's Reporter at `level` and `operations`.
 async fn configure_reporter(
-    session: &EndpointSession<BusPort>,
+    session: &EndpointSession<TestTransport>,
     level: AuditLevel,
     operations: &[AuditOperation],
 ) {
@@ -239,7 +238,7 @@ async fn configure_reporter(
 /// takes the first sequence number.
 #[tokio::test(start_paused = true)]
 async fn endpoint_records_a_local_reset_through_the_reporters_filters() {
-    let (mut sink, mut records) = network().await;
+    let (sink, mut records) = network().await;
     let mut db = database(false);
     db.set_clock_reader(None);
     let mut session = session(db, SessionRole::Both, &sink);
@@ -268,11 +267,7 @@ async fn endpoint_records_a_local_reset_through_the_reporters_filters() {
     assert_eq!(record.source_device, device);
     assert_eq!(record.target_device, device);
     assert_eq!(record.invoke_id, None);
-    assert_eq!(
-        record.target_timestamp,
-        Some(BACnetTimeStamp::SequenceNumber(0)),
-        "the filtered reports built no record"
-    );
+    assert_stamp(&record.target_timestamp, true, 0);
     assert_eq!(record.target_object, None);
     assert_eq!(record.result, None);
     tokio::time::sleep(WAIT).await;

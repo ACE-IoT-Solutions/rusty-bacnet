@@ -27,6 +27,9 @@ pub(super) struct RequestServices<T: TransportPort + 'static> {
     /// The server's throttles on warnings a peer can set off.
     pub(super) warnings: Arc<InboundWarnings>,
     pub(super) config: Arc<ServerConfig>,
+    /// What the Device's Protocol_Services_Supported lists: the server's
+    /// services, or on a node with a client role the node's (#2617).
+    pub(super) execution: crate::device_view::DeviceExecution,
 }
 
 /// The server's throttles on warnings a peer can set off once per packet
@@ -64,6 +67,7 @@ impl<T: TransportPort + 'static> Clone for RequestServices<T> {
             mutation_decisions: Arc::clone(&self.mutation_decisions),
             warnings: Arc::clone(&self.warnings),
             config: Arc::clone(&self.config),
+            execution: self.execution,
         }
     }
 }
@@ -177,6 +181,20 @@ impl<T: TransportPort + 'static> RequestServices<T> {
         }
     }
 
+    /// The COV notification view of these handles, made where a request
+    /// needs it rather than held across its response.
+    pub(super) fn cov_context(&self) -> super::cov_notify_context::CovNotifyContext<'_, T> {
+        super::cov_notify_context::CovNotifyContext {
+            db: &self.db,
+            network: &self.network,
+            cov_table: &self.cov_table,
+            cov_in_flight: &self.cov_in_flight,
+            notification_transactions: &self.notification_transactions,
+            comm_state: &self.comm_state,
+            config: &self.config,
+        }
+    }
+
     /// The tables a read samples the Device's server-owned lists from.
     pub(super) fn live_tables(&self) -> super::requests::confirmed_response::LiveTables<'_> {
         super::requests::confirmed_response::LiveTables {
@@ -215,6 +233,7 @@ impl<T: TransportPort + 'static> RequestServices<T> {
             received_event_log: Arc::default(),
             mutation_decisions: Arc::new(crate::mutation::MutationDecisions::default()),
             warnings: Arc::default(),
+            execution: crate::device_view::DeviceExecution::server(false, &config.time_sync_policy),
             config,
         }
     }
@@ -305,6 +324,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             mutation_decisions: Arc::clone(&self.mutation_decisions),
             warnings: Arc::default(),
             config: Arc::clone(&self.config),
+            execution: self.execution,
         }
     }
 
@@ -314,7 +334,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             db: Arc::clone(&self.db),
             network: Arc::clone(self.test_network()),
             config: Arc::clone(&self.config),
-            clock: self._clock.clone(),
+            clock: self.clock.clone(),
             comm_state: Arc::clone(&self.comm_state),
             device_bindings: Arc::clone(&self.device_bindings),
             discovery_limiter: Arc::clone(&self.discovery_limiter),
@@ -336,7 +356,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         DispatchContext {
             services: Arc::new(self.test_services()),
             confirmed_request_tracker: Arc::clone(&self.confirmed_request_tracker),
-            clock: self._clock.clone(),
+            clock: self.clock.clone(),
             discovery_limiter: Arc::clone(&self.discovery_limiter),
             time_sync_limiter: Arc::clone(&self.time_sync_limiter),
             request_tasks: Arc::clone(&self.request_tasks),

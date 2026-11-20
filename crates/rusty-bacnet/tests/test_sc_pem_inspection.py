@@ -8,7 +8,6 @@ import math
 import os
 import pickle
 import ssl
-import subprocess
 import sys
 import tempfile
 import time
@@ -16,6 +15,7 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
+from openssl_fixture import run as openssl_run
 from rusty_bacnet import (
     ScPemInspection, ScInspectedCertificate, ScInspectionFinding,
     ScExtensionInspection, ScKeyFilePermissions, inspect_sc_pem, inspect_sc_pem_files,
@@ -39,9 +39,10 @@ class ScPemInspectionTests(unittest.TestCase):
         cls.addClassCleanup(cls.temp.cleanup)
         cls.root = Path(cls.temp.name)
 
+        # Self-signed 25-day identities of its own (not the SC site chain):
+        # made here once for this class, and the per-test commands share the root.
         def run(*args):
-            return subprocess.run(["openssl", *args], cwd=cls.root, check=True,
-                                  capture_output=True, timeout=15).stdout
+            return openssl_run(cls.root, *args)
         cls.openssl = staticmethod(run)
         for name in ("identity", "other"):
             run("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
@@ -285,19 +286,23 @@ class ScPemInspectionTests(unittest.TestCase):
         with self.assertRaises(AttributeError):
             finding.kind = "changed"
 
-    def test_key_outcomes_first_key_and_encoding_contracts(self):
+    def test_key_outcomes_one_key_and_encoding_contracts(self):
         self.assertEqual(inspect_sc_pem(self.identity).key_consistency, "not_assessed")
         other = (self.root / "other.key").read_bytes()
         self.assertEqual(inspect_sc_pem(self.identity, private_key_pem=other).key_consistency, "mismatch")
         unusable = b"-----BEGIN PRIVATE KEY-----\nYWJj\n-----END PRIVATE KEY-----\n"
         self.assertEqual(inspect_sc_pem(self.identity, private_key_pem=unusable).key_consistency, "unusable")
-        tail = self.key + other + b"-----BEGIN SECRET invalid\n"
-        self.assertEqual(inspect_sc_pem(self.identity, private_key_pem=tail).key_consistency, "match")
+        # The key rule of the TLS configurations (#2600): one key, in PEM well
+        # formed throughout, as a connect requires.
+        for key, kind in [(self.key + other, "multiple_private_keys"),
+                          (self.key + b"-----BEGIN SECRET invalid\n", "malformed_pem")]:
+            with self.assertRaisesRegex(ValueError, kind):
+                inspect_sc_pem(self.identity, private_key_pem=key)
         sec1 = self.openssl("ec", "-in", "identity.key", "-outform", "PEM")
         self.assertIn(b"EC PRIVATE KEY", sec1)
         self.assertEqual(inspect_sc_pem(self.identity, private_key_pem=sec1).key_consistency, "match")
         encrypted = self.openssl("pkcs8", "-topk8", "-in", "identity.key", "-passout", "pass:fixture-only")
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "unsupported_private_key"):
             inspect_sc_pem(self.identity, private_key_pem=encrypted)
 
     def test_rsa_pkcs1_key_matches_its_identity(self):

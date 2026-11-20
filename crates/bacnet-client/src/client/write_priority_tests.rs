@@ -24,7 +24,7 @@ async fn setup() -> (
             remote_network: 100,
             remote_mac: vec![3],
             max_apdu_length: 1476,
-            segmentation_supported: Segmentation::NONE,
+            segmentation_supported: Segmentation::NO_SEGMENTATION,
             max_segments_accepted: None,
         })
         .await
@@ -51,8 +51,8 @@ async fn write(
             .await
     } else {
         client
-            .write_property_to_device(
-                path,
+            .write_property(
+                &client.resolve_device(path).await.unwrap(),
                 oid,
                 PropertyIdentifier::DESCRIPTION,
                 Some(0),
@@ -67,14 +67,27 @@ async fn write(
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn write_priority_invalid_direct_local_routed_and_batch_never_admit_or_send() {
-    let (mut client, mut peer, mut received) = setup().await;
+    let (mut client, peer, mut received) = setup().await;
+    // A caller by instance looks the device up first; one the table doesn't
+    // hold is refused there, before any request exists.
+    assert!(client.resolve_device(999).await.is_err());
+    let stations = [
+        Station::local(&[2]),
+        client.resolve_device(10).await.unwrap(),
+        client.resolve_device(11).await.unwrap(),
+    ];
+    let oid = ObjectIdentifier::new(ObjectType::DEVICE, 123).unwrap();
+    let description = PropertyIdentifier::DESCRIPTION;
     for priority in [0, 17, 255] {
-        for path in [0, 10, 11, 999] {
-            // Holding the lookup table also proves invalid input is rejected before resolution.
+        for station in &stations {
+            // Holding the lookup table also proves the station's request
+            // takes no table row before refusing invalid input.
             // A blocking lock now: a path that took it would hang this
             // thread instead of timing out, and nextest ends the test.
             let _lookup = client.device_table.lock();
-            let error = timeout(Duration::from_secs(1), write(&client, path, Some(priority)))
+            let write =
+                client.write_property(station, oid, description, Some(0), vec![0], Some(priority));
+            let error = timeout(Duration::from_secs(1), write)
                 .await
                 .unwrap()
                 .unwrap_err();
@@ -111,7 +124,7 @@ async fn write_priority_invalid_direct_local_routed_and_batch_never_admit_or_sen
 
 #[tokio::test]
 async fn write_priority_valid_direct_local_routed_preserve_exact_wire_and_complete() {
-    let (mut client, mut peer, mut received) = setup().await;
+    let (mut client, peer, mut received) = setup().await;
     for path in [0, 10, 11] {
         for priority in std::iter::once(None).chain((1..=16).map(Some)) {
             let send = write(&client, path, priority);

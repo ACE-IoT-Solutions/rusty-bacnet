@@ -42,9 +42,12 @@ same name holds its value: `log_status` (a `BitString` naming
 `event_values` None or a dict whose `kind` names the event type in
 snake case, `out_of_range`, with each value under its member's name;
 see docs/python-api.md) or `audit_notification` (an Audit
-Log record, as `audit_log_query` shows it). A Trend Log record adds
-`status_flags` (a `BitString` naming `IN_ALARM`, `FAULT`,
-`OVERRIDDEN`, `OUT_OF_SERVICE`), or None.
+Log record, as `audit_log_query` shows it). A choice under a tag the
+standard doesn't assign, a datum, a member value or event values, is
+`other` with `tag`, `constructed` and `data` (its octets as
+received). A
+Trend Log record adds `status_flags` (a `BitString` naming
+`IN_ALARM`, `FAULT`, `OVERRIDDEN`, `OUT_OF_SERVICE`), or None.
 
 Raises ValueError for a result that isn't a log's Log\_Buffer, or whose
 item data doesn't decode as `item_count` records, naming the first
@@ -106,7 +109,9 @@ def inspect_sc_pem(
 
 Inspect bounded PEM bytes synchronously. Time is a signed 64-bit integer second.
 
-ValueError: malformed/empty/oversized supplied PEM. TypeError: wrong input type,
+ValueError: malformed/empty/oversized supplied PEM, a private key input holding
+more than one key, or a key in a form a connect can't use (encrypted, OpenSSH),
+as SC startup refuses them. TypeError: wrong input type,
 including bool time. OverflowError: time outside the signed 64-bit range.
 DER defects and key/date observations are returned in the report.
 
@@ -130,13 +135,17 @@ Same interpretation and input limits as inspect\_sc\_pem; no chmod or startup ga
 ## decode_frame
 
 ```python
-def decode_frame(octets: bytes, link: str = "bip") -> FrameSummary
+def decode_frame(
+    octets: bytes,
+    link: Literal["bip", "ipv6", "sc", "mstp"],
+) -> FrameSummary
 ```
 
 Decode link/NPDU/APDU headers with Rust, without sending traffic.
 
-link accepts bip, bip6 (or ipv6), sc, mstp and the corresponding Frame.link
-display names, case-insensitively. Unsupported links, including Ethernet,
-raise ValueError. Malformed octets return a partial summary with parse\_error.
-Raw input is not redacted, and service payloads are not fully validated.
+link is required, by position or keyword: pass frame.link. It takes the
+Frame.link tokens exactly; "other" (a link the decoder doesn't read) and
+any other text raise ValueError. Malformed octets, or octets of another
+link, return a partial summary with parse\_error. Raw input is not
+redacted, and service payloads are not fully validated.
 <!-- generated:end -->

@@ -42,7 +42,9 @@ pub(super) const SPEC: Spec = Spec {
 };
 
 fn input() -> Value {
-    log_pages::input("The log as type:instance: event-log:1, audit-log:2")
+    log_pages::input(
+        "The log as type:instance or type,instance: event-log:1, event-log,1, audit-log:2",
+    )
 }
 
 fn output() -> Value {
@@ -65,7 +67,9 @@ fn output() -> Value {
                 "properties": {
                     "time": { "type": "string" },
                     "seq": { "type": "integer" },
-                    "kind": { "enum": ["notification", "audit", "log-status", "time-change"] },
+                    "kind": {
+                        "enum": ["notification", "audit", "log-status", "time-change", "unknown-choice"],
+                    },
                     "flagged": { "type": "boolean" },
                     "notification": fields,
                     "audit": {
@@ -80,6 +84,7 @@ fn output() -> Value {
                     },
                     "log_status": schema::typed(),
                     "time_change_s": { "type": ["number", "null"] },
+                    "choice": schema::typed(),
                 },
                 "required": ["time", "kind", "flagged"],
             },
@@ -126,13 +131,12 @@ pub(super) async fn run<T: TransportPort + 'static>(
     let limit = args.limit()?;
     let cursor = args.cursor(ctx, NAME, raw)?;
     let device = ctx.device(call, &args.device).await?;
-    let engine = ctx.engine()?;
     let object = object_text(log.object_type(), log.instance_number());
     let source = format!("device {} {object} log-buffer", device.instance);
     let cap = ctx.policy.caps.text;
     let mut summary = Summary::default();
     let mut pager = Pager::new(device.instance, log, cursor, limit);
-    while let Some(page) = pager.next(engine, call).await? {
+    while let Some(page) = pager.next(&device.handle, call).await? {
         for (i, record) in records(&page).iter().enumerate() {
             let Some(seq) = pager.admit(&page, i, &record.time, to.as_deref()) else {
                 break;

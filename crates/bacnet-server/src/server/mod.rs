@@ -37,9 +37,6 @@ use bacnet_encoding::segmentation::{
 use bacnet_network::layer::NetworkLayer;
 use bacnet_npdu::NetworkPriority;
 use bacnet_objects::database::ObjectDatabase;
-use bacnet_objects::notification_class::{
-    lookup_notification_recipients, resolve_transition_priority_ack,
-};
 use bacnet_services::alarm_event::EventNotificationRequest;
 // The server's tests name these through `use super::*`; the Single fanout
 // that used them here builds its notifications in bacnet-device-core now.
@@ -55,12 +52,12 @@ use bacnet_transport::port::TransportPort;
 use bacnet_transport::warn_throttle::WarnThrottle;
 use bacnet_transport::warn_throttled;
 use bacnet_types::MacAddr;
-#[cfg(test)]
-use bacnet_types::enums::RejectReason;
 use bacnet_types::enums::{
-    AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, LifeSafetyOperation, NotifyType,
-    ObjectType, PropertyIdentifier, Segmentation, UnconfirmedServiceChoice,
+    AbortReason, ConfirmedServiceChoice, ErrorClass, ErrorCode, LifeSafetyOperation, ObjectType,
+    PropertyIdentifier, Segmentation, UnconfirmedServiceChoice,
 };
+#[cfg(test)]
+use bacnet_types::enums::{NotifyType, RejectReason};
 use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
@@ -74,6 +71,7 @@ use crate::{handlers, runtime_clock};
 use bacnet_device_core::cov::CovNotificationKind;
 use bacnet_device_core::cov::{CovCounters, CovPolicy};
 use bacnet_device_core::cov::{CovSubscription, CovSubscriptionSnapshot};
+use bacnet_device_core::event::GetEventInformationBudget;
 use confirmed_request_tracker::{
     ConfirmedRequestAdmission, ConfirmedRequestTracker, PendingConfirmedRequest,
 };
@@ -170,6 +168,7 @@ pub struct ServerBuilder<T: TransportPort = AnyTransport> {
     db: Option<ObjectDatabase>,
     transport: Option<T>,
     configured_device_bindings: Vec<DeviceBinding>,
+    clock_zone: ClockConfig,
 }
 
 impl<T: TransportPort + 'static> ServerBuilder<T> {
@@ -256,7 +255,7 @@ impl<T: TransportPort + 'static> ServerBuilder<T> {
             self.config,
             db,
             transport,
-            Some(ClockConfig::default()),
+            Some(self.clock_zone),
             self.configured_device_bindings,
         )
         .await
@@ -270,6 +269,7 @@ pub struct BipServerBuilder {
     configured_device_bindings: Vec<DeviceBinding>,
     mode: BipMode,
     multicast: Option<BipMulticast>,
+    clock_zone: ClockConfig,
 }
 
 impl BipServerBuilder {
@@ -354,14 +354,14 @@ impl BipServerBuilder {
             self.config,
             db,
             transport,
-            Some(ClockConfig::default()),
+            Some(self.clock_zone),
             self.configured_device_bindings,
         )
         .await
     }
 }
 
-type TransportCleanup<T> = JoinHandle<(NetworkLayer<T>, Result<(), Error>)>;
+type TransportCleanup<T> = JoinHandle<(Arc<NetworkLayer<T>>, Result<(), Error>)>;
 
 /// BACnet server with APDU dispatch and service handling.
 ///
@@ -377,7 +377,7 @@ pub struct BACnetServer<T: TransportPort = AnyTransport> {
     #[allow(dead_code)] // Retained with the server, including direct dispatch tests.
     time_sync_limiter: Arc<TimeSyncLimiter>,
     /// Server-owned clock controller; absent in explicit clockless mode.
-    _clock: Option<Arc<ServerClock>>,
+    clock: Option<Arc<ServerClock>>,
     /// Shared network layer (also held by dispatch task; read by
     /// [`write_local`](Self::write_local) for post-write COV/event sends).
     network: Option<Arc<NetworkLayer<T>>>,
@@ -433,6 +433,12 @@ pub struct BACnetServer<T: TransportPort = AnyTransport> {
     /// Follow-up fanout after acknowledged confirmed COV reports (#896).
     cov_revisit_task: Option<JoinHandle<()>>,
     local_mac: MacAddr,
+    /// `Some` on a node's seat, whose node owns the link (#2617); its seat
+    /// takes another server once this drops.
+    seated: Option<server_seat::Seated>,
+    /// The Device's execution profile, which local reads and the PICS
+    /// serve too.
+    execution: crate::device_view::DeviceExecution,
 }
 
 /// Cloneable handle for unsolicited I-Am announcements while its server runs.
@@ -462,6 +468,7 @@ impl BACnetServer<BipTransport> {
             configured_device_bindings: Vec::new(),
             mode: BipMode::Normal,
             multicast: None,
+            clock_zone: ClockConfig::default(),
         }
     }
 }
@@ -470,8 +477,6 @@ mod clock;
 mod command_runs;
 mod reinitialize;
 mod time_sync_policy;
-#[doc(hidden)]
-pub use reinitialize::EndpointReinitializeAudit as __endpoint_ReinitializeAudit;
 pub use reinitialize::{ReinitializeContext, ReinitializeHandler};
 mod write_group;
 pub use clock::ClockConfig;
@@ -486,7 +491,6 @@ mod binary_lighting_lifecycle;
 #[cfg(test)]
 mod confirmed_issuance_tests;
 mod confirmed_request_tracker;
-mod cov_clock;
 mod cov_encoding;
 mod cov_fanout;
 mod cov_notifications;
@@ -512,15 +516,11 @@ pub(crate) use discovery::{DiscoveryLimiter, PreCheckDecision, WhoHasTarget};
 mod audit_log_purge;
 mod dispatch;
 mod durable_writes;
-#[doc(hidden)]
-pub use durable_writes::settle_endpoint as __endpoint_settle_durable_writes;
 mod event_delivery;
 mod event_enrollment_lifecycle;
 mod event_forwarding;
 pub use event_forwarding::MAX_FORWARDED_DESTINATIONS;
 mod event_forwarding_repeats;
-mod event_message_policy;
-pub(crate) mod event_notification_payload;
 mod event_notifications;
 mod event_recipient_route;
 mod event_send;
@@ -529,7 +529,8 @@ pub use event_suppression::EventNotificationCounters;
 mod received_event_log;
 pub use received_event_log::{RECEIVED_EVENT_LOG_RATE, RECEIVED_EVENT_LOG_SOURCES};
 mod confirmed_answer;
-pub(crate) mod event_timestamp;
+#[cfg(test)]
+mod event_timestamp_tests;
 mod handles;
 mod learned_router_cache;
 mod lifecycle;
@@ -557,13 +558,9 @@ pub use notification_transactions::{
     NotificationReserveError as __endpoint_NotificationReserveError,
     NotificationTransactions as __endpoint_NotificationTransactions,
     NotificationWorkerResult as __endpoint_NotificationWorkerResult,
-    canonical_direct_peer as __endpoint_canonical_direct_peer,
-    canonical_routed_peer as __endpoint_canonical_routed_peer,
     run_notification_worker as __endpoint_run_notification_worker,
 };
 mod requests;
-#[doc(hidden)]
-pub use requests::endpoint_responder::EndpointResponder as __endpoint_EndpointResponder;
 #[cfg(feature = "sc-tls")]
 mod sc_builder;
 #[cfg(test)]
@@ -587,9 +584,8 @@ mod atomic_read_file_budget;
 mod atomic_write_file_budget;
 mod read_range_budget;
 pub use read_range_budget::ReadRangeBudget;
-mod event_information_budget;
-pub use event_information_budget::GetEventInformationBudget;
 mod enrollment_summary_budget;
+mod event_information_budget;
 pub use atomic_read_file_budget::AtomicReadFileBudget;
 pub use atomic_write_file_budget::AtomicWriteFileBudget;
 pub use enrollment_summary_budget::GetEnrollmentSummaryBudget;
@@ -602,7 +598,9 @@ mod enrollment_summary_tests;
 mod request_peer;
 mod request_services;
 mod request_tasks;
+mod server_seat;
 pub use request_admission::{RequestAdmissionCounters, RequestAdmissionPolicy};
+pub use server_seat::{NodeBuilderFacts, NodeLink, SeatedServerBuilder};
 mod shutdown;
 pub use shutdown::drop_database_off_runtime;
 
@@ -669,7 +667,15 @@ mod cov_confirmed_context_tests;
 #[cfg(test)]
 mod cov_multiple_admission_tests;
 #[cfg(test)]
+mod cov_multiple_context_order_tests;
+#[cfg(test)]
 mod cov_notifications_tests;
+#[cfg(test)]
+mod cov_owed_id_forms_tests;
+#[cfg(test)]
+mod cov_owed_id_room_tests;
+#[cfg(test)]
+mod cov_owed_id_tests;
 #[cfg(test)]
 mod cov_quota_tests;
 #[cfg(test)]
@@ -678,6 +684,8 @@ mod cov_stalled_send_tests;
 mod cov_timed_capture_order_tests;
 #[cfg(test)]
 mod cov_timed_chunk_tests;
+#[cfg(test)]
+mod cov_timed_claim_return_tests;
 #[cfg(test)]
 mod cov_timed_deadline_tests;
 #[cfg(test)]
@@ -708,6 +716,8 @@ mod discovery_tests;
 mod empty_array_wire_tests;
 #[cfg(test)]
 mod event_confirmed_routing_tests;
+#[cfg(test)]
+mod event_delay_timing_tests;
 #[cfg(test)]
 mod event_enable_distribution_tests;
 #[cfg(test)]
@@ -753,6 +763,8 @@ mod local_network_number_tests;
 #[cfg(test)]
 mod local_network_outbound_tests;
 #[cfg(test)]
+mod local_write_sweep_window_tests;
+#[cfg(test)]
 mod log_reference_resize_tests;
 #[cfg(test)]
 mod loop_controlled_variable_tests;
@@ -768,6 +780,8 @@ mod notification_dcc_tests;
 mod notification_initiator_tests;
 #[cfg(test)]
 mod notification_transactions_tests;
+#[cfg(test)]
+mod object_list_wire_tests;
 #[cfg(test)]
 mod program_state_application_tests;
 #[cfg(test)]
@@ -817,6 +831,8 @@ pub(crate) mod test_transport;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod time_sync_services_tests;
+#[cfg(test)]
 mod timer_state_change_tests;
 #[cfg(test)]
 mod timer_task_tests;
@@ -830,37 +846,6 @@ mod value_cov_increment_tests;
 mod value_source_local_tests;
 #[cfg(test)]
 mod warn_spy;
-
-impl<T: TransportPort + 'static> BACnetServer<T> {
-    /// Get a snapshot of discovery rate-limiting counters.
-    pub fn discovery_counters(&self) -> DiscoveryCounters {
-        self.discovery_limiter.counters()
-    }
-
-    /// Get a snapshot of COV operational and telemetry counters.
-    pub fn cov_counters(&self) -> CovCounters {
-        self.cov_counters.snapshot()
-    }
-
-    /// Sample lifetime mutation authorization decisions, including after `stop()`.
-    /// Counts decisions, not completed handlers or response delivery; see
-    /// [`MutationDecisionCounters`](crate::mutation::MutationDecisionCounters).
-    pub fn mutation_decision_counters(&self) -> crate::mutation::MutationDecisionCounters {
-        self.mutation_decisions.snapshot()
-    }
-
-    /// Remove COV subscriptions using this current immediate MAC and routed source.
-    /// Cleanup of an obsolete router leaves subscriptions renewed onto another route.
-    /// Only removed entries release their contribution to the shared quota group.
-    pub async fn remove_peer_subscriptions(
-        &self,
-        mac: &[u8],
-        network: Option<&NpduAddress>,
-    ) -> usize {
-        let mut table = self.cov_table.write().await;
-        table.remove_peer_subscriptions(mac, network)
-    }
-}
 
 #[cfg(test)]
 mod cov_identity_completion_tests;

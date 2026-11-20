@@ -7,6 +7,49 @@ fn server_config_cov_retry_timeout_default() {
 }
 
 #[test]
+fn cov_retry_timeout_zero_is_refused_naming_the_field() {
+    let zero = ServerConfig {
+        cov_retry_timeout_ms: 0,
+        ..Default::default()
+    };
+    let err = zero.validate_cov_retry_timeout().unwrap_err().to_string();
+    assert!(err.contains("cov_retry_timeout_ms"), "{err}");
+    for accepted in [1, 10, 3000] {
+        let config = ServerConfig {
+            cov_retry_timeout_ms: accepted,
+            ..Default::default()
+        };
+        config.validate_cov_retry_timeout().unwrap();
+    }
+    ServerConfig::default()
+        .validate_cov_retry_timeout()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn starting_with_cov_retry_timeout_zero_fails_and_one_starts() {
+    use bacnet_transport::bip::BipTransport;
+    for (timeout, ok) in [(0, false), (1, true)] {
+        let config = ServerConfig {
+            cov_retry_timeout_ms: timeout,
+            ..Default::default()
+        };
+        let transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
+        let started = BACnetServer::start_clockless(config, ObjectDatabase::new(), transport).await;
+        match started {
+            Ok(mut server) => {
+                assert!(ok, "0 must not start");
+                server.stop().await.unwrap();
+            }
+            Err(err) => {
+                assert!(!ok, "1 must start: {err}");
+                assert!(err.to_string().contains("cov_retry_timeout_ms"), "{err}");
+            }
+        }
+    }
+}
+
+#[test]
 fn server_config_time_sync_callback_default_is_none() {
     let config = ServerConfig::default();
     assert!(config.on_time_sync.is_none());
@@ -189,20 +232,33 @@ fn all_builders_assign_segmentation_supported() {
     // one ServerConfig field among look-alikes, and the dispatch loop now
     // enforces it (Clause 5.4.5.1), so a mis-assignment silently turns
     // segmented reception off.
-    let generic = BACnetServer::<BipTransport>::generic_builder()
-        .device(bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::RECEIVE));
-    assert_eq!(generic.config.device.segmentation(), Segmentation::RECEIVE);
+    let generic = BACnetServer::<BipTransport>::generic_builder().device(
+        bacnet_objects::DeviceIdentity::default()
+            .with_segmentation(Segmentation::SEGMENTED_RECEIVE),
+    );
+    assert_eq!(
+        generic.config.device.segmentation(),
+        Segmentation::SEGMENTED_RECEIVE
+    );
 
-    let bip = BACnetServer::<BipTransport>::bip_builder()
-        .device(bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::BOTH));
-    assert_eq!(bip.config.device.segmentation(), Segmentation::BOTH);
+    let bip = BACnetServer::<BipTransport>::bip_builder().device(
+        bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::SEGMENTED_BOTH),
+    );
+    assert_eq!(
+        bip.config.device.segmentation(),
+        Segmentation::SEGMENTED_BOTH
+    );
 
     #[cfg(feature = "sc-tls")]
     {
         let sc = BACnetServer::sc_builder().device(
-            bacnet_objects::DeviceIdentity::default().with_segmentation(Segmentation::RECEIVE),
+            bacnet_objects::DeviceIdentity::default()
+                .with_segmentation(Segmentation::SEGMENTED_RECEIVE),
         );
-        assert_eq!(sc.config.device.segmentation(), Segmentation::RECEIVE);
+        assert_eq!(
+            sc.config.device.segmentation(),
+            Segmentation::SEGMENTED_RECEIVE
+        );
     }
 }
 
@@ -600,7 +656,7 @@ fn max_neg_segment_ack_retries_constant() {
 
 /// The B/IP builder hands `share_wildcard_port` to its transport (#2366): on a
 /// port another socket holds, a claiming transport's error names the opt-in,
-/// and a sharing one's says the holder doesn't share. Windows decides a
+/// and a sharing one's says the port can't be shared. Windows decides a
 /// sharing bind beside a socket that set no options by the two sockets'
 /// accounts (Microsoft's SO_REUSEADDR table), so only the claiming case runs
 /// there.
@@ -608,7 +664,7 @@ fn max_neg_segment_ack_retries_constant() {
 async fn bip_builder_hands_its_wildcard_sharing_choice_to_the_transport() {
     let holder = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
     let port = holder.local_addr().unwrap().port();
-    for (share, says) in [(false, "share_wildcard_port"), (true, "refuses sharing")] {
+    for (share, says) in [(false, "share_wildcard_port"), (true, "can't be shared")] {
         if share && cfg!(windows) {
             continue;
         }

@@ -34,10 +34,15 @@ Foundations
                         (no_std + alloc where atomics allow, #1615)
   bacnet-device-core    Sans-IO request core over a borrowed ObjectDatabase: the read
                         and write paths, discovery, the COV subscription table, COV
-                        evaluation and the reply map the server runs on, and a
-                        Responder, a COV Reporter and a TimeSynchronization-set
-                        Device clock for firmware
-                        (no_std + alloc where atomics allow, #2178, #2303, #2321)
+                        evaluation, the COV-multiple service, capture, histories
+                        and report decisions, intrinsic event reporting
+                        (commit, sweep, distribution, AcknowledgeAlarm,
+                        GetEventInformation, the fault pass), and the reply map
+                        the server runs on,
+                        and a Responder, a COV and event Reporter and a
+                        TimeSynchronization-set Device clock for firmware
+                        (no_std + alloc where atomics allow, #2178, #2303, #2321,
+                        #2320)
 
 Runtime and application roles
   bacnet-endpoint-core  Private lifecycle, ingress, egress, coordination
@@ -47,24 +52,27 @@ Runtime and application roles
 
 Operations core (UI-free, for the front ends)
   bacnet-ops            Target and value grammar, value formatting, request
-                        limits, read engine over bacnet-client, frame decoder,
-                        watch hub, write-safety core (plan, ledger, audit)
-  bacnet-mcp            MCP server over the bacnet-ops engine; read-only unless
+                        limits, high-level client over bacnet-client, watch hub
+  bacnet-tool           The tool's own layer over bacnet-ops: write-safety core
+                        (plan, ledger, audit), command classes, frame decoder,
+                        BBMD survey (#2560)
+  bacnet-mcp            MCP server over the bacnet-ops client; read-only unless
                         a profile offers writes (rmcp SDK; the CLI's `mcp` feature)
 
 Selected direct dependencies
   bacnet-server   -> bacnet-device-core, bacnet-objects, bacnet-network
   bacnet-endpoint -> bacnet-client, bacnet-server, bacnet-endpoint-core,
                      bacnet-network, bacnet-objects
-  bacnet-ops     -> bacnet-client, bacnet-transport, bacnet-npdu
-  bacnet-mcp     -> bacnet-ops, bacnet-client, rmcp
-  bacnet-cli     -> bacnet-ops, bacnet-client, bacnet-mcp (with `mcp`)  (CLI application)
+  bacnet-ops     -> bacnet-client, bacnet-transport
+  bacnet-tool    -> bacnet-ops, bacnet-client, bacnet-npdu
+  bacnet-mcp     -> bacnet-ops, bacnet-tool, bacnet-client, rmcp
+  bacnet-cli     -> bacnet-ops, bacnet-tool, bacnet-client, bacnet-mcp (with `mcp`)  (CLI application)
   rusty-bacnet   -> bacnet-client, bacnet-server, bacnet-endpoint
                                               (PyO3 bindings)
 ```
 
 `bacnet-client`, `bacnet-server` and `bacnet-endpoint` are all workspace
-`default-members`, along with the foundational crates, endpoint-core, `bacnet-ops`,
+`default-members`, along with the foundational crates, endpoint-core, `bacnet-ops`, `bacnet-tool`,
 integration tests, the MS/TP bus simulator and benchmarks. The CLI
 (`bacnet-cli`), the MCP server (`bacnet-mcp`) and PyO3 binding (`rusty-bacnet`)
 are excluded from default builds: the CLI and the MCP server pull in heavier
@@ -155,7 +163,7 @@ All transports implement the `TransportPort` trait:
 ```rust
 pub trait TransportPort: Send + Sync {
     fn start(&mut self) -> impl Future<Output = Result<mpsc::Receiver<ReceivedNpdu>, Error>> + Send;
-    fn stop(&mut self) -> impl Future<Output = Result<(), Error>> + Send;
+    fn stop(&self) -> impl Future<Output = Result<(), Error>> + Send; // through a shared reference; later sends fail (#2617)
     fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> impl Future<Output = Result<(), Error>> + Send;
     fn send_broadcast(&self, npdu: &[u8]) -> impl Future<Output = Result<(), Error>> + Send;
     fn local_mac(&self) -> &[u8];
@@ -166,13 +174,14 @@ pub trait TransportPort: Send + Sync {
     fn bip6_port(&self) -> Option<Bip6Port>; // the B/IPv6 counterpart: endpoint, VMAC, group, mode
     fn max_npdu(&self) -> NpduLimits; // longest NPDU sent, unicast and broadcast; default 1497
     fn max_npdu_changes(&self) -> Option<watch::Receiver<NpduLimits>>; // SC: its hub's limit; default None
+    fn link_returns(&self) -> Option<watch::Receiver<u64>>; // SC hub reconnects, B/IP(v6) foreign re-registration; default None
     fn prepare_for_routing(&mut self); // BACnetRouter calls it before start; MS/TP turns on extended frames
 }
 ```
 
-`TransportPort` owns data-link framing and link-specific controls. `NetworkLayer` owns NPDU addressing and APDU delivery forms. The private `bacnet-endpoint-core` runtime can own one network lifecycle and expose bounded ingress and network-service egress to application-role adapters; those role handles cannot start or stop the network or transport. The public `bacnet-endpoint` crate composes sibling requester and bounded responder roles on that private foundation. One `EndpointSession` owns one B/IP, SC or MS/TP transport; this is not a multi-link router or full `bacnet-server` responder replacement. See [endpoint scope](rust-api.md#bacnet-endpoint).
+`TransportPort` owns data-link framing and link-specific controls. `NetworkLayer` owns NPDU addressing and APDU delivery forms. The private `bacnet-endpoint-core` runtime can own one network lifecycle and expose bounded ingress and network-service egress to application-role adapters; those role handles cannot start or stop the network or transport. The public `bacnet-endpoint` crate composes sibling client and server roles on that private foundation: a session with a server role runs a full `bacnet-server` server on its seat, read-only unless given a builder (#2617). One `EndpointSession` owns one B/IP, SC or MS/TP transport; this is not a multi-link router. See [endpoint scope](rust-api.md#bacnet-endpoint).
 
-Local nonrouter Number controls take a separate bounded path: one serial state owner per standalone client, full server or shared endpoint consumes eligible parsed controls without blocking independent APDU dispatch. Raw network controls remain available for other consumers, including routed Reject correlation. A client or unregistered owner starts UNKNOWN on an opted-in transport. Only an explicitly registered B/IP receiving-port object, in any B/IP mode, supplies configured number authority; an unrelated database declaration cannot supply it. The capability is separate from registration metadata and from multiport/router behavior. See [Number controls and lifecycle](rust-api.md#local-network-number-controls).
+Local nonrouter Number controls take a separate bounded path: one serial state owner per standalone client, full server or shared endpoint consumes eligible parsed controls without blocking independent APDU dispatch. Raw network controls remain available for other consumers, including routed Reject correlation. A client or unregistered owner starts UNKNOWN on an opted-in transport; the standalone client asks once, on first need (before its first Who-Is, or when it first stores a routed row), and again when the link reports coming back while the number is still unknown (#2572). Only an explicitly registered B/IP receiving-port object, in any B/IP mode, supplies configured number authority; an unrelated database declaration cannot supply it. The capability is separate from registration metadata and from multiport/router behavior. See [Number controls and lifecycle](rust-api.md#local-network-number-controls).
 
 MAC address format varies by transport:
 - **BIP**: 6 bytes (4-byte IPv4 + 2-byte port, big-endian)
@@ -408,7 +417,7 @@ free functions in `bacnet_objects::property_metadata` (#2197).
 
 The stack runs on a Tokio multi-threaded runtime.
 
-**Lock ordering** (server): always lock `db` (ObjectDatabase) before `cov_table` (COV subscriptions). The COV fanouts read an object under the database guard and take the table's write guard before releasing it: the Single fanout runs `bacnet-device-core`'s `cov::evaluate` there, which decides each notification and issues its completion ticket, and both guards drop before any send (#2303); no path holds the table guard and then waits for the database. With target Audit configured, a DeviceCommunicationControl change and its timer's expiry take the DCC timer slot first and `db` second, to report the change under the slot (#1387); nothing takes the slot while holding `db`. Violating either order risks deadlock.
+**Lock ordering** (server): always lock `db` (ObjectDatabase) before `cov_table` (COV subscriptions). The COV fanouts read an object under the database guard and take the table's write guard before releasing it: the Single fanout runs `bacnet-device-core`'s `cov::evaluate` there, which decides each notification and issues its completion ticket, and both guards drop before any send (#2303); no path holds the table guard and then waits for the database. The COV-multiple timestamped histories (`bacnet-device-core`'s `cov::timed`, #2320) sit behind a mutex of the server's that is taken last, after either guard or alone, and only for a synchronous section: the claims and send turns that settle themselves when dropped take nothing else. A capture reads its objects before it takes that mutex and holds it only to queue what it read; SubscribeCOVPropertyMultiple holds it for the whole of its synchronous service call (`cov::subscribe_cov_property_multiple`), under the database and table guards, and drops no claim or send turn inside. The Multiple fanout runs the core's `cov::multiple_report` steps the same way: `Reading::gather` under the database and table guards with that mutex held for the one synchronous call, then `Gathered::split` under the database guard with it held again; neither drops a guard of the store, and the fanout guards the turn and every part's claim before it awaits a send. A confirmed report begins under the table guard alone, with the mutex taken last for the step that also settles its claims. With target Audit configured, a DeviceCommunicationControl change and its timer's expiry take the DCC timer slot first and `db` second, to report the change under the slot (#1387); nothing takes the slot while holding `db`. Violating either order risks deadlock.
 
 **Resource exhaustion caps**:
 - COV subscriptions: 1,024 max
@@ -430,8 +439,8 @@ The `BACnetServer` spawns several background tasks:
 |------|---------|----------|
 | Dispatch | Receives APDUs, routes to service handlers | Event-driven |
 | COV purge | Removes expired COV subscriptions, and ends confirmed reports past their deadline whose worker never reported (#2303) | 30s |
-| Fault detection | Evaluates analog objects for over/under-range | 10s |
-| Intrinsic reporting | Advances Time_Delay countdowns and fires confirmed transitions via `tick_intrinsic_reporting` | 1s |
+| Fault detection | Runs each object's reliability evaluation through `bacnet-device-core`'s `event::fault_pass`, logging a hook's failure once until it changes (#2303) | 10s |
+| Intrinsic reporting | Commits the transitions whose Time_Delay has ended through `bacnet-device-core`'s `event::sweep`, then sends what `event::distribute_event` builds once the guard is dropped; it also wakes at `event::next_due`, no sooner than 100 ms after its last sweep, so a delay ends on time (#2303). It isn't told about writes: it never sleeps past the next one-second sweep, a write's delay ends at least a second later, and the write path and the sweep share the database lock | 1s, and at each due instant |
 | Event enrollment | Evaluates Event Enrollment objects against their monitored properties | 10s |
 | Trend log | Records data samples for trend log objects | Per-object interval |
 | Schedule tick | Evaluates Schedule objects (exceptions by period and priority, weekly schedule, Schedule_Default, within Effective_Period) against one Device clock frame and Calendar states, and writes changes at Priority_For_Writing; a write that commits to a Schedule runs its pass at once, which also sends on a Present_Value written while out of service and relinquishes slots a change of references or priority left behind; each target's result feeds the Schedule's Reliability | 60s |
@@ -458,4 +467,4 @@ step is audited as Table 19-5 maps it (#1564). The mutation policy doesn't cover
 service; the handler restricts sources through its context. A handler panic
 or a returned Reject is answered `SERVICES / OTHER`, since by then the request
 can no longer be rejected (Clause 20.1.8). Endpoint sessions run the same
-handler through their narrow responder.
+handler through their full server (#2617).

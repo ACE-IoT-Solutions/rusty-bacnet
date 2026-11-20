@@ -6,7 +6,7 @@
 //! the server's.
 
 use super::*;
-use crate::report::{OutboxLimits, SERVICES};
+use crate::report::{Bindings, Destination, Notification, OutboxLimits, SERVICES, peer_address};
 use bacnet_encoding::primitives::encode_property_value;
 use bacnet_objects::DeviceIdentity;
 use bacnet_objects::analog::AnalogInputObject;
@@ -18,6 +18,16 @@ use bacnet_time::Duration;
 use bacnet_types::enums::{EngineeringUnits, ObjectType, PropertyIdentifier as P};
 use bacnet_types::primitives::PropertyValue;
 
+#[path = "reporter_change_back_tests.rs"]
+mod change_back;
+#[cfg(feature = "event-reporting")]
+#[path = "reporter_events_tests.rs"]
+mod events;
+#[path = "reporter_local_tests.rs"]
+mod local;
+#[cfg(feature = "cov-multiple")]
+#[path = "reporter_multiple_tests.rs"]
+mod multiple;
 #[path = "reporter_owed_tests.rs"]
 mod owed;
 #[path = "reporter_remove_tests.rs"]
@@ -37,16 +47,19 @@ fn peer() -> SubscriberEndpoint {
     SubscriberEndpoint::new(&[0x0A, 0, 0, 5, 0xBA, 0xC0], None)
 }
 
-/// Invoke IDs from 0 up, at most `limit` taken at once.
+/// Invoke IDs from 0 up, at most `limit` taken at once, noting the service
+/// each was asked for.
 #[derive(Default)]
 struct Ids {
     taken: Vec<(BACnetAddress, u8)>,
     next: u8,
     limit: usize,
+    services: Vec<ConfirmedServiceChoice>,
 }
 
 impl InvokeIds for Ids {
-    fn take(&mut self, to: &BACnetAddress) -> Option<u8> {
+    fn take(&mut self, to: &BACnetAddress, service: ConfirmedServiceChoice) -> Option<u8> {
+        self.services.push(service);
         if self.taken.len() >= self.limit {
             return None;
         }
@@ -230,7 +243,7 @@ impl Device {
 
     fn deadline(&mut self) {
         let now = self.reporter.next_deadline().expect("something due");
-        self.reporter.on_deadline(&self.db, &mut self.ids, now);
+        self.reporter.on_deadline(&mut self.db, &mut self.ids, now);
     }
 }
 
@@ -330,6 +343,20 @@ fn a_report_without_room_is_owed_until_room_frees() {
     assert_eq!(Device::reported_pv(&apdu), PropertyValue::Real(10.0));
 }
 
+/// The host lends a confirmed COV report its invoke ID for the service it
+/// goes out as (#2303).
+#[test]
+fn a_confirmed_report_names_its_service_to_the_invoke_ids() {
+    let mut device = Device::new(OutboxLimits::default());
+    device.subscribe(1, true, T0);
+    let (initial, _) = device.pop(T0).unwrap();
+    assert!(initial.invoke_id.is_some());
+    assert_eq!(
+        device.ids.services,
+        [ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION]
+    );
+}
+
 #[test]
 fn a_confirmed_report_with_no_invoke_id_ends_unsent_and_is_owed() {
     let mut device = Device::new(OutboxLimits::default());
@@ -337,7 +364,10 @@ fn a_confirmed_report_with_no_invoke_id_ends_unsent_and_is_owed() {
     device.subscribe(1, true, T0);
     assert!(device.pop(T0).is_none());
     assert_eq!(device.reporter.counters().cov.notifications_sent, 0);
+    // Owed for an ID, it isn't due again until one comes back (#2512).
+    assert!(device.reporter.next_deadline().is_none_or(|due| due > T0));
     device.ids.limit = 1;
+    device.reporter.invoke_ids_released(1);
     device.deadline();
     assert!(device.pop(T0).unwrap().0.invoke_id.is_some());
 }
@@ -365,6 +395,8 @@ fn reads_answer_the_device_list_from_the_table() {
 
 /// The Reporter runs no SubscribeCOVPropertyMultiple (#2320): it rejects
 /// the request as an unrecognized service, and subscribes nothing.
+// With `cov-multiple` the reporter serves it: `reporter_multiple_tests`.
+#[cfg(not(feature = "cov-multiple"))]
 #[test]
 fn subscribe_cov_property_multiple_is_rejected() {
     use bacnet_services::cov_multiple::{
@@ -531,7 +563,7 @@ fn a_hot_subscription_holds_one_entry_and_others_still_report() {
         {
             device
                 .reporter
-                .on_deadline(&device.db, &mut device.ids, now);
+                .on_deadline(&mut device.db, &mut device.ids, now);
         }
         // The link sends one notification a tick.
         if let Some((sent, apdu)) = device.pop(now) {
@@ -618,7 +650,7 @@ fn owed_references_take_freed_room_oldest_first() {
         {
             device
                 .reporter
-                .on_deadline(&device.db, &mut device.ids, now);
+                .on_deadline(&mut device.db, &mut device.ids, now);
         }
         let value = PropertyValue::Real(100.0 + tick as f32);
         device.write(P::PRESENT_VALUE, value, now);

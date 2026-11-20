@@ -6,7 +6,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
-use super::EventNotificationRequest;
+use super::{EventNotificationRequest, OpaqueChoice};
 use crate::bitstring::LogStatus;
 use crate::enums::{ErrorClass, ErrorCode};
 use crate::primitives::{Date, StatusFlags, Time};
@@ -19,7 +19,8 @@ use crate::primitives::{Date, StatusFlags, Time};
 /// the sample, a status change of the log, or a clock change.
 ///
 /// On the wire each alternative takes a context tag, 0 to 10 in declaration
-/// order; the encoding crate owns that numbering.
+/// order; the encoding crate owns that numbering. An alternative under a
+/// higher tag (a later revision's) decodes as [`Self::Opaque`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogDatum {
     /// A status change of the log itself.
@@ -56,12 +57,19 @@ pub enum LogDatum {
     /// A value of any other datatype, as the tagged encoding a property read
     /// carries for it: one or more complete values, context tags balanced.
     AnyValue(Vec<u8>),
+    /// An alternative under a context tag above 10, where the
+    /// log-datum CHOICE assigns none, kept as received.
+    Opaque(OpaqueChoice),
 }
 
-impl From<LogValue> for LogDatum {
+impl TryFrom<LogValue> for LogDatum {
+    /// An opaque member value, which has no Trend Log counterpart: its tag
+    /// numbers the member CHOICE, not this one.
+    type Error = OpaqueChoice;
+
     /// The same sampled value as a Trend Log datum.
-    fn from(value: LogValue) -> Self {
-        match value {
+    fn try_from(value: LogValue) -> Result<Self, OpaqueChoice> {
+        Ok(match value {
             LogValue::BooleanValue(value) => Self::BooleanValue(value),
             LogValue::RealValue(value) => Self::RealValue(value),
             LogValue::EnumValue(value) => Self::EnumValue(value),
@@ -79,7 +87,8 @@ impl From<LogValue> for LogDatum {
                 error_code,
             },
             LogValue::AnyValue(bytes) => Self::AnyValue(bytes),
-        }
+            LogValue::Opaque(opaque) => return Err(opaque),
+        })
     }
 }
 
@@ -111,7 +120,8 @@ pub struct BACnetLogRecord {
 /// What an Event Log record carries.
 ///
 /// On the wire the alternatives take context tags 0 to 2 in declaration
-/// order; the encoding crate owns that numbering.
+/// order; the encoding crate owns that numbering. An alternative under a
+/// higher tag decodes as [`Self::Opaque`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventLogDatum {
     /// A status change of the log itself.
@@ -125,6 +135,9 @@ pub enum EventLogDatum {
     Notification(EventNotificationRequest),
     /// The device clock moved by this many seconds; zero when unknown.
     TimeChange(f32),
+    /// An alternative under a context tag above 2, where the
+    /// log-datum CHOICE assigns none, kept as received.
+    Opaque(OpaqueChoice),
 }
 
 /// One record held in the log buffer of an Event Log (Clause 12.27.13).
@@ -147,7 +160,8 @@ pub struct BACnetEventLogRecord {
 ///
 /// These are the per-member alternatives of Clause 21's BACnetLogData. On the
 /// wire they take context tags 0 to 8 in declaration order; the encoding crate
-/// owns that numbering, which differs from [`LogDatum`]'s.
+/// owns that numbering, which differs from [`LogDatum`]'s. An alternative
+/// under a higher tag decodes as [`Self::Opaque`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogValue {
     /// A BOOLEAN value.
@@ -180,9 +194,15 @@ pub enum LogValue {
     /// A value of any other datatype, as the tagged encoding a property read
     /// carries for it: one or more complete values, context tags balanced.
     AnyValue(Vec<u8>),
+    /// An alternative under a context tag above 8, where the
+    /// member CHOICE assigns none, kept as received.
+    Opaque(OpaqueChoice),
 }
 
 /// What a Trend Log Multiple record carries (Clause 21's BACnetLogData).
+///
+/// On the wire the alternatives take context tags 0 to 2 in declaration
+/// order. An alternative under a higher tag decodes as [`Self::Opaque`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogData {
     /// A status change of the log itself.
@@ -191,6 +211,9 @@ pub enum LogData {
     Values(Vec<LogValue>),
     /// The device clock moved by this many seconds; zero when unknown.
     TimeChange(f32),
+    /// An alternative under a context tag above 2, where the
+    /// log-data CHOICE assigns none, kept as received.
+    Opaque(OpaqueChoice),
 }
 
 /// One record held in the log buffer of a Trend Log Multiple

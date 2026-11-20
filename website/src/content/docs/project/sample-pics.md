@@ -691,7 +691,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | EVENT_TIME_STAMPS | R |
 | LOG_BUFFER | R |
 | LOG_DEVICE_OBJECT_PROPERTY | RW |
-| LOG_ENABLE | RW |
+| ENABLE | RW |
 | LOG_INTERVAL | RW |
 | NOTIFICATION_THRESHOLD | RW |
 | RECORDS_SINCE_NOTIFICATION | R |
@@ -837,7 +837,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | BUFFER_SIZE | R |
 | EVENT_TIME_STAMPS | R |
 | LOG_BUFFER | R |
-| LOG_ENABLE | RW |
+| ENABLE | RW |
 | NOTIFICATION_THRESHOLD | RW |
 | RECORDS_SINCE_NOTIFICATION | R |
 | RECORD_COUNT | RW |
@@ -896,7 +896,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | EVENT_TIME_STAMPS | R |
 | LOG_BUFFER | R |
 | LOG_DEVICE_OBJECT_PROPERTY | RW |
-| LOG_ENABLE | RW |
+| ENABLE | RW |
 | LOG_INTERVAL | RW |
 | NOTIFICATION_THRESHOLD | RW |
 | RECORDS_SINCE_NOTIFICATION | R |
@@ -931,12 +931,16 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | OBJECT_TYPE | R |
 | PRESENT_VALUE | R |
 | RELIABILITY | RO |
-| STATUS_FLAGS | RO |
-| START_TIME | R |
+| STATUS_FLAGS | R |
+| ENABLE | RW |
+| START_TIME | RW |
 | ACTUAL_SHED_LEVEL | R |
+| DUTY_WINDOW | RW |
 | EXPECTED_SHED_LEVEL | R |
 | REQUESTED_SHED_LEVEL | RW |
 | SHED_DURATION | RW |
+| SHED_LEVEL_DESCRIPTIONS | R |
+| SHED_LEVELS | RW |
 | PROPERTY_LIST | R |
 
 #### STRUCTURED_VIEW
@@ -1092,7 +1096,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | OBJECT_TYPE | R |
 | RELIABILITY | R |
 | STATUS_FLAGS | R |
-| LOG_ENABLE | RW |
+| ENABLE | RW |
 | NEGATIVE_ACCESS_RULES | RW |
 | POSITIVE_ACCESS_RULES | RW |
 | GLOBAL_IDENTIFIER | RW |
@@ -1313,7 +1317,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | OUT_OF_SERVICE | RWO |
 | PRESENT_VALUE | RW |
 | PRIORITY_ARRAY | RO |
-| RELIABILITY | RO |
+| RELIABILITY | RWO |
 | RELINQUISH_DEFAULT | RWO |
 | STATUS_FLAGS | R |
 | UNITS | R |
@@ -1705,7 +1709,7 @@ Property rows aggregate configured instances: a row or access flag means at leas
 | STATUS_FLAGS | R |
 | BUFFER_SIZE | RW |
 | LOG_BUFFER | R |
-| LOG_ENABLE | RW |
+| ENABLE | RW |
 | RECORD_COUNT | R |
 | TOTAL_RECORD_COUNT | R |
 | PROPERTY_LIST | R |

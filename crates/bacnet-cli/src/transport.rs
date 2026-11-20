@@ -12,7 +12,8 @@ use bacnet_types::error::Error;
 pub struct TransportArgs {
     pub interface: Ipv4Addr,
     pub port: u16,
-    /// `--share-port` (#2366): share the B/IP port instead of claiming it.
+    /// `--share-port` (#2366, #2385): share the B/IP or B/IPv6 port instead
+    /// of claiming it.
     pub share_port: bool,
     pub broadcast: Ipv4Addr,
     pub timeout_ms: u64,
@@ -205,8 +206,8 @@ pub async fn build_bip_client(args: &TransportArgs) -> Result<BACnetClient<BipTr
 
 /// Build a BACnet/SC client from CLI transport arguments.
 ///
-/// Loads TLS certificates and private key from PEM files, constructs a TLS
-/// configuration trusting only the explicit site CA PEM, and builds the SC client.
+/// Builds the TLS configuration from the PEM files (trusting only the
+/// explicit site CA bundle), lints them, and builds the SC client.
 #[cfg(feature = "sc-tls")]
 pub async fn build_sc_client(
     args: &TransportArgs,
@@ -224,10 +225,6 @@ pub fn sc_client_builder(
     args: &TransportArgs,
 ) -> Result<bacnet_client::client::ScClientBuilder, Error> {
     use bacnet_transport::sc_tls::ScNodeTlsConfig;
-    use bacnet_transport::sc_tls::pem;
-    use rustls::RootCertStore;
-    use rustls_pki_types::pem::Error as PemError;
-    use std::fs::File;
 
     let cert_path = args
         .sc_cert
@@ -255,44 +252,24 @@ pub fn sc_client_builder(
             Error::Encoding("--sc-ca <FILE> is required for BACnet/SC; supply a nonempty site CA PEM path (no system-root fallback)".into())
         })?;
 
-    let mut root_store = RootCertStore::empty();
-    let ca_file = File::open(ca_path)
-        .map_err(|e| Error::Encoding(format!("failed to read --sc-ca PEM: {}", PemError::Io(e))))?;
-    let ca_iter = pem::certificate_reader(ca_file);
-    let mut ca_certs = Vec::new();
-    // Preserve CA error precedence before identity file I/O. The factory below
-    // owns the actual TLS policy; this store only validates the loaded input.
-    for cert in ca_iter {
-        let cert =
-            cert.map_err(|e| Error::Encoding(format!("failed to parse --sc-ca PEM: {e}")))?;
-        root_store
-            .add(cert.clone())
-            .map_err(|e| Error::Encoding(format!("unusable certificate in --sc-ca PEM: {e}")))?;
-        ca_certs.push(cert);
+    // The transport reads the CA file first and checks it whole before it
+    // reads the identity files. A file that can't be read or decoded, and
+    // anything wrong with the CA bundle, is refused here; a chain
+    // certificate or key that decodes but TLS can't use waits for the lint,
+    // which explains it better.
+    let tls = ScNodeTlsConfig::from_pem_files(ca_path, cert_path, key_path);
+    if let Err(error) = &tls
+        && !waits_for_lint(error)
+    {
+        return Err(Error::Encoding(sc_tls_message(error)));
     }
-    if root_store.is_empty() {
-        return Err(Error::Encoding(
-            "--sc-ca PEM contains no certificates; supply the trusted site CA certificate(s)"
-                .into(),
-        ));
-    }
-
-    let cert_file = File::open(cert_path)
-        .map_err(|e| Error::Encoding(format!("failed to read cert PEM: {}", PemError::Io(e))))?;
-    let certs = pem::certificate_reader(cert_file)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| Error::Encoding(format!("failed to parse cert PEM: {e}")))?;
-    let key = File::open(key_path)
-        .map_err(PemError::Io)
-        .and_then(pem::private_key_reader)
-        .map_err(|e| Error::Encoding(format!("failed to read key PEM: {e}")))?;
 
     // The pre-dial lint (#968), for one-shots and the TUI alike:
     // a hard failure stops here, before any socket. Warnings are logged (to
     // stderr in one-shots) and never block; the TUI confirms them earlier, so
     // a warning that first appears between that check and this one is only
     // logged (accepted by design). Inputs past the inspection limits are a
-    // warning, not a refusal: the loaders above already accepted them.
+    // warning, not a refusal: the loader above already accepted them.
     let lint = crate::sc_check::lint::Lint::run(cert_path, Some(ca_path), Some(key_path), None)
         .map_err(Error::Encoding)?;
     if let Some(refusal) = lint.refusal() {
@@ -302,8 +279,9 @@ pub fn sc_client_builder(
         tracing::warn!("{}", warning.text);
     }
 
-    let tls_config = ScNodeTlsConfig::from_der(ca_certs, certs, key)
-        .map_err(|e| Error::Encoding(format!("TLS config error: {e}")))?;
+    let tls_config = tls.map_err(|error| {
+        Error::Encoding(format!("TLS config error: {}", sc_tls_message(&error)))
+    })?;
 
     let mut builder = BACnetClient::sc_builder()
         .hub_url(hub_url)
@@ -324,6 +302,30 @@ pub fn sc_client_builder(
         builder = builder.failover_hub_url(failover);
     }
     Ok(builder)
+}
+
+/// Whether an SC TLS loading error is reported only after the pre-dial
+/// lint: a chain certificate or a key that decodes but can't be used.
+#[cfg(feature = "sc-tls")]
+fn waits_for_lint(error: &bacnet_transport::sc_tls::ScTlsConfigError) -> bool {
+    use bacnet_transport::sc_tls::{ScTlsConfigError as E, ScTlsInput};
+    match error {
+        E::UnusableCertificate { input, .. } => *input == ScTlsInput::CertificateChain,
+        E::UnusableKey { .. } | E::KeyMismatch | E::Tls { .. } => true,
+        _ => false,
+    }
+}
+
+/// An SC TLS loading error, led by the flag that names the input at fault.
+#[cfg(feature = "sc-tls")]
+fn sc_tls_message(error: &bacnet_transport::sc_tls::ScTlsConfigError) -> String {
+    use bacnet_transport::sc_tls::ScTlsInput;
+    match error.input() {
+        Some(ScTlsInput::CaBundle) => format!("--sc-ca: {error}"),
+        Some(ScTlsInput::CertificateChain) => format!("--sc-cert: {error}"),
+        Some(ScTlsInput::PrivateKey) => format!("--sc-key: {error}"),
+        _ => error.to_string(),
+    }
 }
 
 /// The connect timeout the CLI gives the SC client builder when none is
@@ -381,6 +383,7 @@ pub async fn build_bip6_client(args: &TransportArgs) -> Result<BACnetClient<Bip6
     let mut builder = BACnetClient::bip6_builder()
         .interface(ipv6_addr)
         .port(args.port)
+        .share_wildcard_port(args.share_port)
         .apdu_timeout_ms(args.timeout_ms)
         .min_request_interval_ms(args.min_interval_ms);
 
@@ -400,7 +403,7 @@ mod tests {
 
     /// `--share-port` reaches the B/IP client builder (#2366): on a port
     /// another socket holds, the claiming client's error names the opt-in,
-    /// and a sharing one's says the holder doesn't share. Windows decides a
+    /// and a sharing one's says the port can't be shared. Windows decides a
     /// sharing bind beside a socket that set no options by the two sockets'
     /// accounts (Microsoft's SO_REUSEADDR table), so only the claiming case
     /// runs there.
@@ -408,7 +411,7 @@ mod tests {
     async fn the_share_port_flag_reaches_the_bip_client() {
         let holder = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
         let port = holder.local_addr().unwrap().port().to_string();
-        for (share, says) in [(false, "share_wildcard_port"), (true, "refuses sharing")] {
+        for (share, says) in [(false, "share_wildcard_port"), (true, "can't be shared")] {
             if share && cfg!(windows) {
                 continue;
             }
@@ -423,6 +426,36 @@ mod tests {
             let args =
                 TransportArgs::from_cli(&cli, Ipv4Addr::LOCALHOST, Ipv4Addr::BROADCAST).unwrap();
             let Err(Error::Transport(refused)) = build_bip_client(&args).await else {
+                panic!("the client started on a held port (share: {share})");
+            };
+            assert!(refused.to_string().contains(says), "{refused}");
+        }
+    }
+
+    /// `--share-port` reaches the B/IPv6 client builder too (#2385), with
+    /// `--ipv6`: the same two errors on a held port, and the same Windows
+    /// exception.
+    #[tokio::test]
+    async fn the_share_port_flag_reaches_the_bip6_client() {
+        let holder = std::net::UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).unwrap();
+        let port = holder.local_addr().unwrap().port().to_string();
+        for (share, says) in [(false, "share_wildcard_port"), (true, "can't be shared")] {
+            if share && cfg!(windows) {
+                continue;
+            }
+            let mut argv = vec!["bacnet".to_string(), "-p".into(), port.clone()];
+            argv.extend(["--ipv6", "--ipv6-interface", "::1"].map(String::from));
+            argv.extend(["--device-instance", "2385"].map(String::from));
+            argv.extend(share.then(|| "--share-port".to_string()));
+            argv.push("discover".into());
+            let cli = crate::parse_on_large_stack(move || {
+                <crate::args::Cli as clap::Parser>::try_parse_from(argv)
+            })
+            .unwrap();
+            assert_eq!((cli.ipv6, cli.share_port), (true, share));
+            let args =
+                TransportArgs::from_cli(&cli, Ipv4Addr::LOCALHOST, Ipv4Addr::BROADCAST).unwrap();
+            let Err(Error::Transport(refused)) = build_bip6_client(&args).await else {
                 panic!("the client started on a held port (share: {share})");
             };
             assert!(refused.to_string().contains(says), "{refused}");

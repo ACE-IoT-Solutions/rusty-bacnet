@@ -49,6 +49,8 @@ mod name_value;
 pub use name_value::BACnetNameValue;
 mod network_port;
 pub use network_port::{BACnetBDTEntry, BACnetFDTEntry, BACnetHostAddress, BACnetHostNPort};
+mod opaque;
+pub use opaque::OpaqueChoice;
 mod property_access;
 pub use property_access::{AccessResult, BACnetPropertyAccessResult};
 mod property_value;
@@ -723,6 +725,7 @@ pub use event_parameter::{BACnetEventParameter, ChangeOfValueCriteria, event_par
 mod property_states;
 pub use property_states::{
     BACnetExtendedPropertyState, BACnetPropertyStates, BACnetProprietaryPropertyState,
+    NAMED_EXTENDED_CHOICES, NamedExtendedChoice,
 };
 
 // ---------------------------------------------------------------------------

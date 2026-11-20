@@ -15,6 +15,8 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 use core::fmt;
 use core::time::Duration;
 
+#[cfg(feature = "std")]
+use crate::constructed::BACnetAddress;
 #[cfg(feature = "alloc")]
 use crate::constructed::BACnetObjectPropertyReference;
 use crate::data_link::DataLink;
@@ -54,12 +56,78 @@ impl fmt::Display for NotAdvancing {
     }
 }
 
+/// [`Error::InitiationDisabled`]'s text.
+struct Initiation {
+    sent: bool,
+}
+
+impl fmt::Display for Initiation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.sent {
+            f.write_str(
+                "no retry sent: DeviceCommunicationControl disabled initiation on this device \
+                 after the request went out, and no answer came",
+            )
+        } else {
+            f.write_str(
+                "not sent: DeviceCommunicationControl has disabled initiation on this device \
+                 until it is enabled again",
+            )
+        }
+    }
+}
+
+/// [`Error::AmbiguousDevice`]'s addresses, in the CLI's target grammar where
+/// it has a form for one: a routed station as `2:0x05`; on the local
+/// network, by the MAC's length, which names its link among this stack's
+/// transports: `mstp:5` (MS/TP), `bip6:0x0004D2` (a B/IPv6 VMAC), and
+/// six octets as `10.0.0.1:47808`, the same six octets for an SC VMAC or an
+/// Ethernet MAC too. Those read back as the same station. A local MAC of any
+/// other length, which none of this stack's transports uses, is written as
+/// `0x` and hex, which the grammar refuses.
+#[cfg(feature = "std")]
+struct Candidates<'a>(&'a [BACnetAddress]);
+
+#[cfg(feature = "std")]
+impl fmt::Display for Candidates<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let hex = |f: &mut fmt::Formatter<'_>, mac: &[u8]| {
+            f.write_str("0x")?;
+            mac.iter().try_for_each(|octet| write!(f, "{octet:02X}"))
+        };
+        for (i, address) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            let mac = address.mac_address.as_slice();
+            match (address.network_number, mac) {
+                (0, [station]) => write!(f, "mstp:{station}")?,
+                (0, [_, _, _]) => {
+                    f.write_str("bip6:")?;
+                    hex(f, mac)?;
+                }
+                (0, [a, b, c, d, hi, lo]) => {
+                    let ip = std::net::Ipv4Addr::new(*a, *b, *c, *d);
+                    write!(f, "{ip}:{}", u16::from_be_bytes([*hi, *lo]))?;
+                }
+                (0, _) => hex(f, mac)?,
+                (network, _) => {
+                    write!(f, "{network}:")?;
+                    hex(f, mac)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Top-level error type for the BACnet library.
 ///
 /// It is `#[non_exhaustive]`, so a `match` on it outside this crate needs a
 /// wildcard arm. Some variants exist only with a feature, and any crate in a
-/// build can turn that on: `Error::Transport` needs `std`, and the variants
-/// that hold a `String` or a `Box` need `alloc`. Without the attribute a
+/// build can turn that on: `Error::Transport`, `Error::AmbiguousDevice`
+/// and `Error::UnknownDevice` need `std`, and the variants that hold a
+/// `String` or a `Box` need `alloc`. Without the attribute a
 /// match written against a smaller build would stop compiling (#1604).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -189,6 +257,39 @@ pub enum Error {
     #[error("ReadRange acknowledgement refused: {0}")]
     ReadRangeViolation(ReadRangeViolation),
 
+    /// A request named a device by its instance, and two or more addresses
+    /// in the client's discovery table claim that instance, so which device
+    /// is meant is unknown. Nothing was sent. Name one of `candidates` by
+    /// its address instead. Only with `std`, which the client needs: a
+    /// firmware image built with `alloc` alone links none of it.
+    #[cfg(feature = "std")]
+    #[error(
+        "device {instance} is claimed by {} addresses: {}; name one by its address",
+        candidates.len(),
+        Candidates(candidates)
+    )]
+    AmbiguousDevice {
+        /// The Device instance the request named.
+        instance: u32,
+        /// Every address that claims it, ordered by network number and then
+        /// MAC: network 0 is the local network. A boxed slice, not a `Vec`,
+        /// so the variant lends `Error` no niche to keep its tag in.
+        candidates: Box<[BACnetAddress]>,
+    },
+
+    /// A request named a device the client can't place: no address in its
+    /// discovery table claims the instance, and none answered a Who-Is for
+    /// it, or no router is known for a remote network's station. Nothing
+    /// was sent to the device. Only with `std`, as for
+    /// [`Error::AmbiguousDevice`].
+    #[cfg(feature = "std")]
+    #[error("device {device} is not known to the client; discover it first")]
+    UnknownDevice {
+        /// The device as the request named it: an instance (`1234`,
+        /// `2:1234`) or an address (`2:0x05`).
+        device: String,
+    },
+
     /// A paged log read asked for the records from one sequence number and
     /// the device answered with a page starting before it, so reading on
     /// would repeat records instead of advancing; or answered with none
@@ -206,6 +307,22 @@ pub enum Error {
         /// What the device numbered the first record it sent;
         /// `None` when it returned no records.
         returned: Option<u64>,
+    },
+
+    /// The device this request leaves from has had initiation turned off by
+    /// DeviceCommunicationControl (DISABLE_INITIATION, Clause 16.1). It ends
+    /// when the control's duration runs out, a DeviceCommunicationControl
+    /// ENABLE is accepted, or a WARMSTART or COLDSTART ReinitializeDevice
+    /// is. A full client on a node with a full server returns it for every
+    /// request and unconfirmed send while the node's server holds that
+    /// state (#2617).
+    #[error("{}", Initiation { sent: *.sent })]
+    InitiationDisabled {
+        /// `false`: nothing was sent, as the request was refused before it
+        /// went out. `true`: the request went out before initiation was
+        /// turned off, no answer came, and its retry was not sent, so the
+        /// device may have carried it out.
+        sent: bool,
     },
 }
 

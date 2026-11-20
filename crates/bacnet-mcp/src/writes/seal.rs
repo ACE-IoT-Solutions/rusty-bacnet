@@ -13,13 +13,14 @@ use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
+use bacnet_ops::octets::hex;
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
 
 /// How long a confirmation stays good: the TUI's preview timeout.
-pub(crate) const LIFETIME: Duration = bacnet_ops::safety::PREVIEW_LIFETIME;
+pub(crate) const LIFETIME: Duration = bacnet_tool::safety::PREVIEW_LIFETIME;
 
 /// What a confirmation binds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,10 +168,6 @@ impl Sealer {
         }
         Ok(state)
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn unhex(text: &str) -> Option<Vec<u8>> {

@@ -6,9 +6,13 @@
 //! datum, one of three alternatives: a primitive context 0 holding the
 //! three-bit log status, a constructed context 1 holding a notification's
 //! request parameters, or a primitive context 2 holding the clock change as
-//! a REAL.
+//! a REAL. An alternative under a higher tag, primitive or constructed, is
+//! kept as [`EventLogDatum::Opaque`] and written back unchanged.
 
-use super::log_fields::{decode_log_status, decode_timestamp, encode_log_status, encode_timestamp};
+use super::log_fields::{
+    IN_ITEM_DATA, check_record, decode_log_status, decode_opaque, decode_timestamp,
+    encode_log_status, encode_opaque, encode_timestamp,
+};
 use super::tagged::{contents, decode_ctx_constructed, expect_end};
 use super::{decode_event_notification_tolerant, encode_event_notification};
 use crate::{primitives, tags};
@@ -24,18 +28,27 @@ const LOG_STATUS: u8 = 0;
 const NOTIFICATION: u8 = 1;
 const TIME_CHANGE: u8 = 2;
 
+/// Whether the log-datum CHOICE gives `tag` no alternative: above
+/// time-change, the last it assigns.
+fn unassigned(tag: u8) -> bool {
+    tag > TIME_CHANGE
+}
+
 /// Encode one Event Log record.
 ///
 /// Fails, leaving `buf` unchanged, for a notification that would not encode,
 /// such as one whose raw event values aren't a well-formed run of tagged
-/// fields.
+/// fields, an opaque body that isn't one, or a record nested too deep for a
+/// ReadRange-ACK to carry.
 pub fn encode_event_log_record(
     record: &BACnetEventLogRecord,
     buf: &mut BytesMut,
 ) -> Result<(), Error> {
     // Straight into `buf`, cut back on failure: no staging buffer (#2233).
     let start = buf.len();
-    write_event_log_record(record, buf).inspect_err(|_| buf.truncate(start))
+    write_event_log_record(record, buf)
+        .and_then(|()| check_record(&buf[start..], IN_ITEM_DATA, RECORD))
+        .inspect_err(|_| buf.truncate(start))
 }
 
 fn write_event_log_record(record: &BACnetEventLogRecord, out: &mut BytesMut) -> Result<(), Error> {
@@ -51,6 +64,7 @@ fn write_event_log_record(record: &BACnetEventLogRecord, out: &mut BytesMut) -> 
         EventLogDatum::TimeChange(seconds) => {
             primitives::encode_ctx_real(out, TIME_CHANGE, *seconds)
         }
+        EventLogDatum::Opaque(opaque) => encode_opaque(out, opaque, unassigned, DATUM)?,
     }
     tags::encode_closing_tag(out, 1);
     Ok(())
@@ -83,7 +97,9 @@ pub fn decode_event_log_record(
 
 fn decode_datum(data: &[u8], offset: usize) -> Result<EventLogDatum, Error> {
     let (tag, start) = tags::decode_tag(data, 0)?;
-    let (datum, end) = if tag.is_context(LOG_STATUS) {
+    let (datum, end) = if let Some((opaque, end)) = decode_opaque(data, &tag, start, unassigned)? {
+        (EventLogDatum::Opaque(opaque), end)
+    } else if tag.is_context(LOG_STATUS) {
         let (octets, end) = contents(data, start, tag.length)?;
         let status = decode_log_status(octets, offset, RECORD)?;
         (EventLogDatum::LogStatus(status), end)

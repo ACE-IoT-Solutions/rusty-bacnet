@@ -6,12 +6,10 @@ use std::time::Duration;
 
 use bacnet_npdu::Mac;
 use bacnet_npdu::NpduLimits;
-use bacnet_transport::port::{ReceivedNpdu, TransportPort};
-use bacnet_types::MacAddr;
-use bacnet_types::error::Error;
+use bacnet_transport::test_transport::{StartMode, TestTransport};
 use bytes::Bytes;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use super::super::SendRequest;
 use super::super::control_policy::ControlGate;
@@ -33,6 +31,17 @@ fn request() -> SendRequest {
     }
 }
 
+fn forwarded_unicast() -> SendRequest {
+    SendRequest::Unicast {
+        npdu: Bytes::from_static(&[1, 0, 0x10, 8]),
+        mac: bacnet_types::MacAddr::from_slice(&[2]),
+        data_attributes: Vec::new(),
+        reject_origin: None,
+        response: None,
+        count_forward: true,
+    }
+}
+
 fn shared() -> Arc<Shared> {
     let port = Engine::port(
         1000,
@@ -47,101 +56,33 @@ fn shared() -> Arc<Shared> {
     ))
 }
 
-struct ReadyPort {
+/// A port whose sends finish at once, never awaiting anything: each counts
+/// itself and, up to [`REFILL_LIMIT`], queues another request through
+/// `refill`. Even the broken sender returns Pending after finite work, so
+/// this fixture cannot hang the runtime when testing its original behavior.
+fn ready_port(
     calls: Arc<AtomicUsize>,
     refill: Option<send_queue::Sender>,
-    started: Mutex<Option<oneshot::Sender<()>>>,
-}
-
-struct OutcomePort {
-    fail: bool,
-}
-
-impl TransportPort for OutcomePort {
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        panic!("the sender does not start transports")
-    }
-
-    async fn stop(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    async fn send_unicast(&self, _: &[u8], _: &[u8]) -> Result<(), Error> {
-        if self.fail {
-            Err(Error::Encoding("fixture send failure".into()))
-        } else {
-            Ok(())
-        }
-    }
-
-    async fn send_broadcast(&self, _: &[u8]) -> Result<(), Error> {
-        self.send_unicast(&[], &[]).await
-    }
-
-    fn local_mac(&self) -> &[u8] {
-        &[1]
-    }
-
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        1497
-    }
-}
-
-fn forwarded_unicast() -> SendRequest {
-    SendRequest::Unicast {
-        npdu: Bytes::from_static(&[1, 0, 0x10, 8]),
-        mac: MacAddr::from_slice(&[2]),
-        data_attributes: Vec::new(),
-        reject_origin: None,
-        response: None,
-        count_forward: true,
-    }
-}
-
-impl ReadyPort {
-    fn send(&self) {
-        let count = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-        if let Some(started) = self.started.lock().unwrap().take() {
-            let _ = started.send(());
-        }
-        // Even the broken sender returns Pending after finite work. This
-        // fixture cannot hang the runtime when testing its original behavior.
-        if count < REFILL_LIMIT
-            && let Some(refill) = &self.refill
-        {
-            refill
-                .try_send(bacnet_npdu::NetworkPriority::Normal, request())
-                .unwrap();
-        }
-    }
-}
-
-impl TransportPort for ReadyPort {
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        panic!("the sender does not start transports")
-    }
-
-    async fn stop(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    async fn send_unicast(&self, _: &[u8], _: &[u8]) -> Result<(), Error> {
-        self.send();
-        Ok(())
-    }
-
-    async fn send_broadcast(&self, _: &[u8]) -> Result<(), Error> {
-        self.send();
-        Ok(())
-    }
-
-    fn local_mac(&self) -> &[u8] {
-        &[1]
-    }
-
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        1476
-    }
+    started: Option<oneshot::Sender<()>>,
+) -> TestTransport {
+    let started = Mutex::new(started);
+    TestTransport::builder()
+        .start(StartMode::Panic("the sender does not start transports"))
+        .on_send(move |_| {
+            let count = calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if let Some(started) = started.lock().unwrap().take() {
+                let _ = started.send(());
+            }
+            if count < REFILL_LIMIT
+                && let Some(refill) = &refill
+            {
+                refill
+                    .try_send(bacnet_npdu::NetworkPriority::Normal, request())
+                    .unwrap();
+            }
+            async { Ok(()) }
+        })
+        .build()
 }
 
 #[tokio::test]
@@ -152,11 +93,7 @@ async fn ready_transport_yields_before_draining_a_full_backlog() {
             .unwrap();
     }
     let calls = Arc::new(AtomicUsize::new(0));
-    let port = ReadyPort {
-        calls: Arc::clone(&calls),
-        refill: None,
-        started: Mutex::new(None),
-    };
+    let port = ready_port(Arc::clone(&calls), None, None);
     // Poll the sender first. A ready observer can run only once the sender
     // returns Pending. The locked Tokio version's budget is smaller than
     // the 256-item backlog, so cooperation must leave some work queued.
@@ -184,11 +121,7 @@ async fn a_replenished_ready_sender_can_be_aborted_and_joined_before_exhaustion(
         .unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let (started, observe) = oneshot::channel();
-    let port = ReadyPort {
-        calls: Arc::clone(&calls),
-        refill: Some(tx.clone()),
-        started: Mutex::new(Some(started)),
-    };
+    let port = ready_port(Arc::clone(&calls), Some(tx.clone()), Some(started));
     let sender = tokio::spawn(super::run(
         port,
         PortId(0),
@@ -225,7 +158,17 @@ async fn sender_records_forward_success_and_error_per_port() {
         drop(tx);
         let shared = shared();
         super::run(
-            OutcomePort { fail },
+            TestTransport::builder()
+                .on_send(move |_| async move {
+                    if fail {
+                        Err(bacnet_types::error::Error::Encoding(
+                            "injected send failure".into(),
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .build(),
             PortId(0),
             rx,
             Arc::clone(&shared),

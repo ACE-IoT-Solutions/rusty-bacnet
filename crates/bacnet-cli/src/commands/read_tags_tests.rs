@@ -1,5 +1,15 @@
 use super::*;
 
+/// A read's text as `read` prints it.
+fn format_read_value(
+    format: &ValueFormat<'_>,
+    property: PropertyIdentifier,
+    index: Option<u32>,
+    data: &[u8],
+) -> String {
+    read_value(format, property, index, data.to_vec()).text
+}
+
 #[test]
 fn tags_formatter_preserves_names_values_and_shapes() {
     let semantic = [0x0a, 0, b'a'];
@@ -74,7 +84,10 @@ fn tags_formatter_reports_whole_failure_and_preserves_other_formatters() {
     ] {
         assert_eq!(
             format_read_value(&formatter(AI), PropertyIdentifier::TAGS, index, &bytes),
-            format!("[invalid Tags] [raw {}]", hex(&bytes))
+            format!(
+                "[invalid Tags] [raw {}]",
+                bacnet_ops::octets::hex_sep(&bytes, " ")
+            )
         );
     }
     // Any other property goes through the shared formatter.

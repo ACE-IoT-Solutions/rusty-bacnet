@@ -33,7 +33,7 @@ receiving share a two-second timeout; the complete NPDU is checked against
 independent expected bytes for this global Who-Is request.
 
 ```rust
-use bacnet_client::client::{BACnetClient, ClientConfig};
+use bacnet_client::client::{BACnetClient, Broadcast, ClientConfig};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::TransportPort;
 use tokio::time::{timeout, Duration};
@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut frames = peer.start().await?;
     let mut client = BACnetClient::start(ClientConfig::default(), client_port).await?;
     let received = timeout(Duration::from_secs(2), async {
-        client.who_is(None).await?;
+        client.who_is(Broadcast::Global, None).await?;
         let frame = frames.recv().await.ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "loopback peer closed")
         })?;
@@ -107,6 +107,13 @@ doctest. A local render does not establish a docs.rs deployment.
 that the acknowledgement matches the requested object, property and array
 index. Decode it for your property's expected type; the Who-Is byte literal
 above is not a property-value decoder.
+
+Every typed call takes the station it goes to first: a MAC on this link, a
+`BACnetAddress` (network 0 is this link; another network goes through the
+router the discovery table names for the address), or a
+[`client::Station`], which can also name the router itself
+([`client::ToStation`] lists the forms). Each call keeps its encoding and
+its answer checks whichever form names the station.
 
 Keep the client owner until requests finish, then call
 [`client::BACnetClient::stop`]. Stop aborts and joins its dispatch and local

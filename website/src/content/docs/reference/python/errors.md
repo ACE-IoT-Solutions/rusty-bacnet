@@ -168,6 +168,153 @@ Attributes:
 - `expected: int`
 - `got: int`
 
+## BacnetNetworkRejectError
+
+`class BacnetNetworkRejectError(BacnetError)`
+
+Raised when a router answers a network-layer message the client sent
+with a Reject-Message-To-Network, as `routing_table()` reports it
+(#2612). Silence raises `BacnetTimeoutError` instead.
+
+Attributes:
+reason: The reject reason octet the router sent.
+network: The network the router named.
+
+Attributes:
+
+- `reason: int`
+- `network: int`
+
+## BacnetLookupError
+
+`class BacnetLookupError(BacnetError, LookupError)`
+
+Raised when no device could be placed for the name a call gave
+(#2561): no address in the discovery table claims the instance and none
+answered a Who-Is for it, or no router is known for a routed address's
+network. Also a `LookupError`. Nothing was sent to the device. The
+typed `_from_device` and `_to_device` calls raise it for an
+instance the table doesn't hold.
+
+Attributes:
+target: The device as it was named: an instance (`"1234"`,
+`"2:1234"`) or an address (`"2:0x05"`).
+instance: The instance named (`1234` for `"1234"` or
+`"2:1234"`); None when the device was named by an address.
+candidates: An empty list here.
+
+Attributes:
+
+- `target: Optional[str]`
+- `instance: Optional[int]`
+- `candidates: list[tuple[int, bytes]]`
+
+## BacnetAmbiguousDeviceError
+
+`class BacnetAmbiguousDeviceError(BacnetLookupError)`
+
+Raised when a call names a device by its instance and two or more
+addresses in the discovery table claim that instance, so which device is
+meant is unknown (#2560). A `BacnetLookupError`. Nothing was sent.
+Each claimant keeps its own entry in `discovered_devices()` and stays
+reachable by its address; once only one claims the instance, by the
+purge or a new I-Am, the instance works again.
+
+Attributes:
+target: The instance, as text.
+instance: The device instance the call named.
+candidates: Every claimant as `(network, mac)`, ordered by network
+and then MAC: network 0 is the local network, where `mac` is
+the device's own; on another network it is the device's MAC
+there. Each is a `BACnetClient.device()` target.
+
+Attributes:
+
+- `instance: int`
+- `candidates: list[tuple[int, bytes]]`
+
+## BacnetPagingError
+
+`class BacnetPagingError(BacnetError)`
+
+Raised when a device breaks a rule of a paged read, so reading on
+would repeat what was read or never end (#2561): an answer naming an
+object an earlier answer named, or saying more remain with no new
+object to go on after. No call of this release's Python API pages yet;
+the alarm reads to come raise it.
+
+Attributes:
+service: The paged service, such as `"GetEventInformation"`.
+object\_id: The object named again; None when none was.
+
+Attributes:
+
+- `service: str`
+- `object_id: Optional[ObjectIdentifier]`
+
+## BacnetWriteDeniedError
+
+`class BacnetWriteDeniedError(BacnetError)`
+
+Raised when the client's `write_policy` refuses the priority a
+`write` or `relinquish` names (#2561): 1, 2, 5 or 6 by default.
+Nothing was sent. The message says how to allow it:
+`BACnetClient(write_policy=WritePolicy().allow_priorities([n]))`.
+
+Attributes:
+priority: The priority refused, 1 to 16.
+relinquish: True for a relinquish.
+object\_id: The object named.
+property\_id: The property named (Present\_Value for a relinquish).
+array\_index: The array index named, None for the whole property.
+
+Attributes:
+
+- `priority: int`
+- `relinquish: bool`
+- `object_id: ObjectIdentifier`
+- `property_id: PropertyIdentifier`
+- `array_index: Optional[int]`
+
+## BacnetReadBackError
+
+`class BacnetReadBackError(BacnetError)`
+
+Raised when the device acknowledged a `relinquish`, so it took
+effect, but the read of the object's priorities after it failed
+(#2561). Don't send it again: read them with `priority_array` once the
+device answers. `__cause__` is why the read failed, such as a
+`BacnetTimeoutError`; this class is not one, so a retry on timeouts
+leaves it alone.
+
+Attributes:
+written: The relinquish as the device acknowledged it.
+
+Attributes:
+
+- `written: Written`
+
+## BacnetNoPriorityArrayError
+
+`class BacnetNoPriorityArrayError(BacnetProtocolError)`
+
+Raised when the device says the object has no Priority\_Array, so its
+Present\_Value isn't commandable: a value object built without one
+(#2561). `error_class` and `error_code` are the device's PROPERTY
+and UNKNOWN\_PROPERTY. After a `relinquish`, the device took the NULL
+first as a write to a property that isn't commandable, which changes
+nothing, and `written` holds it.
+
+Attributes:
+object\_id: The object.
+written: The relinquish acknowledged before the read; None for
+`priority_array`, which writes nothing.
+
+Attributes:
+
+- `object_id: ObjectIdentifier`
+- `written: Optional[Written]`
+
 ## BacnetTransportError
 
 `class BacnetTransportError(BacnetError, OSError)`

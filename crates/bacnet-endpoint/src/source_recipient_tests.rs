@@ -2,6 +2,7 @@
 use super::*;
 use bacnet_encoding::apdu::ConfirmedRequest;
 use bacnet_services::write_property::WritePropertyRequest;
+use bacnet_transport::test_transport::TestTransport;
 use bacnet_types::constructed::{AuditPropertyReference, BACnetAddress};
 
 fn device(n: u32) -> BACnetRecipient {
@@ -12,13 +13,16 @@ fn value(recipient: &BACnetRecipient) -> Vec<u8> {
     bacnet_encoding::constructed::encode_recipient(&mut data, recipient).unwrap();
     data.to_vec()
 }
-fn direct(network: &NetworkLayer<BusPort>) -> BACnetRecipient {
+fn direct(network: &NetworkLayer<TestTransport>) -> BACnetRecipient {
     BACnetRecipient::Address(BACnetAddress {
         network_number: 0,
         mac_address: MacAddr::from_slice(network.local_mac()),
     })
 }
-async fn local(session: &EndpointSession<BusPort>, value: PropertyValue) -> Result<(), Error> {
+async fn local(
+    session: &EndpointSession<TestTransport>,
+    value: PropertyValue,
+) -> Result<(), Error> {
     session
         .database
         .as_ref()
@@ -34,7 +38,7 @@ async fn local(session: &EndpointSession<BusPort>, value: PropertyValue) -> Resu
             None,
         )
 }
-async fn current(session: &EndpointSession<BusPort>) -> PropertyValue {
+async fn current(session: &EndpointSession<TestTransport>) -> PropertyValue {
     session
         .database
         .as_ref()
@@ -46,9 +50,25 @@ async fn current(session: &EndpointSession<BusPort>) -> PropertyValue {
         .read_property(PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT, None)
         .unwrap()
 }
+/// The application's own write of the recipient, through the session's
+/// server (#2617).
+async fn write_recipient_locally(
+    session: &EndpointSession<TestTransport>,
+    value: PropertyValue,
+    priority: Option<u8>,
+) -> Result<(), Error> {
+    let oid = oid(ObjectType::DEVICE, 123);
+    let property = PropertyIdentifier::AUDIT_NOTIFICATION_RECIPIENT;
+    let source = bacnet_device_core::write::local::LocalCommandSource::ServerDevice;
+    session
+        .server()
+        .expect("a session with a server role")
+        .write_local(&oid, property, None, value, priority, source)
+        .await
+}
 async fn wire(
-    session: &EndpointSession<BusPort>,
-    peer: &NetworkLayer<BusPort>,
+    session: &EndpointSession<TestTransport>,
+    peer: &NetworkLayer<TestTransport>,
     replies: &mut bacnet_network::layer::ApduReceiver,
     bytes: Vec<u8>,
     invoke: u8,
@@ -105,16 +125,13 @@ fn assert_record(
     new: &BACnetRecipient,
     source: BACnetRecipient,
     invoke: Option<u8>,
-    sequence: u16,
+    clocked: bool,
 ) {
     assert_eq!(record.operation, AuditOperation::WRITE);
     assert_eq!(record.source_device, source);
     assert_eq!(record.invoke_id, invoke);
     assert_eq!(record.source_timestamp, None);
-    assert_eq!(
-        record.target_timestamp,
-        Some(BACnetTimeStamp::SequenceNumber(sequence))
-    );
+    assert_stamp(&record.target_timestamp, clocked, 0);
     assert_eq!(record.target_device, device(123));
     assert_eq!(record.target_object, Some(oid(ObjectType::DEVICE, 123)));
     assert_eq!(
@@ -132,9 +149,9 @@ fn assert_record(
 
 #[tokio::test(start_paused = true)]
 async fn source_recipient_local_and_authorized_wire_pair_bypass_ordinary_filters() {
-    let (mut old, mut old_records) = network().await;
-    let (mut new, mut new_records) = network().await;
-    let (mut peer, mut replies) = network().await;
+    let (old, mut old_records) = network().await;
+    let (new, mut new_records) = network().await;
+    let (peer, mut replies) = network().await;
     for role in [SessionRole::ClientOnly, SessionRole::Both] {
         for level in [AuditLevel::NONE, AuditLevel::AUDIT_ALL] {
             let mut db = database(false);
@@ -187,7 +204,7 @@ async fn source_recipient_local_and_authorized_wire_pair_bypass_ordinary_filters
                     device(123)
                 },
                 (role == SessionRole::Both).then_some(71),
-                0,
+                role == SessionRole::Both,
             );
             assert_eq!(
                 current(&session).await,
@@ -205,7 +222,7 @@ async fn source_recipient_local_and_authorized_wire_pair_bypass_ordinary_filters
 
 #[tokio::test(start_paused = true)]
 async fn source_recipient_null_equal_invalid_and_second_permit_preserve_commit_state() {
-    let (mut sink, mut records) = network().await;
+    let (sink, mut records) = network().await;
     let mut db = database(false);
     db.set_clock_reader(None);
     let mut session = session(db, SessionRole::ClientOnly, &sink);
@@ -277,7 +294,7 @@ async fn source_recipient_null_equal_invalid_and_second_permit_preserve_commit_s
     let (a, _) = notification(&receive(&mut records).await, false);
     let (b, _) = notification(&receive(&mut records).await, false);
     assert_eq!(a, b);
-    assert_record(&a, &device(999), &next, device(123), None, 0);
+    assert_record(&a, &device(999), &next, device(123), None, false);
     assert_eq!(
         session
             .database
@@ -295,9 +312,9 @@ async fn source_recipient_null_equal_invalid_and_second_permit_preserve_commit_s
 
 #[tokio::test(start_paused = true)]
 async fn source_recipient_read_keeps_admitted_route_and_later_read_uses_new_value() {
-    let (mut old, mut old_records) = network().await;
-    let (mut new, mut new_records) = network().await;
-    let (mut peer, mut requests) = network().await;
+    let (old, mut old_records) = network().await;
+    let (new, mut new_records) = network().await;
+    let (peer, mut requests) = network().await;
     let mut db = database(false);
     db.set_clock_reader(None);
     let mut session = session(db, SessionRole::ClientOnly, &old);
@@ -350,23 +367,26 @@ mod lifetime;
 #[tokio::test(start_paused = true)]
 async fn source_recipient_wire_denial_panic_and_invalid_encoding_are_atomic() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let (mut sink, mut records) = network().await;
-    let (mut peer, mut replies) = network().await;
+    let (sink, mut records) = network().await;
+    let (peer, mut replies) = network().await;
     let decision = Arc::new(AtomicUsize::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
     let d = decision.clone();
     let c = calls.clone();
     let mut db = database(false);
     db.set_clock_reader(None);
-    let mut session =
-        session(db, SessionRole::Both, &sink).with_device_writes(Arc::new(move |_| {
+    let policy = bacnet_server::policy::FnPolicy::new()
+        .inline()
+        .mutation(move |_| {
             c.fetch_add(1, Ordering::SeqCst);
             match d.load(Ordering::SeqCst) {
                 0 => false,
                 1 => panic!("controlled authorizer panic"),
                 _ => true,
             }
-        }));
+        });
+    let mut session = session(db, SessionRole::Both, &sink)
+        .with_server(bacnet_server::server::BACnetServer::generic_builder().policy(policy));
     session.start().await.unwrap();
     let next = direct(&sink);
     for mode in [0, 1] {
@@ -387,17 +407,15 @@ async fn source_recipient_wire_denial_panic_and_invalid_encoding_are_atomic() {
             Apdu::Error(_)
         ));
     }
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        2,
-        "malformed values never reach policy"
-    );
+    // The server asks its policy before it decodes the value, as for any
+    // write; a malformed one is refused all the same.
+    let asked = calls.load(Ordering::SeqCst);
     assert!(
         matches!(wire(&session,&peer,&mut replies,vec![0],74).await,Apdu::SimpleAck(a) if a.invoke_id==74)
     );
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        3,
+        asked + 1,
         "NULL still requires policy"
     );
     assert_eq!(
@@ -422,10 +440,57 @@ async fn source_recipient_wire_denial_panic_and_invalid_encoding_are_atomic() {
     peer.stop().await.unwrap();
 }
 
+/// A session of both roles given no server builder runs the read-only
+/// server, beside which source Audit starts (#2617): a peer's write of the
+/// audited Device's Audit_Notification_Recipient is denied, the recipient
+/// stays, and nothing is recorded.
+#[tokio::test(start_paused = true)]
+async fn the_default_server_denies_a_peers_write_of_the_recipient() {
+    let (sink, mut records) = network().await;
+    let (peer, mut replies) = network().await;
+    let mut db = database(false);
+    db.set_clock_reader(None);
+    db.get_mut(&oid(ObjectType::DEVICE, 123))
+        .unwrap()
+        .device_authority_internal()
+        .unwrap()
+        .provision_audit_recipient(device(999))
+        .unwrap();
+    let config = SessionConfig {
+        apdu_timeout_ms: 100,
+        apdu_retries: 0,
+        ..SessionConfig::default()
+    };
+    let mut session = bare_session(SessionRole::Both, config)
+        .device(crate::DeviceIdentity::new(123, 42).unwrap())
+        .with_database(db)
+        .with_source_audit_reporter(selected());
+    session
+        .source_audit_bindings
+        .push((oid(ObjectType::DEVICE, 999), address(&sink)));
+    session.start().await.unwrap();
+    let reply = wire(&session, &peer, &mut replies, value(&direct(&sink)), 75).await;
+    assert!(
+        matches!(&reply, Apdu::Error(error) if error.invoke_id == 75
+            && error.error_class == ErrorClass::SERVICES
+            && error.error_code == ErrorCode::SERVICE_REQUEST_DENIED),
+        "{reply:?}"
+    );
+    assert_eq!(
+        current(&session).await,
+        PropertyValue::ApplicationData(value(&device(999)))
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(records.try_recv().is_err(), "a record of a denied write");
+    session.stop().await.unwrap();
+    sink.stop().await.unwrap();
+    peer.stop().await.unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn source_recipient_unresolved_device_preserves_read_and_rejects_live_change() {
-    let (mut sink, mut records) = network().await;
-    let (mut peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
     let mut db = database(false);
     db.set_clock_reader(None);
     let mut session = session(db, SessionRole::ClientOnly, &sink);
@@ -463,4 +528,87 @@ async fn source_recipient_unresolved_device_preserves_read_and_rejects_live_chan
     session.stop().await.unwrap();
     sink.stop().await.unwrap();
     peer.stop().await.unwrap();
+}
+
+/// The server's local write of the recipient (#2468) takes the route a
+/// client's write and `write_audit_recipient` take: one record to the old
+/// recipient and one to the new, from this Device with no invoke ID.
+#[tokio::test(start_paused = true)]
+async fn a_local_write_of_the_recipient_tells_the_old_and_the_new_one() {
+    let (old, mut old_records) = network().await;
+    let (new, mut new_records) = network().await;
+    let mut db = database(false);
+    db.set_clock_reader(None);
+    let mut session = session(db, SessionRole::Both, &old);
+    session.start().await.unwrap();
+    let next = direct(&new);
+    write_recipient_locally(&session, PropertyValue::ApplicationData(value(&next)), None)
+        .await
+        .unwrap();
+    let (first, _) = notification(&receive(&mut old_records).await, false);
+    let (second, _) = notification(&receive(&mut new_records).await, false);
+    assert_eq!(first, second);
+    assert_record(&first, &device(999), &next, device(123), None, true);
+    assert_eq!(
+        current(&session).await,
+        PropertyValue::ApplicationData(value(&next))
+    );
+    assert!(old_records.try_recv().is_err());
+    assert!(new_records.try_recv().is_err());
+    session.stop().await.unwrap();
+    old.stop().await.unwrap();
+    new.stop().await.unwrap();
+}
+
+/// A local write of the recipient the Device refuses (#2468 review) changes
+/// nothing and sends no record to the old recipient or the new one: a
+/// value of another datatype, one that names no Device, and one naming the
+/// new recipient at a priority outside 1 to 16.
+#[tokio::test(start_paused = true)]
+async fn a_refused_local_write_of_the_recipient_sends_nothing() {
+    let (old, mut old_records) = network().await;
+    let (new, mut new_records) = network().await;
+    let mut db = database(false);
+    db.set_clock_reader(None);
+    let mut session = session(db, SessionRole::Both, &old);
+    session.start().await.unwrap();
+    let before = current(&session).await;
+    let wildcard = BACnetRecipient::Device(oid(ObjectType::DEVICE, ObjectIdentifier::MAX_INSTANCE));
+    let next = PropertyValue::ApplicationData(value(&direct(&new)));
+    let property = (ErrorClass::PROPERTY, ErrorCode::INVALID_DATA_TYPE);
+    for (value, priority, expected) in [
+        (PropertyValue::Unsigned(1), None, property),
+        (
+            PropertyValue::ApplicationData(value(&wildcard)),
+            None,
+            (ErrorClass::PROPERTY, ErrorCode::INVALID_DATA_ENCODING),
+        ),
+        (
+            next,
+            Some(17),
+            (ErrorClass::SERVICES, ErrorCode::PARAMETER_OUT_OF_RANGE),
+        ),
+    ] {
+        let refused = write_recipient_locally(&session, value, priority)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(refused, Error::Remote(bacnet_types::error::RemoteError::Error { class, code })
+                if (class, code) == expected),
+            "{refused:?}"
+        );
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        old_records.try_recv().is_err(),
+        "a record to the old recipient"
+    );
+    assert!(
+        new_records.try_recv().is_err(),
+        "a record to the new recipient"
+    );
+    assert_eq!(current(&session).await, before);
+    session.stop().await.unwrap();
+    old.stop().await.unwrap();
+    new.stop().await.unwrap();
 }

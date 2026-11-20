@@ -8,6 +8,7 @@
 //!
 //! Split from `tests.rs`, which is at the 700-LOC cap.
 
+use crate::client::Station;
 use std::time::Instant;
 
 use bacnet_encoding::apdu::{self, Apdu, SegmentAck as SegmentAckPdu, SimpleAck};
@@ -34,10 +35,11 @@ fn routed_peer(
         object_identifier: ObjectIdentifier::new(ObjectType::DEVICE, 3003).unwrap(),
         mac_address: MacAddr::from_slice(router_mac),
         max_apdu_length,
-        segmentation_supported: Segmentation::BOTH,
+        segmentation_supported: Segmentation::SEGMENTED_BOTH,
         max_segments_accepted: None,
         vendor_id: 42,
         last_seen: Instant::now(),
+        last_announced: None,
         source_network: Some(network),
         source_address: Some(MacAddr::from_slice(mac)),
     }
@@ -77,10 +79,12 @@ async fn routed_confirmed_request_honors_discovered_peer_max_apdu() {
 
     let request_task = tokio::spawn(async move {
         let result = client
-            .confirmed_request_routed(
-                &router_mac_for_request,
-                remote_network,
-                &remote_mac_for_request,
+            .confirmed_request(
+                &Station::routed(
+                    &router_mac_for_request,
+                    remote_network,
+                    &remote_mac_for_request,
+                ),
                 ConfirmedServiceChoice::WRITE_PROPERTY,
                 &service_data,
             )
@@ -180,10 +184,8 @@ async fn routed_confirmed_request_rejects_subminimum_peer_limit() {
         .upsert(routed_peer(3, &router_mac, remote_network, &remote_mac));
 
     let err = client
-        .confirmed_request_routed(
-            &router_mac,
-            remote_network,
-            &remote_mac,
+        .confirmed_request(
+            &Station::routed(&router_mac, remote_network, &remote_mac),
             ConfirmedServiceChoice::READ_PROPERTY,
             &[0x01],
         )
@@ -235,14 +237,20 @@ async fn manual_routed_registration_honors_seeded_peer_limit() {
             remote_network,
             remote_mac: remote_mac.clone(),
             max_apdu_length: 128,
-            segmentation_supported: Segmentation::BOTH,
+            segmentation_supported: Segmentation::SEGMENTED_BOTH,
             max_segments_accepted: None,
         })
         .await
         .unwrap();
 
     // The registration must preserve every supplied field.
-    let row = client.device_table.lock().get(3003).cloned().unwrap();
+    let row = client
+        .device_table
+        .lock()
+        .find(3003)
+        .unwrap()
+        .cloned()
+        .unwrap();
     assert_eq!(row.mac_address.as_slice(), &router_mac);
     assert_eq!(row.source_network, Some(remote_network));
     assert_eq!(
@@ -250,13 +258,14 @@ async fn manual_routed_registration_honors_seeded_peer_limit() {
         Some(remote_mac.clone())
     );
     assert_eq!(row.max_apdu_length, 128);
-    assert_eq!(row.segmentation_supported, Segmentation::BOTH);
+    assert_eq!(row.segmentation_supported, Segmentation::SEGMENTED_BOTH);
     assert_eq!(row.max_segments_accepted, None);
 
     // resolve_device yields the router next-hop plus the remote identity.
-    let (next_hop, routing) = client.resolve_device(3003).await.unwrap();
-    assert_eq!(next_hop, router_mac);
-    assert_eq!(routing, Some((remote_network, remote_mac.clone())));
+    assert_eq!(
+        client.resolve_device(3003).await.unwrap(),
+        Station::routed(&router_mac, remote_network, &remote_mac)
+    );
 
     let service_data: Vec<u8> = (0..200u16).map(|i| i as u8).collect();
     let expected_data = service_data.clone();
@@ -265,10 +274,12 @@ async fn manual_routed_registration_honors_seeded_peer_limit() {
 
     let request_task = tokio::spawn(async move {
         let result = client
-            .confirmed_request_routed(
-                &router_mac_for_request,
-                remote_network,
-                &remote_mac_for_request,
+            .confirmed_request(
+                &Station::routed(
+                    &router_mac_for_request,
+                    remote_network,
+                    &remote_mac_for_request,
+                ),
                 ConfirmedServiceChoice::WRITE_PROPERTY,
                 &service_data,
             )
@@ -362,7 +373,7 @@ async fn manual_routed_registration_rejects_empty_addresses() {
                 remote_network: 100,
                 remote_mac,
                 max_apdu_length: 128,
-                segmentation_supported: Segmentation::BOTH,
+                segmentation_supported: Segmentation::SEGMENTED_BOTH,
                 max_segments_accepted: None,
             })
             .await;
@@ -370,7 +381,7 @@ async fn manual_routed_registration_rejects_empty_addresses() {
     }
 
     assert!(
-        client.device_table.lock().get(3003).is_none(),
+        client.device_table.lock().find(3003).unwrap().is_none(),
         "a refused registration must not create a row"
     );
 }
@@ -390,10 +401,10 @@ async fn legacy_add_device_creates_local_row_only() {
     client.add_device(1234, &mac).await.unwrap();
 
     let dt = client.device_table.lock();
-    let local = dt.get_by_mac(&mac).expect("local lookup must find the row");
+    let local = dt.get(0, &mac).expect("local lookup must find the row");
     assert_eq!(local.object_identifier.instance_number(), 1234);
     assert!(
-        dt.get_by_network_address(100, &mac).is_none(),
+        dt.get(100, &mac).is_none(),
         "the same bytes as SNET/SADR must not satisfy a routed lookup"
     );
 }

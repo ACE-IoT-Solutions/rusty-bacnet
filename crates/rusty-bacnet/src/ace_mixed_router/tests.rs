@@ -9,9 +9,9 @@ use tokio::sync::{mpsc, oneshot};
 
 #[derive(Default)]
 struct TestPort {
-    incoming: Option<mpsc::Sender<ReceivedNpdu>>,
-    stopping: Option<oneshot::Sender<()>>,
-    stop_gate: Option<oneshot::Receiver<()>>,
+    incoming: std::sync::Mutex<Option<mpsc::Sender<ReceivedNpdu>>>,
+    stopping: std::sync::Mutex<Option<oneshot::Sender<()>>>,
+    stop_gate: std::sync::Mutex<Option<oneshot::Receiver<()>>>,
     fail_start: bool,
     fail_stop: bool,
     stops: Arc<AtomicUsize>,
@@ -24,18 +24,19 @@ impl TransportPort for TestPort {
             return Err(Error::Encoding("injected start failure".into()));
         }
         let (tx, rx) = mpsc::channel(4);
-        self.incoming = Some(tx);
+        *self.incoming.get_mut().unwrap() = Some(tx);
         Ok(rx)
     }
-    async fn stop(&mut self) -> Result<(), Error> {
+    async fn stop(&self) -> Result<(), Error> {
         self.stops.fetch_add(1, Ordering::SeqCst);
-        if let Some(entered) = self.stopping.take() {
+        if let Some(entered) = self.stopping.lock().unwrap().take() {
             let _ = entered.send(());
         }
-        if let Some(gate) = self.stop_gate.take() {
+        let gate = self.stop_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
             gate.await.unwrap();
         }
-        self.incoming.take();
+        self.incoming.lock().unwrap().take();
         if self.fail_stop {
             Err(Error::Encoding("injected cleanup failure".into()))
         } else {
@@ -79,6 +80,7 @@ fn session(ports: Vec<TestPort>) -> MixedSession {
     let mut session = MixedSession::new(
         Vec::new(),
         None,
+        false,
         Arc::new(StdMutex::new(Vec::new())),
         Arc::new(StdMutex::new(Vec::new())),
         Arc::new(StdMutex::new(Vec::new())),
@@ -134,8 +136,8 @@ async fn cancelled_start_cannot_interrupt_multiport_rollback() {
     let (release, gate) = oneshot::channel();
     let stops = Arc::new(AtomicUsize::new(0));
     let first = TestPort {
-        stopping: Some(entered),
-        stop_gate: Some(gate),
+        stopping: Some(entered).into(),
+        stop_gate: Some(gate).into(),
         stops: stops.clone(),
         ..Default::default()
     };
@@ -176,8 +178,8 @@ async fn cancelled_stop_keeps_cleanup_and_later_stop_is_a_barrier() {
     start(
         &owner,
         vec![TestPort {
-            stopping: Some(entered),
-            stop_gate: Some(gate),
+            stopping: Some(entered).into(),
+            stop_gate: Some(gate).into(),
             stops: stops.clone(),
             ..Default::default()
         }],

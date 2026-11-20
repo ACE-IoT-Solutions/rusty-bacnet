@@ -3,8 +3,10 @@
 //! refusals; and, with persistence, a written Accompaniment kept across a
 //! restart and saved off the database lock like the rule arrays (#1392).
 
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use super::test_storage::{MemoryPersistence, assert_refused, block_on, persistent, write};
 use super::*;
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use crate::durable::{DurableWrites, StageStep};
 use crate::property_metadata::{PropertyConformance, PropertyWriteCapability};
 use crate::property_metadata::{is_array_property, is_writable_property};
@@ -79,7 +81,7 @@ fn assert_listed(rights: &AccessRightsObject, listed: bool) {
         let order: Vec<_> = metadata.iter().map(|row| row.property_identifier).collect();
         assert_eq!(
             &order[order.len() - 3..],
-            [P::LOG_ENABLE, P::ACCOMPANIMENT, P::PROPERTY_LIST]
+            [P::ENABLE, P::ACCOMPANIMENT, P::PROPERTY_LIST]
         );
     }
 }
@@ -374,7 +376,7 @@ fn a_written_accompaniment_survives_a_rebuild_and_wins_over_the_setter() {
     for property in [
         P::POSITIVE_ACCESS_RULES,
         P::NEGATIVE_ACCESS_RULES,
-        P::LOG_ENABLE,
+        P::ENABLE,
     ] {
         assert!(!rebuilt.property_saved(property), "{property:?}");
     }
@@ -425,6 +427,7 @@ fn a_saved_accompaniment_the_setter_refuses_refuses_the_object() {
     }
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn an_accompaniment_write_stages_only_while_the_row_is_served() {
     let storage = Arc::new(MemoryPersistence::default());

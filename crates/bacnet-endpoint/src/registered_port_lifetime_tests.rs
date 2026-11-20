@@ -1,8 +1,11 @@
 //! Controlled real B/IP cleanup proves leases outlive cancelled caller waiters.
 use super::*;
-use bacnet_transport::{bip::BipTransport, port::ReceivedNpdu};
+use bacnet_transport::{
+    bip::BipTransport,
+    test_transport::{SendMode, TestTransport, TestTransportBuilder},
+};
 use std::{
-    net::{Ipv4Addr, SocketAddrV4},
+    net::Ipv4Addr,
     sync::{
         Mutex as SyncMutex, Weak,
         atomic::{AtomicBool, AtomicU8},
@@ -40,82 +43,72 @@ impl Control {
         self.lease.lock().unwrap().strong_count() != 0
     }
 }
-struct Controlled {
-    bip: BipTransport,
-    control: Arc<Control>,
-    bound: bool,
-    incoming: Option<mpsc::Receiver<ReceivedNpdu>>,
+/// A real B/IP link whose lease, start and stop `control` holds and
+/// observes, and whose Network Port goes missing once started, when
+/// `control.mismatch` says. Its egress limit is asymmetric on purpose: port
+/// publication must use the local 1476.
+fn controlled(control: Arc<Control>) -> TestTransport {
+    controlled_builder(control).build()
 }
-impl Controlled {
-    fn new(control: Arc<Control>) -> Self {
-        Self {
-            bip: BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST),
-            control,
-            bound: false,
-            incoming: None,
-        }
-    }
-}
-impl TransportPort for Controlled {
-    fn bip_broadcast_endpoint(&self) -> Option<SocketAddrV4> {
-        self.bip.bip_broadcast_endpoint()
-    }
-    fn supports_local_nonrouter_number_controls(&self) -> bool {
-        self.bip.supports_local_nonrouter_number_controls()
-    }
-    fn bip_port(&self) -> Option<bacnet_transport::port::BipPort> {
-        if self.bound && self.control.mismatch.load(Ordering::SeqCst) {
-            None
-        } else {
-            self.bip.bip_port()
-        }
-    }
-    fn retain_network_port_lease_internal(&mut self, lease: Arc<()>) -> Result<(), Error> {
-        *self.control.lease.lock().unwrap() = Arc::downgrade(&lease);
-        self.bip.retain_network_port_lease_internal(lease)
-    }
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        let receiver = self.bip.start().await?;
-        self.bound = true;
-        self.control.started.notify_one();
-        if self.control.hold_start.load(Ordering::SeqCst) {
-            self.control.start_release.acquire().await.unwrap().forget();
-        }
-        Ok(self.incoming.take().unwrap_or(receiver))
-    }
-    async fn stop(&mut self) -> Result<(), Error> {
-        self.control.stop_entered.notify_one();
-        self.control.release.acquire().await.unwrap().forget();
-        match self.control.stop_outcome.load(Ordering::SeqCst) {
-            1 => return Err(Error::Encoding("injected registered stop failure".into())),
-            2 => panic!("injected registered stop panic"),
-            _ => {}
-        }
-        self.bip.stop().await?;
-        self.control.stop_finished.notify_one();
-        Ok(())
-    }
-    fn abort(&mut self) {
-        self.bip.abort();
-    }
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        self.bip.local_receive_apdu_capacity()
-    }
 
-    fn egress_apdu_limit(&self) -> u16 {
-        // Deliberately asymmetric wrapper: port publication must use local1476.
-        480
-    }
-
-    fn local_mac(&self) -> &[u8] {
-        self.bip.local_mac()
-    }
-    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        self.bip.send_unicast(npdu, mac).await
-    }
-    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        self.bip.send_broadcast(npdu).await
-    }
+fn controlled_builder(control: Arc<Control>) -> TestTransportBuilder {
+    let bound = Arc::new(AtomicBool::new(false));
+    let (port_control, lease_control, started_control, start_control, stop_control, after_control) = (
+        control.clone(),
+        control.clone(),
+        control.clone(),
+        control.clone(),
+        control.clone(),
+        control,
+    );
+    let started = Arc::clone(&bound);
+    TestTransport::builder()
+        .inner(BipTransport::new(
+            Ipv4Addr::LOCALHOST,
+            0,
+            Ipv4Addr::BROADCAST,
+        ))
+        .unicast(SendMode::Forward)
+        .broadcast(SendMode::Forward)
+        .egress_limit(480)
+        .on_bip_port(move |port| {
+            if bound.load(Ordering::SeqCst) && port_control.mismatch.load(Ordering::SeqCst) {
+                None
+            } else {
+                port
+            }
+        })
+        .on_retain_lease(move |lease| *lease_control.lease.lock().unwrap() = Arc::downgrade(lease))
+        .on_started(move |_| {
+            started.store(true, Ordering::SeqCst);
+            started_control.started.notify_one();
+        })
+        .after_start(move || {
+            let control = start_control.clone();
+            async move {
+                if control.hold_start.load(Ordering::SeqCst) {
+                    control.start_release.acquire().await.unwrap().forget();
+                }
+                Ok(())
+            }
+        })
+        .before_stop(move || {
+            let control = stop_control.clone();
+            async move {
+                control.stop_entered.notify_one();
+                control.release.acquire().await.unwrap().forget();
+                match control.stop_outcome.load(Ordering::SeqCst) {
+                    1 => return Err(Error::Encoding("injected registered stop failure".into())),
+                    2 => panic!("injected registered stop panic"),
+                    _ => {}
+                }
+                Ok(())
+            }
+        })
+        .after_stop(move || {
+            after_control.stop_finished.notify_one();
+            async { Ok(()) }
+        })
 }
 fn port() -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::NETWORK_PORT, 1).unwrap()
@@ -157,14 +150,14 @@ async fn assert_protected(db: &Arc<RwLock<ObjectDatabase>>) {
             .is_err()
     );
 }
-async fn server(control: Arc<Control>) -> bacnet_server::server::BACnetServer<Controlled> {
+async fn server(control: Arc<Control>) -> bacnet_server::server::BACnetServer<TestTransport> {
     let id = identity();
     let mut config = crate::identity::server_config(&id);
     config.registered_network_port = Some(port());
     bacnet_server::server::BACnetServer::start(
         config,
         id.build_database().unwrap(),
-        Controlled::new(control),
+        controlled(control),
     )
     .await
     .unwrap()
@@ -217,7 +210,7 @@ async fn registered_port_failed_postbind_start_cleanup_survives_caller_cancel() 
     let task = tokio::spawn(bacnet_server::server::BACnetServer::start(
         config,
         id.build_database().unwrap(),
-        Controlled::new(control.clone()),
+        controlled(control.clone()),
     ));
     wait(&control.stop_entered).await;
     assert!(control.alive());
@@ -235,7 +228,7 @@ async fn registered_port_endpoint_cancelled_start_and_stop_join_same_cleanup() {
     control.hold_start.store(true, Ordering::SeqCst);
     let id = identity();
     let mut session = EndpointSession::new(
-        Controlled::new(control.clone()),
+        controlled(control.clone()),
         SessionRole::ServerOnly,
         SessionConfig::default(),
     )
@@ -264,100 +257,11 @@ async fn registered_port_endpoint_cancelled_start_and_stop_join_same_cleanup() {
 }
 
 #[tokio::test]
-async fn registered_port_admitted_read_survives_independent_ingress_end() {
-    for direct in [false, true] {
-        let control = Control::new();
-        let (incoming, receiver) = mpsc::channel(1);
-        let mut transport = Controlled::new(control.clone());
-        transport.incoming = Some(receiver);
-        let id = identity();
-        let mut session =
-            EndpointSession::new(transport, SessionRole::ServerOnly, SessionConfig::default())
-                .unwrap()
-                .with_database(id.build_database().unwrap())
-                .device(id)
-                .with_registered_network_port(port());
-        session.start().await.unwrap();
-        let idle_handle = session.cloned_server_handle().unwrap();
-        let db = session.database.as_ref().unwrap().clone();
-        let mut locked = db.write().await;
-        let baseline = control.lease.lock().unwrap().strong_count();
-        // Real encoded RP for NETWORK_PORT:4194303 Object_Identifier; block its DB read.
-        let npdu =
-            bytes::Bytes::from_static(&[1, 4, 0, 5, 1, 12, 12, 0x0e, 0x3f, 0xff, 0xff, 25, 75]);
-        let mac = bacnet_types::MacAddr::from_slice(&[127, 0, 0, 1, 0xba, 0xc0]);
-        let direct_call = if direct {
-            let handle = idle_handle.clone();
-            Some(tokio::spawn(async move {
-                handle
-                    .handle_inbound(ReceivedApdu {
-                        router_response: None,
-                        direct_response: None,
-                        apdu: npdu.slice(2..),
-                        source_mac: mac,
-                        ingress_network: None,
-                        source_network: None,
-                        link_layer_group: false,
-                        is_group: false,
-                        global_broadcast: false,
-                        data_attributes: vec![],
-                        provenance: bacnet_transport::port::TransportProvenance::unverified(),
-                        reply_tx: None,
-                    })
-                    .await
-            }))
-        } else {
-            incoming
-                .send(ReceivedNpdu::unverified(npdu, mac, false, vec![], None))
-                .await
-                .unwrap();
-            None
-        };
-        tokio::time::timeout(Duration::from_secs(3), async {
-            // Per-call strong acquisition is an exact admission observation, not a delay.
-            while control.lease.lock().unwrap().strong_count() <= baseline {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        drop(incoming);
-        wait(&control.stop_entered).await;
-        control.release.add_permits(1);
-        wait(&control.stop_finished).await;
-        assert!(session.bip_local_address().is_none());
-        // UDP is stopped; the already-admitted reader still protects object identity.
-        assert!(locked.remove(&port()).is_err());
-        assert!(
-            locked
-                .get_mut(&port())
-                .unwrap()
-                .write_property(
-                    PropertyIdentifier::OUT_OF_SERVICE,
-                    None,
-                    PropertyValue::Boolean(true),
-                    None
-                )
-                .is_err()
-        );
-        drop(locked);
-        if let Some(call) = direct_call {
-            assert!(call.await.unwrap().is_err());
-        }
-        session.stop().await.unwrap();
-        assert!(!control.alive());
-        assert!(db.write().await.remove(&port()).unwrap().is_some());
-        // Retaining an inactive public role does not reserve the object indefinitely.
-        assert!(!idle_handle.is_session_alive());
-    }
-}
-
-#[tokio::test]
 async fn registered_port_endpoint_cleanup_error_is_reported() {
     let control = Control::new();
     let id = identity();
     let mut session = EndpointSession::new(
-        Controlled::new(control.clone()),
+        controlled(control.clone()),
         SessionRole::ServerOnly,
         SessionConfig::default(),
     )
@@ -419,7 +323,7 @@ async fn registered_port_active_endpoint_cancelled_stop_retains_and_then_release
     let control = Control::new();
     let id = identity();
     let mut session = EndpointSession::new(
-        Controlled::new(control.clone()),
+        controlled(control.clone()),
         SessionRole::ServerOnly,
         SessionConfig::default(),
     )
@@ -429,7 +333,6 @@ async fn registered_port_active_endpoint_cancelled_stop_retains_and_then_release
     .with_registered_network_port(port());
     session.start().await.unwrap();
     let db = session.database.as_ref().unwrap().clone();
-    let idle = session.cloned_server_handle().unwrap();
     {
         let stop = session.stop();
         tokio::pin!(stop);
@@ -439,7 +342,6 @@ async fn registered_port_active_endpoint_cancelled_stop_retains_and_then_release
     assert_protected(&db).await;
     control.release.add_permits(1);
     session.stop().await.unwrap();
-    assert!(!idle.is_session_alive());
     assert!(!control.alive());
     assert!(db.write().await.remove(&port()).unwrap().is_some());
 }
@@ -464,7 +366,7 @@ async fn both_registered_bip_snapshots_use_local_capacity_not_smaller_egress() {
     let control = Control::new();
     let id = identity();
     let mut session = EndpointSession::new(
-        Controlled::new(control.clone()),
+        controlled(control.clone()),
         SessionRole::ServerOnly,
         SessionConfig::default(),
     )

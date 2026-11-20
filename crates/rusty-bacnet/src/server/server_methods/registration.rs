@@ -232,9 +232,98 @@ impl BACnetServer {
     }
 
     /// Add a Load Control object to the server (before starting).
-    #[pyo3(signature = (instance, name))]
-    fn add_load_control(&self, instance: u32, name: &str) -> PyResult<()> {
-        let obj = LoadControlObject::new(instance, name).map_err(to_py_err)?;
+    ///
+    /// `shed_levels` sets Shed_Levels and Shed_Level_Descriptions together,
+    /// as `(level, description)` pairs in order of increasing shed; a level
+    /// of 0, the no-shed level, raises BacnetProtocolError. `shed` and `stop`
+    /// are the application's route for the loads (#2479, see
+    /// [`crate::load_shedder`]): `shed` gets a `ShedRequest` and answers how
+    /// the loads stand, and `stop` hears that a request it was asked about
+    /// ended. Without `shed` nothing is shed. `full_duty_baseline`
+    /// (kilowatts) and `state_description` serve those optional properties,
+    /// and `agreed_duty_window` (minutes) is the Duty_Window a request takes
+    /// when no client wrote one.
+    ///
+    /// With `storage_path` (a `str`), the object keeps its shed request in
+    /// that file (#2497): the request properties, the agreed Duty_Window,
+    /// the shed state, Enable, and a Description and the Shed_Levels
+    /// elements a client wrote (#2502). A rebuilt object looks at a request
+    /// that was pending or being shed again, as though Start_Time had just
+    /// been written, and calls `shed` for it; one that was being shed calls
+    /// `stop` when it ends. A write that cannot be saved is refused with
+    /// DEVICE / OPERATIONAL_PROBLEM. The shed levels, baseline and state
+    /// description are configuration the file does not keep: give them as
+    /// keywords here at every start, so a restored request is put to `shed`
+    /// with them. A written Shed_Levels element wins over the keyword's level
+    /// for it, one past the end of the keyword's array is dropped, and
+    /// `set_load_control_shed_levels_local` drops the written ones;
+    /// `clear_written_shed_levels=True` drops them first, so the keyword
+    /// applies whole (a refused level raises with the file untouched; the
+    /// keyword does nothing without `storage_path`). Without `shed_levels`
+    /// the written ones are neither
+    /// served nor dropped: the file keeps them for a start that gives the
+    /// levels. The `set_load_control_*_local` methods work only once the
+    /// server runs, after that first look, so use them for changes while it
+    /// runs. Give each Load Control its own file; one that holds another
+    /// object's request raises BacnetError.
+    #[pyo3(signature = (
+        instance,
+        name,
+        *,
+        shed_levels=None,
+        shed=None,
+        stop=None,
+        full_duty_baseline=None,
+        state_description=None,
+        agreed_duty_window=None,
+        storage_path=None,
+        clear_written_shed_levels=false
+    ))]
+    fn add_load_control(
+        &self,
+        instance: u32,
+        name: &str,
+        shed_levels: Option<Vec<(u64, String)>>,
+        shed: Option<&Bound<'_, PyAny>>,
+        stop: Option<&Bound<'_, PyAny>>,
+        full_duty_baseline: Option<f64>,
+        state_description: Option<String>,
+        agreed_duty_window: Option<u64>,
+        storage_path: Option<&str>,
+        clear_written_shed_levels: bool,
+    ) -> PyResult<()> {
+        let shedder = crate::load_shedder::PyLoadShedder::parse(shed, stop)?;
+        let mut obj = match storage_path {
+            Some(path) => {
+                let storage = Arc::new(FileLoadControlPersistence::new(path).map_err(to_py_err)?);
+                LoadControlObject::with_persistence(instance, name, storage).map_err(to_py_err)?
+            }
+            None => LoadControlObject::new(instance, name).map_err(to_py_err)?,
+        };
+        // Before the levels are set, so `shed_levels` applies whole. The
+        // levels are checked first, so a refused one leaves the file as it
+        // was. Without storage there is nothing to clear.
+        if clear_written_shed_levels {
+            if let Some(levels) = &shed_levels {
+                obj.set_shed_levels(levels.clone()).map_err(to_py_err)?;
+            }
+            obj.clear_written_shed_levels().map_err(to_py_err)?;
+        }
+        if let Some(levels) = shed_levels {
+            obj.set_shed_levels(levels).map_err(to_py_err)?;
+        }
+        if let Some(kilowatts) = full_duty_baseline {
+            // A value past REAL's range rounds to infinity, which is refused.
+            obj.set_full_duty_baseline(Some(kilowatts as f32))
+                .map_err(to_py_err)?;
+        }
+        obj.set_state_description(state_description);
+        if let Some(minutes) = agreed_duty_window {
+            obj.set_agreed_duty_window(minutes);
+        }
+        if let Some(shedder) = shedder {
+            obj.set_shedder(Arc::new(shedder));
+        }
         self.push_pending(Box::new(obj))
     }
 
@@ -507,25 +596,90 @@ impl BACnetServer {
     ///
     /// `storage_path` and `clear_written_reporting` keep the reporting
     /// settings and Description a peer writes in that file, as on
-    /// `add_analog_input` (#2331, #2364).
+    /// `add_analog_input` (#2331, #2364). The file keeps a written
+    /// Event_Parameters, Fault_Parameters and Time_Delay_Normal too, and
+    /// the restarted enrollment is evaluated with them: Event_Type and
+    /// Fault_Type follow the restored parameters. Time_Delay is a member
+    /// of Event_Parameters and is kept with them. With `storage_path`,
+    /// Event_Parameters or Fault_Parameters whose encoding is past 64 KiB
+    /// are refused with NO_SPACE_TO_WRITE_PROPERTY; without it the
+    /// enrollment takes them as before.
+    ///
+    /// `object_property_reference` names the property the enrollment
+    /// monitors, as an `(object, property)` or `(object, property,
+    /// array_index)` tuple or a `DeviceObjectPropertyReference` mapping,
+    /// the forms `add_trend_log` takes for `reference`. Peers can't write
+    /// it, so it applies at every start and is never saved; without it the
+    /// enrollment monitors nothing.
+    ///
+    /// The parameter keywords configure those three (#2426):
+    /// `event_parameters` and `fault_parameters`, each a `PropertyValue`
+    /// in the form `write_property_local` takes for the property (the
+    /// encoding through `PropertyValue.application_data`, or a value a read
+    /// of the property returned), and `time_delay_normal` (seconds). None
+    /// leaves the enrollment's default. Each value is checked as a write
+    /// of the property is, and one the enrollment refuses raises
+    /// BacnetProtocolError, such as octets that aren't one whole parameter
+    /// value. A negative delay raises OverflowError. A keyword value is
+    /// not held to the 64 KiB cap, which only a saved write meets.
+    /// The keywords apply before storage attaches, so they are never saved:
+    /// a value a peer wrote and the file holds is served over its keyword,
+    /// and the keyword applies again on a start that passes
+    /// `clear_written_reporting=True`. A `write_property_local` of a
+    /// parameter after the builder call is kept like a peer's write.
     #[pyo3(signature = (
         instance,
         name,
         event_type=PyEventType { inner: EventType::CHANGE_OF_BITSTRING },
         *,
+        object_property_reference=None,
+        event_parameters=None,
+        fault_parameters=None,
+        time_delay_normal=None,
         storage_path=None,
         clear_written_reporting=false
     ))]
+    #[allow(clippy::too_many_arguments)]
     fn add_event_enrollment(
         &self,
         instance: u32,
         name: &str,
         event_type: PyEventType,
+        object_property_reference: Option<&Bound<'_, PyAny>>,
+        event_parameters: Option<PyPropertyValue>,
+        fault_parameters: Option<PyPropertyValue>,
+        time_delay_normal: Option<u32>,
         storage_path: Option<&str>,
         clear_written_reporting: bool,
     ) -> PyResult<()> {
+        let parameters = crate::algorithm_keywords::AlgorithmKeywords::enrollment(
+            event_parameters.as_ref().map(|value| &value.inner),
+            fault_parameters.as_ref().map(|value| &value.inner),
+            time_delay_normal,
+        )
+        .map_err(to_py_err)?;
+        let reference = object_property_reference
+            .map(|value| {
+                let mut reference = vec![crate::types::property_reference_from_py(
+                    value,
+                    "object_property_reference",
+                )?];
+                crate::types::localize(
+                    &mut reference,
+                    crate::types::local_device(self.device_instance),
+                );
+                PyResult::Ok(reference.remove(0))
+            })
+            .transpose()?;
         let obj = crate::object_options::keep_reporting(
-            || EventEnrollmentObject::new(instance, name, event_type.to_rust()),
+            || {
+                let mut ee = EventEnrollmentObject::new(instance, name, event_type.to_rust())?;
+                if reference.is_some() {
+                    ee.set_object_property_reference(reference.clone())?;
+                }
+                parameters.apply(&mut ee)?;
+                Ok(ee)
+            },
             storage_path,
             clear_written_reporting,
             EventEnrollmentObject::with_reporting_persistence,

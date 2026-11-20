@@ -1,5 +1,7 @@
 //! Restoring or seeding a log's buffer and Total_Record_Count (#1537).
 use super::*;
+#[cfg(feature = "event-reporting")]
+use crate::event::test_clock::test_now;
 
 const MAX: u64 = u32::MAX as u64;
 
@@ -80,11 +82,8 @@ fn inconsistent_restores_are_refused_and_change_nothing() {
         log.restore(2, samples(1..3)).unwrap();
         assert_eq!(log.identities(), vec![1, 2], "{kind:?}");
         // With Enable FALSE, a stopped log may be full.
-        log.write(
-            PropertyIdentifier::LOG_ENABLE,
-            PropertyValue::Boolean(false),
-        )
-        .unwrap();
+        log.write(PropertyIdentifier::ENABLE, PropertyValue::Boolean(false))
+            .unwrap();
         log.restore(3, samples(1..4)).unwrap();
         assert_eq!(log.identities(), vec![1, 2, 3], "{kind:?}");
     }
@@ -191,11 +190,8 @@ fn an_interruption_carries_log_disabled_while_collection_is_off() {
         // Enable FALSE.
         let mut off = kind.object(5);
         off.bind_clock(TestClock::valid());
-        off.write(
-            PropertyIdentifier::LOG_ENABLE,
-            PropertyValue::Boolean(false),
-        )
-        .unwrap();
+        off.write(PropertyIdentifier::ENABLE, PropertyValue::Boolean(false))
+            .unwrap();
         off.interrupt(date, time).unwrap();
         assert_eq!(
             status_of(&off),
@@ -280,7 +276,7 @@ fn buffer_ready_counts_from_the_restored_count() {
             log.object_mut()
                 .event_reporting_mut()
                 .expect("lends event reporting")
-                .evaluate_intrinsic_reporting()
+                .evaluate_intrinsic_reporting(test_now())
                 .is_none(),
             "{kind:?}"
         );
@@ -299,7 +295,7 @@ fn buffer_ready_counts_from_the_restored_count() {
             log.object_mut()
                 .event_reporting_mut()
                 .expect("lends event reporting")
-                .evaluate_intrinsic_reporting()
+                .evaluate_intrinsic_reporting(test_now())
                 .is_none()
         );
         log.add_record(ordinary(6, 6)).unwrap();
@@ -307,7 +303,7 @@ fn buffer_ready_counts_from_the_restored_count() {
             log.object_mut()
                 .event_reporting_mut()
                 .expect("lends event reporting")
-                .evaluate_intrinsic_reporting()
+                .evaluate_intrinsic_reporting(test_now())
                 .is_some(),
             "{kind:?}"
         );

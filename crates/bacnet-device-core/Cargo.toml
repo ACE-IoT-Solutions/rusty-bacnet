@@ -6,7 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Sans-IO BACnet request core: answers ReadProperty, ReadPropertyMultiple, WriteProperty, WritePropertyMultiple, Who-Is and Who-Has from an ObjectDatabase and keeps the COV subscription table, for firmware and the bacnet-server executor"
+description = "Sans-IO BACnet request core: answers ReadProperty, ReadPropertyMultiple, WriteProperty, WritePropertyMultiple, Who-Is and Who-Has from an ObjectDatabase, keeps the COV subscription table and runs intrinsic event reporting, for firmware and the bacnet-server executor"
 keywords = ["bacnet", "building-automation", "sans-io", "embedded", "no-std"]
 categories = ["network-programming", "embedded", "no-std"]
 
@@ -26,6 +26,9 @@ std = [
     "bacnet-objects/std",
     "bytes/std",
     "structured-writes",
+    "cov-multiple",
+    "event-reporting",
+    "event-enrollment",
 ]
 # no_std with a global allocator.
 alloc = [
@@ -42,10 +45,37 @@ alloc = [
 # it the event parameter decoder. The rows still call those properties
 # writable, so such a build's PICS lists them as read-only.
 structured-writes = []
+# The SubscribeCOVPropertyMultiple path (#2320): the service and its checks
+# (`cov::subscribe_cov_property_multiple`), the capture of timestamped
+# changes (`cov::timed_capture`), the timestamped histories with their
+# claims and deadlines (`cov::timed`), and what a fanout reports to each
+# context, split to the subscriber's APDU size (`cov::multiple_report`).
+# With it the `Reporter` answers the service and sends its reports
+# (`report::NotifyService::CovMultiple`). `std` turns it on, so
+# bacnet-server has it; a firmware image built on `alloc` leaves it off
+# unless it serves that service. The `Reporter` dispatches by service, so
+# the path links whether or not anyone subscribes through it: measured on
+# the `reporting` image it costs about 134 KB of flash on a Cortex-M3 and
+# 12 KiB of heap, with three 64-bit division routines, until its B-tree
+# maps and sorts are trimmed (#2215's rule for keeping a feature; design
+# note, decision 18).
+cov-multiple = []
+# Intrinsic event reporting (#2303): the `event` module, with the
+# timestamps, message text, Event Values and distribution profile of a
+# committed transition. It turns on bacnet-objects' `event-reporting`, so
+# the objects lend their detectors. `std` turns it on, so bacnet-server has
+# it, and firmware-link's `reporting` image does.
+event-reporting = ["bacnet-objects/event-reporting"]
+# Event Enrollment, algorithmic reporting (#2319): `event::enrollment`, the
+# event and fault algorithms an Event Enrollment object evaluates and the
+# pass that runs them, on top of `event-reporting`. `alloc` is enough;
+# `std` turns this on, so bacnet-server has it.
+event-enrollment = ["event-reporting"]
 # Hidden hooks for hosts' own tests (the COV table's generation counter, so
-# bacnet-server's table tests reach generation exhaustion). bacnet-server
-# turns it on for its tests only, through a dev-dependency; never enable it
-# in a product build.
+# bacnet-server's table tests reach generation exhaustion, an event payload
+# built without a projection, and GetEventInformation within a byte budget).
+# bacnet-server turns it on for its tests only, through a dev-dependency;
+# never enable it in a product build.
 test-support = []
 
 # The release that first publishes this crate. Until the website names that

@@ -1,4 +1,5 @@
 use super::*;
+use bacnet_transport::test_transport::TestTransport;
 
 fn failure_flags() -> AuditOperationFlags {
     let mut flags = AuditOperationFlags::empty();
@@ -48,8 +49,8 @@ fn expected_summary(count: u64, timestamp: BACnetTimeStamp) -> BACnetAuditNotifi
     }
 }
 pub(super) async fn complete_read(
-    session: &EndpointSession<BusPort>,
-    peer: &NetworkLayer<BusPort>,
+    session: &EndpointSession<TestTransport>,
+    peer: &NetworkLayer<TestTransport>,
     requests: &mut bacnet_network::layer::ApduReceiver,
 ) {
     let read = start_read(
@@ -66,14 +67,14 @@ pub(super) async fn complete_read(
 
 #[tokio::test(start_paused = true)]
 async fn source_failure_permit_losses_wire_shape_reverse_completion_and_sequence_wrap() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     for confirmed in [false, true] {
         let mut db = failure_database(confirmed);
         for _ in 0..u16::MAX {
             db.next_event_sequence_number();
         }
-        let mut session = session(db, SessionRole::Both, &sink);
+        let mut session = session(db, SessionRole::ClientOnly, &sink);
         session.start().await.unwrap();
         let owner = session.notifications.as_ref().unwrap();
         let permits: Vec<_> = (0..64).map(|_| owner.try_admit_audit().unwrap()).collect();
@@ -128,8 +129,8 @@ async fn source_failure_permit_losses_wire_shape_reverse_completion_and_sequence
 
 #[tokio::test(start_paused = true)]
 async fn source_failure_pending_context_invalidates_without_another_read() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     for change in ["mode-aba", "level-aba", "filter-aba"] {
         let mut session = session(failure_database(true), SessionRole::ClientOnly, &sink);
         session.start().await.unwrap();
@@ -206,8 +207,8 @@ async fn source_failure_pending_context_invalidates_without_another_read() {
 
 #[tokio::test(start_paused = true)]
 async fn source_failure_pending_worker_stop_and_drop_reclaim_owner() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     for stop in [true, false] {
         let mut session = session(failure_database(true), SessionRole::ClientOnly, &sink);
         session.start().await.unwrap();

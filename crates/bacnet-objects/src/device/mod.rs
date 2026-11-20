@@ -238,8 +238,6 @@ pub struct DeviceObject {
     recipient: audit_recipient::RecipientState,
     properties: HashMap<PropertyIdentifier, PropertyValue>,
     profile: ProfileState,
-    /// Cached object list for array-indexed reads.
-    object_list: Vec<ObjectIdentifier>,
     /// Protocol_Object_Types_Supported — bitstring indicating which object
     /// types this device supports (one bit per type, MSB-first within each byte).
     protocol_object_types_supported: Vec<u8>,
@@ -316,6 +314,8 @@ impl DeviceObject {
             PropertyIdentifier::NUMBER_OF_APDU_RETRIES,
             PropertyValue::Unsigned(config.apdu_retries as u64),
         );
+        // Database_Revision: 0 on its own. The database keeps the revision
+        // and the read services serve it for the local Device (#2669).
         properties.insert(
             PropertyIdentifier::DATABASE_REVISION,
             PropertyValue::Unsigned(0),
@@ -374,7 +374,7 @@ impl DeviceObject {
         }
 
         // Max_Segments_Accepted — only included when segmentation is supported.
-        if config.identity.segmentation() != Segmentation::NONE {
+        if config.identity.segmentation() != Segmentation::NO_SEGMENTATION {
             if config.identity.apdu_segment_timeout_ms() == 0 {
                 return Err(Error::Encoding(
                     "APDU_Segment_Timeout must be positive when segmentation is supported".into(),
@@ -384,12 +384,12 @@ impl DeviceObject {
                 PropertyIdentifier::APDU_SEGMENT_TIMEOUT,
                 PropertyValue::Unsigned(config.identity.apdu_segment_timeout_ms()),
             );
-            let max_segments_accepted = if config.identity.segmentation() == Segmentation::TRANSMIT
-            {
-                1
-            } else {
-                65
-            };
+            let max_segments_accepted =
+                if config.identity.segmentation() == Segmentation::SEGMENTED_TRANSMIT {
+                    1
+                } else {
+                    65
+                };
             properties.insert(
                 PropertyIdentifier::MAX_SEGMENTS_ACCEPTED,
                 PropertyValue::Unsigned(max_segments_accepted),
@@ -410,7 +410,6 @@ impl DeviceObject {
             recipient: Default::default(),
             profile: ProfileState::default(),
             properties,
-            object_list: vec![oid], // Device itself is always in the list
             protocol_object_types_supported,
             configured_services_supported: EXECUTED_SERVICES.to_vec(),
             clock: None,
@@ -420,19 +419,43 @@ impl DeviceObject {
     /// Build with application-owned Tags storage. Saved Tags override configured
     /// Tags only while [`Self::set_profile`] provisions the row. Loaded data must
     /// satisfy the shared Tags rules and opt-in 1 MiB snapshot limit.
+    ///
+    /// The storage keeps a written Description too (#2364), at most 16 KiB:
+    /// it is saved before the write is answered, a write whose save fails
+    /// is refused with DEVICE / OPERATIONAL_PROBLEM, and the saved one is
+    /// served from the start and wins over
+    /// [`set_description`](Self::set_description).
     pub fn with_tags_persistence(
         config: DeviceConfig,
         persistence: Arc<dyn TagsPersistence>,
     ) -> Result<Self, Error> {
         let mut object = Self::new(config)?;
-        object.profile = ProfileState::persistent(object.oid, persistence)?;
+        object.profile = ProfileState::persistent(object.oid, persistence, true)?;
+        if let Some(text) = object.profile.saved_description() {
+            let saved = PropertyValue::CharacterString(text.to_owned());
+            object
+                .properties
+                .insert(PropertyIdentifier::DESCRIPTION, saved);
+        }
         Ok(object)
     }
 
+    /// Drop the Description a write saved (#2364): storage keeps none from
+    /// now on, so [`set_description`](Self::set_description) applies again.
+    /// The text served now stays until it, or a write, changes it. Saves
+    /// before it returns; a save that fails keeps the written Description
+    /// and returns storage's error. Does nothing without storage or a
+    /// saved Description.
+    /// Call it before the object joins the database, as the setters are,
+    /// not under the database guard: it waits for its save.
+    pub fn clear_written_description(&mut self) -> Result<(), Error> {
+        self.profile.clear_written_description()
+    }
+
     /// Provision independent optional Tags, Profile_Location and Profile_Name
-    /// rows before registration. Ordinary servers permit Tags writes; an endpoint
-    /// still applies its narrower Device write allowlist. The profile text is
-    /// network read-only. Invalid configuration leaves the old profile unchanged.
+    /// rows before registration. A server permits Tags writes as its mutation
+    /// policy allows. The profile text is network read-only. Invalid
+    /// configuration leaves the old profile unchanged.
     pub fn set_profile(&mut self, profile: ObjectProfile) -> Result<(), Error> {
         self.profile.provision(profile)
     }
@@ -443,25 +466,11 @@ impl DeviceObject {
         self.profile.wait_for_saves();
     }
 
-    /// Update the object-list with the current database contents.
-    pub fn set_object_list(&mut self, oids: Vec<ObjectIdentifier>) {
-        self.object_list = oids;
-    }
-
     /// Set `System_Status`, the device's reported operating state.
     pub fn set_system_status(&mut self, status: DeviceStatus) {
         self.properties.insert(
             PropertyIdentifier::SYSTEM_STATUS,
             PropertyValue::Enumerated(status.to_raw()),
-        );
-    }
-
-    /// Set `Database_Revision`, which a client compares against its cached copy to see whether
-    /// objects were created, deleted, renamed or re-identified, or a restore happened.
-    pub fn set_database_revision(&mut self, revision: u32) {
-        self.properties.insert(
-            PropertyIdentifier::DATABASE_REVISION,
-            PropertyValue::Unsigned(u64::from(revision)),
         );
     }
 
@@ -544,8 +553,14 @@ impl DeviceObject {
         self.oid.instance_number()
     }
 
-    /// Set the description string.
+    /// Set the description string. Once storage holds a Description a
+    /// write set ([`with_tags_persistence`](Self::with_tags_persistence)),
+    /// that one wins and this leaves it alone (#2364), until
+    /// [`clear_written_description`](Self::clear_written_description).
     pub fn set_description(&mut self, desc: impl Into<String>) {
+        if self.profile.saved_description().is_some() {
+            return;
+        }
         self.properties.insert(
             PropertyIdentifier::DESCRIPTION,
             PropertyValue::CharacterString(desc.into()),
@@ -629,31 +644,10 @@ impl BACnetObject for DeviceObject {
             return self.read_audit_recipient(array_index);
         }
         if property == PropertyIdentifier::OBJECT_LIST {
-            return match array_index {
-                None => {
-                    let elements = self
-                        .object_list
-                        .iter()
-                        .map(|oid| PropertyValue::ObjectIdentifier(*oid))
-                        .collect();
-                    Ok(PropertyValue::List(elements))
-                }
-                Some(0) => {
-                    // Index 0 = array length per BACnet convention
-                    Ok(PropertyValue::Unsigned(self.object_list.len() as u64))
-                }
-                Some(idx) => {
-                    let i = (idx - 1) as usize; // BACnet arrays are 1-based
-                    if i < self.object_list.len() {
-                        Ok(PropertyValue::ObjectIdentifier(self.object_list[i]))
-                    } else {
-                        Err(Error::protocol(
-                            ErrorClass::PROPERTY,
-                            ErrorCode::INVALID_ARRAY_INDEX,
-                        ))
-                    }
-                }
-            };
+            // On its own the Device knows only itself. The database keeps
+            // the list of every object, and the read services serve that
+            // for the local Device (`ObjectDatabase::object_list`, #2669).
+            return read_array(vec![PropertyValue::ObjectIdentifier(self.oid)], array_index);
         }
 
         if property == PropertyIdentifier::PROPERTY_LIST {
@@ -774,6 +768,14 @@ impl BACnetObject for DeviceObject {
             // Clause 15.9: relinquishing a non-commandable writable property
             // succeeds without changing its value when no other error exists.
             if value == PropertyValue::Null {
+                return Ok(());
+            }
+            // With storage the text is saved before it is served (#2364).
+            let mut kept = String::new();
+            if let Some(result) = self.profile.write_description(&mut kept, &value) {
+                result?;
+                self.properties
+                    .insert(property, PropertyValue::CharacterString(kept));
                 return Ok(());
             }
             if let PropertyValue::CharacterString(_) = &value {

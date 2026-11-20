@@ -5,8 +5,8 @@
 
 use bacnet_endpoint::identity::DeviceIdentity;
 use bacnet_endpoint::mstp::MstpEndpointBuilder;
-use bacnet_endpoint::session::{EndpointSession, SessionRole};
-use bacnet_transport::mstp::{Echo, MstpConfig, MstpTransport, SerialPort};
+use bacnet_endpoint::session::SessionRole;
+use bacnet_transport::mstp::{Echo, MstpConfig, SerialPort};
 use bacnet_transport::mstp_serial::{SerialConfig, TokioSerialPort};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -14,10 +14,10 @@ use pyo3::types::PyDict;
 
 use crate::endpoint::common::{
     PendingObject, build_database, build_identity, build_pending_boxes, lifecycle_error,
-    parse_device_uuid, parse_read_work_limit, parse_segmentation, parse_services, pending_group,
+    parse_device_uuid, parse_segmentation, pending_group,
 };
 use crate::endpoint::lifecycle::Lifecycle;
-use crate::endpoint::roles::{PyEndpointClient, PyEndpointServer};
+use crate::endpoint::running::Running;
 use crate::errors::to_py_err;
 use crate::mstp_py::MstpTiming;
 use crate::types::{PyReadAccessSpec, PySegmentation};
@@ -84,13 +84,11 @@ struct MstpEndpointConfig {
     timing: MstpTiming,
     identity: DeviceIdentity,
     queue_capacity: usize,
-    read_work_limit: usize,
     apdu_timeout_ms: u64,
     apdu_retries: u8,
     min_request_interval_ms: u64,
-    reinitialize: crate::reinitialize::EndpointReinitialize,
-    /// The `device_write_policy` callable, if any (#2033).
-    device_writes: crate::mutation_policy::DeviceWritePolicy,
+    /// The full server's keywords (#2617).
+    server: super::server_role::ServerKeywords,
     /// The source Audit Reporter keywords, if any (#2357).
     source_audit: Option<super::source_audit::SourceAuditKeywords>,
 }
@@ -105,7 +103,6 @@ mod options_tests;
 type EndpointSerial = lifecycle_tests::TestSerial;
 #[cfg(not(test))]
 type EndpointSerial = TokioSerialPort;
-type MstpSession = EndpointSession<MstpTransport<EndpointSerial>>;
 
 impl MstpEndpointConfig {
     /// The link configuration the keywords describe, as the builder will
@@ -142,7 +139,7 @@ impl MstpEndpointConfig {
         Ok(serial.with_echo(self.echo))
     }
 
-    async fn prepare(self, objects: Vec<PendingObject>) -> PyResult<MstpSession> {
+    async fn prepare(self, objects: Vec<PendingObject>) -> PyResult<Running> {
         let config = self;
         let serial = config.open_serial()?;
         let boxes = build_pending_boxes(&objects)?;
@@ -150,22 +147,27 @@ impl MstpEndpointConfig {
         if let Some(source) = &config.source_audit {
             source.provision(&config.identity, &mut db)?;
         }
-        let session = link_builder(serial, &config.link())
+        let builder = link_builder(serial, &config.link())
             .role(SessionRole::Both)
             .queue_capacity(config.queue_capacity)
-            .read_work_limit(config.read_work_limit)
             .client_timers(config.apdu_timeout_ms, config.apdu_retries)
             .min_request_interval_ms(config.min_request_interval_ms)
             .database(db)
-            .device(config.identity.clone())
-            .build_session()
+            .device(config.identity.clone());
+        // The serial port is boxed into the link a standalone MS/TP client
+        // has, so the session's full client is a Python `BACnetClient`'s.
+        let session = builder
+            .build_session_wrapped(|transport| {
+                crate::app_transport::AppTransport::from(bacnet_transport::any::AnyTransport::from(
+                    transport,
+                ))
+            })
             .map_err(to_py_err)?;
         let session = match &config.source_audit {
             Some(source) => source.select(session),
             None => session,
         };
-        let session = config.device_writes.install(session);
-        Ok(config.reinitialize.install(session))
+        Ok(Running::new(config.server.install(session)))
     }
 }
 
@@ -178,7 +180,7 @@ impl MstpEndpointConfig {
 /// Lifecycle mirrors `BipEndpoint`. BIPv6/Ethernet have no endpoint owner.
 #[pyclass(name = "MstpEndpoint", module = "rusty_bacnet")]
 pub struct PyMstpEndpoint {
-    lifecycle: Lifecycle<MstpSession, PendingObject>,
+    lifecycle: Lifecycle<Running, PendingObject>,
     config: MstpEndpointConfig,
 }
 
@@ -207,13 +209,16 @@ impl PyMstpEndpoint {
     ///     max_apdu: Raw receive ceiling, at least 50 bytes and no more than
     ///         480, or 1476 with ``mstp_extended_frames=True``. Request headers
     ///         use the largest supported code that does not exceed it.
-    ///     segmentation / services / device_uuid: Identity knobs (UUID zeros
-    ///         allowed; stored into DEVICE_UUID).
-    ///     queue_capacity / apdu_timeout_ms / apdu_retries: Session tuning.
-    ///     read_work_limit: Keyword-only. Result rows one ReadProperty served
-    ///         by the server role may expand (must be >0, default 256): its
-    ///         own row plus, for a Group's Present_Value, one per member
-    ///         property. A read past it is aborted with OUT_OF_RESOURCES.
+    ///     segmentation / device_uuid: Identity knobs (UUID zeros allowed;
+    ///         stored into DEVICE_UUID).
+    ///     queue_capacity / apdu_timeout_ms / apdu_retries: Session tuning
+    ///         (queue_capacity default 256; a full queue drops and counts,
+    ///         see `status()`'s `*_full_drops`). The APDU timeout and
+    ///         retries (default 6000 ms and 3) time the client role's
+    ///         requests.
+    ///     read_work_limit: Keyword-only. The server's ReadPropertyMultiple
+    ///         budget of result rows (must be >0, default 256), as on
+    ///         `BipEndpoint`.
     ///     min_request_interval_ms: Keyword-only (default 0, no pacing; at
     ///         most 3600000). Least time between the client role's confirmed
     ///         requests to one destination, as for `BACnetClient`.
@@ -234,12 +239,10 @@ impl PyMstpEndpoint {
     ///     on_reinitialize / after_reinitialize / reinit_password:
     ///         Keyword-only. Execute ReinitializeDevice, as `BACnetServer`'s
     ///         keywords of the same names do (#1566).
-    ///     device_write_policy: Keyword-only (default None). A callable that
-    ///         decides each WriteProperty to the local Device's Description
-    ///         or installed Audit recipient (#2033). It gets a
-    ///         `MutationContext` and returns a bool, with the fail-closed
-    ///         rules of `BACnetServer`'s `mutation_policy` callable. Without
-    ///         it the endpoint executes no WriteProperty.
+    ///     mutation_policy / cov_policy / time_sync_policy: Keyword-only
+    ///         (default None), as on `BipEndpoint` (#2617): without
+    ///         `mutation_policy` the server is read-only, and without
+    ///         `time_sync_policy` time synchronization is off.
     ///     source_audit_reporter / audit_recipient / audit_device_bindings:
     ///         Keyword-only, as on `BipEndpoint` (#2348, #2357), each binding
     ///         address a station in decimal digits (`"2"`), as
@@ -258,11 +261,10 @@ impl PyMstpEndpoint {
         mstp_max_info_frames=1,
         max_apdu=480,
         segmentation=None,
-        services=None,
         device_uuid=None,
-        queue_capacity=16,
+        queue_capacity=256,
         apdu_timeout_ms=6000,
-        apdu_retries=0,
+        apdu_retries=3,
         *,
         read_work_limit=256,
         min_request_interval_ms=0,
@@ -275,7 +277,9 @@ impl PyMstpEndpoint {
         on_reinitialize=None,
         after_reinitialize=None,
         reinit_password=None,
-        device_write_policy=None,
+        mutation_policy=None,
+        cov_policy=None,
+        time_sync_policy=None,
         source_audit_reporter=None,
         audit_recipient=None,
         audit_device_bindings=None
@@ -291,7 +295,6 @@ impl PyMstpEndpoint {
         mstp_max_info_frames: u8,
         max_apdu: u16,
         segmentation: Option<PySegmentation>,
-        services: Option<Vec<u8>>,
         device_uuid: Option<Vec<u8>>,
         queue_capacity: usize,
         apdu_timeout_ms: u64,
@@ -307,23 +310,27 @@ impl PyMstpEndpoint {
         on_reinitialize: Option<&Bound<'_, PyAny>>,
         after_reinitialize: Option<&Bound<'_, PyAny>>,
         reinit_password: Option<String>,
-        device_write_policy: Option<&Bound<'_, PyAny>>,
+        mutation_policy: Option<&Bound<'_, PyAny>>,
+        cov_policy: Option<&Bound<'_, PyDict>>,
+        time_sync_policy: Option<&Bound<'_, PyDict>>,
         source_audit_reporter: Option<crate::types::PyObjectIdentifier>,
         audit_recipient: Option<&Bound<'_, PyAny>>,
         audit_device_bindings: Option<Vec<(crate::types::PyObjectIdentifier, String)>>,
     ) -> PyResult<Self> {
-        let reinitialize = crate::reinitialize::EndpointReinitialize::parse(
+        let server = super::server_role::ServerKeywords::parse(
+            mutation_policy,
+            read_work_limit,
+            cov_policy,
+            time_sync_policy,
             on_reinitialize,
             after_reinitialize,
             reinit_password,
         )?;
-        let device_writes = crate::mutation_policy::DeviceWritePolicy::parse(device_write_policy)?;
         if queue_capacity == 0 {
             return Err(PyValueError::new_err(
                 "queue_capacity must be greater than zero",
             ));
         }
-        let read_work_limit = parse_read_work_limit(read_work_limit)?;
         let min_request_interval_ms =
             crate::client::parse_min_request_interval_ms(min_request_interval_ms)?;
         // Early addressing/baud validation without opening (ValueError).
@@ -360,7 +367,6 @@ impl PyMstpEndpoint {
             )));
         }
         let segmentation = parse_segmentation(segmentation);
-        let service_list = parse_services(services);
         let uuid = parse_device_uuid(device_uuid, false, "device_uuid")?;
         let identity = build_identity(
             device_instance,
@@ -368,7 +374,6 @@ impl PyMstpEndpoint {
             vendor_id,
             max_apdu,
             segmentation,
-            &service_list,
             uuid,
         )?;
         let source_audit = super::source_audit::SourceAuditKeywords::parse(
@@ -377,7 +382,7 @@ impl PyMstpEndpoint {
             audit_device_bindings,
             device_instance,
             super::source_audit::AuditLink::Mstp(mstp_mac),
-            device_writes.enabled(),
+            server.decides_mutations(),
         )?;
         Ok(Self {
             lifecycle: Lifecycle::new(),
@@ -394,12 +399,10 @@ impl PyMstpEndpoint {
                 timing,
                 identity,
                 queue_capacity,
-                read_work_limit,
                 apdu_timeout_ms,
                 apdu_retries,
                 min_request_interval_ms,
-                reinitialize,
-                device_writes,
+                server,
                 source_audit,
             },
         })
@@ -434,7 +437,7 @@ impl PyMstpEndpoint {
         crate::logging_bridge::refresh_at_start(py);
         let lifecycle = self.lifecycle.clone();
         let config = self.config.clone();
-        config.reinitialize.bind_event_loop(py)?;
+        config.server.bind_event_loop(py)?;
         crate::py_async::future_into_py(py, async move {
             lifecycle
                 .start(false, |objects| config.prepare(objects))
@@ -461,7 +464,7 @@ impl PyMstpEndpoint {
             let borrowed = slf.borrow();
             (borrowed.lifecycle.clone(), borrowed.config.clone())
         };
-        config.reinitialize.bind_event_loop(py)?;
+        config.server.bind_event_loop(py)?;
         crate::py_async::future_into_py(py, async move {
             lifecycle
                 .start(true, |objects| config.prepare(objects))
@@ -483,48 +486,27 @@ impl PyMstpEndpoint {
         self.close(py)
     }
 
-    /// Clone the client role.
+    /// The `BACnetClient` on this endpoint's serial link (#2617), as
+    /// `BipEndpoint.client()` gives one: the same object while it runs, a
+    /// fresh one once its `stop()` has finished, its reads and writes
+    /// audited with `source_audit_reporter`. Its requests wait for this
+    /// node's token as the server role's answers do.
     fn client<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = self.lifecycle.session.clone();
-        crate::py_async::future_into_py(py, async move {
-            let handle = {
-                let guard = inner.lock().await;
-                let session = guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err(
-                        "endpoint not started — use 'async with' or await start()",
-                    )
-                })?;
-                session.cloned_client_handle().ok_or_else(|| {
-                    PyRuntimeError::new_err(
-                        "endpoint not started — use 'async with' or await start()",
-                    )
-                })?
-            };
-            Ok(PyEndpointClient::new(handle))
-        })
+        let seated = crate::client::BACnetClient::seated("mstp", None, None);
+        let client = super::running::client(py, self.lifecycle.session.clone(), seated)?;
+        crate::py_async::future_into_py(py, client)
     }
 
-    /// Clone the server role.
+    /// The `BACnetServer` the endpoint's session runs on its serial link
+    /// (#2617), as `BipEndpoint.server()` gives one. Its answers wait for
+    /// this node's token as the client's requests do.
     fn server<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = self.lifecycle.session.clone();
-        let reinitialize = self.config.reinitialize.enabled();
-        let device_writes = self.config.device_writes.enabled();
-        crate::py_async::future_into_py(py, async move {
-            let handle = {
-                let guard = inner.lock().await;
-                let session = guard.as_ref().ok_or_else(|| {
-                    PyRuntimeError::new_err(
-                        "endpoint not started — use 'async with' or await start()",
-                    )
-                })?;
-                session.cloned_server_handle().ok_or_else(|| {
-                    PyRuntimeError::new_err(
-                        "endpoint not started — use 'async with' or await start()",
-                    )
-                })?
-            };
-            Ok(PyEndpointServer::new(handle, reinitialize, device_writes))
-        })
+        let server = super::running::server(
+            self.lifecycle.session.clone(),
+            "mstp",
+            self.config.identity.instance(),
+        );
+        crate::py_async::future_into_py(py, server)
     }
 
     /// Station MAC as a decimal string (validated startup config).
@@ -539,14 +521,14 @@ impl PyMstpEndpoint {
         let config = self.config.clone();
         crate::py_async::future_into_py(py, async move {
             let snapshot = {
-                let guard = inner.lock().await;
+                let guard = inner.read().await;
                 let session = guard
                     .as_ref()
                     .ok_or_else(|| PyRuntimeError::new_err("endpoint not started"))?;
                 let counters = session.policy_counters().await;
                 let leases = session.active_leases();
                 let running = session.is_running();
-                (counters, leases, running)
+                (counters, leases, running, session.seat_counts())
             };
             crate::py_async::attach(|py| {
                 let dict = PyDict::new(py);
@@ -561,7 +543,11 @@ impl PyMstpEndpoint {
                 dict.set_item("no_server_role", snapshot.0.no_server_role)?;
                 dict.set_item("no_client_role", snapshot.0.no_client_role)?;
                 dict.set_item("unclaimed_terminal", snapshot.0.unclaimed_terminal)?;
-                dict.set_item("responder_declined", snapshot.0.responder_declined)?;
+                dict.set_item("unconfirmed_full_drops", snapshot.0.unconfirmed_full_drops)?;
+                dict.set_item("confirmed_full_drops", snapshot.0.confirmed_full_drops)?;
+                dict.set_item("answer_full_drops", snapshot.0.answer_full_drops)?;
+                dict.set_item("policy_full_drops", snapshot.0.policy_full_drops)?;
+                snapshot.3.add_to(&dict)?;
                 Ok(dict.into_any().unbind())
             })
         })
@@ -571,7 +557,7 @@ impl PyMstpEndpoint {
     fn broadcast_i_am<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.lifecycle.session.clone();
         let future = async move {
-            let guard = inner.lock().await;
+            let guard = inner.read().await;
             let session = guard.as_ref().ok_or_else(|| {
                 PyRuntimeError::new_err("endpoint not started — use 'async with' or await start()")
             })?;

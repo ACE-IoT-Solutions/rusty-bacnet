@@ -57,18 +57,21 @@ BACnet command-line tool.
 
 ## Global options
 
-These options go before or after the command. Each command also takes `-h` or `--help`.
+These options go before or after the command, except `--routed-path-limit`, `--no-tui` and `--version`, which go before it. Each command also takes `-h` or `--help`.
 
 - `--allow-write`: Let commands that change a device run: writes, object and file changes, alarm acknowledgment, time sync and unregister, and (with --yes or a typed confirmation) communication control and reinitialize. The TUI ignores it: its writes need an armed write session.
 - `--yes`: Confirm communication control and reinitialize without typing the target; they need it when stdin is not a terminal.
 - `-i, --interface <INTERFACE>`: Network interface IP address to bind (omit to bind all of them; the TUI asks which).
 - `-p, --port <PORT>`: BACnet UDP port. Default: `47808`.
+- `--share-port`: Share --port with other programs on this host that bind it the same way. Without it the CLI claims the port and fails at once when another program holds it. With it, each unicast to the port reaches only one of the programs on it, so replies can go astray. BACnet/IP and BACnet/IPv6 (--ipv6) only.
 - `-b, --broadcast <BROADCAST>`: Broadcast address for WhoIs. Default: `255.255.255.255`.
 - `-t, --timeout <TIMEOUT>`: APDU timeout in milliseconds. Default: `6000`.
 - `--min-interval-ms <MIN_INTERVAL_MS>`: Least time in milliseconds from the latest request to a device finishing to the next being sent, or from its send while it is still outstanding (0: none, at most 3600000), so paging a log or polling leaves a slow device room for others. Default: `0`.
-- `--foreign-bbmd <ADDR>`: Run as a foreign device registered with this BBMD (IP or IP:port), so broadcasts such as discover reach its network. A one-shot command waits for the registration first; it is renewed while the CLI runs. BACnet/IP only.
+- `--routed-path-limit <ROUTER/NETWORK=MAX_NPDU>`: Size requests to NETWORK through the router at ROUTER (its address on this network, as whois-router prints it) to at most MAX\_NPDU octets of NPDU, for this run. Repeat it for more paths. Without it a path uses 228 octets, the least every router must carry; set it below that for an older router that carries less, whose requests otherwise time out, or above it for a wider path. Goes before the command.
+- `--foreign-bbmd <ADDR>`: Run as a foreign device registered with this BBMD (IP, host name, or either with :port), so broadcasts such as discover reach its network. A host name is looked up at start: until it first resolves, again 30 s after each failure, and from then on alongside the registrations, at most every 30 s. A one-shot command waits for the registration first, and fails when the name doesn't resolve; it is renewed while the CLI runs. With --ipv6: an IPv6 address (ip, or ip in brackets with :port) or a host name, and --device-instance; a host name with --ipv6 and no --ipv6-interface must resolve at start.
 - `--ttl <TTL>`: Time-to-live in seconds of a foreign-device registration: with --foreign-bbmd, register and discover --bbmd. Default: `300`.
 - `--renewal <SECS>`: Seconds between --foreign-bbmd registrations, less than --ttl (default: half the TTL). Behind NAT, renew often so the mapping the BBMD's replies use stays open.
+- `--nat-global-address <IP:PORT>`: Our address and port as the --foreign-bbmd BBMD sees them, when a NAT router translates the registration (IPv4 ip:port). The TUI's Network screen uses it to find our FDT entry; it changes nothing sent.
 - `--bip-multicast <GROUP>`: Join this IPv4 multicast group (class D) as a B/IP-M node (Annex J.8): broadcasts such as discover go to the group, and only the group's broadcasts are taken. Needs --interface. BACnet/IP only.
 - `--bip-multicast-ttl <TTL>`: Multicast TTL for --bip-multicast, 1 to 255 (default 1, the local network only); raise it for a group that spans IP routers. Default: `1`.
 - `--bip-multicast-port <PORT>`: UDP port of the --bip-multicast group (default: --port). Several stacks on one host at one address each need their own --port, and share this one.
@@ -80,9 +83,9 @@ These options go before or after the command. Each command also takes `-h` or `-
 - `--sc-failover-url <URL>`: SC failover hub WebSocket URL, used when the primary hub can't be reached or its reconnects run out. Turns on --sc-reconnect. Needs the `sc-tls` feature.
 - `--sc-reconnect`: Redial a lost SC hub connection with backoff (10 s doubling to 10 min, 10 attempts). A TUI profile does this unless it sets reconnect = false. Needs the `sc-tls` feature.
 - `--sc-connect-timeout <MS>`: SC connect timeout in milliseconds, for each hub dial and handshake (1 to 600000; default 10000). Needs the `sc-tls` feature.
-- `--sc-ca <FILE>`: SC trusted site CA PEM file (required for SC; no system-root fallback). Needs the `sc-tls` feature.
-- `--sc-cert <SC_CERT>`: SC TLS certificate PEM file. Needs the `sc-tls` feature.
-- `--sc-key <SC_KEY>`: SC TLS private key PEM file. Needs the `sc-tls` feature.
+- `--sc-ca <FILE>`: SC trusted site CA PEM file (required for SC; no system-root fallback; read up to 1 MiB). Needs the `sc-tls` feature.
+- `--sc-cert <SC_CERT>`: SC TLS certificate PEM file (read up to 1 MiB). Needs the `sc-tls` feature.
+- `--sc-key <SC_KEY>`: SC TLS private key PEM file: one unencrypted key (read up to 1 MiB). Needs the `sc-tls` feature.
 - `--sc-vmac <SC_VMAC>`: BACnet/SC local VMAC as 12 hex digits or colon-separated bytes. Needs the `sc-tls` feature.
 - `--sc-device-uuid <SC_DEVICE_UUID>`: BACnet/SC device UUID as 32 hex digits or RFC 4122 hyphenated text. Needs the `sc-tls` feature.
 - `--mstp <PORT>`: Join an MS/TP trunk as a master station on this serial port (see `bacnet mstp-ports`); needs --mstp-mac and the `serial` feature. B/IP, B/IPv6 and SC flags are refused with it.
@@ -92,7 +95,7 @@ These options go before or after the command. Each command also takes `-h` or `-
 - `--mstp-max-info-frames <N>`: Frames this station sends per token (Max\_Info\_Frames), 1 to 255. Default: `1`. Needs the `serial` feature.
 - `--mstp-rt-priority <N>`: Run this station's MS/TP token handling under SCHED\_FIFO at this priority, 1 to 99 (Linux only). Needs CAP\_SYS\_NICE or an RLIMIT\_RTPRIO of at least N; joining fails if it can't be applied. Needs the `serial` feature.
 - `--mstp-cpus <CPUS>`: Pin this station's MS/TP token handling to these CPUs, such as 2 or 2,3 (Linux only); joining fails if the process may not use them. Needs the `serial` feature.
-- `--format <FORMAT>`: Output format (table, json).
+- `--format <FORMAT>`: Output format (table, json; csv too for inventory).
 - `--json`: JSON output shorthand.
 - `-v, --verbose`: Verbosity (-v, -vv, -vvv). Repeat it for more.
 - `--no-tui`: With no command, print the usage instead of opening the terminal UI (as does BACNET\_NO\_TUI set to anything but "" or "0").
@@ -109,9 +112,12 @@ These options go before or after the command. Each command also takes `-h` or `-
 | [`mcp serve`](#bacnet-mcp-serve) | — | Serve MCP on stdin and stdout until the agent host closes them. Stdout carries only JSON-RPC; logs go to stderr. Needs the `mcp` feature. |
 | [`mcp connect`](#bacnet-mcp-connect) | — | Bridge stdin and stdout to the MCP socket (a named pipe on Windows) of a TUI that has the profile open, so an agent shares its client. Its writes, if the profile offers them, wait for confirmation there. Needs the `mcp` feature. |
 | [`mcp authorize`](#bacnet-mcp-authorize) | — | Record, after showing what an agent may reach, that you authorize the MCP server on a profile. Needs a terminal. Needs the `mcp` feature. |
-| [`discover`](#bacnet-discover) | `whois` | Discover BACnet devices (WhoIs). |
-| [`find`](#bacnet-find) | `whohas` | Find objects by name (WhoHas). |
+| [`discover`](#bacnet-discover) | `whois` | Discover BACnet devices (WhoIs): a broadcast on this network alone, which no router passes on, unless --dnet, --global or --target says where else. |
+| [`find`](#bacnet-find) | `whohas` | Find objects by name (WhoHas): a broadcast on this network alone, which no router passes on, unless --dnet, --global or --target says where else. |
 | [`read`](#bacnet-read) | `rp` | Read a property. |
+| [`export`](#bacnet-export) | — | Export a device's objects in another model's terms (experimental). |
+| [`export 223-experimental`](#bacnet-export-223-experimental) | — | EXPERIMENTAL: the device's analog, binary and multi-state objects and integer values as a proposed ASHRAE Standard 223 point list, in Turtle. |
+| [`inventory`](#bacnet-inventory) | — | List a device's objects as point records: each one's name, units, state texts and whether it takes commands. |
 | [`readm`](#bacnet-readm) | `rpm` | Read multiple properties. |
 | [`write`](#bacnet-write) | `wp` | Write a property. |
 | [`writem`](#bacnet-writem) | `wpm` | Write multiple properties (WritePropertyMultiple). |
@@ -129,6 +135,7 @@ These options go before or after the command. Each command also takes `-h` or `-
 | [`register`](#bacnet-register) | — | Register as foreign device with BBMD, once, for --ttl seconds. |
 | [`unregister`](#bacnet-unregister) | — | Unregister from BBMD. |
 | [`whois-router`](#bacnet-whois-router) | — | List the routers on the local network and the networks they reach (Who-Is-Router-To-Network). |
+| [`routing-table`](#bacnet-routing-table) | — | Read the routing table of the router at TARGET, on the local network, without changing it (an Initialize-Routing-Table query). |
 | [`ack-alarm`](#bacnet-ack-alarm) | `ack` | Acknowledge an alarm. |
 | [`read-range`](#bacnet-read-range) | `rr` | Read a range of items from a list or log buffer. |
 | [`create-object`](#bacnet-create-object) | — | Create an object on a remote device. |
@@ -234,7 +241,7 @@ Options:
 
 ### bacnet discover
 
-Discover BACnet devices (WhoIs).
+Discover BACnet devices (WhoIs): a broadcast on this network alone, which no router passes on, unless --dnet, --global or --target says where else.
 
 Aliases: `whois`.
 
@@ -251,11 +258,12 @@ Options:
 - `--wait <WAIT>`: Seconds to wait for responses. Default: `3`.
 - `--target <TARGET>`: Send directed WhoIs to a specific address instead of broadcasting.
 - `--bbmd <BBMD>`: Register as foreign device with a BBMD before discovering, once (for --ttl seconds). --foreign-bbmd also renews and sends the Who-Is through the BBMD.
-- `--dnet <DNET>`: Target a specific remote network number.
+- `--dnet <DNET>`: Broadcast on one remote network (1 to 65534) instead, through its router.
+- `--global`: Broadcast on every network instead: a global broadcast, which every router passes on. On a large routed site every device answers it.
 
 ### bacnet find
 
-Find objects by name (WhoHas).
+Find objects by name (WhoHas): a broadcast on this network alone, which no router passes on, unless --dnet, --global or --target says where else.
 
 Aliases: `whohas`.
 
@@ -271,6 +279,9 @@ Options:
 
 - `--name <NAME>`: Object name to find, as a flag: the same as the positional NAME.
 - `--wait <WAIT>`: Seconds to wait for responses. Default: `3`.
+- `--target <TARGET>`: Send a directed WhoHas to one station on this network instead of broadcasting.
+- `--dnet <DNET>`: Broadcast on one remote network (1 to 65534) instead, through its router.
+- `--global`: Broadcast on every network instead: a global broadcast, which every router passes on, and every device that hears it searches its objects.
 
 ### bacnet read
 
@@ -285,8 +296,58 @@ Usage: bacnet read [OPTIONS] <TARGET> <OBJECT> <PROPERTY>
 Arguments:
 
 - `<TARGET>`: Target device (IP address or instance number). Required.
-- `<OBJECT>`: Object specifier (e.g., analog-input:1, ai:1). Required.
+- `<OBJECT>`: Object specifier, type:instance or type,instance (e.g., analog-input:1, ai:1, analog-input,1). Required.
 - `<PROPERTY>`: Property (e.g., present-value, pv). Required.
+
+### bacnet export
+
+Export a device's objects in another model's terms (experimental).
+
+```text
+Usage: bacnet export [OPTIONS] <COMMAND>
+```
+
+### bacnet export 223-experimental
+
+EXPERIMENTAL: the device's analog, binary and multi-state objects and integer values as a proposed ASHRAE Standard 223 point list, in Turtle.
+
+One 223 property per object, each with a BACnet external reference (device, object, name, property), QUDT units where they map, and the states of multi-state objects. A point list only: no equipment, connections or sensors. The 223 draft and this output can change between releases. Reads the device summary, its object list, then the exported objects a few a request; a target given by address costs one more, a read of its Device object to learn the instance. Stdout carries only the Turtle; a summary goes to stderr. --format and --json don't apply.
+
+```text
+Usage: bacnet export 223-experimental [OPTIONS] <TARGET>
+```
+
+Arguments:
+
+- `<TARGET>`: Target device (address, instance, or routed dnet:instance). Required.
+
+Options:
+
+- `--base-iri <IRI>`: Base IRI of the generated nodes: an ASCII absolute IRI ending in / or #. A device's nodes go under the base followed by device-INSTANCE/. Default: `http://example.org/bacnet/`.
+- `--types <TYPES>`: Object types to export, comma-separated (default: ai, ao, av, bi, bo, bv, msi, mso, msv and integer-value).
+- `--write-priority <N>`: Command priority (1-16) to name in each commandable point's reference.
+- `-o, --output <FILE>`: Write the Turtle to this new file instead of stdout; an existing file is refused.
+
+### bacnet inventory
+
+List a device's objects as point records: each one's name, units, state texts and whether it takes commands.
+
+Reads the device summary, its object list, then the objects in batches by ReadPropertyMultiple, a few objects a request. --format csv prints one row an object, --format json (or --json) the whole inventory with typed values; stdout carries only that, and a summary goes to stderr. If the device stops answering partway, what was read is still printed and the exit status is 1.
+
+```text
+Usage: bacnet inventory [OPTIONS] <TARGET>
+```
+
+Arguments:
+
+- `<TARGET>`: Target device (address, instance, or routed dnet:instance). Required.
+
+Options:
+
+- `--types <TYPES>`: Object types to read, comma-separated (ai,ao,msv, ...); default: every object, of any type.
+- `--values`: Also read each object's Present\_Value and Status\_Flags.
+- `--settings`: Also read each object's COV\_Increment, Min\_Pres\_Value, Max\_Pres\_Value and Relinquish\_Default, where it has them.
+- `--csv-exact`: With --format csv: write device text exactly. Without it, a name, description, state text or string value that starts with =, +, -, @, a tab or a carriage return gets an apostrophe before it, so a spreadsheet doesn't run it as a formula.
 
 ### bacnet readm
 
@@ -337,7 +398,7 @@ Usage: bacnet writem [OPTIONS] <TARGET> <SPECS> <SPECS>...
 Arguments:
 
 - `<TARGET>`: Target device. Required.
-- `<SPECS>...`: Each object, then its comma-separated writes, each with an optional @priority: "av:1 pv=72.5@8,on=Zone ao:1 pv=10". Required.
+- `<SPECS>...`: Each object, then its comma-separated writes, each with an optional @priority: "av:1 pv=72.5@8,on=Zone ao:1 pv=10". A comma ends a write only before a property and `=`, so a value may hold commas (`pv=object:ai,1`); quote one that holds `, mode=`. Required.
 
 ### bacnet subscribe
 
@@ -553,6 +614,22 @@ Options:
 - `--dnet <DNET>`: Ask only for the router to this network number.
 - `--wait <WAIT>`: Seconds to wait for responses. Default: `3`.
 
+### bacnet routing-table
+
+Read the routing table of the router at TARGET, on the local network, without changing it (an Initialize-Routing-Table query).
+
+```text
+Usage: bacnet routing-table [OPTIONS] <TARGET>
+```
+
+Arguments:
+
+- `<TARGET>`: The router's address on the local network, as `whois-router` prints it. Required.
+
+Options:
+
+- `--wait <WAIT>`: Seconds to wait for the router's first answer (0 to 3600). Default: `3`.
+
 ### bacnet ack-alarm
 
 Acknowledge an alarm.
@@ -566,7 +643,7 @@ Usage: bacnet ack-alarm [OPTIONS] --state <STATE> --timestamp <TIMESTAMP> --ack-
 Arguments:
 
 - `<TARGET>`: Target device. Required.
-- `<OBJECT>`: Object specifier (e.g., ai:1). Required.
+- `<OBJECT>`: Object specifier (e.g., ai:1 or ai,1). Required.
 
 Options:
 
@@ -588,14 +665,14 @@ Usage: bacnet read-range [OPTIONS] <TARGET> <OBJECT> [PROPERTY]
 Arguments:
 
 - `<TARGET>`: Target device. Required.
-- `<OBJECT>`: Object specifier (e.g., trend-log:1). Required.
+- `<OBJECT>`: Object specifier (e.g., trend-log:1 or trend-log,1). Required.
 - `[PROPERTY]`: Property (default: log-buffer). Default: `log-buffer`.
 
 Options:
 
 - `--position <POSITION>`: Read by position, from this one-based index.
 - `--sequence <SEQUENCE>`: Read by sequence number, from this record.
-- `--time <TIME>`: Read the records logged after this time, in the device's local time: YYYY-MM-DDTHH:MM\[:SS\[.hh\]\].
+- `--time <TIME>`: Read the records logged after this time, in the device's local time: YYYY-MM-DDTHH:MM\[:SS\[.hh\]\], or with the weekday digit (Monday 1) before the time, "2026-11-10 2 16:35:00.00".
 - `--count <COUNT>`: Items to read (default 100); negative reads backward from the reference. With --all, the page size.
 - `--all`: Page through the log from the oldest record, or from --position, --sequence or --time, until the newest.
 - `--strict`: Refuse an answer that breaks a ReadRange rule, instead of showing it with the rules it broke.
@@ -611,7 +688,7 @@ Usage: bacnet create-object [OPTIONS] <TARGET> <OBJECT>
 Arguments:
 
 - `<TARGET>`: Target device. Required.
-- `<OBJECT>`: Object specifier (type:instance, e.g., av:100). Required.
+- `<OBJECT>`: Object specifier (type:instance or type,instance, e.g., av:100). Required.
 
 ### bacnet delete-object
 
@@ -624,7 +701,7 @@ Usage: bacnet delete-object [OPTIONS] <TARGET> <OBJECT>
 Arguments:
 
 - `<TARGET>`: Target device. Required.
-- `<OBJECT>`: Object specifier (type:instance). Required.
+- `<OBJECT>`: Object specifier (type:instance or type,instance). Required.
 
 ### bacnet time-sync
 

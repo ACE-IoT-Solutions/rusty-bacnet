@@ -9,7 +9,7 @@ use crate::enums::{
 };
 use crate::primitives::{BACnetTimeStamp, Date, ObjectIdentifier, PropertyValue, Time};
 
-use super::{BACnetAddress, BACnetRecipient};
+use super::{BACnetAddress, BACnetRecipient, OpaqueChoice};
 
 /// `BACnetObjectSelector` (Clause 21), used by Audit Reporter Monitored_Objects.
 ///
@@ -147,6 +147,10 @@ pub struct BACnetAuditLogRecord {
 }
 
 /// Audit-specific `BACnetAuditLogRecord` datum CHOICE.
+///
+/// On the wire the alternatives take context tags 0 to 2 in declaration
+/// order. An alternative under a higher tag (a later revision's) decodes as
+/// [`Self::Opaque`].
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)] // Preserve the existing direct public variant shape.
 pub enum BACnetAuditLogDatum {
@@ -156,6 +160,9 @@ pub enum BACnetAuditLogDatum {
     AuditNotification(BACnetAuditNotification),
     /// Clock adjustment in seconds, encoded as a four-octet REAL under `[2]`.
     TimeChange(f32),
+    /// An alternative under a context tag above 2, where the log-datum
+    /// CHOICE assigns none, kept as received (#2483).
+    Opaque(OpaqueChoice),
 }
 
 /// Typed `BACnetAuditLogQueryParameters` CHOICE.
@@ -233,18 +240,5 @@ mod tests {
             },
         };
         assert_eq!(record.clone(), record);
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn legacy_bool_helper_maps_old_meaning_to_named_filter() {
-        assert_eq!(
-            BACnetSuccessFilter::from_legacy_bool(true),
-            BACnetSuccessFilter::SUCCESSES_ONLY
-        );
-        assert_eq!(
-            BACnetSuccessFilter::from_legacy_bool(false),
-            BACnetSuccessFilter::ALL
-        );
     }
 }

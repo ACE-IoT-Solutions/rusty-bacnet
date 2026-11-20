@@ -57,7 +57,7 @@ fn identity_defaults_are_endpoint_composed_no_superset() {
     assert_eq!(id.instance(), 42);
     assert_eq!(id.vendor_id(), 7);
     assert_eq!(id.max_apdu_length(), 1476);
-    assert_eq!(id.segmentation(), Segmentation::NONE);
+    assert_eq!(id.segmentation(), Segmentation::NO_SEGMENTATION);
     assert_eq!(id.services(), &[ServiceSupported::READ_PROPERTY]);
     assert_eq!(id.device_uuid(), [0; 16]);
     assert!(id.network_ports().is_empty());
@@ -79,7 +79,7 @@ fn identity_builds_device_plus_ports_plus_uuid() {
         .unwrap()
         .with_max_apdu(480)
         .unwrap()
-        .with_segmentation(Segmentation::NONE)
+        .with_segmentation(Segmentation::NO_SEGMENTATION)
         .with_device_uuid(uuid)
         .with_bip_port(1, 10, Ipv4Addr::new(127, 0, 0, 1), 47808)
         .unwrap()
@@ -108,7 +108,7 @@ fn identity_builds_device_plus_ports_plus_uuid() {
     assert_eq!(
         dev.read_property(PropertyIdentifier::SEGMENTATION_SUPPORTED, None)
             .unwrap(),
-        PropertyValue::Enumerated(Segmentation::NONE.to_raw() as u32)
+        PropertyValue::Enumerated(Segmentation::NO_SEGMENTATION.to_raw() as u32)
     );
     assert_eq!(
         dev.read_property(PropertyIdentifier::DEVICE_UUID, None)
@@ -128,9 +128,11 @@ fn identity_builds_device_plus_ports_plus_uuid() {
         other => panic!("expected BitString, got {other:?}"),
     }
     // Object_List contains Device + both ports (port rule: one entry per
-    // bound transport; instances caller-stable, B/IP=1 SC=2 here).
-    match dev
-        .read_property(PropertyIdentifier::OBJECT_LIST, Some(0))
+    // bound transport; instances caller-stable, B/IP=1 SC=2 here). The
+    // database keeps it for the local Device (#2669).
+    assert!(db.keeps_device_property(dev, PropertyIdentifier::OBJECT_LIST));
+    match db
+        .read_device_property(PropertyIdentifier::OBJECT_LIST, Some(0))
         .unwrap()
     {
         PropertyValue::Unsigned(n) => assert_eq!(n, 3),
@@ -202,7 +204,10 @@ fn identity_iam_bytes_match_server_discovery_construction() {
         object_id(ObjectType::DEVICE, 1234)
     );
     assert_eq!(decoded.max_apdu_length, 1476);
-    assert_eq!(decoded.segmentation_supported, Segmentation::NONE);
+    assert_eq!(
+        decoded.segmentation_supported,
+        Segmentation::NO_SEGMENTATION
+    );
     assert_eq!(decoded.vendor_id, 99);
 
     // Server side builds the same four fields from the derived config.
@@ -213,7 +218,7 @@ fn identity_iam_bytes_match_server_discovery_construction() {
         bacnet_services::who_is::IAmRequest {
             object_identifier: id.device_oid(),
             max_apdu_length: 1476,
-            segmentation_supported: Segmentation::NONE,
+            segmentation_supported: Segmentation::NO_SEGMENTATION,
             vendor_id: 99,
         }
     );
@@ -262,9 +267,10 @@ async fn session_identity_overrides_480_and_iam_broadcasts() {
         other => panic!("expected I-Am, got {other:?}"),
     }
 
-    // Missing identity errors without sending (no invented device).
+    // Missing identity errors without sending (no invented device). A
+    // session with a server role needs one, so this one is a client.
     let (t_c, _t_d) = LoopbackTransport::pair(vec![0x03], vec![0x04]);
-    let mut c = EndpointSession::new(t_c, SessionRole::Both, session_config()).unwrap();
+    let mut c = EndpointSession::new(t_c, SessionRole::ClientOnly, session_config()).unwrap();
     c.start().await.unwrap();
     assert!(c.broadcast_i_am().await.is_err());
     c.stop().await.unwrap();
@@ -275,24 +281,20 @@ async fn session_identity_overrides_480_and_iam_broadcasts() {
 
 #[tokio::test(start_paused = true)]
 async fn capability_matrix_services_and_segmentation_refuse() {
-    // Services == reality: ReadProperty succeeds; WriteProperty (unexecuted)
-    // draws Reject UNRECOGNIZED_SERVICE from the narrow responder.
-    // Segmentation NONE: segmented request draws server Abort; segmented
+    // ReadProperty succeeds; WriteProperty draws the read-only server's
+    // Error SERVICES / SERVICE_REQUEST_DENIED.
+    // Segmentation NO_SEGMENTATION: segmented request draws server Abort; segmented
     // ComplexAck draws client Abort (both directions refuse, Loopback here;
     // real-loopback proofs assert the same aborts on wire).
-    use bacnet_encoding::apdu::{
-        AbortPdu, ConfirmedRequest as ConfirmedPdu, RejectPdu, encode_apdu,
-    };
+    use bacnet_encoding::apdu::{AbortPdu, ConfirmedRequest as ConfirmedPdu, encode_apdu};
     use bacnet_services::read_property::ReadPropertyRequest;
-    use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice, RejectReason};
+    use bacnet_types::enums::{AbortReason, ConfirmedServiceChoice};
     use bytes::BytesMut;
 
     let id = DeviceIdentity::new(55, 5).unwrap();
     let db_a = build_database_with_extra(&id, vec![analog(9, 3.25)]).unwrap();
-    let db_b = {
-        let id_b = DeviceIdentity::new(56, 5).unwrap();
-        build_database_with_extra(&id_b, vec![analog(9, 9.5)]).unwrap()
-    };
+    let id_b = DeviceIdentity::new(56, 5).unwrap();
+    let db_b = build_database_with_extra(&id_b, vec![analog(9, 9.5)]).unwrap();
     // Pair for baseline: two full sessions so ReadProperty has a responder.
     let (t_a, t_b) = LoopbackTransport::pair(vec![0xA1], vec![0xB2]);
     let mut a = EndpointSession::new(t_a, SessionRole::Both, session_config())
@@ -301,7 +303,8 @@ async fn capability_matrix_services_and_segmentation_refuse() {
         .device(id);
     let mut b = EndpointSession::new(t_b, SessionRole::Both, session_config())
         .unwrap()
-        .with_database(db_b);
+        .with_database(db_b)
+        .device(id_b);
     a.start().await.unwrap();
     b.start().await.unwrap();
 
@@ -335,16 +338,17 @@ async fn capability_matrix_services_and_segmentation_refuse() {
     let mut peer_rx = peer.start().await.unwrap();
     c.start().await.unwrap();
 
-    // Unexecuted service (WriteProperty) draws Reject on the wire.
+    // A WriteProperty draws the read-only server's denial on the wire.
     let mut svc = BytesMut::new();
-    // Minimal WriteProperty body: object id + property id + value (the
-    // responder rejects before parsing detail, so exact body is inert).
-    ReadPropertyRequest {
+    bacnet_services::write_property::WritePropertyRequest {
         object_identifier: object_id(ObjectType::ANALOG_INPUT, 9),
-        property_identifier: PropertyIdentifier::PRESENT_VALUE,
+        property_identifier: PropertyIdentifier::OUT_OF_SERVICE,
         property_array_index: None,
+        property_value: vec![0x11],
+        priority: None,
     }
-    .encode(&mut svc);
+    .encode(&mut svc)
+    .unwrap();
     let write_req = Apdu::ConfirmedRequest(ConfirmedPdu {
         segmented: false,
         more_follows: false,
@@ -364,17 +368,20 @@ async fn capability_matrix_services_and_segmentation_refuse() {
         .unwrap();
     let reply = tokio::time::timeout(WAIT, peer_rx.recv())
         .await
-        .expect("reject must arrive")
+        .expect("the denial must arrive")
         .expect("peer closed");
     match decode_apdu(reply.apdu).unwrap() {
-        Apdu::Reject(RejectPdu {
-            invoke_id,
-            reject_reason,
-        }) => {
-            assert_eq!(invoke_id, 21);
-            assert_eq!(reject_reason, RejectReason::UNRECOGNIZED_SERVICE);
+        Apdu::Error(error) => {
+            assert_eq!(error.invoke_id, 21);
+            assert_eq!(
+                (error.error_class, error.error_code),
+                (
+                    bacnet_types::enums::ErrorClass::SERVICES,
+                    bacnet_types::enums::ErrorCode::SERVICE_REQUEST_DENIED
+                )
+            );
         }
-        other => panic!("expected Reject, got {other:?}"),
+        other => panic!("expected Error, got {other:?}"),
     }
 
     // Segmented request draws server Abort SEGMENTATION_NOT_SUPPORTED.
@@ -623,7 +630,7 @@ fn identity_maps_its_segment_timeout_to_both_database_builders_and_full_server()
     for timeout in [5000, 7300] {
         let mut identity = DeviceIdentity::new(42, 7)
             .unwrap()
-            .with_segmentation(Segmentation::BOTH);
+            .with_segmentation(Segmentation::SEGMENTED_BOTH);
         if timeout != 5000 {
             identity = identity.with_apdu_segment_timeout_ms(timeout);
         }
@@ -673,9 +680,9 @@ async fn endpoint_roles_reject_non_none_identity_before_consuming_transport() {
         SessionRole::Both,
     ] {
         for mode in [
-            Segmentation::TRANSMIT,
-            Segmentation::RECEIVE,
-            Segmentation::BOTH,
+            Segmentation::SEGMENTED_TRANSMIT,
+            Segmentation::SEGMENTED_RECEIVE,
+            Segmentation::SEGMENTED_BOTH,
             Segmentation::from_raw(64),
         ] {
             let identity = DeviceIdentity::new(42, 7).unwrap();
@@ -687,8 +694,8 @@ async fn endpoint_roles_reject_non_none_identity_before_consuming_transport() {
             let error = endpoint
                 .start()
                 .await
-                .expect_err("narrow role cannot claim segmentation");
-            assert!(error.to_string().contains("segmentation NONE"));
+                .expect_err("the session's roles cannot claim segmentation yet");
+            assert!(error.to_string().contains("segmentation NO_SEGMENTATION"));
             // Failed validation leaves configuration and the unstarted transport
             // reusable. A valid identity can start the exact same session.
             let mut endpoint = endpoint.device(identity);
@@ -699,7 +706,7 @@ async fn endpoint_roles_reject_non_none_identity_before_consuming_transport() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn endpoint_roles_reject_segmented_database_without_identity_and_allow_correction() {
+async fn endpoint_roles_reject_a_segmented_database_and_allow_correction() {
     for role in [
         SessionRole::ClientOnly,
         SessionRole::ServerOnly,
@@ -707,15 +714,19 @@ async fn endpoint_roles_reject_segmented_database_without_identity_and_allow_cor
     ] {
         let identity = DeviceIdentity::new(42, 7).unwrap();
         let (transport, _peer) = LoopbackTransport::pair(vec![1], vec![2]);
-        let mut endpoint = EndpointSession::new(transport, role, session_config())
-            .unwrap()
-            .with_database(
-                identity
-                    .clone()
-                    .with_segmentation(Segmentation::BOTH)
-                    .build_database()
-                    .unwrap(),
-            );
+        let mut endpoint = EndpointSession::new(transport, role, session_config()).unwrap();
+        // A server role needs the node's identity; a client role may go
+        // without one.
+        if role != SessionRole::ClientOnly {
+            endpoint = endpoint.device(identity.clone());
+        }
+        let mut endpoint = endpoint.with_database(
+            identity
+                .clone()
+                .with_segmentation(Segmentation::SEGMENTED_BOTH)
+                .build_database()
+                .unwrap(),
+        );
         let error = endpoint
             .start()
             .await
@@ -723,7 +734,7 @@ async fn endpoint_roles_reject_segmented_database_without_identity_and_allow_cor
         assert!(
             error
                 .to_string()
-                .contains("selected Device requires segmentation NONE")
+                .contains("selected Device requires segmentation NO_SEGMENTATION")
         );
         let mut endpoint = endpoint.with_database(identity.build_database().unwrap());
         endpoint.start().await.unwrap();

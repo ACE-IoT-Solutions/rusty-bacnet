@@ -1,5 +1,6 @@
 use super::*;
 use bacnet_services::cov::{SubscribeCOVPropertyRequest, SubscribeCOVRequest};
+use bacnet_services::cov_multiple::SubscribeCOVPropertyMultipleRequest;
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::ObjectIdentifier;
 use std::num::NonZeroU32;
@@ -52,21 +53,6 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         }
     }
 
-    pub(super) async fn send_subscribe_cov_request(
-        &self,
-        target: ConfirmedTarget<'_>,
-        request: SubscribeCOVRequest,
-    ) -> Result<(), Error> {
-        let mut buf = BytesMut::new();
-        request.encode(&mut buf)?;
-
-        let _ = self
-            .confirmed_request_inner(target, ConfirmedServiceChoice::SUBSCRIBE_COV, &buf)
-            .await?;
-
-        Ok(())
-    }
-
     fn subscribe_cov_property_request(
         subscriber_process_identifier: u32,
         monitored_object_identifier: ObjectIdentifier,
@@ -87,25 +73,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         }
     }
 
-    pub(super) async fn send_subscribe_cov_property_request(
-        &self,
-        target: ConfirmedTarget<'_>,
-        request: SubscribeCOVPropertyRequest,
-    ) -> Result<(), Error> {
-        let mut buf = BytesMut::new();
-        request.encode(&mut buf)?;
-
-        let _ = self
-            .confirmed_request_inner(target, ConfirmedServiceChoice::SUBSCRIBE_COV_PROPERTY, &buf)
-            .await?;
-
-        Ok(())
-    }
-
-    /// Subscribe to COV notifications for an object at a directly reachable MAC address.
+    /// Subscribe to COV notifications for an object on the station `to`.
     pub async fn subscribe_cov(
         &self,
-        destination_mac: &[u8],
+        to: &(impl ToStation + ?Sized),
         subscriber_process_identifier: u32,
         monitored_object_identifier: ObjectIdentifier,
         confirmed: bool,
@@ -117,85 +88,13 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             Some(confirmed),
             lifetime,
         );
-
-        self.send_subscribe_cov_request(
-            ConfirmedTarget::Local {
-                mac: destination_mac,
-            },
-            request,
-        )
-        .await
+        self.call(to, request).await
     }
 
-    /// Subscribe to COV notifications for an object on a remote network via a router.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn subscribe_cov_routed(
-        &self,
-        router_mac: &[u8],
-        dest_network: u16,
-        dest_mac: &[u8],
-        subscriber_process_identifier: u32,
-        monitored_object_identifier: ObjectIdentifier,
-        confirmed: bool,
-        lifetime: Option<u32>,
-    ) -> Result<(), Error> {
-        let request = Self::subscribe_cov_request(
-            subscriber_process_identifier,
-            monitored_object_identifier,
-            Some(confirmed),
-            lifetime,
-        );
-
-        self.send_subscribe_cov_request(
-            ConfirmedTarget::Routed {
-                router_mac,
-                dest_network,
-                dest_mac,
-            },
-            request,
-        )
-        .await
-    }
-
-    /// Subscribe to COV notifications for a discovered device, auto-routing if needed.
-    pub async fn subscribe_cov_to_device(
-        &self,
-        device_instance: u32,
-        subscriber_process_identifier: u32,
-        monitored_object_identifier: ObjectIdentifier,
-        confirmed: bool,
-        lifetime: Option<u32>,
-    ) -> Result<(), Error> {
-        let request = Self::subscribe_cov_request(
-            subscriber_process_identifier,
-            monitored_object_identifier,
-            Some(confirmed),
-            lifetime,
-        );
-
-        request.validate()?;
-        let (mac, routing) = self.resolve_device(device_instance).await?;
-
-        if let Some((dnet, dadr)) = routing {
-            self.send_subscribe_cov_request(
-                ConfirmedTarget::Routed {
-                    router_mac: &mac,
-                    dest_network: dnet,
-                    dest_mac: &dadr,
-                },
-                request,
-            )
-            .await
-        } else {
-            self.send_subscribe_cov_request(ConfirmedTarget::Local { mac: &mac }, request)
-                .await
-        }
-    }
-
-    /// Cancel a COV subscription on a remote device.
+    /// Cancel a COV subscription on the station `to`.
     pub async fn unsubscribe_cov(
         &self,
-        destination_mac: &[u8],
+        to: &(impl ToStation + ?Sized),
         subscriber_process_identifier: u32,
         monitored_object_identifier: ObjectIdentifier,
     ) -> Result<(), Error> {
@@ -205,125 +104,24 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             None,
             None,
         );
-
-        self.send_subscribe_cov_request(
-            ConfirmedTarget::Local {
-                mac: destination_mac,
-            },
-            request,
-        )
-        .await
+        self.call(to, request).await
     }
 
-    /// Cancel a COV subscription on a remote network via a router.
-    pub async fn unsubscribe_cov_routed(
-        &self,
-        router_mac: &[u8],
-        dest_network: u16,
-        dest_mac: &[u8],
-        subscriber_process_identifier: u32,
-        monitored_object_identifier: ObjectIdentifier,
-    ) -> Result<(), Error> {
-        let request = Self::subscribe_cov_request(
-            subscriber_process_identifier,
-            monitored_object_identifier,
-            None,
-            None,
-        );
-
-        self.send_subscribe_cov_request(
-            ConfirmedTarget::Routed {
-                router_mac,
-                dest_network,
-                dest_mac,
-            },
-            request,
-        )
-        .await
-    }
-
-    /// Cancel a COV subscription for a discovered device, auto-routing if needed.
-    pub async fn unsubscribe_cov_to_device(
-        &self,
-        device_instance: u32,
-        subscriber_process_identifier: u32,
-        monitored_object_identifier: ObjectIdentifier,
-    ) -> Result<(), Error> {
-        let request = Self::subscribe_cov_request(
-            subscriber_process_identifier,
-            monitored_object_identifier,
-            None,
-            None,
-        );
-
-        request.validate()?;
-        let (mac, routing) = self.resolve_device(device_instance).await?;
-
-        if let Some((dnet, dadr)) = routing {
-            self.send_subscribe_cov_request(
-                ConfirmedTarget::Routed {
-                    router_mac: &mac,
-                    dest_network: dnet,
-                    dest_mac: &dadr,
-                },
-                request,
-            )
-            .await
-        } else {
-            self.send_subscribe_cov_request(ConfirmedTarget::Local { mac: &mac }, request)
-                .await
-        }
-    }
-
-    /// Subscribe to COV notifications for a single property at a directly reachable MAC address.
-    /// Lifetime must be positive; use `unsubscribe_cov_property` for cancellation.
+    /// Subscribe to COV notifications for a single property on the station
+    /// `to`. Lifetime must be positive; use `unsubscribe_cov_property` for
+    /// cancellation.
     pub async fn subscribe_cov_property(
         &self,
-        destination_mac: &[u8],
+        to: &(impl ToStation + ?Sized),
         subscription: CovPropertySubscription,
     ) -> Result<(), Error> {
-        let request = subscription.into_request();
-
-        self.send_subscribe_cov_property_request(
-            ConfirmedTarget::Local {
-                mac: destination_mac,
-            },
-            request,
-        )
-        .await
+        self.call(to, subscription.into_request()).await
     }
 
-    /// Subscribe to COV notifications for a single property on a discovered device,
-    /// auto-routing if needed. Lifetime must be positive; cancellation has a separate method.
-    pub async fn subscribe_cov_property_to_device(
-        &self,
-        device_instance: u32,
-        subscription: CovPropertySubscription,
-    ) -> Result<(), Error> {
-        let request = subscription.into_request();
-
-        request.validate()?;
-        let (mac, routing) = self.resolve_device(device_instance).await?;
-        if let Some((dnet, dadr)) = routing {
-            self.send_subscribe_cov_property_request(
-                ConfirmedTarget::Routed {
-                    router_mac: &mac,
-                    dest_network: dnet,
-                    dest_mac: &dadr,
-                },
-                request,
-            )
-            .await
-        } else {
-            self.send_subscribe_cov_property_request(ConfirmedTarget::Local { mac: &mac }, request)
-                .await
-        }
-    }
-
-    /// Cancel a single-property COV subscription at a directly reachable MAC address.
+    /// Cancel a single-property COV subscription on the station `to`.
     pub async fn unsubscribe_cov_property(
         &self,
-        destination_mac: &[u8],
+        to: &(impl ToStation + ?Sized),
         subscriber_process_identifier: u32,
         monitored_object_identifier: ObjectIdentifier,
         monitored_property_identifier: PropertyIdentifier,
@@ -338,103 +136,42 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             monitored_property_array_index,
             None,
         );
-
-        self.send_subscribe_cov_property_request(
-            ConfirmedTarget::Local {
-                mac: destination_mac,
-            },
-            request,
-        )
-        .await
+        self.call(to, request).await
     }
 
-    /// Cancel a single-property COV subscription for a discovered device,
-    /// auto-routing if needed.
-    pub async fn unsubscribe_cov_property_to_device(
+    /// Subscribe to COV notifications for several properties of several
+    /// objects on the station `to`, or cancel such a subscription, with one
+    /// SubscribeCOVPropertyMultiple (Clause 13.16). The whole request is
+    /// checked before anything is sent
+    /// ([`SubscribeCOVPropertyMultipleRequest::validate`]). A device that
+    /// refuses one of the subscriptions says which in the error's
+    /// first-failed-subscription detail.
+    ///
+    /// The notifications such a subscription brings arrive on
+    /// [`Self::cov_notifications`] as [`COVEvent::Multiple`], beside the
+    /// single-object ones, in the order they came.
+    pub async fn subscribe_cov_property_multiple(
         &self,
-        device_instance: u32,
-        subscriber_process_identifier: u32,
-        monitored_object_identifier: ObjectIdentifier,
-        monitored_property_identifier: PropertyIdentifier,
-        monitored_property_array_index: Option<u32>,
+        to: &(impl ToStation + ?Sized),
+        request: &SubscribeCOVPropertyMultipleRequest,
     ) -> Result<(), Error> {
-        let request = Self::subscribe_cov_property_request(
-            subscriber_process_identifier,
-            monitored_object_identifier,
-            None,
-            None,
-            monitored_property_identifier,
-            monitored_property_array_index,
-            None,
-        );
-
-        request.validate()?;
-        let (mac, routing) = self.resolve_device(device_instance).await?;
-
-        if let Some((dnet, dadr)) = routing {
-            self.send_subscribe_cov_property_request(
-                ConfirmedTarget::Routed {
-                    router_mac: &mac,
-                    dest_network: dnet,
-                    dest_mac: &dadr,
-                },
-                request,
-            )
-            .await
-        } else {
-            self.send_subscribe_cov_property_request(ConfirmedTarget::Local { mac: &mac }, request)
-                .await
-        }
+        self.call(to, request).await
     }
 
-    /// Cancel a COV subscription at `target`, the device a
-    /// [`manage_cov_subscription`](Self::manage_cov_subscription) went to.
-    /// The cancel goes the way the subscription did, with no device-table
-    /// lookup, so it reaches the same device even if the table has since
-    /// dropped or moved its entry.
-    pub async fn unsubscribe_cov_target(
-        &self,
-        target: &CovTarget,
-        subscriber_process_identifier: u32,
-        monitored_object_identifier: ObjectIdentifier,
-    ) -> Result<(), Error> {
-        let request = Self::subscribe_cov_request(
-            subscriber_process_identifier,
-            monitored_object_identifier,
-            None,
-            None,
-        );
-        self.send_subscribe_cov_request(target.confirmed(), request)
-            .await
-    }
-
-    /// Cancel a single-property COV subscription at `target`:
-    /// [`unsubscribe_cov_target`](Self::unsubscribe_cov_target) for one
-    /// property.
-    pub async fn unsubscribe_cov_property_target(
-        &self,
-        target: &CovTarget,
-        subscriber_process_identifier: u32,
-        monitored_object_identifier: ObjectIdentifier,
-        monitored_property_identifier: PropertyIdentifier,
-        monitored_property_array_index: Option<u32>,
-    ) -> Result<(), Error> {
-        let request = Self::subscribe_cov_property_request(
-            subscriber_process_identifier,
-            monitored_object_identifier,
-            None,
-            None,
-            monitored_property_identifier,
-            monitored_property_array_index,
-            None,
-        );
-        self.send_subscribe_cov_property_request(target.confirmed(), request)
-            .await
-    }
-
-    /// Get a receiver for incoming COV notifications. Each call returns a new
-    /// independent receiver.
-    pub fn cov_notifications(&self) -> broadcast::Receiver<ReceivedCOVNotification> {
+    /// Get a receiver for incoming COV notifications of both forms: about one
+    /// object ([`COVEvent::Object`]: ConfirmedCOVNotification and
+    /// UnconfirmedCOVNotification) or about several ([`COVEvent::Multiple`]:
+    /// ConfirmedCOVNotificationMultiple and UnconfirmedCOVNotificationMultiple),
+    /// in the order they arrive. Each call returns a new independent receiver.
+    ///
+    /// The client acknowledges a confirmed notification of either form, and
+    /// publishes it here, whether or not it knows the subscription: it keeps
+    /// no list of them. Match one by its subscriber process identifier and
+    /// its source ([`Station::is_source_of`]), or set
+    /// [`ClientOptions::with_confirmed_cov_notification_ack_policy`] to
+    /// answer otherwise. A notification the sender sends again, its answer
+    /// lost, is published again.
+    pub fn cov_notifications(&self) -> broadcast::Receiver<COVEvent> {
         self.cov_tx.subscribe()
     }
 }

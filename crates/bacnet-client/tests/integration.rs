@@ -4,7 +4,7 @@
 //! APDU -> NPDU -> BVLL -> UDP -> receive -> decode -> respond ->
 //! encode -> UDP -> receive -> decode -> return typed result.
 
-use bacnet_client::client::BACnetClient;
+use bacnet_client::client::{BACnetClient, Broadcast};
 use bacnet_encoding::apdu::{
     self, Apdu, ComplexAck, UnconfirmedRequest as UnconfirmedRequestPdu, encode_apdu,
 };
@@ -131,9 +131,12 @@ async fn who_is_broadcast() {
         .unwrap();
 
     // WhoIs is fire-and-forget, so it should succeed immediately
-    client.who_is(None).await.unwrap();
+    client.who_is(Broadcast::Global, None).await.unwrap();
     client
-        .who_is(Some(DeviceInstanceRange::new(1000, 2000).unwrap()))
+        .who_is(
+            Broadcast::Global,
+            Some(DeviceInstanceRange::new(1000, 2000).unwrap()),
+        )
         .await
         .unwrap();
 
@@ -160,7 +163,7 @@ async fn device_discovery_via_iam() {
     let i_am = IAmRequest {
         object_identifier: ObjectIdentifier::new(ObjectType::DEVICE, 5678).unwrap(),
         max_apdu_length: 1476,
-        segmentation_supported: Segmentation::NONE,
+        segmentation_supported: Segmentation::NO_SEGMENTATION,
         vendor_id: 42,
     };
     let mut service_buf = BytesMut::new();
@@ -189,9 +192,9 @@ async fn device_discovery_via_iam() {
     assert_eq!(devices[0].max_apdu_length, 1476);
 
     // Also test get_device
-    let dev = client.get_device(5678).await;
+    let dev = client.get_device(5678).await.unwrap();
     assert!(dev.is_some());
-    assert!(client.get_device(9999).await.is_none());
+    assert!(client.get_device(9999).await.unwrap().is_none());
 
     net_b.stop().await.unwrap();
     client.stop().await.unwrap();

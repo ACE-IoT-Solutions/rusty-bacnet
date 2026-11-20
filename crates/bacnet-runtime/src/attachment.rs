@@ -1,7 +1,7 @@
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
-use bacnet_client::client::BACnetClient;
+use bacnet_client::client::{BACnetClient, Station};
 use bacnet_transport::bip::{BipMode, BipTransport, ForeignBbmd, ForeignDeviceConfig};
 use tokio::sync::Mutex;
 
@@ -17,6 +17,19 @@ pub(super) struct ManagedAttachment {
     pub(super) client: Mutex<Option<BACnetClient<BipTransport>>>,
     state: Mutex<AttachmentState>,
     last_error: Mutex<Option<crate::ErrorCode>>,
+}
+
+impl DevicePath {
+    fn station(&self) -> Station {
+        match self {
+            Self::Direct { mac } => Station::local(mac),
+            Self::Routed {
+                ingress_mac,
+                dnet,
+                dadr,
+            } => Station::routed(ingress_mac, *dnet, dadr),
+        }
+    }
 }
 
 impl ManagedAttachment {
@@ -81,34 +94,14 @@ impl ManagedAttachment {
     ) -> Result<Vec<u8>, RuntimeError> {
         let client = self.client.lock().await;
         let client = client.as_ref().ok_or_else(RuntimeError::stopped)?;
-        let result = match &target.path {
-            DevicePath::Direct { mac } => {
-                client
-                    .read_property(
-                        mac,
-                        target.object_identifier,
-                        target.property_identifier,
-                        target.property_array_index,
-                    )
-                    .await
-            }
-            DevicePath::Routed {
-                ingress_mac,
-                dnet,
-                dadr,
-            } => {
-                client
-                    .read_property_routed(
-                        ingress_mac,
-                        *dnet,
-                        dadr,
-                        target.object_identifier,
-                        target.property_identifier,
-                        target.property_array_index,
-                    )
-                    .await
-            }
-        };
+        let result = client
+            .read_property(
+                &target.path.station(),
+                target.object_identifier,
+                target.property_identifier,
+                target.property_array_index,
+            )
+            .await;
         result
             .map(|ack| ack.property_value)
             .map_err(|error| RuntimeError::operation(self.config.id, error))
@@ -122,38 +115,16 @@ impl ManagedAttachment {
     ) -> Result<(), RuntimeError> {
         let client = self.client.lock().await;
         let client = client.as_ref().ok_or_else(RuntimeError::stopped)?;
-        let result = match &target.path {
-            DevicePath::Direct { mac } => {
-                client
-                    .write_property(
-                        mac,
-                        target.object_identifier,
-                        target.property_identifier,
-                        target.property_array_index,
-                        raw_value,
-                        priority,
-                    )
-                    .await
-            }
-            DevicePath::Routed {
-                ingress_mac,
-                dnet,
-                dadr,
-            } => {
-                client
-                    .write_property_routed(
-                        ingress_mac,
-                        *dnet,
-                        dadr,
-                        target.object_identifier,
-                        target.property_identifier,
-                        target.property_array_index,
-                        raw_value,
-                        priority,
-                    )
-                    .await
-            }
-        };
+        let result = client
+            .write_property(
+                &target.path.station(),
+                target.object_identifier,
+                target.property_identifier,
+                target.property_array_index,
+                raw_value,
+                priority,
+            )
+            .await;
         result.map_err(|error| RuntimeError::operation(self.config.id, error))
     }
 

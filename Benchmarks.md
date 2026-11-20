@@ -1217,18 +1217,56 @@ interleaved matrix compare.
   workloads). The difference in instructions divided by the difference in
   length is the cost of one request, without setup, checks or shutdown. The
   harness's own counting allocator (about 42 instructions per allocation) is
-  subtracted; the tables show the figure with it too. Allocations per
-  request are the counted loop's allocator calls and requested bytes divided
-  by its length.
+  subtracted. Allocations per request are the counted loop's allocator
+  calls and requested bytes divided by its length.
+- **The system allocator is reported, not gated.** The gated figure also
+  leaves out the work of glibc's allocator: the instructions it runs in its
+  own functions (`malloc`, `free` and internals such as `_int_malloc` and
+  `unlink_chunk`), the copy it makes when `realloc` moves a block to a new
+  place, and, on arm64, the small atomic helper functions it calls inside
+  the C library for its locks. Every other copy stays in the gated figure,
+  including the program's own copies that callgrind books to `malloc`
+  because the program reaches `malloc` with a tail call. Which free chunk
+  serves a request depends on where earlier allocations landed in the
+  heap. That can differ between two builds whose request path is the same,
+  and on ReadPropertyMultiple between runs of one binary too: 16 bytes of
+  padding in one server struct moved that row by about 200 instructions
+  per request, all inside glibc, with the same allocation calls and bytes
+  ([#2555](https://github.com/jscott3201/rusty-bacnet/issues/2555)). In
+  the two matrices that checked this change, two clean builds of one
+  commit spread over 673 and 536 instructions per request on
+  ReadPropertyMultiple (current-thread runtime) with the allocator
+  counted, and over 9 and 66 without it. The table shows the allocator's
+  share and the total (the two together, the figure gated before #2555)
+  beside the gated figure, each with its change, and the total with its
+  own noise floor; those columns are marked as reported only. Allocation
+  calls stay gated, so allocating more still fails; a change that only
+  makes each allocation dearer, such as a size that moves to a larger bin,
+  shows in the allocator's column and isn't gated. A note under the table
+  names each row whose allocator share rose by more than the total's own
+  noise floor.
+- **Finding the allocator.** Its functions are named from glibc's
+  debugging symbols, which the image installs with Valgrind, and listed in
+  `scripts/perf/count_analysis.py`. These stop the comparison rather than
+  gate a figure that still holds the allocator, or one that lost the
+  program's own copies: a run that allocated without those functions
+  (another C library, or a static or stripped one); a function in glibc's
+  allocator sources that the list doesn't name (a newer glibc); a loop
+  whose allocations cost the allocator fewer than 10 instructions per
+  allocation call (glibc's own cost 182 to 208 on the round trips), which
+  means another allocator serves them while glibc runs only at start-up;
+  and a run in which callgrind books more copies to the allocator than
+  `realloc` moved blocks. After a deliberate glibc update, the lists in
+  that file are refreshed from the new image's symbols.
 - **Builds and order.** Each commit is exported into its own tree, built in a
   fresh Docker volume at the same paths with `--locked`. A comparison builds
   the baseline twice (A and A') and the candidate once (B), and runs them in
   the order A B A' A' B A, three times, so each build gets six values per
   workload and runtime. Every run first checks its binary's SHA-256.
-- **Noise floor.** The range of the twelve A and A' values per workload and
-  runtime, from the same matrix as the verdict. Two clean builds of one
-  commit give byte-identical binaries. A noise run (`--noise`) measures only
-  this.
+- **Noise floor.** The range of the twelve A and A' values of the gated
+  figure per workload and runtime, from the same matrix as the verdict. Two
+  clean builds of one commit give byte-identical binaries. A noise run
+  (`--noise`) measures only this.
 - **Gates.** A comparison is accepted only when it covers `rp`, `wp` and
   `rpm` on both runtimes and every row passes. The aimed workload (`rp`
   unless `--aim` names others) must fall by at least 100 instructions per
@@ -1236,7 +1274,9 @@ interleaved matrix compare.
   lower; an aimed codec workload has the same rule without the
   100-instruction minimum. Every other row may not rise by more than its
   noise floor, and no row's allocation calls may rise by more than 0.01 per
-  request. Requested bytes are reported, not gated. Wire bytes must stay
+  request. Each instruction rule judges the gated figure, so a saving made
+  only inside the system allocator doesn't count as one. Requested bytes
+  and the allocator's instructions are reported, not gated. Wire bytes must stay
   identical; the existing test suites check that. The script exits non-zero
   when a comparison isn't accepted.
 - **No-regression check.** A change that isn't an optimization, such as a
@@ -1245,11 +1285,13 @@ interleaved matrix compare.
   no row adds allocation calls; each row reports its change in floors.
 - **When a comparison fails.** Compare per-function call counts first:
   `perf_counts.py attribute <run directory> --workload rp --runtime ct`
-  lists the calls per request that changed, then the instructions. The
-  workflow writes the same for each round trip to `attribution.md` when it
-  fails. Unchanged calls with changed instructions point at code
-  generation, such as a function the compiler stopped inlining, rather
-  than at more work per request.
+  lists the calls per request that changed, then the instructions, marking
+  the system allocator's functions, and then the share the gate leaves
+  out: the allocator's functions, its block copies and the atomic helpers
+  it calls. The workflow writes the same
+  for each round trip to `attribution.md` when it fails. Unchanged calls
+  with changed instructions point at code generation, such as a function
+  the compiler stopped inlining, rather than at more work per request.
 - **Where.** On Apple silicon, in local Docker; on GitHub, the manual
   `Perf counts` workflow (`.github/workflows/perf-counts.yml`, run from the
   Actions tab with a baseline ref, a candidate ref and the workloads) on an
@@ -1273,13 +1315,20 @@ channels' permit returns, in `callers.md`. A channel receive inlined into
 its caller, like the network layer's APDU receiver, leaves no channel frame,
 so that receiver counts as the channel. For quick local iteration only, `--noise-floors /tmp/noise/summary.json`
 skips the A' build and takes the floors from an earlier noise run on the
-same machine; each row of the table names its floor's source. Each run
+same machine; each row of the table names its floor's source. Floors are
+used only for the figure they were measured on: the manifest records it,
+and both the run and a later `perf_counts.py analyze` refuse floors from a
+noise run before #2555, which hold the allocator's spread.
+`perf_counts.py analyze` of a run recorded before #2555 takes the
+allocator's share from its raw callgrind files. Each run
 writes `summary.md` (the verdict table), per-function and per-line
 instruction slopes under `profiles/`, and the #1978 items' share in
 `items.md`. The first baseline and noise floors on dev are in
-[benchmarks/results/perf-s0](benchmarks/results/perf-s0/README.md); the
-current ones, built like the release with the fixed allocator settings, in
+[benchmarks/results/perf-s0](benchmarks/results/perf-s0/README.md), and
+the first built like the release with the fixed allocator settings in
 [benchmarks/results/perf-s0b](benchmarks/results/perf-s0b/README.md).
+Both hold floors of the total, before #2555, so quick mode refuses them;
+measure new floors with a noise run.
 
 ### 10.5 The #1979 shifts, explained by counts
 
@@ -1468,6 +1517,100 @@ counted the harness's way from one build
   carrying its decision. A server without a policy doesn't reach the new
   branch, and its count is within 0.15% of the official WriteProperty
   count after section 10.10.
+
+### 10.12 Codec savings for builds without link-time optimization (#2334)
+
+One small change ships from this work: the write into the output buffer
+is now inlined into the crates that call the encoders. In a build without
+link-time optimization, encoding a ReadProperty request falls from 705 to
+611 instructions, and a whole ReadProperty request (network layer,
+application layer and service) from 2,157 to 2,063. Built like the
+release, with link-time optimization, nothing changes: 306 and 1,412
+instructions before and after. No other codec workload moves in either
+profile, and allocations are unchanged.
+
+Section 10.5's counts pointed at three places where the codecs spend
+instructions they needn't, mostly in builds without link-time
+optimization. Each was changed on its own and counted in two build
+profiles
+([benchmarks/results/perf-2334](benchmarks/results/perf-2334/README.md)):
+built like the release, and with Cargo's default release profile, which is
+what a crate that depends on the stack gets unless it turns link-time
+optimization on. Codec counts are exact: two builds of one commit give the
+same count to the instruction, so any change counts. A change was kept
+only if its workloads fell in one profile and nothing rose in the other.
+
+- **ReadProperty request encode: kept.** Two larger changes were counted
+  and not taken. Inlining the write into the encoders' stack buffer as well
+  reaches 395 instructions in the default profile, and encoding the
+  request straight into the output reaches 330; but built like the release
+  they cost 22 and 2 instructions more, not fewer. About 280 instructions
+  per request are still there for a build without link-time optimization.
+- **NPDU decode: measured and dropped.** Reading a frame straight into the
+  owned NPDU, instead of through the borrowed view, took decoding an NPDU
+  that carries 100 bytes from 219 to 154 instructions in the default
+  profile and from 172 to 153 built like the release. The maintainer
+  decided on 2026-11-10 not to ship it: the stack's own network layer does
+  not call `decode_npdu`, the change added a second NPDU parser of about
+  160 lines, and it grew the one firmware image that calls `decode_npdu`
+  by about 600 bytes of flash.
+- **NPDU encode: not kept.** `encode_npdu` fills its output with zeros
+  before it writes the NPDU over them. Appending the header and the
+  payload instead saves 25 instructions per NPDU of 100 bytes built like
+  the release (384 to 359). In the default profile it costs 1 more (446 to
+  447), and 10 more for a whole ReadProperty request: there the extra copy
+  of the header costs what the fill did. The change was reverted.
+
+The shipped change does not show in a round trip. ReadProperty,
+WriteProperty and ten-object ReadPropertyMultiple, built like the
+release, moved by at most 0.3 times their run-to-run floors on both
+runtimes, with allocations unchanged. The firmware image that encodes
+with the allocator-using profile (apdu) grows by 56 bytes of flash on a
+Cortex-M3, to 42,924 of its budget of 47,840.
+
+### 10.13 The client's dispatch loop and two write-path clock reads (#1978 items 8 and 6)
+
+One more request-path change, and one measured and dropped, each counted
+against its own baseline
+([benchmarks/results/perf-1978-dispatch](benchmarks/results/perf-1978-dispatch/README.md)):
+
+- **The client's dispatch loop.** It waited on four sources at once: the
+  received APDUs, the network-control messages, the cleanups of requests
+  given up on, and the five-minute device purge. Every wake polled all four,
+  and each idle one registered the task to be woken again; a ReadProperty
+  round trip wakes the loop twice. The loop now takes its work in a fixed
+  order and polls an idle source only when the turn would otherwise wait,
+  and the purge runs as a task of its own. After 16 APDUs in a row a turn
+  looks at the cleanups first, so a steady stream of APDUs can't hold one
+  back. That saves 768.7 instructions per ReadProperty request on the
+  current-thread runtime and 766.9 on the multi-thread one, 85 and 54 times
+  the run-to-run floor, 761.1 and 769.1 per WriteProperty request, and 209.3 and
+  902.6 per ten-object ReadPropertyMultiple request, with every pair lower
+  and allocations unchanged. On the current-thread ReadPropertyMultiple row
+  the same loop savings are partly offset by the memory allocator's work
+  (the same calls, finding other free chunks), a heap-layout effect.
+- **Not accepted: clock reads on a write.** A ReadProperty round trip
+  still reads the clock about 12 times, but only one read is the stack's
+  own: the client's request timer, which is the deadline itself. The
+  others are Tokio's (its timer and I/O drivers, and its busy-time
+  metrics). A WriteProperty reads it twice more on the server, to resolve
+  learned device bindings and to filter COV subscriptions, even with
+  neither there. Skipping both when there was nothing to resolve or filter
+  saved 156.9 instructions per WriteProperty request on both runtimes,
+  with 12 of 12 pairs lower and allocations unchanged, but only 1.7 and 2.6
+  times the run-to-run floor, where the rule asks for more than three
+  times. The change was dropped; nothing else moved.
+
+These counts were taken locally, in Docker on the laptop. The official
+count, the manual Perf counts workflow on GitHub's arm64 runner, is still
+to come. Wall-clock time was not measured: other builds shared the machine
+throughout, so timings from it would not compare.
+
+The kernel's side of the vectored B/IP send (section 10.9) is not in these
+counts, as callgrind sees only the program's own instructions. Weighing it
+needs a wall-clock comparison of `bip_latency` and `bip_throughput` on a
+quiet machine, or kernel instruction counts on Linux, against a build that
+sends one joined buffer.
 
 ## 11. How to reproduce
 

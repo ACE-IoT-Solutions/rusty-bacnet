@@ -500,9 +500,7 @@ pub(super) fn group_shape_listener_failed(
     port: u16,
     error: io::Error,
 ) -> io::Result<()> {
-    let held = error.kind() == io::ErrorKind::AddrInUse
-        || (cfg!(windows) && error.kind() == io::ErrorKind::PermissionDenied);
-    if held {
+    if super::listener_error::port_held(&error) {
         let context = format!("UDP port {port} on {ip} is in use on this host");
         return Err(super::listener_error::listener_error(context, error));
     }
@@ -563,30 +561,23 @@ pub(super) fn wildcard_role(plan: &BindPlan) -> SocketRole {
 
 /// A primary bind's error: on a requested port that another socket holds,
 /// it says so and names the opt-in, and keeps the OS error as its source,
-/// so its OS code survives (#2231).
+/// so its OS code survives (#2231). B/IPv6 words it the same way
+/// (`listener_error::held_port_error`).
 fn held(plan: &BindPlan, role: SocketRole, e: io::Error) -> io::Error {
-    // Windows refuses a bind beside a socket that holds the port with
-    // `SO_EXCLUSIVEADDRUSE` as WSAEACCES.
-    let held = e.kind() == io::ErrorKind::AddrInUse
-        || (cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied);
-    if !plan.requested_port || !held {
+    use super::listener_error::{HeldBind, HeldTransport, held_port_error, port_held};
+    if !plan.requested_port || !port_held(&e) {
         return e;
     }
     let port = plan.port;
-    let context = if role == SocketRole::SharedWildcard {
-        format!("UDP port {port} is in use on this host by a socket that refuses sharing")
-    } else if role == SocketRole::Address {
-        let ip = plan.interface;
-        format!("UDP port {port} on {ip} is in use on this host")
-    } else {
-        format!(
-            "UDP port {port} is in use on this host, and a B/IP transport doesn't share its \
-             port by default; stop the other program, use another port, or share the port \
-             (share_wildcard_port, or --share-port in the CLI), after which unicast reaches \
-             only one of the sockets on it"
-        )
+    let (place, bind) = match role {
+        SocketRole::SharedWildcard => (format!("UDP port {port}"), HeldBind::Sharing),
+        SocketRole::Address => {
+            let ip = plan.interface;
+            (format!("UDP port {port} on {ip}"), HeldBind::Address)
+        }
+        _ => (format!("UDP port {port}"), HeldBind::Claiming),
     };
-    super::listener_error::listener_error(context, e)
+    held_port_error(HeldTransport::Bip, &place, bind, e)
 }
 
 /// Set up a B/IP-M node's group, if it has one (multicast.rs): the primary
@@ -642,6 +633,10 @@ pub(super) struct BipSocket {
     /// drive [`SendTo`]'s boxed wait on a real socket.
     #[cfg(test)]
     pub(super) block_next_try: std::sync::atomic::AtomicBool,
+    /// While set, every try reports `WouldBlock`: a socket that never takes
+    /// the datagram, for a send that must wait (#2617).
+    #[cfg(test)]
+    pub(super) block_tries: std::sync::atomic::AtomicBool,
     /// Runs at each try just before the socket write, so a test can see
     /// what the tap holds at that moment (#2519).
     #[cfg(test)]
@@ -658,6 +653,8 @@ impl BipSocket {
             sink: None,
             #[cfg(test)]
             block_next_try: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            block_tries: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             on_try: std::sync::Mutex::new(None),
         }
@@ -748,8 +745,20 @@ impl BipSocket {
         }
     }
 
-    /// One try at sending `datagram`, without waiting for the socket.
-    fn try_send(&self, datagram: &OutgoingDatagram<'_>, target: SocketAddrV4) -> io::Result<usize> {
+    /// Count one logical send, before its first try, for a test's
+    /// `SendAttemptObserver`.
+    pub(super) fn note_attempt(&self) {
+        #[cfg(any(test, feature = "test-support"))]
+        super::send_observer::attempted(&self.socket);
+    }
+
+    /// One try at sending `datagram`, without waiting for the socket. A
+    /// test's sink takes it instead of the network.
+    pub(super) fn try_send(
+        &self,
+        datagram: &OutgoingDatagram<'_>,
+        target: SocketAddrV4,
+    ) -> io::Result<usize> {
         #[cfg(test)]
         if self
             .block_next_try
@@ -758,8 +767,16 @@ impl BipSocket {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         #[cfg(test)]
+        if self.block_tries.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        #[cfg(test)]
         if let Some(hook) = self.on_try.lock().unwrap().as_mut() {
             hook();
+        }
+        #[cfg(test)]
+        if let Some(sink) = &self.sink {
+            return sink.send(&datagram.joined(), target);
         }
         datagram.try_send(&self.socket, target)
     }
@@ -768,7 +785,7 @@ impl BipSocket {
     /// first try, so that an answer the receive loop reports can't come
     /// ahead of it however long the send takes to return (#2519). A datagram
     /// in parts is put in one buffer only when the tap has a subscriber.
-    fn tap_outbound(&self, datagram: &OutgoingDatagram<'_>, target: SocketAddrV4) {
+    pub(super) fn tap_outbound(&self, datagram: &OutgoingDatagram<'_>, target: SocketAddrV4) {
         if self.tap.is_active() {
             let peer = || TapPeer::Udp(target.into());
             let record = |bytes: &[u8]| {
@@ -862,6 +879,13 @@ async fn send_when_writable(
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             sent => return sent,
         }
+    }
+}
+
+/// A dropped transport aborts, so no socket or lease outlives it.
+impl Drop for super::BipTransport {
+    fn drop(&mut self) {
+        crate::port::TransportPort::abort(self);
     }
 }
 

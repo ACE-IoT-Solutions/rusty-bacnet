@@ -1,76 +1,128 @@
 //! Periodic intrinsic notification owner; uses the server's effective raw acceptance.
 use super::super::cov_fanout::CovFanout;
+use super::super::event_notifications::logged_intrinsic_commit;
+use super::super::event_send::Settle;
+use super::tail::FanoutTail;
 use super::*;
+use crate::committed_cov::BackgroundCommit;
+use bacnet_device_core::event::{next_due, sweep};
 
-pub(super) async fn run<T: TransportPort + 'static>(
-    fanout: CovFanout<T>,
-    learned_routers: Arc<Mutex<LearnedRouterCache>>,
-    device_bindings: Arc<RwLock<DeviceBindingTable>>,
-) {
-    let mut interval = tokio::time::interval(Duration::from_secs(1));
-    // The countdown decrements exactly once per call, so a delayed wake
-    // must NOT burst-deliver missed ticks (each would decrement
-    // `remaining`, compressing the Time_Delay). `Delay` collapses a
-    // missed deadline into a single tick, preserving per-second
-    // granularity (Time_Delay counts seconds, ASHRAE 135-2020 Clause 13.3).
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+/// The sweep's period: the standing duties (FAULT from Reliability,
+/// Event_Algorithm_Inhibit references) run this often. It must not exceed
+/// the shortest nonzero Time_Delay, one second; see [`sweeps`].
+const SWEEP_PERIOD: Duration = Duration::from_secs(1);
+
+/// The least time from one sweep to the next when the next is woken for a
+/// due instant rather than by the period. Each wake runs the whole sweep and
+/// a second pass over the database for `next_due` (about 0.4 ms at 10,000
+/// Analog Inputs, measured in review), and staggered delays could otherwise
+/// wake the task a thousand times a second. So a transition can go out up
+/// to this long after its due instant.
+const DUE_WAKE_FLOOR: Duration = Duration::from_millis(100);
+
+/// The intrinsic-reporting task (#2303).
+///
+/// Each pass's COV fanout waits for that pass's event notifications in the
+/// task's [`FanoutTail`], at most the cap from the pass's commit, so a
+/// destination that holds its lane holds up no later sweep (#2537).
+pub(super) async fn run<T: TransportPort + 'static>(fanout: CovFanout<T>) {
+    let tail = FanoutTail::new(&fanout, None);
+    tokio::join!(sweeps(&fanout, &tail), tail.run());
+}
+
+/// The sweeps, each pass's COV fanout handed to the tail.
+///
+/// It sweeps every [`SWEEP_PERIOD`], and between those sweeps when the
+/// database's next Time_Delay ends ([`next_due`]), no sooner than
+/// [`DUE_WAKE_FLOOR`] after the last sweep, so a transition goes out when
+/// its delay ends rather than at the next whole second.
+///
+/// The task isn't told about writes, and needn't be. It never sleeps past
+/// the next periodic sweep; a write seeds a due instant at least one second
+/// (the shortest nonzero Time_Delay) after the write; and the write path
+/// and the sweep take the same database lock. So a sweep always runs after
+/// the write and before its due instant, sees it, and recomputes when to
+/// wake. That holds only while the period is no longer than the shortest
+/// nonzero delay: a host that sweeps less often must also wake on writes.
+///
+/// A sweep at or after the periodic instant moves the cadence on: the next
+/// periodic sweep is a period after the instant it replaced when it ran on
+/// time, and a period after it ran when it ran late, so a stall runs one
+/// sweep, not one per missed second. A sweep woken for a due instant leaves
+/// the cadence as it was.
+async fn sweeps<T: TransportPort + 'static>(fanout: &CovFanout<T>, tail: &FanoutTail<'_, T>) {
+    let mut next_sweep = tokio::time::Instant::now();
+    let mut last_sweep = next_sweep;
+    let mut due: Option<tokio::time::Instant> = None;
     loop {
-        interval.tick().await;
+        let wake = match due {
+            Some(due) if due < next_sweep => due.max(last_sweep + DUE_WAKE_FLOOR).min(next_sweep),
+            _ => next_sweep,
+        };
+        tokio::time::sleep_until(wake).await;
+        let woke = tokio::time::Instant::now();
+        last_sweep = woke;
+        if woke >= next_sweep {
+            next_sweep = if woke > next_sweep {
+                woke + SWEEP_PERIOD
+            } else {
+                next_sweep + SWEEP_PERIOD
+            };
+        }
         // DCC gates the outbound sender, not event-state detection or
         // the local transition actions in Clause 13.2.2.1.4.
         // Collect resolved transitions under a brief write lock, then
         // drop it before sending (never hold the db lock across a
         // network send — matches the per-write notification path).
         //
-        // Event_Enable gates distribution only (Clause 12.12), so every
+        // Event_Enable gates distribution only (Clause 13.2.5), so every
         // proposal is committed locally before a suppressed
         // transition is omitted from the outbound work list.
-        let (fired, committed) = {
+        let (settle, committed) = {
             let mut db = fanout.db.write().await;
-            let mut out = Vec::new();
+            let mut settle = Settle::default();
             let mut commit = BackgroundCommit::new();
-            for oid in db.list_objects() {
-                // Event_Algorithm_Inhibit follows its reference once a
-                // second at least, under this same guard (#1329).
-                db.follow_event_algorithm_inhibit(&oid);
-                let Some(outcome) = db
-                    .get_mut(&oid)
-                    .and_then(|object| object.event_reporting_mut())
-                    .and_then(|reporting| reporting.tick_intrinsic_reporting())
-                else {
-                    continue;
-                };
-                // A proposal can commit and still have its projection rejected,
-                // so owe the fanout for every proposal; COV criteria drop it if
-                // nothing changed.
-                commit.before_change(&db, oid);
+            // A proposal can commit and still have its projection rejected,
+            // so owe the fanout for every proposal; COV criteria drop it if
+            // nothing changed.
+            let swept_at = crate::runtime_clock::core_now();
+            let swept = sweep(&mut db, swept_at, |db, oid| {
+                commit.before_change(db, oid);
                 commit.changed(oid);
-                let resolved =
-                    BACnetServer::<T>::commit_intrinsic_transition(&mut db, &oid, outcome);
-                if let Some(resolved) = resolved
+            });
+            // Each distributed transition joins its recipients' lanes under
+            // this guard, in commit order (#2537).
+            for (oid, result) in swept {
+                if let Some(resolved) = logged_intrinsic_commit(&oid, result)
                     && resolved.distribute
                     && resolved.event_values.is_some()
                 {
-                    out.push((oid, resolved));
+                    BACnetServer::<T>::enqueue_event_notification(
+                        &fanout.event_delivery(),
+                        &mut db,
+                        &oid,
+                        resolved,
+                        Some(&mut settle),
+                    );
                 }
             }
+            // When the next delay after this sweep ends, on tokio's clock.
+            due = next_due(&db, swept_at)
+                .and_then(|due| crate::runtime_clock::core_clock().to_std(due))
+                .map(tokio::time::Instant::from_std);
             // Each committed transition changes Status_Flags. Timestamped
             // references capture it at commit time; every subscriber hears of
             // it once the guard is dropped, after the event notifications, as
             // on the write path (#889).
             (
-                out,
-                commit.finish(&fanout.db, &mut db, &fanout.cov_table).await,
+                settle,
+                commit
+                    .finish_committed(&fanout.db, &mut db, &fanout.cov_table)
+                    .await,
             )
         };
-        for (oid, resolved) in fired {
-            BACnetServer::<T>::build_and_send_event_notification_with_bindings(
-                &fanout.event_delivery(&learned_routers, &device_bindings),
-                &oid,
-                resolved,
-            )
-            .await;
-        }
-        fanout.fire(&committed).await;
+        // The fanout waits for those notifications, capped (#889), behind
+        // the earlier passes' and off this loop.
+        tail.hand_off(settle, committed, Vec::new()).await;
     }
 }

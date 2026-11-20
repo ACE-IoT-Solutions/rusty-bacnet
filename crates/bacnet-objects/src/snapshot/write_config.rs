@@ -26,15 +26,54 @@
 //!   Event_Message_Texts_Config (three UTF-8 strings, each its length and
 //!   then its octets), Event_Algorithm_Inhibit_Ref (its length and its
 //!   BACnet encoding) and Event_Algorithm_Inhibit, in that order. Only the
-//!   object types that keep them take this kind (see [`keeps_reporting`]);
-//!   none of them has another kind, so their whole file is this one.
+//!   object types that keep them take this kind (see [`keeps_reporting`])
+//!   and kind 6, which goes on from it.
 //! - [`KIND_WITH_DESCRIPTION`]: a written Description (#2364), its length
 //!   and then its UTF-8 octets, at most 16 KiB, followed by the kind octet
-//!   and body of one of kinds 2, 3 and 4 as above. [`encode`] writes it only
+//!   and body of one of kinds 2, 3, 4 and 6. [`encode`] writes it only
 //!   for a snapshot holding a Description, so a file without one keeps its
 //!   plain kind, octet for octet, and a build that predates kind 5 still
 //!   reads it; one holding a Description is refused there as an unknown
 //!   kind.
+//! - [`KIND_REPORTING_PARAMETERS`]: the body of kind 4, then the event
+//!   algorithm parameters the object keeps (#2331): a four-octet presence
+//!   mask, then each parameter whose bit is set, in bit order. Bit 0 is
+//!   Time_Delay and bit 1 Time_Delay_Normal (four octets each); bits 2, 3
+//!   and 4 are High_Limit, Low_Limit and Deadband (the four octets of an
+//!   IEEE 754 single each); bit 5 is Limit_Enable (one octet, bit 0 the low
+//!   limit and bit 1 the high); bit 6 is a binary object's Alarm_Value (one
+//!   octet, 0 or 1); bit 7 is Alarm_Values as a list of states (a count of
+//!   at most 1,024, then each state in four octets; a count past the cap is
+//!   refused before a state is read, and the count fixes the row's length,
+//!   so a row cut short or going on is refused too); bits 8 and 9 are an
+//!   Access Door's Fault_Values and Masked_Alarm_Values, in the form of
+//!   bit 7; bits 10 and 11 are an Event Enrollment's Event_Parameters and
+//!   Fault_Parameters, each a length of at most 64 KiB and then the value
+//!   in its BACnet encoding (a length past the cap is refused before the
+//!   value is read; the octets must be one whole value, in the encoding a
+//!   save writes, so a load followed by a save leaves them as they were).
+//!   An Event Enrollment keeps bit 1 without bit 0: its Time_Delay is a
+//!   member of its Event_Parameters. Bit 12 is a multi-state object's
+//!   State_Text (#2414), no event algorithm parameter but kept here beside
+//!   them: a count of 1 to 1,024 labels, then each label as a length of at
+//!   most 512 and its UTF-8 octets (a count the cap or the body's octets
+//!   can't hold, at four octets a label, is refused before anything is
+//!   allocated, and a length past the cap before its octets are read). What a listed state may be is the
+//!   rule of the object type the
+//!   file's header names: on a multi-state object any state but zero, and
+//!   on an Access Door or an Access Zone a member of the type's
+//!   enumeration, named or proprietary, other than NORMAL. A file is
+//!   opened for one object and refused for another, so its lists are
+//!   never read under another type's rule. [`keeps_parameter`] names the
+//!   parameters each object type keeps. [`encode`] writes this kind only for a
+//!   snapshot holding a parameter, so one without keeps kind 4, octet for
+//!   octet, and a build that predates kind 6 refuses a file with one as an
+//!   unknown kind. A later parameter takes the next bit, and a later build
+//!   may keep a known one for more object types: a set bit this build
+//!   doesn't keep for the object's type, known to it or not, refuses the
+//!   file as an unknown kind too, before a parameter is read, and is never
+//!   damage. No set bit at all is damage, as is a kept parameter holding a
+//!   value no write leaves. Kind 5 wraps this kind as it wraps kind 4.
 //!
 //! Every length and count above is four octets, big-endian.
 //!
@@ -61,8 +100,10 @@ use crate::write_config::{
     ChannelMembers, ChannelWriteConfig, TimerStateChange, TimerWriteConfig, WriteConfigSnapshot,
 };
 
+pub(crate) mod parameters;
 mod reporting;
 
+pub use parameters::keeps_parameter;
 #[cfg(feature = "event-reporting")]
 pub(crate) use reporting::invalid as reporting_invalid;
 pub use reporting::keeps_reporting;
@@ -82,11 +123,17 @@ pub const KIND_TIMER: u8 = 3;
 /// The reporting settings of an object with intrinsic reporting (#2331).
 pub const KIND_REPORTING: u8 = 4;
 /// A written Description, then the kind and body of one of the kinds
-/// [`KIND_CHANNEL`], [`KIND_TIMER`] and [`KIND_REPORTING`] (#2364). A kind
+/// [`KIND_CHANNEL`], [`KIND_TIMER`], [`KIND_REPORTING`] and
+/// [`KIND_REPORTING_PARAMETERS`] (#2364). A kind
 /// around the others rather than a part added to each, so their octets
 /// don't change and a reader that predates it refuses the file instead of
 /// dropping the Description.
 pub const KIND_WITH_DESCRIPTION: u8 = 5;
+/// The reporting settings of kind [`KIND_REPORTING`], then the event
+/// algorithm parameters a write set (#2331). A new kind rather than a part
+/// added to kind 4, for the reasons [`KIND_TIMER`] gives; its presence mask
+/// lets a parameter join later without another.
+pub const KIND_REPORTING_PARAMETERS: u8 = 6;
 /// The most octets a file may take. A full member list, or reference list,
 /// of the longest references takes about 30 KiB; the cap leaves room for
 /// large constructed State_Change_Values.
@@ -99,8 +146,11 @@ pub const MAX_LEN: usize = 1024 * 1024;
 /// wouldn't take back (a priority outside 1 to 16, more references or
 /// members than the object keeps, delays that don't pair with the members,
 /// a Control_Groups size outside 1 to [`MAX_CONTROL_GROUPS`], reporting
-/// settings no write leaves, a Description past 16 KiB), and one past
-/// [`MAX_LEN`].
+/// settings or an algorithm parameter no write leaves, a parameter the
+/// object's type doesn't keep, Event_Parameters or Fault_Parameters with no
+/// encoding or one past 64 KiB, a State_Text of no label, of more than
+/// 1,024 or with one past 512 octets, a Description past 16 KiB), and one
+/// past [`MAX_LEN`].
 pub fn encode(
     object: ObjectIdentifier,
     snapshot: &WriteConfigSnapshot,
@@ -144,8 +194,16 @@ fn encode_file(
             encode_channel(&mut body, config)?;
         }
         (WriteConfigSnapshot::Reporting(config), kind) if keeps_reporting(kind) => {
-            body.extend_from_slice(&[KIND_REPORTING]);
-            reporting::encode(&mut body, config)?;
+            // Only a snapshot holding a parameter takes the newer kind, so
+            // one without keeps its octets.
+            if parameters::mask(&config.algorithm) == 0 {
+                body.extend_from_slice(&[KIND_REPORTING]);
+                reporting::encode(&mut body, config)?;
+            } else {
+                body.extend_from_slice(&[KIND_REPORTING_PARAMETERS]);
+                reporting::encode(&mut body, config)?;
+                parameters::encode(&mut body, kind, &config.algorithm)?;
+            }
         }
         _ => {
             return Err(SnapshotError::out_of_range(
@@ -187,7 +245,19 @@ fn decode_file(
         (KIND_REPORTING, kind) if keeps_reporting(kind) => {
             WriteConfigSnapshot::Reporting(reader.reporting()?)
         }
-        (KIND_TIMER | KIND_TIMER_SET_ONLY | KIND_CHANNEL | KIND_REPORTING, _) => {
+        (KIND_REPORTING_PARAMETERS, kind) if keeps_reporting(kind) => {
+            let mut config = reader.reporting()?;
+            config.algorithm = reader.parameters(kind)?;
+            WriteConfigSnapshot::Reporting(config)
+        }
+        (
+            KIND_TIMER
+            | KIND_TIMER_SET_ONLY
+            | KIND_CHANNEL
+            | KIND_REPORTING
+            | KIND_REPORTING_PARAMETERS,
+            _,
+        ) => {
             return Err(SnapshotError::new(
                 SnapshotErrorKind::OtherObject,
                 "holds another object type's configuration",

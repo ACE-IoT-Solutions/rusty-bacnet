@@ -123,7 +123,7 @@ pub(super) struct Budgets {
     pub atomic_read_file_budget: server::AtomicReadFileBudget,
     pub atomic_write_file_budget: server::AtomicWriteFileBudget,
     pub read_range_budget: server::ReadRangeBudget,
-    pub get_event_information_budget: server::GetEventInformationBudget,
+    pub get_event_information_budget: bacnet_device_core::event::GetEventInformationBudget,
 }
 
 /// Build and validate the budgets. The first one the Rust validation refuses
@@ -171,7 +171,7 @@ pub(super) fn budgets(keywords: BudgetKeywords) -> PyResult<Budgets> {
     };
     atomic_write_file_budget.validate().map_err(invalid)?;
     read_range_budget.validate().map_err(invalid)?;
-    let get_event_information_budget = server::GetEventInformationBudget {
+    let get_event_information_budget = bacnet_device_core::event::GetEventInformationBudget {
         max_objects: keywords.event_information_max_objects,
         max_returned_summaries: keywords.event_information_max_returned_summaries,
         max_service_ack_bytes: keywords.event_information_max_service_ack_bytes,
@@ -199,13 +199,14 @@ pub(super) fn segmentation(
     apdu_segment_timeout_ms: u64,
 ) -> PyResult<bacnet_types::enums::Segmentation> {
     let segmentation_supported = segmentation_supported.inner;
-    if segmentation_supported.to_raw() > bacnet_types::enums::Segmentation::NONE.to_raw() {
+    if segmentation_supported.to_raw() > bacnet_types::enums::Segmentation::NO_SEGMENTATION.to_raw()
+    {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "invalid segmentation_supported",
         ));
     }
     if apdu_segment_timeout_ms == 0
-        && segmentation_supported != bacnet_types::enums::Segmentation::NONE
+        && segmentation_supported != bacnet_types::enums::Segmentation::NO_SEGMENTATION
     {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "apdu_segment_timeout_ms must be positive when segmentation is supported",

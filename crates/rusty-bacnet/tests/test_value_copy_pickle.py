@@ -25,11 +25,19 @@ from rusty_bacnet import (
     BACnetServer,
     BACnetTimeStamp,
     BitString,
+    FrameSummary,
+    IAmArrival,
     Multicast,
     ObjectIdentifier,
     ObjectType,
     PropertyIdentifier,
     PropertyValue,
+    RoutedTarget,
+    Segmentation,
+    TagNode,
+    Value,
+    WritePolicy,
+    decode_frame,
 )
 
 P = PropertyIdentifier
@@ -54,6 +62,9 @@ def value_classes() -> dict[str, type]:
         and "__eq__" in vars(cls)
         and not callable(getattr(cls, "from_raw", None))
     }
+
+
+TAGGED = PropertyValue.tagged(bytes.fromhex("0902" "1e443fc000001f"))
 
 
 def samples() -> dict[type, list[Any]]:
@@ -88,19 +99,80 @@ def samples() -> dict[type, list[Any]]:
             PropertyValue.time(255, 255, 255, 255),
             PropertyValue.bit_string(3, b"\xa0"),
             PropertyValue.application_data(b"\x0e\x21\x01\x0f"),
+            # A value read as its tags (#2618): [0] 2, [1] ( REAL 1.5 ).
+            TAGGED,
             PropertyValue.list([]),
             # Equal as Python values, unequal as BACnet ones: the copy keeps
             # each item's tag.
             PropertyValue.list([*one, PropertyValue.list(one)]),
         ],
+        # Each kind of node: context, constructed, and an application
+        # value inside one (#2618).
+        TagNode: [*TAGGED.value, TAGGED.value[1].value[0]],
         BitString: [
             BitString(0, b""),
             BitString(3, b"\xa0"),
             BitString(4, b"\x40", PropertyIdentifier.STATUS_FLAGS),
         ],
+        # Copied by its fields (#2614): a request, a NAK, a malformed
+        # frame, a B/IPv6 broadcast, an MS/TP token, and every field set
+        # at the edge of its range.
+        FrameSummary: [
+            FrameSummary._rebuild(  # type: ignore[attr-defined]
+                "forwarded-npdu", True, "bip6:0xFFFFFF", "bip6:0x000000",
+                "[2001:db8::1]:65535", 65535, 65535, "65535:0xFF", "65535:*",
+                "i-am-router-to-network", "Abort", 255, "read-property",
+                "abort other", "malformed: APDU decode error: x", 4194303,
+            ),
+            decode_frame(bytes.fromhex("810a001101000005010c0c02000312194b"), "bip"),
+            decode_frame(bytes.fromhex("810000060030"), "bip"),
+            decode_frame(b"\x81", "bip"),
+            decode_frame(bytes.fromhex("8202000b00010201001008"), "ipv6"),
+            decode_frame(bytes.fromhex("55ff000201000073"), "mstp"),
+        ],
+        # Copied by its fields (#2612): a direct I-Am at the low edges, and
+        # a routed, forwarded one with every field at its high edge.
+        IAmArrival: [
+            IAmArrival._rebuild(  # type: ignore[attr-defined]
+                0.0, 0.0, "bip", ObjectIdentifier(ObjectType.DEVICE, 0), 50,
+                Segmentation.NO_SEGMENTATION, 0, "127.0.0.1:47808", "127.0.0.1:47808",
+                None, False, None, None, False, "127.0.0.1:47808", 0,
+            ),
+            IAmArrival._rebuild(  # type: ignore[attr-defined]
+                1.5e9, -0.5, "ipv6", ObjectIdentifier(ObjectType.from_raw(1023), 4194303),
+                2**32 - 1, Segmentation.from_raw(255), 65535, "[2001:db8::1]:65535",
+                "bip6:0xFFFFFF", "[2001:db8::3]:47808", True, 65534, bytes(range(18)),
+                True, "65534:0x000102030405060708090A0B0C0D0E0F1011", 2**64 - 1,
+            ),
+        ],
         Multicast: [
             Multicast("239.255.66.1"),
             Multicast("224.0.1.0", ttl=255, port=47809),
+        ],
+        # The edges of the network and MAC ranges, with and without a
+        # router (#2612).
+        RoutedTarget: [
+            RoutedTarget(1, b"\x0a"),
+            RoutedTarget(65534, "127.0.0.1:47808", router="10.0.0.1:47808"),
+            RoutedTarget(5, bytes(range(18)), router=b"\x07"),
+        ],
+        # The default, and policies allowing some or all of what it refuses
+        # (#2561).
+        WritePolicy: [
+            WritePolicy(),
+            WritePolicy().allow_priorities([5]),
+            WritePolicy().allow_priorities(WritePolicy.GUARDED),
+        ],
+        # A value a high-level call read (#2561), built as its pickle
+        # builds it: REAL 72.5 as an analog Present_Value, text with a
+        # unit, a state with its name, and octets no property decodes.
+        Value: [
+            Value._rebuild(1, 85, None, bytes.fromhex("4442910000"), "72.5", "72.5"),
+            Value._rebuild(1, 85, None, bytes.fromhex("4442910000"), "72.5 °C", "72.5"),
+            Value._rebuild(4, 85, None, b"\x91\x01", "active",
+                           '{"value": 1, "name": "active"}'),
+            Value._rebuild(1, 87, 8, b"\x00", "null", "null"),
+            Value._rebuild(1023, 5000, None, b"\x0e\x21\x01\x0f", "?", "[1]"),
         ],
         BACnetTimeStamp: [
             BACnetTimeStamp.sequence_number(0),
@@ -168,6 +240,30 @@ class ValueCopyPickleTests(unittest.TestCase):
                             BACnetTimeStamp.sequence_number(7)]}
         self.assertEqual(copy.deepcopy(state), state)
         self.assertEqual(pickle.loads(pickle.dumps(state)), state)
+
+    def test_a_value_rebuilds_from_its_parts_only(self) -> None:
+        rebuild: Any = Value._rebuild  # type: ignore[attr-defined]
+        value = rebuild(1, 85, None, bytes.fromhex("4442910000"), "72.5", "72.5")
+        self.assertEqual((value.text, value.data, value.value), ("72.5", 72.5,
+                                                                 PropertyValue.real(72.5)))
+        self.assertEqual(value.__reduce__()[1],
+                         (1, 85, None, bytes.fromhex("4442910000"), "72.5", "72.5"))
+        # The same octets, text and data as another property's value are
+        # an equal value, though its pickle says which it was.
+        other = rebuild(1, 104, None, bytes.fromhex("4442910000"), "72.5", "72.5")
+        self.assertEqual(value, other)
+        self.assertEqual(hash(value), hash(other))
+        self.assertNotEqual(value.__reduce__()[1], other.__reduce__()[1])
+        self.assertNotEqual(value, rebuild(1, 85, None, bytes.fromhex("4442910000"),
+                                           "72.5 °C", "72.5"))
+        self.assertIs(value.__eq__("72.5"), NotImplemented)
+        with self.assertRaisesRegex(ValueError, "not JSON"):
+            rebuild(1, 85, None, b"\x00", "null", "{")
+        for wrong in (bytearray(b"\x00"), "00", [0]):
+            with self.subTest(wrong=type(wrong).__name__), self.assertRaises(TypeError):
+                rebuild(1, 85, None, wrong, "null", "null")
+        with self.assertRaises(TypeError):
+            Value()  # type: ignore[call-arg]
 
     def test_the_rebuild_paths_refuse_what_no_pickle_holds(self) -> None:
         from_octets: Any = BACnetTimeStamp._from_octets  # type: ignore[attr-defined]
@@ -346,7 +442,7 @@ class OtherClassTests(unittest.IsolatedAsyncioTestCase):
             self.assert_refused(notifications)
             await client.subscribe_cov(address, 1, AI_1, confirmed=False, lifetime=60)
             self.assert_refused(await asyncio.wait_for(notifications.__anext__(), 3))
-            await client.who_is_directed(address)
+            await client.who_is(scope=address)
             for _ in range(100):
                 devices = await client.discovered_devices()
                 if devices:

@@ -12,7 +12,6 @@
 //! source tracking; input profiles are independent of Out_Of_Service, and output
 //! profiles are independent of command priorities, sources and feedback. Device
 //! profiles preserve identity, clock, service declarations and Audit ownership.
-//! Endpoint responders retain their separate, narrow Device write admission.
 //!
 //! - Tags is a BACnetARRAY of BACnetNameValue that peers may write: whole, an
 //!   element by index, or its size at index 0, which truncates or appends
@@ -30,6 +29,11 @@
 //! application-owned storage:
 //! successful writes then override configured Tags across reconstruction.
 //! Saved Tags never provision an absent row. See [`TagsPersistence`].
+//!
+//! A Device, a Lighting Output and a Binary Lighting Output keep a written
+//! Description in the same storage (#2364), provisioned Tags or not. The
+//! other objects keep theirs in storage of another kind, or in none, and
+//! refuse Tags storage that holds one.
 
 use crate::prelude::*;
 use bacnet_encoding::constructed::{decode_name_value, encode_name_value};

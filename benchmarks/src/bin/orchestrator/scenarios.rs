@@ -5,7 +5,7 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use bacnet_benchmarks::stress::output::{DegradationPoint, LatencyRecorder};
-use bacnet_client::client::{BACnetClient, DeviceEventKind};
+use bacnet_client::client::{BACnetClient, Broadcast, DeviceEventKind, Station};
 use bacnet_transport::bip::{BipMode, BipTransport, ForeignDeviceConfig};
 use bacnet_transport::bvll::encode_bip_mac;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
@@ -52,18 +52,17 @@ pub async fn read_loop(
     let oid = ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 1).unwrap();
     let property = PropertyIdentifier::PRESENT_VALUE;
     let mut recorder = LatencyRecorder::new();
+    let routed = via.map(|via| {
+        let router = encode_bip_mac(via.router_ip, via.router_port);
+        Station::routed(&router, via.network, &mac)
+    });
     let start = Instant::now();
     let deadline = start + duration;
     while Instant::now() < deadline {
         let t0 = Instant::now();
-        let result = match via {
+        let result = match &routed {
             None => client.read_property(&mac, oid, property, None).await,
-            Some(via) => {
-                let router = encode_bip_mac(via.router_ip, via.router_port);
-                client
-                    .read_property_routed(&router, via.network, &mac, oid, property, None)
-                    .await
-            }
+            Some(station) => client.read_property(station, oid, property, None).await,
         };
         match result {
             Ok(_) => recorder.record_success(t0),
@@ -134,7 +133,7 @@ pub async fn discovery(fleet: u64, duration: Duration) -> Result<DegradationPoin
         let mut events = client.device_events();
         let mut seen = HashSet::new();
         let t0 = Instant::now();
-        client.who_is(None).await?;
+        client.who_is(Broadcast::Global, None).await?;
         let round_end = t0 + ROUND_TIMEOUT;
         while (seen.len() as u64) < fleet {
             let left = round_end.saturating_duration_since(Instant::now());
@@ -231,7 +230,7 @@ pub async fn foreign(param: u64, duration: Duration) -> Result<DegradationPoint,
     let range = bacnet_services::who_is::DeviceInstanceRange::new(instance, instance)?;
     let mut events = client.device_events();
     let t0 = Instant::now();
-    client.who_is(Some(range)).await?;
+    client.who_is(Broadcast::Global, Some(range)).await?;
     let found = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             match events.recv().await {

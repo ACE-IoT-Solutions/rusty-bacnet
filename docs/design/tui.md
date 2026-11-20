@@ -226,7 +226,7 @@ What M0 draws (80x24):
 
 | Screen | Contents |
 |---|---|
-| Devices (M0) | Who-Is form (local, global, directed, remote network; instance range 0 to 4194303); live table (instance, name, address, network, vendor, max APDU, segmentation, last seen), each column sized to its content, names read for the rows on screen only (#1896); a routed device as its station in target syntax (`2:0x05`) with the router in a Via column when it fits (#1892); sort (by name too, names not known yet (unread, refused or unanswered) last) and filter (the filter matches the router and any name already read, and reads none, #1929); duplicate-instance banner; `:find` Who-Has panel (device, object label, name, address, Via, network), below the table or, from 160 columns when both fit at their content widths, beside it (#1915) |
+| Devices (M0) | Who-Is form (local, global, directed, remote network; instance range 0 to 4194303); live table (instance, name, address, network, vendor, max APDU, segmentation, last seen), each column sized to its content, names read for the rows on screen only (#1896); a routed device as its station in target syntax (`2:0x05`) with the router in a Via column when it fits (#1892); sort (by name too, names not known yet (unread, refused or unanswered) last) and filter (the filter matches the router and any name already read, and reads none, #1929); a row per address, so two devices sharing an instance are two rows, each opened at its own address, with a duplicate-instance banner naming them (#2560); `:find` Who-Has panel (device, object label, name, address, Via, network), below the table or, from 160 columns when both fit at their content widths, beside it (#1915) |
 | Browse (#963) | Device card (vendor, model, firmware, protocol revision, services and objects supported, Max_APDU, segmentation, Database_Revision); Object_List grouped by type, with each object's name (#1896) and a filter that matches labels and names already read (#1929); property pane with `[ALM]` `[FLT]` `[OVR]` `[OOS]` badges; priority-array pane with the slot in control marked. RPM with ALL, ReadProperty per property when RPM is refused, Object_List element by element when it can't come whole; one request outstanding per device, shared with the watch list, writes and COV renewals (#1791), and a `--max-rate` cap across devices |
 | Watch (#965, #1891) | Watched points with the device (`NET:INSTANCE` when routed), object, Object_Name from the first read, value with its unit symbol and state text, flags, COV or polled, last-update age and a bar sparkline; columns fit their content, Property shows from 120 columns (below that, only when some row watches another property than Present_Value) and Units from 160; the CSV log keeps the device a plain instance with the network in its own column, and each row keeps 512 values for the trend. Managed COV with a finite lifetime renewed before it ends (SubscribeCOVProperty off Present_Value), for local and routed devices alike (#1790), cancelled on remove and on exit; polling by batched RPM when COV is refused, at a per-point interval within the shared `--max-rate`; optional CSV log in the profile workspace |
 | Network, B/IP (#966) | Foreign-device panel (BBMD, TTL, last BVLC-Result, countdown to the next registration, a banner when the BBMD refuses or never answers); BDT with each mask explained, FDT with seconds left and our own entry marked ("what the BBMD sees me as"); BDT consistency matrix over every BBMD the tables lead to. `:bbmd ADDRESS` picks another BBMD, and `:bbmd` alone goes back to ours. Write-BDT and Delete-FDT-Entry are later items |
@@ -311,7 +311,7 @@ The project README asks for authorization before use on a network. The
 one-shot CLI guards writes with `--allow-write`, and DCC and reinitialize
 also with `--yes` or a typed confirmation (#972). The one-shots and the TUI
 take a command's class (read, write or device management) from one
-table, `bacnet_ops::class` (`crates/bacnet-ops/src/class.rs`); `Level::permits` maps the TUI's levels onto it.
+table, `bacnet_tool::class` (`crates/bacnet-tool/src/class.rs`); `Level::permits` maps the TUI's levels onto it.
 
 **Session levels** (always shown in the status bar):
 
@@ -351,7 +351,7 @@ table, `bacnet_ops::class` (`crates/bacnet-ops/src/class.rs`); `Level::permits` 
 | T3 | Priorities 1, 2 and 5, DCC, reinitialize, Write-BDT, Delete-FDT-Entry, create and delete object, file write | Shows the blast radius; the user types the device instance (or BBMD address) to confirm. A DCC disable lasts 15 minutes unless a duration or `forever` is typed (#1799); plain disable is T3 here too, behind `dangerous = true` |
 | Blocked | Priority 6, which the standard sets aside for minimum on and off times (Clause 19.2.3) | Expert flag only (`dangerous = true`); then T3. The deprecated plain-disable DCC option, which current-revision servers refuse (Clause 16.1), needs the same flag, which every DCC needs, and is confirmed at T3 with a deprecation warning |
 
-As built in #964 (`tui/safety/plan.rs`, since #2068 `bacnet_ops::safety::plan`): priorities 3, 4 and 7, which Table 19-1
+As built in #964 (`tui/safety/plan.rs`, since #2068 `bacnet_ops::safety::plan`, since #2560 `bacnet_tool::safety::plan`): priorities 3, 4 and 7, which Table 19-1
 leaves to the site but which outrank the operator's 8, are T2 like 8. A
 WritePropertyMultiple batch is at least T2 and takes its strongest member's
 tier; one blocked member blocks it. The "expert flag" is the profile's
@@ -387,7 +387,12 @@ recorded with an unknown pre-image. Element and whole writes to one array
 share one record of the original: a whole write folds the element entries
 before it into one entry (its pre-image with each element's put back), and an
 element write after a whole one records nothing new; a refused whole write
-gives the element entries back. `ledger.json` in the workspace is saved atomically before each
+gives the element entries back. Each entry keeps the device's address beside
+its instance, and a write is read, gated, sent and reverted at that one
+address (#2560), only while the discovery table's row there claims that
+instance; a write, revert, DCC or reinitialize to a local address with no row
+(aged out, or after a restart) asks the device which it is first, once per
+address. `ledger.json` in the workspace is saved atomically before each
 request goes out and after its answer, so a kill mid-request still leaves the
 entry (state `sending`, or `unknown` after a timeout); a write is not sent if
 the ledger can't be saved. Repeated writes to one target keep the first
@@ -535,7 +540,7 @@ crates/bacnet-cli/src/
 `safety/` holds the TUI's side of the write session model (the device
 management requests, the password `Secret`, the app and worker messages); the
 shared core (levels, tiers and planning, ledger, audit writer, workspace lock,
-and the engine half of a write) is `bacnet_ops::safety` since #2068, which the
+and the client half of a write) is `bacnet_tool::safety` (since #2068, in `bacnet-ops` until #2560), which the
 MCP server uses too. `worker/write/` and `worker/passive.rs` are its worker side, and
 `app/safety.rs` and `view/safety.rs` its dialogs (#964). Each screen has its
 own app and view modules. The profile store in `profile/` keeps B/IP, SC and
@@ -579,8 +584,10 @@ signals ------------------+      if dirty: terminal.draw(view)
   status bar shows the total. After any loss the worker resynchronises the table
   from the client's own discovery table, at most once a second. Duplicate-
   instance notices are rare and important, so they wait for room instead of
-  being dropped; the record behind the banner keeps at most four addresses per
-  instance and counts the rest, and its text is rebuilt only when it changes.
+  being dropped. Each lists every address claiming the instance; the record
+  behind the banner keeps at most four of them and counts the rest, drops the
+  instance once one address is left, and its text is rebuilt only when it
+  changes.
   Lost devices leave the table with a line in the log pane. Later streams
   (COV, events, frames) get the same treatment.
 - **Latest-value state** (SC link state, MS/TP statistics, FD countdown) will
@@ -654,12 +661,12 @@ parsing, the value formatter).
 - **Generics.** The worker is generic over `T: TransportPort` and instantiated
   per transport, as the one-shot commands are. `App` and the views are not
   generic, so monomorphization stays in the worker layer.
-- **APIs used by M0:** `who_is`, `who_is_directed`, `who_is_network` and
-  `broadcast_unconfirmed` (for a local-only Who-Is), `device_events()`,
+- **APIs used by M0:** `who_is` (to a `Broadcast` scope) and
+  `who_is_directed`, `device_events()`,
   `device_collision_events()` and `discovered_devices()`.
 - **APIs later screens will use:** RP and RPM, WP and WPM (local and routed);
   `subscribe_cov`, `manage_cov_subscription` and `cov_notifications()`; the BBMD
-  helpers on any `BACnetClient` whose transport is `AsBip` (`BipTransport`, or
+  helpers on any `BACnetClient` whose transport reports a B/IP link (`BipTransport`, or
   `AnyTransport` with a `Bip` variant); `ScConnectError` and
   `ScWebSocketErrorKind`; the MS/TP `diagnostics()` handle and the
   `MstpMonitor` frame stream.
@@ -863,7 +870,7 @@ cargo nextest run -p bacnet-cli --release -E 'test(drawing_a_full_device_table)'
 
 | Issue | Gap | Needed by |
 |---|---|---|
-| #956 | Done: `BACnetClient::transport()` and the `AsBip` BBMD helpers. Was: no access to transport handles from a built `BACnetClient`: the SC state watch, SC drop counts and BIP counters are unreachable after build, and the BBMD helpers exist only on `BACnetClient<BipTransport>`, so `AnyTransport` loses them | #967, #957, #959 |
+| #956 | Done: `BACnetClient::transport()` and the BBMD helpers. Was: no access to transport handles from a built `BACnetClient`: the SC state watch, SC drop counts and BIP counters are unreachable after build, and the BBMD helpers exist only on `BACnetClient<BipTransport>`, so `AnyTransport` loses them | #967, #957, #959 |
 | #957 | Done: `bacnet_transport::tap::FrameTap`, reached with each transport's `frame_tap()`. Was: no link-level frame tap on any transport, so BVLC control traffic, SC control messages and MS/TP Token, PFM and Reply-Postponed frames are invisible | #971 |
 | #958 | Done: `mstp::monitor::MstpMonitor` and the `diagnostics()` handle. Was: no MS/TP passive monitor, per-station statistics or master list; `MstpDiagnostics` not exposed from builders | #970, #971 |
 | #959 | Done: `ScClientBuilder::failover_hub_url` and `reconnect`, with connection-state changes. Was: SC reconnect, failover and disconnect causes appear only as tracing lines; no active-hub indication, heartbeat statistics or peer certificate; no failover or reconnect options on `ScClientBuilder` | #967 |

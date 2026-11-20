@@ -22,8 +22,9 @@ BACnet/SC (`"sc"`), and BACnet MS/TP (`"mstp"`) transports, and a
 For SC, sc\_ca\_cert, sc\_client\_cert, and sc\_client\_key must be nonempty
 paths; omission, None, or empty strings raise ValueError at construction.
 Their None defaults preserve non-SC use and positional layout only.
-Async entry loads the explicit site CA and operational cert/key; invalid
-TLS configuration raises RuntimeError before dialing. No system-root or
+Async entry loads the explicit site CA and operational cert/key, each file
+read up to 1 MiB; invalid TLS configuration, a larger file included, raises
+RuntimeError before dialing. No system-root or
 unauthenticated-client fallback is available.
 
 SC also requires keyword-only sc\_device\_uuid: exactly 16 bytes, not all zero,
@@ -41,6 +42,13 @@ stop() and context exit refuse new work, drain outstanding native operations
 and join teardown. Cancelling the close Future leaves shutdown running;
 await stop() again to join it. Drain duration depends on outstanding requests.
 Entry is exclusive; entering an already running or closing client fails.
+
+`await endpoint.client()` on a `BipEndpoint`, `ScEndpoint` or
+`MstpEndpoint` gives a client of this class on the endpoint's link
+(#2617), with every call, on the endpoint's one address. Its endpoint
+starts it: `async with` only enters it, and once stopped it stays
+stopped (ask the endpoint for another). Its `stop()` ends the client
+role alone.
 
 Usage:
 
@@ -68,14 +76,10 @@ colon hex such as `"01:02:03:04:05:06"` (SC, or `"00:04:d2"` for a
 VMAC), or an MS/TP station. `"[ip]:port"` raises ValueError: use
 `resolve_vmac`. So does a `bip6:` address on any other transport.
 
-### BACnetClient.frames
+Properties:
 
-```python
-def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]
-```
-
-Observe raw frames on the running owner; capacity is 1–65536.
-Owner shutdown ends this subscription; a restart needs a new one.
+- `write_policy: WritePolicy`: The priorities `Device.write` and `relinquish` may use, as `write_policy=` set them.
+- `resolve_scope: Literal["local", "global"] | int | None`: Where a `device()` handle made from a bare instance asks for it, as `resolve_scope=` set it; None on `transport="router"` given none, which asks nowhere.
 
 ### BACnetClient.__init__
 
@@ -121,8 +125,28 @@ def __init__(
     sc_connect_timeout_ms: int | None = None,
     sc_control_rate_limit: tuple[int, int] | None = None,
     router: Optional[BACnetRouter] = None,
+    write_policy: Optional[WritePolicy] = None,
+    resolve_scope: Literal["local", "global"] | int | None = None,
 ) -> None
 ```
+
+`write_policy` (default None, which is `WritePolicy()`): the
+priorities `Device.write` and `relinquish` may use. The default
+refuses 1, 2, 5 and 6 with `BacnetWriteDeniedError`, sending
+nothing; `WritePolicy().allow_priorities([...])` allows some of
+them too (#2561). `write_property` and the other typed calls
+don't look at it. Anything but a `WritePolicy` raises TypeError.
+
+`resolve_scope` (default None, which is `"local"`): where a
+`device()` handle made from a bare instance (`1234`) sends its
+one Who-Is when no address claims the instance (#2561): this
+network alone, `"global"` for every network, or a network number
+from 1 to 65534. A target that names its network (`"5:1234"`)
+asks there whatever this says. On `transport="router"`, which has
+no network of its own, `"local"` raises ValueError and None asks
+nowhere: a bare instance the client hasn't heard from raises
+`BacnetLookupError`. Another name or number raises ValueError,
+another type TypeError.
 
 `transport="router"` with `router` (a `BACnetRouter` built
 with `application="client"` or `"client_and_server"`): run the
@@ -207,13 +231,17 @@ of this host can share the port. Needs an explicit interface and a
 nonzero port; broadcasts and unicast are still handled in the order
 they arrived.
 
-`share_wildcard_port` (B/IP only, default False): share an
-explicitly requested port with other sockets on this host that bind
-it the same way. By default the client claims its port, so a second
-bind of it fails, and `start()` raises when another socket holds
-it. With sharing, broadcasts reach every socket on the port, but
-each unicast reaches only one of them; prefer
-`share_port_by_address` or separate ports.
+`share_wildcard_port` (B/IP and B/IPv6 only, default False): share
+an explicitly requested port with other sockets on this host that
+bind it the same way. By default the client claims its port, so a
+second bind of it fails, and `start()` raises when another socket
+holds it. With sharing, broadcasts reach every socket on the port,
+but each unicast reaches only one of them; prefer
+`share_port_by_address` (B/IP) or separate ports. macOS and the
+BSDs never let two sockets share one address and port this way, so
+there the keyword only lets a stack bound to `0.0.0.0` or `::`
+start beside one bound to a specific address (a B/IPv6 foreign
+device), or the reverse. Another transport raises ValueError.
 
 `min_request_interval_ms` (default 0, no pacing; at most
 3,600,000, else ValueError) paces the confirmed requests to each
@@ -249,7 +277,7 @@ def __aexit__(
 ```python
 def read_property(
     self,
-    address: Target,
+    address: str | RoutedTarget,
     object_id: ObjectIdentifier,
     property_id: PropertyIdentifier,
     array_index: Optional[int] = None,
@@ -262,13 +290,15 @@ ACK object/property/index must match. Device/Network Port instance 4194303
 requests accept a same-type concrete ACK. Malformed/mismatched ACKs raise
 BacnetError; this method returns the property value, not ACK metadata,
 shaped as `PropertyValue` describes for read results.
+`address` is a `str` on the local link, or a `RoutedTarget` for
+a station behind a router (#2617), as `RoutedTarget` describes.
 
 ### BACnetClient.write_property
 
 ```python
 def write_property(
     self,
-    address: Target,
+    address: str | RoutedTarget,
     object_id: ObjectIdentifier,
     property_id: PropertyIdentifier,
     value: PropertyValue,
@@ -280,14 +310,66 @@ def write_property(
 Write a single property on a remote device.
 
 Priority is None or 1..16. Invalid u8 priorities raise ValueError
-synchronously; integers outside u8 raise OverflowError.
+synchronously; integers outside u8 raise OverflowError. The client's
+`write_policy` doesn't apply: this is the low-level write.
+`address` is a `str` on the local link, or a `RoutedTarget` for
+a station behind a router (#2617), as `RoutedTarget` describes.
+
+### BACnetClient.device
+
+```python
+def device(
+    self,
+    target: str | int | Discovered | DiscoveredDevice | tuple[int, bytes],
+) -> Awaitable[Device]
+```
+
+A handle on one device, whose methods are the high-level calls:
+`read`, `read_many`, `read_object`, `write`,
+`preview_write`, `relinquish`, `priority_array`, `objects`
+and `summary` (#2561).
+
+`target` names the device in the target grammar, not in the
+`address` forms the typed calls take. Most addresses read the
+same in both: `"ip:port"`, six hex octets, the `bip6:` forms and
+`"mstp:N"`. Two don't. \*\*A bare `"5"` is device instance 5 here,
+not MS/TP station 5: write `"mstp:5"`.\*\* And colon-separated hex
+of another length than six octets, which `address` takes as a
+MAC, is no address here: it is refused (ValueError), or, for two
+decimal parts such as `"10:20"`, read as instance 20 on network
+10. The forms:
+
+- an address pins the handle there and sends nothing for a station
+on this network: `"192.168.1.10"` or `"192.168.1.10:47808"`,
+`"mstp:5"`, `"bip6:0x0004D2"`, an SC VMAC as six hex octets,
+a routed station as `"2:0x05"` (network 2, MAC 05), or a
+`(network, mac)` pair such as a lookup error's candidate. A
+routed station the client knows no router for asks its network
+first;
+- an instance, `1234` (an int or text) or `"2:1234"` on network
+2, gives a handle that follows the instance: the one address
+claiming it, or the one that answers a Who-Is for it, sent where
+`resolve_scope` says for a bare instance (this network alone by
+default) and to the network named otherwise, waiting up to 3
+seconds;
+- a `discover()` row or a `DiscoveredDevice` pins the handle to
+its address, knowing its instance.
+
+A wrong type raises TypeError and text the grammar refuses
+ValueError, when the call is made. On await: an address the
+client's link can't reach raises ValueError, as does a local
+address on `transport="router"`; an instance no address claims
+and none answered for, or a routed address with no router known,
+`BacnetLookupError`; an instance two or more addresses claim
+`BacnetAmbiguousDeviceError`, whose `candidates` are each a
+target.
 
 ### BACnetClient.read_property_multiple
 
 ```python
 def read_property_multiple(
     self,
-    address: Target,
+    address: str | RoutedTarget,
     specs: list[tuple[ObjectIdentifier, list[tuple[PropertyIdentifier, Optional[int]]]]],
 ) -> Awaitable[list[ReadAccessResult]]
 ```
@@ -297,13 +379,15 @@ Read multiple properties from a remote device (ReadPropertyMultiple).
 `specs` is a list of `(object_id, [(property_id, array_index), ...])` tuples.
 Returns ordered object/result dictionaries. Empty request/property lists
 are rejected; this standalone profile still permits property selectors.
+`address` is a `str` on the local link, or a `RoutedTarget`
+(#2617).
 
 ### BACnetClient.write_property_multiple
 
 ```python
 def write_property_multiple(
     self,
-    address: Target,
+    address: str | RoutedTarget,
     specs: list[tuple[ObjectIdentifier, list[tuple[PropertyIdentifier, PropertyValue, Optional[int], Optional[int]]]]],
 ) -> Awaitable[None]
 ```
@@ -395,16 +479,32 @@ Returns `[{"request_index": int, "device_instance": int, "error": BacnetError | 
 ```python
 def who_is(
     self,
-    low_limit: Optional[int] = None,
-    high_limit: Optional[int] = None,
+    *,
+    low: Optional[int] = None,
+    high: Optional[int] = None,
+    scope: Literal["local", "global"] | int | str = "local",
 ) -> Awaitable[None]
 ```
 
 Broadcast a Who-Is request. Responses are collected asynchronously;
 use `discovered_devices()` to retrieve them.
 
-Give `low_limit` and `high_limit` together or not at all, each from
-0 to 4194303: one alone, `low_limit` above `high_limit`, or a limit
+`scope` says where the broadcast goes (#2560): `"local"`, the
+default, is this network alone, which no router passes on;
+`"global"` is every network, which on a large routed site every
+device answers; a number from 1 to 65534 is that remote network,
+through its router; and any other text is one station's address in
+the forms `device()` takes (`"192.168.1.10"`, `"mstp:5"`),
+asked by unicast (#2561, where `who_is_directed` was). Another
+number, or text that names a device instance or a routed target,
+raises `ValueError`, and another type `TypeError`, before
+anything is sent; a station the client's link can't reach raises
+`ValueError` on await. A client on `transport="router"` has no
+network of its own, so its Who-Is names a network, or every one: a
+local or directed one raises `ValueError` saying so.
+
+Give `low` and `high` together or not at all, each from
+0 to 4194303: one alone, `low` above `high`, or a limit
 past 4194303 raises `ValueError` before anything is sent.
 
 ### BACnetClient.discover
@@ -412,17 +512,29 @@ past 4194303 raises `ValueError` before anything is sent.
 ```python
 def discover(
     self,
-    timeout_ms: int = 3000,
-    low_limit: Optional[int] = None,
-    high_limit: Optional[int] = None,
-) -> Awaitable[list[DiscoveredDevice]]
+    *,
+    scope: Literal["local", "global"] | int | str = "local",
+    low: Optional[int] = None,
+    high: Optional[int] = None,
+    wait: float = 3.0,
+) -> Awaitable[list[Discovered]]
 ```
 
-Convenience: send WhoIs, wait `timeout_ms`, return discovered devices.
+Find devices: one Who-Is, then the devices that answered it
+within `wait` seconds, one `Discovered` an address (#2561).
+Only this call's answers: a device the client heard earlier that
+stays quiet now isn't listed (`discovered_devices()` is the whole
+table). Each row is a `device()` target, and its `duplicate`
+says when another address claims the same instance.
 
-Give `low_limit` and `high_limit` together or not at all, each from
-0 to 4194303: one alone, `low_limit` above `high_limit`, or a limit
-past 4194303 raises `ValueError` before anything is sent.
+The Who-Is goes where `scope` says, as for `who_is()`: this
+network alone unless it names every network (`"global"`), one
+remote network by its number, or one station by its address.
+
+Give `low` and `high` together or not at all, each from 0 to
+4194303, to ask only those instances: one alone, `low` above
+`high`, or a limit past 4194303 raises `ValueError` before
+anything is sent, as does a `wait` outside 0 to 3600 seconds.
 
 ### BACnetClient.who_has_by_id
 
@@ -430,15 +542,30 @@ past 4194303 raises `ValueError` before anything is sent.
 def who_has_by_id(
     self,
     object_id: ObjectIdentifier,
-    low_limit: Optional[int] = None,
-    high_limit: Optional[int] = None,
+    *,
+    low: Optional[int] = None,
+    high: Optional[int] = None,
+    scope: Literal["local", "global"] | int | str = "local",
 ) -> Awaitable[None]
 ```
 
-Broadcast Who-Has by object identifier.
+Send a Who-Has by object identifier. Answers come through
+`i_have_events()`.
 
-Give `low_limit` and `high_limit` together or not at all, each from
-0 to 4194303: one alone, `low_limit` above `high_limit`, or a limit
+`scope` says where it goes, as for `who_is()` (#2596):
+`"local"`, the default, is this network alone, which no router
+passes on; `"global"` is every network, where every device that
+hears it searches its objects; a number from 1 to 65534 is that
+remote network, through its router; any other text is one station's
+address, asked by unicast (#2561). Another number, or text that
+names a device instance or a routed target, raises `ValueError`,
+and another type `TypeError`, before anything is sent. A client on
+`transport="router"` has no network of its own, so its Who-Has
+names a network, or every one: a local or directed one raises
+`ValueError` saying so.
+
+Give `low` and `high` together or not at all, each from
+0 to 4194303: one alone, `low` above `high`, or a limit
 past 4194303 raises `ValueError` before anything is sent.
 
 ### BACnetClient.who_has_by_name
@@ -447,16 +574,17 @@ past 4194303 raises `ValueError` before anything is sent.
 def who_has_by_name(
     self,
     name: str,
-    low_limit: Optional[int] = None,
-    high_limit: Optional[int] = None,
+    *,
+    low: Optional[int] = None,
+    high: Optional[int] = None,
+    scope: Literal["local", "global"] | int | str = "local",
 ) -> Awaitable[None]
 ```
 
-Broadcast Who-Has by object name.
-
-Give `low_limit` and `high_limit` together or not at all, each from
-0 to 4194303: one alone, `low_limit` above `high_limit`, or a limit
-past 4194303 raises `ValueError` before anything is sent.
+Send a Who-Has by object name, compared exactly. The limits and
+`scope` follow `who_has_by_id()`'s rules: this network alone
+unless `scope` names every network (`"global"`) or one remote
+network by its number.
 
 ### BACnetClient.who_has_replies
 
@@ -464,18 +592,27 @@ past 4194303 raises `ValueError` before anything is sent.
 def who_has_replies(
     self,
     object: ObjectIdentifier | str,
-    low_limit: Optional[int] = None,
-    high_limit: Optional[int] = None,
-    timeout_ms: int = 3000,
+    *,
+    low: Optional[int] = None,
+    high: Optional[int] = None,
+    wait: float = 3.0,
+    scope: Literal["local", "global"] | int | str = "local",
 ) -> Awaitable[list[IHave]]
 ```
 
-Broadcast a Who-Has for `object` (an identifier, or a name) and
-collect the I-Haves that answer it for `timeout_ms`: one per device
-and object, in arrival order; an empty list when none answer. The
-limits follow `who_has_by_id()`'s rule (#1850). It holds the
-started client for the whole wait, so `stop()` waits up to
-`timeout_ms` for it.
+Send a Who-Has for `object` (an identifier, or a name) and
+collect the I-Haves that answer it from that scope for
+`wait` seconds: one per device, object and station (a station's copy
+through a router on this client's own network is its local answer),
+in arrival order; an empty list when none answer. An I-Have heard
+from elsewhere during the wait is not an answer, and collection stops
+at 4096 answers, so a list of exactly that many may have been cut
+short. The limits and `scope`
+follow `who_has_by_id()`'s rules (#1850, #2596): with the default
+scope an empty list says only that nothing on this network has the
+object. `wait` is 0 to 3600 seconds (`ValueError` otherwise). It
+holds the started client for the whole wait, so `stop()` waits up
+to `wait` seconds for it.
 
 ### BACnetClient.i_have_events
 
@@ -493,16 +630,153 @@ stop.
 def discover_routers(
     self,
     network: Optional[int] = None,
-    timeout_ms: int = 3000,
+    *,
+    wait: float = 3.0,
 ) -> Awaitable[list[DiscoveredRouter]]
 ```
 
 Broadcast a Who-Is-Router-To-Network for `network` (or every
-network) and collect the routers that answer for `timeout_ms`, one
+network) and collect the routers that answer for `wait` seconds, one
 per router MAC in the order first heard; for a `network`, only the
 routers listing it. An empty list when none answer. `network` 0 or
-65535 raises BacnetError (#1850). It holds the started client for
-the whole wait, so `stop()` waits up to `timeout_ms` for it.
+65535 raises BacnetError (#1850). `wait` is 0 to 3600 seconds
+(`ValueError` otherwise). It holds the started client for the
+whole wait, so `stop()` waits up to `wait` seconds for it.
+
+### BACnetClient.routing_table
+
+```python
+def routing_table(
+    self,
+    router: str | bytes,
+    *,
+    wait: float = 3.0,
+    quiet: float = 0.5,
+    total: float = 10.0,
+    max_entries: int = 4096,
+) -> Awaitable[RoutingTable]
+```
+
+Read the routing table of the router at `router`, a station on
+this client's own link, without changing it (#2612). The call sends
+one Initialize-Routing-Table with a port count of zero, which only
+asks; no argument can make it an update.
+
+`router` is the router's address on the local link: `bytes` as
+given, such as a `DiscoveredRouter`'s `mac`, or a string in the
+binding's address forms (`"ip:port"`, `"bip6:N"`, hex octets, an
+MS/TP station). An empty or broadcast address raises ValueError.
+
+A long table comes as several acknowledgements with nothing to mark
+the last, so the call returns once `quiet` seconds pass after the
+last acknowledgement from the router (other traffic does not restart
+it), at `total` seconds from the send, or at `max_entries`
+entries (at least 1); the last two set `truncated` on the result,
+which covers those bounds only. A quiet end does not prove the table
+whole: on MS/TP, acknowledgements after the first wait for the
+router's token, so use a larger `quiet` on a slow trunk. A late
+acknowledgement of an earlier query to the same router can be
+counted by the next one (nothing pairs answers with questions), so
+leave a gap between repeated queries; entries are reported as
+received, not deduplicated.
+
+An empty table, or an older router's acknowledgement with no data,
+is a `RoutingTable` with no entries. A router that sends nothing
+within `wait` seconds raises BacnetTimeoutError: one that ignores
+the message looks the same as one that is absent (on B/IP, so does
+one that answers from another address or port), and neither is an
+empty table. A Reject-Message-To-Network from the router before any
+acknowledgement raises BacnetNetworkRejectError; rejects with
+reasons 1, 2 and 4 concern a DNET and are ignored. Each bound is 0 to
+3600 seconds and `wait` may not exceed `total` (ValueError
+otherwise). A client stopped mid-call raises RuntimeError. Only a
+router on the local link can be asked; one behind another router
+cannot. One query runs at a time per client; a second call waits for
+the first. It holds the started client for the whole wait, so
+`stop()` waits for it.
+
+### BACnetClient.configure_routed_path_max_npdu
+
+```python
+def configure_routed_path_max_npdu(
+    self,
+    router: str | bytes,
+    network: int,
+    max_npdu: int,
+) -> Awaitable[None]
+```
+
+Set the size limit, in NPDU octets, of the routed path through
+`router` to `network`, replacing any limit set or learned before
+(#2667). Requests to stations on that network through that router are
+sized to it, and segmented or refused as any request too large for
+its path is.
+
+`router` is the router's address on the local link, as
+`routing_table` takes it: `bytes` such as a `DiscoveredRouter`'s
+`mac`, or a string in the binding's address forms (a B/IPv6 socket
+address is first asked its VMAC). `network` is 1 to 65534. A limit
+under 228 is taken, for an older router that carries less than the
+standard asks; one that could carry no request at all (under 66 on
+B/IP, 61 on MS/TP) raises ValueError, as do a bad router or network.
+An `int` outside 0 to 65535 raises OverflowError, and a `bool`
+for `network` or `max_npdu` TypeError.
+
+The call waits for a request active on the path, or one queued for
+it, but not out the hold a request with no answer leaves (the APDU
+timeout times the attempts): the change applies at once, and the next
+request still waits the hold out, sized to the new limit. Nothing goes
+through the path. RuntimeError before start and after stop.
+
+### BACnetClient.clear_routed_path_limit
+
+```python
+def clear_routed_path_limit(self, router: str | bytes, network: int) -> Awaitable[None]
+```
+
+Put the routed path through `router` to `network` back on the
+default, 228 octets, dropping the limit set or learned for it
+(#2667). Takes `router` and `network` as
+`configure_routed_path_max_npdu` does and waits the same way.
+Nothing goes through the path. RuntimeError before start and after
+stop.
+
+### BACnetClient.routed_path_limits
+
+```python
+def routed_path_limits(self) -> Awaitable[list[RoutedPathLimit]]
+```
+
+Every routed path that holds more than the default, by router and
+then network (#2667): a limit set by hand, one learned from a
+router's too-long reject, or a dropped below-minimum reject
+(`below_minimum_reject_seen`). A path held only by that mark may be
+dropped when the client's table of 256 paths is full. Sends nothing.
+RuntimeError before start and after stop.
+
+### BACnetClient.too_long_reject_drops
+
+```python
+def too_long_reject_drops(self) -> Awaitable[int]
+```
+
+How many too-long rejects (Reject-Message-To-Network, reason 4) the
+client dropped since start, on every path, because they could answer
+a larger frame of an earlier request (#2651). These clear by
+themselves. RuntimeError before start and after stop.
+
+### BACnetClient.below_minimum_reject_drops
+
+```python
+def below_minimum_reject_drops(self) -> Awaitable[int]
+```
+
+How many too-long rejects the client dropped since start, on every
+path, because the request they landed on sent nothing above 228 NPDU
+octets (#2665). A rise can mean a router that carries less than that:
+its requests end by timeout until `configure_routed_path_max_npdu`
+sets the path's limit; `routed_path_limits()` marks the paths.
+RuntimeError before start and after stop.
 
 ### BACnetClient.network_reports
 
@@ -510,9 +784,40 @@ the whole wait, so `stop()` waits up to `timeout_ms` for it.
 def network_reports(self) -> Awaitable[NetworkReportIterator]
 ```
 
-Follow the I-Am-Router-To-Network, Network-Number-Is and
-Reject-Message-To-Network messages the client receives from now on
-(#1850). RuntimeError before start and after stop.
+Follow the I-Am-Router-To-Network, Network-Number-Is,
+Reject-Message-To-Network and Initialize-Routing-Table-Ack (query
+answers, #2612) messages the client receives from now on (#1850).
+RuntimeError before start and after stop.
+
+### BACnetClient.frames
+
+```python
+def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]
+```
+
+Observe the raw frames this client's own transport sends and
+receives from now on (B/IP, B/IPv6, SC or MS/TP), `capacity`
+frames queued at most (1 to 65536, else ValueError). RuntimeError
+before start and after stop; a router application client
+(`transport="router"`) has no link of its own and raises
+ValueError. Stop ends the iterator; a restart needs a new one.
+
+### BACnetClient.i_am_arrivals
+
+```python
+def i_am_arrivals(self, capacity: int = 1024) -> Awaitable[IAmArrivalIterator]
+```
+
+Follow every I-Am this client's own transport receives from now
+on (B/IP, B/IPv6, SC or MS/TP), one `IAmArrival` each (#2612),
+from a tap queue of `capacity` frames of every kind (1 to 65536,
+else ValueError). A standalone client sends no I-Am, so nothing is
+left out: an I-Am from its own address (another node using it, or
+one a NAT site reuses) is a record. A client an endpoint's
+`client()` returns follows the endpoint's rule, and is how
+`ScEndpoint` and `MstpEndpoint` give arrivals. RuntimeError before start and after stop;
+a router application client raises ValueError. Stop ends the
+iterator.
 
 ### BACnetClient.discovered_devices
 
@@ -520,7 +825,8 @@ Reject-Message-To-Network messages the client receives from now on
 def discovered_devices(self) -> Awaitable[list[DiscoveredDevice]]
 ```
 
-Return all devices discovered so far.
+Return all devices discovered so far, one per address: a device
+instance two addresses claim is listed for each (#2560).
 
 ### BACnetClient.get_device
 
@@ -528,7 +834,9 @@ Return all devices discovered so far.
 def get_device(self, instance: int) -> Awaitable[Optional[DiscoveredDevice]]
 ```
 
-Look up a discovered device by instance number.
+Look up a discovered device by instance number: None when no
+address claims it, `BacnetAmbiguousDeviceError` when two or more
+do.
 
 ### BACnetClient.clear_devices
 
@@ -576,23 +884,6 @@ Broadcast a Who-Am-I request announcing this device's identity.
 The three arguments should match the sender's Device object properties
 (`vendor_id` is 0-65535). Raises `ValueError` if a string cannot be
 encoded, or `OverflowError` for a `vendor_id` that doesn't fit.
-
-### BACnetClient.who_is_directed
-
-```python
-def who_is_directed(
-    self,
-    address: str,
-    low_limit: Optional[int] = None,
-    high_limit: Optional[int] = None,
-) -> Awaitable[None]
-```
-
-Send a Who-Is to a specific device address (unicast).
-
-Give `low_limit` and `high_limit` together or not at all, each from
-0 to 4194303: one alone, `low_limit` above `high_limit`, or a limit
-past 4194303 raises `ValueError` before anything is sent.
 
 ### BACnetClient.time_synchronization
 
@@ -643,6 +934,10 @@ def read_property_from_device(
 
 Read a property from a device by instance number (auto-routing).
 
+Like every `_from_device` and `_to_device` method, it raises
+`BacnetAmbiguousDeviceError` before sending anything when two or
+more addresses claim the instance.
+
 ### BACnetClient.read_property_multiple_from_device
 
 ```python
@@ -691,6 +986,36 @@ before discovery or dispatch: nonempty request/property lists, no special
 selectors, priority None or 1..16. Invalid u8 priorities/structure raise
 ValueError; priorities outside u8 raise OverflowError.
 
+### BACnetClient.export_223_experimental
+
+```python
+def export_223_experimental(
+    self,
+    device_instance: int,
+    *,
+    types: Optional[list[ObjectType]] = None,
+) -> Awaitable[Inventory223Experimental]
+```
+
+Read a device's objects for the experimental Standard 223 export
+(#2436): its summary, its Object\_List, then the objects of the
+selected types a few a request. `to_turtle()` on the result writes
+the Turtle.
+
+The device is looked up in the discovery table, as the
+`_from_device` methods look it up. `types` narrows the objects read
+(analog, binary and multi-state inputs, outputs and values, and
+integer values; all ten by default). Another type or an empty list
+raises ValueError before anything is sent.
+
+A device that doesn't answer the summary read, or a failed read of the
+Object\_List, raises the usual error; so does a device that can't send
+the list whole, is read element by element, and fails an element; a
+note on that exception names the element. A device that goes silent
+while its objects are read gives an inventory with `stopped` set and
+the objects read before it. `stop()`, and leaving `async with`,
+wait for a running export to finish.
+
 ### BACnetClient.add_device
 
 ```python
@@ -699,12 +1024,16 @@ def add_device(self, device_instance: int, address: str) -> Awaitable[None]
 
 Add a device to the discovery table manually (useful when address is known without WhoIs).
 
+The table holds one device per address: adding an instance at an
+address that holds another replaces it, so `get_device()` no longer
+finds the instance that was there (#2560).
+
 ### BACnetClient.subscribe_cov
 
 ```python
 def subscribe_cov(
     self,
-    address: Target,
+    address: str | RoutedTarget,
     subscriber_process_identifier: int,
     monitored_object_identifier: ObjectIdentifier,
     confirmed: bool,
@@ -716,13 +1045,18 @@ Subscribe to Change-of-Value notifications for an object.
 
 lifetime=None or 0 is indefinite; positive values are seconds.
 Use unsubscribe\_cov for cancellation. confirmed always supplies the mode.
+`address` is a `str` on the local link, or a `RoutedTarget` for
+a station behind a router (#2588), as `RoutedTarget` describes. A
+routed device notifies back through its router, so its notifications
+have `source_network` and `source_address` set to the station's
+network and MAC.
 
 ### BACnetClient.unsubscribe_cov
 
 ```python
 def unsubscribe_cov(
     self,
-    address: Target,
+    address: str | RoutedTarget,
     subscriber_process_identifier: int,
     monitored_object_identifier: ObjectIdentifier,
 ) -> Awaitable[None]
@@ -730,12 +1064,69 @@ def unsubscribe_cov(
 
 Cancel a COV subscription.
 
+`address` is a `str` or a `RoutedTarget`, as for
+`subscribe_cov`. The device finds the subscription by the address
+the request came from and the process and object, so name the target
+the subscription named: the same `RoutedTarget`, or the same
+`str`. The same device reached another way, such as by its own
+`ip:port` after a routed subscription, answers with success and
+keeps the subscription.
+
+### BACnetClient.subscribe_cov_property
+
+```python
+def subscribe_cov_property(
+    self,
+    address: str | RoutedTarget,
+    subscriber_process_identifier: int,
+    monitored_object_identifier: ObjectIdentifier,
+    property_identifier: PropertyIdentifier,
+    confirmed: bool,
+    lifetime: int,
+    array_index: Optional[int] = None,
+    cov_increment: Optional[float] = None,
+) -> Awaitable[None]
+```
+
+Subscribe to Change-of-Value notifications for one property of an
+object (SubscribeCOVProperty, #2588).
+
+`address` is a `str` or a `RoutedTarget`, as for
+`subscribe_cov`. `lifetime` is required, 1 or more seconds: such
+a subscription can't be indefinite, so 0 raises ValueError before
+anything is sent; renew by subscribing again before it runs out.
+`array_index` names one element of an array property;
+`cov_increment` overrides the object's own increment for a numeric
+property. Notifications arrive on `cov_notifications()`. Give each
+subscription a process identifier of its own: an object subscription
+and a property subscription on one object with one identifier send
+notifications that can't be told apart.
+
+### BACnetClient.unsubscribe_cov_property
+
+```python
+def unsubscribe_cov_property(
+    self,
+    address: str | RoutedTarget,
+    subscriber_process_identifier: int,
+    monitored_object_identifier: ObjectIdentifier,
+    property_identifier: PropertyIdentifier,
+    array_index: Optional[int] = None,
+) -> Awaitable[None]
+```
+
+Cancel a single-property COV subscription.
+
+Name the target, process, object, property and array index the
+subscription named: the device finds it by those and the address
+the request came from, as for `unsubscribe_cov`.
+
 ### BACnetClient.subscribe_cov_property_multiple
 
 ```python
 def subscribe_cov_property_multiple(
     self,
-    address: str,
+    address: str | RoutedTarget,
     subscriber_process_identifier: int,
     specs: list[tuple[ObjectIdentifier, list[tuple[PropertyIdentifier, Optional[int], Optional[float], bool]]]],
     issue_confirmed_notifications: bool,
@@ -746,6 +1137,10 @@ def subscribe_cov_property_multiple(
 
 Subscribe to COV notifications for multiple properties on multiple objects.
 
+`address` is a `str` or a `RoutedTarget`, as for
+`subscribe_cov` (#2588). The notifications such a subscription
+brings arrive on `cov_notifications()` as `CovNotificationMultiple`
+objects.
 `specs` is `[(object_id, [(property_id, array_index, cov_increment, timestamped), ...]), ...]`.
 `issue_confirmed_notifications` is required, including for cancellation requests.
 For subscriptions and re-subscriptions, `lifetime` and `max_notification_delay` are both required.
@@ -764,7 +1159,18 @@ first\_failed\_subscription set; a general failure leaves it None.
 def cov_notifications(self) -> Awaitable[CovNotificationIterator]
 ```
 
-Get an async iterator for incoming COV notifications.
+Get an async iterator for incoming COV notifications of both kinds:
+`CovNotification` (one object) and `CovNotificationMultiple`
+(several objects, from `subscribe_cov_property_multiple`). The client
+acknowledges a confirmed one of either kind whether or not it knows the
+subscription; match one by its `subscriber_process_identifier` and
+source.
+An unsubscribed sender's broadcast can bring a
+`CovNotificationMultiple` too, so check `kind` (or use
+`isinstance`) before reading a `CovNotification`'s fields. A
+segmented COV-multiple request is answered with an Abort (the client
+does not support segmentation; tracked in #2646), and a confirmed
+notification sent again, its answer lost, is published again.
 
 ### BACnetClient.delete_object
 
@@ -829,10 +1235,10 @@ Send ReinitializeDevice to a remote device.
 Raises ValueError, before anything is sent, for a password over 20
 characters or an empty one (pass None to send no password).
 
-### BACnetClient.acknowledge_alarm_request
+### BACnetClient.acknowledge_alarm
 
 ```python
-def acknowledge_alarm_request(
+def acknowledge_alarm(
     self,
     address: str,
     acknowledging_process_identifier: int,
@@ -848,24 +1254,6 @@ Acknowledge an alarm with exact caller-supplied BACnetTimeStamp values.
 
 `timestamp` must echo the original event notification timestamp;
 `time_of_acknowledgment` is selected by the caller.
-
-### BACnetClient.acknowledge_alarm
-
-```python
-def acknowledge_alarm(
-    self,
-    address: str,
-    acknowledging_process_identifier: int,
-    event_object_identifier: ObjectIdentifier,
-    event_state_acknowledged: EventState,
-    acknowledgment_source: str,
-) -> Awaitable[None]
-```
-
-Deprecated compatibility method.
-
-This method fabricates sequence-number zero for both timestamps. Use
-`acknowledge_alarm_request` for a lossless request.
 
 ### BACnetClient.get_event_information
 
@@ -920,7 +1308,7 @@ Returns `[{"object_id": ObjectIdentifier, "event_type": EventType, "event_state"
 ```python
 def read_range(
     self,
-    address: str,
+    address: str | RoutedTarget,
     object_id: ObjectIdentifier,
     property_id: PropertyIdentifier,
     array_index: Optional[int] = None,
@@ -952,13 +1340,15 @@ to zero.
 with BacnetReadRangeViolationError, whose `rule` names it;
 `"lenient"` keeps it and lists the rules in `violations` (#1531).
 Decode a log's records with `decode_log_records`.
+`address` is a `str` on the local link, or a `RoutedTarget` for
+a station behind a router (#2617), as `RoutedTarget` describes.
 
 ### BACnetClient.read_log_page
 
 ```python
 def read_log_page(
     self,
-    address: str,
+    address: str | RoutedTarget,
     object_id: ObjectIdentifier,
     cursor: LogCursor = None,
     page_size: int = 100,
@@ -983,14 +1373,16 @@ records don't decode raises BacnetError, dropping the records before
 the failing one; an answer that breaks a rule the reader can't
 tolerate, such as an echo that doesn't match, raises
 BacnetReadRangeViolationError. A non-log object or a `page_size`
-outside 1..=32767 raises ValueError before I/O.
+outside 1..=32767 raises ValueError before I/O. `address` is a
+`str` on the local link, or a `RoutedTarget` (#2617); every
+request of a page, the count reads included, goes there.
 
 ### BACnetClient.atomic_read_file
 
 ```python
 def atomic_read_file(
     self,
-    address: str,
+    address: str | RoutedTarget,
     file_identifier: ObjectIdentifier,
     access_method: str,
     start_position: int = 0,
@@ -1005,14 +1397,17 @@ Returns the decoded acknowledgment: `access_method`, `end_of_file`,
 then `start_position` and `data` for stream access, or
 `start_record`, `record_count` and `records` for record access.
 An acknowledgment in the other access method, or with more octets or
-records than requested, raises BacnetError.
+records than requested, raises BacnetError. `address` is a `str`
+on the local link, or a `RoutedTarget` for a station behind a
+router (#2613), as `RoutedTarget` describes: the answer, segmented
+or not, and a reject, error or abort come back as from a local read.
 
 ### BACnetClient.atomic_write_file
 
 ```python
 def atomic_write_file(
     self,
-    address: str,
+    address: str | RoutedTarget,
     file_identifier: ObjectIdentifier,
     access_method: str,
     start_position: int = 0,
@@ -1028,6 +1423,8 @@ Returns the decoded acknowledgment: `access_method`, then
 `start_position` for stream access or `start_record` for record
 access, where the device says the write took place. An
 acknowledgment in the other access method raises BacnetError.
+`address` is a `str` or a `RoutedTarget`, as for
+`atomic_read_file` (#2613).
 
 ### BACnetClient.add_list_element
 
@@ -1594,168 +1991,6 @@ Properties:
 - `leaf_sha256: bytes`
 - `certificates: tuple[ScPeerCertificate, ...]`
 
-## RouterBipPort
-
-Attributes:
-
-- `network_number: int`
-- `interface: str`
-- `port: int`
-- `broadcast_address: str`
-- `reuse_port: bool`
-
-### RouterBipPort.__init__
-
-```python
-def __init__(
-    self,
-    network_number: int,
-    interface: str = "0.0.0.0",
-    port: int = 0xBAC0,
-    broadcast_address: str = "255.255.255.255",
-    reuse_port: bool = False,
-) -> None
-```
-
-## RouterScPort
-
-Attributes:
-
-- `network_number: int`
-- `primary_hub: str`
-- `local_vmac: bytes`
-- `device_uuid: bytes`
-- `ca_cert: str`
-- `client_cert: str`
-- `client_key: str`
-- `failover_hub: Optional[str]`
-- `heartbeat_interval_ms: int`
-- `heartbeat_timeout_ms: int`
-- `reconnect_initial_delay_ms: int`
-- `reconnect_max_delay_ms: int`
-- `reconnect_max_retries: int`
-- `reconnect_forever: bool`
-- `max_npdu_length: int`
-- `max_bvlc_length: int`
-
-### RouterScPort.__init__
-
-```python
-def __init__(
-    self,
-    network_number: int,
-    primary_hub: str,
-    local_vmac: bytes,
-    device_uuid: bytes,
-    ca_cert: str,
-    client_cert: str,
-    client_key: str,
-    failover_hub: Optional[str] = None,
-    heartbeat_interval_ms: int = 30000,
-    heartbeat_timeout_ms: int = 60000,
-    reconnect_initial_delay_ms: int = 10000,
-    reconnect_max_delay_ms: int = 600000,
-    reconnect_max_retries: int = 10,
-    reconnect_forever: bool = False,
-    max_npdu_length: int = 1497,
-    max_bvlc_length: int = 5705,
-) -> None
-```
-
-## RouterPortHealth
-
-Attributes:
-
-- `config_index: int`
-- `network_number: int`
-- `transport_kind: str`
-- `identity: str`
-- `state: str`
-- `detail: Optional[str]`
-- `active_hub: Optional[str]`
-- `last_error: Optional[str]`
-- `attempt: int`
-- `since: Optional[float]`
-
-## RouterPortCounters
-
-Attributes:
-
-- `config_index: int`
-- `network_number: int`
-- `transport_kind: str`
-- `identity: str`
-- `forwarded_unicast: int`
-- `forwarded_broadcast: int`
-- `send_errors: int`
-- `output_full_drops: int`
-- `no_route_drops: int`
-- `shutdown_drops: int`
-
-## RouterRouteEntry
-
-Attributes:
-
-- `network_number: int`
-- `port_index: int`
-- `directly_connected: bool`
-- `next_hop_mac: bytes`
-- `reachability: str`
-- `last_seen_age_s: Optional[float]`
-- `busy_remaining_s: Optional[float]`
-- `flap_count: int`
-- `last_port_change_age_s: Optional[float]`
-
-## AceMixedRouter
-
-### AceMixedRouter.from_ports
-
-```python
-@classmethod
-def from_ports(
-    cls,
-    ports: list[Union[RouterBipPort, RouterScPort]],
-    *,
-    announce_interval_s: Optional[float] = None,
-) -> AceMixedRouter
-```
-
-### AceMixedRouter.start
-
-```python
-async def start(self) -> None
-```
-
-### AceMixedRouter.stop
-
-```python
-async def stop(self) -> None
-```
-
-### AceMixedRouter.local_address
-
-```python
-async def local_address(self) -> str
-```
-
-### AceMixedRouter.port_health
-
-```python
-async def port_health(self) -> list[RouterPortHealth]
-```
-
-### AceMixedRouter.port_counters
-
-```python
-async def port_counters(self) -> list[RouterPortCounters]
-```
-
-### AceMixedRouter.routing_table
-
-```python
-async def routing_table(self) -> list[RouterRouteEntry]
-```
-
 ## ScEvent
 
 One SC hub-connector event (#1829), frozen. Fields that don't apply
@@ -1773,7 +2008,9 @@ Properties:
 - `kind: Literal['connected', 'disconnected', 'connect_failed', 'reconnect_attempt', 'failover_engaged', 'primary_restored', 'primary_restore_failed', 'reconnect_gave_up', 'other']`
 - `hub: Literal["primary", "failover"] | None`: The hub connected to, lost, failed or being dialled; `primary` for `primary_restore_failed`.
 - `hub_vmac: bytes | None`: The hub's VMAC from its Connect-Accept, on `connected`.
-- `cause: Literal['local_close', 'peer_close', 'heartbeat_timeout', 'websocket', 'tls', 'nak', 'dial_timeout', 'connect_accept_timeout', 'upgrade_refused', 'malformed_result', 'unexpected_connect_reply', 'rejection_expired', 'other'] | None`: Why a `disconnected` link ended, or a `connect_failed` attempt or `primary_restore_failed` probe failed. `dial_timeout`: the dial (host lookup, TCP, TLS, WebSocket upgrade) ran out of time; `connect_accept_timeout`: the hub never answered the Connect-Request; `upgrade_refused`: the server answered the upgrade with `http_status` (#1839).
+- `cause: Literal['local_close', 'peer_close', 'heartbeat_timeout', 'websocket', 'websocket_closed', 'tls', 'nak', 'dial_timeout', 'connect_accept_timeout', 'upgrade_refused', 'malformed_result', 'unexpected_connect_reply', 'rejection_expired', 'other'] | None`: Why a `disconnected` link ended, or a `connect_failed` attempt or `primary_restore_failed` probe failed. `peer_close`: a Disconnect-Request from the hub; `websocket_closed`: the hub closed the WebSocket with `close_status` (#2438); `dial_timeout`: the dial (host lookup, TCP, TLS, WebSocket upgrade) ran out of time; `connect_accept_timeout`: the hub never answered the Connect-Request; `upgrade_refused`: the server answered the upgrade with `http_status` (#1839). `cause_code` names it.
+- `cause_code: ErrorCode | None`: The BACnet error code that names the cause (Annex AB.7.5): a NAK's own code, or the BACnet/SC connection code for a DNS, TCP, TLS, HTTP or WebSocket failure, such as `TCP_CONNECTION_REFUSED` or `WEBSOCKET_ENDPOINT_LEAVES`. None when no code applies, as for a local close or a heartbeat timeout (#2438).
+- `close_status: int | None`: The status in the hub's WebSocket close frame, for a `websocket_closed` cause, such as 1001 for a hub going away.
 - `dial_stage: Literal['host_lookup', 'tcp_connect', 'tls', 'websocket_upgrade', 'other'] | None`: Where a `dial_timeout` dial stalled; None when it did not say.
 - `http_status: int | None`: The HTTP status of an `upgrade_refused`, such as a proxy's 502.
 - `cause_detail: str | None`: Diagnostic text for a `websocket`, `tls` or `other` cause; not stable.
@@ -1823,51 +2060,27 @@ def __aiter__(self) -> ScEventIterator
 def __anext__(self) -> Awaitable[ScEvent]
 ```
 
-## DirectTarget
-
-A direct BACnet/IP target with an explicitly preserved UDP port.
-
-Properties:
-
-- `address: str`
-- `mac: bytes`
-
-### DirectTarget.__init__
-
-```python
-def __init__(self, address: str) -> None
-```
-
-## RoutedTarget
-
-A routed target with an explicit next-hop router, DNET, and DADR.
-
-Properties:
-
-- `router: str`
-- `router_mac: bytes`
-- `network: int`
-- `address: bytes`
-
-### RoutedTarget.__init__
-
-```python
-def __init__(self, router: str, network: int, address: bytes) -> None
-```
-
 ## Frame
 
-Frozen raw frame. Pass octets and link to decode\_frame for a summary.
+One frame the owner's transport sent or received, frozen at capture.
+
+The octets are raw; `decode_frame(frame.octets, frame.link)` gives the
+decoded header summary. `local_address` and `peer` use one form per
+link (see "Raw frame observation" in docs/python-api.md).
 
 Properties:
 
-- `timestamp: float`: Monotonic capture seconds from the first subscription in this module. Comparable across subscriptions, not to wall time or Python's clock origin.
-- `direction: str`: 'inbound' or 'outbound'.
-- `link: str`: Link display name, such as 'BACnet/IP'.
-- `local_address: str`: Local address at subscription: IPv4 ip:port, otherwise a hex MAC.
-- `peer: str`: UDP peer, SC hub name, MS/TP station or Ethernet MAC. This is the next hop, not a forwarded frame's original source.
-- `octets: bytes`: Raw link octets, including malformed received datagrams.
-- `missed: int`: Cumulative queue overflow at the first delivery attempt. Redelivery after cancellation keeps this snapshot; iterator.missed is live.
+- `port_index: int | None`: Configured mixed-router port index.
+- `hub_url: str | None`: Configured SC hub URL associated with the captured frame.
+- `timestamp_unix_ns: int`: Wall-clock time of capture, in integer Unix nanoseconds.
+- `monotonic: float`: Capture time in seconds on the clock and origin of `time.monotonic()`, so `time.monotonic() - frame.monotonic` is the frame's age. It never decreases within a subscription. The first `frames()` call in the process pairs the capture clock with `time.monotonic()` once, and each capture converts by its offset from that pair. Both read the same OS clock on Linux (`CLOCK_MONOTONIC`), on macOS (`mach_absolute_time`) and on Windows from Python 3.13 (`QueryPerformanceCounter`); neither counts system sleep on Linux or macOS, both count it on Windows. On Windows with Python 3.11 or 3.12, `time.monotonic()` reads `GetTickCount64` instead: it also counts sleep, but moves in 10-16 ms steps, so a value can sit up to one step away from it, and the two counters are not guaranteed to stay in step over a long run.
+- `timestamp: float`: Capture time as POSIX seconds from the wall clock, as `time.time()`: comparable with other machines' clocks, but a clock adjustment can move it either way, so order frames by `monotonic`.
+- `direction: Literal["inbound", "outbound", "other"]`: `"inbound"` or `"outbound"` (`"other"` only for a direction a later release adds).
+- `link: Literal["bip", "ipv6", "sc", "mstp", "other"]`: The link, as the `transport=` argument spells it; `"other"` for a link no Python owner runs.
+- `local_address: str`: This node's address on the link when the subscription began, in the form `peer` uses for that link: `"ip:port"` on B/IP, `"[ip]:port"` on B/IPv6 (the UDP socket, not the VMAC), the VMAC in colon hex on SC, the station in decimal on MS/TP.
+- `peer: str`: The other end on the link: the datagram's source or destination on B/IP (`"ip:port"`) and B/IPv6 (`"[ip]:port"`, the form `resolve_vmac` takes), the hub connection on SC (`"primary"` or `"failover"`, as `ScEvent.hub`), the station in decimal on MS/TP (`"255"` for a broadcast). The next hop, not a forwarded frame's original source.
+- `octets: bytes`: The frame as the link carries it, malformed received datagrams included.
+- `missed_before: int`: Frames this subscription missed just before this one: dropped by its full queue (which keeps the oldest frames and drops the newest), or lost on the way to Python together with the gap such a frame carried. A frame redelivered after a cancelled read keeps its value. Summed over the frames received, plus any lost after the last one, it is `FrameIterator.missed`.
 
 ## FrameSummary
 
@@ -1875,12 +2088,16 @@ Frozen offline header summary. Missing fields are None.
 
 parse\_error reports header decoding failures, while problem also reports
 valid protocol refusals. Service parameters are not exhaustively validated.
-original\_source is encoded in a forwarded message; Frame.peer is the actual
-transport peer. Neither field proves the sender's identity or its path.
+original\_source is the originating address a BBMD wrote into a B/IP
+Forwarded-NPDU, or a B/IPv6 Forwarded-NPDU or Forwarded-Address-Resolution;
+Frame.peer is the actual transport peer. Neither field proves the sender's
+identity or its path. Summaries compare and hash by value. A summary holds
+its fields only, never the frame's octets: copy and pickle carry those
+fields and nothing else.
 
 Properties:
 
-- `link: str`
+- `link_message: str`: BVLC function or MS/TP frame type, such as original-unicast-npdu. Not the data link; that is Frame.link.
 - `broadcast: bool`
 - `link_source: str | None`
 - `link_destination: str | None`
@@ -1909,7 +2126,7 @@ Read from one running event loop; concurrent reads keep arrival order.
 
 Properties:
 
-- `missed: int`: Frames lost to overflow or failed delivery; readable after close.
+- `missed: int`: Frames lost so far, live: dropped by the full queue or lost on the way to Python, including any lost after the last frame read, which no `missed_before` has reported yet. Readable after close.
 
 ### FrameIterator.__aiter__
 
@@ -1924,6 +2141,82 @@ def __anext__(self) -> Awaitable[Frame]
 ```
 
 ### FrameIterator.aclose
+
+```python
+def aclose(self) -> Awaitable[None]
+```
+
+Idempotently stop this subscription, without stopping its owner.
+
+## IAmArrival
+
+One I-Am the owner's link handed it, frozen at arrival (#2612).
+
+Every I-Am frame received is a record, in arrival order: repeats, and
+two devices claiming one instance at different addresses, included.
+`link_sender` is who put the frame on this node's link, in
+`Frame.peer`'s form; `link_source` is the source MAC the stack takes,
+in the address form the calls take on that link (`"ip:port"`,
+`"bip6:0x0004D2"`, an SC VMAC in colon hex, `"mstp:5"`). See "I-Am
+arrivals" in docs/python-api.md for who is who on each link. The
+parameters are kept as sent, odd ones included. A record compares,
+hashes, copies and pickles by its fields.
+
+The tap shows frames before the stack filters them, so a record does
+not prove the discovery table took the I-Am.
+
+Properties:
+
+- `monotonic: float`: Arrival time on `time.monotonic()`'s clock and origin, as `Frame.monotonic` (with its Windows note).
+- `timestamp: float`: Arrival time as POSIX seconds from the wall clock, as `Frame.timestamp`.
+- `link: Literal["bip", "ipv6", "sc", "mstp", "other"]`: The link, as `Frame.link`.
+- `object_identifier: ObjectIdentifier`: The I-Am's device identifier, of the type it was sent with, as `DiscoveredDevice.object_identifier`; `.instance` is the device instance.
+- `max_apdu_length: int`: Max APDU length accepted, as sent (below 50 included).
+- `segmentation_supported: Segmentation`: Segmentation supported, as sent (a value outside the enumeration included).
+- `vendor_id: int`: Vendor identifier, as sent.
+- `link_sender: str`: Who put the frame on this node's link, as `Frame.peer` writes it: the UDP source on B/IP and B/IPv6 (for a Forwarded-NPDU the BBMD that forwarded it), `"primary"` or `"failover"` on SC, the source station in decimal on MS/TP.
+- `link_source: str`: The source MAC the stack takes for the frame: the origin a Forwarded-NPDU carries, else the sender, on B/IP; the source VMAC on B/IPv6 (the original source's when forwarded); the originating VMAC on SC; the source station on MS/TP. The router when `source_network` is set: the next hop back, which a node may take as that network's router (Clauses 6.5.3, 6.5.4).
+- `original_source: Optional[str]`: The originating node's `"ip:port"` or `"[ip]:port"` a BBMD wrote into a B/IP or B/IPv6 Forwarded-NPDU; None otherwise.
+- `forwarded: bool`: True when the frame carried an origin other than its sender: a BBMD forwarded it. Never on SC or MS/TP.
+- `source_network: Optional[int]`: SNET, when a router relayed the I-Am from another network.
+- `source_address: Optional[bytes]`: SADR, the device's MAC on `source_network`.
+- `destination_network: int | None`: DNET carried by the received NPDU.
+- `destination_address: bytes | None`: DADR, empty for a network broadcast and absent without a DNET.
+- `broadcast: bool`: A link broadcast or a broadcast on a network. False for an MS/TP I-Am one station unicast to another, which the bus lets this station hear.
+- `device_address: Optional[str]`: The device's address as `BACnetClient.device()` takes it: `link_source` for a device on this link, `"5:0x07"` for one a router relayed. None when those name no one station. The calls that take an `address` don't take `"5:0x07"`: for a routed record, `read_property`, `read_property_multiple`, `read_range`, `read_log_page`, `write_property`, `atomic_read_file` and `atomic_write_file` take `RoutedTarget(rec.source_network, rec.source_address, router=rec.next_hop_router)`.
+- `next_hop_router: Optional[str]`: The router that relayed it, when `source_network` is set: its `link_source`.
+- `forwarding_bbmd: Optional[str]`: The BBMD that forwarded it, when `forwarded`: its `link_sender`.
+- `missed_before: int`: Frames of any kind this subscription lost just before this record, as `Frame.missed_before`: the tap cannot tell which of them held an I-Am. Summed over the records received, plus any lost after the last one, it is `IAmArrivalIterator.missed`. An own echo left out is no loss and adds nothing.
+
+## IAmArrivalIterator
+
+A bounded subscription to the I-Ams the owner's link hands it,
+with `FrameIterator`'s semantics: the queue holds frames of every kind
+(`capacity`), a full queue drops new frames, a cancelled read keeps
+the next record, and close or owner shutdown wakes pending reads. It
+never keeps the owner's socket alive. With a subscriber the transport
+copies every frame once, as for `frames()`; the decode runs where the
+records are read, never on the transport's path.
+
+Properties:
+
+- `missed: int`: Frames of any kind lost so far, live, as `FrameIterator.missed`. Readable after close.
+- `malformed: int`: Inbound I-Am frames read so far that made no record: parameters that don't decode, or an SC message naming no originating VMAC. `frames()` and `decode_frame` show who sent one and why it failed. A frame whose headers don't decode is not counted: it is not known to hold an I-Am. Readable after close.
+- `own_echoes: int`: The owner's own I-Ams come back to it, read so far and left out: on a `BipEndpoint` and on the client its `client()` returns, those from the endpoint's own address naming its own device instance, whether its broadcast returned or a BBMD sent it back. Always 0 on a standalone `BACnetClient`, which sends no I-Am and leaves nothing out. Readable after close.
+
+### IAmArrivalIterator.__aiter__
+
+```python
+def __aiter__(self) -> IAmArrivalIterator
+```
+
+### IAmArrivalIterator.__anext__
+
+```python
+def __anext__(self) -> Awaitable[IAmArrival]
+```
+
+### IAmArrivalIterator.aclose
 
 ```python
 def aclose(self) -> Awaitable[None]
@@ -1968,10 +2261,4 @@ Keys:
 - `request_index: int`
 - `device_instance: int`
 - `error: BacnetError | None`
-
-## Target
-
-```python
-Target = Union[str, DirectTarget, RoutedTarget]
-```
 <!-- generated:end -->

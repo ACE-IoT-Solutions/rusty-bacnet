@@ -5,10 +5,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use bacnet_ops::engine::Engine;
+use bacnet_client::client::Broadcast;
+use bacnet_device_core::write::local::LocalCommandSource;
+use bacnet_ops::Client;
 use bacnet_ops::limits::RequestLimits;
-use bacnet_ops::watch::Hub;
-use bacnet_server::LocalCommandSource;
+use bacnet_ops::watch::hub::Hub;
 use bacnet_types::enums::PropertyIdentifier;
 use bacnet_types::primitives::PropertyValue;
 
@@ -61,7 +62,9 @@ async fn routed_rows_subscribe_renew_and_cancel_through_the_router() {
 
     // Renewals fall due every 44 s, so the quit below lands on the third:
     // the cancels must wait for the renewals in flight rather than abort
-    // them, or the routed path's quarantine outlasts the cancel wait.
+    // them. A request cancelled after it went out holds its routed path for
+    // the APDU timeout times the attempts, longer than the cancel wait; one
+    // the device answered frees it at once (#2651).
     site.run_for(Duration::from_secs(130)).await;
     assert_eq!(active(&site), 2, "renewals kept both subscriptions");
     assert_eq!(
@@ -84,31 +87,33 @@ async fn routed_rows_subscribe_renew_and_cancel_through_the_router() {
 async fn a_routed_row_is_cancelled_after_its_device_leaves_the_table() {
     let (routed, client) = routed_parts(LAB).await;
     let client = Arc::new(client);
-    client.who_is(None).await.unwrap();
-    while client.get_device(LAB).await.is_none() {
+    client.who_is(Broadcast::Global, None).await.unwrap();
+    while client.get_device(LAB).await.unwrap().is_none() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let rate = Arc::new(RequestLimits::new(0));
-    let engine = Arc::new(Engine::new(Arc::clone(&client), rate));
+    let ops = Client::new(Arc::clone(&client), rate);
     let options = WatchOptions {
         lifetime: 60,
         request_budget: Duration::from_secs(8),
         ..WatchOptions::default()
     };
-    let hub = Hub::new(engine, hub_options(&options)).unwrap();
+    let hub = Hub::new(ops, hub_options(&options)).unwrap();
     let point = Point {
         device: LAB,
         network: Some(super::site::ROUTED_NETWORK),
         object: ai(1),
         property: PropertyIdentifier::PRESENT_VALUE,
     };
-    let lease = hub.watch(hub_point(&point)).unwrap();
+    let row = client.get_device(LAB).await.unwrap().unwrap();
+    let at = bacnet_ops::DeviceAddress::of(&row).unwrap();
+    let lease = hub.watch(hub_point(&point, at)).unwrap();
     while lease.snapshot().source.is_none() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(
         lease.snapshot().source,
-        Some(bacnet_ops::watch::Source::Cov)
+        Some(bacnet_ops::watch::hub::Source::Cov)
     );
     assert_eq!(routed.server().cov_counters().subscriptions_active, 1);
 

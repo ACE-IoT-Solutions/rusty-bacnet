@@ -2,6 +2,7 @@ use super::*;
 use bacnet_services::rpm::{
     ReadAccessResult, ReadPropertyMultipleACK, ReadPropertyMultipleRequest, ReadResultElement,
 };
+use bacnet_transport::test_transport::TestTransport;
 use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
 
 fn specs() -> Vec<ReadAccessSpecification> {
@@ -95,7 +96,7 @@ fn response(invoke: u8, ack: &ReadPropertyMultipleACK) -> Apdu {
 }
 async fn records(
     receiver: &mut bacnet_network::layer::ApduReceiver,
-    sink: &NetworkLayer<BusPort>,
+    sink: &NetworkLayer<TestTransport>,
     confirmed: bool,
     n: usize,
 ) -> Vec<BACnetAuditNotification> {
@@ -121,8 +122,8 @@ async fn records(
 }
 #[tokio::test(start_paused = true)]
 async fn source_rpm_ordered_occurrences_mixed_results_both_roles_modes() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut received) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut received) = network().await;
     for role in [SessionRole::ClientOnly, SessionRole::Both] {
         for confirmed in [false, true] {
             let mut session = session(database(confirmed), role, &sink);
@@ -145,10 +146,7 @@ async fn source_rpm_ordered_occurrences_mixed_results_both_roles_modes() {
             let actual = records(&mut received, &sink, confirmed, 5).await;
             for (i, record) in actual.iter().enumerate() {
                 assert_eq!(record.invoke_id, Some(invoke));
-                assert_eq!(
-                    record.source_timestamp,
-                    Some(BACnetTimeStamp::SequenceNumber(0))
-                );
+                assert_stamp(&record.source_timestamp, role == SessionRole::Both, 0);
                 assert_eq!(
                     record.target_device,
                     BACnetRecipient::Device(oid(ObjectType::DEVICE, 10))
@@ -189,8 +187,8 @@ async fn source_rpm_ordered_occurrences_mixed_results_both_roles_modes() {
 }
 #[tokio::test(start_paused = true)]
 async fn source_rpm_complete_correlation_before_any_success_projection() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut received) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut received) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
     for fault in 0..15 {
@@ -278,8 +276,8 @@ async fn source_rpm_complete_correlation_before_any_success_projection() {
 }
 #[tokio::test(start_paused = true)]
 async fn source_rpm_unique_successful_device_projection_and_per_reference_filters() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut received) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut received) = network().await;
     for case in 0..6 {
         let mut db = database(false);
         if case == 3 {

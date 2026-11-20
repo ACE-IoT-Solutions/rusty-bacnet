@@ -4,35 +4,6 @@ use bacnet_device_core::cov::active::LiveDeviceCov;
 use bacnet_device_core::read::{self, LiveLists, ReadFailure, ReadScope};
 use bacnet_services::read_property::ReadPropertyRequest;
 
-/// ReadProperty under the narrow responder's actual RP[/WP/ReinitializeDevice] execution
-/// profile, within the responder's configured read work limit.
-pub(super) async fn read_property_response(
-    db: &RwLock<ObjectDatabase>,
-    request: &ConfirmedRequestPdu,
-    writes: bool,
-    reinitialize: bool,
-    registered_port: Option<ObjectIdentifier>,
-    work_limit: usize,
-    identity: Option<&bacnet_objects::DeviceIdentity>,
-) -> Apdu {
-    read_property_response_observed(
-        db,
-        None,
-        ReadProfile {
-            execution: DeviceExecution::Endpoint {
-                writes,
-                reinitialize,
-            },
-            registered_port,
-            work_limit,
-            identity,
-        },
-        request,
-        |_, _, _, _| {},
-    )
-    .await
-}
-
 /// The server tables a read samples the selected Device's server-owned lists
 /// from: the COV table for its COV lists, the binding table for its
 /// Device_Address_Binding (#1369).
@@ -93,6 +64,7 @@ pub(super) async fn read_property_multiple_observed(
     service_request: &[u8],
     service_ack: &mut BytesMut,
     config: &ServerConfig,
+    execution: DeviceExecution,
     mut completed: impl FnMut(
         &ObjectDatabase,
         ObjectIdentifier,
@@ -105,8 +77,7 @@ pub(super) async fn read_property_multiple_observed(
     let request = bacnet_services::rpm::ReadPropertyMultipleRequest::decode(service_request)
         .map_err(|error| ReadFailure::Service(error.into_request_reject()))?;
     let budget = config.read_property_multiple_budget;
-    let view = DeviceReadContext::new(&db, DeviceExecution::FullServer)
-        .with_identity(Some(&config.device));
+    let view = DeviceReadContext::new(&db, execution).with_identity(Some(&config.device));
     let scope = ReadScope {
         work_limit: budget.max_result_elements,
         registered_port: config.registered_network_port,
@@ -138,7 +109,7 @@ pub(super) struct ReadProfile<'a> {
     pub(super) execution: DeviceExecution,
     pub(super) registered_port: Option<ObjectIdentifier>,
     pub(super) work_limit: usize,
-    pub(super) identity: Option<&'a bacnet_objects::DeviceIdentity>,
+    pub(super) identity: &'a bacnet_objects::DeviceIdentity,
 }
 
 /// ReadProperty under one database read guard, planned before any table is
@@ -147,7 +118,7 @@ pub(super) struct ReadProfile<'a> {
 /// as that request would be.
 pub(super) async fn read_property_response_observed(
     db: &RwLock<ObjectDatabase>,
-    tables: Option<LiveTables<'_>>,
+    tables: LiveTables<'_>,
     profile: ReadProfile<'_>,
     request: &ConfirmedRequestPdu,
     mut completed: impl FnMut(
@@ -163,8 +134,8 @@ pub(super) async fn read_property_response_observed(
         .map_err(Error::into_request_reject)
     {
         Ok(decoded) => {
-            let view =
-                DeviceReadContext::new(&db, profile.execution).with_identity(profile.identity);
+            let view = DeviceReadContext::new(&db, profile.execution)
+                .with_identity(Some(profile.identity));
             let scope = ReadScope {
                 work_limit: profile.work_limit,
                 registered_port: profile.registered_port,
@@ -180,14 +151,14 @@ pub(super) async fn read_property_response_observed(
                 decoded.property_array_index,
             ) {
                 Ok(plan) => {
-                    let live = match (tables, plan.live_lists(&db)) {
+                    let live = match plan.live_lists(&db) {
                         // Boxed: only a read of the Device's COV subscription
                         // list samples them, and the inline future would
                         // more than double every ReadProperty's (#1713).
-                        (Some(tables), Some(selection)) => {
+                        Some(selection) => {
                             Some(Box::pin(active_cov_snapshot(&db, tables, selection)).await)
                         }
-                        _ => None,
+                        None => None,
                     };
                     let view = view.with_live(live.as_ref());
                     read::read_property_ack(

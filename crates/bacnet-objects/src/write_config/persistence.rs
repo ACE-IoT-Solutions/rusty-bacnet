@@ -8,11 +8,12 @@ use crate::prelude::*;
 #[cfg(feature = "std")]
 use std::path::Path;
 
-use bacnet_types::bitstring::EventTransitionBits;
+use bacnet_types::bitstring::{EventTransitionBits, LimitEnable};
 use bacnet_types::constructed::{
-    BACnetDeviceObjectPropertyReference, BACnetObjectPropertyReference,
+    BACnetDeviceObjectPropertyReference, BACnetEventParameter, BACnetObjectPropertyReference,
+    FaultParameters,
 };
-use bacnet_types::enums::NotifyType;
+use bacnet_types::enums::{BinaryPV, NotifyType};
 use bacnet_types::error::Error;
 use bacnet_types::primitives::ObjectIdentifier;
 
@@ -67,6 +68,71 @@ pub struct ReportingWriteConfig {
     /// (#2364); at most 16 KiB of UTF-8, as a durable object refuses a
     /// longer write.
     pub description: Option<String>,
+    /// The event algorithm parameters a write set (#2331).
+    pub algorithm: AlgorithmWriteConfig,
+}
+
+/// The event algorithm parameters an intrinsic reporter keeps once a write
+/// sets them (#2331), beside its reporting settings. Each is `None` until
+/// then: what the application configures applies at each start until then.
+///
+/// An object type keeps only the parameters it has; storage holding another
+/// is refused. `snapshot::write_config::keeps_parameter` names them per type.
+/// More parameters will join it, so outside the crate it is built from
+/// [`Default`] with its fields then set.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct AlgorithmWriteConfig {
+    /// Time_Delay, in seconds.
+    pub time_delay: Option<u32>,
+    /// Time_Delay_Normal, in seconds. An Event Enrollment keeps it without
+    /// Time_Delay, which on that type is a member of Event_Parameters.
+    pub time_delay_normal: Option<u32>,
+    /// High_Limit of an analog object; finite, as a write is.
+    pub high_limit: Option<f32>,
+    /// Low_Limit of an analog object; finite.
+    pub low_limit: Option<f32>,
+    /// Deadband of an analog object; finite and not negative.
+    pub deadband: Option<f32>,
+    /// Limit_Enable of an analog object.
+    pub limit_enable: Option<LimitEnable>,
+    /// Alarm_Value of a Binary Input or Value: INACTIVE or ACTIVE.
+    pub alarm_value: Option<BinaryPV>,
+    /// Alarm_Values, in list order: at most 1,024 states, as a write is. A
+    /// written empty list is kept as one.
+    ///
+    /// On a Multi-state Input or Value none of them is zero. A state past
+    /// the object's Number_Of_States, which a write refuses, is restored as
+    /// stored: with no State_Text kept beside it, the count is the one the
+    /// application builds the object with.
+    ///
+    /// On an Access Door each is a BACnetDoorAlarmState and on an Access
+    /// Zone a BACnetAccessZoneOccupancyState, as its raw value: a named
+    /// state or a proprietary one, and never NORMAL, as a write is held to.
+    pub alarm_values: Option<Vec<u32>>,
+    /// Fault_Values of an Access Door, held to what its Alarm_Values is.
+    pub fault_values: Option<Vec<u32>>,
+    /// Masked_Alarm_Values of an Access Door, held to what its
+    /// Alarm_Values is.
+    pub masked_alarm_values: Option<Vec<u32>>,
+    /// Event_Parameters of an Event Enrollment: any value a write of the
+    /// property leaves, whose BACnet encoding is at most 64 KiB, as an
+    /// enrollment with storage refuses a longer write. The legacy octet
+    /// layout is the `Opaque` alternative under tag 255.
+    pub event_parameters: Option<BACnetEventParameter>,
+    /// Fault_Parameters of an Event Enrollment, held to what its
+    /// Event_Parameters are. A written `none` choice is kept as
+    /// `FaultNone`, and reopens as no fault algorithm.
+    pub fault_parameters: Option<FaultParameters>,
+    /// State_Text of a Multi-state Input, Output or Value (#2414), and with
+    /// it Number_Of_States, which is its number of labels. No event
+    /// algorithm parameter, but a value a peer writes to the same objects,
+    /// kept in the same file. From 1 to 1,024 labels
+    /// ([`MAX_NUMBER_OF_STATES`](crate::multistate::MAX_NUMBER_OF_STATES)),
+    /// each at most 512 octets of UTF-8
+    /// ([`MAX_KEPT_STATE_TEXT_OCTETS`](crate::multistate::MAX_KEPT_STATE_TEXT_OCTETS)),
+    /// as an object with storage refuses a write that would leave more.
+    pub state_text: Option<Vec<String>>,
 }
 
 /// What a Timer keeps across a restart.

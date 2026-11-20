@@ -20,7 +20,7 @@
 //!   ordinary side effects. No property is skipped as time dependent: the
 //!   proptest's back-to-back read check would catch one that moved by itself.
 //! - no log record is written, because every log-status record needs the
-//!   clock and a write that would add one is refused (Log_Enable changes, a
+//!   clock and a write that would add one is refused (Enable changes, a
 //!   Record_Count purge, a new Log_DeviceObjectProperty). So no log count,
 //!   buffer, Status_Flags or Event_State moves on a log type.
 //! - writes that only `write_property_from` takes (Present_Value of Analog,
@@ -33,7 +33,7 @@
 //!   Reason_For_Disable; stamps (Modification_Date, Count_Change_Time, the
 //!   Timer's Update_Time and Expiration_Time) move; log writes add records,
 //!   moving Record_Count, Total_Record_Count, Log_Buffer and
-//!   Records_Since_Notification, and may turn Log_Enable off;
+//!   Records_Since_Notification, and may turn Enable off;
 //! - with configured actions, Command Present_Value moves In_Process and
 //!   All_Writes_Successful;
 //! - with an IP configuration (or a non-Normal command mode), Network Port
@@ -42,7 +42,9 @@
 //!   Acked_Transitions and the event time stamps (they are already initial
 //!   here);
 //! - with value-source commands, the commandable outputs' Value_Source,
-//!   Value_Source_Array and Last_Command_Time.
+//!   Value_Source_Array and Last_Command_Time;
+//! - with a clock, a Load Control request starts shedding at its Start_Time,
+//!   and a shorter Shed_Duration can end it.
 //!
 //! An entry says what a write *may* change: whether it does depends on the
 //! object's state (most Reliability effects need Out_Of_Service first, and
@@ -154,12 +156,13 @@ pub fn effects(object_type: T) -> Option<&'static [&'static [Effect]]> {
         | T::DATE_VALUE
         | T::DATETIMEPATTERN_VALUE
         | T::DATETIME_VALUE
-        | T::INTEGER_VALUE
         | T::LARGE_ANALOG_VALUE
         | T::OCTETSTRING_VALUE
         | T::POSITIVE_INTEGER_VALUE
         | T::TIMEPATTERN_VALUE
         | T::TIME_VALUE => &[OUT_OF_SERVICE_FLAGS, COMMANDED, RELINQUISH_DEFAULT],
+        // Reliability simulated out of service, as on the Accumulator (#2446).
+        T::INTEGER_VALUE => &[RELIABILITY_SIMULATION, COMMANDED, RELINQUISH_DEFAULT],
         T::GLOBAL_GROUP
         | T::PROGRAM
         | T::NOTIFICATION_FORWARDER
@@ -339,10 +342,43 @@ pub fn effects(object_type: T) -> Option<&'static [&'static [Effect]]> {
                 (P::OUT_OF_SERVICE, &[P::PRESENT_STAGE]),
             ],
         ],
-        T::LOAD_CONTROL => &[&[(
-            P::REQUESTED_SHED_LEVEL,
-            &[P::EXPECTED_SHED_LEVEL, P::ACTUAL_SHED_LEVEL],
-        )]],
+        // With no clock a Start_Time behind a level to shed starts a
+        // request that waits; the unspecified Start_Time, the requested
+        // choice's default and Enable FALSE each end it, which puts the
+        // request's properties back at their idle values. Outside a request
+        // the shed levels read the requested choice's default.
+        T::LOAD_CONTROL => &[&[
+            (
+                P::REQUESTED_SHED_LEVEL,
+                &[
+                    P::EXPECTED_SHED_LEVEL,
+                    P::ACTUAL_SHED_LEVEL,
+                    P::PRESENT_VALUE,
+                    P::START_TIME,
+                    P::SHED_DURATION,
+                    P::DUTY_WINDOW,
+                ],
+            ),
+            (
+                P::START_TIME,
+                &[
+                    P::PRESENT_VALUE,
+                    P::REQUESTED_SHED_LEVEL,
+                    P::SHED_DURATION,
+                    P::DUTY_WINDOW,
+                ],
+            ),
+            (
+                P::ENABLE,
+                &[
+                    P::PRESENT_VALUE,
+                    P::REQUESTED_SHED_LEVEL,
+                    P::START_TIME,
+                    P::SHED_DURATION,
+                    P::DUTY_WINDOW,
+                ],
+            ),
+        ]],
         T::FILE => &[&[
             // Changing the data clears Archive.
             (P::FILE_SIZE, &[P::ARCHIVE]),

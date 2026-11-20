@@ -1,17 +1,19 @@
 //! The target grammar shared by the one-shot commands and the TUI,
 //! and the way each transport's MAC addresses are shown so they read back.
 //!
-//! Resolving a target to something a request can go to is in
-//! [`super::destination`].
+//! Resolving a target to something a request can go to is the `bacnet`
+//! CLI's (its `destination` module).
 
-use std::any::Any;
 use std::net::{Ipv4Addr, SocketAddrV6};
 
 use bacnet_transport::bip6::{
     Bip6Transport, DEFAULT_BACNET6_PORT, VMAC_TEXT_PREFIX, parse_vmac_text,
 };
 use bacnet_transport::port::TransportPort;
+use bacnet_types::data_link::DataLink;
 use bacnet_types::error::Error;
+
+use crate::octets::{hex_sep, hex_upper};
 
 /// A parsed target for a BACnet command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,31 +199,27 @@ fn parse_bip6_address(s: &str) -> Result<SocketAddrV6, String> {
         .map_err(|_| format!("invalid B/IPv6 address '{s}': expected [IPv6] or [IPv6]:port"))
 }
 
-/// `transport` as the B/IPv6 transport, when it is one. The commands are
-/// generic over the transport; only B/IPv6 maps addresses to VMACs.
-pub fn as_bip6<T: TransportPort + 'static>(transport: &T) -> Option<&Bip6Transport> {
-    (transport as &dyn Any).downcast_ref()
-}
-
-/// True when `transport` is the BACnet/SC transport the CLI builds.
-fn is_sc<T: TransportPort + 'static>(transport: &T) -> bool {
-    #[cfg(feature = "sc-tls")]
-    {
-        (transport as &dyn Any)
-            .is::<bacnet_transport::sc::ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>()
-    }
-    #[cfg(not(feature = "sc-tls"))]
-    {
-        let _ = transport;
-        false
-    }
+/// `transport` as the B/IPv6 transport, when it is one or wraps one. The
+/// commands are generic over the transport; only B/IPv6 maps addresses to
+/// VMACs.
+pub fn as_bip6<T: TransportPort>(transport: &T) -> Option<&Bip6Transport> {
+    transport.bip6_transport()
 }
 
 /// True when `transport` is MS/TP: the only data link the CLI uses whose
 /// MACs are one octet.
-pub fn is_mstp<T: TransportPort + 'static>(transport: &T) -> bool {
-    transport.local_mac().len() == 1
+pub fn is_mstp<T: TransportPort>(transport: &T) -> bool {
+    transport.data_link() == Some(DataLink::Mstp)
 }
+
+/// Why a link that isn't B/IPv6 refuses a B/IPv6 VMAC. It names no front
+/// end's flag or keyword: the CLI, the MCP server and the Python binding
+/// all show it, and each adds its own hint where it has one.
+pub const NEEDS_BIP6: &str = "only a client on a B/IPv6 link reaches one";
+
+/// Why a link that isn't MS/TP refuses an MS/TP station, as
+/// [`NEEDS_BIP6`] does a VMAC.
+pub const NEEDS_MSTP: &str = "only a client on an MS/TP link reaches one";
 
 /// [`parse_target`] for a command on `transport`. A `bip6:` VMAC names a
 /// B/IPv6 node and `mstp:` an MS/TP station, so any other transport refuses
@@ -234,49 +232,99 @@ pub fn parse_target_on<T: TransportPort + 'static>(
     let bip6 = as_bip6(transport).is_some();
     let mstp = is_mstp(transport);
     if s.starts_with(VMAC_TEXT_PREFIX) && !bip6 {
-        return Err(format!(
-            "'{s}' is a B/IPv6 VMAC: bip6: addresses need the --ipv6 transport"
-        ));
+        return Err(format!("'{s}' is a B/IPv6 VMAC: {NEEDS_BIP6}"));
     }
     if s.starts_with(MSTP_TEXT_PREFIX) && !mstp {
-        return Err(format!(
-            "'{s}' is an MS/TP station: mstp: addresses need the --mstp transport"
-        ));
+        return Err(format!("'{s}' is an MS/TP station: {NEEDS_MSTP}"));
     }
     let target = parse_target(s)?;
     if let Target::Mac(mac) = &target {
-        if bip6 && mac.len() == 6 {
-            return Err(format!(
-                "'{s}' is a 6-octet MAC; a B/IPv6 node is addressed by its 3-octet VMAC (bip6:...)"
-            ));
-        }
-        if mstp && mac.len() != 1 {
-            return Err(format!(
-                "'{s}' is a {}-octet MAC; an MS/TP station is addressed by mstp:N",
-                mac.len()
-            ));
-        }
+        check_local_mac(transport, mac, s)?;
     }
     Ok(target)
 }
+
+/// Refuse a MAC on the local network that `transport`'s link doesn't
+/// address stations by, as [`parse_target_on`] refuses one written for it,
+/// with `shown` naming it: B/IPv6 refuses six octets, MS/TP any length but
+/// one, and every other link the one octet of an MS/TP station and the
+/// three of a B/IPv6 VMAC. `shown` is the address as the caller has it:
+/// the text given, or the MAC's octets when it came as octets, so a
+/// message never quotes a form nobody wrote.
+pub fn check_local_mac<T: TransportPort + 'static>(
+    transport: &T,
+    mac: &[u8],
+    shown: &str,
+) -> Result<(), String> {
+    let bip6 = as_bip6(transport).is_some();
+    let mstp = is_mstp(transport);
+    match mac.len() {
+        6 if bip6 => Err(format!(
+            "'{shown}' is a 6-octet MAC; a B/IPv6 node is addressed by its 3-octet VMAC (bip6:...)"
+        )),
+        n if mstp && n != 1 => Err(format!(
+            "'{shown}' is a {n}-octet MAC; an MS/TP station is addressed by mstp:N"
+        )),
+        3 if !bip6 => Err(format!(
+            "'{shown}' is a 3-octet MAC, a B/IPv6 VMAC: {NEEDS_BIP6}"
+        )),
+        1 if !mstp => Err(format!(
+            "'{shown}' is a 1-octet MAC, an MS/TP station: {NEEDS_MSTP}"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Why [`bip6_vmac`] found no VMAC.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum VmacLookup {
+    /// The client's link isn't B/IPv6: nothing was asked.
+    NotBip6 {
+        /// The address given.
+        peer: SocketAddrV6,
+    },
+    /// The node at `peer` didn't say its VMAC.
+    NoAnswer {
+        /// The address asked.
+        peer: SocketAddrV6,
+        /// The transport's error.
+        error: Error,
+    },
+}
+
+impl std::fmt::Display for VmacLookup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotBip6 { peer } => write!(f, "{peer} is a B/IPv6 address: {NEEDS_BIP6}"),
+            Self::NoAnswer { peer, error } => {
+                write!(f, "could not find the VMAC at {peer}: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for VmacLookup {}
 
 /// Find the VMAC of the B/IPv6 node at `peer`, the MAC a command sends to.
 ///
 /// A B/IPv6 node is addressed by its VMAC, not its IPv6 address (Clause
 /// U.1.3), so the CLI asks the node once, with a Virtual-Address-Resolution
 /// (Clause U.5), unless the transport already knows which VMAC is there.
-/// Fails on any transport but B/IPv6, and when nothing answers within three
-/// seconds.
+///
+/// # Errors
+///
+/// [`VmacLookup::NotBip6`] on any transport but B/IPv6, and
+/// [`VmacLookup::NoAnswer`] when nothing answers within three seconds.
 pub async fn bip6_vmac<T: TransportPort + 'static>(
     transport: &T,
     peer: SocketAddrV6,
-) -> Result<Vec<u8>, String> {
-    let bip6 = as_bip6(transport)
-        .ok_or_else(|| format!("{peer} is a B/IPv6 address: use it with --ipv6"))?;
+) -> Result<Vec<u8>, VmacLookup> {
+    let bip6 = as_bip6(transport).ok_or(VmacLookup::NotBip6 { peer })?;
     let vmac = bip6
         .resolve_virtual_address(peer)
         .await
-        .map_err(|e| format!("could not find the VMAC at {peer}: {e}"))?;
+        .map_err(|error| VmacLookup::NoAnswer { peer, error })?;
     Ok(vmac.octets().to_vec())
 }
 
@@ -294,7 +342,9 @@ pub async fn address_mac<T: TransportPort + 'static>(
 ) -> Result<Vec<u8>, String> {
     match parse_target_on(transport, text)? {
         Target::Mac(mac) => Ok(mac),
-        Target::Bip6(peer) => bip6_vmac(transport, peer).await,
+        Target::Bip6(peer) => bip6_vmac(transport, peer)
+            .await
+            .map_err(|error| error.to_string()),
         Target::Instance(_) | Target::Routed { .. } | Target::RoutedMac { .. } => {
             Err(refusal.to_string())
         }
@@ -317,14 +367,17 @@ pub enum AddressStyle {
 impl AddressStyle {
     /// The style of `transport`'s addresses.
     pub fn of<T: TransportPort + 'static>(transport: &T) -> Self {
-        if as_bip6(transport).is_some() {
-            Self::Bip6
-        } else if is_mstp(transport) {
-            Self::Mstp
-        } else if is_sc(transport) {
-            Self::Hex
-        } else {
-            Self::Bip
+        transport.data_link().map_or(Self::Bip, Self::of_link)
+    }
+
+    /// The style of the addresses on `link`: six octets are `ip:port`
+    /// except on BACnet/SC, where they are a VMAC.
+    pub fn of_link(link: DataLink) -> Self {
+        match link {
+            DataLink::Bip6 => Self::Bip6,
+            DataLink::Mstp => Self::Mstp,
+            DataLink::Sc => Self::Hex,
+            _ => Self::Bip,
         }
     }
 
@@ -333,7 +386,7 @@ impl AddressStyle {
         match (self, mac) {
             (Self::Mstp, [station]) => format!("{MSTP_TEXT_PREFIX}{station}"),
             (Self::Bip, [_, _, _, _, _, _]) | (Self::Bip6, [_, _, _]) => format_mac(mac),
-            _ => hex(mac),
+            _ => hex_sep(mac, ":"),
         }
     }
 
@@ -361,43 +414,35 @@ pub fn routed_station(network: u16, mac: &[u8]) -> Option<String> {
     if mac.is_empty() {
         return None;
     }
-    let mut out = format!("{network}:0x");
-    for b in mac {
-        out.push_str(&format!("{b:02X}"));
-    }
-    Some(out)
+    Some(format!("{network}:0x{}", hex_upper(mac)))
 }
 
 /// Format a MAC address as a target the CLI reads back: a BIP MAC (6 bytes:
 /// 4 IP + 2 port) as `ip:port`, and a B/IPv6 VMAC (3 bytes, the only
 /// 3-byte MAC the CLI's transports use) as `bip6:0x0004D2`. Falls back to
-/// hex display for other MACs. A routed station is written with its network
-/// by [`routed_station`] instead.
+/// colon-separated hex for other MACs. A routed station is written with its
+/// network by [`routed_station`] instead. [`format_sc_mac`] is the same for a
+/// BACnet/SC peer, where six octets are a VMAC.
 pub fn format_mac(mac: &[u8]) -> String {
-    if mac.len() == 6 {
-        let ip = Ipv4Addr::new(mac[0], mac[1], mac[2], mac[3]);
-        let port = u16::from_be_bytes([mac[4], mac[5]]);
+    mac_text(mac, true)
+}
+
+/// Like [`format_mac`], for a BACnet/SC peer: six octets are a VMAC, not an
+/// IPv4 address and port, so they stay colon-separated hex.
+pub fn format_sc_mac(mac: &[u8]) -> String {
+    mac_text(mac, false)
+}
+
+fn mac_text(mac: &[u8], six_is_ip_port: bool) -> String {
+    if let (true, [a, b, c, d, hi, lo]) = (six_is_ip_port, mac) {
+        let ip = Ipv4Addr::new(*a, *b, *c, *d);
+        let port = u16::from_be_bytes([*hi, *lo]);
         format!("{ip}:{port}")
     } else if let Ok(vmac) = <[u8; 3]>::try_from(mac) {
         bacnet_transport::bip6::format_vmac_text(bacnet_transport::bip6::Bip6Vmac::new(vmac))
     } else {
-        mac.iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<Vec<_>>()
-            .join(":")
+        hex_sep(mac, ":")
     }
-}
-
-/// Colon-separated lowercase hex.
-pub fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 3);
-    for (i, b) in bytes.iter().enumerate() {
-        if i > 0 {
-            out.push(':');
-        }
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
 }
 
 #[cfg(test)]

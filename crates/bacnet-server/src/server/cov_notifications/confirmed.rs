@@ -3,9 +3,11 @@
 //! (#896); see `crate::cov::confirmed` for the outstanding-report policy.
 use super::super::cov_notify_context::CovFanoutHandles;
 use super::*;
-use crate::cov::timed::TimedClaim;
+use crate::cov::timed_store::{ClaimGuard, LodgedClaim};
+use crate::server::notification_transactions::NotificationReserveError;
 use bacnet_device_core::cov::{BeginRefusal, Delivery, PreparedCovCompletion};
 use bacnet_device_core::cov::{CovObservation, CovSubscriptionKey};
+use bacnet_endpoint_core::coordinator::ReserveError;
 
 /// A confirmed notification ready for admission.
 pub(in crate::server) struct ConfirmedReport {
@@ -18,12 +20,12 @@ pub(in crate::server) struct ConfirmedReport {
     pub(in crate::server) observations: Vec<(CovSubscriptionSnapshot, CovObservation)>,
     /// Timestamped history conveyed; it retires on the Ack and otherwise
     /// returns to its references.
-    pub(in crate::server) claim: Option<TimedClaim>,
+    pub(in crate::server) claim: Option<ClaimGuard>,
     /// Later parts of a report too large for one notification (#986). They
     /// return to their queue, their untimestamped references owed (#1038),
     /// once this report holds its coordinate, so no other report can carry
     /// them first, and the Ack's follow-up sends them.
-    pub(in crate::server) deferred: Vec<TimedClaim>,
+    pub(in crate::server) deferred: Vec<ClaimGuard>,
 }
 
 impl ConfirmedReport {
@@ -63,7 +65,10 @@ pub(in crate::server) struct ConfirmedSend {
     pub(in crate::server) buf: BytesMut,
     /// Reference whose recipient and current route receive the notification.
     pub(in crate::server) route: CovSubscriptionSnapshot,
-    pub(in crate::server) claim: Option<TimedClaim>,
+    /// Timestamped history conveyed, lodged with the histories until the
+    /// report's deadline: the worker commits it on the Ack, and it returns
+    /// to its references otherwise.
+    pub(in crate::server) claim: Option<LodgedClaim>,
     pub(in crate::server) label: &'static str,
     pub(in crate::server) revisits: Arc<crate::cov::CovRevisits>,
     /// When the table began the report: its deadline, and the worker's
@@ -71,21 +76,39 @@ pub(in crate::server) struct ConfirmedSend {
     pub(in crate::server) begun: tokio::time::Instant,
 }
 
+/// Why [`BACnetServer::admit_confirmed`] gave a report nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::server) enum Refusal {
+    /// The peer's in-flight limit or the pool of in-flight slots, counted
+    /// or logged. References already waiting for an invoke ID keep their
+    /// places; others wait for their next fanout (a deliberate throttle,
+    /// #533).
+    InFlight,
+    /// Every invoke ID the server may hold is leased: the report's
+    /// references are owed a look once one comes back (#2661).
+    InvokeId,
+    /// A closed or broken pool, logged.
+    Other,
+}
+
 impl<T: TransportPort + 'static> BACnetServer<T> {
     /// Admit a confirmed report to `route` against the peer and global
     /// in-flight limits and an invoke ID. A refusal is counted or logged,
-    /// and the report isn't sent. Synchronous: it takes leaf mutexes only,
-    /// so the Single fanout calls it under its database and table guards.
+    /// and the report isn't sent; the caller owes its references a look
+    /// when it was refused an invoke ID. Synchronous: it takes leaf mutexes
+    /// only, so the Single fanout calls it under its database and table
+    /// guards.
     pub(in crate::server) fn admit_confirmed(
         handles: &CovFanoutHandles<'_, '_, T>,
         route: &CovSubscriptionSnapshot,
         service: ConfirmedServiceChoice,
         label: &'static str,
-    ) -> Option<ConfirmedLease> {
+    ) -> Result<ConfirmedLease, Refusal> {
         let &CovFanoutHandles {
             ctx,
             in_flight_tracker,
             counters,
+            ..
         } = handles;
         let guard = match in_flight_tracker.try_acquire(
             route.recipient(),
@@ -97,14 +120,14 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 counters
                     .notifications_throttled_peer
                     .fetch_add(1, Ordering::Relaxed);
-                return None;
+                return Err(Refusal::InFlight);
             }
             Err(InFlightAcquireError::GlobalPoolExhausted) => {
                 warn!(
                     object = ?route.monitored_object_identifier,
                     "255 confirmed COV notifications in-flight, skipping {label}"
                 );
-                return None;
+                return Err(Refusal::InFlight);
             }
         };
         let (operation, result_rx) = match ctx
@@ -112,16 +135,42 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             .reserve(Self::canonical_cov_peer(route), service)
         {
             Ok(reservation) => reservation,
+            Err(NotificationReserveError::Coordinator(ReserveError::Exhausted)) => {
+                warn!(
+                    object = ?route.monitored_object_identifier,
+                    "No free invoke ID for confirmed {label}; it goes once one comes back"
+                );
+                return Err(Refusal::InvokeId);
+            }
             Err(error) => {
-                warn!(%error, "No free invoke ID for confirmed {label}");
-                return None;
+                warn!(%error, "No invoke ID for confirmed {label}");
+                return Err(Refusal::Other);
             }
         };
-        Some(ConfirmedLease {
+        Ok(ConfirmedLease {
             guard,
             operation,
             result_rx,
         })
+    }
+
+    /// `report`, a COV-multiple context's, was refused an invoke ID
+    /// (#2661). Its timestamped history, deferred parts included, goes back
+    /// to its references first; then every reference of the context is owed
+    /// a look once an ID comes back: a split report's later parts as much as
+    /// its first, which alone it carried. No other lock is held here; the
+    /// references are read live under the table's, so one cancelled
+    /// meanwhile isn't queued.
+    async fn owe_context(handles: &CovFanoutHandles<'_, '_, T>, report: ConfirmedReport) {
+        let context = report.route.key().multiple_context().cloned();
+        let carried: Vec<_> = report.keys().collect();
+        drop(report);
+        let table = handles.ctx.cov_table.read().await;
+        let keys = match &context {
+            Some(context) => table.context_keys(context),
+            None => carried,
+        };
+        table.revisits().owe(keys);
     }
 
     /// Admit `report` against the peer and global in-flight limits, an invoke
@@ -136,9 +185,26 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
     ) {
         let counters = handles.counters;
         let label = report.label();
-        let Some(lease) = Self::admit_confirmed(handles, &report.route, report.service, label)
-        else {
-            return;
+        let lease = match Self::admit_confirmed(handles, &report.route, report.service, label) {
+            Ok(lease) => lease,
+            // Boxed, and only on a refusal: inline, either wait would add
+            // the whole report to every fanout's future, on the request path.
+            Err(Refusal::InvokeId) => {
+                return Box::pin(Self::owe_context(handles, report)).await;
+            }
+            // Its history goes back first; then those of its references
+            // being looked at for an invoke ID keep their places. Usually
+            // none is: the check is the revisits' lock alone, reached
+            // through the histories with no table guard and no await.
+            Err(Refusal::InFlight) => {
+                let context = report.route.key().multiple_context().cloned();
+                drop(report);
+                if let Some(context) = context {
+                    handles.timed.revisits().keep_context_waiting(&context);
+                }
+                return;
+            }
+            Err(Refusal::Other) => return,
         };
         let buf = match encode(lease.invoke_id()) {
             Ok(buf) => buf,
@@ -153,45 +219,36 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 .fetch_add(1, Ordering::Relaxed);
             return;
         }
-        let (flight, revisits) = {
+        // The table begins the report and, in the same step, the histories
+        // settle what it holds: once it holds its coordinate, the later
+        // parts queue again, their untimestamped references owed (#1038),
+        // and its claim is lodged until the report's own deadline, the one
+        // instant the table gave it; a live worker settles ahead of that,
+        // as it does the report (its cutoff is half a timeout earlier). A
+        // refusal puts the drained history back before any follow-up can
+        // drain the same references again, so it stays in capture order.
+        let (begun, revisits) = {
             let mut table = handles.ctx.cov_table.write().await;
-            let flight = table.begin_confirmed(
+            let begun = table.begin_confirmed_report(
                 report.completion,
-                report
-                    .observations
-                    .iter()
-                    .map(|(sub, observation)| (sub, observation.clone())),
+                &report.observations,
+                report.claim.take(),
+                std::mem::take(&mut report.deferred),
             );
-            (flight, Arc::clone(table.revisits()))
+            (begun, Arc::clone(table.revisits()))
         };
         // The instant the table began the report, near enough: its deadline
         // runs from it, and the worker's cutoff too.
-        let begun = tokio::time::Instant::now();
-        let flight = match flight {
-            Ok(flight) => {
-                // The coordinate is marked busy: the later parts can queue,
-                // and their untimestamped references are owed (#1038). A
-                // change this part sends only some values of keeps the rest
-                // queued until it is delivered (#1163).
-                if let Some(claim) = &report.claim {
-                    claim.going_out();
-                }
-                for deferred in std::mem::take(&mut report.deferred) {
-                    drop(deferred.owing());
-                }
-                flight
-            }
+        let begun_at = tokio::time::Instant::now();
+        let (flight, claim) = match begun {
+            Ok(begun) => begun,
             Err(refusal) => {
                 budget.refund(buf.len());
-                let keys: Vec<_> = report.keys().collect();
-                // Put drained history back before any follow-up can drain the
-                // same references again, so it stays in capture order.
-                drop(report);
                 if refusal == BeginRefusal::NotCurrent {
                     // A fence moved a reference since it was captured; look at
                     // its live state again. A busy coordinate needs nothing: its
                     // outstanding report, Ack or hold-off owns the follow-up.
-                    revisits.request(keys);
+                    revisits.request(report.keys());
                 }
                 return;
             }
@@ -203,10 +260,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 flight,
                 buf,
                 route: report.route,
-                claim: report.claim,
+                claim,
                 label,
                 revisits,
-                begun,
+                begun: begun_at,
             },
         );
     }
@@ -247,7 +304,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         let comm_state = Arc::clone(ctx.comm_state);
         let cov_table = Arc::clone(ctx.cov_table);
         let apdu_timeout = Duration::from_millis(ctx.config.cov_retry_timeout_ms);
-        let apdu_retries = DEFAULT_APDU_RETRIES;
+        let apdu_retries = ctx.config.notification_retries;
         // After a failure the coordinate waits one full retry cycle, the first
         // attempt and every retry, before it may report again. That bounds a
         // dead or refusing subscriber to half the in-flight time at most.
@@ -331,10 +388,14 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                     drop(claim);
                     let mut table = cov_table.write().await;
                     table.delivered(&flight, Delivery::Failed);
-                    // Its timestamped history goes out once the hold-off ends.
+                    // Its timestamped history goes out once the hold-off
+                    // ends. A report whose context was cancelled while it
+                    // was out, or which was fenced while this worker waited
+                    // for the table, holds nothing off: the table ignored
+                    // its failure, and the context's backstop may be a
+                    // newer subscription's (#2419).
                     if let Some(context) = route.key().multiple_context() {
-                        let until = tokio::time::Instant::now() + hold_off;
-                        table.timed().hold_until(context, until);
+                        table.hold_off(&flight, context);
                     }
                     Vec::new()
                 }

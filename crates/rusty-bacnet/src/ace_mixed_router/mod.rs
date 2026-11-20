@@ -9,6 +9,7 @@ use bacnet_transport::bip::BipTransport;
 use bacnet_transport::sc::{
     ScConnectionState, ScEvent, ScHubDialer, ScLinkMonitor, ScReconnectConfig,
 };
+use bacnet_transport::tap::FrameTap;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use tokio::sync::{Mutex, watch};
@@ -18,12 +19,14 @@ use crate::errors::to_py_err;
 use crate::router::lifecycle::{CloseError, Lifecycle, StartError};
 
 mod config;
+mod frames;
 mod publication;
 mod session;
 mod snapshots;
 #[cfg(test)]
 mod tests;
 
+use frames::RouterFrames;
 use publication::Publication;
 use session::MixedSession;
 
@@ -106,11 +109,13 @@ impl HealthSource {
 }
 
 struct BuiltPort {
+    tap: FrameTap,
     port: RouterPort<MixedTransport>,
     health: HealthSource,
 }
 
 struct RunningRouter {
+    frames: RouterFrames,
     router: Arc<Mutex<NativeRouter>>,
     background: Vec<JoinHandle<()>>,
     health: Vec<(u16, HealthSource)>,
@@ -130,6 +135,7 @@ pub struct PyAceMixedRouter {
     lifecycle: Lifecycle<MixedSession>,
     configured_ports: Vec<PyRouterPortConfig>,
     announce_interval: Option<Duration>,
+    isolate_sc_ports: bool,
     last_health: Arc<StdMutex<Vec<PyRouterPortHealth>>>,
     last_counters: Arc<StdMutex<Vec<PyRouterPortCounters>>>,
     last_routes: Arc<StdMutex<Vec<PyRouterRouteEntry>>>,
@@ -139,11 +145,12 @@ pub struct PyAceMixedRouter {
 impl PyAceMixedRouter {
     /// Build a mixed-transport router from typed port configurations.
     #[classmethod]
-    #[pyo3(signature = (ports, *, announce_interval_s=None))]
+    #[pyo3(signature = (ports, *, announce_interval_s=None, isolate_sc_ports=false))]
     fn from_ports(
         _class: &Bound<'_, pyo3::types::PyType>,
         ports: Vec<PyRouterPortConfig>,
         announce_interval_s: Option<f64>,
+        isolate_sc_ports: bool,
     ) -> PyResult<Self> {
         validate_ports(&ports)?;
         let announce_interval = announce_interval_s
@@ -164,6 +171,7 @@ impl PyAceMixedRouter {
             lifecycle: Lifecycle::new(),
             configured_ports: ports,
             announce_interval,
+            isolate_sc_ports,
             last_health: Arc::new(StdMutex::new(Vec::new())),
             last_counters: Arc::new(StdMutex::new(Vec::new())),
             last_routes: Arc::new(StdMutex::new(Vec::new())),
@@ -174,6 +182,7 @@ impl PyAceMixedRouter {
         let session = MixedSession::new(
             self.configured_ports.clone(),
             self.announce_interval,
+            self.isolate_sc_ports,
             Arc::clone(&self.last_health),
             Arc::clone(&self.last_counters),
             Arc::clone(&self.last_routes),
@@ -482,6 +491,7 @@ async fn build_router_port(
                 transport.set_share_port_by_address(config.reuse_port);
             }
             Ok(BuiltPort {
+                tap: transport.frame_tap().clone(),
                 port: RouterPort {
                     transport: MixedTransport::Bip(Box::new(transport)),
                     network_number,
@@ -538,6 +548,7 @@ async fn build_router_port(
             let state = transport.connection_state_changes();
             let monitor = transport.link_monitor();
             Ok(BuiltPort {
+                tap: transport.frame_tap().clone(),
                 port: RouterPort {
                     transport: MixedTransport::Sc(Box::new(transport)),
                     network_number,

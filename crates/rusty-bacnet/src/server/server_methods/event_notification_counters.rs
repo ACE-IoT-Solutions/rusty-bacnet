@@ -21,7 +21,7 @@ fn event_notification_counter_entries(
         device_recipient_unbound,
         recipient_unroutable,
         confirmed_broadcast_recipient,
-        confirmed_no_invoke_id,
+        confirmed_waited_for_invoke_id,
         confirmed_rejected,
         confirmed_unanswered,
         unconfirmed_send_failed,
@@ -29,6 +29,10 @@ fn event_notification_counter_entries(
         received_not_forwarded,
         forwarding_cap_dropped,
         received_not_logged,
+        lane_full,
+        lanes_entries_full,
+        lanes_full,
+        cov_wait_expired,
     } = counters;
     HashMap::from([
         ("notification_class_missing", notification_class_missing),
@@ -41,7 +45,10 @@ fn event_notification_counter_entries(
             "confirmed_broadcast_recipient",
             confirmed_broadcast_recipient,
         ),
-        ("confirmed_no_invoke_id", confirmed_no_invoke_id),
+        (
+            "confirmed_waited_for_invoke_id",
+            confirmed_waited_for_invoke_id,
+        ),
         ("confirmed_rejected", confirmed_rejected),
         ("confirmed_unanswered", confirmed_unanswered),
         ("unconfirmed_send_failed", unconfirmed_send_failed),
@@ -49,6 +56,10 @@ fn event_notification_counter_entries(
         ("received_not_forwarded", received_not_forwarded),
         ("forwarding_cap_dropped", forwarding_cap_dropped),
         ("received_not_logged", received_not_logged),
+        ("lane_full", lane_full),
+        ("lanes_entries_full", lanes_entries_full),
+        ("lanes_full", lanes_full),
+        ("cov_wait_expired", cov_wait_expired),
     ])
 }
 
@@ -60,14 +71,11 @@ impl BACnetServer {
     /// independently, not as an atomic aggregate. Raises
     /// RuntimeError("server not started") before start and after stop.
     fn event_notification_counters<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = Arc::clone(&self.inner);
+        let inner = self.inner.clone();
         crate::py_async::future_into_py(py, async move {
             let counters = {
-                let guard = inner.lock().await;
-                guard
-                    .as_ref()
-                    .ok_or_else(|| PyRuntimeError::new_err("server not started"))?
-                    .event_notification_counters()
+                let guard = inner.read().await;
+                guard.server()?.event_notification_counters()
             };
             // Owned Rust data only; the bridge builds the dict while attached.
             Ok(event_notification_counter_entries(counters))

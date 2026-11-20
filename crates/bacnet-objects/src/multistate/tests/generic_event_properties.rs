@@ -6,6 +6,7 @@
 //! `multistate/mod.rs` and already holds `objects.rs` and `state_text.rs`.
 
 use super::super::*;
+use crate::event::test_clock::test_now;
 use crate::property_metadata::is_writable_property;
 use crate::traits::EventReporting as _;
 use bacnet_encoding::primitives::encode_timestamp_choice;
@@ -54,12 +55,12 @@ fn msi_event_enable_bit_selects_which_transition_distributes() {
         (EventTransitionBits::all(), true),
     ] {
         let mut msi = MultiStateInputObject::new(1, "MSI-1", 3).unwrap();
-        msi.set_alarm_values(vec![2]);
+        msi.set_alarm_values(vec![2]).unwrap();
         write_event_enable(&mut msi, bits);
         msi.set_present_value(2);
 
         let outcome = msi
-            .evaluate_intrinsic_reporting()
+            .evaluate_intrinsic_reporting(test_now())
             .expect("an alarm value in Present_Value must report a transition");
         assert_eq!(
             outcome.change.to,
@@ -85,19 +86,19 @@ fn msi_event_enable_bit_selects_whether_the_return_to_normal_distributes() {
         (EventTransitionBits::TO_OFFNORMAL, false),
     ] {
         let mut msi = MultiStateInputObject::new(1, "MSI-1", 3).unwrap();
-        msi.set_alarm_values(vec![2]);
+        msi.set_alarm_values(vec![2]).unwrap();
         write_event_enable(&mut msi, bits);
 
         msi.set_present_value(2);
         let proposal = msi
-            .evaluate_intrinsic_reporting()
+            .evaluate_intrinsic_reporting(test_now())
             .expect("an alarm value must report the entry into OFFNORMAL");
         let entry = crate::event::commit_test_proposal(&mut msi, proposal);
         assert_eq!(entry.change.to, EventState::OFFNORMAL);
 
         msi.set_present_value(1);
         let returned = msi
-            .evaluate_intrinsic_reporting()
+            .evaluate_intrinsic_reporting(test_now())
             .expect("leaving the alarm value must report the return to NORMAL");
         assert_eq!(returned.change.from, EventState::OFFNORMAL);
         assert_eq!(returned.change.to, EventState::NORMAL);
@@ -404,8 +405,8 @@ fn multistate_event_history_is_listed_readable_and_read_only() {
 macro_rules! assert_multistate_history_reset {
     ($object:expr_2021, $label:literal) => {{
         let mut object = $object;
-        object.event_history.time_stamps[0] = BACnetTimeStamp::SequenceNumber(91);
-        object.event_history.message_texts[1] = "seeded".into();
+        object.core.event_history.time_stamps[0] = BACnetTimeStamp::SequenceNumber(91);
+        object.core.event_history.message_texts[1] = "seeded".into();
         object
             .write_property(
                 PropertyIdentifier::EVENT_DETECTION_ENABLE,
@@ -657,9 +658,9 @@ fn unsupported_fault_and_output_alarm_surfaces_are_unknown() {
 #[test]
 fn recommissioning_alarm_values_while_offnormal_returns_to_normal() {
     let mut msi = MultiStateInputObject::new(1, "MSI-1", 3).unwrap();
-    msi.set_alarm_values(vec![2]);
+    msi.set_alarm_values(vec![2]).unwrap();
     msi.set_present_value(2);
-    let proposal = msi.evaluate_intrinsic_reporting().unwrap();
+    let proposal = msi.evaluate_intrinsic_reporting(test_now()).unwrap();
     let entry = crate::event::commit_test_proposal(&mut msi, proposal);
     assert_eq!(entry.change.to, EventState::OFFNORMAL);
     msi.write_property(
@@ -669,7 +670,7 @@ fn recommissioning_alarm_values_while_offnormal_returns_to_normal() {
         None,
     )
     .unwrap();
-    let returned = msi.evaluate_intrinsic_reporting().unwrap();
+    let returned = msi.evaluate_intrinsic_reporting(test_now()).unwrap();
     assert_eq!(returned.change.from, EventState::OFFNORMAL);
     assert_eq!(returned.change.to, EventState::NORMAL);
 }

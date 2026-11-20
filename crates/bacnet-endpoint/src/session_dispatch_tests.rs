@@ -49,7 +49,6 @@ fn fixture() -> (
             no_server_role: 0,
             no_client_role: 0,
             unclaimed_terminal: 0,
-            responder_declined: 0,
         }),
     });
     (
@@ -58,11 +57,9 @@ fn fixture() -> (
             terminal,
             policy,
             requester: None,
-            responder: None,
             notifications: Some(notifications),
             coordinator,
             shared,
-            source_routers: None,
             local_network: LocalNetworkNumber::default(),
         },
         inbound_tx,
@@ -107,7 +104,7 @@ async fn replenished_worker_completions_cannot_starve_valid_terminal_or_ingress(
             DispatchEvent::Worker(_) => seen[0] = true,
             DispatchEvent::Inbound(received) => {
                 seen[1] = true;
-                handle_inbound(&mut parts, received).await;
+                handle_inbound(&parts.shared, received).await;
             }
             DispatchEvent::Terminal(received) => {
                 seen[2] = true;

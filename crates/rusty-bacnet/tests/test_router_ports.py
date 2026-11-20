@@ -74,6 +74,9 @@ class RouterPortConfigTests(unittest.IsolatedAsyncioTestCase):
             "client.key",
         )
         self.assertIsInstance(AceMixedRouter.from_ports([bip, sc]), AceMixedRouter)
+        self.assertIsInstance(
+            AceMixedRouter.from_ports([bip, sc], isolate_sc_ports=True), AceMixedRouter
+        )
         with self.assertRaises(ValueError):
             AceMixedRouter.from_ports([bip])
         for interval in (0, 0.5, -1, float("inf"), float("nan")):

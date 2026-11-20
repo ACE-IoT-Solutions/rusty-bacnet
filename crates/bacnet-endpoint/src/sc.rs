@@ -139,15 +139,6 @@ impl ScEndpointBuilder {
         self
     }
 
-    /// Sets the server role's read work limit (default 256): the result rows
-    /// one ReadProperty may expand, a Group's member rows included. See
-    /// [`SessionConfig::read_work_limit`]; zero fails the
-    /// session builds via [`EndpointSession::new`].
-    pub fn read_work_limit(mut self, limit: usize) -> Self {
-        self.session.read_work_limit = limit;
-        self
-    }
-
     /// Least time between the client role's confirmed requests to one
     /// destination (default 0: no pacing). See
     /// [`SessionConfig::min_request_interval_ms`]; more than an hour fails
@@ -158,7 +149,7 @@ impl ScEndpointBuilder {
         self
     }
 
-    /// Attaches the object database for the server responder.
+    /// Attaches the object database, which a server role's server serves.
     ///
     /// Build it from the same identity passed to
     /// [`device`](Self::device) so I-Am vs ReadProperty agree.
@@ -214,8 +205,8 @@ impl ScEndpointBuilder {
         if let Some(config) = &self.reconnect {
             config.validate()?;
         }
-        // The session's own checks, so a bad queue capacity, read work
-        // limit or pacing interval fails before connect_hub_session dials.
+        // The session's own checks, so a bad queue capacity or pacing
+        // interval fails before connect_hub_session dials.
         self.session.validate()?;
         crate::session::check_link_bindings(
             &self.source_audit_bindings,
@@ -245,7 +236,7 @@ impl ScEndpointBuilder {
     ///
     /// Checks VMAC reservation, UUID presence, heartbeat range, reconnect
     /// config, source Audit bindings and the session settings (queue
-    /// capacity, read work limit, pacing interval). Returns a typed
+    /// capacity, pacing interval). Returns a typed
     /// [`Error::Encoding`] on the first
     /// violation, before any dial.
     pub fn validate_only(&self) -> Result<(), Error> {
@@ -264,7 +255,7 @@ impl ScEndpointBuilder {
     ) -> Result<EndpointSession<ScTransport<bacnet_transport::sc::LoopbackWebSocket>>, Error> {
         self.validate()?;
         let transport = ScTransport::new(ws, self.vmac);
-        self.compose(transport)
+        self.compose(transport, std::convert::identity)
     }
 
     /// Builds an unstarted real-hub SC session over constrained TLS (RB-16).
@@ -293,7 +284,7 @@ impl ScEndpointBuilder {
         self.validate()?;
         self.check_identity()?;
         let transport = ScTransport::new(ws, self.vmac);
-        self.compose(transport)
+        self.compose(transport, std::convert::identity)
     }
 
     /// Dials the hubs `hubs` names and builds an unstarted session over the
@@ -334,14 +325,32 @@ impl ScEndpointBuilder {
     #[cfg(feature = "sc-tls")]
     #[cfg_attr(docsrs, doc(cfg(feature = "sc-tls")))]
     pub async fn connect_hub_session(
-        mut self,
+        self,
         hubs: bacnet_transport::sc::ScHubDialer,
     ) -> Result<EndpointSession<ScTransport<bacnet_transport::sc_tls::TlsWebSocket>>, Error> {
+        self.connect_hub_session_wrapped(hubs, std::convert::identity)
+            .await
+    }
+
+    /// Dials and builds the session [`connect_hub_session`](Self::connect_hub_session)
+    /// would, with its one SC transport passed through `wrap` first (#2617),
+    /// as [`BipEndpointBuilder::build_session_wrapped`](crate::bip::BipEndpointBuilder::build_session_wrapped)
+    /// does. The transport's link monitor is taken before `wrap`, so
+    /// [`EndpointSession::sc_link`] keeps working. `wrap` must pass every
+    /// [`TransportPort`](bacnet_transport::port::TransportPort) call through
+    /// to the transport it is given.
+    #[cfg(feature = "sc-tls")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "sc-tls")))]
+    pub async fn connect_hub_session_wrapped<U: bacnet_transport::port::TransportPort + 'static>(
+        mut self,
+        hubs: bacnet_transport::sc::ScHubDialer,
+        wrap: impl FnOnce(ScTransport<bacnet_transport::sc_tls::TlsWebSocket>) -> U,
+    ) -> Result<EndpointSession<U>, Error> {
         self.validate()?;
         self.check_identity()?;
         let reconnect = self.reconnect.take();
         let transport = Box::pin(hubs.connect(self.vmac, reconnect)).await?;
-        self.compose(transport)
+        self.compose(transport, wrap)
     }
 
     /// A composed identity must carry this builder's device UUID and, when
@@ -378,11 +387,16 @@ impl ScEndpointBuilder {
 
     /// Gives `transport` this node's UUID and heartbeat timing, and the
     /// reconnect configuration unless the hub dialer took it, then composes
-    /// the session over it, keeping the transport's link monitor.
-    fn compose<W: bacnet_transport::sc::WebSocketPort>(
+    /// the session over it as `wrap` wraps it, keeping the transport's link
+    /// monitor.
+    fn compose<
+        W: bacnet_transport::sc::WebSocketPort,
+        U: bacnet_transport::port::TransportPort + 'static,
+    >(
         mut self,
         transport: ScTransport<W>,
-    ) -> Result<EndpointSession<ScTransport<W>>, Error> {
+        wrap: impl FnOnce(ScTransport<W>) -> U,
+    ) -> Result<EndpointSession<U>, Error> {
         let mut transport = transport
             .with_device_uuid(self.device_uuid)
             .with_heartbeat_interval_ms(self.heartbeat_interval_ms)
@@ -391,8 +405,10 @@ impl ScEndpointBuilder {
             transport = transport.with_reconnect(config);
         }
         let link = transport.link_monitor();
-        let mut endpoint = EndpointSession::new(transport, self.role, self.session.clone())?;
+        let tap = transport.frame_tap().clone();
+        let mut endpoint = EndpointSession::new(wrap(transport), self.role, self.session.clone())?;
         endpoint.sc_link = Some(link);
+        endpoint.frame_tap = Some(tap);
         if let Some(db) = self.database.take() {
             endpoint = endpoint.with_database(db);
         }

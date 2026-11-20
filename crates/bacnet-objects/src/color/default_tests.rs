@@ -13,7 +13,9 @@ use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 
 use super::*;
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use crate::durable::{DurableWrites, PendingWrite, StageStep};
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use crate::object_profile::{ObjectProfile, TagsPersistence, TagsSnapshot};
 use crate::traits::BACnetObject;
 
@@ -27,7 +29,7 @@ struct Memory {
 
 impl Memory {
     fn held(&self) -> Option<ColorOutputSnapshot> {
-        *self.held.lock().unwrap()
+        self.held.lock().unwrap().clone()
     }
 }
 
@@ -41,12 +43,13 @@ impl ColorOutputPersistence for Memory {
             return Err(Error::Encoding("refused".into()));
         }
         self.saves.fetch_add(1, Ordering::SeqCst);
-        *self.held.lock().unwrap() = Some(*snapshot);
+        *self.held.lock().unwrap() = Some(snapshot.clone());
         Ok(())
     }
 }
 
 /// Tags storage in memory, saves counted.
+#[cfg_attr(not(feature = "durable-writes"), allow(dead_code))]
 #[derive(Default)]
 struct Tags(Mutex<Option<TagsSnapshot>>, AtomicUsize);
 
@@ -159,6 +162,7 @@ fn a_written_default_survives_a_restart() {
         Some(ColorOutputSnapshot {
             present_value: None,
             default: Some(ColorOutputValue::Xy(blue)),
+            description: None
         })
     );
     let mut color = color(&storage);
@@ -220,6 +224,7 @@ fn a_default_that_cannot_be_saved_is_refused_and_the_old_one_stays() {
 /// The server's path: the default stages, a Present_Value change while it
 /// is staged waits, and the write takes the saved default; the waiting
 /// change is saved after it.
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_staged_default_is_taken_and_a_waiting_present_value_follows_it() {
     let storage = Arc::new(Memory::default());
@@ -253,12 +258,14 @@ fn a_staged_default_is_taken_and_a_waiting_present_value_follows_it() {
         Some(ColorOutputSnapshot {
             present_value: Some(ColorOutputValue::Xy(red())),
             default: Some(ColorOutputValue::Xy(BACnetXyColor::new(0.0, 0.0))),
+            description: None
         })
     );
 }
 
 /// A staged default its request never makes: storage goes back to what
 /// the object serves, the waiting Present_Value included.
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_staged_default_never_made_puts_the_served_state_back() {
     let storage = Arc::new(Memory::default());
@@ -280,6 +287,7 @@ fn a_staged_default_never_made_puts_the_served_state_back() {
         Some(ColorOutputSnapshot {
             present_value: Some(ColorOutputValue::Kelvin(3000)),
             default: None,
+            description: None
         })
     );
     assert_eq!(ct.default_color_temperature(), 4000);
@@ -287,6 +295,7 @@ fn a_staged_default_never_made_puts_the_served_state_back() {
 
 /// One request writing Tags and Default_Color stages both, with one wait,
 /// and the release lets each go.
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_request_writing_tags_and_the_default_stages_both() {
     let storage = Arc::new(Memory::default());
@@ -347,6 +356,7 @@ fn a_request_writing_tags_and_the_default_stages_both() {
 /// The same joined stage released with neither write made, as when the
 /// request failed first: both staged writes go, and storage keeps what the
 /// object serves.
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_joined_stage_released_unmade_lets_both_go() {
     let storage = Arc::new(Memory::default());
@@ -424,6 +434,7 @@ fn clearing_a_written_default_lets_the_configured_one_apply() {
 
 /// A staged default whose save failed is refused, and the Present_Value
 /// change that waited for it is saved at once.
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_refused_staged_default_saves_the_present_value_that_waited() {
     let storage = Arc::new(Memory::default());
@@ -455,6 +466,7 @@ fn a_refused_staged_default_saves_the_present_value_that_waited() {
         Some(ColorOutputSnapshot {
             present_value: Some(ColorOutputValue::Xy(red())),
             default: None,
+            description: None
         })
     );
 }
@@ -487,4 +499,12 @@ fn many_idle_colour_objects_hold_no_writer_threads() {
         objects.iter().all(|(color, _)| color.writer_thread_ended()),
         "an idle object still holds a writer thread"
     );
+}
+
+/// A colour object without output storage pays one pointer for it, however
+/// much a snapshot holds (#2364).
+#[test]
+fn an_object_without_output_storage_pays_one_pointer_for_it() {
+    use core::mem::size_of;
+    assert_eq!(size_of::<saving::OutputStorage>(), size_of::<usize>());
 }

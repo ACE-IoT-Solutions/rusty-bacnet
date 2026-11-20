@@ -4,13 +4,15 @@
 //! command watches and cancelled when it stops, so it leaves nothing behind
 //! on the device. A lifetime of 0 asks for one that never expires (Clause
 //! 13.14.1.1.4); it stays after the CLI exits, which is why the write guard
-//! treats it as a write (`bacnet_ops::class`).
+//! treats it as a write (`bacnet_tool::class`).
 
 use std::future::Future;
 use std::time::Duration;
 
-use bacnet_client::client::{BACnetClient, COVNotificationDelivery, ReceivedCOVNotification};
-use bacnet_ops::destination::Destination;
+use crate::destination::Destination;
+use bacnet_client::client::{
+    BACnetClient, COVEvent, COVNotificationDelivery, ReceivedCOVNotification,
+};
 use bacnet_ops::target::routed_station;
 use bacnet_transport::port::TransportPort;
 use bacnet_types::enums::ObjectType;
@@ -138,7 +140,11 @@ pub async fn subscribe_cmd<T: TransportPort + 'static>(
                 renew_at = renew_every.map(|every| tokio::time::Instant::now() + every);
             }
             result = rx.recv() => match result {
-                Ok(notification) => print_cov_notification(&notification, format),
+                Ok(COVEvent::Object(notification)) => print_cov_notification(&notification, format),
+                // A COV-multiple notification answers a
+                // SubscribeCOVPropertyMultiple, which this command never
+                // sends: nothing it watches.
+                Ok(COVEvent::Multiple(_)) => {}
                 Err(RecvError::Lagged(n)) => {
                     output::print_error(&format!("Missed {n} notifications (buffer overflow)"));
                 }
@@ -184,7 +190,7 @@ fn cov_notification_text(received: &ReceivedCOVNotification, format: OutputForma
         COVNotificationDelivery::Confirmed => "confirmed",
         COVNotificationDelivery::Unconfirmed => "unconfirmed",
     };
-    let source_mac = format_mac(&received.source_mac);
+    let source_mac = bacnet_ops::target::format_sc_mac(&received.source_mac);
     let routed_source = received
         .source_network
         .zip(received.source_address.as_ref())
@@ -241,24 +247,10 @@ fn cov_notification_text(received: &ReceivedCOVNotification, format: OutputForma
     }
 }
 
-/// A MAC as hex, except a B/IPv6 VMAC, which prints as the `bip6:` target
-/// the CLI reads back. Six octets stay hex: on BACnet/SC they are a VMAC,
-/// not an IPv4 address and port.
-fn format_mac(mac: &[u8]) -> String {
-    if let Ok(vmac) = <[u8; 3]>::try_from(mac) {
-        return bacnet_transport::bip6::format_vmac_text(bacnet_transport::bip6::Bip6Vmac::new(
-            vmac,
-        ));
-    }
-    mac.iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<Vec<_>>()
-        .join(":")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{format_mac, renewal_interval};
+    use super::renewal_interval;
+    use bacnet_ops::target::format_sc_mac;
     use std::time::Duration;
 
     /// Renewal comes 30 s before a subscription runs out, never before half
@@ -279,14 +271,14 @@ mod tests {
     #[test]
     fn cov_sources_print_b_ipv6_vmacs_as_targets() {
         let vmac = [0x00, 0x04, 0xD2];
-        let printed = format_mac(&vmac);
+        let printed = format_sc_mac(&vmac);
         assert_eq!(printed, "bip6:0x0004D2");
         match parse_target(&printed) {
             Ok(Target::Mac(mac)) => assert_eq!(mac, vmac),
             _ => panic!("{printed} does not read back"),
         }
-        assert_eq!(format_mac(&[2, 0, 0, 0, 0, 1]), "02:00:00:00:00:01");
-        assert_eq!(format_mac(&[7]), "07");
+        assert_eq!(format_sc_mac(&[2, 0, 0, 0, 0, 1]), "02:00:00:00:00:01");
+        assert_eq!(format_sc_mac(&[7]), "07");
     }
 
     /// A routed COV source prints as the `NET:0xMAC` target, in the text

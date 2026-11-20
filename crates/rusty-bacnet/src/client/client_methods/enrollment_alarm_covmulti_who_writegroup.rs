@@ -51,13 +51,10 @@ impl BACnetClient {
                 priority_filter: pf,
                 notification_class_filter,
             };
-            let mut buf = BytesMut::new();
-            req.try_encode(&mut buf).map_err(to_py_err)?;
-            let resp = c
-                .confirmed_request(&mac, ConfirmedServiceChoice::GET_ENROLLMENT_SUMMARY, &buf)
+            let ack = c
+                .get_enrollment_summary(&mac, &req)
                 .await
                 .map_err(to_py_err)?;
-            let ack = GetEnrollmentSummaryAck::decode(&resp).map_err(to_py_err)?;
             crate::py_async::attach(|py| {
                 let list = pyo3::types::PyList::empty(py);
                 for entry in &ack.entries {
@@ -106,11 +103,7 @@ impl BACnetClient {
         crate::py_async::future_into_py(py, async move {
             let mac = peers.parse(&address)?;
             let c = started(&inner).await?;
-            let resp = c
-                .confirmed_request(&mac, ConfirmedServiceChoice::GET_ALARM_SUMMARY, &[])
-                .await
-                .map_err(to_py_err)?;
-            let ack = GetAlarmSummaryAck::decode(&resp).map_err(to_py_err)?;
+            let ack = c.get_alarm_summary(&mac).await.map_err(to_py_err)?;
             crate::py_async::attach(|py| {
                 let list = pyo3::types::PyList::empty(py);
                 for entry in &ack.entries {
@@ -149,11 +142,12 @@ impl BACnetClient {
     /// `issue_confirmed_notifications` is required, including for cancellations.
     /// For subscriptions and re-subscriptions, `lifetime` and `max_notification_delay` are both required.
     /// A whole-context cancellation uses an empty `specs` list and omits both timing fields.
+    /// The notifications arrive on `cov_notifications()` as `CovNotificationMultiple`.
     #[pyo3(signature = (address, subscriber_process_identifier, specs, issue_confirmed_notifications, max_notification_delay=None, lifetime=None))]
     fn subscribe_cov_property_multiple<'py>(
         &self,
         py: Python<'py>,
-        address: String,
+        address: &Bound<'py, PyAny>,
         subscriber_process_identifier: u32,
         specs: Vec<PyCovSubscriptionSpec>,
         issue_confirmed_notifications: bool,
@@ -185,20 +179,26 @@ impl BACnetClient {
             max_notification_delay,
             list_of_cov_subscription_specifications: rust_specs,
         };
-        let mut buf = BytesMut::new();
-        req.encode(&mut buf)
+        req.validate()
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let address = routed::Address::of(address)?;
         let inner = self.inner.clone();
         let peers = PeerAddresses::for_transport(&self.transport_type);
         let future = async move {
-            let mac = peers.parse(&address)?;
-            let c = started(&inner).await?;
-            c.confirmed_request(
-                &mac,
-                ConfirmedServiceChoice::SUBSCRIBE_COV_PROPERTY_MULTIPLE,
-                &buf,
-            )
-            .await
+            match address {
+                routed::Address::Local(address) => {
+                    let mac = routed::Address::local(&address, peers)?;
+                    let c = started(&inner).await?;
+                    c.subscribe_cov_property_multiple(&mac, &req).await
+                }
+                routed::Address::Routed(target) => {
+                    let high = state::high_level(&inner).await?;
+                    let to = target.path(&high, &inner.route_misses).await?;
+                    high.low_level()
+                        .subscribe_cov_property_multiple(&to, &req)
+                        .await
+                }
+            }
             .map_err(to_py_err)?;
             Ok(())
         };
@@ -226,13 +226,12 @@ impl BACnetClient {
             model_name,
             serial_number,
         };
-        let mut buf = BytesMut::new();
-        req.encode(&mut buf)
+        req.encode(&mut BytesMut::new())
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         let inner = self.inner.clone();
         let future = async move {
             let c = started(&inner).await?;
-            c.broadcast_unconfirmed(UnconfirmedServiceChoice::WHO_AM_I, &buf)
+            c.who_am_i(client::Broadcast::Local, &req)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -298,15 +297,19 @@ impl BACnetClient {
         let inner = self.inner.clone();
         let peers = PeerAddresses::for_transport(&self.transport_type);
         let future = async move {
-            let destination = match (broadcast, address) {
-                (Some(broadcast), _) => broadcast,
-                (None, Some(address)) => WriteGroupDestination::Device(
-                    bacnet_types::MacAddr::from_slice(&peers.parse(&address)?),
-                ),
+            match (broadcast, address) {
+                (Some(scope), _) => {
+                    let c = started(&inner).await?;
+                    c.write_group(scope, &req).await
+                }
+                (None, Some(address)) => {
+                    let mac = peers.parse(&address)?;
+                    let c = started(&inner).await?;
+                    c.write_group_directed(&mac, &req).await
+                }
                 (None, None) => unreachable!("no address means a broadcast"),
-            };
-            let c = started(&inner).await?;
-            c.write_group(&destination, &req).await.map_err(to_py_err)?;
+            }
+            .map_err(to_py_err)?;
             Ok(())
         };
         crate::py_async::future_into_py(py, crate::unit_result(future))
@@ -345,14 +348,14 @@ impl ChannelValueArg {
 fn write_group_broadcast(
     has_address: bool,
     network: Option<u16>,
-) -> Result<Option<WriteGroupDestination>, &'static str> {
+) -> Result<Option<client::Broadcast>, &'static str> {
     match (has_address, network) {
         (true, Some(_)) => Err("give an address or a network, not both"),
         (true, None) => Ok(None),
-        (false, None) => Ok(Some(WriteGroupDestination::LocalBroadcast)),
+        (false, None) => Ok(Some(client::Broadcast::Local)),
         (false, Some(0)) => Err("network must be 1-65535"),
-        (false, Some(u16::MAX)) => Ok(Some(WriteGroupDestination::GlobalBroadcast)),
-        (false, Some(network)) => Ok(Some(WriteGroupDestination::RemoteBroadcast(network))),
+        (false, Some(u16::MAX)) => Ok(Some(client::Broadcast::Global)),
+        (false, Some(network)) => Ok(Some(client::Broadcast::Network(network))),
     }
 }
 
@@ -365,19 +368,16 @@ mod write_group_destination_tests {
     /// bacnet-client WriteGroup tests pin each destination's NPDU.
     #[test]
     fn write_group_address_and_network_pick_the_destination() {
-        use WriteGroupDestination::{GlobalBroadcast, LocalBroadcast, RemoteBroadcast};
+        use client::Broadcast::{Global, Local, Network};
         assert_eq!(write_group_broadcast(true, None), Ok(None));
-        assert_eq!(write_group_broadcast(false, None), Ok(Some(LocalBroadcast)));
+        assert_eq!(write_group_broadcast(false, None), Ok(Some(Local)));
         for network in [1, 5, 65534] {
             assert_eq!(
                 write_group_broadcast(false, Some(network)),
-                Ok(Some(RemoteBroadcast(network)))
+                Ok(Some(Network(network)))
             );
         }
-        assert_eq!(
-            write_group_broadcast(false, Some(65535)),
-            Ok(Some(GlobalBroadcast))
-        );
+        assert_eq!(write_group_broadcast(false, Some(65535)), Ok(Some(Global)));
         assert!(write_group_broadcast(false, Some(0)).is_err());
         assert!(write_group_broadcast(true, Some(5)).is_err());
     }

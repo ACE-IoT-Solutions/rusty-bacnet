@@ -12,7 +12,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 use tokio::sync::broadcast;
 
-use bacnet_client::client::{COVNotificationDelivery, ReceivedCOVNotification};
+use bacnet_client::client::{
+    COVEvent, COVNotificationDelivery, ReceivedCOVNotification, ReceivedCOVNotificationMultiple,
+};
 use bacnet_client::discovery::DiscoveredDevice;
 use bacnet_encoding::primitives::encode_property_value;
 use bacnet_services::common::BACnetPropertyValue;
@@ -46,8 +48,11 @@ mod object_profile;
 mod property_reference;
 mod property_value;
 mod read_value;
+mod routed_target;
 mod rpm_wpm;
 mod schedule;
+mod shed_level;
+mod tag_tree;
 mod timestamp;
 
 pub(crate) use access_credential::{
@@ -55,14 +60,14 @@ pub(crate) use access_credential::{
 };
 pub(crate) use access_rule::{access_rules_from_py, device_object_reference};
 pub(crate) use action_list::action_lists_from_py;
+pub use address::parse_address;
 pub(crate) use address::{PeerAddresses, parse_bip6_address};
-pub use address::{PyDirectTarget, PyRoutedTarget, PyTarget, parse_address};
 pub(crate) use audit::recipient as audit_recipient_from_py;
 pub(crate) use audit::{audit_log_query_request_from_py, audit_notification_request_from_py};
 pub(crate) use audit_projection::{audit_log_query_ack_to_py, audit_log_record_to_py};
 pub(crate) use authentication_policy::authentication_policies_from_py;
 pub use bit_string::PyBitString;
-pub use cov::{PyCovNotification, PyCovNotificationIterator};
+pub use cov::{PyCovNotification, PyCovNotificationIterator, PyCovNotificationMultiple};
 pub(crate) use date::{date_from_value, date_value, specific_date_time};
 pub(crate) use destination::destinations;
 pub use device::PyDiscoveredDevice;
@@ -77,6 +82,7 @@ pub(crate) use property_reference::{
 };
 pub use property_value::PyPropertyValue;
 pub(crate) use read_value::{decode_read_ack, decode_read_value};
+pub(crate) use routed_target::PyRoutedTarget;
 pub(crate) use rpm_wpm::{
     PyDeviceWrite, PyPropertyWrite, PyReadAccessSpec, PyWriteAccessSpec, py_to_rpm_specs,
     py_to_wpm_specs, rpm_ack_to_py,
@@ -84,6 +90,7 @@ pub(crate) use rpm_wpm::{
 pub(crate) use schedule::{
     calendar_entries_from_py, date_range_from_py, special_events_from_py, weekly_schedule_from_py,
 };
+pub(crate) use shed_level::{shed_level_from_py, shed_level_to_py};
 pub use timestamp::PyBACnetTimeStamp;
 pub(crate) use timestamp::{date_time_tuple, time_value};
 
@@ -130,6 +137,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLifeSafetyOperation>()?;
     PyLifeSafetyOperation::register_constants(&m.getattr("LifeSafetyOperation")?)?;
 
+    m.add_class::<PyReliability>()?;
+    PyReliability::register_constants(&m.getattr("Reliability")?)?;
+
     m.add_class::<PyEventState>()?;
     PyEventState::register_constants(&m.getattr("EventState")?)?;
 
@@ -156,14 +166,14 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Composite types
     m.add_class::<PyObjectIdentifier>()?;
     m.add_class::<PyPropertyValue>()?;
+    m.add_class::<tag_tree::PyTagNode>()?;
     m.add_class::<PyBitString>()?;
     m.add_function(wrap_pyfunction!(bit_string::enum_name, m)?)?;
     m.add_class::<PyBACnetTimeStamp>()?;
     m.add_class::<PyDiscoveredDevice>()?;
     m.add_class::<PyCovNotification>()?;
+    m.add_class::<PyCovNotificationMultiple>()?;
     m.add_class::<PyCovNotificationIterator>()?;
-    m.add_class::<PyDirectTarget>()?;
-    m.add_class::<PyRoutedTarget>()?;
 
     // 255, what an unspecified date or time field holds (#1501).
     m.add("UNSPECIFIED", date::UNSPECIFIED)?;

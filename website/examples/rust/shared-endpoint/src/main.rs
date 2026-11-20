@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         writeln!(io::stdout(), "Started endpoint: {address}")?;
         writeln!(
             io::stdout(),
-            "Roles: requester={} responder={}",
+            "Roles: requester={} server={}",
             session.client().is_some(),
             session.server().is_some()
         )?;
@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     session.stop().await?;
     writeln!(
         io::stdout(),
-        "Stopped: address={:?} requester={} responder={}",
+        "Stopped: address={:?} requester={} server={}",
         session.bip_local_address(),
         session.client().is_some(),
         session.server().is_some()

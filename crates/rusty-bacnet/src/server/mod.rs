@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use tokio::sync::Mutex;
 
 use bacnet_objects::access_control::{
     AccessCredentialObject, AccessDoorObject, AccessPointObject, AccessRightsObject,
@@ -27,7 +26,7 @@ use bacnet_objects::file::FileObject;
 use bacnet_objects::group::{GlobalGroupObject, StructuredViewObject};
 use bacnet_objects::life_safety::{LifeSafetyPointObject, LifeSafetyZoneObject};
 use bacnet_objects::lighting::{BinaryLightingOutputObject, LightingOutputObject};
-use bacnet_objects::load_control::LoadControlObject;
+use bacnet_objects::load_control::{FileLoadControlPersistence, LoadControlObject};
 use bacnet_objects::loop_obj::LoopObject;
 use bacnet_objects::multistate::{
     MultiStateInputObject, MultiStateOutputObject, MultiStateValueObject,
@@ -62,9 +61,11 @@ use crate::types::{PyEventType, PyObjectIdentifier, PyPropertyIdentifier, PyProp
 
 mod audit_configuration;
 use audit_configuration::AuditNotificationSink;
+mod host;
 pub(crate) use audit_configuration::{
     reporter_audit_level, reporter_auditable_operations, validate_audit_recipient,
 };
+pub(crate) use host::{SeatedHost, ServerHost};
 
 /// Async BACnet server that hosts objects and responds to requests.
 ///
@@ -96,7 +97,12 @@ pub(crate) use audit_configuration::{
 /// Later startup failures retain existing behavior, not general rollback.
 #[pyclass(name = "BACnetServer", module = "rusty_bacnet")]
 pub struct BACnetServer {
-    inner: Arc<Mutex<Option<server::BACnetServer<AppTransport>>>>,
+    /// The running server. Every call takes a read guard, so a local write
+    /// that waits for its event notifications (a Device recipient's I-Am,
+    /// #2537) holds up no other call; `start` and `stop` take the write
+    /// guard, `stop` once the calls in flight have returned. An endpoint's
+    /// server takes its endpoint's session lock in the same way (#2617).
+    inner: ServerHost,
     device_instance: u32,
     segmentation_supported: bacnet_types::enums::Segmentation,
     apdu_segment_timeout_ms: u64,
@@ -108,7 +114,8 @@ pub struct BACnetServer {
     broadcast_address: String,
     /// See `BipTransport::set_share_port_by_address` (#1538).
     share_port_by_address: bool,
-    /// See `BipTransport::set_share_wildcard_port` (#2366).
+    /// See `BipTransport::set_share_wildcard_port` (#2366) and
+    /// `Bip6Transport::set_share_wildcard_port` (#2385).
     share_wildcard_port: bool,
     /// The B/IP mode `bbmd=` or `foreign_device=` asked for (#938).
     bip_mode: bacnet_transport::bip::BipMode,
@@ -150,9 +157,12 @@ pub struct BACnetServer {
     atomic_read_file_budget: server::AtomicReadFileBudget,
     atomic_write_file_budget: server::AtomicWriteFileBudget,
     read_range_budget: server::ReadRangeBudget,
-    get_event_information_budget: server::GetEventInformationBudget,
+    get_event_information_budget: bacnet_device_core::event::GetEventInformationBudget,
     cov_policy: bacnet_device_core::cov::CovPolicy,
     time_sync_policy: server::TimeSyncPolicy,
+    /// The zone the Device clock starts in (`utc_offset_minutes`,
+    /// `daylight_savings`).
+    clock_zone: server::ClockConfig,
     audit_notification_sink: Option<AuditNotificationSink>,
     audit_reporters: Option<server::AuditReportersConfig>,
     audit_recipient: std::sync::Mutex<Option<bacnet_types::constructed::BACnetRecipient>>,
@@ -194,12 +204,26 @@ impl BACnetServer {
     /// Prevents TOCTOU race between checking `started` and modifying `pending_objects`.
     fn push_pending(&self, obj: Box<dyn BACnetObject + Send>) -> PyResult<()> {
         let mut guard = self.lock_pending()?;
+        self.check_takes_objects()?;
+        guard.push(obj);
+        Ok(())
+    }
+
+    /// Refuse an object once the server runs (call it under the pending
+    /// lock). An endpoint's server (#2617) takes its objects from the
+    /// endpoint only.
+    fn check_takes_objects(&self) -> PyResult<()> {
+        if self.inner.is_seated() {
+            return Err(PyRuntimeError::new_err(
+                "an endpoint's server takes its objects from the endpoint: add them with the \
+                 endpoint's add_* calls before its start",
+            ));
+        }
         if self.started.load(Ordering::Acquire) {
             return Err(PyRuntimeError::new_err(
                 "cannot add objects after start() — server is already running",
             ));
         }
-        guard.push(obj);
         Ok(())
     }
 
@@ -221,6 +245,10 @@ impl BACnetServer {
     }
 }
 
+// The endpoints' `cov_policy` and `time_sync_policy` keywords are read as
+// `BACnetServer`'s are (#2617).
+pub(crate) use server_methods::{cov_policy, time_sync_policy};
+
 mod server_methods {
     mod access_control_methods;
     mod access_credential_methods;
@@ -229,11 +257,13 @@ mod server_methods {
     mod accumulator_methods;
     mod audit_log_methods;
     mod averaging_methods;
+    mod binary_io_methods;
     mod channel_methods;
+    mod clock_zone;
     mod constructor;
     mod constructor_budgets;
     mod cov_counters;
-    mod cov_policy;
+    pub(crate) mod cov_policy;
     mod dcc_outcomes;
     mod event_notification_counters;
     mod file_configuration;
@@ -241,15 +271,17 @@ mod server_methods {
     mod life_safety_methods;
     mod lifecycle;
     mod lighting_methods;
+    mod load_control_methods;
     mod loop_methods;
     mod network_port;
     mod notification_forwarder;
     mod policy_dict;
     mod program_methods;
     mod registration;
+    mod reliability_methods;
     mod request_admission;
     mod sc_npdu;
-    mod time_sync_policy;
+    pub(crate) mod time_sync_policy;
     mod trend_log_methods;
     mod value_registration;
 }

@@ -30,7 +30,7 @@ use crate::tui::network::address_of;
 use crate::tui::profile::Profile;
 use crate::tui::worker::session::{ConnectPlan, TransportKind};
 use crate::tui::worker::{EVENT_CHANNEL_CAPACITY, EventSink, coordinator};
-use bacnet_ops::bbmd::{Cell, Finding};
+use bacnet_tool::bbmd::{Cell, Finding};
 
 /// Long enough for any step here, short of a hang.
 const STEP: Duration = Duration::from_secs(10);
@@ -197,7 +197,7 @@ pub(super) fn local(app: &App) -> SocketAddrV4 {
 }
 
 /// Survey from `a` and return the matrix the app built.
-async fn survey(a: SocketAddrV4) -> bacnet_ops::bbmd::Matrix {
+async fn survey(a: SocketAddrV4) -> bacnet_tool::bbmd::Matrix {
     let mut net = Net::start(plan(None)).await;
     net.press(KeyCode::Char('4')).await;
     assert_eq!(net.app.screen, Screen::Network);
@@ -215,7 +215,7 @@ async fn survey(a: SocketAddrV4) -> bacnet_ops::bbmd::Matrix {
 
 #[tokio::test]
 async fn symmetric_bdts_read_as_consistent() {
-    let (mut a, mut b) = (bbmd_transport().await, bbmd_transport().await);
+    let (a, b) = (bbmd_transport().await, bbmd_transport().await);
     let (a_at, b_at) = (
         address_of(a.local_mac()).unwrap(),
         address_of(b.local_mac()).unwrap(),
@@ -236,7 +236,7 @@ async fn symmetric_bdts_read_as_consistent() {
 
 #[tokio::test]
 async fn a_bdt_missing_its_peer_is_flagged_one_way() {
-    let (mut a, mut b) = (bbmd_transport().await, bbmd_transport().await);
+    let (a, b) = (bbmd_transport().await, bbmd_transport().await);
     let (a_at, b_at) = (
         address_of(a.local_mac()).unwrap(),
         address_of(b.local_mac()).unwrap(),
@@ -262,7 +262,7 @@ async fn a_bdt_missing_its_peer_is_flagged_one_way() {
 /// BBMD as refusing; neither stalls the survey.
 #[tokio::test(start_paused = true)]
 async fn silent_and_refusing_peers_are_named() {
-    let mut a = bbmd_transport().await;
+    let a = bbmd_transport().await;
     let a_at = address_of(a.local_mac()).unwrap();
     let silent = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
         .await

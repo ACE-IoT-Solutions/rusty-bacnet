@@ -1,459 +1,256 @@
-use super::event_message_policy::intrinsic_event_message_text;
-use super::event_notification_payload::{CommittedNotificationPayload, project_intrinsic_payload};
-#[path = "event_notification_profile.rs"]
-mod profile;
-use self::profile::{CommittedHistorySnapshot, NotificationConstruction, NotificationTransition};
-pub(super) use self::profile::{CommittedIntrinsicTransition, NotificationHistorySource};
 use super::event_recipient_route::system_utc_recipient_filter_time;
-use super::event_timestamp::{
-    SampledEventClock, confirm_event_timestamp, sample_event_timestamp, stage_event_timestamp,
-};
+use super::event_send::Settle;
 use super::*;
-use bacnet_encoding::primitives::decode_timestamp_choice;
-use bacnet_objects::event::{
-    EventTransition, EventTransitionCommit, EventTransitionCommitError, TransitionOutcome,
+use bacnet_device_core::event::{
+    AcceptedAcknowledgeAlarm, CommittedIntrinsicTransition, DistributionOutcome, IntrinsicCommit,
+    IntrinsicCommitRefusal, NotificationTransition, RecipientWindow, SampledEventClock,
+    after_write, distribute_event,
 };
-use bacnet_objects::traits::BACnetObject;
-
-use crate::event_enrollment::{CommittedEventEnrollmentDelivery, CommittedEventEnrollmentResult};
 
 #[path = "event_recipient_lookup.rs"]
 mod recipient_lookup;
 use recipient_lookup::matched_recipients_or_log;
 
-/// Whether a committed projection needs Event_Message_Texts.
-#[derive(Clone, Copy)]
-enum MessageTexts {
-    /// Intrinsic reporters serve it; failing to read it fails closed.
-    Required,
-    /// Event Enrollment serves it as an optional row (Table 12-14). An object
-    /// that doesn't (UNKNOWN_PROPERTY) sends no message text; any other
-    /// failure, or a value that isn't a CharacterString, still fails closed.
-    Optional,
-}
-
-/// Read one exact committed transition coordinate through the object contract.
-///
-/// Required properties are projected while the caller still owns the database
-/// write guard. A malformed or incomplete projection is not equivalent to a
-/// missing message/timestamp: the committed transition remains local, but no
-/// outward frame can be built from an unproven history snapshot. An empty
-/// Event_Message_Texts entry sends no message text: an Event Enrollment
-/// commits one unless Event_Message_Texts_Config gives it a text (#1507).
-fn read_committed_history_snapshot(
-    object: &dyn BACnetObject,
-    coordinate: EventTransition,
-    message_texts: MessageTexts,
-) -> Option<CommittedHistorySnapshot> {
-    let array_index = u32::try_from(coordinate.index() + 1)
-        .expect("three event transition coordinates fit in u32");
-    let PropertyValue::ApplicationData(encoded_timestamp) = object
-        .read_property(PropertyIdentifier::EVENT_TIME_STAMPS, Some(array_index))
-        .ok()?
-    else {
-        return None;
-    };
-    let (timestamp, consumed) = decode_timestamp_choice(&encoded_timestamp, 0).ok()?;
-    if consumed != encoded_timestamp.len() {
-        return None;
+/// Log why an intrinsic commit gave nothing to distribute, as the commit
+/// once did itself, and keep what it committed.
+pub(super) fn logged_intrinsic_commit(
+    oid: &ObjectIdentifier,
+    result: IntrinsicCommit,
+) -> Option<CommittedIntrinsicTransition> {
+    match result {
+        Ok(committed) => {
+            if committed.event_values.is_none() {
+                debug!(
+                    %oid,
+                    event_type = ?committed.event_type,
+                    "Committed intrinsic Event Values projection rejected; suppressing distribution"
+                );
+            }
+            Some(committed)
+        }
+        Err(IntrinsicCommitRefusal::Gone) => None,
+        Err(IntrinsicCommitRefusal::Rejected(error)) => {
+            debug!(%oid, ?error, "Intrinsic transition commit rejected");
+            None
+        }
+        Err(IntrinsicCommitRefusal::HistoryUnreadable(coordinate)) => {
+            debug!(
+                %oid,
+                ?coordinate,
+                "Committed intrinsic history projection rejected; suppressing distribution"
+            );
+            None
+        }
     }
-
-    let message_text = match (
-        object.read_property(PropertyIdentifier::EVENT_MESSAGE_TEXTS, Some(array_index)),
-        message_texts,
-    ) {
-        (Ok(PropertyValue::CharacterString(message_text)), _) => message_text,
-        (
-            Err(Error::Remote(RemoteError::Error {
-                class: ErrorClass::PROPERTY,
-                code: ErrorCode::UNKNOWN_PROPERTY,
-            })),
-            MessageTexts::Optional,
-        ) => String::new(),
-        _ => return None,
-    };
-
-    Some(CommittedHistorySnapshot {
-        timestamp,
-        message_text: (!message_text.is_empty()).then_some(message_text),
-    })
 }
 
-/// Project an already-committed Event Enrollment result without another
-/// transition commit or timestamp sample.
-pub(super) fn resolve_committed_event_enrollment_transition(
-    db: &ObjectDatabase,
-    committed: CommittedEventEnrollmentDelivery,
-) -> Option<(ObjectIdentifier, bool, NotificationTransition)> {
-    let CommittedEventEnrollmentDelivery {
-        result,
-        ack_required,
-        recipient_clock,
-        event_type,
-        event_values,
-    } = committed;
-    let (oid, change, distribute) = match result {
-        CommittedEventEnrollmentResult::Normal(result) => {
-            (result.enrollment_oid, result.change, result.distribute)
+/// The per-write intrinsic evaluation of `oid`, made under `db`, the guard
+/// that committed the write, before it is dropped (#2530). True when it
+/// committed a transition.
+///
+/// The write and the transition it causes then commit as one step: no
+/// ReadProperty, sweep or COV fanout sees the object half updated, with a
+/// new Reliability or value and the Event_State from before. The detector
+/// fires at once only for a `Time_Delay` of 0; a nonzero delay is seeded,
+/// due when it ends, and the intrinsic-reporting task
+/// ([`start`](BACnetServer::start)) sweeps then and sends that notification.
+///
+/// It captures nothing for timestamped COV-multiple references: the caller
+/// captures the write once the transition has committed, so a reference
+/// records the two as one row (#2535). A WritePropertyMultiple, which
+/// captured each attempt as it committed, captures an object whose
+/// transition committed again, replacing the newest row of each reference
+/// its attempts queued one for. A
+/// WriteProperty of a Life Safety object takes its exact capture before
+/// this, as the core's request path does.
+///
+/// A transition to distribute is built, logged to the Event Logs and pushed
+/// onto its recipients' lanes here, under `db`
+/// ([`BACnetServer::enqueue_event_notification`]), so it goes out in commit
+/// order (#2537); `settle` gathers the pushes, for the caller's COV fanout
+/// to wait on (#889). One that committed but isn't distributed goes nowhere:
+/// Event_Enable or a refused projection stop only the notification, not the
+/// local transition actions (Clauses 13.2.2.1.4 and 13.2.5). Either way the
+/// caller owes the object its COV fanout, since a commit changes
+/// Status_Flags.
+///
+/// `delivery` is called only for a transition to distribute, so a write
+/// that commits none does nothing here it didn't do before (#2537).
+pub(super) fn commit_written_transition<'a, T: TransportPort + 'static>(
+    delivery: impl FnOnce() -> EventDelivery<'a, T>,
+    db: &mut ObjectDatabase,
+    oid: ObjectIdentifier,
+    settle: &mut Settle,
+) -> bool {
+    match written_transition(db, oid) {
+        WrittenTransition::None => false,
+        WrittenTransition::Kept => true,
+        WrittenTransition::Distributed(committed) => {
+            let ctx = delivery();
+            BACnetServer::<T>::enqueue_event_notification(&ctx, db, &oid, *committed, Some(settle));
+            true
         }
-        CommittedEventEnrollmentResult::Reliability(result) => {
-            let change = result.state_change.clone()?;
-            (result.enrollment_oid, change, result.distribute)
-        }
-    };
+    }
+}
 
-    let coordinate = change.transition();
-    let history_snapshot = db.get(&oid).and_then(|object| {
-        read_committed_history_snapshot(object, coordinate, MessageTexts::Optional)
-    })?;
-    Some((
-        oid,
-        distribute,
-        NotificationTransition {
-            change,
-            event_type,
-            history_source: NotificationHistorySource::Committed {
-                snapshot: history_snapshot,
-                recipient_clock,
-            },
-            ack_required: Some(ack_required),
-            event_values: Some(event_values),
-            construction: NotificationConstruction::Event,
-        },
-    ))
+/// [`commit_written_transition`] for each object a background commit changed
+/// ([`BackgroundCommit::finish`](crate::committed_cov::BackgroundCommit::finish)),
+/// its pushes counted in `settle`: a fault-detection, Schedule, membership or
+/// operation pass commits the transitions its changes cause with them, as a
+/// write does (#2535). `delivery` is called only for a transition to
+/// distribute.
+pub(super) fn committing<'a, T: TransportPort + 'static>(
+    delivery: impl Fn() -> EventDelivery<'a, T> + Send + 'a,
+    settle: &'a mut Settle,
+) -> impl FnMut(&mut ObjectDatabase, ObjectIdentifier) -> bool + Send + 'a {
+    move |db, oid| commit_written_transition(&delivery, db, oid, settle)
+}
+
+/// What the per-write evaluation committed.
+enum WrittenTransition {
+    /// No transition.
+    None,
+    /// A transition that goes to no one.
+    Kept,
+    /// A transition to distribute; boxed, so the common case returns small.
+    Distributed(Box<CommittedIntrinsicTransition>),
+}
+
+/// The evaluation [`commit_written_transition`] makes, apart from the
+/// transport it sends on: one function every writer calls, as before the
+/// lanes, so a write that commits no transition runs the same code it did.
+#[inline(never)]
+fn written_transition(db: &mut ObjectDatabase, oid: ObjectIdentifier) -> WrittenTransition {
+    let Some(committed) = after_write(db, &oid, crate::runtime_clock::core_now())
+        .and_then(|result| logged_intrinsic_commit(&oid, result))
+    else {
+        return WrittenTransition::None;
+    };
+    if committed.distribute && committed.event_values.is_some() {
+        WrittenTransition::Distributed(Box::new(committed))
+    } else {
+        WrittenTransition::Kept
+    }
 }
 
 impl<T: TransportPort + 'static> BACnetServer<T> {
-    /// Resolve policy and atomically commit one intrinsic proposal.
-    pub(super) fn commit_intrinsic_transition(
-        db: &mut ObjectDatabase,
-        oid: &ObjectIdentifier,
-        outcome: TransitionOutcome,
-    ) -> Option<CommittedIntrinsicTransition> {
-        let coordinate = outcome.change.transition();
-        let notification_class = db
-            .get(oid)?
-            .read_property(PropertyIdentifier::NOTIFICATION_CLASS, None)
-            .ok()
-            .and_then(|value| match value {
-                PropertyValue::Unsigned(number) => Some(number as u32),
-                _ => None,
-            })
-            .unwrap_or(0);
-        let (_, ack_required) = resolve_transition_priority_ack(db, notification_class, coordinate);
-        let staged_timestamp = stage_event_timestamp(db);
-        let message_text = intrinsic_event_message_text(oid, &outcome.change);
-        let commit = EventTransitionCommit {
-            change: outcome.change.clone(),
-            coordinate,
-            ack_required,
-            timestamp: staged_timestamp.sample.timestamp.clone(),
-            message_text: Some(message_text),
-        };
-
-        let committed = db
-            .get_mut(oid)?
-            .event_reporting_mut()
-            .map_or(Err(EventTransitionCommitError::Unsupported), |reporting| {
-                reporting.commit_event_transition(commit)
-            });
-        if let Err(error) = committed {
-            debug!(%oid, ?error, "Intrinsic transition commit rejected");
-            return None;
-        }
-
-        let recipient_clock = confirm_event_timestamp(db, staged_timestamp).clock;
-        let history_snapshot = match db.get(oid).and_then(|object| {
-            read_committed_history_snapshot(object, coordinate, MessageTexts::Required)
-        }) {
-            Some(snapshot) => snapshot,
-            None => {
-                debug!(
-                    %oid,
-                    ?coordinate,
-                    "Committed intrinsic history projection rejected; suppressing distribution"
-                );
-                return None;
-            }
-        };
-        let event_type = outcome.change.event_type(outcome.event_type);
-        let device = db.local_device().identifier();
-        let event_values = db
-            .get(oid)
-            .and_then(|object| {
-                project_intrinsic_payload(object, &outcome.change, event_type, device)
-            })
-            .or_else(|| {
-                debug!(
-                    %oid,
-                    ?event_type,
-                    "Committed intrinsic Event Values projection rejected; suppressing distribution"
-                );
-                None
-            });
-        Some(CommittedIntrinsicTransition {
-            change: outcome.change,
-            event_type,
-            distribute: outcome.distribute,
-            history_snapshot,
-            recipient_clock,
-            ack_required,
-            event_values,
-        })
-    }
-
-    /// Evaluate intrinsic reporting on an object and send event notifications
-    /// to the recipients the object's NotificationClass names.
-    /// DCC gates network-message initiation (Clause 16.1), not the local
-    /// transition actions in Clause 13.2.2.1.4. The outbound sender below
-    /// suppresses distribution while communications are disabled.
+    /// Build an `EventNotificationRequest` for a committed transition of
+    /// `oid`, under `db`, the guard that committed it, and push it onto the
+    /// lane of each recipient the object's Notification Class names (#2537),
+    /// counting each push in `settle` for a writer that waits on them. Never
+    /// waits: the lanes' tasks send.
     ///
-    /// This is the per-write entry point: it probes the detector, which fires
-    /// immediately only when `Time_Delay == 0`. For a nonzero delay the probe
-    /// seeds a pending transition (returning `None`, so no notification is
-    /// sent here) and the one-second [`intrinsic_reporting_task`](Self::start)
-    /// advances the countdown and sends the notification on expiry.
-    ///
-    /// A caller owes the object a COV fanout afterwards, as the periodic task
-    /// gives one, since a proposal can commit (changing Status_Flags) even
-    /// when its projection is refused.
-    pub(super) async fn fire_event_notifications_with_bindings(
-        ctx: &EventDelivery<'_, T>,
-        cov_table: &Arc<RwLock<CovSubscriptionTable>>,
-        oid: &ObjectIdentifier,
-    ) {
-        let db = ctx.db;
-        let resolved = {
-            let mut db = db.write().await;
-            // Event_Algorithm_Inhibit follows its reference as of now (#1329).
-            db.follow_event_algorithm_inhibit(oid);
-            let outcome = db
-                .get_mut(oid)
-                .and_then(|object| object.event_reporting_mut())
-                .and_then(|reporting| reporting.evaluate_intrinsic_reporting());
-            let resolved = outcome
-                .and_then(|outcome| Self::commit_intrinsic_transition(&mut db, oid, outcome));
-            // A committed transition changes Status_Flags: capture it at its
-            // own time for timestamped COV-multiple references.
-            if resolved.is_some() {
-                let capture = cov_table.read().await.timed_capture(*oid);
-                capture.run(&db);
-            }
-            resolved
-        };
-
-        // Local transition actions commit before Event_Enable or DCC can suppress
-        // external distribution (Clauses 13.2.2.1.4 and 13.2.5).
-        if let Some(resolved) = resolved
-            && resolved.distribute
-            && resolved.event_values.is_some()
-        {
-            Self::build_and_send_event_notification_with_bindings(ctx, oid, resolved).await;
-        }
-    }
-
-    /// Run the per-write evaluation on every object a confirmed service
-    /// wrote. Each such service (WriteProperty, WritePropertyMultiple,
-    /// AddListElement and RemoveListElement) has already put every object it
-    /// wrote, Life Safety objects aside, in the COV fanout that runs after
-    /// this, so a committed transition's Status_Flags change reaches
-    /// subscribers.
-    pub(super) async fn fire_written_event_notifications(
-        ctx: &EventDelivery<'_, T>,
-        cov_table: &Arc<RwLock<CovSubscriptionTable>>,
-        written_oids: &[ObjectIdentifier],
-    ) {
-        for oid in written_oids {
-            Self::fire_event_notifications_with_bindings(ctx, cov_table, oid).await;
-        }
-    }
-
-    /// Build an `EventNotificationRequest` for a pre-computed transition and
-    /// send it to the recipients the object's NotificationClass names.
-    ///
-    /// Shared by the per-write path and the
-    /// periodic `Time_Delay` confirmation path, so both emit identical
-    /// notifications. Skipped while DCC restricts initiation. Re-reads
-    /// `Notification_Class` / `Notify_Type` under a brief `db.write()` guard,
-    /// then drops the lock before any network send.
+    /// Shared by every path that commits a transition, the periodic
+    /// `Time_Delay` sweep included, so all emit identical notifications.
+    /// Skipped while DCC restricts initiation. Each recipient's day and time
+    /// window is judged now, when the transition commits, not when its lane
+    /// gets to it.
     ///
     /// Every notification built here also goes to the device's Event Log
-    /// objects ([`ObjectDatabase::log_event_notification`]), under the build
-    /// guard and before the network send, with Process Identifier 0, the value
-    /// it has before a recipient's own is filled in. It is logged when the
-    /// Notification Class selects nobody, since Clause 13.2.5 keeps the
-    /// Recipient_List out of distribution to local objects, but not when the
-    /// recipient lookup fails closed: that transition is refused whole, and a
-    /// record would carry a priority and ack policy the class never gave.
-    /// Event_Enable and DCC, which stop the notification being built, keep it
-    /// out of the logs too, a local choice. Received notifications never come
-    /// here.
+    /// objects ([`ObjectDatabase::log_event_notification`]), under the same
+    /// guard, so the logs hold transitions in commit order, with Process
+    /// Identifier 0, the value it has before a recipient's own is filled in.
+    /// It is logged when the Notification Class selects nobody, since Clause
+    /// 13.2.5 keeps the Recipient_List out of distribution to local objects,
+    /// but not when the recipient lookup fails closed: that transition is
+    /// refused whole, and a record would carry a priority and ack policy the
+    /// class never gave. Event_Enable and DCC, which stop the notification
+    /// being built, keep it out of the logs too, a local choice. Received
+    /// notifications never come here.
+    pub(super) fn enqueue_event_notification(
+        ctx: &EventDelivery<'_, T>,
+        db: &mut ObjectDatabase,
+        oid: &ObjectIdentifier,
+        transition: impl Into<NotificationTransition>,
+        settle: Option<&mut Settle>,
+    ) {
+        if ctx.comm_state.initiation_restricted() {
+            return;
+        }
+        let system_utc = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        // The Device clock's frame, else the system clock's UTC day and
+        // time, as the server has always judged windows.
+        let window = RecipientWindow::Frame {
+            fallback: Some(system_utc_recipient_filter_time(system_utc)),
+        };
+        let distribution = distribute_event(db, ctx.device, oid, transition.into(), window);
+        match distribution.clock {
+            SampledEventClock::Valid(_) => {}
+            SampledEventClock::Unavailable => {
+                debug!("Using system UTC to filter recipients without a Device clock");
+            }
+            SampledEventClock::Invalid => {
+                debug!("Using system UTC to filter recipients with an invalid Device clock frame");
+            }
+        }
+        let suppressions = ctx.suppressions;
+        match distribution.outcome {
+            DistributionOutcome::Gone => {}
+            DistributionOutcome::Refused {
+                notification_class,
+                transition,
+                lookup,
+            } => {
+                matched_recipients_or_log(lookup, notification_class, transition, suppressions);
+            }
+            DistributionOutcome::Built {
+                notification,
+                notification_class,
+                transition,
+                lookup,
+            } => {
+                if let Some(recipients) =
+                    matched_recipients_or_log(lookup, notification_class, transition, suppressions)
+                    && !recipients.is_empty()
+                {
+                    Self::push_local_notification(ctx, db, notification, recipients, settle);
+                }
+            }
+        }
+    }
+
+    /// [`Self::enqueue_event_notification`] under a database guard of its
+    /// own, for a notification no write commits: an accepted
+    /// acknowledgment, once its SimpleACK is issued, so the acknowledgment
+    /// follows its transition in its lanes (#2537). Counted in `settle` when
+    /// one is given.
+    pub(super) async fn enqueue_with_guard(
+        ctx: &EventDelivery<'_, T>,
+        oid: &ObjectIdentifier,
+        transition: impl Into<NotificationTransition>,
+        settle: Option<&mut Settle>,
+    ) {
+        let mut db = ctx.db.write().await;
+        Self::enqueue_event_notification(ctx, &mut db, oid, transition, settle);
+    }
+
+    /// Build and push a transition's notification, then wait until each of
+    /// its lanes has handed it off: the old send-and-return shape, for tests.
+    #[cfg(test)]
     pub(super) async fn build_and_send_event_notification_with_bindings(
         ctx: &EventDelivery<'_, T>,
         oid: &ObjectIdentifier,
         transition: impl Into<NotificationTransition>,
     ) {
-        let &EventDelivery {
-            db,
-            comm_state,
-            suppressions,
-            ..
-        } = ctx;
-        if comm_state.initiation_restricted() {
-            return;
-        }
-
-        let NotificationTransition {
-            change,
-            event_type,
-            history_source,
-            ack_required: ack_required_snapshot,
-            event_values,
-            construction,
-        } = transition.into();
-        let system_utc = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        let (notification, recipients) = {
-            let mut db = db.write().await;
-
-            let (timestamp, message_text, recipient_clock) = match history_source {
-                NotificationHistorySource::SendTime => {
-                    let sample = sample_event_timestamp(&mut db);
-                    (sample.timestamp, None, sample.clock)
-                }
-                NotificationHistorySource::Committed {
-                    snapshot,
-                    recipient_clock,
-                } => (snapshot.timestamp, snapshot.message_text, recipient_clock),
-            };
-
-            let device_oid = ctx.device;
-
-            let (today, current_time) = match recipient_clock {
-                SampledEventClock::Valid(clock_frame) => (
-                    clock_frame
-                        .day_of_week()
-                        .expect("validated ClockFrame has a day of week"),
-                    clock_frame.local_time,
-                ),
-                SampledEventClock::Unavailable => {
-                    debug!("Using system UTC to filter recipients without a Device clock");
-                    system_utc_recipient_filter_time(system_utc)
-                }
-                SampledEventClock::Invalid => {
-                    debug!(
-                        "Using system UTC to filter recipients with an invalid Device clock frame"
-                    );
-                    system_utc_recipient_filter_time(system_utc)
-                }
-            };
-
-            let object = match db.get_mut(oid) {
-                Some(o) => o,
-                None => return,
-            };
-
-            let notification_class = object
-                .read_property(PropertyIdentifier::NOTIFICATION_CLASS, None)
-                .ok()
-                .and_then(|v| match v {
-                    PropertyValue::Unsigned(n) => Some(n as u32),
-                    _ => None,
-                })
-                .unwrap_or(0);
-
-            let notify_type = match construction {
-                NotificationConstruction::Acknowledgment => NotifyType::ACK_NOTIFICATION,
-                NotificationConstruction::Event => object
-                    .read_property(PropertyIdentifier::NOTIFY_TYPE, None)
-                    .ok()
-                    .and_then(|v| match v {
-                        PropertyValue::Enumerated(n) => Some(NotifyType::from_raw(n)),
-                        _ => None,
-                    })
-                    .unwrap_or(NotifyType::ALARM),
-            };
-
-            let transition = change.transition();
-
-            // Resolve the per-transition Priority and Ack_Required from the
-            // referenced NotificationClass (ASHRAE 135-2020 §13.2.1), falling
-            // back to the BACnet defaults (Priority 255, no ack) when the
-            // class is missing.
-            let (priority, resolved_ack_required) =
-                resolve_transition_priority_ack(&db, notification_class, transition);
-            let ack_required = ack_required_snapshot.unwrap_or(resolved_ack_required);
-
-            let Some(recipients) = matched_recipients_or_log(
-                lookup_notification_recipients(
-                    &db,
-                    notification_class,
-                    transition,
-                    today,
-                    &current_time,
-                ),
-                notification_class,
-                transition,
-                suppressions,
-            ) else {
-                return;
-            };
-
-            let base_notification = EventNotificationRequest {
-                process_identifier: 0,
-                initiating_device_identifier: device_oid,
-                event_object_identifier: *oid,
-                timestamp,
-                notification_class,
-                priority,
-                event_type,
-                message_text,
-                notify_type,
-                // ack_required is only meaningful for ALARM/EVENT notify types
-                // (ACK_NOTIFICATION omits the field on the wire). Per §13.2.1 the
-                // value is the NotificationClass's per-transition Ack_Required,
-                // not a function of Notify_Type alone.
-                ack_required: if notify_type == NotifyType::ACK_NOTIFICATION {
-                    false
-                } else {
-                    ack_required
-                },
-                from_state: change.from,
-                to_state: change.to,
-                event_values: if notify_type == NotifyType::ACK_NOTIFICATION {
-                    None
-                } else {
-                    event_values.map(CommittedNotificationPayload::into_parameters)
-                },
-            };
-
-            db.log_event_notification(&base_notification);
-            (base_notification, recipients)
-        };
-
-        if !recipients.is_empty() {
-            Self::deliver_local_notification(ctx, notification, &recipients).await;
+        let mut settle = Settle::default();
+        Self::enqueue_with_guard(ctx, oid, transition, Some(&mut settle)).await;
+        if let Some(settled) = settle.into_wait() {
+            let _ = settled.await;
         }
     }
 
-    /// Distribute a successfully accepted acknowledgment after its requester
-    /// response path has completed.
+    /// Push an accepted acknowledgment's notification onto its recipients'
+    /// lanes once its requester's response has gone, behind the transition
+    /// it acknowledges. Nothing waits for it: its lanes send it.
     pub(super) async fn send_acknowledgment_notification_with_bindings(
         ctx: &EventDelivery<'_, T>,
-        accepted: handlers::AcceptedAcknowledgeAlarm,
+        accepted: AcceptedAcknowledgeAlarm,
     ) {
-        let Some(notification) = accepted.notification else {
+        let Some((oid, transition)) = accepted.into_notification() else {
             return;
         };
-        if !notification.distribute {
-            return;
-        }
-        Self::build_and_send_event_notification_with_bindings(
-            ctx,
-            &accepted.event_object_identifier,
-            NotificationTransition::acknowledgment(notification.change, notification.event_type),
-        )
-        .await;
+        Self::enqueue_with_guard(ctx, &oid, transition, None).await;
     }
 }

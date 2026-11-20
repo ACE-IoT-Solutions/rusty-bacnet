@@ -22,6 +22,12 @@ create_exception!(rusty_bacnet, BacnetLogNotAdvancingError, BacnetError);
 create_exception!(rusty_bacnet, BacnetReadRangeViolationError, BacnetError);
 create_exception!(rusty_bacnet, BacnetBvlcNakError, BacnetError);
 create_exception!(rusty_bacnet, BacnetBvlcUnexpectedResponseError, BacnetError);
+create_exception!(rusty_bacnet, BacnetNetworkRejectError, BacnetError);
+
+mod lookup;
+pub(crate) use lookup::{Lookup, lookup_error};
+#[cfg(test)]
+pub(crate) use lookup::{ambiguous_error_type, lookup_error_type};
 
 /// `BacnetTransportError`, built at first use: pyo3's `create_exception!`
 /// takes one base, and this class derives from both `BacnetError` and
@@ -53,7 +59,7 @@ const KIND_ERRNO_NAMES: [(std::io::ErrorKind, &str); 15] = [
 /// The `BacnetProtocolError` attributes a structured Clause 21 error body
 /// fills in. Each is `None` unless the body carried it, including on the
 /// class itself.
-const DETAIL_ATTRIBUTES: [&str; 7] = [
+pub(crate) const DETAIL_ATTRIBUTES: [&str; 7] = [
     "first_failed_element_number",
     "first_failed_write_attempt",
     "first_failed_subscription",
@@ -62,6 +68,15 @@ const DETAIL_ATTRIBUTES: [&str; 7] = [
     "error_parameters",
     "vt_session_identifiers",
 ];
+
+/// What the client's transaction state machine says when a request's
+/// transaction ended before an answer came: the client stopped under it.
+const TSM_CHANNEL_CLOSED: &str = "TSM response channel closed";
+
+/// The message a request cut off that way raises (#2617): the client's
+/// stop() ran, or the endpoint it runs on closed, which stops it.
+const REQUEST_CUT_OFF: &str = "the request ended without an answer: the client stopped while \
+     it waited";
 
 /// Convert a Rust `Error` into a Python exception.
 ///
@@ -159,6 +174,29 @@ pub fn to_py_err(err: Error) -> PyErr {
             });
             py_err
         }
+        Error::AmbiguousDevice {
+            instance,
+            ref candidates,
+        } => {
+            // Two or more addresses claim the instance a request named
+            // (#2560): each candidate is (network, MAC), network 0 local.
+            let candidates = candidates
+                .iter()
+                .map(|address| (address.network_number, address.mac_address.to_vec()))
+                .collect();
+            lookup_error(err.to_string(), Lookup::ambiguous(instance, candidates))
+        }
+        // No row for the device a request named (#2561).
+        Error::UnknownDevice { ref device } => {
+            lookup_error(err.to_string(), Lookup::unknown(device.clone()))
+        }
+        // The request's transaction was ended under it: the client stopped
+        // while it waited, by its own stop() or, on an endpoint's link, by
+        // the endpoint's close (#2617). The client names it by this text alone until #1833
+        // gives client errors their types.
+        Error::Encoding(ref message) if message == TSM_CHANNEL_CLOSED => {
+            BacnetError::new_err(REQUEST_CUT_OFF)
+        }
         _ => BacnetError::new_err(err.to_string()),
     }
 }
@@ -193,6 +231,35 @@ pub(crate) fn bvlc_exchange_err(err: BvlcExchangeError) -> PyErr {
         }
         BvlcExchangeError::Refused(_) => BacnetError::new_err(err.to_string()),
         BvlcExchangeError::Transport(error) => to_py_err(error),
+        other => BacnetError::new_err(other.to_string()),
+    }
+}
+
+/// What `routing_table()` raises: silence is `BacnetTimeoutError`, a router's
+/// Reject-Message-To-Network is `BacnetNetworkRejectError` with its `reason`
+/// octet and `network`, and a failure to send is what [`to_py_err`] makes of
+/// it. A refusal and silence never share a class (#2612).
+pub(crate) fn routing_table_err(err: bacnet_client::client::RoutingTableError) -> PyErr {
+    use bacnet_client::client::RoutingTableError;
+    match err {
+        RoutingTableError::NoAnswer { .. } => BacnetTimeoutError::new_err(err.to_string()),
+        RoutingTableError::Rejected(reject) => {
+            let py_err =
+                BacnetNetworkRejectError::new_err(RoutingTableError::Rejected(reject).to_string());
+            let _ = crate::py_async::attach(|py| {
+                let value = py_err.value(py);
+                let _ = value.setattr("reason", reject.reason.to_raw());
+                let _ = value.setattr("network", reject.network);
+                Ok(())
+            });
+            py_err
+        }
+        RoutingTableError::InvalidArgument(why) => pyo3::exceptions::PyValueError::new_err(why),
+        // As the binding reports every other stopped client.
+        RoutingTableError::ClientStopped => {
+            pyo3::exceptions::PyRuntimeError::new_err("client stopped during routing_table()")
+        }
+        RoutingTableError::Send(error) => to_py_err(error),
         other => BacnetError::new_err(other.to_string()),
     }
 }
@@ -282,7 +349,7 @@ fn transport_error_type(py: Python<'_>) -> PyResult<&Py<PyType>> {
 /// Set `name` on `error` to `value`'s IntEnum member, which compares equal
 /// to the wire integer (#915, #1816); the plain integer if the member can't
 /// be made.
-fn set_enum_attr<T: PyIntEnum>(error: &Bound<'_, PyAny>, name: &str, value: T) {
+pub(crate) fn set_enum_attr<T: PyIntEnum>(error: &Bound<'_, PyAny>, name: &str, value: T) {
     let _ = match int_enums::to_py(error.py(), value) {
         Ok(member) => error.setattr(name, member),
         Err(_) => error.setattr(name, value.raw()),
@@ -397,7 +464,11 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     unexpected.setattr("expected", m.py().None())?;
     unexpected.setattr("got", m.py().None())?;
     m.add("BacnetBvlcUnexpectedResponseError", unexpected)?;
-    Ok(())
+    let network_reject = m.py().get_type::<BacnetNetworkRejectError>();
+    network_reject.setattr("reason", m.py().None())?;
+    network_reject.setattr("network", m.py().None())?;
+    m.add("BacnetNetworkRejectError", network_reject)?;
+    lookup::register(m)
 }
 
 #[cfg(test)]

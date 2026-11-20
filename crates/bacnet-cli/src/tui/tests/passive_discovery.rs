@@ -187,19 +187,23 @@ async fn passive_receives_real_router_startup_after_listener_readiness() {
         broadcast_mask: [255; 4],
     }]);
     let (far, _station) = LoopbackTransport::pair(vec![1], vec![5]);
-    let StartedRouter { mut router, .. } = BACnetRouter::start(
-        vec![
-            RouterPort {
-                transport: AnyTransport::Bip(Box::new(bip)),
-                network_number: 1,
-            },
-            RouterPort {
-                transport: AnyTransport::Loopback(far),
-                network_number: 2,
-            },
-        ],
-        RouterOptions::new(),
-    )
+    // Boxed: the test's poll frame would hold the start's future, under
+    // the start itself (#2656).
+    let StartedRouter { mut router, .. } = crate::heap::boxed(|| {
+        BACnetRouter::start(
+            vec![
+                RouterPort {
+                    transport: AnyTransport::Bip(Box::new(bip)),
+                    network_number: 1,
+                },
+                RouterPort {
+                    transport: AnyTransport::Loopback(far),
+                    network_number: 2,
+                },
+            ],
+            RouterOptions::new(),
+        )
+    })
     .await
     .unwrap();
     let (origin, networks) = loop {
@@ -367,6 +371,7 @@ async fn zero_send_attempts() -> std::io::Result<()> {
         DiscoveryCommand::WhoIsRouter,
         DiscoveryCommand::WhoHas {
             name: "marker".into(),
+            scope: bacnet_ops::Scope::Local,
         },
     ] {
         net.commands

@@ -1,6 +1,6 @@
-use super::bus_port::BusPort;
 use super::eventually::eventually;
 use super::*;
+use crate::session::bus_port::bus_port;
 use bacnet_encoding::apdu::{
     AbortPdu, ComplexAck, ErrorPdu, RejectPdu, SimpleAck, decode_apdu, encode_apdu,
 };
@@ -10,6 +10,7 @@ use bacnet_objects::audit::AuditReporterObject;
 use bacnet_services::audit::AuditNotificationRequest;
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_transport::bvll::{decode_bip_mac, encode_bip_mac};
+use bacnet_transport::test_transport::TestTransport;
 use bacnet_types::MacAddr;
 use bacnet_types::bitstring::{AuditOperationFlags, BACnetPriorityFilter};
 use bacnet_types::constructed::{BACnetAuditNotification, BACnetObjectSelector, BACnetRecipient};
@@ -23,7 +24,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use tokio::time::{Duration, timeout};
 
 /// How long a test waits for a frame or a condition. Every test here runs
-/// on paused time, over [`BusPort`] or a loopback transport, so this is
+/// on paused time, over [`bus_port`] or a loopback transport, so this is
 /// Tokio time, not the host's: a stalled host can't use it up, and a wait
 /// that never succeeds fails after 2 s of it (#2293). A wait in a loop must
 /// go through [`eventually`], since a loop that only yields stops paused
@@ -40,10 +41,11 @@ fn target() -> ObjectIdentifier {
     oid(ObjectType::ANALOG_VALUE, 7)
 }
 fn database(confirmed: bool) -> ObjectDatabase {
-    let mut db = crate::DeviceIdentity::new(123, 42)
-        .unwrap()
-        .build_database()
-        .unwrap();
+    database_for(&crate::DeviceIdentity::new(123, 42).unwrap(), confirmed)
+}
+/// [`database`] for Device `identity`.
+fn database_for(identity: &crate::DeviceIdentity, confirmed: bool) -> ObjectDatabase {
+    let mut db = identity.build_database().unwrap();
     let mut reporter = AuditReporterObject::new(1, "Source").unwrap();
     reporter
         .audit_reporter_mut()
@@ -60,20 +62,23 @@ fn database(confirmed: bool) -> ObjectDatabase {
     db.add(Box::new(reporter)).unwrap();
     db
 }
-async fn network() -> (NetworkLayer<BusPort>, bacnet_network::layer::ApduReceiver) {
-    let mut network = NetworkLayer::new(BusPort::new());
+async fn network() -> (
+    NetworkLayer<TestTransport>,
+    bacnet_network::layer::ApduReceiver,
+) {
+    let mut network = NetworkLayer::new(bus_port());
     let receiver = network.start().await.unwrap();
     (network, receiver)
 }
-fn address(network: &NetworkLayer<BusPort>) -> SocketAddrV4 {
+fn address(network: &NetworkLayer<TestTransport>) -> SocketAddrV4 {
     let (ip, port) = decode_bip_mac(network.local_mac()).unwrap();
     SocketAddrV4::new(ip.into(), port)
 }
 fn session(
     mut db: ObjectDatabase,
     role: SessionRole,
-    sink: &NetworkLayer<BusPort>,
-) -> EndpointSession<BusPort> {
+    sink: &NetworkLayer<TestTransport>,
+) -> EndpointSession<TestTransport> {
     db.get_mut(&oid(ObjectType::DEVICE, 123))
         .unwrap()
         .device_authority_internal()
@@ -93,20 +98,46 @@ fn session(
     session
         .source_audit_bindings
         .push((oid(ObjectType::DEVICE, 999), address(sink)));
+    // A server role runs a full server on the node's identity; this one
+    // lets any peer write, and decides mutations, as source Audit requires.
     if role == SessionRole::Both {
-        session.with_device_writes(Arc::new(|_| true))
+        session
+            .device(crate::DeviceIdentity::new(123, 42).unwrap())
+            .with_server(allowing())
     } else {
         session
     }
 }
-/// A session on its own [`BusPort`], with no database or source Audit.
-fn bare_session(role: SessionRole, config: SessionConfig) -> EndpointSession<BusPort> {
-    EndpointSession::new(BusPort::new(), role, config).unwrap()
+/// Check a record's timestamp: the Device's date and time where the
+/// session runs a full server (`clocked`), whose clock the database reads
+/// (#2617), and its `sequence` number otherwise.
+#[track_caller]
+fn assert_stamp(stamp: &Option<BACnetTimeStamp>, clocked: bool, sequence: u16) {
+    if clocked {
+        assert!(
+            matches!(stamp, Some(BACnetTimeStamp::DateTime { .. })),
+            "{stamp:?}"
+        );
+    } else {
+        assert_eq!(stamp, &Some(BACnetTimeStamp::SequenceNumber(sequence)));
+    }
+}
+/// A server whose policy lets any peer write: it decides mutations.
+fn allowing<T: TransportPort + 'static>() -> bacnet_server::server::ServerBuilder<T> {
+    bacnet_server::server::BACnetServer::generic_builder().policy(
+        bacnet_server::policy::FnPolicy::new()
+            .inline()
+            .mutation(|_| true),
+    )
+}
+/// A session on its own [`bus_port`], with no database or source Audit.
+fn bare_session(role: SessionRole, config: SessionConfig) -> EndpointSession<TestTransport> {
+    EndpointSession::new(bus_port(), role, config).unwrap()
 }
 async fn receive(receiver: &mut bacnet_network::layer::ApduReceiver) -> ReceivedApdu {
     timeout(WAIT, receiver.recv()).await.unwrap().unwrap()
 }
-async fn send(network: &NetworkLayer<BusPort>, mac: &[u8], pdu: Apdu) {
+async fn send(network: &NetworkLayer<TestTransport>, mac: &[u8], pdu: Apdu) {
     let mut bytes = BytesMut::new();
     encode_apdu(&mut bytes, &pdu).unwrap();
     network
@@ -182,7 +213,7 @@ async fn reliability<T: TransportPort + 'static>(session: &EndpointSession<T>) -
     value
 }
 fn start_read(
-    session: &EndpointSession<BusPort>,
+    session: &EndpointSession<TestTransport>,
     target_mac: &[u8],
     property: PropertyIdentifier,
     index: Option<u32>,
@@ -194,8 +225,8 @@ fn start_read(
 
 #[tokio::test(start_paused = true)]
 async fn source_read_wire_fields_both_roles_modes_and_result_before_delivery() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     for role in [SessionRole::ClientOnly, SessionRole::Both] {
         for confirmed in [false, true] {
             let mut session = session(database(confirmed), role, &sink);
@@ -225,10 +256,7 @@ async fn source_read_wire_fields_both_roles_modes_and_result_before_delivery() {
             // Confirmed audit ACK deliberately withheld until after caller result.
             let envelope = receive(&mut records).await;
             let (record, notification_invoke) = notification(&envelope, confirmed);
-            assert_eq!(
-                record.source_timestamp,
-                Some(BACnetTimeStamp::SequenceNumber(0))
-            );
+            assert_stamp(&record.source_timestamp, role == SessionRole::Both, 0);
             assert_eq!(
                 record.source_device,
                 BACnetRecipient::Device(oid(ObjectType::DEVICE, 123))
@@ -284,8 +312,8 @@ async fn source_read_wire_fields_both_roles_modes_and_result_before_delivery() {
 /// beside a higher Device and every record names the lowest.
 #[tokio::test(start_paused = true)]
 async fn source_read_identity_is_the_lowest_of_several_devices() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     let mut db = database(false);
     let mut other = crate::DeviceIdentity::new(456, 42)
         .unwrap()
@@ -322,8 +350,8 @@ async fn source_read_identity_is_the_lowest_of_several_devices() {
 
 #[tokio::test(start_paused = true)]
 async fn source_read_peer_and_local_failure_outcomes_are_not_success() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
     for case in 0..7 {
@@ -411,8 +439,8 @@ async fn source_read_peer_and_local_failure_outcomes_are_not_success() {
 
 #[tokio::test(start_paused = true)]
 async fn source_read_dropped_waiter_retries_once_per_logical_request() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     let mut session = session(database(false), SessionRole::Both, &sink);
     session.client_config.apdu_retries = 1;
     session.start().await.unwrap();
@@ -432,10 +460,7 @@ async fn source_read_dropped_waiter_retries_once_per_logical_request() {
     let (record, _) = notification(&receive(&mut records).await, false);
     assert_eq!(record.invoke_id, Some(invoke));
     assert_eq!(record.result, None);
-    assert_eq!(
-        record.source_timestamp,
-        Some(BACnetTimeStamp::SequenceNumber(0))
-    );
+    assert_stamp(&record.source_timestamp, true, 0);
     assert!(
         timeout(Duration::from_millis(30), records.recv())
             .await
@@ -448,7 +473,7 @@ async fn source_read_dropped_waiter_retries_once_per_logical_request() {
 
 #[tokio::test(start_paused = true)]
 async fn source_read_selector_preflight_is_atomic_and_adapter_rejects_mutation() {
-    let (mut sink, _records) = network().await;
+    let (sink, _records) = network().await;
     for selectors in [vec![], vec![BACnetObjectSelector::None]] {
         let mut db = database(false);
         db.get_mut(&selected())
@@ -548,7 +573,7 @@ async fn source_read_ignores_remote_and_same_oid_local_value_object_policy() {
     use bacnet_objects::{analog::AnalogValueObject, audit::ObjectAuditPolicy};
     use bacnet_server::server::{BACnetServer, ServerConfig};
     use bacnet_types::enums::EngineeringUnits;
-    let (mut sink, mut records) = network().await;
+    let (sink, mut records) = network().await;
     let policy = ObjectAuditPolicy {
         level: Some(AuditLevel::NONE),
         operations: Some(AuditOperationFlags::empty()),
@@ -568,7 +593,7 @@ async fn source_read_ignores_remote_and_same_oid_local_value_object_policy() {
             ..Default::default()
         },
         remote_db,
-        BusPort::new(),
+        bus_port(),
     )
     .await
     .unwrap();
@@ -612,8 +637,14 @@ mod delay_rejection;
 #[path = "source_write_tests.rs"]
 mod write;
 
+#[path = "source_full_client_tests.rs"]
+mod full_client;
+
 #[path = "source_reinitialize_tests.rs"]
 mod reinitialize;
+
+#[path = "source_server_tests.rs"]
+mod server;
 
 #[path = "source_link_tests.rs"]
 mod links;

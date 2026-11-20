@@ -6,15 +6,19 @@
 //! layers are the same everywhere and go through [`super::decode_npdu_layer`].
 //! [`summarize_npdu`] reads an NPDU given without its link.
 
+use std::net::{SocketAddr, SocketAddrV6};
 use std::ops::Range;
 
-use crate::target::{hex, routed_station};
+use crate::octets::hex_sep;
+use crate::target::routed_station;
 use bacnet_transport::bip6::{Bvll6, decode_bvll6, format_vmac_text};
 use bacnet_transport::bvll::{self, BvlcFunction, BvlcResultCode, Bvll};
 use bacnet_transport::mstp::codec::{FrameType, decode_frame, decode_frame_in_place};
 use bacnet_transport::sc_frame::{
     ScBvlcResult, ScFunction, decode_sc_bvlc_result, decode_sc_message, is_broadcast_vmac,
 };
+use bacnet_types::MacAddr;
+use bacnet_types::enums::ErrorCode;
 use bytes::Bytes;
 
 use super::decode_npdu_layer;
@@ -27,7 +31,12 @@ fn routed(network: u16, mac: &[u8]) -> String {
 }
 
 /// The link a frame was captured on, which decides how its octets are read.
+///
+/// Non-exhaustive: more links can join (BACnet Ethernet, Clause 7, is the
+/// next one the stack taps), so a `match` outside this crate needs a
+/// wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Framing {
     /// A B/IP BVLL message, the UDP payload (Annex J).
     Bip,
@@ -53,10 +62,12 @@ impl Framing {
 }
 
 /// What the capture list shows of a frame, read from its headers.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct FrameSummary {
-    /// The link message: a BVLC function, an MS/TP frame type.
-    pub link: String,
+    /// The link message: a BVLC function or an MS/TP frame type, in kebab
+    /// case (`original-unicast-npdu`, `token`), or `malformed`. Not the data
+    /// link itself, which the caller names with [`Framing`].
+    pub link_message: String,
     /// A link or network broadcast.
     pub broadcast: bool,
     /// The link's own source and destination, where the frame names them
@@ -64,8 +75,10 @@ pub struct FrameSummary {
     pub link_source: Option<String>,
     /// See [`link_source`](Self::link_source).
     pub link_destination: Option<String>,
-    /// Original IP address and UDP port encoded by a forwarded B/IP or
-    /// B/IPv6 message. The physical forwarding peer is not in these octets.
+    /// The originating node's IP address and UDP port, as a BBMD wrote them
+    /// into a message it forwarded: a B/IP Forwarded-NPDU (Annex J.2.5), or
+    /// a B/IPv6 Forwarded-NPDU or Forwarded-Address-Resolution (Annex U.2.9,
+    /// U.2.5). The forwarding peer itself is not in the octets.
     pub original_source: Option<String>,
     /// SNET, when a router added one.
     pub snet: Option<u16>,
@@ -123,8 +136,17 @@ pub struct Link {
     pub source: Option<String>,
     /// The link's destination, where the frame names one.
     pub destination: Option<String>,
-    /// Original IP address and UDP port encoded in a forwarded message.
+    /// The originating node's address a forwarded message carries; see
+    /// [`FrameSummary::original_source`].
     pub original_source: Option<String>,
+    /// [`Self::original_source`] as an address.
+    pub origin: Option<SocketAddr>,
+    /// The source MAC the frame itself names, as the stack writes a MAC on
+    /// the link: a B/IPv6 source VMAC (the original source's, in a message
+    /// a BBMD relays), a BACnet/SC originating VMAC, an MS/TP source
+    /// station, and on B/IP a Forwarded-NPDU's origin as six octets. `None`
+    /// where the frame names none: then the source is whoever sent it.
+    pub source_mac: Option<MacAddr>,
     /// A NAK, or why the header doesn't decode.
     pub problem: Option<String>,
     /// Whether the link header refused to decode, so `npdu` is unknown
@@ -161,6 +183,8 @@ pub fn link(framing: Framing, frame: &[u8]) -> Link {
         source: None,
         destination: None,
         original_source: None,
+        origin: None,
+        source_mac: None,
         problem: None,
         malformed: false,
         npdu: None,
@@ -183,7 +207,11 @@ pub fn link(framing: Framing, frame: &[u8]) -> Link {
 
 fn bip(frame: &[u8], link: &mut Link) -> Result<(), String> {
     let message = bvll::decode_bvll(frame).map_err(|e| e.to_string())?;
-    link.name = kebab(message.function);
+    // A function Annex J.2 doesn't assign (0x0C and up) fails to read below
+    // and stays unnamed, `malformed`, as on the other two BVLC links.
+    if message.function.is_defined() {
+        link.name = kebab(message.function);
+    }
     link.broadcast = matches!(
         message.function,
         BvlcFunction::ORIGINAL_BROADCAST_NPDU
@@ -195,7 +223,12 @@ fn bip(frame: &[u8], link: &mut Link) -> Result<(), String> {
             link.problem = Some(format!("NAK {}", kebab(code)));
         }
         parsed => {
-            link.original_source = parsed.origin().map(|address| address.to_string());
+            if let Some(origin) = parsed.origin() {
+                link.original_source = Some(origin.to_string());
+                link.origin = Some(origin.into());
+                let mac = bvll::encode_bip_mac(origin.ip().octets(), origin.port());
+                link.source_mac = Some(MacAddr::from_slice(&mac));
+            }
             if let Some(npdu) = parsed.npdu() {
                 let start = 4 + offset_in(&message.payload, npdu);
                 link.npdu = Some(Npdu::At(start..start + npdu.len()));
@@ -209,8 +242,12 @@ fn bip6(frame: &[u8], link: &mut Link) -> Result<(), String> {
     let message = decode_bvll6(frame).map_err(|e| e.to_string())?;
     link.name = kebab(message.function());
     link.source = Some(format_vmac_text(message.source_vmac()));
+    link.source_mac = Some(MacAddr::from_slice(&message.source_vmac().octets()));
     link.destination = message.destination_vmac().map(format_vmac_text);
     link.original_source = message.origin().map(|address| address.to_string());
+    link.origin = message
+        .origin()
+        .map(|address| SocketAddrV6::new(address.ip, address.port, 0, 0).into());
     link.broadcast = matches!(
         message,
         Bvll6::OriginalBroadcastNpdu { .. }
@@ -231,9 +268,16 @@ fn bip6(frame: &[u8], link: &mut Link) -> Result<(), String> {
 
 fn sc(frame: &[u8], link: &mut Link) -> Result<(), String> {
     let message = decode_sc_message(frame).map_err(|e| e.to_string())?;
+    // Table AB-1 assigns 0x00 to 0x0C. The codec passes any other function
+    // through, so it is refused here, as the B/IP and B/IPv6 codecs refuse
+    // theirs: octets of another link read as BACnet/SC land here too.
+    if let ScFunction::Unknown(function) = message.function {
+        return Err(format!("unknown BVLC-SC function {function:#04X}"));
+    }
     link.name = kebab(format!("{:?}", message.function));
-    link.source = message.originating_vmac.map(|v| hex(&v));
-    link.destination = message.destination_vmac.map(|v| hex(&v));
+    link.source = message.originating_vmac.map(|v| hex_sep(&v, ":"));
+    link.source_mac = message.originating_vmac.map(|v| MacAddr::from_slice(&v));
+    link.destination = message.destination_vmac.map(|v| hex_sep(&v, ":"));
     link.broadcast = message
         .destination_vmac
         .is_some_and(|vmac| is_broadcast_vmac(&vmac));
@@ -246,7 +290,10 @@ fn sc(frame: &[u8], link: &mut Link) -> Result<(), String> {
             if let ScBvlcResult::Nak { error_code, .. } =
                 decode_sc_bvlc_result(&message).map_err(|error| error.to_string())?
             {
-                link.problem = Some(format!("NAK {error_code}"));
+                // Named in kebab case like the B/IP NAKs; an unnamed code
+                // stays a number.
+                let code = ErrorCode::from_raw(error_code);
+                link.problem = Some(format!("NAK {}", kebab(code)));
             }
         }
         _ => {}
@@ -262,6 +309,7 @@ fn mstp(frame: &[u8], link: &mut Link) -> Result<(), String> {
             .map_or_else(|| format!("type {}", frame_type.to_raw()), kebab);
         link.destination = Some(format!("mstp:{}", frame[3]));
         link.source = Some(format!("mstp:{}", frame[4]));
+        link.source_mac = Some(MacAddr::from_slice(&frame[4..5]));
         link.broadcast = frame[3] == 255;
     }
     let frame_type = FrameType::from_raw(*frame.get(2).ok_or("shorter than a header")?);
@@ -297,7 +345,7 @@ pub fn summarize_frame(framing: Framing, frame: &[u8]) -> FrameSummary {
     let link = link(framing, frame);
     let parse_error = link.malformed.then(|| link.problem.clone()).flatten();
     let mut summary = FrameSummary {
-        link: link.name,
+        link_message: link.name,
         broadcast: link.broadcast,
         link_source: link.source,
         link_destination: link.destination,
@@ -325,6 +373,8 @@ pub fn summarize_npdu(npdu: &[u8]) -> FrameSummary {
 
 /// What the network layer and the APDU's header add to a summary.
 fn network_layer(summary: &mut FrameSummary, npdu: Bytes) {
+    // The routing comes from the borrowed view, read once: it holds even
+    // when the APDU behind it fails to decode below.
     if let Ok(view) = bacnet_npdu::Npdu::decode(&npdu) {
         summary.snet = view.source.map(|address| address.network);
         summary.dnet = view.destination.map(|address| address.network);
@@ -336,9 +386,6 @@ fn network_layer(summary: &mut FrameSummary, npdu: Bytes) {
     }
     match decode_npdu_layer(npdu) {
         Ok(npdu) => {
-            summary.broadcast |= npdu.broadcast;
-            summary.snet = npdu.source_network;
-            summary.dnet = npdu.dest_network;
             summary.network_message = npdu
                 .network_message_type
                 .map(|kind| kebab(bacnet_npdu::NetworkMessageType::from_raw(kind)));
@@ -347,7 +394,10 @@ fn network_layer(summary: &mut FrameSummary, npdu: Bytes) {
                 summary.invoke_id = apdu.invoke_id;
                 summary.service = apdu.service.map(kebab);
                 summary.problem = apdu.problem.map(kebab);
-                summary.device = apdu.device;
+                summary.device = apdu
+                    .i_am
+                    .and_then(Result::ok)
+                    .map(|i_am| i_am.object_identifier.instance_number());
             }
         }
         Err(error) => {

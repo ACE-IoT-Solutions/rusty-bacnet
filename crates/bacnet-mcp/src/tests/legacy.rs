@@ -6,18 +6,19 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use bacnet_ops::engine::Engine;
-use bacnet_ops::watch::{Hub, WatchOptions};
+use bacnet_ops::Client;
+use bacnet_ops::watch::hub::{Hub, WatchOptions};
 use bacnet_types::enums::ObjectType;
 use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 
-use super::{Agent, Lab, Recording};
+use super::{Agent, Lab};
 use crate::Policy;
 use crate::follow::Follow;
 use crate::policy::Caps;
 use crate::resources::uri::{self, Uri};
+use bacnet_transport::test_transport::TestTransport;
 
 const AI1: &str = "bacnet://device/1201/object/analog-input:1";
 const AI3: &str = "bacnet://device/1201/object/ai:3";
@@ -168,7 +169,7 @@ async fn a_subscription_before_the_notifier_starts_is_followed() {
     lab.mcp.subscribe_now("bacnet://devices").unwrap();
     lab.agent.initialize_legacy().await;
     settle().await;
-    lab.client.clear_devices().await;
+    lab.low.clear_devices().await;
     lab.server.broadcast_i_am().await.unwrap();
     let updates = lab.agent.drain(UPDATED, Duration::from_secs(3)).await;
     assert_eq!(updates.len(), 1, "{updates:?}");
@@ -184,16 +185,17 @@ async fn a_point_watched_again_is_followed_on_its_new_watch() {
     let mut lab = Lab::start(Policy::default()).await;
     lab.agent.initialize_legacy().await;
     let limits = Arc::new(Policy::default().request_limits());
-    let engine = Arc::new(Engine::new(Arc::clone(&lab.client), limits));
-    let hub = Hub::new(Arc::clone(&engine), WatchOptions::default()).unwrap();
+    let client = Client::new(Arc::clone(&lab.low), limits);
+    let hub = Hub::new(client.clone(), WatchOptions::default()).unwrap();
     let Ok(Uri::Point(point)) = uri::parse(AI1) else {
         panic!("a point URI");
     };
+    let point = point.at(bacnet_ops::DeviceAddress::local(&super::LAB_MAC).unwrap());
     let mut follow = Follow::new();
-    let first = hub.watch(point).unwrap();
+    let first = hub.watch(point.clone()).unwrap();
     let signals = crate::writes::notify::Signals::default();
     follow.set(
-        Some(&*engine),
+        Some(&client),
         &signals,
         vec![(AI1.to_string(), Some(first.changes()))],
     );
@@ -202,7 +204,7 @@ async fn a_point_watched_again_is_followed_on_its_new_watch() {
     let second = hub.watch(point).unwrap();
     assert!(!second.changes().same(&follow.signal(AI1).unwrap().clone()));
     follow.set(
-        None::<&Engine<Recording>>,
+        None::<&Client<TestTransport>>,
         &signals,
         vec![(AI1.to_string(), Some(second.changes()))],
     );
@@ -210,7 +212,7 @@ async fn a_point_watched_again_is_followed_on_its_new_watch() {
     drop(second);
     hub.shutdown(Duration::from_secs(10)).await;
     drop(hub);
-    drop(engine);
+    drop(client);
     lab.stop().await;
 }
 
@@ -356,7 +358,7 @@ async fn a_passive_server_takes_only_session_and_ledger() {
     for uri in [
         AI1,
         "bacnet://devices",
-        "bacnet://devices/after/5",
+        "bacnet://devices/after/5/0/00",
         "bacnet://alarms",
     ] {
         let error = agent.subscribe(uri).await.unwrap_err();
@@ -375,7 +377,7 @@ async fn the_device_list_is_announced_to_a_legacy_subscriber() {
     lab.agent.initialize_legacy().await;
     assert_eq!(lab.agent.subscribe("bacnet://devices").await, Ok(json!({})));
     settle().await;
-    lab.client.clear_devices().await;
+    lab.low.clear_devices().await;
     for _ in 0..3 {
         lab.server.broadcast_i_am().await.unwrap();
     }
@@ -390,14 +392,14 @@ async fn the_device_list_is_announced_to_a_legacy_subscriber() {
 /// unsubscribed one isn't.
 #[tokio::test(start_paused = true)]
 async fn a_device_list_page_is_announced_to_a_legacy_subscriber() {
-    const PAGE: &str = "bacnet://devices/after/302";
+    const PAGE: &str = "bacnet://devices/after/302/2001/0c";
     let mut lab = Lab::start(Policy::default()).await;
     lab.agent.initialize_legacy().await;
     for uri in ["bacnet://devices", PAGE] {
         assert_eq!(lab.agent.subscribe(uri).await, Ok(json!({})), "{uri}");
     }
     settle().await;
-    lab.client.clear_devices().await;
+    lab.low.clear_devices().await;
     lab.server.broadcast_i_am().await.unwrap();
     let updates = lab.agent.drain(UPDATED, Duration::from_secs(3)).await;
     let mut told: Vec<&str> = updates
@@ -408,7 +410,7 @@ async fn a_device_list_page_is_announced_to_a_legacy_subscriber() {
     assert_eq!(told, ["bacnet://devices", PAGE], "{updates:?}");
     lab.agent.unsubscribe("bacnet://devices").await;
     settle().await;
-    lab.client.clear_devices().await;
+    lab.low.clear_devices().await;
     lab.server.broadcast_i_am().await.unwrap();
     let updates = lab.agent.drain(UPDATED, Duration::from_secs(3)).await;
     assert_eq!(updates.len(), 1, "{updates:?}");
@@ -430,7 +432,7 @@ async fn device_list_pages_count_against_the_uri_bound() {
     let mut lab = Lab::start(policy).await;
     lab.agent.initialize_legacy().await;
     let pages: Vec<String> = (0..5)
-        .map(|n| format!("bacnet://devices/after/{n}"))
+        .map(|n| format!("bacnet://devices/after/{n}/0/00"))
         .collect();
     for page in &pages[..4] {
         assert_eq!(lab.agent.subscribe(page).await, Ok(json!({})), "{page}");

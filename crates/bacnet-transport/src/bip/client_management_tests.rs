@@ -430,12 +430,7 @@ async fn bvlc_encode_and_send_errors_release_slot_without_fabricated_timeouts() 
     ));
     // A broadcast without socket permission fails locally; UDP port zero
     // does not provide the same send-error behavior on every platform.
-    transport
-        .socket
-        .as_ref()
-        .unwrap()
-        .set_broadcast(false)
-        .unwrap();
+    transport.socket().unwrap().set_broadcast(false).unwrap();
     let denied_broadcast = encode_bip_mac(
         Ipv4Addr::BROADCAST.octets(),
         peer.local_addr().unwrap().port(),
@@ -626,7 +621,7 @@ async fn a_request_given_up_after_stop_leaves_the_status_clear() {
     let mut transport = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let _rx = transport.start().await.unwrap();
     let node = Arc::clone(transport.node.as_ref().unwrap());
-    let request = node.request(&target, register(60), THREE_SECONDS);
+    let request = node.request(&target, register(60), THREE_SECONDS, None);
     tokio::pin!(request);
     let mut packet = [0; 64];
     tokio::select! {
@@ -634,8 +629,13 @@ async fn a_request_given_up_after_stop_leaves_the_status_clear() {
         received = peer.recv_from(&mut packet) => { received.unwrap(); }
     }
     transport.stop().await.unwrap();
-    let error = request.await.unwrap_err();
-    assert!(error.to_string().contains("channel dropped"), "{error}");
+    // It fails as a request after the stop does (#2612).
+    match request.await.unwrap_err() {
+        BvlcExchangeError::Transport(Error::Transport(io)) => {
+            assert_eq!(io.kind(), std::io::ErrorKind::NotConnected);
+        }
+        other => panic!("not the not-started error: {other}"),
+    }
     let snapshot = transport.bvlc_client_snapshot();
     assert_eq!(snapshot.foreign_registration.last_outcome, None);
     assert_eq!(snapshot.foreign_registration.attempts, 1);
@@ -668,7 +668,7 @@ async fn a_call_racing_stop_leaves_the_status_clear() {
             pending.last_outcome,
             Some(ForeignRegistrationOutcome::Pending)
         );
-        transport.between_stops = Some(Box::new(move || match race {
+        *transport.between_stops.get_mut().unwrap() = Some(Box::new(move || match race {
             Race::GiveUp => drop(exchange),
             Race::Answer => {
                 use bacnet_bip_core::node::{Addressed, Datagram, Permissive, Received};

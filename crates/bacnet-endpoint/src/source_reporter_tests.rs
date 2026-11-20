@@ -5,7 +5,7 @@ use bacnet_objects::audit::AuditReporterObject;
 use bacnet_objects::property_metadata::PropertyMetadata;
 use bacnet_objects::traits::BACnetObject;
 use bacnet_transport::loopback::LoopbackTransport;
-use bacnet_transport::port::ReceivedNpdu;
+use bacnet_transport::test_transport::{SendMode, TestTransport};
 use bacnet_types::enums::{AuditLevel, PropertyIdentifier};
 use bacnet_types::primitives::PropertyValue;
 use std::borrow::Cow;
@@ -20,50 +20,41 @@ struct Observations {
     bip_reads: AtomicUsize,
 }
 
-struct ObservedTransport {
-    inner: LoopbackTransport,
-    observed: Arc<Observations>,
-}
-
-impl TransportPort for ObservedTransport {
-    fn bip_broadcast_endpoint(&self) -> Option<std::net::SocketAddrV4> {
-        self.observed.bip_reads.fetch_add(1, Ordering::SeqCst);
-        // Before start, an unrelated placeholder: the started link's
-        // broadcast endpoint is a fact learned post-start, which the source
-        // routes then recheck.
-        Some(if self.observed.starts.load(Ordering::SeqCst) == 0 {
-            std::net::SocketAddrV4::new([198, 51, 100, 255].into(), 0)
-        } else {
-            std::net::SocketAddrV4::new([192, 168, 1, 255].into(), 47808)
+/// `inner` behind a transport that counts starts, stops, sends and reads of
+/// its B/IP broadcast endpoint in `observed`. That endpoint is an unrelated
+/// placeholder before start; the started link's is a fact learned
+/// post-start, which the source routes then recheck.
+fn observed_transport(inner: LoopbackTransport, observed: Arc<Observations>) -> TestTransport {
+    let (on_start, on_stop, on_send, on_read) = (
+        Arc::clone(&observed),
+        Arc::clone(&observed),
+        Arc::clone(&observed),
+        observed,
+    );
+    TestTransport::builder()
+        .inner(inner)
+        .unicast(SendMode::Forward)
+        .broadcast(SendMode::Forward)
+        .on_start(move || {
+            on_start.starts.fetch_add(1, Ordering::SeqCst);
         })
-    }
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        self.observed.starts.fetch_add(1, Ordering::SeqCst);
-        self.inner.start().await
-    }
-    async fn stop(&mut self) -> Result<(), Error> {
-        self.observed.stops.fetch_add(1, Ordering::SeqCst);
-        self.inner.stop().await
-    }
-    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        self.observed.sends.fetch_add(1, Ordering::SeqCst);
-        self.inner.send_unicast(npdu, mac).await
-    }
-    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        self.observed.sends.fetch_add(1, Ordering::SeqCst);
-        self.inner.send_broadcast(npdu).await
-    }
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        self.inner.local_receive_apdu_capacity()
-    }
-
-    fn egress_apdu_limit(&self) -> u16 {
-        self.inner.egress_apdu_limit()
-    }
-
-    fn local_mac(&self) -> &[u8] {
-        self.inner.local_mac()
-    }
+        .before_stop(move || {
+            on_stop.stops.fetch_add(1, Ordering::SeqCst);
+            async { Ok(()) }
+        })
+        .on_send(move |_| {
+            on_send.sends.fetch_add(1, Ordering::SeqCst);
+            async { Ok(()) }
+        })
+        .on_bip_broadcast_endpoint(move || {
+            on_read.bip_reads.fetch_add(1, Ordering::SeqCst);
+            Some(if on_read.starts.load(Ordering::SeqCst) == 0 {
+                std::net::SocketAddrV4::new([198, 51, 100, 255].into(), 0)
+            } else {
+                std::net::SocketAddrV4::new([192, 168, 1, 255].into(), 47808)
+            })
+        })
+        .build()
 }
 
 fn oid(kind: ObjectType, instance: u32) -> ObjectIdentifier {
@@ -110,23 +101,21 @@ fn database() -> ObjectDatabase {
 fn session(
     role: SessionRole,
 ) -> (
-    EndpointSession<ObservedTransport>,
+    EndpointSession<TestTransport>,
     LoopbackTransport,
     Arc<Observations>,
 ) {
     let (inner, peer) = LoopbackTransport::pair(vec![1], vec![2]);
     let observed = Arc::new(Observations::default());
     let session = EndpointSession::new(
-        ObservedTransport {
-            inner,
-            observed: observed.clone(),
-        },
+        observed_transport(inner, observed.clone()),
         role,
         SessionConfig::default(),
     )
     .unwrap();
-    let session = if role == SessionRole::Both {
-        session.with_device_writes(Arc::new(|_| true))
+    // A server role runs the read-only full server on the node's identity.
+    let session = if role != SessionRole::ClientOnly {
+        session.device(crate::identity::DeviceIdentity::new(123, 42).unwrap())
     } else {
         session
     };
@@ -175,10 +164,9 @@ async fn success(role: SessionRole) {
     assert_eq!(session.server().is_some(), role == SessionRole::Both);
     let db = session.database.as_ref().unwrap();
     let weak = Arc::downgrade(db);
-    assert_eq!(
-        Arc::strong_count(db),
-        if role == SessionRole::Both { 3 } else { 2 }
-    );
+    if role == SessionRole::ClientOnly {
+        assert_eq!(Arc::strong_count(db), 2);
+    }
     {
         let db = db.read().await;
         assert!(source(&db, selected()));
@@ -193,7 +181,7 @@ async fn success(role: SessionRole) {
     assert!(session.start().await.is_err());
     assert_eq!(observed.starts.load(Ordering::SeqCst), 1);
     if role == SessionRole::Both {
-        // The responder sees the same promoted object, not a second database.
+        // The server sees the same promoted object, not a second database.
         let mut peer =
             EndpointSession::new(peer, SessionRole::ClientOnly, SessionConfig::default()).unwrap();
         peer.start().await.unwrap();
@@ -219,7 +207,13 @@ async fn success(role: SessionRole) {
         selected()
     ));
     drop(session);
-    assert!(weak.upgrade().is_none());
+    // The server's drop hands its handle to a task, which lets go of it on
+    // the runtime's next turn, as a standalone server's drop does (#2617).
+    let wait = Duration::from_secs(1);
+    crate::session::eventually::eventually(wait, "the database let go", async || {
+        weak.upgrade().is_none()
+    })
+    .await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -228,12 +222,12 @@ async fn client_only_retains_source_database_and_startup_is_silent() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn both_shares_source_database_with_responder_and_startup_is_silent() {
+async fn both_shares_source_database_with_its_server_and_startup_is_silent() {
     success(SessionRole::Both).await;
 }
 
 async fn rejected(
-    session: &mut EndpointSession<ObservedTransport>,
+    session: &mut EndpointSession<TestTransport>,
     observed: &Observations,
     expected: &str,
 ) {
@@ -268,7 +262,7 @@ async fn rejected(
             Lifecycle::Ready as u8
         );
         assert!(!session.is_running());
-        assert!(session.requester.is_none() && session.responder.is_none());
+        assert!(session.requester.is_none() && session.server.is_none());
         assert!(session.dispatch_task.is_none() && session.egress.is_none());
         assert_eq!(observed.starts.load(Ordering::SeqCst), 0);
         assert_eq!(observed.sends.load(Ordering::SeqCst), 0);
@@ -506,7 +500,8 @@ async fn source_database_is_released_on_drop_without_stop() {
         session.start().await.unwrap();
         let weak = Arc::downgrade(session.database.as_ref().unwrap());
         drop(session);
-        // Dispatch owns a responder clone until its abort is observed.
+        // The session's aborted tasks, and on Both its server's, let go of
+        // their handles once the runtime drops them.
         crate::session::eventually::eventually(
             Duration::from_secs(2),
             "the dropped session lets go of the database",
@@ -613,16 +608,20 @@ async fn selected_source_requires_typed_recipient_before_start() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn source_both_requires_explicit_authorizer_before_owner_installation() {
-    let (mut session, _peer, observed) = session(SessionRole::Both);
-    session.device_write_authorizer = None;
+async fn source_both_needs_a_server_that_decides_mutations() {
+    // The read-only server a session runs by default decides every
+    // mutation, so source Audit starts beside it (#2617); a builder whose
+    // policy decides none is refused, before anything changes.
+    let (session, _peer, observed) = session(SessionRole::Both);
     let mut session = session
         .with_database(database())
-        .with_source_audit_reporter(selected());
-    rejected(&mut session, &observed, "explicit Device write authorizer").await;
-    session = session.with_device_writes(Arc::new(|_| false));
+        .with_source_audit_reporter(selected())
+        .with_server(bacnet_server::server::BACnetServer::generic_builder());
+    rejected(&mut session, &observed, "decides mutations").await;
+    session = session.with_server(super::read_only_server());
     session.start().await.unwrap();
     session.stop().await.unwrap();
+    assert_eq!(observed.starts.load(Ordering::SeqCst), 1);
 }
 
 #[path = "source_start_cleanup_tests.rs"]

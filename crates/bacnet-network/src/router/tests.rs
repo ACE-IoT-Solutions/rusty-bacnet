@@ -98,13 +98,13 @@ async fn router_forwards_between_networks() {
     router.stop().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn dropping_router_aborts_all_owned_port_tasks() {
-    use super::driven_port::Driven;
+    use super::driven_port::driven;
     use tokio::time::timeout;
 
-    let (first, first_handle) = Driven::new(1, 1497);
-    let (second, second_handle) = Driven::new(2, 1497);
+    let (first, first_handle) = driven(1, 1497);
+    let (second, second_handle) = driven(2, 1497);
     let ports = vec![
         RouterPort {
             transport: first,

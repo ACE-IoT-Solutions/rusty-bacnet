@@ -76,7 +76,7 @@ pub use event_reporting::{EventReporting, no_alarm_configured};
 pub use life_safety::LifeSafety;
 pub use local_input::{LocalInput, LocalInputValue};
 #[doc(hidden)]
-pub use log_buffer::LogBuffer;
+pub use log_buffer::{LogBuffer, NotificationLogger};
 pub(crate) use log_buffer::{impl_log_buffer, lend_log_buffer};
 pub use reliability_eval::ReliabilityEval;
 pub(crate) use reliability_eval::lend_reliability_eval;
@@ -85,7 +85,7 @@ pub(crate) use schedule_runner::lend_schedule_runner;
 #[doc(hidden)]
 pub use staging_source::StagingSource;
 pub(crate) use timed::same_handle;
-pub use timed::{Clocks, DeadlineWaker, MonotonicClock, Timed};
+pub use timed::{Clocks, DeadlineWaker, MonotonicClock, Retirement, Timed};
 
 /// OBJECT / OPTIONAL_FUNCTIONALITY_NOT_SUPPORTED: what an object answers for
 /// an input or operation it doesn't model, and what a host answers for an

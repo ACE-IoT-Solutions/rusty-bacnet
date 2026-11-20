@@ -5,17 +5,25 @@
 
 #[cfg(feature = "std")]
 use super::test_storage::WAIT;
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use super::test_storage::{
     MemoryPersistence, assert_refused, block_on, octets, persistent, positive_only, write,
     write_positive, zone_rule,
 };
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use super::*;
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use crate::durable::{DurableWrites, STAGED_WRITE_LIFETIME, SaveWait, StageStep};
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use bacnet_types::enums::PropertyIdentifier as P;
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use std::sync::Arc;
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use std::sync::atomic::Ordering;
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use std::time::Duration;
 
+#[cfg_attr(not(feature = "durable-writes"), allow(dead_code))]
 fn staged(step: StageStep) -> SaveWait {
     match step {
         StageStep::Staged(wait) => wait,
@@ -25,6 +33,7 @@ fn staged(step: StageStep) -> SaveWait {
 
 /// Stage a write of `value` to `property` at `index`, wait for its save, and
 /// return the wait to release it with.
+#[cfg(feature = "durable-writes")]
 fn stage_saved(
     rights: &mut AccessRightsObject,
     property: P,
@@ -37,6 +46,7 @@ fn stage_saved(
 }
 
 /// Stage a whole Positive_Access_Rules write of `rules` and wait for it.
+#[cfg(feature = "durable-writes")]
 fn stage_positive(rights: &mut AccessRightsObject, rules: &[BACnetAccessRule]) -> SaveWait {
     stage_saved(rights, P::POSITIVE_ACCESS_RULES, None, &octets(rules))
 }
@@ -72,6 +82,7 @@ fn a_staged_write_saves_while_the_object_serves_the_old_rules() {
     assert_eq!(storage.saves(), 2);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn indexed_index_zero_and_enable_writes_stage_too() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -84,7 +95,7 @@ fn indexed_index_zero_and_enable_writes_stage_too() {
             Some(0),
             PropertyValue::Unsigned(1),
         ),
-        (P::LOG_ENABLE, None, PropertyValue::Boolean(false)),
+        (P::ENABLE, None, PropertyValue::Boolean(false)),
     ] {
         let wait = stage_saved(&mut rights, property, index, &value);
         write(&mut rights, property, index, value).unwrap();
@@ -111,6 +122,7 @@ fn indexed_index_zero_and_enable_writes_stage_too() {
     assert!(!rebuilt.enable());
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_staged_element_write_is_taken_only_by_a_write_at_its_index() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -139,6 +151,7 @@ fn a_staged_element_write_is_taken_only_by_a_write_at_its_index() {
     assert_eq!(storage.snapshot(), Some(positive_only(&expected)));
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_staged_write_whose_save_fails_is_refused_and_the_old_state_stays() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -147,20 +160,21 @@ fn a_staged_write_whose_save_fails_is_refused_and_the_old_state_stays() {
     write_positive(&mut rights, &old).unwrap();
     storage.fail.store(true, Ordering::SeqCst);
     let enable = PropertyValue::Boolean(false);
-    let wait = stage_saved(&mut rights, P::LOG_ENABLE, None, &enable);
+    let wait = stage_saved(&mut rights, P::ENABLE, None, &enable);
     assert_refused(
-        write(&mut rights, P::LOG_ENABLE, None, enable),
+        write(&mut rights, P::ENABLE, None, enable),
         ErrorClass::DEVICE,
         ErrorCode::OPERATIONAL_PROBLEM,
     );
     rights.release_staged_write(&wait);
     rights.wait_for_saves();
     assert!(rights.enable());
-    assert!(!rights.property_saved(P::LOG_ENABLE));
+    assert!(!rights.property_saved(P::ENABLE));
     assert_eq!(storage.snapshot(), Some(positive_only(&old)));
     assert_eq!(storage.saves(), 1);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_staged_write_its_request_never_made_leaves_storage_with_the_served_state() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -186,6 +200,7 @@ fn a_staged_write_its_request_never_made_leaves_storage_with_the_served_state() 
     assert_eq!(rebuilt.negative_access_rules(), [zone_rule(2)]);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn an_operation_task_call_drops_a_forgotten_staged_write_once_its_lifetime_is_over() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -210,6 +225,7 @@ fn an_operation_task_call_drops_a_forgotten_staged_write_once_its_lifetime_is_ov
     assert_eq!(storage.saves(), 3);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn staging_skips_writes_the_object_does_not_save_or_will_refuse() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -236,8 +252,8 @@ fn staging_skips_writes_the_object_does_not_save_or_will_refuse() {
             PropertyValue::ApplicationData(vec![0xFF]),
         ),
         (P::NEGATIVE_ACCESS_RULES, Some(1), rules.clone()),
-        (P::LOG_ENABLE, None, PropertyValue::Null),
-        (P::LOG_ENABLE, Some(1), PropertyValue::Boolean(true)),
+        (P::ENABLE, None, PropertyValue::Null),
+        (P::ENABLE, Some(1), PropertyValue::Boolean(true)),
     ] {
         assert!(
             skipped(rights.stage_write(property, index, &value)),
@@ -248,7 +264,7 @@ fn staging_skips_writes_the_object_does_not_save_or_will_refuse() {
     assert_refused(
         write(
             &mut rights,
-            P::LOG_ENABLE,
+            P::ENABLE,
             Some(1),
             PropertyValue::Boolean(true),
         ),
@@ -270,6 +286,7 @@ fn staging_skips_writes_the_object_does_not_save_or_will_refuse() {
 // came back, as when the server stops mid-request and the database is
 // dropped (#1363). Storage then goes back to what the object served.
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn an_object_dropped_with_a_staged_write_puts_storage_back_to_the_served_state() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -286,6 +303,7 @@ fn an_object_dropped_with_a_staged_write_puts_storage_back_to_the_served_state()
     assert_eq!(persistent(&storage).positive_access_rules(), served);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn an_object_dropped_with_a_staged_write_whose_save_failed_leaves_storage_alone() {
     let storage = Arc::new(MemoryPersistence::default());
@@ -323,6 +341,7 @@ fn an_object_dropped_while_its_staged_save_runs_puts_storage_back_after_it() {
     assert_eq!(storage.saves(), 3);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn settling_forgotten_writes_puts_storage_back_and_frees_the_object() {
     let storage = Arc::new(MemoryPersistence::default());

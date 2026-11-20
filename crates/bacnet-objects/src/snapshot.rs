@@ -25,20 +25,25 @@
 //! | --- | --- | --- | --- | --- |
 //! | [`log`] | [`LogSnapshot`] | `RBLOGS01` | 1, 2, 3 (2, 3) | `FileLogPersistence`, one slot of two |
 //! | [`audit_log`] | [`AuditLogSnapshot`] | `RBALOG01` | 1, 2, 3 (3) | `FileAuditLogPersistence`, one slot of two |
-//! | [`write_config`] | [`WriteConfigSnapshot`] | `RBNWCF01` | kinds 1 to 5 (2 to 5) | `FileWriteConfigPersistence` |
+//! | [`write_config`] | [`WriteConfigSnapshot`] | `RBNWCF01` | kinds 1 to 6 (2 to 6) | `FileWriteConfigPersistence` |
 //! | [`notification_class`] | [`NotificationClassSnapshot`] | `RBNNCL01` | 1, 2 (1, 2) | `FileNotificationClassPersistence` |
 //! | [`notification_forwarder`] | [`ForwarderSnapshot`] | `RBNFWD01` | 1, 2 (1, 2) | `FileNotificationForwarderPersistence` |
-//! | [`tags`] | [`TagsSnapshot`] | `RBNTAG01` | 1 (1) | `FileTagsPersistence` |
-//! | [`color`] | [`ColorOutputSnapshot`] | `RBNCLR02` | 1 (`RBNCLR01`), 2 (2) | `FileColorOutputPersistence` |
+//! | [`tags`] | [`TagsSnapshot`] | `RBNTAG01` | 1, 2 (1, 2) | `FileTagsPersistence` |
+//! | [`color`] | [`ColorOutputSnapshot`] | `RBNCLR02` | 1 (`RBNCLR01`), 2, 3 (2, 3) | `FileColorOutputPersistence` |
 //! | [`access_rights`] | [`AccessRightsSnapshot`] | `RBNACR01` | 1, 2 (1, 2) | `FileAccessRightsPersistence` |
+//! | [`load_control`] | [`LoadControlSnapshot`] | `RBNLCT02` | 1 (`RBNLCT01`), 2 (1, 2) | `FileLoadControlPersistence` |
 //!
 //! A written Description (#2364) takes the newest version (or kind) in each
-//! row it changed: log schema version 3, write configuration kind 5 and the
-//! one-file formats' version 2. Only a snapshot holding one is written that
+//! row it changed: log schema version 3, write configuration kind 5, the
+//! colour output's version 3 and the other one-file formats' version 2.
+//! Only a snapshot holding one is written that
 //! way, so a snapshot without one keeps the octets an earlier release wrote,
 //! and a release that predates the version refuses one with it as
 //! [`UnknownVersion`](SnapshotErrorKind::UnknownVersion) or
-//! [`UnknownKind`](SnapshotErrorKind::UnknownKind).
+//! [`UnknownKind`](SnapshotErrorKind::UnknownKind). A written event
+//! algorithm parameter (#2331) takes write configuration kind 6 the same
+//! way, and a written Shed_Levels element (#2502) the Load Control's
+//! version 2.
 //!
 //! The one-file formats share a header: the eight-octet tag, which names the
 //! format and its version, then the four-octet identifier of the object the
@@ -124,12 +129,14 @@
 //! [`TagsSnapshot`]: crate::object_profile::TagsSnapshot
 //! [`ColorOutputSnapshot`]: crate::color::ColorOutputSnapshot
 //! [`AccessRightsSnapshot`]: crate::access_control::AccessRightsSnapshot
+//! [`LoadControlSnapshot`]: crate::load_control::LoadControlSnapshot
 
 pub mod access_rights;
 pub mod audit_log;
 pub mod color;
 mod error;
 pub(crate) mod framing;
+pub mod load_control;
 pub mod log;
 pub mod notification_class;
 pub mod notification_forwarder;
@@ -145,10 +152,18 @@ mod described_tests;
 #[cfg(test)]
 mod description_tests;
 #[cfg(test)]
+pub(crate) mod enrollment_parameters_tests;
+#[cfg(test)]
 mod one_file_tests;
+#[cfg(test)]
+mod parameter_list_tests;
+#[cfg(test)]
+mod parameters_tests;
 #[cfg(test)]
 mod reporting_tests;
 #[cfg(test)]
 mod slot_tests;
+#[cfg(test)]
+mod state_text_tests;
 #[cfg(test)]
 mod tests;

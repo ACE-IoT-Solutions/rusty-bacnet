@@ -108,11 +108,7 @@ pub(super) fn completed(report: &ScPemInspection) -> Document<Inspection<'_>> {
                 .map(|value| Certificate {
                     role: value.role.as_str(),
                     index: value.index,
-                    sha256: value
-                        .sha256
-                        .iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect(),
+                    sha256: bacnet_ops::octets::hex(&value.sha256),
                     metadata: value.metadata.as_ref().map(Metadata::from),
                     validity: value.validity.as_str(),
                     expiry: value.expiry.as_str(),
@@ -395,6 +391,12 @@ pub(super) fn input_error(error: ScInspectionError) -> ExecutionError {
                 }
                 ScInputErrorKind::MissingPrivateKey => {
                     "No supported unencrypted private key was found. Check the selected key file."
+                }
+                ScInputErrorKind::MultiplePrivateKeys => {
+                    "The key file holds more than one private key. Keep only the key of the operational certificate."
+                }
+                ScInputErrorKind::UnsupportedPrivateKey => {
+                    "The private key is encrypted or in a form TLS can't use, such as OpenSSH. Convert it to unencrypted PKCS#8 PEM."
                 }
                 ScInputErrorKind::ClockOutOfRange => {
                     "The clock cannot be represented in signed Unix seconds. Supply --at-unix explicitly."

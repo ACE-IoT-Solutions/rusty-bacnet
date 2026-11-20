@@ -9,7 +9,7 @@ use tokio::time::timeout;
 async fn running_client() -> ClientInner {
     pyo3::Python::initialize();
     let state = Arc::new(ClientState::default());
-    *state.client.write().await = Some(
+    *state.client.write().await = Some(Started::new(
         bacnet_client::client::BACnetClient::bip_builder()
             .interface(Ipv4Addr::LOCALHOST)
             .broadcast_address(Ipv4Addr::LOCALHOST)
@@ -17,7 +17,9 @@ async fn running_client() -> ClientInner {
             .build_into()
             .await
             .unwrap(),
-    );
+        bacnet_ops::WritePolicy::default(),
+        None,
+    ));
     state
 }
 
@@ -76,6 +78,11 @@ async fn failed_shutdown_keeps_client_closed_to_operations_until_retry() {
     assert!(error.to_string().contains("injected shutdown failure"));
     assert!(state.client.read().await.is_some());
     assert!(state.closing.load(Ordering::Acquire));
+    // An endpoint asked for a client learns why, not that it is stopping
+    // forever (#2617).
+    assert!(
+        matches!(state.liveness(), Liveness::Failed(cause) if cause.contains("injected shutdown failure"))
+    );
     assert!(started(&state).await.is_err());
     assert!(starting(&state).await.is_err());
     timeout(Duration::from_secs(3), close(Arc::clone(&state)))
@@ -84,6 +91,27 @@ async fn failed_shutdown_keeps_client_closed_to_operations_until_retry() {
         .unwrap();
     assert!(state.client.read().await.is_none());
     assert!(!state.closing.load(Ordering::Acquire));
+    assert_eq!(state.liveness(), Liveness::Stopped);
+}
+
+/// A call through the high-level client holds the same lease as any other,
+/// and its handle lets go of the low-level client when it ends, so the stop
+/// that follows owns the client and stops it (#2561).
+#[tokio::test]
+async fn a_stop_after_a_high_level_call_owns_the_client() {
+    let state = running_client().await;
+    {
+        let high = high_level(&state).await.unwrap();
+        let station = bacnet_ops::DeviceAddress::local(&[127, 0, 0, 1, 0xBA, 0xC0]).unwrap();
+        let device = high.device(station).await.unwrap();
+        assert!(!device.follows());
+    }
+    timeout(Duration::from_secs(3), close(Arc::clone(&state)))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(state.client.read().await.is_none());
+    assert!(high_level(&state).await.is_err());
 }
 
 /// Poll `future` once, so a lock acquisition in it joins the lock's queue.
@@ -132,4 +160,59 @@ async fn queued_work_behind_a_pending_entry_learns_of_close_at_once() {
         .unwrap()
         .unwrap();
     assert!(!state.closing.load(Ordering::Acquire));
+}
+
+/// A Python `Device` that goes away takes its handle out of the started
+/// client's map, so the map holds only handles someone can still call.
+#[tokio::test]
+async fn a_dropped_tie_forgets_its_handle_while_the_client_runs() {
+    let state = running_client().await;
+    let tie = crate::client::DeviceTie::new(Arc::clone(&state));
+    let other = crate::client::DeviceTie::new(Arc::clone(&state));
+    for tie in [&tie, &other] {
+        let held = tie
+            .hold(|client| async move {
+                let station =
+                    bacnet_ops::DeviceAddress::local(&[127, 0, 0, 1, 0xBA, 0xC0]).unwrap();
+                Ok(client.device(station).await.unwrap())
+            })
+            .await
+            .unwrap();
+        drop(held);
+        assert!(tie.peek(|_| ()).is_some());
+    }
+    assert_eq!(state.handles.lock().unwrap().len(), 2);
+    drop(tie);
+    // The client is still started, and only the other's handle is left.
+    assert!(started(&state).await.is_ok());
+    assert_eq!(state.handles.lock().unwrap().len(), 1);
+    assert!(other.peek(|_| ()).is_some());
+    close(Arc::clone(&state)).await.unwrap();
+    assert!(other.peek(|_| ()).is_none(), "a stop drops the rest");
+}
+
+/// A native stop that fails is recorded by the stop itself, so a stop()
+/// whose waiter went away still leaves the cause (#2617); a later stop,
+/// once the stray reference is gone, finishes.
+#[tokio::test]
+async fn a_failed_native_stop_is_recorded_without_a_waiter() {
+    let state = running_client().await;
+    let held = state.hold_core_for_test().await.expect("started");
+    state.closing.store(true, Ordering::Release);
+    let task = tokio::spawn(stop_native(Arc::clone(&state)));
+    let error = timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("references remain"), "{error}");
+    assert!(
+        matches!(state.liveness(), Liveness::Failed(cause) if cause.contains("references remain"))
+    );
+    drop(held);
+    timeout(Duration::from_secs(3), close(Arc::clone(&state)))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.liveness(), Liveness::Stopped);
 }

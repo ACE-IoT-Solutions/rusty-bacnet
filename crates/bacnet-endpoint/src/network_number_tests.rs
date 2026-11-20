@@ -1,6 +1,10 @@
 //! Raw BVLL/NPDU fixtures exercise the two actual NORMAL B/IP owners.
 use super::*;
-use bacnet_transport::{bip::BipTransport, port::ReceivedNpdu};
+use bacnet_transport::{
+    bip::BipTransport,
+    port::ReceivedNpdu,
+    test_transport::{SendMode, TestTransport},
+};
 use std::{
     net::{Ipv4Addr, SocketAddrV4},
     time::Duration,
@@ -13,79 +17,67 @@ mod sc_network_number_tests;
 fn selected() -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::NETWORK_PORT, 2).unwrap()
 }
-struct ObservedBip {
+/// A real B/IP link whose broadcasts are observed in `sent` before they are forwarded to it
+/// (a held send waits first), whose stop `gates` can hold, and whose
+/// received frames come from `input_override` when given.
+fn observed_bip(
     bip: BipTransport,
     sent: mpsc::Sender<Vec<u8>>,
     gates: Option<Arc<Gates>>,
     input_override: Option<mpsc::Receiver<ReceivedNpdu>>,
-}
-impl TransportPort for ObservedBip {
-    fn supports_local_nonrouter_number_controls(&self) -> bool {
-        self.bip.supports_local_nonrouter_number_controls()
+) -> TestTransport {
+    let (stop_gates, after_gates, send_gates) = (gates.clone(), gates.clone(), gates);
+    let mut builder = TestTransport::builder()
+        .inner(bip)
+        .unicast(SendMode::Forward)
+        .broadcast(SendMode::Forward)
+        .before_stop(move || {
+            let gates = stop_gates.clone();
+            async move {
+                if let Some(gates) = &gates
+                    && gates.hold_stop.load(Ordering::SeqCst)
+                {
+                    gates.stop_entered.notify_one();
+                    gates.stop_release.acquire().await.unwrap().forget();
+                }
+                Ok(())
+            }
+        })
+        .after_stop(move || {
+            if let Some(gates) = &after_gates {
+                gates.stop_finished.notify_one();
+            }
+            async { Ok(()) }
+        })
+        .on_send(move |frame| {
+            let (gates, sent) = (send_gates.clone(), sent.clone());
+            async move {
+                if !frame.broadcast {
+                    return Ok(());
+                }
+                if let Some(gates) = &gates
+                    && gates.hold_send.load(Ordering::SeqCst)
+                {
+                    gates.send_entered.notify_one();
+                    gates.send_release.acquire().await.unwrap().forget();
+                }
+                sent.try_send(frame.npdu.to_vec())
+                    .expect("bounded test observation");
+                Ok(())
+            }
+        });
+    if let Some(input) = input_override {
+        builder = builder.replace_inbound(input);
     }
-    fn bip_port(&self) -> Option<bacnet_transport::port::BipPort> {
-        self.bip.bip_port()
-    }
-    fn bip_broadcast_endpoint(&self) -> Option<SocketAddrV4> {
-        self.bip.bip_broadcast_endpoint()
-    }
-    fn retain_network_port_lease_internal(&mut self, lease: Arc<()>) -> Result<(), Error> {
-        self.bip.retain_network_port_lease_internal(lease)
-    }
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        let real = self.bip.start().await?;
-        Ok(self.input_override.take().unwrap_or(real))
-    }
-    async fn stop(&mut self) -> Result<(), Error> {
-        if let Some(gates) = &self.gates
-            && gates.hold_stop.load(Ordering::SeqCst)
-        {
-            gates.stop_entered.notify_one();
-            gates.stop_release.acquire().await.unwrap().forget();
-        }
-        self.bip.stop().await?;
-        if let Some(gates) = &self.gates {
-            gates.stop_finished.notify_one();
-        }
-        Ok(())
-    }
-    fn abort(&mut self) {
-        self.bip.abort();
-    }
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        self.bip.local_receive_apdu_capacity()
-    }
-
-    fn local_mac(&self) -> &[u8] {
-        self.bip.local_mac()
-    }
-    fn egress_apdu_limit(&self) -> u16 {
-        self.bip.egress_apdu_limit()
-    }
-    async fn send_unicast(&self, mac: &[u8], npdu: &[u8]) -> Result<(), Error> {
-        self.bip.send_unicast(mac, npdu).await
-    }
-    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        if let Some(gates) = &self.gates
-            && gates.hold_send.load(Ordering::SeqCst)
-        {
-            gates.send_entered.notify_one();
-            gates.send_release.acquire().await.unwrap().forget();
-        }
-        self.bip.send_broadcast(npdu).await?;
-        self.sent
-            .try_send(npdu.to_vec())
-            .expect("bounded test observation");
-        Ok(())
-    }
+    builder.build()
 }
 #[allow(
     clippy::large_enum_variant,
     reason = "one fixture per test; the two owners differ in size"
 )]
 enum Owner {
-    Server(bacnet_server::server::BACnetServer<ObservedBip>),
-    Endpoint(EndpointSession<ObservedBip>),
+    Server(bacnet_server::server::BACnetServer<TestTransport>),
+    Endpoint(EndpointSession<TestTransport>),
 }
 struct Fixture {
     owner: Owner,
@@ -126,12 +118,12 @@ impl Fixture {
             .with_bip_port(2, number.into(), Ipv4Addr::LOCALHOST, port)
             .unwrap();
         let db = identity.build_database().unwrap();
-        let transport = ObservedBip {
-            bip: BipTransport::new(Ipv4Addr::LOCALHOST, port, broadcast),
-            sent: sent_tx,
+        let transport = observed_bip(
+            BipTransport::new(Ipv4Addr::LOCALHOST, port, broadcast),
+            sent_tx,
             gates,
             input_override,
-        };
+        );
         let owner = if full {
             let mut config = crate::identity::server_config(&identity);
             config.registered_network_port = registered.then_some(selected());
@@ -237,7 +229,10 @@ async fn network_number_full_server_answers_configured_local_what_is() {
 async fn network_number_endpoint_answers_configured_local_what_is() {
     port_retry::rerun_on_lost_port(async || {
         let mut fixture = Fixture::start(false, true, 17).await;
-        fixture.send(0x04, &[1, 0x80, 0x12]).await;
+        // Asked of the node alone, so the answer comes at once; the wait
+        // before one to a broadcast question is on paused time in
+        // `local_network_tests::answering` (#2597).
+        fixture.send(0x0a, &[1, 0x80, 0x12]).await;
         fixture.response(17, 1).await;
         fixture.stop().await;
         assert_eq!(
@@ -403,7 +398,7 @@ async fn network_number_real_owners_learn_precedence_and_refuse_invalid_controls
 async fn network_number_real_owners_configured_and_unregistered_are_isolated() {
     for full in [true, false] {
         let mut configured = Fixture::start(full, true, 17).await;
-        configured.send(0x04, &[1, 0x80, 0x12]).await;
+        configured.send(0x0a, &[1, 0x80, 0x12]).await;
         configured.response(17, 1).await;
         for flag in [0, 1] {
             configured.announce(99, flag).await;
@@ -480,40 +475,36 @@ async fn network_number_real_owner_stop_cancel_joins_control_and_keeps_socket_le
         .await;
     }
 }
+/// A control waiting for the database's guard, which the application holds,
+/// is cancelled at stop, and the stop doesn't wait for the guard: the
+/// standalone server's and the endpoint's alike, whose server stops as the
+/// standalone one does (#2617).
 #[tokio::test]
-async fn network_number_held_database_cancels_control_before_endpoint_settlement() {
+async fn network_number_held_database_cancels_control_at_stop() {
     for full in [true, false] {
         let mut f = Fixture::start(full, true, 0).await;
         let db = f.database();
         let guard = db.read().await;
+        let requested = bacnet_server::network_number::control_writers_requested();
         f.announce(19, 1).await;
-        // Tokio's write-preferring lock makes a queued control writer observable.
+        // Wait for the control's own write guard request: the server's tasks
+        // queue for the guard too, so a queued writer alone proves nothing.
         tokio::time::timeout(Duration::from_secs(1), async {
-            while db.try_read().is_ok() {
+            while bacnet_server::network_number::control_writers_requested() == requested {
                 tokio::task::yield_now().await;
             }
         })
         .await
         .unwrap();
-        if full {
-            tokio::time::timeout(Duration::from_secs(1), f.stop())
-                .await
-                .unwrap();
-        } else {
-            // Endpoint stop now waits for the database's durable settlement,
-            // but first aborts and joins the queued Number control task.
-            assert!(
-                tokio::time::timeout(Duration::from_millis(20), f.stop())
-                    .await
-                    .is_err()
-            );
-            let Owner::Endpoint(endpoint) = &f.owner else {
-                unreachable!()
-            };
+        tokio::time::timeout(Duration::from_secs(1), f.stop())
+            .await
+            .unwrap();
+        if let Owner::Endpoint(endpoint) = &f.owner {
+            // The stop aborted and joined the queued Number control task.
             assert!(endpoint.network_number_task.is_none());
             assert_eq!(
                 endpoint.lifecycle.load(Ordering::Acquire),
-                Lifecycle::Stopping as u8
+                Lifecycle::Stopped as u8
             );
         }
         assert_eq!(
@@ -528,15 +519,14 @@ async fn network_number_held_database_cancels_control_before_endpoint_settlement
             PropertyValue::Unsigned(0)
         );
         drop(guard);
-        if !full {
-            tokio::time::timeout(Duration::from_secs(1), f.stop())
-                .await
-                .unwrap();
-        }
         assert!(db.write().await.remove(&selected()).unwrap().is_some());
     }
 }
 
+/// The SimpleAck to a reserved audit notification is admitted while the
+/// control learning network 19 waits behind a reader for the database's
+/// write guard: the answer path reads the published number, so it waits on
+/// neither the control nor the database (#2514).
 #[tokio::test]
 async fn network_number_endpoint_held_learning_preserves_audit_ack_progress() {
     use bacnet_endpoint_core::coordinator::CanonicalPeer;
@@ -544,20 +534,23 @@ async fn network_number_endpoint_held_learning_preserves_audit_ack_progress() {
     let mut f = Fixture::start(false, true, 0).await;
     let db = f.database();
     let guard = db.read().await;
+    let requested = bacnet_server::network_number::control_writers_requested();
     let Owner::Endpoint(endpoint) = &f.owner else {
         unreachable!()
     };
     let mac =
         bacnet_transport::bvll::encode_bip_mac([127, 0, 0, 1], f.peer.local_addr().unwrap().port());
     let (operation, acknowledged) = endpoint
-        .notifications
-        .as_ref()
+        .server()
         .unwrap()
+        .notification_pool()
         .reserve(CanonicalPeer::direct(&mac), S::CONFIRMED_AUDIT_NOTIFICATION)
         .unwrap();
     f.announce(19, 1).await;
+    // Wait for the control's own write guard request, not any queued
+    // writer: the server's tasks queue for the guard too (#2507).
     tokio::time::timeout(Duration::from_secs(1), async {
-        while db.try_read().is_ok() {
+        while bacnet_server::network_number::control_writers_requested() == requested {
             tokio::task::yield_now().await;
         }
     })
@@ -628,6 +621,7 @@ async fn network_number_endpoint_input_closed_keeps_admitted_control_lease_until
             Fixture::start_options(false, true, 17, Some(gates.clone()), Some(receiver)).await;
         let db = f.database();
         let guard = db.read().await;
+        let requested = bacnet_server::network_number::control_writers_requested();
         input
             .send(ReceivedNpdu {
                 direct_response: None,
@@ -640,8 +634,10 @@ async fn network_number_endpoint_input_closed_keeps_admitted_control_lease_until
             })
             .await
             .unwrap();
+        // Wait for the control's own write guard request, not any queued
+        // writer: the server's tasks queue for the guard too (#2507).
         tokio::time::timeout(Duration::from_secs(1), async {
-            while db.try_read().is_ok() {
+            while bacnet_server::network_number::control_writers_requested() == requested {
                 tokio::task::yield_now().await;
             }
         })

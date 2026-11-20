@@ -27,6 +27,13 @@ bacnet-transport.workspace = true
 
 [dev-dependencies]
 bacnet-bip-codec.workspace = true
+# The high-level client over an endpoint's full client (endpoint_full_client).
+bacnet-ops.workspace = true
+bacnet-transport = { workspace = true, features = ["test-support"] }
+# Fixed waits before a Network-Number-Is answer (network_number_answers).
+bacnet-network = { workspace = true, features = ["test-support"] }
+# The source a local write takes (`write::local::LocalCommandSource`).
+bacnet-device-core = { workspace = true, features = ["std"] }
 bacnet-mstp-codec.workspace = true
 bacnet-npdu = { workspace = true }
 bytes = { workspace = true, features = ["std"] }
@@ -55,6 +62,15 @@ path = "../../examples/rust/cov_subscriptions.rs"
 [[example]]
 name = "multi_object_server"
 path = "../../examples/rust/multi_object_server.rs"
+
+# Databases built from a point list (#2445): a server, and two endpoints.
+[[example]]
+name = "point_list_server"
+path = "../../examples/rust/point_list_server.rs"
+
+[[example]]
+name = "point_list_endpoint"
+path = "../../examples/rust/point_list_endpoint.rs"
 
 # The root README's Rust blocks (#2105): each file is a short header, then
 # the README block byte for byte, which website/tests/python checks.

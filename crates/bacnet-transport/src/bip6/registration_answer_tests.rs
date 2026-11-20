@@ -10,7 +10,7 @@ use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
 use super::foreign_retarget_tests::{
-    address_of, bbmd, changes, next, next_within, registration, started,
+    address_of, bbmd, changes, in_real_time, next, next_within, registration, started,
 };
 use super::frame::encoded;
 use super::*;
@@ -32,7 +32,31 @@ fn status(transport: &Bip6Transport) -> Bip6ForeignStatus {
 
 /// Wait, a millisecond at a time, until `transport` reports `want` as its
 /// BBMD's latest answer.
+///
+/// A held or refused answer comes from a datagram, which can be on its way
+/// for longer than the 10,000 steps below take on a paused clock (about
+/// 160 ms), so it is waited for in real time with the clock held still
+/// ([`in_real_time`]). Unanswered and none come from the clock moving, so
+/// those are waited for on it.
 async fn answered(transport: &Bip6Transport, want: Option<Bip6RegistrationAnswer>) {
+    if matches!(
+        want,
+        Some(Bip6RegistrationAnswer::Held | Bip6RegistrationAnswer::Refused)
+    ) {
+        in_real_time(async {
+            for _ in 0..5_000 {
+                if status(transport).last_answer == want {
+                    return;
+                }
+                tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_millis(1)))
+                    .await
+                    .unwrap();
+            }
+        })
+        .await;
+        assert_eq!(status(transport).last_answer, want);
+        return;
+    }
     for _ in 0..10_000 {
         if status(transport).last_answer == want {
             return;
@@ -47,7 +71,7 @@ async fn answered(transport: &Bip6Transport, want: Option<Bip6RegistrationAnswer
 #[tokio::test]
 async fn the_bbmds_answers_mark_the_registration_held_or_refused() {
     let a = bbmd().await;
-    let (mut transport, lent) = started(&a, 300).await;
+    let (transport, lent) = started(&a, 300).await;
     assert_eq!(status(&transport).last_answer, None);
     result(&a, &transport, Bvlc6ResultCode::SUCCESSFUL_COMPLETION).await;
     answered(&transport, Some(Bip6RegistrationAnswer::Held)).await;
@@ -83,7 +107,7 @@ async fn the_bbmds_answers_mark_the_registration_held_or_refused() {
 #[tokio::test]
 async fn an_answer_that_beats_the_send_still_counts() {
     let a = bbmd().await;
-    let (mut transport, lent) = started(&a, 300).await;
+    let (transport, lent) = started(&a, 300).await;
     result(&a, &transport, Bvlc6ResultCode::REGISTER_FOREIGN_DEVICE_NAK).await;
     answered(&transport, Some(Bip6RegistrationAnswer::Refused)).await;
     let target = Arc::clone(transport.foreign_target().unwrap());
@@ -116,7 +140,7 @@ async fn an_answer_that_beats_the_send_still_counts() {
 #[tokio::test]
 async fn an_activation_supersedes_a_registration_rather_than_leave_it_unanswered() {
     let a = bbmd().await;
-    let (mut transport, lent) = started(&a, 300).await;
+    let (transport, lent) = started(&a, 300).await;
     lent.activate(&changes(None, Some(120))).unwrap();
     assert_eq!(registration(&a).await, 120);
     let superseded = status(&transport);
@@ -162,13 +186,14 @@ async fn a_success_for_the_release_of_the_bbmd_left_is_not_counted() {
 /// unanswered until then is unanswered.
 ///
 /// Time is paused, and real sockets let the clock jump while a datagram is
-/// on its way, so the period is read at the gate, which a renewal reaches
-/// with no I/O in between, and the answers from the status, a millisecond
-/// at a time.
+/// on its way, so each read of the BBMD's socket holds the clock still
+/// ([`in_real_time`]); the period is read at the gate, which a renewal
+/// reaches with no I/O in between, and the answers from the status, a
+/// millisecond at a time.
 #[tokio::test(start_paused = true)]
 async fn a_refusal_keeps_the_schedule_and_silence_is_unanswered() {
     let peer = bbmd().await;
-    let (mut transport, _lent) = started(&peer, 60).await;
+    let (transport, _lent) = in_real_time(started(&peer, 60)).await;
     let target = Arc::clone(transport.foreign_target().unwrap());
     let reached = || target.reached.notified();
     result(
@@ -189,12 +214,11 @@ async fn a_refusal_keeps_the_schedule_and_silence_is_unanswered() {
         Some(Bip6RegistrationAnswer::Refused)
     );
     let long = Duration::from_secs(3600);
-    let ttl = next_within(&peer, long, |message| match message {
+    let renewal = next_within(&peer, long, |message| match message {
         Bvll6::RegisterForeignDevice { ttl, .. } => Some(ttl),
         _ => None,
-    })
-    .await;
-    assert_eq!(ttl, 60);
+    });
+    assert_eq!(in_real_time(renewal).await, 60);
     reached().await;
     assert_eq!(renewed.elapsed(), Duration::from_secs(30), "the usual 30 s");
     answered(&transport, Some(Bip6RegistrationAnswer::Unanswered)).await;
@@ -211,7 +235,7 @@ async fn a_refusal_keeps_the_schedule_and_silence_is_unanswered() {
 #[tokio::test(start_paused = true)]
 async fn activations_against_a_silent_bbmd_reach_no_answer() {
     let peer = bbmd().await;
-    let (mut transport, lent) = started(&peer, 300).await;
+    let (transport, lent) = in_real_time(started(&peer, 300)).await;
     let target = Arc::clone(transport.foreign_target().unwrap());
     for second in 1..=3 {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -230,7 +254,7 @@ async fn activations_against_a_silent_bbmd_reach_no_answer() {
 #[tokio::test(start_paused = true)]
 async fn a_failed_send_counts_nothing_and_keeps_the_one_before() {
     let peer = bbmd().await;
-    let (mut transport, _lent) = started(&peer, 60).await;
+    let (transport, _lent) = in_real_time(started(&peer, 60)).await;
     let target = Arc::clone(transport.foreign_target().unwrap());
     target
         .fail_send
@@ -250,5 +274,50 @@ async fn a_failed_send_counts_nothing_and_keeps_the_one_before() {
     assert!(nothing.is_err(), "the failed renewal sent {nothing:?}");
     result(&peer, &transport, Bvlc6ResultCode::SUCCESSFUL_COMPLETION).await;
     answered(&transport, Some(Bip6RegistrationAnswer::Held)).await;
+    transport.stop().await.unwrap();
+}
+
+/// The link's returns (#2572). B/IPv6 holds no broadcasts for the first
+/// registration, so a success after a broadcast went to the BBMD before any
+/// success, or after a refusal, is a return of the link: the broadcast may
+/// have gone nowhere. A success with nothing broadcast unproven since is
+/// none.
+#[tokio::test]
+async fn a_success_after_an_unproven_broadcast_is_a_return_of_the_link() {
+    let held = Some(Bip6RegistrationAnswer::Held);
+    let refused = Some(Bip6RegistrationAnswer::Refused);
+    let a = bbmd().await;
+    let (transport, lent) = started(&a, 300).await;
+    let returns = transport.link_returns().expect("a foreign device's");
+    transport.send_broadcast(&[1, 0x80, 0x12]).await.unwrap();
+    result(&a, &transport, Bvlc6ResultCode::SUCCESSFUL_COMPLETION).await;
+    answered(&transport, held).await;
+    assert_eq!(*returns.borrow(), 1, "the first success, after a broadcast");
+
+    // A broadcast while the BBMD holds the entry is proven; a refusal with
+    // nothing broadcast since leaves the next success no return.
+    transport.send_broadcast(&[1, 0x80, 0x12]).await.unwrap();
+    for (ttl, code, answer) in [
+        (120, Bvlc6ResultCode::REGISTER_FOREIGN_DEVICE_NAK, refused),
+        (90, Bvlc6ResultCode::SUCCESSFUL_COMPLETION, held),
+    ] {
+        lent.activate(&changes(None, Some(ttl))).unwrap();
+        assert_eq!(registration(&a).await, ttl);
+        result(&a, &transport, code).await;
+        answered(&transport, answer).await;
+    }
+    assert_eq!(*returns.borrow(), 1, "nothing went unproven");
+
+    // Refused, then a broadcast: the next success brings the link back.
+    lent.activate(&changes(None, Some(130))).unwrap();
+    assert_eq!(registration(&a).await, 130);
+    result(&a, &transport, Bvlc6ResultCode::REGISTER_FOREIGN_DEVICE_NAK).await;
+    answered(&transport, refused).await;
+    transport.send_broadcast(&[1, 0x80, 0x12]).await.unwrap();
+    lent.activate(&changes(None, Some(140))).unwrap();
+    assert_eq!(registration(&a).await, 140);
+    result(&a, &transport, Bvlc6ResultCode::SUCCESSFUL_COMPLETION).await;
+    answered(&transport, held).await;
+    assert_eq!(*returns.borrow(), 2);
     transport.stop().await.unwrap();
 }

@@ -15,18 +15,15 @@ async fn server_segments_large_rpm_response() {
     // an RPM response reading many properties will be large.
     let mut db = ObjectDatabase::new();
 
-    let mut device = DeviceObject::new(DeviceConfig {
+    let device = DeviceObject::new(DeviceConfig {
         identity: bacnet_objects::DeviceIdentity::new(5678, 555)
             .expect("valid Device identity")
             .with_name("Segmentation Test Device")
-            .with_segmentation(Segmentation::BOTH),
+            .with_segmentation(Segmentation::SEGMENTED_BOTH),
         vendor_name: "Rusty BACnet Seg Test".into(),
         ..DeviceConfig::default()
     })
     .unwrap();
-
-    let dev_oid = device.object_identifier();
-    let mut all_oids = vec![dev_oid];
 
     // Create 5 AnalogInput objects with long names to produce a large response.
     for i in 1..=5 {
@@ -40,11 +37,9 @@ async fn server_segments_large_rpm_response() {
         )
         .unwrap();
         ai.set_present_value(i as f32 * 10.0);
-        all_oids.push(ai.object_identifier());
         db.add(Box::new(ai)).unwrap();
     }
 
-    device.set_object_list(all_oids.clone());
     db.add(Box::new(device)).unwrap();
 
     let mut server = BACnetServer::bip_builder()
@@ -52,7 +47,7 @@ async fn server_segments_large_rpm_response() {
         .port(0)
         // The transmit side is gated on the advertisement too (Clause
         // 5.4.5.3 case (a)): segmenting the response requires saying so.
-        .device(bacnet_objects::DeviceIdentity::new(5678, 555).unwrap().with_segmentation(Segmentation::BOTH))
+        .device(bacnet_objects::DeviceIdentity::new(5678, 555).unwrap().with_segmentation(Segmentation::SEGMENTED_BOTH))
         .database(db)
         .build()
         .await

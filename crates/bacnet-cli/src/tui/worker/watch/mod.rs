@@ -21,13 +21,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bacnet_ops::engine::Engine;
 use bacnet_ops::label::{kebab, object_label};
 use bacnet_ops::limits::RequestLimits;
-use bacnet_ops::watch::{
-    self as hub, Backoff, Hub, Lease, Lifetime, MissingDevice, Reads, Samples, Snapshot, Watched,
-    Why,
+use bacnet_ops::watch::hub::{
+    self, Backoff, Hub, Lease, Lifetime, MissingDevice, Reads, Samples, Snapshot,
 };
+use bacnet_ops::watch::{Point as WatchPoint, Watched, Why};
+use bacnet_ops::{Client, DeviceAddress};
 use bacnet_transport::port::TransportPort;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::mpsc;
@@ -113,9 +113,10 @@ pub(crate) fn hub_options(options: &WatchOptions) -> hub::WatchOptions {
     }
 }
 
-/// A row's point as the hub watches it: Present_Value by SubscribeCOV on
-/// the object, any other property by SubscribeCOVProperty.
-pub(crate) fn hub_point(point: &Point) -> hub::Point {
+/// A row's point as the hub watches it, at its device's address `at`:
+/// Present_Value by SubscribeCOV on the object, any other property by
+/// SubscribeCOVProperty.
+pub(crate) fn hub_point(point: &Point, at: DeviceAddress) -> WatchPoint {
     let watched = if point.whole_object() {
         Watched::Object
     } else {
@@ -124,8 +125,8 @@ pub(crate) fn hub_point(point: &Point) -> hub::Point {
             index: None,
         }
     };
-    hub::Point {
-        device: point.device,
+    WatchPoint {
+        device: at,
         object: point.object,
         watched,
     }
@@ -136,12 +137,14 @@ pub(crate) fn hub_point(point: &Point) -> hub::Point {
 fn source_of(snapshot: &Snapshot, lifetime: u32) -> Option<Source> {
     match (&snapshot.why, snapshot.source) {
         (None, Some(hub::Source::Cov)) => Some(Source::Cov { lifetime }),
-        (Some(Why::Missing), _) => snapshot.note.clone().map(Source::Failed),
+        (Some(Why::Missing | Why::Moved { .. }), _) => snapshot.note.clone().map(Source::Failed),
         (Some(why), Some(hub::Source::Poll)) => Some(Source::Polled(match why {
             Why::Refused(error) => format!("COV refused: {error}"),
             Why::NoAnswer(error) => format!("no answer: {error}"),
+            Why::Full(error) => format!("COV table full: {error}"),
             Why::Lapsed(Some(error)) => format!("renewal failed: {error}"),
-            Why::Lapsed(None) | Why::Missing => "renewal stopped".to_string(),
+            Why::Lapsed(None) => "renewal stopped".to_string(),
+            other => format!("polled: {other:?}"),
         })),
         _ => None,
     }
@@ -183,7 +186,7 @@ impl<'s, T: TransportPort + 'static> State<'s, T> {
 
     fn command(&mut self, command: WatchCommand) {
         match command {
-            WatchCommand::Add { row, point } => self.add(row, point),
+            WatchCommand::Add { row, point, at } => self.add(row, point, at),
             WatchCommand::Remove { row } => self.remove(row),
             WatchCommand::Csv(on) => self.csv(on),
         }
@@ -198,12 +201,17 @@ impl<'s, T: TransportPort + 'static> State<'s, T> {
         }
     }
 
-    fn add(&mut self, id: RowId, point: Point) {
+    fn add(&mut self, id: RowId, point: Point, at: Option<DeviceAddress>) {
         if self.rows.len() >= MAX_ROWS || self.rows.contains_key(&id) {
             self.source(id, Source::Failed(format!("at most {MAX_ROWS} rows")));
             return;
         }
-        match self.hub.watch(hub_point(&point)) {
+        let Some(at) = at else {
+            let missing = format!("device {} is not in the device table", point.device);
+            self.source(id, Source::Failed(missing));
+            return;
+        };
+        match self.hub.watch(hub_point(&point, at)) {
             Ok(lease) => {
                 let samples = lease.samples();
                 self.rows.insert(
@@ -271,7 +279,7 @@ impl<'s, T: TransportPort + 'static> State<'s, T> {
                 // handed on by now: one not among the samples was lost.
                 row.writer.release(polled, &mut taken);
             }
-            row.started = snapshot.state != hub::State::Starting;
+            row.started = snapshot.state != hub::Phase::Starting;
             for Details { name, units } in taken.details {
                 self.outbox.push_back(WatchEvent::Details {
                     row: id,
@@ -304,7 +312,7 @@ impl<'s, T: TransportPort + 'static> State<'s, T> {
                     }
                     Source::Starting => {}
                 }
-                if snapshot.state == hub::State::Gone {
+                if snapshot.state == hub::Phase::Gone {
                     // Nothing watches it any more.
                     gone.push(id);
                 }
@@ -377,14 +385,14 @@ fn csv_line(point: &Point, written: &Written) -> String {
     )
 }
 
-/// The watch list's hub over `engine`. The session makes it before the
-/// MCP listener's, so it takes the engine's first range of subscriber
+/// The watch list's hub over `client`. The session makes it before the
+/// MCP listener's, so it takes the client's first range of subscriber
 /// process identifiers whatever order the workers start in (#2185).
 pub(crate) fn hub<T: TransportPort + 'static>(
-    engine: &Arc<Engine<T>>,
+    client: &Client<T>,
     options: &WatchOptions,
 ) -> Result<Hub<T>, String> {
-    Hub::new(Arc::clone(engine), hub_options(options))
+    Hub::new(client.clone(), hub_options(options))
 }
 
 /// Serve watch commands on `hub` until `commands` closes or the session

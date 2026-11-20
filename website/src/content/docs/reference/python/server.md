@@ -18,8 +18,9 @@ BACnet server that hosts objects and responds to client requests.
 For SC, sc\_ca\_cert, sc\_client\_cert, and sc\_client\_key must be nonempty
 paths; omission, None, or empty strings raise ValueError at construction.
 Their None defaults preserve non-SC use and positional layout only.
-start() loads the explicit site CA and operational cert/key before dialing
-or draining registrations. Local TLS configuration errors raise RuntimeError;
+start() loads the explicit site CA and operational cert/key, each file read
+up to 1 MiB, before dialing or draining registrations. Local TLS
+configuration errors, a larger file included, raise RuntimeError;
 repair the files and retry on the same server. Later startup failures do not
 have a general registration rollback guarantee.
 
@@ -30,7 +31,7 @@ Provision before deployment and durably reuse the same UUID for the device's
 lifetime. No generation, persistence, change detection, or version/variant
 enforcement is provided. Non-SC transports ignore this option.
 
-Segmentation defaults to NONE. When enabled, apdu\_segment\_timeout\_ms must
+Segmentation defaults to NO\_SEGMENTATION. When enabled, apdu\_segment\_timeout\_ms must
 be positive; it supplies Device APDU\_SEGMENT\_TIMEOUT, response SegmentACK
 waits, and the 4\*Tseg receive inactivity timer. A separate 16-second
 no-progress resource limit aborts abandoned request transfers with OTHER.
@@ -38,6 +39,14 @@ no-progress resource limit aborts abandoned request transfers with OTHER.
 `device_instance` takes 0 to 4194302. Instance 4194303 is reserved, as
 no object may have it, so it, or anything larger, raises ValueError at
 construction (#2171).
+
+`await endpoint.server()` returns this class too (#2617): the server
+the endpoint's session runs on the endpoint's one address, with its
+objects and the endpoint's server keywords. Its runtime calls work as
+here. Its `start()` and `stop()` raise RuntimeError, since the
+endpoint starts it and the endpoint's `close()` stops it, after which
+its calls raise RuntimeError too; so do its `add_*` and `configure_*`
+calls, since the endpoint configures it before its start.
 
 Usage:
 
@@ -111,9 +120,11 @@ def __init__(
     registered_network_port: Optional[int] = None,
     cov_policy: CovPolicy | None = None,
     time_sync_policy: TimeSyncPolicy | None = None,
+    utc_offset_minutes: int = 0,
+    daylight_savings: bool = False,
     share_port_by_address: bool = False,
     share_wildcard_port: bool = False,
-    segmentation_supported: Segmentation = Segmentation.NONE,
+    segmentation_supported: Segmentation = Segmentation.NO_SEGMENTATION,
     apdu_segment_timeout_ms: int = 5000,
     bbmd: Optional[Bbmd] = None,
     foreign_device: Optional[ForeignDevice] = None,
@@ -177,13 +188,24 @@ interface address itself, so devices on other addresses of this host
 can share the port. Needs an explicit interface and a nonzero port;
 broadcasts and unicast are still handled in the order they arrived.
 
-`share_wildcard_port` (B/IP only, default False): share an
-explicitly requested port with other sockets on this host that bind
-it the same way. By default the server claims its port, so a second
-bind of it fails, and `start()` raises when another socket holds
-it. With sharing, broadcasts reach every socket on the port, but
-each unicast reaches only one of them; prefer
-`share_port_by_address` or separate ports.
+`share_wildcard_port` (B/IP and B/IPv6 only, default False): share
+an explicitly requested port with other sockets on this host that
+bind it the same way. By default the server claims its port, so a
+second bind of it fails, and `start()` raises when another socket
+holds it. With sharing, broadcasts reach every socket on the port,
+but each unicast reaches only one of them; prefer
+`share_port_by_address` (B/IP) or separate ports. macOS and the
+BSDs never let two sockets share one address and port this way, so
+there the keyword only lets a stack bound to `0.0.0.0` or `::`
+start beside one bound to a specific address (a B/IPv6 foreign
+device), or the reverse. Another transport raises ValueError.
+
+`utc_offset_minutes` / `daylight_savings` (keyword-only,
+default 0 and False): the zone the Device clock starts in, as
+`set_clock_zone` takes them and checked the same way, at
+construction. Every `start()` begins in it, so the Schedule pass
+that runs as the server starts already judges local time there;
+`set_clock_zone` changes it while the server runs, until `stop()`.
 
 `bbmd` / `foreign_device` (at most one, else ValueError): run
 the device as a BBMD (B/IP only), or register it with a BBMD on
@@ -245,6 +267,12 @@ def add_analog_input(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    high_limit: float | None = None,
+    low_limit: float | None = None,
+    deadband: float | None = None,
+    limit_enable: BitString | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
     storage_path: Optional[str] = None,
     clear_written_reporting: bool = False,
 ) -> None
@@ -265,12 +293,66 @@ Event\_Detection\_Enable, Event\_Message\_Texts\_Config and the
 Event\_Algorithm\_Inhibit pair) and a written Description in that
 file: such a write is saved before it is answered, refused when it
 can't be, and served again after a restart; a Description past
-16 KiB is refused with NO\_SPACE\_TO\_WRITE\_PROPERTY.
+16 KiB is refused with NO\_SPACE\_TO\_WRITE\_PROPERTY. The analog,
+binary and multi-state builders keep the event algorithm parameters
+a peer writes there too, and the restarted object's event detection
+uses them: Time\_Delay and Time\_Delay\_Normal on all nine, High\_Limit,
+Low\_Limit, Deadband and Limit\_Enable on the analog ones, Alarm\_Value
+on a Binary Input or Value, and Alarm\_Values on a Multi-state Input
+or Value. The three multi-state builders keep a written State\_Text
+there too, and with it the state count, which the restarted object
+takes over `number_of_states`; with `storage_path` a write
+leaving more than 1,024 labels or a label past 512 octets of UTF-8
+is refused with NO\_SPACE\_TO\_WRITE\_PROPERTY. `add_access_door`,
+`add_access_zone` and `add_event_enrollment` keep theirs too,
+as each says.
 `clear_written_reporting=True` drops what was saved first,
-Description included, so the object starts from its defaults. A file that
-doesn't load raises BacnetError. Every analog, binary and multi-state
-builder takes both, as do `add_access_door`, `add_access_zone`,
-`add_event_enrollment` and `add_alert_enrollment`.
+Description and parameters included, so the object starts from its
+defaults. A file that doesn't load, or holds a value the object
+refuses on the wire, raises BacnetError, with the clear too: the
+file is read before it is cleared. One such value doesn't:
+saved Alarm\_Values naming a state past the object's count are
+restored as written. A peer that added a state and listed it
+leaves the State\_Text that added it saved beside the list, so the
+count comes back with it. A list naming a state past the count can
+still arise two ways: a file holding no State\_Text (one saved
+before State\_Text was kept among them) on an object now built with
+a smaller `number_of_states`, and an `alarm_values` keyword,
+checked against `number_of_states` before the file is read,
+beside a restored State\_Text with fewer states. Either way the
+object serves the list. A Multi-state Input reports no fault and
+alarms on the states it has; a Multi-state Value reports
+CONFIGURATION\_ERROR and is in FAULT, raising no OFFNORMAL on any
+listed state, until a list within its states is written. Every analog, binary and
+multi-state builder takes both, as do `add_access_door`,
+`add_access_zone`, `add_event_enrollment` and
+`add_alert_enrollment`.
+
+The parameter keywords configure those parameters (#2410):
+`high_limit`, `low_limit` and `deadband` (floats),
+`limit_enable` (a `BitString` of two bits, low limit first, the
+form a read of Limit\_Enable gives: `BitString(6, b"\x40")` enables
+the high limit alone), and `time_delay` and `time_delay_normal`
+(seconds) on the analog builders; `alarm_value` (0 or 1, for
+INACTIVE or ACTIVE) and the delays on a Binary Input or Value;
+`alarm_values` (a list of states) and the delays on a Multi-state
+Input or Value; the delays alone on a Binary or Multi-state Output.
+None leaves the object's default. Each value is checked as a write
+of the property is, and one the object refuses raises
+BacnetProtocolError: VALUE\_OUT\_OF\_RANGE for a non-finite limit, a
+negative deadband, an `alarm_value` past 1 or a state of 0 or
+past `number_of_states`, and INVALID\_DATA\_ENCODING for a
+`limit_enable` that isn't two bits wide. A negative delay raises
+OverflowError.
+The keywords apply before storage attaches, so they are never saved:
+a value a peer wrote and the file holds is served over its keyword,
+and the keyword applies again on a start that passes
+`clear_written_reporting=True`. A `write_property_local` of a
+parameter after the builder call is kept like a peer's write. An
+`alarm_values` keyword is checked against `number_of_states`,
+so a restored State\_Text with fewer states (#2414) leaves it naming
+a state past the count: a Multi-state Value then reports
+CONFIGURATION\_ERROR.
 
 ### BACnetServer.add_analog_output
 
@@ -284,12 +366,18 @@ def add_analog_output(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    high_limit: float | None = None,
+    low_limit: float | None = None,
+    deadband: float | None = None,
+    limit_enable: BitString | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
     storage_path: Optional[str] = None,
     clear_written_reporting: bool = False,
 ) -> None
 ```
 
-Profile keywords as on `add_analog_input`.
+Profile and parameter keywords as on `add_analog_input`.
 
 ### BACnetServer.add_analog_value
 
@@ -308,6 +396,12 @@ def add_analog_value(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    high_limit: float | None = None,
+    low_limit: float | None = None,
+    deadband: float | None = None,
+    limit_enable: BitString | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
     storage_path: Optional[str] = None,
     clear_written_reporting: bool = False,
 ) -> None
@@ -322,7 +416,7 @@ Priority\_Array), `"writable"` (a write replaces Present\_Value) or
 object: the writer of the last Present\_Value write, who alone may
 then correct it. A commandable object tracks its sources through
 Priority\_Array already, so asking it to track raises ValueError.
-Profile keywords as on `add_analog_input`.
+Profile and parameter keywords as on `add_analog_input`.
 
 ### BACnetServer.add_binary_input
 
@@ -332,15 +426,26 @@ def add_binary_input(
     instance: int,
     name: str,
     *,
+    polarity: Polarity | int = 0,
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    alarm_value: int | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
     storage_path: Optional[str] = None,
     clear_written_reporting: bool = False,
 ) -> None
 ```
 
-Profile keywords as on `add_analog_input`.
+Profile and parameter keywords as on `add_analog_input`.
+
+`polarity` is a `Polarity` or its number: NORMAL (0, the default)
+or REVERSE (1), which inverts the state `set_physical_input_local`
+reports on its way to Present\_Value. Any other int, negative
+included, raises BacnetProtocolError VALUE\_OUT\_OF\_RANGE. Clients can
+read Polarity but not write it; `set_polarity_local` changes it
+later.
 
 ### BACnetServer.add_binary_output
 
@@ -350,15 +455,25 @@ def add_binary_output(
     instance: int,
     name: str,
     *,
+    polarity: Polarity | int = 0,
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
     storage_path: Optional[str] = None,
     clear_written_reporting: bool = False,
 ) -> None
 ```
 
-Profile keywords as on `add_analog_input`.
+Profile and parameter keywords as on `add_analog_input`.
+
+`polarity` is a `Polarity` or its number: NORMAL (0, the default)
+or REVERSE (1), which inverts the state `physical_output_local`
+gives for the commanded Present\_Value. Any other int, negative
+included, raises BacnetProtocolError VALUE\_OUT\_OF\_RANGE. Clients can
+read Polarity but not write it; `set_polarity_local` changes it
+later.
 
 ### BACnetServer.add_binary_value
 
@@ -376,13 +491,17 @@ def add_binary_value(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    alarm_value: int | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
     storage_path: Optional[str] = None,
     clear_written_reporting: bool = False,
 ) -> None
 ```
 
 Optional BV Audit rows: None is absent; priority 'inherit' is present NULL.
-Access, Value\_Source and profile keywords as on `add_analog_value`.
+Access, Value\_Source and profile keywords as on `add_analog_value`,
+parameter keywords as on `add_analog_input`.
 
 ### BACnetServer.add_multistate_input
 
@@ -396,12 +515,15 @@ def add_multistate_input(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    alarm_values: list[int] | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
     storage_path: Optional[str] = None,
     clear_written_reporting: bool = False,
 ) -> None
 ```
 
-Profile keywords as on `add_analog_input`.
+Profile and parameter keywords as on `add_analog_input`.
 
 ### BACnetServer.add_multistate_output
 
@@ -415,12 +537,14 @@ def add_multistate_output(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
     storage_path: Optional[str] = None,
     clear_written_reporting: bool = False,
 ) -> None
 ```
 
-Profile keywords as on `add_analog_input`.
+Profile and parameter keywords as on `add_analog_input`.
 
 ### BACnetServer.add_multistate_value
 
@@ -436,12 +560,16 @@ def add_multistate_value(
     tags: Optional[list[NameValue]] = None,
     profile_location: Optional[str] = None,
     profile_name: Optional[str] = None,
+    alarm_values: list[int] | None = None,
+    time_delay: int | None = None,
+    time_delay_normal: int | None = None,
     storage_path: Optional[str] = None,
     clear_written_reporting: bool = False,
 ) -> None
 ```
 
-Access, Value\_Source and profile keywords as on `add_analog_value`.
+Access, Value\_Source and profile keywords as on `add_analog_value`,
+parameter keywords as on `add_analog_input`.
 
 ### BACnetServer.add_calendar
 
@@ -930,7 +1058,7 @@ VALUE\_OUT\_OF\_RANGE; a priority outside 0..=255 raises OverflowError.
 Peers can write Action (DIRECT until written).
 
 Controlled\_Variable\_Reference and Manipulated\_Variable\_Reference read
-as `application_data` holding the context-tagged reference; while
+as a `tagged` value holding the context-tagged reference; while
 unset they name instance 4194303 (an Analog Input and an Analog Output
 respectively), and writing a reference to that instance unsets them.
 A null written to any Loop reference succeeds and changes nothing.
@@ -998,8 +1126,85 @@ load raises BacnetError.
 ### BACnetServer.add_load_control
 
 ```python
-def add_load_control(self, instance: int, name: str) -> None
+def add_load_control(
+    self,
+    instance: int,
+    name: str,
+    *,
+    shed_levels: Optional[Sequence[tuple[int, str]]] = None,
+    shed: Optional[Callable[[ShedRequest], ShedStatus]] = None,
+    stop: Optional[Callable[[], object]] = None,
+    full_duty_baseline: Optional[float] = None,
+    state_description: Optional[str] = None,
+    agreed_duty_window: Optional[int] = None,
+    storage_path: Optional[str] = None,
+    clear_written_shed_levels: bool = False,
+) -> None
 ```
+
+Add a Load Control object (#2479).
+
+`shed_levels` sets Shed\_Levels and Shed\_Level\_Descriptions as
+`(level, description)` pairs in order of increasing shed; a level
+of 0, the no-shed level, raises BacnetProtocolError with
+VALUE\_OUT\_OF\_RANGE. Clients may rewrite a level but not resize the
+array.
+
+`shed` is the application's route for the loads. The object calls
+it with a `ShedRequest` each time it looks at a request, on every
+write that changes it, on a change of its shed levels or baseline
+through `set_load_control_shed_levels_local` or
+`set_load_control_full_duty_baseline_local`, and on the server's
+once-a-second pass while
+one is pending or under way, and it answers `(progress, expected, actual)`: `"waiting"`, `"shedding"` or `"compliant"`, then
+the expected and actual levels as `ShedLevel` mappings in the
+requested choice. `stop` (optional, needs `shed`) is called with
+no arguments once a request `shed` was asked about ends, removal
+of the object and a start that fails or is cancelled included. Make
+it idempotent: it may come with no loads shed, and twice with no
+`shed` between. Without `shed` nothing is shed: a request runs
+SHED\_NON\_COMPLIANT from Start\_Time to its end.
+
+Both run with the server's object database locked: they must return
+at once, may not await, and may not start a binding operation (it
+raises RuntimeError), nor wait on the event loop or another thread
+for one. An exception, or an answer of another shape (a coroutine
+from either callable included, closed unawaited), is shown through
+`sys.unraisablehook`; `shed` then counts as nothing shed, and the
+request ends anyway after `stop`.
+A callable that isn't callable raises TypeError, and `stop`
+without `shed` ValueError.
+
+`full_duty_baseline` (kilowatts, finite and not negative, or
+BacnetProtocolError) and `state_description` serve those optional
+properties, read-only; the baseline reaches `shed` as
+`ShedRequest.full_duty_baseline`. `agreed_duty_window` (minutes,
+0 when omitted) is the Duty\_Window a request takes when no client
+wrote one, and the one a finished request returns to.
+
+With `storage_path` the object keeps its shed request in that file
+(#2497): the request properties, the agreed Duty\_Window, the shed
+state, Enable, and a Description and the Shed\_Levels elements a
+client wrote (#2502). A rebuilt object looks at a request that was
+pending or being shed again, as though Start\_Time had just been
+written, and calls `shed` for it; one that was being shed calls
+`stop` when it ends. A write that cannot be saved is refused with
+DEVICE / OPERATIONAL\_PROBLEM. The shed levels, baseline and state
+description are configuration the file does not keep: give them as
+keywords at every start, so a restored request is put to `shed`
+with them. A written Shed\_Levels element wins over the
+`shed_levels` keyword's level for it, one past the end of the
+keyword's array is dropped, and `set_load_control_shed_levels_local`
+drops them all; `clear_written_shed_levels=True` drops them first,
+so the keyword applies whole (a refused level raises with the file
+untouched; without `storage_path` the keyword does nothing).
+Without `shed_levels` the written ones
+are neither served nor dropped: the file keeps them for a start that
+gives the levels. The
+`set_load_control_*_local` methods work only once the server runs,
+after that first look, so use them for changes while it runs. Give
+each Load Control its own file; one that holds another object's
+request raises BacnetError.
 
 ### BACnetServer.add_program
 
@@ -1029,8 +1234,9 @@ def add_lighting_output(
 
 Add a Lighting Output object.
 
-Its Lighting\_Command reads and writes as `application_data` holding
-the context-tagged BACnetLightingCommand, operation NONE
+Its Lighting\_Command reads as a `tagged` value, and writes as
+`application_data`, holding the context-tagged BACnetLightingCommand,
+operation NONE
 (`b"\x09\x00"`) until written. An `octet_string` or any other
 datatype is refused with INVALID\_DATA\_TYPE, and a command its operation
 can't take with VALUE\_OUT\_OF\_RANGE. The object carries each command
@@ -1119,8 +1325,13 @@ In\_Progress reads NOT\_CONTROLLED until a write drives the output.
 The file keeps a Default\_Color written over the network too, which
 wins over `default_color` at the next start; such a write is
 refused when it can't be saved. `clear_written_default=True` drops
-a saved one first, so `default_color` applies again. A file that
-doesn't load raises BacnetError.
+a saved one first, so `default_color` applies again. The file
+keeps a Description a client writes as well, across restarts: it is
+saved before the write is answered, refused with DEVICE /
+OPERATIONAL\_PROBLEM when it can't be, and refused with RESOURCES /
+NO\_SPACE\_TO\_WRITE\_PROPERTY past 16 KiB. `clear_written_default`
+leaves a saved Description in place. A file that doesn't load
+raises BacnetError.
 
 ### BACnetServer.add_color_temperature
 
@@ -1152,7 +1363,7 @@ clamped to them. A value out of range raises BacnetProtocolError.
 `default_color_temperature` (4000 unless given, clamped to the
 limits), `storage_path` and `clear_written_default` work as on
 `add_color`, with 0 keeping the temperature from before the
-restart.
+restart; the file keeps a written Description the same way.
 
 ### BACnetServer.add_channel
 
@@ -1297,7 +1508,14 @@ VALUE\_OUT\_OF\_RANGE, and nothing is registered.
 
 `storage_path` and `clear_written_reporting` keep the reporting
 settings and Description a peer writes in that file, as on
-`add_analog_input`.
+`add_analog_input`, and the door's event algorithm parameters:
+Time\_Delay, Time\_Delay\_Normal, Alarm\_Values, Fault\_Values and
+Masked\_Alarm\_Values. A list a peer wrote is served again after a
+restart, over its keyword here, and the door's event detection uses
+it; `clear_written_reporting=True` drops it, so the keyword
+applies again. A saved list is held to what a write is, so a file
+naming NORMAL or a number outside the enumeration raises
+BacnetError.
 
 ### BACnetServer.add_access_credential
 
@@ -1428,7 +1646,7 @@ Add an Access Rights object to the server (before starting).
 
 `positive_access_rules` and `negative_access_rules` set the two
 rule arrays as `AccessRule` mappings, and `enable` sets Enable
-(`PropertyIdentifier.LOG_ENABLE`, property 133), whose FALSE
+(`PropertyIdentifier.ENABLE`, property 133), whose FALSE
 disables every rule. Peers can write all three over the network. A
 wrong shape or type raises TypeError, an unknown or missing key or a
 device that isn't a Device raises ValueError, and a location naming
@@ -1532,7 +1750,13 @@ registered. Left out, the list starts empty.
 
 `storage_path` and `clear_written_reporting` keep the reporting
 settings and Description a peer writes in that file, as on
-`add_analog_input`.
+`add_analog_input`, and the zone's event algorithm parameters:
+Time\_Delay, Time\_Delay\_Normal and Alarm\_Values. A list a peer wrote
+is served again after a restart, over `alarm_values` here, and
+the zone's event detection uses it;
+`clear_written_reporting=True` drops it, so the keyword applies
+again. A saved list is held to what a write is, so a file naming
+NORMAL or a number outside the enumeration raises BacnetError.
 
 ### BACnetServer.add_credential_data_input
 
@@ -1590,6 +1814,10 @@ def add_event_enrollment(
     name: str,
     event_type: EventType = ...,
     *,
+    object_property_reference: tuple[ObjectIdentifier, PropertyIdentifier] | tuple[ObjectIdentifier, PropertyIdentifier, Optional[int]] | DeviceObjectPropertyReference | None = None,
+    event_parameters: Optional[PropertyValue] = None,
+    fault_parameters: Optional[PropertyValue] = None,
+    time_delay_normal: Optional[int] = None,
     storage_path: Optional[str] = None,
     clear_written_reporting: bool = False,
 ) -> None
@@ -1612,7 +1840,37 @@ it succeeds and changes nothing.
 
 `storage_path` and `clear_written_reporting` keep the reporting
 settings and Description a peer writes in that file, as on
-`add_analog_input`.
+`add_analog_input`. The file keeps a written Event\_Parameters,
+Fault\_Parameters and Time\_Delay\_Normal too, and the restarted
+enrollment is evaluated with them: Event\_Type and Fault\_Type follow
+the restored parameters. Time\_Delay is a member of
+Event\_Parameters and is kept with them. With `storage_path`,
+Event\_Parameters or Fault\_Parameters whose encoding is past 64 KiB
+are refused with NO\_SPACE\_TO\_WRITE\_PROPERTY; without it the
+enrollment takes them as before.
+
+`object_property_reference` names the property the enrollment
+monitors, as an `(object, property)` or `(object, property, array_index)` tuple or a `DeviceObjectPropertyReference` mapping,
+the forms `add_trend_log` takes for `reference`. Peers can't
+write it, so it applies at every start and is never saved; without
+it the enrollment monitors nothing.
+
+The parameter keywords configure those three (#2426):
+`event_parameters` and `fault_parameters`, each a
+`PropertyValue` in the form `write_property_local` takes for the
+property (the encoding through `PropertyValue.application_data`,
+or a value a read of the property returned), and
+`time_delay_normal` (seconds). None leaves the enrollment's
+default. Each value is checked as a write of the property is, and
+one the enrollment refuses raises BacnetProtocolError, such as
+octets that aren't one whole parameter value. A negative delay
+raises OverflowError. A keyword value is not held to the 64 KiB
+cap, which only a saved write meets. The keywords apply before storage attaches,
+so they are never saved: a value a peer wrote and the file holds is
+served over its keyword, and the keyword applies again on a start
+that passes `clear_written_reporting=True`. A
+`write_property_local` of a parameter after the builder call is
+kept like a peer's write.
 
 ### BACnetServer.add_elevator_group
 
@@ -1762,7 +2020,7 @@ def add_pulse_converter(
 
 Add a Pulse Converter (Clause 12.23) to the server (before starting).
 
-Input\_Reference reads as `application_data` holding the
+Input\_Reference reads as a `tagged` value holding the
 context-tagged reference; while unset it reads as Accumulator
 4194303's Present\_Value, and writing a reference to instance 4194303
 unsets it. A null written to it succeeds and changes nothing.
@@ -1923,7 +2181,8 @@ Start the server and begin accepting BACnet requests.
 An added object the database won't take raises ValueError: "duplicate
 object name: ..." for a name another object holds, or "object
 refused: ..." for any other reason, an instance of 4194303 among them
-(#2171).
+(#2171). An endpoint's server (`await endpoint.server()`) raises
+RuntimeError: it started with its endpoint.
 
 ### BACnetServer.stop
 
@@ -1931,11 +2190,16 @@ refused: ..." for any other reason, an instance of 4194303 among them
 def stop(self) -> Awaitable[None]
 ```
 
-Join admitted work and release the owned transport.
+Join admitted work and release the owned transport. An endpoint's
+server (`await endpoint.server()`) raises RuntimeError: the
+endpoint's `close()` stops it.
 
 Cancelling the returned Future retains shutdown ownership. Call stop()
 again to join it; a cleanup error also retains the owner for retry.
-Local mutation is rejected once shutdown starts.
+Local mutation is rejected once shutdown starts. Calls already running
+return first: a local write waiting for its event notifications (a
+Device recipient's I-Am) does so within cov\_retry\_timeout\_ms. Other
+calls run beside such a write rather than waiting for it.
 
 A Notification Forwarder, Notification Class or Audit Log write staged
 for a request that stop() cut short is dropped, and stop() waits, with
@@ -2061,13 +2325,104 @@ and Unsigned 1..=Number\_Of\_States for Multi-state Input. A noncommandable
 Analog, Binary or Multi-state Value takes the same datatype as its Input
 counterpart; a commandable one raises OPTIONAL\_FUNCTIONALITY\_NOT\_SUPPORTED
 (use `write_property_local` with a priority). Binary values are
-BACnet logical values after Polarity, not raw hardware/interface levels.
+BACnet logical values after Polarity, not raw hardware/interface levels
+(a raw Binary Input state goes through `set_physical_input_local`).
 An object with Out\_Of\_Service set rejects this update to preserve
 network simulation ownership. A Life Safety Point or Zone takes an
 Enumerated BACnetLifeSafetyState (standard, or 256..=65535) whether or
 not Out\_Of\_Service is set, since clients never write its Present\_Value;
 Tracking\_Value, Silenced and Operation\_Expected stay as they are. Other
 object types are not writable through this method.
+
+### BACnetServer.set_reliability_local
+
+```python
+def set_reliability_local(
+    self,
+    object_id: ObjectIdentifier,
+    reliability: Reliability,
+) -> Awaitable[None]
+```
+
+Set the Reliability the application works out for an object, such as
+NO\_SENSOR when its hardware reports a missing sensor.
+
+The built-in Inputs, Outputs and Values, the Integer Value, Loop,
+Schedule, Life Safety Point and Zone, Access Zone, Credential Data Input
+and Accumulator take it. Status\_Flags' FAULT follows the change, and a
+COV subscriber is notified of it. The value stays until the application
+sets another: the object's own evaluation doesn't clear it. Like the
+other `*_local` inputs it is not audited.
+
+An object with Out\_Of\_Service set, whose Reliability a client may be
+simulating, raises WRITE\_ACCESS\_DENIED, and so does one whose
+Reliability\_Evaluation\_Inhibit is TRUE. A value outside
+BACnetReliability (11, 26 to 63, or past 65535) raises
+VALUE\_OUT\_OF\_RANGE. An unknown object raises UNKNOWN\_OBJECT and one that
+takes no Reliability OPTIONAL\_FUNCTIONALITY\_NOT\_SUPPORTED. Raises
+RuntimeError before `start()`.
+
+### BACnetServer.set_physical_input_local
+
+```python
+def set_physical_input_local(
+    self,
+    object_id: ObjectIdentifier,
+    on: bool,
+) -> Awaitable[None]
+```
+
+Report the state the application read from a Binary Input's
+physical input, `True` for ON.
+
+In service Present\_Value becomes that state through Polarity: ACTIVE
+for ON under NORMAL (0), INACTIVE for ON under REVERSE (1). A logical
+value goes through `set_present_value_local` instead. This route is
+taken while Out\_Of\_Service is set too: Present\_Value then keeps a
+client's simulated value, and the return to service derives it from
+the latest input. Event and COV processing see the logical
+Present\_Value. An unknown object raises UNKNOWN\_OBJECT and any object
+other than a Binary Input OPTIONAL\_FUNCTIONALITY\_NOT\_SUPPORTED.
+Raises RuntimeError before `start()`.
+
+### BACnetServer.set_polarity_local
+
+```python
+def set_polarity_local(
+    self,
+    object_id: ObjectIdentifier,
+    polarity: Polarity | int,
+) -> Awaitable[None]
+```
+
+Set the Polarity of a Binary Input or Binary Output: a `Polarity`
+or its number, NORMAL (0) or REVERSE (1). Clients can't write it.
+
+In service a Binary Input derives Present\_Value again from the
+physical input it last took, and a Binary Output drives its physical
+output from its unchanged Present\_Value with the new Polarity; out of
+service neither changes until the return to service. Any other int,
+negative included, raises VALUE\_OUT\_OF\_RANGE before anything is
+awaited, an unknown object UNKNOWN\_OBJECT and any other object
+OPTIONAL\_FUNCTIONALITY\_NOT\_SUPPORTED. Raises RuntimeError before
+`start()`.
+
+### BACnetServer.physical_output_local
+
+```python
+def physical_output_local(self, object_id: ObjectIdentifier) -> Awaitable[bool]
+```
+
+The state to drive a Binary Output's physical output to, `True`
+for ON.
+
+In service it is the commanded Present\_Value through Polarity: ON for
+ACTIVE under NORMAL, OFF for ACTIVE under REVERSE. While
+Out\_Of\_Service is set it stays at the state it had when
+Out\_Of\_Service was set, though commands keep moving Present\_Value. An
+unknown object raises UNKNOWN\_OBJECT and any object other than a
+Binary Output OPTIONAL\_FUNCTIONALITY\_NOT\_SUPPORTED. Raises
+RuntimeError before `start()`.
 
 ### BACnetServer.report_access_event_local
 
@@ -2201,6 +2556,70 @@ larger number raises VALUE\_OUT\_OF\_RANGE and another datatype
 INVALID\_DATA\_TYPE. An unknown object raises UNKNOWN\_OBJECT and any
 object other than a Program OPTIONAL\_FUNCTIONALITY\_NOT\_SUPPORTED.
 
+### BACnetServer.set_load_control_shed_levels_local
+
+```python
+def set_load_control_shed_levels_local(
+    self,
+    object_id: ObjectIdentifier,
+    shed_levels: Sequence[tuple[int, str]],
+) -> Awaitable[None]
+```
+
+Replace a running Load Control's Shed\_Levels and Shed\_Level\_Descriptions (#2497).
+
+`shed_levels` is the `add_load_control` shape, `(level, description)` pairs in order of increasing shed, and may be a
+different number from before. A level of 0 raises
+BacnetProtocolError with VALUE\_OUT\_OF\_RANGE and changes nothing; an
+unknown object raises UNKNOWN\_OBJECT and any object other than a
+Load Control OPTIONAL\_FUNCTIONALITY\_NOT\_SUPPORTED. A request under
+way is put to `shed` again, and stays in its state unless the
+answer moves it; what that moves is reported through COV and saved
+with the request. Storage keeps only the elements a client wrote
+(#2502), not these levels: give them as `add_load_control`
+keywords at every start, so a restored request is put to `shed`
+with them. These replace the written elements, which win over the
+keywords' levels until then, and storage drops those in a save
+nobody waits for. If that save fails, the file holds the older state,
+written elements included, until a retry succeeds, and a restart
+before then serves them: the running server's next look tries again,
+and later tries back off to once every 64 s. Not audited, like
+`set_reliability_local`.
+
+### BACnetServer.set_load_control_full_duty_baseline_local
+
+```python
+def set_load_control_full_duty_baseline_local(
+    self,
+    object_id: ObjectIdentifier,
+    kilowatts: Optional[float],
+) -> Awaitable[None]
+```
+
+Set a running Load Control's Full\_Duty\_Baseline in kilowatts, or clear it with None (#2497).
+
+A negative or non-finite value raises VALUE\_OUT\_OF\_RANGE; the other
+errors are those of `set_load_control_shed_levels_local`. A request
+under way is put to `shed` again with the new
+`ShedRequest.full_duty_baseline`. Not audited.
+
+### BACnetServer.set_load_control_state_description_local
+
+```python
+def set_load_control_state_description_local(
+    self,
+    object_id: ObjectIdentifier,
+    text: Optional[str],
+) -> Awaitable[None]
+```
+
+Set a running Load Control's State\_Description, or clear it with None (#2497).
+
+The errors are those of `set_load_control_shed_levels_local`. A
+SubscribeCOVProperty on State\_Description hears of the change; the
+request is not looked at again. Clearing it sends a subscriber
+nothing, and the call is not audited.
+
 ### BACnetServer.report_device_reset_local
 
 ```python
@@ -2210,7 +2629,9 @@ def report_device_reset_local(self) -> Awaitable[None]
 Record a reset the application makes for its own reasons: a
 DEVICE\_RESET Audit record from this device, with no invoke ID
 (#1564). A peer's accepted restart is recorded already. RuntimeError
-when the server is not running.
+when the server is not running. On an endpoint's server (#2617) the
+record goes through the endpoint's `source_audit_reporter`, as its
+peers' resets do, and nothing is recorded without one.
 
 ### BACnetServer.purge_audit_log
 
@@ -2312,6 +2733,38 @@ raises OverflowError. An unknown object raises
 UNKNOWN\_OBJECT and any object other than an Accumulator
 OPTIONAL\_FUNCTIONALITY\_NOT\_SUPPORTED.
 
+### BACnetServer.set_clock_zone
+
+```python
+def set_clock_zone(
+    self,
+    utc_offset_minutes: int,
+    daylight_savings: bool,
+) -> Awaitable[None]
+```
+
+Change the Device clock's zone while the server runs.
+
+`utc_offset_minutes` becomes the Device's UTC\_Offset: minutes west
+of UTC, east negative, a multiple of 15 within -1440..=1440.
+`daylight_savings` becomes its Daylight\_Savings\_Status, which puts
+local time an hour ahead. A server starts in the zone its
+constructor's keywords of the same names give, and the change lasts
+until `stop()`.
+
+The clock keeps its UTC instant, and one a TimeSynchronization set
+stays set, so Local\_Date and Local\_Time move by the difference
+between the zones. Schedules, calendars, Notification Class
+recipient windows and new timestamps follow at their next look at
+the clock; timestamps already recorded stay. A request sees the old
+pair or the new, never one of each. Both properties stay read-only
+to a peer.
+
+An offset outside that range or off the 15-minute grid raises
+ValueError when called, and an int past 16 bits OverflowError;
+nothing changes. The awaitable raises RuntimeError before start and
+after stop, and ValueError if the local date would leave 1900..=2154.
+
 ### BACnetServer.comm_state
 
 ```python
@@ -2367,7 +2820,13 @@ apdu\_too\_large counts notifications not sent to one destination
 because they exceed the local APDU size, received\_not\_forwarded
 counts received event notifications no Notification Forwarder took,
 and forwarding\_cap\_dropped counts destinations dropped because one
-notification already had 64 across the forwarders.
+notification already had 64 across the forwarders. Each destination's
+notifications wait in a lane of their own to go out in order:
+lane\_full counts notifications dropped because their destination
+already had 64 waiting, lanes\_entries\_full those dropped with 1,024
+waiting in all, and lanes\_full those dropped with 256 destinations
+waiting. cov\_wait\_expired counts changes whose COV notifications went
+out before their event notifications had, past the APDU timeout.
 Fields are sampled independently. Raises
 RuntimeError before start and after stop.
 
@@ -2443,8 +2902,8 @@ async with ScHub(..., device_uuid=provisioned_hub_uuid) as hub:
 `ca_cert` must name trusted issuer CA PEM certificates for mutual TLS.
 Omitted, None, or empty values raise ValueError at construction. The None
 default retains the existing positional layout only; there is no insecure
-mode. Invalid/unreadable credentials raise BacnetError from start(), before
-binding. Connections require TLS 1.3 and a valid trusted client certificate.
+mode. Invalid/unreadable credentials, or a file over 1 MiB, raise BacnetError
+from start(), before binding. Connections require TLS 1.3 and a valid trusted client certificate.
 
 `device_uuid` is required, keyword-only and copied from bytes/bytearray into
 owned storage. Missing/None, wrong length or all-zero UUID raises ValueError
@@ -2611,6 +3070,21 @@ Properties:
 - `source_address: Optional[bytes]`: The originating MAC of a routed request, else None.
 - `invoke_id: int`
 
+## ShedRequest
+
+A Load Control shed request handed to the `shed` callable of
+`BACnetServer.add_load_control` (#2479). Not copyable or picklable.
+
+Properties:
+
+- `requested: ShedLevel`: Requested\_Shed\_Level.
+- `shed_level: Optional[int]`: For a level request, the index in `shed_levels` of the level whose action it selects: the one requested, or the nearest below. None for a percent or an amount, or with no level at or below it.
+- `start_time: tuple[BACnetDate, BACnetTime]`: Start\_Time.
+- `shed_duration: int`: Shed\_Duration, in minutes.
+- `duty_window: int`: Duty\_Window, in minutes.
+- `full_duty_baseline: Optional[float]`: Full\_Duty\_Baseline in kilowatts, or None while none is served.
+- `started: bool`: Whether Start\_Time has come.
+
 ## MutationContext
 
 One mutation a `mutation_policy` callable is asked to allow
@@ -2736,7 +3210,7 @@ Keys:
 
 `class EventNotificationCounters(TypedDict)`
 
-Undelivered event notifications, zero at each start; independent u64 totals, saturating at 2\*\*64-1.
+Undelivered event notifications, and confirmed ones that waited for an invoke ID or COV fanouts that stopped waiting; zero at each start; independent u64 totals, saturating at 2\*\*64-1.
 
 Keys:
 
@@ -2747,7 +3221,7 @@ Keys:
 - `device_recipient_unbound: int`
 - `recipient_unroutable: int`
 - `confirmed_broadcast_recipient: int`
-- `confirmed_no_invoke_id: int`
+- `confirmed_waited_for_invoke_id: int`
 - `confirmed_rejected: int`
 - `confirmed_unanswered: int`
 - `unconfirmed_send_failed: int`
@@ -2755,6 +3229,10 @@ Keys:
 - `received_not_forwarded: int`
 - `forwarding_cap_dropped: int`
 - `received_not_logged: int`
+- `lane_full: int`
+- `lanes_entries_full: int`
+- `lanes_full: int`
+- `cov_wait_expired: int`
 
 ## DccOutcomeCounters
 

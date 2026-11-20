@@ -27,10 +27,8 @@ impl BACnetServer {
         let prop_value = value.inner;
 
         let future = async move {
-            let guard = inner.lock().await;
-            let srv = guard
-                .as_ref()
-                .ok_or_else(|| PyRuntimeError::new_err("server not started"))?;
+            let guard = inner.read().await;
+            let srv = guard.server()?;
             srv.set_tracking_value_local(&oid, prop_value)
                 .await
                 .map_err(to_py_err)

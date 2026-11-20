@@ -1,13 +1,14 @@
 //! `bacnet_decode`: a frame, NPDU or APDU the agent passes as hex, decoded
-//! by the capture screen's decoder (`bacnet_ops::decode`). Nothing is sent,
-//! so it works in passive mode.
+//! by the capture screen's decoder: the summary from `bacnet_ops::decode`,
+//! the field tree from `bacnet_tool::decode::tree`. Nothing is sent, so it
+//! works in passive mode.
 //!
 //! The octets are the agent's, but whatever wrote them chose any character
 //! string inside: those come back as untrusted envelopes, like any device
 //! text.
 
 use bacnet_ops::decode::frame::{FrameSummary, Framing, summarize_frame, summarize_npdu};
-use bacnet_ops::decode::tree::{Field, decode_apdu_tree, decode_npdu_tree, decode_tree};
+use bacnet_tool::decode::tree::{Field, decode_apdu_tree, decode_npdu_tree, decode_tree};
 use bacnet_transport::port::TransportPort;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -98,32 +99,59 @@ fn field_schema() -> Value {
     })
 }
 
-fn output() -> Value {
+/// The summary's schema: every key [`summary_json`] writes, each required,
+/// and no other (a test holds the two together).
+fn summary_schema() -> Value {
     let text = json!({ "type": ["string", "null"] });
     let integer = json!({ "type": ["integer", "null"] });
+    let properties = json!({
+        "link_message": {
+            "type": "string",
+            "description": "The BVLC function or MS/TP frame type, or malformed; empty \
+                            for npdu and apdu input, which has no link layer. The data link \
+                            is the top-level link",
+        },
+        "broadcast": { "type": "boolean" },
+        "link_source": text,
+        "link_destination": text,
+        "original_source": {
+            "type": ["string", "null"],
+            "description": "The originating address a BBMD wrote into a forwarded B/IP \
+                            or B/IPv6 message; not the peer that sent it",
+        },
+        "snet": integer,
+        "dnet": integer,
+        "routed_source": text,
+        "routed_destination": text,
+        "network_message": text,
+        "pdu": text,
+        "invoke_id": integer,
+        "service": text,
+        "problem": text,
+        "parse_error": {
+            "type": ["string", "null"],
+            "description": "Set only when a link, NPDU or APDU header fails to decode; a \
+                            valid Error, Reject, Abort or NAK has a problem and no parse_error",
+        },
+        "device": integer,
+    });
+    let required: Vec<&String> = properties
+        .as_object()
+        .map_or(Vec::new(), |p| p.keys().collect());
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false,
+    })
+}
+
+fn output() -> Value {
     schema::output(json!({
         "link": { "enum": ["bip", "bip6", "mstp", "sc", "npdu", "apdu"] },
         "octets": { "type": "integer" },
         "text": { "type": "string", "description": "One line: what the frame is" },
-        "summary": {
-            "type": "object",
-            "properties": {
-                "link": { "type": "string" },
-                "broadcast": { "type": "boolean" },
-                "link_source": text,
-                "link_destination": text,
-                "snet": integer,
-                "dnet": integer,
-                "routed_source": text,
-                "routed_destination": text,
-                "network_message": text,
-                "pdu": text,
-                "invoke_id": integer,
-                "service": text,
-                "problem": text,
-                "device": integer,
-            },
-        },
+        "summary": summary_schema(),
         "tree": { "type": "array", "items": field_schema() },
         "fields_cut": { "type": "boolean" },
     }))
@@ -250,7 +278,7 @@ fn fields_json(fields: &[Field], budget: &mut usize, cap: usize) -> Vec<Value> {
 /// The summary as JSON.
 fn summary_json(summary: &FrameSummary) -> Value {
     json!({
-        "link": summary.link,
+        "link_message": summary.link_message,
         "broadcast": summary.broadcast,
         "link_source": summary.link_source,
         "link_destination": summary.link_destination,
@@ -273,8 +301,8 @@ fn summary_json(summary: &FrameSummary) -> Value {
 /// or PDU and service, invoke ID, device and problem.
 fn one_line(link: Link, summary: &FrameSummary) -> String {
     let mut parts = vec![link.name().to_string()];
-    if !summary.link.is_empty() {
-        parts.push(summary.link.clone());
+    if !summary.link_message.is_empty() {
+        parts.push(summary.link_message.clone());
     }
     if let Some(message) = &summary.network_message {
         parts.push(format!("network message {message}"));
@@ -347,6 +375,43 @@ pub(super) async fn run<T: TransportPort + 'static>(
 mod tests {
     use super::*;
 
+    /// What the tool returns for `apdu` given on its own, but its octet
+    /// count: the tree, the summary and the one-line text.
+    fn returned(apdu: &[u8]) -> Value {
+        let npdu = [&[0x01, 0x00][..], apdu].concat();
+        let summary = summarize_npdu(&npdu);
+        let mut budget = MAX_FIELDS;
+        json!({
+            "tree": fields_json(&[decode_apdu_tree(apdu)], &mut budget, 256),
+            "summary": summary_json(&summary),
+            "text": one_line(Link::Apdu, &summary),
+        })
+    }
+
+    /// DeviceCommunicationControl and ReinitializeDevice requests whose
+    /// passwords differ only in their characters return the same JSON,
+    /// where an earlier field's length takes in the password's header or
+    /// the password claims too few octets (#2618).
+    #[test]
+    fn requests_differing_only_in_their_passwords_return_the_same() {
+        let pairs = [
+            ("00050114 091C05 707764", "00050114 091C05 717764"),
+            ("00050111 0C19012C00 657A71", "00050111 0C19012C00 616263"),
+            ("00050111 093C192C05 707764", "00050111 093C192C05 414243"),
+            ("00050111 0B19012C19 414243", "00050111 0B19012C19 585958"),
+            ("00050111 19002A00 416F", "00050111 19002A00 427A"),
+            ("00050111 19002A00 416577", "00050111 19002A00 587A78"),
+            (
+                "00050114 0900190070 613535776F7264",
+                "00050114 0900190070 62363678707265",
+            ),
+        ];
+        for (one, other) in pairs {
+            let (one, other) = (octets(one).unwrap(), octets(other).unwrap());
+            assert_eq!(returned(&one), returned(&other), "{one:02X?}");
+        }
+    }
+
     #[test]
     fn hex_is_read_with_separators_and_capped() {
         assert_eq!(octets("0x81 0a:00-04").unwrap(), [0x81, 0x0A, 0x00, 0x04]);
@@ -380,6 +445,29 @@ mod tests {
             LABEL_CAP
         );
         assert!(json[1].get("truncated").is_none());
+    }
+
+    /// The output schema declares exactly the summary's keys, each required:
+    /// a key `summary_json` adds or drops fails here first.
+    #[test]
+    fn the_summary_schema_names_every_key_the_summary_writes() {
+        let keys = |value: &Value| -> Vec<String> {
+            let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+        let written = keys(&summary_json(&FrameSummary::default()));
+        let schema = &output()["properties"]["summary"];
+        assert_eq!(keys(&schema["properties"]), written);
+        let mut required: Vec<String> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|key| key.as_str().unwrap().to_string())
+            .collect();
+        required.sort();
+        assert_eq!(required, written);
+        assert_eq!(schema["additionalProperties"], json!(false));
     }
 
     #[test]

@@ -7,6 +7,7 @@ use super::response_admission::{
 use super::segmentation_context::InboundSegmentSource;
 use super::*;
 use crate::tsm::{CompletionOutcome, CoordinatedCompletion};
+use bacnet_network::layer::ReceivedApdu;
 
 impl<T: TransportPort + 'static> BACnetClient<T> {
     /// Dispatch a received APDU to the appropriate handler.
@@ -400,51 +401,18 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     .await;
                     return;
                 }
-                if req.service_choice == ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION {
-                    match COVNotificationRequest::decode_detailed(&req.service_request) {
-                        Ok(notification) => {
-                            debug!(
-                                object = ?notification.monitored_object_identifier,
-                                "Received ConfirmedCOVNotification"
-                            );
-                            let received = ReceivedCOVNotification::new(
-                                notification,
-                                source_mac,
-                                source_network,
-                                COVNotificationDelivery::Confirmed,
-                            );
-                            let response = confirmed_cov_ack_policy(&received);
-                            let _ = cov_tx.send(received);
-                            Self::send_confirmed_cov_notification_response(
-                                network,
-                                source_mac,
-                                source_network,
-                                req.invoke_id,
-                                req.service_choice,
-                                response,
-                                reply,
-                            )
-                            .await;
-                        }
-                        Err(e) => {
-                            let reject_reason = e.reject_reason();
-                            let e = e.into_error();
-                            warn_throttled!(
-                                decode_warning,
-                                error = %e,
-                                "Failed to decode ConfirmedCOVNotification"
-                            );
-                            Self::send_confirmed_request_reject(
-                                network,
-                                source_mac,
-                                source_network,
-                                reply,
-                                req.invoke_id,
-                                reject_reason,
-                            )
-                            .await;
-                        }
-                    }
+                if is_confirmed_cov_notification(req.service_choice) {
+                    Self::receive_confirmed_cov_notification(
+                        network,
+                        cov_tx,
+                        confirmed_cov_ack_policy,
+                        source_mac,
+                        source_network,
+                        reply,
+                        req,
+                        decode_warning,
+                    )
+                    .await;
                 } else if req.service_choice == ConfirmedServiceChoice::CONFIRMED_EVENT_NOTIFICATION
                 {
                     Self::receive_confirmed_event_notification(
@@ -482,47 +450,21 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                 vendor = i_am.vendor_id,
                                 "Received IAm"
                             );
-                            let (src_net, src_addr) = match source_network {
-                                Some(npdu_addr) if !npdu_addr.mac_address.is_empty() => {
-                                    (Some(npdu_addr.network), Some(npdu_addr.mac_address.clone()))
-                                }
-                                _ => (None, None),
-                            };
-                            let device = DiscoveredDevice {
-                                object_identifier: i_am.object_identifier,
-                                mac_address: MacAddr::from_slice(source_mac),
-                                max_apdu_length: i_am.max_apdu_length,
-                                segmentation_supported: i_am.segmentation_supported,
-                                max_segments_accepted: None,
-                                vendor_id: i_am.vendor_id,
-                                last_seen: std::time::Instant::now(),
-                                source_network: src_net,
-                                source_address: src_addr,
-                            };
-                            let status = {
-                                let mut table = device_table.lock();
-                                table.upsert_with_result(device.clone())
-                            };
-                            match status {
-                                DeviceUpsertResult::Inserted => {
-                                    let _ = device_tx.send(DeviceEvent {
-                                        kind: DeviceEventKind::Discovered,
-                                        device,
-                                    });
-                                }
-                                DeviceUpsertResult::Updated => {
-                                    let _ = device_tx.send(DeviceEvent {
-                                        kind: DeviceEventKind::Updated,
-                                        device,
-                                    });
-                                }
-                                DeviceUpsertResult::Collision { retained } => {
-                                    let _ = device_collision_tx.send(DeviceCollisionEvent {
-                                        retained,
-                                        incoming: device,
-                                    });
-                                }
-                                DeviceUpsertResult::Dropped => {}
+                            let routed_while_unknown = device_events::heard_i_am(
+                                &device_table.table,
+                                device_events::IAmSource {
+                                    mac: source_mac,
+                                    network: source_network,
+                                    this_network: network.local_network_number(),
+                                },
+                                &i_am,
+                                (device_tx, device_collision_tx),
+                            );
+                            // A routed row stored while the number is
+                            // unknown may be a local device's twin: ask
+                            // (#2572), through the Number owner.
+                            if routed_while_unknown {
+                                device_table.asking.want();
                             }
                         }
                         Err(e) => {
@@ -531,29 +473,17 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     }
                 } else if req.service_choice
                     == UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION
+                    || req.service_choice
+                        == UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION_MULTIPLE
                 {
-                    match COVNotificationRequest::decode(&req.service_request) {
-                        Ok(notification) => {
-                            debug!(
-                                object = ?notification.monitored_object_identifier,
-                                "Received UnconfirmedCOVNotification"
-                            );
-                            let received = ReceivedCOVNotification::new(
-                                notification,
-                                source_mac,
-                                source_network,
-                                COVNotificationDelivery::Unconfirmed,
-                            );
-                            let _ = cov_tx.send(received);
-                        }
-                        Err(e) => {
-                            warn_throttled!(
-                                decode_warning,
-                                error = %e,
-                                "Failed to decode UnconfirmedCOVNotification"
-                            );
-                        }
-                    }
+                    cov_notifications::receive_unconfirmed_cov_notification(
+                        cov_tx,
+                        source_mac,
+                        source_network,
+                        &req.service_request,
+                        req.service_choice,
+                        decode_warning,
+                    );
                 } else if req.service_choice
                     == UnconfirmedServiceChoice::UNCONFIRMED_EVENT_NOTIFICATION
                 {
@@ -717,6 +647,71 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     .send_apdu(buf, reply_mac, false, NetworkPriority::Normal)
                     .await
             }
+        }
+    }
+}
+
+/// Whether `service` is a confirmed COV notification, of one object or of
+/// several (Clauses 13.7 and 13.17).
+fn is_confirmed_cov_notification(service: ConfirmedServiceChoice) -> bool {
+    service == ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION
+        || service == ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION_MULTIPLE
+}
+
+/// Whether a confirmed COV notification is the several-object form
+/// (Clause 13.17). Named here, with the other services the client receives.
+pub(super) fn is_confirmed_cov_multiple(service: ConfirmedServiceChoice) -> bool {
+    service == ConfirmedServiceChoice::CONFIRMED_COV_NOTIFICATION_MULTIPLE
+}
+
+/// Whether an unconfirmed COV notification is the several-object form
+/// (Clause 13.18).
+pub(super) fn is_unconfirmed_cov_multiple(service: UnconfirmedServiceChoice) -> bool {
+    service == UnconfirmedServiceChoice::UNCONFIRMED_COV_NOTIFICATION_MULTIPLE
+}
+
+/// Whether a seated client beside a server role answers `request` itself:
+/// only a confirmed COV notification, of either form, which is about its own
+/// subscription (#2617, #2654). Every other Confirmed-Request is the server
+/// role's.
+pub(super) fn seated_client_answers(request: &ConfirmedRequestPdu) -> bool {
+    is_confirmed_cov_notification(request.service_choice)
+}
+
+/// A confirmed request that reached a seated client beside a server role and
+/// is the server's to answer. A ConfirmedEventNotification is published to
+/// the client's subscribers; the client sends nothing either way.
+pub(super) fn heard_for_the_server(
+    event_tx: &broadcast::Sender<ReceivedEventNotification>,
+    received: &ReceivedApdu,
+    request: &ConfirmedRequestPdu,
+    decode_warning: &WarnThrottle,
+) {
+    if request.service_choice != ConfirmedServiceChoice::CONFIRMED_EVENT_NOTIFICATION
+        || request.segmented
+        || received.is_group
+    {
+        debug!(
+            service = request.service_choice.to_raw(),
+            "Leaving a ConfirmedRequest to the node's server role"
+        );
+        return;
+    }
+    match ReceivedEventNotification::decode(
+        &request.service_request,
+        &received.source_mac,
+        &received.source_network,
+        EventNotificationDelivery::Confirmed,
+    ) {
+        Ok(notification) => {
+            let _ = event_tx.send(notification);
+        }
+        Err(error) => {
+            warn_throttled!(
+                decode_warning,
+                %error,
+                "Failed to decode ConfirmedEventNotification"
+            );
         }
     }
 }

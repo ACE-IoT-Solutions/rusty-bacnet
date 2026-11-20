@@ -316,7 +316,7 @@ fn help_scrolls_at_80x24() {
     assert!(top.contains("1-20 of"), "{top}");
     assert!(!top.contains("Commands (:)"), "{top}");
     // The last page ends with the command list's last rows.
-    assert!(end.contains("bbmd [ADDRESS]"), "{end}");
+    assert!(end.contains("find --global NAME"), "{end}");
     assert!(end.contains("mstp listen SECS"), "{end}");
     assert!(end.contains("reinit coldstart|warmstart|STATE"), "{end}");
     assert_snapshot!("help_devices_80x24_top", top);
@@ -558,15 +558,23 @@ fn a_session_reset_while_browsing_leaves_browse() {
     }
 }
 
-/// Showing the kept device again takes the address its row has now.
+/// Showing the kept device again takes the address its row has now. A
+/// device heard at a new address is a row of its own (#2560), and once the
+/// purge takes the old one the kept device shows there.
 #[test]
 fn the_kept_device_takes_its_new_address() {
     let mut app = browsing();
     press(&mut app, KeyCode::Char('1'));
-    worker(
-        &mut app,
-        WorkerEvent::Updated(row(1001, "10.0.1.99:47808", 260, 3)),
+    let old = app.devices.get(1001).unwrap().clone();
+    let moved = row(1001, "10.0.1.99:47808", 260, 3);
+    worker(&mut app, WorkerEvent::Discovered(moved.clone()));
+    assert_eq!(
+        app.devices.claims(1001).len(),
+        2,
+        "two rows while both claim it"
     );
+    worker(&mut app, WorkerEvent::Lost(old));
+    assert_eq!(app.devices.get(1001).unwrap().address, moved.address);
     app.settle();
     assert_eq!(app.devices.selected_row().unwrap().instance, 1001);
     assert!(press(&mut app, KeyCode::Enter).is_empty(), "no new read");

@@ -31,7 +31,7 @@ fn reliability(object: &dyn BACnetObject) -> PropertyValue {
 fn configured_session(
     role: SessionRole,
 ) -> (
-    EndpointSession<ObservedTransport>,
+    EndpointSession<TestTransport>,
     LoopbackTransport,
     Arc<Observations>,
 ) {
@@ -325,7 +325,7 @@ async fn direct_bip_ipv4_client_only_and_both_start_stop_silently() {
                 .build_session()
                 .unwrap();
             if role == SessionRole::Both {
-                session = session.with_device_writes(Arc::new(|_| true));
+                session = session.device(crate::identity::DeviceIdentity::new(123, 42).unwrap());
             }
             session = session.with_source_audit_reporter(selected());
             let bindings = session.source_audit_bindings.clone();

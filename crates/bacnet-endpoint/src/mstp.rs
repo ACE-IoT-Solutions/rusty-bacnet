@@ -9,16 +9,15 @@
 //!
 //! # Reply-path ownership (RB-17)
 //!
-//! Prompt replies route through the existing responder `reply_tx` path
-//! (MAC `AnswerDataRequest` window, no token needed). Token-owned
-//! initiations (client requests, broadcasts) plus deferred-after-postponed
-//! responses go through the single [`EndpointEgress`](bacnet_endpoint_core::endpoint_ingress::EndpointEgress)
-//! → `queue_npdu` path and transmit as `DataNotExpectingReply` at the next
-//! token opportunity. The two stay distinct by construction: the responder
-//! observes `reply_tx` present (prompt) or absent (token-owned), never both
-//! for one request. Deferred correlation is session-side (one-shot
-//! suspension on the session token, resolved via egress); the MAC keeps no
-//! extra state and no second serial owner exists.
+//! The server role's prompt answer to a DataExpectingReply frame's request
+//! goes through the request's one-use `reply_tx` (the MAC's `AnswerDataRequest`
+//! window, no token needed). Token-owned initiations (client requests,
+//! broadcasts, the server's notifications) and an answer that comes after
+//! the MAC has sent Reply Postponed go through the transport's `queue_npdu`
+//! path and transmit as `DataNotExpectingReply` at the next token
+//! opportunity. A request carries `reply_tx` (prompt) or not (token-owned),
+//! never both; the MAC keeps no extra state and no second serial owner
+//! exists.
 //!
 //! # Bounds and evidence level
 //!
@@ -250,16 +249,10 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
         self
     }
 
-    /// Sets the server role's read work limit (default 256): the result rows
-    /// one ReadProperty may expand, a Group's member rows included. See
-    /// [`SessionConfig::read_work_limit`]; zero fails
-    /// [`build_session`](Self::build_session) via [`EndpointSession::new`].
-    pub fn read_work_limit(mut self, limit: usize) -> Self {
-        self.session.read_work_limit = limit;
-        self
-    }
-
-    /// Sets client APDU timeout/retries (session-owned timers).
+    /// Sets the node's APDU timeout and retries (default 6000 ms and 3; see
+    /// [`SessionConfig::apdu_timeout_ms`]): the client roles' request
+    /// timing, and a full server's confirmed notifications and its Device's
+    /// APDU_Timeout and Number_Of_APDU_Retries.
     pub fn client_timers(mut self, timeout_ms: u64, retries: u8) -> Self {
         self.session.apdu_timeout_ms = timeout_ms;
         self.session.apdu_retries = retries;
@@ -275,7 +268,7 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
         self
     }
 
-    /// Attaches the object database for the server responder.
+    /// Attaches the object database, which a server role's server serves.
     ///
     /// Build it from the same identity passed to
     /// [`device`](Self::device) so Device readback agrees with I-Am.
@@ -358,7 +351,21 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
     /// identity resolves against the transport's receive capacity before
     /// generating or validating its Device. An identity-free session keeps
     /// the [`SessionConfig`] 480 default.
-    pub fn build_session(mut self) -> Result<EndpointSession<MstpTransport<S>>, Error> {
+    pub fn build_session(self) -> Result<EndpointSession<MstpTransport<S>>, Error> {
+        self.build_session_wrapped(std::convert::identity)
+    }
+
+    /// Builds the session [`build_session`](Self::build_session) would, with
+    /// its one MS/TP transport passed through `wrap` first (#2617), as
+    /// [`BipEndpointBuilder::build_session_wrapped`](crate::bip::BipEndpointBuilder::build_session_wrapped)
+    /// does. The transport's diagnostics are taken before `wrap`, so
+    /// [`EndpointSession::mstp_diagnostics`] keeps working. `wrap` must pass
+    /// every [`TransportPort`](bacnet_transport::port::TransportPort) call
+    /// through to the transport it is given.
+    pub fn build_session_wrapped<U: bacnet_transport::port::TransportPort + 'static>(
+        mut self,
+        wrap: impl FnOnce(MstpTransport<S>) -> U,
+    ) -> Result<EndpointSession<U>, Error> {
         self.validate_only()?;
         let bindings = std::mem::take(&mut self.source_audit_bindings);
         let routed = std::mem::take(&mut self.source_audit_routed);
@@ -369,7 +376,7 @@ impl<S: SerialPort> MstpEndpointBuilder<S> {
         let identity = self.identity.take();
         let transport = self.build_transport()?;
         let diagnostics = transport.diagnostics();
-        let mut endpoint = EndpointSession::new(transport, role, session)?;
+        let mut endpoint = EndpointSession::new(wrap(transport), role, session)?;
         endpoint.mstp_diagnostics = Some(diagnostics);
         if let Some(db) = database {
             endpoint = endpoint.with_database(db);

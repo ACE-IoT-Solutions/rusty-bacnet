@@ -47,14 +47,8 @@ impl DeviceAuthority<'_> {
     pub fn set_services_supported(&mut self, services: &[ServiceSupported]) {
         self.0.set_services_supported(services);
     }
-    pub fn set_object_list(&mut self, oids: Vec<ObjectIdentifier>) {
-        self.0.set_object_list(oids);
-    }
     pub fn set_system_status(&mut self, status: DeviceStatus) {
         self.0.set_system_status(status);
-    }
-    pub fn set_database_revision(&mut self, revision: u32) {
-        self.0.set_database_revision(revision);
     }
     pub fn set_backup_and_restore_state(&mut self, state: BackupAndRestoreState) {
         self.0.set_backup_and_restore_state(state);
@@ -65,14 +59,20 @@ impl DeviceAuthority<'_> {
     pub fn set_configuration_files(&mut self, files: Vec<ObjectIdentifier>) {
         self.0.set_configuration_files(files);
     }
-    pub fn write_property(
-        &mut self,
-        property: PropertyIdentifier,
-        index: Option<u32>,
-        value: PropertyValue,
-        priority: Option<u8>,
-    ) -> Result<(), Error> {
-        self.0.write_property(property, index, value, priority)
+    /// Declare the APDU_Timeout and Number_Of_APDU_Retries the device runs
+    /// with, which are read-only to the network: a node whose client and
+    /// server share one pair states that pair (#2617). Internal API, as
+    /// [`DeviceAuthority`] is.
+    #[doc(hidden)]
+    pub fn set_apdu_timing(&mut self, apdu_timeout_ms: u32, apdu_retries: u32) {
+        self.0.properties.insert(
+            PropertyIdentifier::APDU_TIMEOUT,
+            PropertyValue::Unsigned(u64::from(apdu_timeout_ms)),
+        );
+        self.0.properties.insert(
+            PropertyIdentifier::NUMBER_OF_APDU_RETRIES,
+            PropertyValue::Unsigned(u64::from(apdu_retries)),
+        );
     }
     pub fn provision_audit_recipient(&mut self, recipient: BACnetRecipient) -> Result<(), Error> {
         self.0.provision_audit_recipient(recipient)

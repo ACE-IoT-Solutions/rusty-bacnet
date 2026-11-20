@@ -16,6 +16,7 @@ use bacnet_device_core::cov::{CovCounters, CovPolicy};
 use bacnet_encoding::npdu::NpduAddress;
 use bacnet_objects::command_source::{CommandDeviceBinding, CommandOrigin};
 
+mod local_write;
 mod notify;
 
 /// Both sides of one fixture under one COV policy.
@@ -26,13 +27,26 @@ struct CovParity {
     ids: notify::Ids,
     /// Confirmed notifications both sides sent and nobody answered yet.
     outstanding: Vec<notify::Outstanding>,
+    /// The server's link, to fail a send on.
+    link: test_transport::TestTransportHandle,
+    /// The max-APDU-length-accepted the subscriber's requests state.
+    max_apdu: u16,
 }
 
 impl CovParity {
     async fn start(policy: CovPolicy) -> Self {
+        Self::start_from(policy, fixture).await
+    }
+
+    /// [`start`](Self::start), each side's database built by `fixture`.
+    async fn start_from(
+        policy: CovPolicy,
+        fixture: fn(&bacnet_objects::DeviceIdentity) -> ObjectDatabase,
+    ) -> Self {
         let identity = identity();
         let (transport, tx) = TestTransport::inbound(16);
         let sent = transport.sent();
+        let link = transport.handle();
         let config = ServerConfig {
             device: identity.clone(),
             cov_policy: policy.clone(),
@@ -61,6 +75,8 @@ impl CovParity {
             invoke_id: 0,
             ids: notify::Ids::default(),
             outstanding: Vec::new(),
+            link,
+            max_apdu: 1476,
         }
     }
 
@@ -110,7 +126,7 @@ impl CovParity {
         body: &[u8],
     ) -> (Vec<test_transport::SentFrame>, Bytes) {
         self.invoke_id = self.invoke_id.wrapping_add(1);
-        let apdu = confirmed(self.invoke_id, service, body, 1476);
+        let apdu = confirmed(self.invoke_id, service, body, self.max_apdu);
         let now = runtime_clock::core_now();
         let frames = self.deliver(&apdu, peer).await;
         let origin = CommandOrigin::Remote {

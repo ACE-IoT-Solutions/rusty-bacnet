@@ -1,51 +1,40 @@
 use super::*;
 use bacnet_transport::port::ReceivedNpdu;
+use bacnet_transport::test_transport::TestTransport;
 use tokio::sync::Semaphore;
 use tokio::time::{Duration, Instant, timeout};
 
-struct GateTransport {
-    receiver: Option<mpsc::Receiver<ReceivedNpdu>>,
+/// A link fed by `receiver`; each send (either kind) reports to `sent` (the
+/// destination MAC of a unicast, the NPDU of a broadcast), then waits for a
+/// permit from `gate`.
+fn gate_transport(
+    receiver: mpsc::Receiver<ReceivedNpdu>,
     sent: mpsc::Sender<Vec<u8>>,
     gate: Arc<Semaphore>,
-}
-impl TransportPort for GateTransport {
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        Ok(self.receiver.take().unwrap())
-    }
-    async fn stop(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-    async fn send_unicast(&self, _npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        self.sent.send(mac.to_vec()).await.unwrap();
-        self.gate.acquire().await.unwrap().forget();
-        Ok(())
-    }
-    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        self.sent.send(npdu.to_vec()).await.unwrap();
-        self.gate.acquire().await.unwrap().forget();
-        Ok(())
-    }
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        1476
-    }
-
-    fn local_mac(&self) -> &[u8] {
-        &[1]
-    }
+) -> TestTransport {
+    TestTransport::builder()
+        .inbound(receiver)
+        .on_send(move |frame| {
+            let (sent, gate) = (sent.clone(), Arc::clone(&gate));
+            async move {
+                let report = if frame.broadcast {
+                    frame.npdu.to_vec()
+                } else {
+                    frame.mac.to_vec()
+                };
+                sent.send(report).await.unwrap();
+                gate.acquire().await.unwrap().forget();
+                Ok(())
+            }
+        })
+        .build()
 }
 #[tokio::test]
 async fn endpoint_egress_discards_expired_and_canceled_commands_before_transport() {
     let (_input, receiver) = mpsc::channel(8);
     let (sent, mut emissions) = mpsc::channel(8);
     let gate = Arc::new(Semaphore::new(0));
-    let mut ingress = EndpointIngress::new(
-        GateTransport {
-            receiver: Some(receiver),
-            sent,
-            gate: Arc::clone(&gate),
-        },
-        8,
-    );
+    let mut ingress = EndpointIngress::new(gate_transport(receiver, sent, Arc::clone(&gate)), 8);
     let receivers = ingress.start().await.unwrap();
     let enqueue = |mac, deadline| {
         receivers
@@ -97,14 +86,7 @@ async fn network_number_egress_cancellation_retracts_queued_and_in_progress_comm
     let (_input, receiver) = mpsc::channel(8);
     let (sent, mut emissions) = mpsc::channel(8);
     let gate = Arc::new(Semaphore::new(0));
-    let mut ingress = EndpointIngress::new(
-        GateTransport {
-            receiver: Some(receiver),
-            sent,
-            gate: gate.clone(),
-        },
-        8,
-    );
+    let mut ingress = EndpointIngress::new(gate_transport(receiver, sent, gate.clone()), 8);
     let receivers = ingress.start().await.unwrap();
     let enqueue = |mac| {
         receivers
@@ -163,26 +145,21 @@ async fn network_number_egress_cancellation_retracts_queued_and_in_progress_comm
 }
 
 #[tokio::test]
-async fn owned_response_command_cancellation_is_independent_of_deadline() {
-    use bacnet_network::response_route::ResponseRoute;
+async fn owned_command_cancellation_is_independent_of_deadline() {
     let (_input, receiver) = mpsc::channel(4);
     let (sent, mut emissions) = mpsc::channel(4);
     let gate = Arc::new(Semaphore::new(0));
-    let mut ingress = EndpointIngress::new(
-        GateTransport {
-            receiver: Some(receiver),
-            sent,
-            gate: gate.clone(),
-        },
-        1,
-    );
+    let mut ingress = EndpointIngress::new(gate_transport(receiver, sent, gate.clone()), 1);
     let receivers = ingress.start().await.unwrap();
     let enqueue = |mac| {
-        receivers.egress.admit_response_apdu(
-            vec![0x60, 1, 9],
-            MacAddr::from_slice(&[mac]),
-            None,
-            ResponseRoute::unverified(),
+        receivers.egress.admit_owned_apdu(
+            vec![0x10, 8],
+            EndpointApduDestination::Direct {
+                destination_mac: MacAddr::from_slice(&[mac]),
+            },
+            false,
+            NetworkPriority::Normal,
+            Vec::new(),
         )
     };
     let first = enqueue(2).unwrap();

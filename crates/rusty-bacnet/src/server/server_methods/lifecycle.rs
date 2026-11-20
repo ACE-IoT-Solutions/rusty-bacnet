@@ -21,8 +21,11 @@ fn refused_object(error: bacnet_types::error::Error) -> PyErr {
 
 #[pymethods]
 impl BACnetServer {
-    /// Start the server. It will begin responding to BACnet requests.
+    /// Start the server. It will begin responding to BACnet requests. An
+    /// endpoint's server (#2617) raises RuntimeError: it started with its
+    /// endpoint.
     fn start<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.inner.owned("start()")?;
         crate::logging_bridge::refresh_at_start(py);
         // Validate the selected sink before TLS/serial/network preparation or
         // ownership transfer. Keep registration stable until it is drained.
@@ -101,7 +104,6 @@ impl BACnetServer {
             None
         };
 
-        let inner = self.inner.clone();
         let started = self.started.clone();
         let device_instance = self.device_instance;
         let audit_recipient = recipient_input.take();
@@ -143,6 +145,7 @@ impl BACnetServer {
         let cov_policy = self.cov_policy.clone();
         let router = self.router.clone();
         let time_sync_policy = self.time_sync_policy.clone();
+        let clock_zone = self.clock_zone;
 
         let objects: Vec<Box<dyn BACnetObject + Send>> = pending.drain(..).collect();
         // Taken under the pending lock, with the forwarders they belong to.
@@ -187,6 +190,7 @@ impl BACnetServer {
                     // instance; startup fails if another node on the
                     // link already uses it.
                     let mut bip6 = Bip6Transport::new(interface, port, Some(device_instance));
+                    bip6.set_share_wildcard_port(share_wildcard_port);
                     if let Some(foreign) = bip6_foreign {
                         bip6.register_as_foreign_device(foreign);
                     }
@@ -240,17 +244,12 @@ impl BACnetServer {
                     .map_err(to_py_err)?;
             }
 
-            // Collect object identifiers for device object-list
-            let dev_oid = device.object_identifier();
-            let mut object_list = vec![dev_oid];
-
-            // Move pending objects into the database
+            // Move pending objects into the database. The Device's
+            // Object_List is the database's own: the Device, then the
+            // objects in the order they were added (#2669).
             for obj in objects {
-                object_list.push(obj.object_identifier());
                 db.add(obj).map_err(refused_object)?;
             }
-
-            device.set_object_list(object_list);
             db.add(Box::new(device)).map_err(refused_object)?;
 
             let transport = match (prepared_transport, router) {
@@ -304,6 +303,7 @@ impl BACnetServer {
                 .get_event_information_budget(get_event_information_budget)
                 .cov_policy(cov_policy)
                 .time_sync_policy(time_sync_policy)
+                .clock_zone(clock_zone)
                 .transport(transport);
             if let Some(sink) = audit_notification_sink {
                 builder = builder.audit_notification_sink(sink.object_id);
@@ -333,7 +333,7 @@ impl BACnetServer {
             let srv = builder.build().await.map_err(to_py_err)?;
 
             // No fallible step once the server runs: it must reach `inner`.
-            let mut published = inner.lock().await;
+            let mut published = inner.write().await;
             *live_forwarder_save_counters
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = forwarder_save_counters;
@@ -345,15 +345,18 @@ impl BACnetServer {
         crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
-    /// Stop admitted work and release the owned transport.
+    /// Stop admitted work and release the owned transport, once the calls in
+    /// flight have returned: a local write waiting for its event
+    /// notifications returns within the COV retry timeout.
     /// Cancellation keeps shutdown available for a later stop to join.
     /// Waits, with no limit, for the saves durable objects have queued, and
-    /// warns while storage holds it up (#1363).
+    /// warns while storage holds it up (#1363). An endpoint's server
+    /// (#2617) raises RuntimeError: the endpoint's close stops it.
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = self.inner.clone();
+        let inner = self.inner.owned("stop()")?;
         let started = self.started.clone();
         let future = async move {
-            let mut guard = inner.lock().await;
+            let mut guard = inner.write().await;
             if let Some(srv) = guard.as_mut() {
                 srv.stop().await.map_err(to_py_err)?;
             }
@@ -374,10 +377,8 @@ impl BACnetServer {
         let inner = self.inner.clone();
         let transport_type = self.transport_type.clone();
         crate::py_async::future_into_py(py, async move {
-            let guard = inner.lock().await;
-            let srv = guard
-                .as_ref()
-                .ok_or_else(|| PyRuntimeError::new_err("server not started"))?;
+            let guard = inner.read().await;
+            let srv = guard.server()?;
             let mac = srv.local_mac();
             match transport_type.as_str() {
                 "bip" => {
@@ -438,8 +439,9 @@ impl BACnetServer {
     ///
     /// The value is encoded as the server sends it and decoded by the
     /// client's rules, so it has the shape a network `read_property` of the
-    /// same property returns. The server lock is held for the read, as for
-    /// [`write_property_local`](Self::write_property_local).
+    /// same property returns. It holds a read guard of the server, as
+    /// [`write_property_local`](Self::write_property_local) does, so it runs
+    /// beside a local write still waiting for its notifications.
     #[pyo3(signature = (object_id, property_id, array_index=None))]
     fn read_property<'py>(
         &self,
@@ -454,10 +456,8 @@ impl BACnetServer {
 
         crate::py_async::future_into_py(py, async move {
             let value = {
-                let guard = inner.lock().await;
-                let srv = guard
-                    .as_ref()
-                    .ok_or_else(|| PyRuntimeError::new_err("server not started"))?;
+                let guard = inner.read().await;
+                let srv = guard.server()?;
                 srv.read_local(&oid, pid, array_index)
                     .await
                     .map_err(to_py_err)?
@@ -496,12 +496,12 @@ impl BACnetServer {
     /// array index on a property that isn't an array yields
     /// `PROPERTY_IS_NOT_AN_ARRAY`.
     ///
-    /// The server lock is held for the whole call (including the post-write
-    /// COV/event sends), so concurrent Python calls on the same `BACnetServer`
-    /// serialize behind a local write. This is deliberate: it prevents a
-    /// `stop()` racing the notification sends mid-flight. A confirmed-COV send
-    /// to an unresponsive subscriber can therefore stall other Python calls
-    /// for up to the COV retry timeout.
+    /// A read guard of the server is held for the whole call, the post-write
+    /// COV and event sends included, so `stop()`, which takes the write
+    /// guard, never races those sends mid-flight; it waits for the call. Other
+    /// calls on the same `BACnetServer` take read guards too and go on beside
+    /// it, however long it waits for its event notifications (an unbound
+    /// Device recipient's I-Am, up to the COV retry timeout, #2537).
     #[pyo3(signature = (object_id, property_id, value, priority=None, array_index=None, *, source_object))]
     fn write_property_local<'py>(
         &self,
@@ -517,10 +517,10 @@ impl BACnetServer {
         let oid = object_id.to_rust();
         let pid = property_id.to_rust();
         let prop_value = value.inner;
-        let source = source_object
-            .map_or(bacnet_server::LocalCommandSource::ServerDevice, |object| {
-                bacnet_server::LocalCommandSource::Object(object.to_rust())
-            });
+        let source = source_object.map_or(
+            bacnet_device_core::write::local::LocalCommandSource::ServerDevice,
+            |object| bacnet_device_core::write::local::LocalCommandSource::Object(object.to_rust()),
+        );
 
         let future = async move {
             let mut encoded = bytes::BytesMut::new();
@@ -529,10 +529,8 @@ impl BACnetServer {
             // Hold the server guard for the duration of the call: the write
             // borrows `srv` and runs the post-write COV/event trigger path,
             // so the server must stay alive across the await.
-            let guard = inner.lock().await;
-            let srv = guard
-                .as_ref()
-                .ok_or_else(|| PyRuntimeError::new_err("server not started"))?;
+            let guard = inner.read().await;
+            let srv = guard.server()?;
             srv.write_local_encoded(&oid, pid, array_index, &encoded, priority, source)
                 .await
                 .map_err(to_py_err)
@@ -561,10 +559,8 @@ impl BACnetServer {
         let prop_value = value.inner;
 
         let future = async move {
-            let guard = inner.lock().await;
-            let srv = guard
-                .as_ref()
-                .ok_or_else(|| PyRuntimeError::new_err("server not started"))?;
+            let guard = inner.read().await;
+            let srv = guard.server()?;
             srv.set_present_value_local(&oid, prop_value)
                 .await
                 .map_err(to_py_err)
@@ -580,10 +576,8 @@ impl BACnetServer {
         let inner = self.inner.clone();
 
         crate::py_async::future_into_py(py, async move {
-            let guard = inner.lock().await;
-            let srv = guard
-                .as_ref()
-                .ok_or_else(|| PyRuntimeError::new_err("server not started"))?;
+            let guard = inner.read().await;
+            let srv = guard.server()?;
             Ok(crate::types::PyEnableDisable {
                 inner: bacnet_types::enums::EnableDisable::from(srv.comm_state()),
             })

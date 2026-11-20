@@ -1,7 +1,6 @@
 use std::num::NonZeroUsize;
 
 use super::super::*;
-use crate::types::PyTarget;
 
 #[pymethods]
 impl BACnetClient {
@@ -9,6 +8,8 @@ impl BACnetClient {
     ///
     /// Args:
     ///     address: Target device as "ip:port" (e.g. "192.168.1.100:47808")
+    ///         on the local link, or a `RoutedTarget` for a station behind
+    ///         a router (#2617)
     ///     object_id: Target object identifier
     ///     property_id: Property to read
     ///     array_index: Optional array index (for array properties)
@@ -18,24 +19,31 @@ impl BACnetClient {
     fn read_property<'py>(
         &self,
         py: Python<'py>,
-        address: PyTarget,
+        address: &Bound<'py, PyAny>,
         object_id: PyObjectIdentifier,
         property_id: PyPropertyIdentifier,
         array_index: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let address = routed::Address::of(address)?;
         let inner = self.inner.clone();
         let peers = PeerAddresses::for_transport(&self.transport_type);
         let oid = object_id.to_rust();
         let pid = property_id.to_rust();
 
         crate::py_async::future_into_py(py, async move {
-            let (mac, routing) = address.into_parts(peers)?;
-            let c = started(&inner).await?;
-            let ack = if let Some((dnet, dadr)) = routing {
-                c.read_property_routed(&mac, dnet, &dadr, oid, pid, array_index)
-                    .await
-            } else {
-                c.read_property(&mac, oid, pid, array_index).await
+            let ack = match address {
+                routed::Address::Local(address) => {
+                    let mac = routed::Address::local(&address, peers)?;
+                    let c = started(&inner).await?;
+                    c.read_property(&mac, oid, pid, array_index).await
+                }
+                routed::Address::Routed(target) => {
+                    let high = state::high_level(&inner).await?;
+                    let to = target.path(&high, &inner.route_misses).await?;
+                    high.low_level()
+                        .read_property(&to, oid, pid, array_index)
+                        .await
+                }
             }
             .map_err(to_py_err)?;
 
@@ -48,7 +56,8 @@ impl BACnetClient {
     /// Write a property on a remote BACnet device.
     ///
     /// Args:
-    ///     address: Target device as "ip:port"
+    ///     address: Target device as "ip:port" on the local link, or a
+    ///         `RoutedTarget` for a station behind a router (#2617)
     ///     object_id: Target object identifier
     ///     property_id: Property to write
     ///     value: PropertyValue to write (e.g. `PropertyValue.real(72.5)`)
@@ -58,7 +67,7 @@ impl BACnetClient {
     fn write_property<'py>(
         &self,
         py: Python<'py>,
-        address: PyTarget,
+        address: &Bound<'py, PyAny>,
         object_id: PyObjectIdentifier,
         property_id: PyPropertyIdentifier,
         value: PyPropertyValue,
@@ -66,6 +75,7 @@ impl BACnetClient {
         array_index: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         validate_write_priority(priority)?;
+        let address = routed::Address::of(address)?;
 
         let inner = self.inner.clone();
         let peers = PeerAddresses::for_transport(&self.transport_type);
@@ -74,27 +84,24 @@ impl BACnetClient {
         let prop_value = value.inner;
 
         let future = async move {
-            let (mac, routing) = address.into_parts(peers)?;
-            let c = started(&inner).await?;
             // Encode PropertyValue to application-tagged bytes
             let mut value_buf = BytesMut::new();
             encode_property_value(&mut value_buf, &prop_value).map_err(to_py_err)?;
-
-            if let Some((dnet, dadr)) = routing {
-                c.write_property_routed(
-                    &mac,
-                    dnet,
-                    &dadr,
-                    oid,
-                    pid,
-                    array_index,
-                    value_buf.to_vec(),
-                    priority,
-                )
-                .await
-            } else {
-                c.write_property(&mac, oid, pid, array_index, value_buf.to_vec(), priority)
-                    .await
+            let value = value_buf.to_vec();
+            match address {
+                routed::Address::Local(address) => {
+                    let mac = routed::Address::local(&address, peers)?;
+                    let c = started(&inner).await?;
+                    c.write_property(&mac, oid, pid, array_index, value, priority)
+                        .await
+                }
+                routed::Address::Routed(target) => {
+                    let high = state::high_level(&inner).await?;
+                    let to = target.path(&high, &inner.route_misses).await?;
+                    high.low_level()
+                        .write_property(&to, oid, pid, array_index, value, priority)
+                        .await
+                }
             }
             .map_err(to_py_err)?;
 
@@ -103,50 +110,84 @@ impl BACnetClient {
         crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
-    /// Send a WhoIs broadcast to discover devices.
+    /// Send a WhoIs broadcast to discover devices: on this network alone
+    /// unless `scope` names every network (`"global"`), one remote
+    /// network by its number (#2560), or one station by its address, which
+    /// is asked by unicast (#2561).
     ///
     /// Give both limits or neither, each from 0 to 4194303; one alone,
-    /// `low_limit` above `high_limit`, or a limit past 4194303 raises
-    /// `ValueError` before anything is sent.
-    #[pyo3(signature = (low_limit=None, high_limit=None))]
+    /// `low` above `high`, or a limit past 4194303 raises
+    /// `ValueError` before anything is sent, as does a scope that is none
+    /// of those.
+    #[pyo3(
+        signature = (*, low=None, high=None, scope=None),
+        text_signature = "($self, *, low=None, high=None, scope='local')"
+    )]
     fn who_is<'py>(
         &self,
         py: Python<'py>,
-        low_limit: Option<u32>,
-        high_limit: Option<u32>,
+        low: Option<u32>,
+        high: Option<u32>,
+        scope: Option<Bound<'py, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let range = device_range(low_limit, high_limit)?;
+        let range = device_range(low, high)?;
+        let scope = discovery_scope(scope.as_ref(), &self.transport_type, "Who-Is")?;
         let inner = self.inner.clone();
         let future = async move {
             let c = started(&inner).await?;
-            c.who_is(range).await.map_err(to_py_err)?;
-            Ok(())
+            let scope = scope.on(&c).await?;
+            send_who_is(&c, &scope, range).await
         };
         crate::py_async::future_into_py(py, crate::unit_result(future))
     }
 
-    /// Convenience: send WhoIs, wait for `timeout_ms` (default 3000), return discovered devices.
+    /// Find devices: one Who-Is, then the devices that answered it within
+    /// `wait` seconds (3 unless given), as a list of `Discovered`, one an
+    /// address. Only this call's answers: a device the client heard
+    /// earlier and that stays quiet now isn't listed
+    /// (`discovered_devices()` is the whole table).
     ///
-    /// Combines `who_is()` + `asyncio.sleep()` + `discovered_devices()` in one call,
-    /// with the same limits rule as `who_is()`.
-    #[pyo3(signature = (timeout_ms=3000, low_limit=None, high_limit=None))]
+    /// `scope` is where the Who-Is goes, as for `who_is()`: this network
+    /// alone by default. `low` and `high` ask only the instances between
+    /// them: give both or neither, each from 0 to 4194303. A row is a
+    /// `device()` target, and its `duplicate` says when another address
+    /// claims the same instance.
+    ///
+    /// Raised before anything is sent: `ValueError` for one limit alone,
+    /// `low` above `high`, a limit past 4194303, a scope that is none of
+    /// the forms, or a `wait` that isn't a number of seconds from 0 to
+    /// 3600; `TypeError` for a scope of another type.
+    #[pyo3(
+        signature = (*, scope=None, low=None, high=None, wait=3.0),
+        text_signature = "($self, *, scope='local', low=None, high=None, wait=3.0)"
+    )]
     fn discover<'py>(
         &self,
         py: Python<'py>,
-        timeout_ms: u64,
-        low_limit: Option<u32>,
-        high_limit: Option<u32>,
+        scope: Option<Bound<'py, PyAny>>,
+        low: Option<u32>,
+        high: Option<u32>,
+        wait: f64,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let range = device_range(low_limit, high_limit)?;
+        let range = device_range(low, high)?;
+        let scope = discovery_scope(scope.as_ref(), &self.transport_type, "Who-Is")?;
+        let wait = discover_wait(wait)?;
         let inner = self.inner.clone();
         crate::py_async::future_into_py(py, async move {
-            let c = started(&inner).await?;
-            c.who_is(range).await.map_err(to_py_err)?;
-            tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)).await;
-            let devices = c.discovered_devices().await;
-            Ok(devices
+            let high_level = state::high_level(&inner).await?;
+            let scope = scope.on(high_level.low_level()).await?;
+            let style = high_level.address_style();
+            let mut request = bacnet_ops::Discover::from(scope).wait(wait);
+            if let Some(range) = range {
+                request = request.range(range.low()..=range.high());
+            }
+            let found = high_level
+                .discover(request)
+                .await
+                .map_err(|error| crate::high_level::ops_err(error, style))?;
+            Ok(found
                 .into_iter()
-                .map(PyDiscoveredDevice::from_rust)
+                .map(|found| crate::high_level::PyDiscovered::new(found, style))
                 .collect::<Vec<_>>())
         })
     }
@@ -156,25 +197,34 @@ impl BACnetClient {
     // -----------------------------------------------------------------------
 
     /// Read multiple properties from multiple objects in a single request.
+    /// `address` is a local address or a `RoutedTarget`, as for
+    /// `read_property` (#2617).
     #[pyo3(signature = (address, specs))]
     fn read_property_multiple<'py>(
         &self,
         py: Python<'py>,
-        address: PyTarget,
+        address: &Bound<'py, PyAny>,
         specs: Vec<PyReadAccessSpec>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let address = routed::Address::of(address)?;
         let inner = self.inner.clone();
         let peers = PeerAddresses::for_transport(&self.transport_type);
         let rust_specs = py_to_rpm_specs(specs);
 
         crate::py_async::future_into_py(py, async move {
-            let (mac, routing) = address.into_parts(peers)?;
-            let c = started(&inner).await?;
-            let ack = if let Some((dnet, dadr)) = routing {
-                c.read_property_multiple_routed(&mac, dnet, &dadr, rust_specs)
-                    .await
-            } else {
-                c.read_property_multiple(&mac, rust_specs).await
+            let ack = match address {
+                routed::Address::Local(address) => {
+                    let mac = routed::Address::local(&address, peers)?;
+                    let c = started(&inner).await?;
+                    c.read_property_multiple(&mac, rust_specs).await
+                }
+                routed::Address::Routed(target) => {
+                    let high = state::high_level(&inner).await?;
+                    let to = target.path(&high, &inner.route_misses).await?;
+                    high.low_level()
+                        .read_property_multiple(&to, rust_specs)
+                        .await
+                }
             }
             .map_err(to_py_err)?;
             crate::py_async::attach(|py| rpm_ack_to_py(py, ack))
@@ -186,21 +236,29 @@ impl BACnetClient {
     fn write_property_multiple<'py>(
         &self,
         py: Python<'py>,
-        address: PyTarget,
+        address: &Bound<'py, PyAny>,
         specs: Vec<PyWriteAccessSpec>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let address = routed::Address::of(address)?;
         let inner = self.inner.clone();
         let peers = PeerAddresses::for_transport(&self.transport_type);
         let rust_specs = py_to_wpm_specs(specs)?;
 
         let future = async move {
-            let (mac, routing) = address.into_parts(peers)?;
-            let c = started(&inner).await?;
-            if let Some((dnet, dadr)) = routing {
-                c.write_property_multiple_routed(&mac, dnet, &dadr, rust_specs)
-                    .await
-            } else {
-                c.write_property_multiple(&mac, rust_specs).await
+            match address {
+                routed::Address::Local(address) => {
+                    let mac = routed::Address::local(&address, peers)?;
+                    let client = started(&inner).await?;
+                    client.write_property_multiple(&mac, rust_specs).await
+                }
+                routed::Address::Routed(target) => {
+                    let client = state::high_level(&inner).await?;
+                    let station = target.path(&client, &inner.route_misses).await?;
+                    client
+                        .low_level()
+                        .write_property_multiple(&station, rust_specs)
+                        .await
+                }
             }
             .map_err(to_py_err)?;
             Ok(())

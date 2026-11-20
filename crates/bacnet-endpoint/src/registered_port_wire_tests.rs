@@ -1,4 +1,4 @@
-//! Independent UDP oracle for the full-server and bounded endpoint owners.
+//! Independent UDP oracle for the full-server and endpoint owners.
 use super::*;
 use bacnet_encoding::{
     apdu::{Apdu, ComplexAck, ConfirmedRequest, decode_apdu, encode_apdu},
@@ -156,12 +156,15 @@ impl Owner {
                 crate::bip::BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST)
                     .role(SessionRole::ServerOnly)
                     .device(identity)
-                    .database(db)
-                    .device_writes(Arc::new(|_| true));
+                    .database(db);
             if registered {
                 builder = builder.registered_network_port(port());
             }
-            let mut endpoint = builder.build_session().unwrap();
+            // A server that lets any peer write, as the standalone one does.
+            let mut endpoint = builder
+                .build_session()
+                .unwrap()
+                .with_server(bacnet_server::server::BACnetServer::generic_builder());
             endpoint.start().await.unwrap();
             Self::Endpoint(Box::new(endpoint))
         }
@@ -358,8 +361,6 @@ async fn registered_port_capacity_1476_valid_wp_and_rp_through_both_owners() {
             .await
             .get_mut(&device())
             .unwrap()
-            .device_authority_internal()
-            .unwrap()
             .write_property(
                 P::DESCRIPTION,
                 None,
@@ -443,40 +444,6 @@ async fn registered_port_rpm_mixed_targets_and_missing_registration() {
         }
         owner.stop().await;
     }
-}
-
-#[tokio::test]
-async fn registered_port_shared_database_does_not_register_other_ingress() {
-    let mut owner = Owner::start(false, true).await;
-    let mut other = EndpointIngress::new(
-        BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST),
-        8,
-    );
-    let mut receivers = other.start().await.unwrap();
-    let address = receivers.bip_local_address.unwrap();
-    let responder = EndpointResponder::new(owner.database(), receivers.egress);
-    let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let request = rp(wildcard(), P::OBJECT_IDENTIFIER);
-    let (reply, handled) = tokio::join!(exchange(&peer, address, &request), async {
-        responder
-            .handle(receivers.inbound_requests.recv().await.unwrap())
-            .await
-            .unwrap()
-    });
-    assert!(handled);
-    let Apdu::Error(error) = decode_apdu(reply).unwrap() else {
-        panic!("other ingress must not inherit DB registration");
-    };
-    assert_eq!(
-        error.error_code,
-        bacnet_types::enums::ErrorCode::UNKNOWN_OBJECT
-    );
-    assert_eq!(
-        read(&peer, owner.address(), wildcard(), P::OBJECT_IDENTIFIER).await,
-        (port(), PropertyValue::ObjectIdentifier(port()))
-    );
-    other.stop().await.unwrap();
-    owner.stop().await;
 }
 
 #[tokio::test]

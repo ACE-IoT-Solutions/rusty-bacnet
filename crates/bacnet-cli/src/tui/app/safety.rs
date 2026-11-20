@@ -8,8 +8,8 @@
 
 use std::time::{Duration, Instant};
 
-use bacnet_ops::class::Class;
 use bacnet_ops::parse::{parse_property, parse_value_for};
+use bacnet_tool::class::Class;
 use bacnet_types::enums::PropertyIdentifier;
 
 use super::browser::ViewState;
@@ -31,7 +31,7 @@ pub(crate) const CONFIRM_GUARD: Duration = Duration::from_millis(300);
 
 /// How long a preview may wait for its confirmation before it is
 /// declined as stale.
-pub(crate) const PREVIEW_LIFETIME: Duration = bacnet_ops::safety::PREVIEW_LIFETIME;
+pub(crate) const PREVIEW_LIFETIME: Duration = bacnet_tool::safety::PREVIEW_LIFETIME;
 
 /// What `w` says in a read-only session.
 pub(crate) const ARM_HINT: &str = "Read-only: press W to arm a write session first.";
@@ -209,6 +209,8 @@ pub(crate) enum Modal {
     Arm(Form),
     /// Write (or relinquish, with only a priority) to an object.
     Write {
+        /// Where the device answers.
+        at: bacnet_ops::DeviceAddress,
         /// Device instance.
         device: u32,
         /// The object.
@@ -333,12 +335,14 @@ impl App {
             self.flash("Read an object first (Enter).", FLASH_FOR);
             return;
         };
-        let (device, object) = (browser.device, view.object);
-        let ours = self
-            .safety
-            .ledger
-            .iter()
-            .find(|e| e.device == device && e.object() == Some(object) && e.priority.is_some());
+        let (at, device, object) = (browser.at.clone(), browser.device, view.object);
+        // An entry from before #2560 has no address: its instance names it.
+        let ours = self.safety.ledger.iter().find(|e| {
+            e.device == device
+                && e.address.as_ref().is_none_or(|a| *a == at)
+                && e.object() == Some(object)
+                && e.priority.is_some()
+        });
         let winner = view.priority.as_ref().and_then(|p| p.winner());
         let priority = match (relinquish, ours, &view.priority) {
             (true, Some(entry), _) => entry.priority.map(|p| p.to_string()),
@@ -355,6 +359,7 @@ impl App {
         let mut form = Form::new(fields);
         form.focus = usize::from(!relinquish);
         self.overlay = modal(Modal::Write {
+            at,
             device,
             object,
             relinquish,
@@ -485,13 +490,14 @@ impl App {
                 _ => Some(Modal::Arm(form)),
             },
             Modal::Write {
+                at,
                 device,
                 object,
                 relinquish,
                 mut form,
             } => match key {
                 ModalKey::Esc => None,
-                _ if form.key(key) => match write_spec(device, object, relinquish, &form) {
+                _ if form.key(key) => match write_spec((&at, device), object, relinquish, &form) {
                     Ok(spec) => {
                         self.prepare(vec![spec], false, out);
                         return;
@@ -499,6 +505,7 @@ impl App {
                     Err(error) => {
                         form.error = Some(error);
                         Some(Modal::Write {
+                            at,
                             device,
                             object,
                             relinquish,
@@ -507,6 +514,7 @@ impl App {
                     }
                 },
                 _ => Some(Modal::Write {
+                    at,
                     device,
                     object,
                     relinquish,
@@ -764,6 +772,7 @@ impl App {
             out.push(Command::Browse {
                 req,
                 device: browser.device,
+                at: browser.at.clone(),
                 read: BrowseRead::Object(object),
             });
         }
@@ -781,7 +790,7 @@ fn declined(mut change: Change, out: &mut Vec<Command>) {
 
 /// The form's write, checked with the one-shot CLI's parsers.
 fn write_spec(
-    device: u32,
+    (at, device): (&bacnet_ops::DeviceAddress, u32),
     object: bacnet_types::primitives::ObjectIdentifier,
     relinquish: bool,
     form: &Form,
@@ -801,9 +810,9 @@ fn write_spec(
     let priority = match form.get("Priority") {
         "" if relinquish => return Err("Priority: the slot to relinquish, 1-16.".into()),
         "" => None,
-        text => match text.parse::<u8>() {
-            Ok(p) if (1..=16).contains(&p) => Some(p),
-            _ => {
+        text => match text.parse::<bacnet_ops::Priority>() {
+            Ok(p) => Some(p.get()),
+            Err(_) => {
                 return Err(
                     "Priority: 1-16, or blank for a property that isn't commandable.".into(),
                 );
@@ -811,6 +820,7 @@ fn write_spec(
         },
     };
     Ok(WriteSpec {
+        address: at.clone(),
         device,
         object,
         property,

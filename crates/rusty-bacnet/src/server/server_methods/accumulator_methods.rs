@@ -27,10 +27,8 @@ impl BACnetServer {
         let oid = object_id.to_rust();
 
         let future = async move {
-            let guard = inner.lock().await;
-            let srv = guard
-                .as_ref()
-                .ok_or_else(|| PyRuntimeError::new_err("server not started"))?;
+            let guard = inner.read().await;
+            let srv = guard.server()?;
             srv.add_pulses_local(&oid, pulses).await.map_err(to_py_err)
         };
         crate::py_async::future_into_py(py, crate::unit_result(future))

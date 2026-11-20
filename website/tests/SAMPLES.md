@@ -64,11 +64,11 @@ table; `test_site_samples.py` fails when this file is out of date. Run
 | guides/ai-agents.md:33 | sh | `bacnet mcp authorize --profile plant-a` | CLI arguments parsed by the CLI (--help) |  |
 | guides/ai-agents.md:45 | json | `{` | CLI arguments parsed by the CLI (--help) |  |
 | guides/ai-agents.md:58 | sh | `bacnet mcp serve --stdio --profile plant-a --passive` | CLI arguments parsed by the CLI (--help) |  |
-| guides/ai-agents.md:89 | toml | `# A plan grant: writes approved in advance` | run or compiled by another CI test |  |
+| guides/ai-agents.md:90 | toml | `# A plan grant: writes approved in advance` | run or compiled by another CI test |  |
 | guides/discovery.mdx:14 | sh | `bacnet discover --target 192.168.1.100 --wait 3` | run against a loopback server |  |
 | guides/discovery.mdx:22 | sh | `bacnet discover 1000-2000 --wait 3` | CLI arguments parsed by the CLI (--help) |  |
-| guides/discovery.mdx:34 | sh | `bacnet --foreign-bbmd 192.168.1.1 --ttl 300 discover --wa...` | CLI arguments parsed by the CLI (--help) |  |
-| guides/discovery.mdx:54 | sh | `bacnet find --name "Zone Temp" --wait 3` | CLI arguments parsed by the CLI (--help) |  |
+| guides/discovery.mdx:36 | sh | `bacnet --foreign-bbmd 192.168.1.1 --ttl 300 discover --wa...` | CLI arguments parsed by the CLI (--help) |  |
+| guides/discovery.mdx:56 | sh | `bacnet find --name "Zone Temp" --wait 3` | CLI arguments parsed by the CLI (--help) |  |
 | guides/mcp-hosts.md:16 | sh | `bacnet mcp authorize --profile plant-a` | CLI arguments parsed by the CLI (--help) |  |
 | guides/mcp-hosts.md:50 | sh | `claude mcp add rusty-bacnet -- bacnet mcp serve --stdio -...` | CLI arguments parsed by the CLI (--help) |  |
 | guides/mcp-hosts.md:58 | json | `{` | CLI arguments parsed by the CLI (--help) |  |
@@ -77,7 +77,7 @@ table; `test_site_samples.py` fails when this file is out of date. Run
 | guides/safe-writes.md:16 | sh | `bacnet readm 192.168.1.100 av:1 object-name,units,pv` | run against a loopback server |  |
 | guides/safe-writes.md:28 | sh | `bacnet write 192.168.1.100 av:1 pv 72.5 --priority 8` | run against a loopback server |  |
 | guides/safe-writes.md:39 | sh | `bacnet write 192.168.1.100 av:1 pv null --priority 8` | run against a loopback server |  |
-| guides/safe-writes.md:50 | sh | `bacnet --allow-write write 192.168.1.100 av:1 pv 72.5 --p...` | run against a loopback server |  |
+| guides/safe-writes.md:52 | sh | `bacnet --allow-write write 192.168.1.100 av:1 pv 72.5 --p...` | run against a loopback server |  |
 | integrate/pics.mdx:26 | rust | `use bacnet_objects::DeviceIdentity;` | compiled: a Cargo example's exact text |  |
 | integrate/router.mdx:40 | sh | `bacnet whois-router` | CLI arguments parsed by the CLI (--help) |  |
 | integrate/router.mdx:93 | toml | `<Code code={routerManifest} lang="toml" title="Cargo.toml...` | run or compiled by another CI test |  |
@@ -129,7 +129,7 @@ table; `test_site_samples.py` fails when this file is out of date. Run
 | start/local-lab.mdx:85 | powershell | `.\.venv\Scripts\python.exe loopback_lab.py --serve --seco...` | not checked (class F) | PowerShell; the job that runs this test is Linux only |
 | start/local-lab.mdx:117 | python | `<Code code={labSource} lang="python" title="loopback_lab....` | run or compiled by another CI test |  |
 | start/python.md:14 | python | `from __future__ import annotations` | run or compiled by another CI test |  |
-| start/python.md:65 | sh | `python first_read.py 192.168.1.100:47808 --instance 1` | run or compiled by another CI test |  |
+| start/python.md:59 | sh | `python first_read.py 192.168.1.100:47808 --instance 1` | run or compiled by another CI test |  |
 | start/rust.md:10 | sh | `cargo new first-read` | not checked (class F) | installs or builds software |
 | start/rust.md:17 | toml | `[dependencies]` | run or compiled by another CI test |  |
 | start/rust.md:31 | rust | `use std::net::{Ipv4Addr, SocketAddrV4};` | run or compiled by another CI test |  |
@@ -151,12 +151,12 @@ table; `test_site_samples.py` fails when this file is out of date. Run
 | tui/writes.mdx:111 | text | `:dcc disable-initiation 30` | run or compiled by another CI test |  |
 | README.md:46 | python | `# local_server.py: one simulated temperature sensor on 12...` | run or compiled by another CI test |  |
 | README.md:81 | python | `# read_value.py: read Analog Input 1's present value` | run against a loopback server |  |
-| README.md:105 | rust | `use bacnet_client::client::BACnetClient;` | compiled: a Cargo example's exact text |  |
-| README.md:138 | bash | `bacnet --interface 127.0.0.1 --port 0 read 127.0.0.1:4780...` | run against a loopback server |  |
-| README.md:154 | rust | `use bacnet_objects::DeviceIdentity;` | compiled: a Cargo example's exact text |  |
-| README.md:197 | python | `# watch_value.py: subscribe to Analog Input 1 and print i...` | run against a loopback server |  |
-| README.md:232 | sh | `bacnet` | CLI arguments parsed by the CLI (--help) |  |
-| README.md:251 | sh | `bacnet mcp authorize --profile plant-a` | CLI arguments parsed by the CLI (--help) |  |
-| README.md:258 | json | `{` | CLI arguments parsed by the CLI (--help) |  |
-| README.md:287 | toml | `[dependencies]` | dependency table checked against the workspace |  |
-| README.md:358 | bash | `git clone https://github.com/jscott3201/rusty-bacnet.git` | not checked (class F) | installs or builds software |
+| README.md:102 | rust | `use bacnet_client::client::BACnetClient;` | compiled: a Cargo example's exact text |  |
+| README.md:135 | bash | `bacnet --interface 127.0.0.1 --port 0 read 127.0.0.1:4780...` | run against a loopback server |  |
+| README.md:151 | rust | `use bacnet_objects::DeviceIdentity;` | compiled: a Cargo example's exact text |  |
+| README.md:194 | python | `# watch_value.py: subscribe to Analog Input 1 and print i...` | run against a loopback server |  |
+| README.md:231 | sh | `bacnet` | CLI arguments parsed by the CLI (--help) |  |
+| README.md:250 | sh | `bacnet mcp authorize --profile plant-a` | CLI arguments parsed by the CLI (--help) |  |
+| README.md:257 | json | `{` | CLI arguments parsed by the CLI (--help) |  |
+| README.md:286 | toml | `[dependencies]` | dependency table checked against the workspace |  |
+| README.md:357 | bash | `git clone https://github.com/jscott3201/rusty-bacnet.git` | not checked (class F) | installs or builds software |

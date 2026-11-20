@@ -24,8 +24,10 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use bacnet_client::client::BACnetClient;
-use bacnet_ops::engine::{DEVICE_PROPERTIES, Halt, Reader, Wanted};
+use bacnet_ops::DeviceAddress;
+use bacnet_ops::client::{DEVICE_PROPERTIES, Wanted};
 use bacnet_ops::limits::RequestLimits;
+use bacnet_ops::raw::{Halt, Reader};
 use bacnet_transport::port::TransportPort;
 use bacnet_types::primitives::ObjectIdentifier;
 use futures_util::stream::{FuturesUnordered, StreamExt};
@@ -113,13 +115,13 @@ pub(crate) async fn run<T: TransportPort + 'static>(
                     }
                     prune(&mut queues);
                 }
-                Some(Command::Browse { req, device, read }) => {
+                Some(Command::Browse { req, device, at, read }) => {
                     // A fresh read of the device may ask again for names
                     // it couldn't give before.
                     if read == BrowseRead::Device {
                         with_queue(&queues, device, NameQueue::forget);
                     }
-                    if let Some(started) = scheduler.submit(device, Job { req, read }) {
+                    if let Some(started) = scheduler.submit(device, Job { req, at, read }) {
                         jobs.push(start(started, &no_rpm, &queues));
                     }
                 }
@@ -153,27 +155,52 @@ async fn job<T: TransportPort + 'static>(
         task,
         cancel,
     } = started;
+    let report = |req, address, names| {
+        deliver(
+            sink,
+            req,
+            BrowseResult::Names {
+                device,
+                address,
+                names,
+            },
+        )
+    };
+    // A read goes to the address of the row it was asked for (#2560);
+    // name reads, asked for by instance, to the one address claiming it.
+    let named = match &task {
+        Task::Read(job) => Ok(job.at.clone()),
+        Task::Names => DeviceAddress::claiming(client, device).await,
+    };
+    let at = match named {
+        Ok(at) => at,
+        Err(error) => {
+            match task {
+                Task::Read(Job { req, .. }) => {
+                    deliver(sink, req, BrowseResult::Failed(error.to_string())).await;
+                }
+                Task::Names => {
+                    let max_apdu = client.max_apdu_length();
+                    names::abandon_names(&queue, (device, max_apdu, &error), report).await;
+                }
+            }
+            return Done {
+                device,
+                refused_rpm: false,
+            };
+        }
+    };
     let mut reader = Reader {
         client,
-        device,
+        device: at,
+        instance: Some(device),
         rate,
         cancel: &cancel,
         rpm,
     };
     let (req, read) = match task {
-        Task::Read(Job { req, read }) => (req, read),
+        Task::Read(Job { req, read, .. }) => (req, read),
         Task::Names => {
-            let report = |req, address, names| {
-                deliver(
-                    sink,
-                    req,
-                    BrowseResult::Names {
-                        device,
-                        address,
-                        names,
-                    },
-                )
-            };
             names::read_names(&mut reader, &queue, report).await;
             return Done {
                 device,

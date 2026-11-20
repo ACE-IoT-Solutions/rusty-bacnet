@@ -50,6 +50,7 @@ const DEVICE: u32 = 4321;
 const DIFFER_EXCHANGES: &[&str] = &[
     "reply over max_reply, segmented response accepted",
     "a Command run's actions",
+    "a restricted Recipient_List without a Device clock",
 ];
 
 struct FixedClock;
@@ -145,7 +146,11 @@ fn reporter(responder: Responder, config: &ServerConfig) -> Reporter {
 
 impl Parity {
     async fn start() -> Self {
-        Self::start_with(ReadPropertyMultipleBudget::default(), Segmentation::NONE).await
+        Self::start_with(
+            ReadPropertyMultipleBudget::default(),
+            Segmentation::NO_SEGMENTATION,
+        )
+        .await
     }
 
     /// Both sides within `budget`'s result-row limit, the server's Device
@@ -161,6 +166,17 @@ impl Parity {
         segmentation: Segmentation,
         fixture: fn(&bacnet_objects::DeviceIdentity) -> ObjectDatabase,
     ) -> Self {
+        Self::start_enrolling(budget, segmentation, fixture, ServerConfig::default()).await
+    }
+
+    /// [`start_from`](Self::start_from), the server's background tasks set
+    /// as `tasks` sets them: its Event Enrollment pass and fault detection.
+    async fn start_enrolling(
+        budget: ReadPropertyMultipleBudget,
+        segmentation: Segmentation,
+        fixture: fn(&bacnet_objects::DeviceIdentity) -> ObjectDatabase,
+        tasks: ServerConfig,
+    ) -> Self {
         let identity = identity();
         let (transport, tx) = TestTransport::inbound(16);
         let sent = transport.sent();
@@ -168,7 +184,7 @@ impl Parity {
         let config = ServerConfig {
             device: served.clone(),
             read_property_multiple_budget: budget,
-            ..ServerConfig::default()
+            ..tasks
         };
         let server = BACnetServer::start(config, fixture(&served), transport)
             .await
@@ -186,7 +202,7 @@ impl Parity {
             .config
             .device
             .clone()
-            .with_segmentation(Segmentation::NONE);
+            .with_segmentation(Segmentation::NO_SEGMENTATION);
         let responder = Responder::new(core_identity, limits).unwrap();
         let reporter = reporter(responder, &server.config);
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -644,8 +660,11 @@ async fn edge_rows_match_and_the_segmented_reply_differs() {
 
     // The requester takes a segmented response, and the server's Device
     // segments; only the server sends one.
-    let mut parity =
-        Parity::start_with(ReadPropertyMultipleBudget::default(), Segmentation::BOTH).await;
+    let mut parity = Parity::start_with(
+        ReadPropertyMultipleBudget::default(),
+        Segmentation::SEGMENTED_BOTH,
+    )
+    .await;
     let mut body = BytesMut::new();
     ReadPropertyRequest {
         object_identifier: oid(ObjectType::DEVICE, DEVICE),
@@ -686,7 +705,7 @@ async fn edge_rows_match_and_the_segmented_reply_differs() {
             max_result_elements: 2,
             ..ReadPropertyMultipleBudget::default()
         },
-        Segmentation::NONE,
+        Segmentation::NO_SEGMENTATION,
     )
     .await;
     let group = read(oid(ObjectType::GROUP, 1), P::PRESENT_VALUE);
@@ -702,6 +721,7 @@ async fn edge_rows_match_and_the_segmented_reply_differs() {
 mod clock;
 mod cov;
 mod discovery;
+mod events;
 mod rpm;
 mod wpm;
 mod write;

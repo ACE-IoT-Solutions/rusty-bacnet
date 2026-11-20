@@ -7,6 +7,7 @@
 use std::net::{Ipv4Addr, SocketAddrV6};
 use std::time::{Duration, Instant};
 
+use bacnet_ops::DeviceAddress;
 use bacnet_services::who_is::DeviceInstanceRange;
 use bacnet_types::enums::Segmentation;
 
@@ -146,6 +147,8 @@ pub(crate) enum Command {
         req: ReqId,
         /// Device instance, from the discovery table.
         device: u32,
+        /// Where the device answers: the read goes there (#2560).
+        at: DeviceAddress,
         /// What to read.
         read: BrowseRead,
     },
@@ -185,6 +188,9 @@ pub(crate) enum Command {
 pub(crate) struct DeviceRow {
     /// Device instance.
     pub(crate) instance: u32,
+    /// Where it answers: what identifies it, and where its reads and
+    /// writes go (#2560).
+    pub(crate) at: DeviceAddress,
     /// Where it is, as a target the CLI reads back: its own address, or
     /// for a routed device its routed station, `2:0x05`.
     pub(crate) address: String,
@@ -360,13 +366,6 @@ pub(crate) enum WorkerEvent {
     Updated(DeviceRow),
     /// The client purged a stale device.
     Lost(DeviceRow),
-    /// Two endpoints claim the same instance; the client kept `retained`.
-    Collision {
-        /// The row the client's table kept.
-        retained: DeviceRow,
-        /// The conflicting answer.
-        incoming: DeviceRow,
-    },
     /// The client's whole table, sent after events were dropped.
     Snapshot(Vec<DeviceRow>),
     /// The Who-Is left; its listen window has started.

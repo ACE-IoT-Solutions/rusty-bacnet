@@ -8,6 +8,7 @@ use bacnet_encoding::apdu::ConfirmedRequest;
 use bacnet_services::device_mgmt::ReinitializeDeviceRequest;
 use bacnet_transport::mstp::{LoopbackSerial, MstpConfig, MstpTransport};
 use bacnet_transport::port::GroupDestinations;
+use bacnet_transport::test_transport::{SendMode, TestTransport};
 use bacnet_types::constructed::BACnetAddress;
 use bacnet_types::enums::ReinitializedState;
 
@@ -121,37 +122,13 @@ async fn bindings_of_the_wrong_link_fail_start() {
 
 /// A link that learns its MAC at start, as B/IPv6 does: it reports station
 /// 7 as a placeholder before start, and the started node is station 1.
-struct LateMac {
-    inner: bacnet_transport::loopback::LoopbackTransport,
-    started: bool,
-}
-
-impl TransportPort for LateMac {
-    async fn start(
-        &mut self,
-    ) -> Result<tokio::sync::mpsc::Receiver<bacnet_transport::port::ReceivedNpdu>, Error> {
-        self.started = true;
-        self.inner.start().await
-    }
-    async fn stop(&mut self) -> Result<(), Error> {
-        self.inner.stop().await
-    }
-    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        self.inner.send_unicast(npdu, mac).await
-    }
-    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        self.inner.send_broadcast(npdu).await
-    }
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        self.inner.local_receive_apdu_capacity()
-    }
-    fn local_mac(&self) -> &[u8] {
-        if self.started {
-            self.inner.local_mac()
-        } else {
-            &[7]
-        }
-    }
+fn late_mac(inner: bacnet_transport::loopback::LoopbackTransport) -> TestTransport {
+    TestTransport::builder()
+        .inner(inner)
+        .unicast(SendMode::Forward)
+        .broadcast(SendMode::Forward)
+        .local_mac_until_started(&[7])
+        .build()
 }
 
 /// The selected Reporter's Reliability.
@@ -178,10 +155,7 @@ async fn a_binding_to_the_mac_learned_at_start_reads_configuration_error() {
         (1, Reliability::CONFIGURATION_ERROR),
     ] {
         let (inner, _peer) = bacnet_transport::loopback::LoopbackTransport::pair(vec![1], vec![2]);
-        let transport = LateMac {
-            inner,
-            started: false,
-        };
+        let transport = late_mac(inner);
         let mut session =
             EndpointSession::new(transport, SessionRole::ClientOnly, SessionConfig::default())
                 .unwrap()
@@ -234,7 +208,12 @@ async fn a_bip6_session_checks_its_own_vmac_once_started() {
 
 /// The source database with its Device's Audit recipient, Device 999.
 fn provisioned() -> ObjectDatabase {
-    let mut db = database(false);
+    provisioned_for(&crate::DeviceIdentity::new(123, 42).unwrap())
+}
+
+/// [`provisioned`] for Device `identity`.
+fn provisioned_for(identity: &crate::DeviceIdentity) -> ObjectDatabase {
+    let mut db = database_for(identity, false);
     db.set_clock_reader(None);
     db.get_mut(&oid(ObjectType::DEVICE, 123))
         .unwrap()
@@ -366,10 +345,7 @@ async fn records_resets<T: TransportPort + 'static, P: TransportPort + 'static>(
     };
     assert!(seen.is_empty(), "filtered resets built records: {seen:?}");
     assert_eq!(backup.operation, AuditOperation::DEVICE_BACKUP);
-    assert_eq!(
-        backup.target_timestamp,
-        Some(BACnetTimeStamp::SequenceNumber(0))
-    );
+    assert_stamp(&backup.target_timestamp, session.server().is_some(), 0);
     // Resets recorded: the peer's, then the local one.
     record_only(session, &[AuditOperation::DEVICE_RESET]).await;
     let mut seen = peer
@@ -400,15 +376,20 @@ async fn an_mstp_session_records_resets_through_its_reporter() {
         max_master: 3,
         ..MstpConfig::default()
     };
+    // The Device takes what a standard MS/TP frame carries.
+    let identity = crate::DeviceIdentity::new(123, 42)
+        .unwrap()
+        .with_max_apdu(480)
+        .unwrap();
     let mut session = crate::mstp::MstpEndpointBuilder::new(session_line, 1)
         .max_master(3)
-        .database(provisioned())
+        .database(provisioned_for(&identity))
         .source_audit_device_binding(oid(ObjectType::DEVICE, 999), 2)
         .build_session()
         .unwrap()
         .with_source_audit_reporter(selected())
-        .with_device_writes(Arc::new(|_| true))
-        .with_reinitialize(|_, _| Ok(()));
+        .device(identity)
+        .with_server(allowing().on_reinitialize(|_, _| Ok(())));
     session.start().await.unwrap();
     let mut network = NetworkLayer::new(MstpTransport::new(peer_line, config(2)));
     let rx = network.start().await.unwrap();
@@ -442,8 +423,8 @@ async fn an_sc_session_records_resets_through_its_reporter() {
         .build_hub_session(socket)
         .unwrap()
         .with_source_audit_reporter(selected())
-        .with_device_writes(Arc::new(|_| true))
-        .with_reinitialize(|_, _| Ok(()));
+        .device(crate::DeviceIdentity::new(123, 42).unwrap())
+        .with_server(allowing().on_reinitialize(|_, _| Ok(())));
     session.start().await.unwrap();
     let socket = TlsWebSocket::connect(&url, node_tls).await.unwrap();
     let mut network =

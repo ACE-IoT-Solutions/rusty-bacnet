@@ -22,8 +22,10 @@
 //!   refusal of an invalid SC profile before any dial, the flags-only path,
 //!   and the SC connection screen's frames.
 //! - `sc_screen`: the SC screen from synthetic reports, with its frames;
-//!   `sc_hub`: the SC worker against in-process mTLS hubs; `sc_lint`: the
-//!   credential lint on the preview, in the coordinator and on the SC screen.
+//!   `sc_hub`: the SC worker against in-process mTLS hubs; `sc_codes`: the
+//!   error code a real failure reports, as the screen shows it; `sc_lint`:
+//!   the credential lint on the preview, in the coordinator and on the SC
+//!   screen.
 //! - `mstp_monitor`: the MS/TP monitor and the safe-join wizard end to end,
 //!   on the scripted ring of `bacnet-transport`'s `test-support`.
 //! - `mstp_screen`: the MS/TP screen and the join confirmation from
@@ -66,6 +68,7 @@ mod device_mgmt_capture;
 mod device_mgmt_worker;
 mod devices_layout;
 mod discovery;
+mod duplicates;
 mod event_loop;
 mod footer;
 mod frames;
@@ -118,6 +121,8 @@ mod passive_retention;
 mod port_retry;
 mod profile_ui;
 mod request_gate;
+#[cfg(feature = "sc-tls")]
+mod sc_codes;
 #[cfg(feature = "sc-tls")]
 mod sc_hub;
 mod sc_layout;
@@ -195,16 +200,30 @@ pub(super) fn connected_app() -> App {
     app
 }
 
+/// The address `text` names, or for a label that names none (`"old"`) a
+/// local one made from it, so rows with different labels are different
+/// devices.
+pub(super) fn address_of(text: &str) -> bacnet_ops::DeviceAddress {
+    text.parse().unwrap_or_else(|_| {
+        let mut mac = [0xEE, 0, 0, 0, 0, 0];
+        for (i, octet) in text.bytes().enumerate() {
+            mac[1 + i % 5] ^= octet.rotate_left(i as u32);
+        }
+        bacnet_ops::DeviceAddress::local(&mac).unwrap()
+    })
+}
+
 /// A synthetic device row seen `seen` seconds after `t0()`.
 pub(super) fn row(instance: u32, address: &str, vendor_id: u16, seen: u64) -> DeviceRow {
     DeviceRow {
         instance,
+        at: address_of(address),
         address: address.into(),
         via: None,
         network: None,
         vendor_id,
         max_apdu: 1476,
-        segmentation: Segmentation::NONE,
+        segmentation: Segmentation::NO_SEGMENTATION,
         last_seen: at(seen),
     }
 }

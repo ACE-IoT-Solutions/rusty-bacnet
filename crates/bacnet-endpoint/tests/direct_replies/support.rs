@@ -6,14 +6,14 @@ use bacnet_encoding::{
 use bacnet_objects::{database::ObjectDatabase, value_types::CharacterStringValueObject};
 use bacnet_services::read_property::ReadPropertyRequest;
 use bacnet_transport::{
-    port::{ReceivedNpdu, TransportPort},
+    port::ReceivedNpdu,
     sc::{ScConnection, WebSocketPort},
     sc_frame::{decode_sc_message, encode_sc_message},
     sc_tls::{DirectAcceptConfig, DirectListener, ScNodeTlsConfig, TlsWebSocket},
+    test_transport::TestTransport,
 };
 use bacnet_types::{
     enums::{ConfirmedServiceChoice, ObjectType, PropertyIdentifier},
-    error::Error,
     primitives::ObjectIdentifier,
 };
 use bytes::{Bytes, BytesMut};
@@ -75,57 +75,38 @@ impl TestCa {
         .unwrap()
     }
 }
-pub struct QueuedPort {
-    incoming: Option<mpsc::Receiver<ReceivedNpdu>>,
-    generic: mpsc::UnboundedSender<Npdu>,
-    gate: Option<Arc<tokio::sync::Semaphore>>,
-    attributes: Arc<std::sync::Mutex<Vec<Vec<bacnet_transport::port::DataAttribute>>>>,
-}
-impl TransportPort for QueuedPort {
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        Ok(self.incoming.take().unwrap())
-    }
-    async fn stop(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-    async fn send_unicast(&self, bytes: &[u8], _: &[u8]) -> Result<(), Error> {
-        self.generic
-            .send(decode_npdu(Bytes::copy_from_slice(bytes)).unwrap())
-            .unwrap();
-        if let Some(gate) = &self.gate {
-            gate.acquire().await.unwrap().forget();
-        }
-        Ok(())
-    }
-    async fn send_broadcast(&self, bytes: &[u8]) -> Result<(), Error> {
-        self.send_unicast(bytes, &[]).await
-    }
-    async fn send_unicast_with_data_attributes(
-        &self,
-        bytes: &[u8],
-        mac: &[u8],
-        attributes: &[bacnet_transport::port::DataAttribute],
-    ) -> Result<(), Error> {
-        self.attributes.lock().unwrap().push(attributes.to_vec());
-        self.send_unicast(bytes, mac).await
-    }
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        1476
-    }
+type Attributes = Arc<std::sync::Mutex<Vec<Vec<bacnet_transport::port::DataAttribute>>>>;
 
-    fn local_mac(&self) -> &[u8] {
-        &[0xaa; 6]
-    }
+/// A port with MAC `[0xaa; 6]` fed by `incoming`, whose every send (either
+/// kind) is decoded into `generic` and whose non-empty data attributes are
+/// kept in `attributes`.
+fn queued_port(
+    incoming: mpsc::Receiver<ReceivedNpdu>,
+    generic: mpsc::UnboundedSender<Npdu>,
+    attributes: Attributes,
+) -> TestTransport {
+    TestTransport::builder()
+        .local_mac(&[0xaa; 6])
+        .inbound(incoming)
+        .on_send(move |frame| {
+            if !frame.attributes.is_empty() {
+                attributes.lock().unwrap().push(frame.attributes);
+            }
+            generic.send(decode_npdu(frame.npdu).unwrap()).unwrap();
+            async { Ok(()) }
+        })
+        .build()
 }
 pub struct Fixture {
     pub listener: DirectListener,
     admitted: mpsc::Receiver<ReceivedNpdu>,
     pub incoming: mpsc::Sender<ReceivedNpdu>,
     pub generic: mpsc::UnboundedReceiver<Npdu>,
-    pub attributes: Arc<std::sync::Mutex<Vec<Vec<bacnet_transport::port::DataAttribute>>>>,
+    /// The data attributes of every ordinary send that carried some.
+    pub attributes: Attributes,
 }
 impl Fixture {
-    pub async fn new(ca: &TestCa) -> (Self, QueuedPort) {
+    pub async fn new(ca: &TestCa) -> (Self, TestTransport) {
         let (listener, admitted) = DirectListener::start(
             DirectAcceptConfig::new(
                 "127.0.0.1:0".parse().unwrap(),
@@ -139,7 +120,7 @@ impl Fixture {
         .unwrap();
         let (incoming, rx) = mpsc::channel(32);
         let (generic, observed) = mpsc::unbounded_channel();
-        let attributes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let attributes = Attributes::default();
         (
             Self {
                 listener,
@@ -148,12 +129,7 @@ impl Fixture {
                 generic: observed,
                 attributes: attributes.clone(),
             },
-            QueuedPort {
-                incoming: Some(rx),
-                generic,
-                gate: None,
-                attributes,
-            },
+            queued_port(rx, generic, attributes),
         )
     }
     pub async fn peer(&self, tls: ScNodeTlsConfig, limits: Option<(u16, u16)>) -> Peer {
@@ -253,6 +229,11 @@ pub fn confirmed(service: ConfirmedServiceChoice, invoke_id: u8, data: Bytes) ->
 pub fn unsupported(invoke: u8) -> Apdu {
     confirmed(ConfirmedServiceChoice::from_raw(254), invoke, Bytes::new())
 }
+/// The endpoint's Device: a session with a server role runs a full server,
+/// which serves the node's identity (#2617).
+pub fn node() -> bacnet_endpoint::DeviceIdentity {
+    bacnet_endpoint::DeviceIdentity::new(1001, 42).unwrap()
+}
 pub fn csv_oid() -> ObjectIdentifier {
     ObjectIdentifier::new(ObjectType::CHARACTERSTRING_VALUE, 1).unwrap()
 }
@@ -292,11 +273,11 @@ impl Fixture {
     }
 }
 pub enum Consumer {
-    Client(Box<bacnet_client::client::BACnetClient<QueuedPort>>),
-    Endpoint(Box<bacnet_endpoint::session::EndpointSession<QueuedPort>>),
+    Client(Box<bacnet_client::client::BACnetClient<TestTransport>>),
+    Endpoint(Box<bacnet_endpoint::session::EndpointSession<TestTransport>>),
 }
 impl Consumer {
-    pub async fn start(client: bool, port: QueuedPort) -> Self {
+    pub async fn start(client: bool, port: TestTransport) -> Self {
         if client {
             Self::Client(Box::new(
                 bacnet_client::client::BACnetClient::start(Default::default(), port)
@@ -310,6 +291,7 @@ impl Consumer {
                 Default::default(),
             )
             .unwrap()
+            .device(node())
             .with_database(database("original"));
             session.start().await.unwrap();
             Self::Endpoint(Box::new(session))
@@ -329,29 +311,4 @@ pub fn routed() -> Option<NpduAddress> {
         network: 123,
         mac_address: bacnet_types::MacAddr::from_slice(&[3, 4, 5, 6, 7, 8]),
     })
-}
-
-impl QueuedPort {
-    pub fn hold_sends(&mut self) -> Arc<tokio::sync::Semaphore> {
-        let gate = Arc::new(tokio::sync::Semaphore::new(0));
-        self.gate = Some(gate.clone());
-        gate
-    }
-}
-pub fn received_apdu(envelope: ReceivedNpdu) -> bacnet_network::layer::ReceivedApdu {
-    let npdu = decode_npdu(envelope.npdu).unwrap();
-    bacnet_network::layer::ReceivedApdu {
-        apdu: npdu.payload,
-        source_mac: envelope.source_mac,
-        source_network: npdu.source,
-        ingress_network: None,
-        link_layer_group: envelope.link_layer_group,
-        is_group: envelope.link_layer_group,
-        global_broadcast: false,
-        data_attributes: envelope.data_attributes,
-        provenance: envelope.provenance,
-        router_response: None,
-        direct_response: envelope.direct_response,
-        reply_tx: envelope.reply_tx,
-    }
 }

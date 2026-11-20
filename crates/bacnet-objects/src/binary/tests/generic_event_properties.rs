@@ -7,6 +7,7 @@
 //! writable, so the transition bits were stuck at (F, F, F).
 
 use super::*;
+use crate::event::test_clock::test_now;
 use crate::property_metadata::is_writable_property;
 use crate::traits::EventReporting as _;
 use bacnet_encoding::primitives::{decode_timestamp_choice, encode_timestamp_choice};
@@ -372,7 +373,7 @@ fn fresh_binary_input_is_default_armed_for_active() {
     let mut bi = BinaryInputObject::new(1, "BI-1").unwrap();
     bi.set_present_value(1);
     let outcome = bi
-        .evaluate_intrinsic_reporting()
+        .evaluate_intrinsic_reporting(test_now())
         .expect("ACTIVE is the default Alarm_Value");
     assert_eq!(outcome.change.to, EventState::OFFNORMAL);
 }
@@ -463,8 +464,9 @@ macro_rules! assert_seeded_binary_event_history {
                 },
             },
         ];
-        object.event_history.time_stamps = expected_timestamps.clone();
-        object.event_history.message_texts = ["offnormal".into(), "fault".into(), "normal".into()];
+        object.core.event_history.time_stamps = expected_timestamps.clone();
+        object.core.event_history.message_texts =
+            ["offnormal".into(), "fault".into(), "normal".into()];
 
         assert_timestamp_array(
             object
@@ -544,8 +546,8 @@ fn binary_seeded_event_history_preserves_array_order_and_timestamp_choices() {
 macro_rules! assert_binary_history_reset {
     ($object:expr_2021, $label:literal) => {{
         let mut object = $object;
-        object.event_history.time_stamps[0] = BACnetTimeStamp::SequenceNumber(91);
-        object.event_history.message_texts[1] = "seeded".into();
+        object.core.event_history.time_stamps[0] = BACnetTimeStamp::SequenceNumber(91);
+        object.core.event_history.message_texts[1] = "seeded".into();
         object
             .write_property(
                 PropertyIdentifier::EVENT_DETECTION_ENABLE,

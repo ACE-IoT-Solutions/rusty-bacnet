@@ -7,9 +7,10 @@ use crate::access_control::{
     AccessControlInput, AccessEventReport, CredentialReadReport, DoorStateReport,
 };
 use crate::catalogue::representatives;
+use crate::load_control::LoadControlSetting;
 use crate::traits::{BACnetObject, LocalInputValue, not_supported};
 use bacnet_types::constructed::BACnetAuthenticationFactor;
-use bacnet_types::enums::{AccessEvent, AuthenticationFactorType, ObjectType};
+use bacnet_types::enums::{AccessEvent, AuthenticationFactorType, ObjectType, Polarity};
 use bacnet_types::primitives::PropertyValue;
 
 /// Each kind of input, by name, with a value of its own datatype.
@@ -59,6 +60,14 @@ fn inputs() -> Vec<(&'static str, LocalInputValue)> {
             "ProgramState",
             LocalInputValue::ProgramState(PropertyValue::Enumerated(2)),
         ),
+        (
+            "LoadControl",
+            LocalInputValue::LoadControl(LoadControlSetting::StateDescription(Some(
+                "shedding".into(),
+            ))),
+        ),
+        ("PhysicalInput", LocalInputValue::PhysicalInput(true)),
+        ("Polarity", LocalInputValue::Polarity(Polarity::REVERSE)),
     ]
 }
 
@@ -66,10 +75,15 @@ fn inputs() -> Vec<(&'static str, LocalInputValue)> {
 const MODELS: &[(ObjectType, &[&str])] = &[
     (ObjectType::ANALOG_INPUT, &["PresentValue"]),
     (ObjectType::ANALOG_VALUE, &["PresentValue"]),
-    (ObjectType::BINARY_INPUT, &["PresentValue"]),
+    (
+        ObjectType::BINARY_INPUT,
+        &["PresentValue", "PhysicalInput", "Polarity"],
+    ),
+    (ObjectType::BINARY_OUTPUT, &["Polarity"]),
     (ObjectType::BINARY_VALUE, &["PresentValue"]),
     (ObjectType::MULTI_STATE_INPUT, &["PresentValue"]),
     (ObjectType::MULTI_STATE_VALUE, &["PresentValue"]),
+    (ObjectType::INTEGER_VALUE, &["PresentValue"]),
     (
         ObjectType::LOOP,
         &["PresentValue", "ControlledVariableValue"],
@@ -88,6 +102,7 @@ const MODELS: &[(ObjectType, &[&str])] = &[
     (ObjectType::ACCESS_DOOR, &["DoorState"]),
     (ObjectType::ACCUMULATOR, &["Pulses"]),
     (ObjectType::PROGRAM, &["ProgramState"]),
+    (ObjectType::LOAD_CONTROL, &["LoadControl"]),
 ];
 
 /// Every property the object lists, read whole.

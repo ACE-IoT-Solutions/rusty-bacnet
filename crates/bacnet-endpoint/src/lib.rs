@@ -10,13 +10,17 @@ pub mod roles;
 pub mod sc;
 pub mod session;
 mod source_audit;
+// The server's rows for test objects. The session's tests state no value
+// types, so `typed` goes unused here.
 #[cfg(test)]
+#[allow(dead_code)]
 #[path = "../../bacnet-server/src/test_rows.rs"]
 mod test_rows;
+#[cfg(test)]
+mod wrapped_session_tests;
 
 pub use identity::{DeviceIdentity, NetworkPortEntry, build_database_with_extra};
-pub use roles::{ClientRoleHandle, EndpointApduDestination, ServerRoleHandle};
+pub use roles::{ClientRoleHandle, EndpointApduDestination};
 pub use session::{
-    EndpointSession, PolicyCountersSnapshot, RESPONDER_OPT_IN_SERVICES, RESPONDER_SERVICES,
-    ResponderOptIn, SessionConfig, SessionExit, SessionRole,
+    EndpointSession, PolicyCountersSnapshot, SessionConfig, SessionExit, SessionRole,
 };

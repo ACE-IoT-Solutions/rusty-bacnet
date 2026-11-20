@@ -11,11 +11,13 @@
 //! confirmed traffic, I-Am identical to Device ReadProperty. BBMD and foreign
 //! modes have local Network Number wire coverage: ServerOnly BBMD admission
 //! and Original-Broadcast replies, ClientOnly foreign DBTN/retry and
-//! alternate forwarders, and Both requester/responder progress with cleanup.
+//! alternate forwarders, and Both client and server progress with cleanup.
 //! The modes themselves run on the same transport as the standalone client
 //! and server. [`EndpointSession::foreign_registration`] reports a foreign
-//! device's registration. Live BVLC queries (`read_bdt` / `write_bdt` /
-//! `read_fdt` / …) stay on [`BipTransport`].
+//! device's registration, and [`EndpointSession::bvlc_tables`] reads a
+//! BBMD's tables through the session's socket (#2612). The BVLC writes
+//! (`write_bdt`, `delete_fdt_entry`, a one-shot registration) stay on
+//! [`BipTransport`].
 //!
 //! ```no_run
 //! use std::net::Ipv4Addr;
@@ -51,8 +53,9 @@ use crate::session::{EndpointSession, SessionConfig, SessionRole};
 /// Concrete B/IP endpoint builder.
 ///
 /// [`mode`](Self::mode) sets the B/IP mode, as on the standalone client and
-/// server builders; live BVLC queries (`read_bdt`/`write_bdt`/`read_fdt`/…)
-/// stay on [`BipTransport`].
+/// server builders. A session it builds reads a BBMD's tables through
+/// [`EndpointSession::bvlc_tables`]; the BVLC writes stay on
+/// [`BipTransport`].
 pub struct BipEndpointBuilder {
     interface: Ipv4Addr,
     port: u16,
@@ -64,9 +67,6 @@ pub struct BipEndpointBuilder {
     database: Option<ObjectDatabase>,
     registered_network_port: Option<ObjectIdentifier>,
     identity: Option<crate::identity::DeviceIdentity>,
-    device_write_authorizer: Option<bacnet_server::mutation::DeviceWriteAuthorizer>,
-    reinitialize: Option<bacnet_server::server::ReinitializeHandler>,
-    reinit_password: Option<String>,
     source_audit_bindings: Vec<(ObjectIdentifier, SocketAddrV4)>,
     source_audit_routed: crate::session::RoutedBindings,
     mode: BipMode,
@@ -94,9 +94,6 @@ impl BipEndpointBuilder {
             database: None,
             registered_network_port: None,
             identity: None,
-            device_write_authorizer: None,
-            reinitialize: None,
-            reinit_password: None,
             source_audit_bindings: Vec::new(),
             source_audit_routed: Vec::new(),
             mode: BipMode::Normal,
@@ -143,16 +140,10 @@ impl BipEndpointBuilder {
         self
     }
 
-    /// Sets the server role's read work limit (default 256): the result rows
-    /// one ReadProperty may expand, a Group's member rows included. See
-    /// [`SessionConfig::read_work_limit`]; zero fails
-    /// [`build_session`](Self::build_session) via [`EndpointSession::new`].
-    pub fn read_work_limit(mut self, limit: usize) -> Self {
-        self.session.read_work_limit = limit;
-        self
-    }
-
-    /// Sets client APDU timeout/retries (session-owned timers).
+    /// Sets the node's APDU timeout and retries (default 6000 ms and 3; see
+    /// [`SessionConfig::apdu_timeout_ms`]): the client roles' request
+    /// timing, and a full server's confirmed notifications and its Device's
+    /// APDU_Timeout and Number_Of_APDU_Retries.
     pub fn client_timers(mut self, timeout_ms: u64, retries: u8) -> Self {
         self.session.apdu_timeout_ms = timeout_ms;
         self.session.apdu_retries = retries;
@@ -168,7 +159,7 @@ impl BipEndpointBuilder {
         self
     }
 
-    /// Attaches the object database for the server responder.
+    /// Attaches the object database, which a server role's server serves.
     ///
     /// Build it from the same identity passed to
     /// [`device`](Self::device) so Device readback agrees with I-Am.
@@ -193,45 +184,6 @@ impl BipEndpointBuilder {
     /// selected Device must match. No additional socket is created.
     pub fn device(mut self, identity: crate::identity::DeviceIdentity) -> Self {
         self.identity = Some(identity);
-        self
-    }
-
-    /// Enables authorized writes to the local Device's Description and installed Audit recipient.
-    ///
-    /// The mandatory callback and atomic startup requirements are those of
-    /// [`EndpointSession::with_device_writes`]. Other objects/properties and
-    /// WritePropertyMultiple remain unsupported. Requires `build_session()`;
-    /// a bare transport cannot retain this session-owned authorization.
-    pub fn device_writes(
-        mut self,
-        authorizer: bacnet_server::mutation::DeviceWriteAuthorizer,
-    ) -> Self {
-        self.device_write_authorizer = Some(authorizer);
-        self
-    }
-
-    /// Enables ReinitializeDevice. The handler must reply before restarting
-    /// and stay quick, or it stalls the session; see
-    /// [`EndpointSession::with_reinitialize`]. Requires `build_session()`.
-    pub fn reinitialize<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(
-                &bacnet_server::server::ReinitializeContext,
-                &mut ObjectDatabase,
-            ) -> Result<(), Error>
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.reinitialize = Some(std::sync::Arc::new(handler));
-        self
-    }
-
-    /// Sets the password a ReinitializeDevice request must carry. Requires
-    /// [`reinitialize`](Self::reinitialize) and `build_session()`; see
-    /// [`EndpointSession::with_reinit_password`].
-    pub fn reinit_password(mut self, password: impl Into<String>) -> Self {
-        self.reinit_password = Some(password.into());
         self
     }
 
@@ -314,23 +266,12 @@ impl BipEndpointBuilder {
     ///
     /// Returns a typed [`Error::Encoding`] when any session-owned
     /// configuration is set, since a bare transport would discard it: a
-    /// Network Port registration, Device writes, a ReinitializeDevice handler
-    /// or password (a password alone included), or source Audit route data.
-    /// Those require [`build_session`](Self::build_session).
+    /// Network Port registration or source Audit route data. Those require
+    /// [`build_session`](Self::build_session).
     pub fn build_transport(self) -> Result<BipTransport, Error> {
         if self.registered_network_port.is_some() {
             return Err(Error::Encoding(
                 "Network Port registration requires build_session()".into(),
-            ));
-        }
-        if self.device_write_authorizer.is_some() {
-            return Err(Error::Encoding(
-                "Device writes require build_session()".into(),
-            ));
-        }
-        if self.reinitialize.is_some() || self.reinit_password.is_some() {
-            return Err(Error::Encoding(
-                "ReinitializeDevice and its password require build_session()".into(),
             ));
         }
         if !self.source_audit_bindings.is_empty() || !self.source_audit_routed.is_empty() {
@@ -359,16 +300,37 @@ impl BipEndpointBuilder {
     /// in [`EndpointSession`]. Bind-count proofs use a counting test double
     /// plus real-socket corroboration (single nonzero local MAC/port).
     pub fn build_session(self) -> Result<EndpointSession<BipTransport>, Error> {
-        let mut bip_status = None;
-        let mut frame_tap = None;
+        self.build_session_wrapped(std::convert::identity)
+    }
+
+    /// Builds the session [`build_session`](Self::build_session) would, with
+    /// its one B/IP transport passed through `wrap` first (#2617): for an
+    /// owner that keeps several kinds of link in one type, such as a
+    /// binding's enum over [`AnyTransport`](bacnet_transport::any::AnyTransport),
+    /// so a [`full_client`](EndpointSession::full_client) has the type its
+    /// other clients have. The transport's BVLC status, table reader and
+    /// frame tap are taken before `wrap`, so the session's B/IP calls keep
+    /// working. `wrap` must pass every [`TransportPort`](bacnet_transport::port::TransportPort)
+    /// call through to the transport it is given.
+    pub fn build_session_wrapped<U: bacnet_transport::port::TransportPort + 'static>(
+        self,
+        wrap: impl FnOnce(BipTransport) -> U,
+    ) -> Result<EndpointSession<U>, Error> {
+        let mut handles = None;
         let mut endpoint = self.compose(|builder| {
             let transport = builder.build_transport()?;
-            bip_status = Some(transport.bvlc_client_status());
-            frame_tap = Some(transport.frame_tap().clone());
-            Ok(transport)
+            handles = Some((
+                transport.bvlc_client_status(),
+                transport.bvlc_table_reader(),
+                transport.frame_tap().clone(),
+            ));
+            Ok(wrap(transport))
         })?;
-        endpoint.bip_status = bip_status;
-        endpoint.frame_tap = frame_tap;
+        if let Some((status, tables, frame_tap)) = handles {
+            endpoint.bip_status = Some(status);
+            endpoint.bip_tables = Some(tables);
+            endpoint.frame_tap = Some(frame_tap);
+        }
         Ok(endpoint)
     }
 
@@ -396,9 +358,6 @@ impl BipEndpointBuilder {
         mut self,
         transport: impl FnOnce(Self) -> Result<T, Error>,
     ) -> Result<EndpointSession<T>, Error> {
-        let device_write_authorizer = self.device_write_authorizer.take();
-        let reinitialize = self.reinitialize.take();
-        let reinit_password = self.reinit_password.take();
         let bindings = std::mem::take(&mut self.source_audit_bindings);
         let routed = std::mem::take(&mut self.source_audit_routed);
         crate::source_audit::recipient::SourceRoutes::new(
@@ -418,14 +377,9 @@ impl BipEndpointBuilder {
         if let Some(id) = identity {
             endpoint = endpoint.device(id);
         }
-        if let Some(authorizer) = device_write_authorizer {
-            endpoint = endpoint.with_device_writes(authorizer);
-        }
         if let Some(oid) = registered_network_port {
             endpoint = endpoint.with_registered_network_port(oid);
         }
-        endpoint.reinitialize = reinitialize;
-        endpoint.reinit_password = reinit_password;
         endpoint.source_audit_bindings = bindings;
         endpoint.source_audit_routed_bindings = routed;
         Ok(endpoint)
@@ -454,7 +408,7 @@ mod share_port_tests {
 
     /// The builder hands `share_wildcard_port` to its transport (#2366): on
     /// a port another socket holds, a claiming transport's error names the
-    /// opt-in, and a sharing one's says the holder doesn't share. Windows
+    /// opt-in, and a sharing one's says the port can't be shared. Windows
     /// decides a sharing bind beside a socket that set no options by the two
     /// sockets' accounts (Microsoft's SO_REUSEADDR table), so only the
     /// claiming case runs there.
@@ -462,7 +416,7 @@ mod share_port_tests {
     async fn the_builder_hands_its_wildcard_sharing_choice_to_the_transport() {
         let holder = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
         let port = holder.local_addr().unwrap().port();
-        for (share, says) in [(false, "share_wildcard_port"), (true, "refuses sharing")] {
+        for (share, says) in [(false, "share_wildcard_port"), (true, "can't be shared")] {
             if share && cfg!(windows) {
                 continue;
             }

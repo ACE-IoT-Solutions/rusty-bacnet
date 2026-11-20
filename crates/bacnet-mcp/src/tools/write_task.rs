@@ -11,9 +11,9 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use bacnet_ops::limits::{Account, charged};
-use bacnet_ops::safety::desk::{Desk, STALE, Sent};
-use bacnet_ops::safety::ledger::Origin;
-use bacnet_ops::safety::{Gate, Outcome, Preview, WriteSpec};
+use bacnet_tool::safety::desk::{Desk, STALE, Sent};
+use bacnet_tool::safety::ledger::Origin;
+use bacnet_tool::safety::{Gate, Outcome, Preview, WriteSpec};
 use bacnet_transport::port::TransportPort;
 use serde_json::{Map, Value, json};
 use tokio::task::JoinHandle;
@@ -121,14 +121,14 @@ pub(crate) async fn confirmed<T: TransportPort + 'static>(
     fields: Map<String, Value>,
     sending: Sending,
 ) -> Result<Value, ToolError> {
-    let engine = ctx.engine()?;
+    let client = ctx.client()?;
     let mut caller = McpCaller::new(&ctx.writes, &ctx.policy.writes, Some(via), fields);
     caller.sending = Some(sending);
     let mut desk = open(&ctx, &workspace, &caller).await?;
     let fresh = desk
         .prepare(
-            engine.client(),
-            engine.limits(),
+            client.low_level(),
+            client.limits(),
             &caller,
             &specs,
             args.batch,
@@ -138,9 +138,10 @@ pub(crate) async fn confirmed<T: TransportPort + 'static>(
     let fresh = match fresh {
         Ok(fresh) if preview_digest(&fresh) == state.preview => fresh,
         other => {
-            let detail = other
-                .err()
-                .unwrap_or_else(|| "the pre-image changed".into());
+            // The digest covers the address as well as the pre-images.
+            let detail = other.err().unwrap_or_else(|| {
+                "the device's address, a pre-image or a slot holder is not as previewed".into()
+            });
             let fields = json!({ "why": "stale", "detail": detail });
             desk.record(&caller, "declined", fields).await;
             return Err(ToolError::refused("stale", format!("{STALE}: {detail}")));
@@ -153,7 +154,7 @@ pub(crate) async fn confirmed<T: TransportPort + 'static>(
     }
     let before = desk.entries();
     let sent = desk
-        .commit(engine.client(), engine.limits(), &caller, &fresh)
+        .commit(client.low_level(), client.limits(), &caller, &fresh)
         .await;
     ctx.writes
         .signals
@@ -171,13 +172,13 @@ pub(crate) async fn planned<T: TransportPort + 'static>(
     fields: Map<String, Value>,
     sending: Sending,
 ) -> Result<Value, ToolError> {
-    let engine = ctx.engine()?;
+    let client = ctx.client()?;
     let refusing = McpCaller::new(&ctx.writes, &ctx.policy.writes, None, fields.clone());
     let mut desk = open(&ctx, &workspace, &refusing).await?;
     let preview = desk
         .prepare(
-            engine.client(),
-            engine.limits(),
+            client.low_level(),
+            client.limits(),
             &refusing,
             &specs,
             args.batch,
@@ -213,7 +214,7 @@ pub(crate) async fn planned<T: TransportPort + 'static>(
     caller.sending = Some(sending);
     let before = desk.entries();
     let sent = desk
-        .commit(engine.client(), engine.limits(), &caller, &preview)
+        .commit(client.low_level(), client.limits(), &caller, &preview)
         .await;
     ctx.writes
         .signals

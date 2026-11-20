@@ -8,7 +8,7 @@ use bacnet_types::{
     enums::{ObjectType, PropertyIdentifier},
     primitives::ObjectIdentifier,
 };
-use bus_port::BusPort;
+use bus_port::bus_port;
 
 #[path = "support/bus_port.rs"]
 mod bus_port;
@@ -25,12 +25,12 @@ async fn endpoint_device_wildcard_accepts_bundled_server_concrete_ack() {
             ..Default::default()
         },
         database,
-        BusPort::new(),
+        bus_port(),
     )
     .await
     .unwrap();
     let mut endpoint = EndpointSession::new(
-        BusPort::new(),
+        bus_port(),
         SessionRole::ClientOnly,
         SessionConfig::default(),
     )
@@ -56,7 +56,7 @@ async fn endpoint_device_wildcard_accepts_bundled_server_concrete_ack() {
     server.stop().await.unwrap();
 }
 
-use bacnet_client::client::BACnetClient;
+use bacnet_client::client::{BACnetClient, Station};
 use bacnet_encoding::{
     apdu::{Apdu, ComplexAck, decode_apdu, encode_apdu},
     npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu},
@@ -90,7 +90,7 @@ impl Reader {
         match self {
             Self::Standalone(client) if routed => {
                 client
-                    .read_property_routed(&[2], 100, &[3], object, property, index)
+                    .read_property(&Station::routed(&[2], 100, &[3]), object, property, index)
                     .await
             }
             Self::Standalone(client) => client.read_property(&[2], object, property, index).await,

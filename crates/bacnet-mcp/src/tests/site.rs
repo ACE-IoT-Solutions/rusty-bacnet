@@ -289,13 +289,37 @@ async fn objects_are_found_by_name_type_and_object() {
             json!({ "object": "ao:1", "range": "1201-1202" }),
         )
         .await;
-    // 1202 is another instance the lab answers for: it has no Device
-    // object of its own, so its list fails and it is skipped, not fatal.
+    // 1202 is another lab device at its own address, holding the same
+    // objects.
     let body = ok(&by_object);
     assert_eq!(body["searched"], json!([1201, 1202]));
-    assert_eq!(body["matches"].as_array().unwrap().len(), 1, "{body}");
-    assert_eq!(body["skipped"][0]["device"], json!(1202));
-    assert_eq!(body["skipped"][0]["error"]["code"], json!("unknown-object"));
+    let devices: Vec<&Value> = body["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| &m["device"])
+        .collect();
+    assert_eq!(devices, [&json!(1201), &json!(1202)], "{body}");
+    assert_eq!(body["skipped"], json!([]));
+
+    // A search that finds something carries no note; one that matches
+    // nothing says the miss is the discovered devices', not the site's,
+    // and how a discovery reaches further (#2596).
+    assert!(body.get("note").is_none(), "{body}");
+    let missed = lab
+        .agent
+        .call(
+            "bacnet_find_object",
+            json!({ "name": "no such point", "range": "1201" }),
+        )
+        .await;
+    let missed = ok(&missed);
+    assert_eq!(missed["matches"], json!([]), "{missed}");
+    let note = missed["note"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("discovered so far") && note.contains("network or global"),
+        "{missed}"
+    );
 
     let nothing = lab
         .agent
@@ -303,6 +327,74 @@ async fn objects_are_found_by_name_type_and_object() {
         .await;
     assert_eq!(failed(&nothing)["error"], json!("invalid-argument"));
     lab.stop().await;
+}
+
+/// Every page of `args`' search, following its cursors.
+async fn find_pages(lab: &mut Lab, args: &Value) -> Vec<Value> {
+    let mut pages = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..50 {
+        let mut call = args.clone();
+        if let Some(cursor) = &cursor {
+            call["cursor"] = json!(cursor);
+        }
+        let page = lab.agent.call("bacnet_find_object", call).await;
+        let body = ok(&page).clone();
+        cursor = body["next_cursor"].as_str().map(str::to_string);
+        pages.push(body);
+        if cursor.is_none() {
+            return pages;
+        }
+    }
+    panic!("the search didn't end: {pages:?}");
+}
+
+/// A search the call budget pages carries the note on its last page when
+/// no page matched, and on no page when one did (#2596): the cursor says
+/// whether an earlier page matched.
+#[tokio::test(start_paused = true)]
+async fn a_paged_search_notes_a_miss_on_its_last_page() {
+    // A lab of its own for each search: names read are kept, and a search
+    // that reads none isn't paged.
+    let lab = || {
+        let policy = Policy {
+            caps: Caps {
+                budget: Duration::from_millis(500),
+                ..Caps::default()
+            },
+            ..Policy::default()
+        };
+        Lab::start_site(policy, Duration::from_millis(200))
+    };
+    let mut missing = lab().await;
+    missing.agent.initialize().await;
+    let args = json!({ "name": "no such point", "range": "1201-1202" });
+    let missed = find_pages(&mut missing, &args).await;
+    assert!(missed.len() > 1, "the budget pages it: {missed:?}");
+    let (last, earlier) = missed.split_last().unwrap();
+    assert!(
+        earlier.iter().all(|page| page.get("note").is_none()),
+        "{earlier:?}"
+    );
+    let note = last["note"].as_str().unwrap_or_default();
+    assert!(note.contains("discovered so far"), "{last}");
+    missing.stop().await;
+
+    let mut found = lab().await;
+    found.agent.initialize().await;
+    let hit = find_pages(&mut found, &json!({ "name": "zone", "range": "1201-1202" })).await;
+    assert!(hit.len() > 1, "the budget pages it: {hit:?}");
+    assert!(
+        hit.iter().any(|page| page["matches"] != json!([])),
+        "{hit:?}"
+    );
+    assert_eq!(
+        hit.last().unwrap()["matches"],
+        json!([]),
+        "the premise: {hit:?}"
+    );
+    assert!(hit.iter().all(|page| page.get("note").is_none()), "{hit:?}");
+    found.stop().await;
 }
 
 /// A page holds the policy's object page; the cursor goes on where it
@@ -323,7 +415,7 @@ async fn find_pages_resume_across_devices() {
     let mut skipped = Vec::new();
     let mut pages = Vec::new();
     let mut cursor: Option<String> = None;
-    for _ in 0..10 {
+    for _ in 0..20 {
         let mut call = args.clone();
         if let Some(cursor) = &cursor {
             call["cursor"] = json!(cursor);
@@ -346,24 +438,31 @@ async fn find_pages_resume_across_devices() {
             None => break,
         }
     }
-    assert_eq!(
-        seen,
-        [
-            "1201 \"analog-input:1\"",
-            "1201 \"analog-input:3\"",
-            "1201 \"trend-log:1\"",
-            "1201 \"trend-log:2\"",
-            "1201 \"trend-log:3\"",
-            "1201 \"trend-log:4\"",
-            "1201 \"trend-log:5\"",
-        ]
-    );
-    // A full page ends before the next device: 1202 is read only on the
-    // last page, which finds nothing there and ends the search.
+    let objects = [
+        "\"analog-input:1\"",
+        "\"analog-input:3\"",
+        "\"trend-log:1\"",
+        "\"trend-log:2\"",
+        "\"trend-log:3\"",
+        "\"trend-log:4\"",
+        "\"trend-log:5\"",
+    ];
+    let wanted: Vec<String> = [1201, 1202]
+        .iter()
+        .flat_map(|device| {
+            objects
+                .iter()
+                .map(move |object| format!("{device} {object}"))
+        })
+        .collect();
+    assert_eq!(seen, wanted);
+    // A full page ends before the next device: 1202, another lab device at
+    // its own address, is read only once 1201 is done, and its last match
+    // ends the search.
     let mut wanted: Vec<(Value, usize)> = vec![(json!([1201]), 1); 7];
-    wanted.push((json!([1202]), 0));
+    wanted.extend(vec![(json!([1202]), 1); 7]);
     assert_eq!(pages, wanted);
-    assert_eq!(skipped, [json!(1202)], "skipped once, on the last page");
+    assert!(skipped.is_empty(), "{skipped:?}");
 
     lab.stop().await;
 }
@@ -530,7 +629,7 @@ pub(crate) fn ack_with_text(text: &str) -> String {
     let length = u16::try_from(npdu.len() + 4).unwrap().to_be_bytes();
     let mut frame = vec![0x81, 0x0A, length[0], length[1]];
     frame.extend_from_slice(&npdu);
-    frame.iter().map(|b| format!("{b:02x}")).collect()
+    bacnet_ops::octets::hex(&frame)
 }
 
 /// Every label in a decode tree, depth first.

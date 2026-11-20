@@ -3,7 +3,7 @@
 //! the ReadProperty fallback, the element-by-element Object_List and the
 //! one-request-per-device limit.
 
-use bacnet_ops::engine::ReadVia;
+use bacnet_ops::client::ReadVia;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
 use bacnet_types::primitives::ObjectIdentifier;
 use insta::assert_snapshot;
@@ -332,6 +332,7 @@ async fn a_device_gets_one_request_at_a_time() {
         commands.push(Command::Browse {
             req,
             device: LAB,
+            at: "10.0.0.100:47808".parse().unwrap(),
             read: BrowseRead::Object(object),
         });
     }

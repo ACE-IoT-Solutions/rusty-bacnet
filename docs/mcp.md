@@ -15,16 +15,16 @@ page. Experimental in 0.15.
 | Piece | Where | What it does |
 |---|---|---|
 | `bacnet-mcp` | `crates/bacnet-mcp` | `McpServer<T>`: the tool surface, prompts, policy, untrusted-text envelope, signed cursors. Out of `default-members`; publishable, because the CLI depends on it. Default feature `stdio`. |
-| Engine extensions | `bacnet-ops` | `RequestLimits::with_network_rates`, `turn_on` and `slot`; per-caller `Account` and `TokenBucket` through `limits::charged`; `Engine::who_is`, `discover_routers`, `devices`, `device`, `address_style`; `read_trend` charged per request; `alarm_summary` and `enrollment_summary` |
-| Decoder | `bacnet-ops::decode` | The capture screen's frame summary and field tree, moved from the CLI for `bacnet_decode`: any tapped link (B/IP, B/IPv6, BACnet/SC, MS/TP), or a bare NPDU or APDU; a field quoting a character string is marked as device text |
-| Watch hub | `bacnet-ops::watch` | `Hub`: one managed COV subscription or poller per point, shared by every listener, holding the latest values (phase 2); `Engine::device_events` |
-| `bacnet mcp` | `crates/bacnet-cli/src/mcp.rs` | `serve --stdio [--profile NAME] [--passive]`, `connect [--profile NAME]` (#2185) and `authorize --profile NAME`, behind the CLI feature `mcp` (which brings `tui`, for the profiles; the release binaries include it from 0.15.0, and a source build enables it with `--features mcp`). Classified `Read` in `bacnet_ops::class`. |
+| Client extensions | `bacnet-ops` | `RequestLimits::with_network_rates`, `turn` and `slot`, gates keyed by `DeviceAddress` (#2560); per-caller `Account` and `TokenBucket` through `limits::charged`; `Client::who_is`, `discover_routers`, `devices`, `device` (a `Device` handle, #2560), `address_style`; `Device::read_trend` charged per request; `alarm_summary` and `enrollment_summary`; `point_record`, the 223 export's read of one object, a page of them a call (#2436) |
+| Decoder | `bacnet-ops::decode`, `bacnet-tool::decode::tree` | The capture screen's frame summary (`bacnet-ops`) and field tree (`bacnet-tool`), moved from the CLI for `bacnet_decode`: any tapped link (B/IP, B/IPv6, BACnet/SC, MS/TP), or a bare NPDU or APDU; a field quoting a character string is marked as device text |
+| Watch hub | `bacnet-ops::watch` | `Hub`: one managed COV subscription or poller per point, shared by every listener, holding the latest values (phase 2); `Client::device_events` |
+| `bacnet mcp` | `crates/bacnet-cli/src/mcp.rs` | `serve --stdio [--profile NAME] [--passive]`, `connect [--profile NAME]` (#2185) and `authorize --profile NAME`, behind the CLI feature `mcp` (which brings `tui`, for the profiles; the release binaries include it from 0.15.0, and a source build enables it with `--features mcp`). Classified `Read` in `bacnet_tool::class`. |
 | `[mcp]` profile table | `crates/bacnet-cli/src/tui/profile/mcp.rs` | networks, devices, slow and fast networks, broad discovery, rates and caps; `mcp_writes`, `mcp_arm` and `[mcp.plan]` (#2068) |
-| Write safety core | `bacnet-ops::safety` | The TUI's plan, ledger, audit log and workspace lock, and the engine half of a write (`desk`: pre-image reads, the stale check, the ledger and audit around each send, revert), shared by the TUI and MCP (#2068) |
+| Write safety core | `bacnet-tool::safety` | The TUI's plan, ledger, audit log and workspace lock, and the client half of a write (`desk`: pre-image reads, the stale check, the ledger and audit around each send, revert), shared by the TUI and MCP (#2068) |
 | Writes | `crates/bacnet-mcp/src/writes/`, `tools/write.rs`, `tools/revert.rs` | The write session, the approvers (`ClientElicitation`, `PlanApprover`, `Deny`), the sealed confirmation state, and the two write tools |
 | Attached mode | `crates/bacnet-mcp/src/attach/`, `crates/bacnet-cli/src/tui/attach.rs` | The TUI's local socket or, on Windows, named pipe (`attach::Listener`), the peer checks, and `bacnet mcp connect`'s bridge (`attach::bridge`) (#2185, #2201) |
 
-The SDK is `rmcp` 3.5.1 (pinned, server role, stdio only). It answers both
+The SDK is `rmcp` 3.9.0 (pinned, server role, stdio only). It answers both
 the 2026-07-28 request form (`server/discover`, version and capabilities in
 each request's `_meta`) and the older `initialize` handshake.
 
@@ -33,27 +33,136 @@ each request's `_meta`) and the older `initialize` handshake.
 The read tools are read-only (`readOnlyHint: true`, `destructiveHint:
 false`); the two [write tools](#writes) are listed only when the profile
 offers writes. All have input and output schemas and structured content
-plus a text rendering.
+plus a text rendering. An `object` argument is `type:instance` (`ai:1`,
+`analog-output:3`) or, as the coming BACnet RDF encoding writes one,
+`type,instance` (`analog-output,3`); a log tool's `from` and `to` also take
+that encoding's date-time string, `2026-11-10 2 16:35:00.00`. Every form is
+in the CLI reference's [Input Forms](CLI.md#input-forms). A `device`
+argument is an instance (`1201`), `dnet:instance` for the one claiming it
+on that network, or the address of a device in the discovery table
+(`10.0.0.2:47808`, `mstp:5`, `bip6:0x0004D2`, six hex octets, or
+`2001:0x33` behind a router; #2560); nothing is sent to resolve one, and
+every request of the call goes to the address the policy checked. An
+instance two addresses claim is refused (`ambiguous-device`), naming both:
+name one by its address.
 
 | Tool | Notes |
 |---|---|
 | `bacnet_discover` | Who-Is (local, network, directed, global), then the discovery table, paged (pages index the live table, which can change between them). Broad (global, no range, or more than 1000 instances; directed without a range to an address that isn't a known device) needs `broad_discovery`, one a minute, whatever the reach; with `[mcp] devices` the range must also lie inside them. A send the transport refuses isn't charged. A network-scope Who-Is takes that network's slot. The one tool in passive mode, where it only lists (by default) and refuses to send. |
-| `bacnet_read` | RPM with the engine's RP fallback; array elements by RP; `preset` `point` or `device`; at most `max_values` rows a call, then a cursor |
-| `bacnet_list_objects` | Object_List, cached five minutes per device for paging; `types` filter; `names` reads each name (50 a page). A list read element by element stops at the call's budget and keeps its place, so the next call (with `next_cursor`) goes on from there; `list.complete` says when it's done. Calls on one device take turns, so progress never goes back. A resumed read checks the count again and starts over if it changed, and one begun more than 10 minutes ago starts over; an element the device can't give is a gap (`list.gaps`); at most 64 devices' lists are kept |
+| `bacnet_read` | RPM with the client's RP fallback; array elements by RP; `preset` `point` or `device`; at most `max_values` rows a call, then a cursor |
+| `bacnet_list_objects` | Object_List, cached five minutes per device for paging; `types` filter; `names` reads each name (50 a page). A list read element by element stops at the call's budget and keeps its place, so the next call (with `next_cursor`) goes on from there; `list.complete` says when it's done. Calls on one device take turns, so progress never goes back. A resumed read checks the count again and starts over if it changed, and one that hasn't gone on for 10 minutes starts over; a list read element by element is kept five minutes from when it completed; an element the device can't give is a gap (`list.gaps`); at most 64 devices' lists are kept |
 | `bacnet_describe_device` | The Device object's summary properties, services and object types by name, the address and route; `count_objects` |
-| `bacnet_find_object` | Objects across the discovery table, within reach and an optional device `range`: by `name` or `description` (a case-insensitive substring of the cleaned device text), `object` or `types`. Lists come from `bacnet_list_objects`' cache (read once, kept five minutes); a text match reads each candidate's name (and description, if asked) once, kept five minutes too. A page holds up to 100 matches (or the policy's object page), and a full page ends before the next device is read; the cursor packs a device and a candidate index. Names are kept cleaned and capped at 4,096 characters, which a search matches against (a result shows the policy's text cap of them), at most 4,096 objects a device and 16,384 in all. A device whose list read stopped is under `incomplete` with why, after searching what was read; one that failed is under `skipped` with its error; a list read cut by the budget resumes on the next page. A device that stops answering while its names are read is under `incomplete` too, and the search moves on without a cursor back to it, so a silent device doesn't cost each later page a timeout; search it alone to retry. |
+| `bacnet_find_object` | Objects across the discovery table, within reach and an optional device `range`: by `name` or `description` (a case-insensitive substring of the cleaned device text), `object` or `types`. Lists come from `bacnet_list_objects`' cache (read once, kept five minutes); a text match reads each candidate's name (and description, if asked) once, kept five minutes too. A page holds up to 100 matches (or the policy's object page), and a full page ends before the next device is read; the cursor packs a device and a candidate index. Names are kept cleaned and capped at 4,096 characters, which a search matches against (a result shows the policy's text cap of them), at most 4,096 objects a device and 16,384 in all. A device whose list read stopped is under `incomplete` with why, after searching what was read; one that failed is under `skipped` with its error; a list read cut by the budget resumes on the next page. A device that stops answering while its names are read is under `incomplete` too, and the search moves on without a cursor back to it, so a silent device doesn't cost each later page a timeout; search it alone to retry. It sends no Who-Has: it searches the devices `bacnet_discover` found, which by default asks this network alone, so the last page of a search that matched nothing, on any page, carries a `note` saying that only the devices discovered so far were searched and that a discovery with scope `network` or `global` reaches devices behind routers (#2596). |
 | `bacnet_network_map` | Networks in `[mcp] networks`, each with its routers (from the last Who-Is-Router-To-Network and from the routed devices' router addresses), its speed and rate under the policy, and its devices in reach; and the routers with the networks each reaches. `send: true` broadcasts a Who-Is-Router-To-Network: it needs `broad_discovery`, goes at most once a minute (checked and claimed under one lock), takes the local network's slot and is charged. The wait for answers ends with the call's budget, counted after the wait for the rate slot. A query cancelled while it waits (for the slot or for answers) keeps its claim on the minute but records no routers; at most 256 routers are kept, replaced by each finished query (one asking about a single network merges into them, the routers just heard first). `bbmd: true` adds the BBMD tables and a consistency verdict (see [BBMD tables](#bbmd-tables)). No network-layer writes, table writes or registrations. |
-| `bacnet_read_trend` | A Trend Log or Trend Log Multiple through `Engine::read_trend`, each request charged. From the oldest record or after `from`, up to `to`; at most `max_records` (500 by default, 2,000 at most, and about 60 kB of structured content) a call, then a cursor holding the log's next sequence number (a log that has more but gives no sequence number to resume from returns `truncated` without a cursor, and says why under `stopped`). `from` after `to` is a JSON-RPC -32602.
- Records: time, sequence number, `values` as `Datum`s (a failure as its error), status flags named, `flagged` when a status flag is set or the record is a log status change. A summary of the records read comes with every call: count, flagged, log status and time-change counts, first and last time, and per column (a member of a Trend Log Multiple) count, min, max and mean of numbers, counts of booleans and enumerations by value, failures. Once the device has answered the first page, a call reads the log's Log_DeviceObjectProperty once (one more charged request, through `Engine::log_columns`, so a silent device still costs one timeout) and names each column's enumerations and bit strings by the property it samples, in `values` and in the state counts (#2091); when that read fails or names nothing, values keep their numbers. State keys are therefore names when the reference names them and numbers otherwise, and can differ between calls on the same log if the reference read fails on one of them. A column that samples a binary or multi-state object's state (its Present_Value and the like) counts its samples as states, keyed `active`/`inactive` or by state number, never as numbers to average; when the reference read fails, the call doesn't know the column holds states, so a multi-state column falls back to `numeric` and `numeric` versus `states` can also differ between calls. The call then reads that object's Active_Text and Inactive_Text, or State_Text: one more charged request an object, once a call, for at most 8 objects on the log's own device, and skipped once the call's budget is spent (#2122). The texts are device strings, so they never become keys or join a value: the column's `state_texts` maps each state key it counted to its text, as the device sent it, in an untrusted envelope (cleaned and capped there, with `truncated` set when cut) (source `device N multi-state-value:1 state-text`, `active-text` or `inactive-text`), and is null when no key has one (a refused read, an empty text, a state past the end of State_Text). `summary: true` reads up to 20,000 records and returns only the summary. `pages`, `more_items` (answers cut short by the device) and `gaps` report how the reading went. |
-| `bacnet_read_log_records` | An Event Log or Audit Log (#2103), read and paged as `bacnet_read_trend` reads a trend log: the same `from`, `to`, `max_records`, `summary` and cursor arguments, the same limits and budget, each request charged, and the same `pages`, `more_items`, `gaps`, `done` and `stopped`. A sibling tool rather than more of the trend tool: these records are notifications, not samples, so they have no columns to name or average. Records: time, sequence number (an Audit Log counts in 64 bits), `kind` and `flagged` (a log status change, an event into a state other than normal, or a failed operation). An event notification (`notification`) comes through `bacnet_ops::format::log_records`: the initiating device and event object, timestamp, class, priority, event type, notify type and states named (an ack-notification has no `from_state` or `ack_required`), and its event values through the shared notification renderer (#2073). An audit notification (`audit`) names the operation and the target property, gives the source and target devices and objects, decodes the values written and held as the target property's, and names a failure's error class and code. The message and the comments are device text, in untrusted envelopes (source `device N event-log:1 log-buffer`). The summary counts records by kind, then for an Event Log the notifications by the state entered (`by_to_state`), event type and notify type, and for an Audit Log the operations by name (`by_operation`) and how many failed. Any other object is refused (`invalid-argument` on `object`). |
+| `bacnet_read_trend` | A Trend Log or Trend Log Multiple through `Device::read_trend`, each request charged. From the oldest record or after `from`, up to `to`; at most `max_records` (500 by default, 2,000 at most, and about 60 kB of structured content) a call, then a cursor holding the log's next sequence number (a log that has more but gives no sequence number to resume from returns `truncated` without a cursor, and says why under `stopped`). `from` after `to` is a JSON-RPC -32602.
+ Records: time, sequence number, `values` as `Datum`s (a failure as its error), status flags named, `flagged` when a status flag is set or the record is a log status change. A record under a tag its CHOICE doesn't assign (a later revision's, #2474) has `kind` `unknown-choice` and its `choice`, an `unknown-choice` element (its tag, whether constructed, and its octets as hex), and is flagged; a Trend Log Multiple member under one is that element in `values`. A summary of the records read comes with every call: count, flagged, log status and time-change counts, first and last time, and per column (a member of a Trend Log Multiple) count, min, max and mean of numbers, counts of booleans and enumerations by value, failures. Once the device has answered the first page, a call reads the log's Log_DeviceObjectProperty once (one more charged request, through `Device::log_columns`, so a silent device still costs one timeout) and names each column's enumerations and bit strings by the property it samples, in `values` and in the state counts (#2091); when that read fails or names nothing, values keep their numbers. State keys are therefore names when the reference names them and numbers otherwise, and can differ between calls on the same log if the reference read fails on one of them. A column that samples a binary or multi-state object's state (its Present_Value and the like) counts its samples as states, keyed `active`/`inactive` or by state number, never as numbers to average; when the reference read fails, the call doesn't know the column holds states, so a multi-state column falls back to `numeric` and `numeric` versus `states` can also differ between calls. The call then reads that object's Active_Text and Inactive_Text, or State_Text: one more charged request an object, once a call, for at most 8 objects on the log's own device, and skipped once the call's budget is spent (#2122). The texts are device strings, so they never become keys or join a value: the column's `state_texts` maps each state key it counted to its text, as the device sent it, in an untrusted envelope (cleaned and capped there, with `truncated` set when cut) (source `device N multi-state-value:1 state-text`, `active-text` or `inactive-text`), and is null when no key has one (a refused read, an empty text, a state past the end of State_Text). `summary: true` reads up to 20,000 records and returns only the summary. `pages`, `more_items` (answers cut short by the device) and `gaps` report how the reading went. |
+| `bacnet_read_log_records` | An Event Log or Audit Log (#2103), read and paged as `bacnet_read_trend` reads a trend log: the same `from`, `to`, `max_records`, `summary` and cursor arguments, the same limits and budget, each request charged, and the same `pages`, `more_items`, `gaps`, `done` and `stopped`. A sibling tool rather than more of the trend tool: these records are notifications, not samples, so they have no columns to name or average. Records: time, sequence number (an Audit Log counts in 64 bits), `kind` and `flagged` (a log status change, an event into a state other than normal, a failed operation, or a record of either log under a tag its CHOICE doesn't assign, whose `kind` is `unknown-choice` with the element in `choice`, #2474, #2483). An event notification (`notification`) comes through `bacnet_ops::format::log_records`: the initiating device and event object, timestamp, class, priority, event type, notify type and states named (an ack-notification has no `from_state` or `ack_required`), and its event values through the shared notification renderer (#2073). An audit notification (`audit`) names the operation and the target property, gives the source and target devices and objects, decodes the values written and held as the target property's, and names a failure's error class and code. The message and the comments are device text, in untrusted envelopes (source `device N event-log:1 log-buffer`). The summary counts records by kind, then for an Event Log the notifications by the state entered (`by_to_state`), event type and notify type, and for an Audit Log the operations by name (`by_operation`) and how many failed. Any other object is refused (`invalid-argument` on `object`). |
 | `bacnet_alarms` | GetEventInformation through `bacnet_ops::format::alarms` (#2077): objects, states, transitions, notify types, timestamps and priorities named; paged over the device's answers (`more_events`) up to `max` (100) a call, the cursor holding the last object; once the call's budget is spent no further answer is asked for, and what was read comes back with `more_events` and a cursor (`format::alarms::read_event_information_until`).  `summaries: true` adds GetAlarmSummary and GetEnrollmentSummary on the first page; a device refusing one reports it under `summary_errors`. When the events spent the call's budget, neither is sent, and each shows under `summary_errors` as `{"skipped": "budget"}`. Every datum is passed through the envelope check. |
 | `bacnet_watch` | Points on the watch hub, and what changed since the last call (see [the tool-only fallback](#the-tool-only-fallback)). `idempotentHint: false`. Not listed in passive mode. |
 | `bacnet_decode` | Hex (separators and `0x` ignored, at most 6,144 octets, room for the largest BACnet/SC message the stack accepts) as `bip`, `bip6`, `mstp`, `sc`, `npdu`, `apdu` or `auto` (by the first octets; SC must be named). Returns a one-line `text`, the decoder's `summary` and the field `tree` (labels with `[start, end)` octet ranges, at most 600 fields). A label quoting a character string is an envelope with source `decoded frame`; other labels are cleaned, and a long one (an unknown tag's octets) is cut at 512 characters with `truncated: true`. No traffic: listed in passive mode too. |
+| `bacnet_export_223` | Experimental (#2436): one device's analog, binary and multi-state objects and integer values as a proposed Standard 223 point list in Turtle, the CLI's `bacnet export 223-experimental` through the client, paged with a cursor. Each page's Turtle is a second text block; the structured content summarises the page. See [Standard 223 export](#standard-223-export-experimental). |
 
 Prompts: `survey_site` (range, network) and `investigate_point` (device,
 object). Their arguments are checked against the target grammar. The survey
 also maps the networks and lists each device's alarms; the point
 investigation also checks its alarms and summarises a trend log of it.
+
+## Standard 223 export (experimental)
+
+`bacnet_export_223` (#2436) writes what `bacnet export 223-experimental`
+writes, from the same code (`bacnet_ops::export::s223`): one 223 property
+for each analog, binary and multi-state input, output and value and each
+integer value, with a BACnet external reference to its Present_Value. Its
+title says experimental, as the CLI command's name does: the draft standard
+and the mapping can change between releases. Read-only; not listed in
+passive mode.
+
+- **Arguments.** `device` as the other tools take it; `base_iri` (default
+  `http://example.org/bacnet/`, a documentation domain), `types` (any of the
+  ten types, by the target grammar's names: `ai`, `binary-output`,
+  `integer-value` and so on; left out, all ten) and `write_priority` (1 to
+  16). The export's own checks refuse a bad base IRI, a priority outside 1
+  to 16, a type it doesn't map or an empty `types`, with its own messages,
+  as `invalid-argument` before anything is sent.
+- **Base IRI.** Each device's nodes go under `<base_iri>device-<instance>/`
+  and are named from object identifiers. A device instance is unique only
+  within one BACnet internetwork, so give each site a base of its own, or
+  two sites' models merged into one graph would share node names.
+- **Pages.** A call returns one page. It takes the device's Object_List
+  as `bacnet_list_objects` does (from its five-minute cache, or read
+  element by element across calls, each going on where the last stopped;
+  while it is incomplete a page holds no object and its cursor goes on
+  reading the list), reads the device's name, then reads the objects of
+  the selected types in Object_List order, one at a time from the cursor's
+  place, each as the inventory's point record (`Device::point_record`).
+  A page's Turtle stays under
+  24,000 bytes: the page ends before an object likely to pass that (judged
+  by its largest point so far), and an object that passes it anyway goes
+  back to the next page, where it is read again. A point larger than that
+  on its own goes out on a page alone, flagged `oversized`. A page ends too
+  at 50 objects (or the policy's object page, if smaller), or once the
+  call's budget is spent; with objects left, it takes at least one. Then
+  `next_cursor` points at the first object not on the page: nothing past
+  it is read but, now and then, that one. The cursor is bound, as every
+  cursor is, to the call's other arguments (device, `types`, `base_iri`,
+  `write_priority`), the principal and ten minutes; another call's cursor
+  is refused (`invalid-argument` on `cursor`) before anything is sent.
+- **The cursor holds the list too**: a fingerprint of the matching objects
+  in order. When the Object_List has changed since the cursor's page
+  (objects added, removed or moved; the list is read again once its five
+  minutes in the cache are up), the call fails (`failed`) after the list
+  read, with nothing more sent, and says to start the export again
+  without a cursor, rather than repeat some objects and leave out others.
+- **Each page is a Turtle document of its own**: the export's header and
+  prefixes again, and its points; a page with no object, while the
+  Object_List is still being read, is comments only. A multi-state point's
+  enumeration kind belongs to that point, so the pages' points, in order,
+  are the whole export's, and concatenated pages make one model. The
+  page's first comment says which of the matching objects it holds and
+  whether more follow; the header's counts are the page's.
+- **Cost.** One request per object, by ReadPropertyMultiple (a device that
+  refuses it costs what the CLI section says), plus the device's name on
+  every page and the Object_List once (until the cache expires): a small
+  device is N + 2 in one page. A point's Turtle runs to 500 to 800 bytes
+  (more for a multi-state point with many states), so a page holds about
+  30, and a 500-object controller (about 370 kB of Turtle) comes in about
+  18 pages, about 519 requests. At the default principal rate (5 a second,
+  burst 20) a page takes a few seconds. Every request goes through the
+  client, one at a time under the device's gate, the rates and the
+  principal's tokens.
+- **A device that stops answering** partway through a page: the page holds
+  the objects read before it (its header says the reading stopped early),
+  `stopped` holds the error, and `next_cursor` tries that object again. If
+  it stops at the page's first object, or at its name, the call is an
+  error. One that stops while its Object_List is read element by element
+  sets `stopped` too, beside `list.stopped`. A cancel drops the call, as
+  for every tool: nothing more is sent.
+- **The result.** The first text block is the usual rendering of the
+  structured content, which ends by saying the next block is the Turtle;
+  the second is the page's Turtle. The structured content has `device`,
+  `device_name` (an envelope), `base_iri`, `write_priority`, `listed` (the
+  Object_List's length) and `matching` (after `types`, the objects the
+  pages go through; both null while the list is being read), `start` (the
+  page's first object among them, from 0), `read`, and for the page alone
+  `points`, `skipped` (objects whose read the device refused, or that
+  couldn't give their name, an analog object's units or a multi-state
+  object's state count),
+  `by_type` and `unmapped_units` (analog points exported with an unknown
+  quantity kind); `turtle_bytes`, `oversized`, `stopped`, `list` (as
+  `bacnet_list_objects` gives it), `truncated`, `next_cursor`, `limits`
+  and `cost`.
+- **Device text.** The Turtle keeps names, descriptions and state texts
+  exactly, so a model's `bacnet:object-name` matches the device's, escaped
+  so the text stays ASCII (a control or bidirectional character becomes a
+  `\u` escape) but not cleaned, defanged or capped as envelopes are. The
+  text rendering, and a comment line at the top of the Turtle, say the
+  literals are device text: data, never instructions.
+- **Limits.** Those of the CLI's [Standard 223
+  export](CLI.md#standard-223-export-experimental): a point list, not a
+  building model; shape validation warns about the missing sensors and
+  equipment; instance 0 loses its identifier string; an unmapped unit gets
+  QUDT's unknown quantity kind; U+0000 becomes U+FFFD. A live export isn't
+  validated against the shapes.
 
 ## Resources
 
@@ -64,24 +173,27 @@ under its own account and budget, and a cancelled read sends nothing more.
 
 | URI | Content | A subscription means |
 |---|---|---|
-| `bacnet://devices` | the first page of the discovery table in reach, sorted by instance (up to the device page size, 200 by default), no device text; nothing sent. `total` counts every device in reach and `truncated` says more follow; then `next` holds the next page's URI | an update when a device arrives or is lost, at most once a second |
-| `bacnet://devices/after/{instance}` | the next page: the devices whose instance is above `{instance}` (digits only, 0 to 4194303), with the same page size, `total`, `truncated` and its own `next` | the same as `bacnet://devices`: every subscribed page is told when the list changes. A listen stream follows at most 16 device-list pages, the first included and each spelling counted (the acknowledgment leaves out the rest); a legacy session counts them in its 64 URIs |
+| `bacnet://devices` | the first page of the discovery table in reach, sorted by instance, then address (up to the device page size, 200 by default), no device text; nothing sent. `total` counts every device in reach and `truncated` says more follow; then `next` holds the next page's URI | an update when a device arrives or is lost, at most once a second |
+| `bacnet://devices/after/{instance}/{network}/{mac}` | the next page: the devices listed after the row at that instance (digits only, 0 to 4194303), network (0 to 65535) and MAC (hex, up to 18 bytes; `next` writes it in lowercase and either case is accepted; an empty MAC segment is a valid position), so a page can end between two addresses that claim one instance and each row is listed once. Take the URI from `next` rather than building it. Same page size, `total`, `truncated` and its own `next` | the same as `bacnet://devices`: every subscribed page is told when the list changes. A listen stream follows at most 16 device-list pages, the first included and each spelling counted (the acknowledgment leaves out the rest); a legacy session counts them in its 64 URIs |
 | `bacnet://device/{instance}` | `bacnet_describe_device`'s summary, cached five minutes (`cached`) | not honoured: a summary has no updates |
-| `bacnet://device/{instance}/object/{type}:{n}` | the point facts (`bacnet_read`'s `preset: "point"` properties); `source` `read` when read just now, `cov` or `poll` when watched, with `state` (`starting`, `live`, `failed`, `unreachable`, `stopped`), `note` (why it is polled or not live), `seq`, `age_ms` and `updates` (notifications, coalesced, polls, renewals) | a watch on the hub |
+| `bacnet://device/{instance}/object/{type}:{n}` (or `{type},{n}`) | the point facts (`bacnet_read`'s `preset: "point"` properties); `source` `read` when read just now, `cov` or `poll` when watched, with `state` (`starting`, `live`, `failed`, `unreachable`, `stopped`), `note` (why it is polled or not live), `seq`, `age_ms` and `updates` (notifications, coalesced, polls, renewals) | a watch on the hub |
 | `.../property/{prop}` | one property (`name` or `name[index]`; `[`, `]` and `:` may be percent-encoded) | a property watch (SubscribeCOVProperty) |
 | `bacnet://alarms` | each device in reach: its first page of GetEventInformation, as far as the read's budget goes (`unread` past it, `errors` per device) | a poll every 60 s; an update when the events change |
 | `bacnet://device/{instance}/alarms` | one device's first page of events | the same, for one device. A session's per-device alarm URIs, on listen streams and legacy subscriptions alike, count against its 64-URI bound (the acknowledgment leaves out the rest), so the poll reads at most that many devices |
-| `bacnet://session` | level (`read-only`, `write-session` while a session or plan grant is in force, `write-session (expired)`), `writes` (`not offered`, or the mode, arming and what the client may confirm), `expires` (seconds left in an armed session), `grants` (a plan grant: in force, used, budget, expiry; `used` is null and `count_unavailable` says why when the plan's write count can't be trusted, so its writes are refused), limits, the request meter (`requests_last_10_s`, and of those `agents_requests_last_10_s`, every MCP caller's), the principal's watches and the hub's footprint (points, subscribed, polled, requests, lagged notifications, lifetime); on a session attached to the TUI, `tui.armed`, read-only: whether the TUI's write session is armed, so a write could be confirmed there now | an update when this server arms a session, a write spends a plan grant's budget, or the armed session or the plan grant runs out (announced when it ends, with no request needed) (#2160) |
+| `bacnet://session` | level (`read-only`, `write-session` while a session or plan grant is in force, `write-session (expired)`), `writes` (`not offered`, or the mode, arming and what the client may confirm), `expires` (seconds left in an armed session), `grants` (a plan grant: in force, used, budget, expiry; `used` is null and `count_unavailable` says why when the plan's write count can't be trusted, so its writes are refused), limits, the request meter (`requests_last_10_s`, and of those `agents_requests_last_10_s`, every MCP caller's), the principal's watches and the hub's footprint (points, subscribed, polled, requests, lagged notifications, `cov_multiple_ignored`, the COV-multiple notifications none of its watches answers, lifetime); on a session attached to the TUI, `tui.armed`, read-only: whether the TUI's write session is armed, so a write could be confirmed there now | an update when this server arms a session, a write spends a plan grant's budget, or the armed session or the plan grant runs out (announced when it ends, with no request needed) (#2160) |
 | `bacnet://ledger` | this principal's ledger entries in effect (`ledger_id`, target, value written, what undoes it, state, time), read from the profile workspace's `ledger.json`; empty without writes | an update when one of this server's writes is recorded as `sending`, and again when it settles (two updates, folded into one when they come close together); when a revert settles; and when it settles an entry left `sending` as unknown. A write the device refused announces its `sending` row and then the row's removal, so the ledger ends as it was. The TUI's own changes to the shared ledger aren't announced (#2160) |
 
 A watched point is read from the hub, which sends nothing. An unwatched one
 is read once. Each device's alarms are read at most once a minute, whoever
 asks: later reads within the minute come from a cache.
 
-The device list pages by instance, not by position (#2116): `next` names
-the last instance listed, so a device discovered between two page reads
-moves nothing already seen. It lands on a later page if its instance is
-above the cursor, or only in `total` if it is below. MCP's own cursors
+The device list pages by row, not by position (#2116, #2589): a row is an
+instance at an address, listed by instance, then network, then MAC, and
+`next` names the last row listed. A device discovered between two page
+reads moves nothing already seen, and several addresses claiming one
+instance can sit across a page boundary without a row lost or repeated.
+A new row lands on a later page if it sorts after the cursor's row, or
+only in `total` if it sorts before it. MCP's own cursors
 page the `*/list` methods only; `resources/read` has none, so the cursor
 lives in the URI. Under `--passive` the template isn't listed.
 
@@ -93,7 +205,7 @@ all) is a -32603 with the same body.
 
 ## Subscriptions
 
-`rmcp` 3.5.1 implements `subscriptions/listen` (2026-07-28): the server
+`rmcp` 3.9.0 implements `subscriptions/listen` (2026-07-28): the server
 sends the acknowledgment, then `notifications/resources/updated` carrying
 only the URI; the client reads the resource. A legacy client (one that
 opens with the older `initialize` handshake, such as a 2025-06-18 host)
@@ -109,9 +221,10 @@ advertises `resources.subscribe` for every version.
   included. A URI that can't be honoured is a JSON-RPC -32602 with the
   tool error body, as a refused read is: `invalid-argument` (malformed, or
   a device summary, which has no updates), `unknown-device`, or `refused`
-  with `device-not-allowed`, `network-not-allowed`, `principal-cap`,
-  `process-cap`, `passive` or `shutting-down` (the session is ending);
-  nothing is sent. Subscribing twice to one
+  with `device-not-allowed`, `network-not-allowed`, `ambiguous-device` (a
+  URI names a device by its instance, and two addresses claim it),
+  `principal-cap`, `process-cap`, `passive` or `shutting-down` (the session
+  is ending); nothing is sent. Subscribing twice to one
   URI is one subscription, and a session holds at most 64 URIs (twice the
   point cap), its listen streams' per-device alarm URIs included (#2150). `resources/unsubscribe` drops the subscription and its watch
   at once; the last watch on a point cancels its BACnet subscription. When
@@ -170,7 +283,7 @@ advertises `resources.subscribe` for every version.
   counted as `lagged` in the session.
 - **Charging.** The hub's requests (first reads, subscriptions, polls) run
   under its own account and token bucket (the principal rate, 5 a second,
-  burst 20), besides the engine's gates and rates, so they never take the
+  burst 20), besides the client's gates and rates, so they never take the
   agent's tokens. A shared point costs the same however many listeners,
   and notifications cost nothing. Renewals take the device's gate but no
   rate slot; cancels skip the hub's bucket. A resource read is charged to
@@ -199,7 +312,12 @@ The cursor holds the hub's sequence number. A point stays watched while
 calls ask for it and goes 10 minutes after the last (the cursor's
 lifetime), cancelling its subscription. It counts against the same
 per-principal cap; a point past it, or a device out of reach, is an error
-row while the others are returned.
+row while the others are returned. Each row gives the device's `address`
+as `bacnet_discover` writes it, since a point is watched at an address:
+two devices sharing an instance, each named by its address, are two rows
+with one `device`. Such a row's `uri` names the device by its instance,
+which names neither, and the row says so with `uri_ambiguous: true`;
+follow it with `bacnet_watch` by its address.
 
 ## BBMD tables
 
@@ -259,7 +377,7 @@ J.2.3 and J.2.7), and returns them under `bbmd` with a verdict.
   consistency check compares only the tables read, so its work is bounded
   by the 16 reads, not by what the tables list. A survey whose every read
   the call's budget left unsent gives its minute back. The table
-  rows, the survey and the consistency matrix are `bacnet_ops::bbmd`'s,
+  rows, the table reads, the survey and the consistency matrix are `bacnet_tool::bbmd`'s,
   shared with the TUI's Network screen.
 
 ## Writes
@@ -269,15 +387,16 @@ Phase 3 (#2068). Off by default: with the `[mcp]` table's `mcp_writes =
 profile allows. `mcp_writes = "elicit"` lists `bacnet_write` and
 `bacnet_revert` (`readOnlyHint: false`, `destructiveHint: true`) and needs
 the profile's workspace, which holds the ledger and audit log the TUI uses.
-Writes go through `bacnet_ops::safety`: the TUI's planner, tiers, ledger
+Writes go through `bacnet_tool::safety`: the TUI's planner, tiers, ledger
 (entries marked `front_end: mcp` with the principal) and audit log.
 
 - **`bacnet_write`**: `device`, `writes` (1 to 20: `object`, `property`
   with an optional `[index]` (`present-value` when left out), `value`,
   `priority`), `batch`
   (WritePropertyMultiple; several writes need it) and `reason`. Targets are
-  numeric (`ao:1`, never a name); a value is a number, a boolean, `null`
-  (relinquish), a typed `{"value": n}` or the CLI value grammar, checked
+  numeric (`ao:1` or `ao,1`, never a name); a value is a number, a boolean,
+  `null` (relinquish), a typed `{"value": n}` or the
+  [CLI value grammar](CLI.md#writing-properties), checked
   before anything is sent. A Priority_Array element is never written
   (`read-only-property`: command or relinquish the slot through
   `present-value` at that priority), and a write to Relinquish_Default is
@@ -294,7 +413,8 @@ Writes go through `bacnet_ops::safety`: the TUI's planner, tiers, ledger
   only (priority 9 to 16, or a property that isn't commandable): T2 and T3
   are refused (`needs-verified-approver`). A T1 write returns
   `input_required` (multi round-trip requests, 2026-07-28) with a form
-  elicitation `confirm` (the canonical targets, the value now and after,
+  elicitation `confirm` (the device and its address, the canonical
+  targets, the value now and after,
   the Present_Value change and the planner's notes; device text cleaned and
   labelled) and a sealed `requestState`. An older-revision session that
   declared form elicitation (or the capability without a mode, as
@@ -320,8 +440,10 @@ Writes go through `bacnet_ops::safety`: the TUI's planner, tiers, ledger
 - **The retry** carries the form's answer and the state. The state is
   XChaCha20-Poly1305 under a key drawn per process, with the principal and
   the tool as associated data, and holds a digest of the arguments, a
-  digest of the preview, a nonce and a 120 s expiry (the process's own
-  clock). A forged or changed state, or another caller's
+  digest of the preview (the device's address included, #2560: a device
+  named by its instance that has moved by the retry previews another
+  address, and is refused as `stale`), a nonce and a 120 s expiry (the
+  process's own clock). A forged or changed state, or another caller's
   (`confirmation-invalid`), an expired one (`confirmation-expired`), one
   used before (`confirmation-replayed`; a state opens once even when the
   retry is then refused) and different arguments (`confirmation-mismatch`)
@@ -347,9 +469,22 @@ Writes go through `bacnet_ops::safety`: the TUI's planner, tiers, ledger
   once.
 - **`bacnet_revert`**: `entries` (ledger ids) or `all`, this principal's
   MCP entries only (`not-yours` for another's), on devices the policy
-  reaches; no prompt and no armed session, as in the TUI. Latest write
-  first, through the desk; the result names each entry's outcome and how
-  many are `left`.
+  reaches, checked by the address each entry's write went to
+  (`network-not-allowed`, `device-not-allowed`); no prompt and no armed
+  session, as in the TUI. Latest write first, through the desk; the result
+  names each entry's outcome and how many are `left`. It sends no Who-Is:
+  an entry whose device the discovery table can't place (a routed station
+  with no row, or an entry from before addresses were kept whose instance
+  no row claims) is reported not reverted, saying why.
+- **The device at the address.** A write or revert goes to its address
+  only while the discovery table's row there claims the device it was
+  confirmed for; another instance there now refuses it with nothing sent
+  (#2560). A write or revert to a local address with no row (aged out, or
+  after a restart) asks the device which it is first: one ReadProperty of
+  its Device object's Object_Identifier per address, and no Who-Is. A
+  revert is checked against the policy where the desk finds the entry's
+  device, in its local form, and an attached revert only goes to the
+  address the person confirmed.
 - **Plan grants** (`[mcp.plan]`: `devices`, `properties` (`present-value`
   by default), `priority_min` and `priority_max` (8 and 16 by default),
   `max_writes` (1 to 10,000), `hours` (1 to 8), `reason`) run from
@@ -425,7 +560,8 @@ Nothing that needs traffic is offered.
   bidirectional, zero-width, tag characters and the rest), variation
   selectors and Hangul fillers are dropped; `http://` becomes
   `hxxp://` (other schemes `scheme[:]//`), and the text is capped (256
-  characters by default).
+  characters by default). The 223 export's Turtle keeps device text
+  exactly, escaped, outside any envelope.
 - Cursors are `hex(body).hex(HMAC-SHA256)` under a key drawn per process,
   binding the tool, a digest of the principal (the OS user's name doesn't
   show), a digest of the other arguments, an expiry (10 minutes) and the
@@ -539,7 +675,7 @@ stderr; when the TUI ends the session it exits cleanly.
   asked for couldn't start.
 - **One client.** Each connection gets its own MCP session, as a stdio
   server does, under the profile's `[mcp]` reach and caps, as the TUI's
-  OS user. Its reads go through the TUI's engine: the same client,
+  OS user. Its reads go through the TUI's client: the same low-level client,
   transport and UDP port, the same device gates, and the watch list's
   rate meter counts them. The agents are one principal, so their sessions
   share one `principal_rate` budget, one watch hub (256 points between
@@ -766,8 +902,24 @@ stderr; when the TUI ends the session it exits cleanly.
   policy's reach, broad discovery (wide ranges, ranges outside the policy,
   parallel calls), network numbers, network-paced Who-Is, cancellation, a
   long indexed Object_List across calls, and output schemas (success and
-  error results of all eleven read tools, nested values included; the
+  error results of all twelve read tools, nested values included; the
   write tools' in `writes.rs` and `plan.rs`).
+- `crates/bacnet-mcp/src/tests/export.rs` (#2436): the 223 export of the
+  lab (an analog input with its unit, a binary output, a multi-state value,
+  an unmapped unit) in one page passing the export's structural check,
+  with its counts and N + 2 requests; a 136-point device in pages whose
+  points concatenate to the whole export's, each object once and each
+  page reading only its own; the base IRI, types and write priority; bad
+  options and other calls' cursors refused with nothing sent; a list
+  grown or shrunk between pages refused after the list read; a spent
+  budget ending a page that the cursor resumes; a device silent mid-page;
+  the policy's object page; an Object_List read element by element across
+  calls; a cancel sending nothing more (through the handler, and over the
+  pipe, where it goes unanswered). `tools/export_tests.rs`: a 500-object
+  controller in 18 pages under the text cap, an oversized point mid-page
+  going out alone, the page cap, and the cursor's position.
+  `tests/discovery.rs`: a slow element-by-element list read, calls 200 s
+  apart, completing and then served from the cache.
 - `crates/bacnet-mcp/src/tests/bbmd.rs`: real BBMDs on loopback. A survey
   from the registration's BBMD reports a missing peer entry, a refused
   read, a silent address (one timeout) and a foreign device near expiry,
@@ -833,7 +985,7 @@ stderr; when the TUI ends the session it exits cleanly.
   scheduler ends, a one-row batch too large to answer, the cancel of a
   point given up, and a renewal behind a busy gate.
 - `crates/bacnet-ops`: network rates, accounts and buckets, a trend page
-  charged per request, Who-Is through the engine, and the decoder's tests
+  charged per request, Who-Is through the client, and the decoder's tests
   (moved from the CLI).
 - `crates/bacnet-cli`: the `[mcp]` table, authorization and its
   revocation, the write policy and plan grant from the table, and the stdio
@@ -850,7 +1002,7 @@ stderr; when the TUI ends the session it exits cleanly.
   bound to its principal and tool, opened once, within its lifetime.
 - `crates/bacnet-mcp/src/tests/attach.rs` (#2185; Unix, and on Windows
   the reads, the read-only list and the shutdown): an agent
-  through the bridge reads the lab on the shared engine, which its rate
+  through the bridge reads the lab on the shared client, which its rate
   meter shows, with no write tool though the policy offers writes; a peer
   of another uid (named by a stand-in for the kernel's credentials, since a
   test can't connect as another user) closed before any MCP traffic and

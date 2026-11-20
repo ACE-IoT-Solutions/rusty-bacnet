@@ -2,6 +2,7 @@ use super::*;
 use bacnet_encoding::npdu::decode_npdu;
 use bacnet_services::write_group::GroupChannelValue;
 use bacnet_transport::port::ReceivedNpdu;
+use bacnet_transport::test_transport::TestTransport;
 use std::num::NonZeroU32;
 
 const PEER: [u8; 6] = [10, 0, 0, 5, 0xBA, 0xC0];
@@ -14,58 +15,31 @@ struct Sent {
 }
 
 /// Records every frame instead of sending it.
-struct Capture {
-    inbound: Option<mpsc::Receiver<ReceivedNpdu>>,
+fn capture(
+    inbound: mpsc::Receiver<ReceivedNpdu>,
     sent: mpsc::UnboundedSender<Sent>,
-}
-
-impl TransportPort for Capture {
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        self.inbound
-            .take()
-            .ok_or_else(|| Error::Encoding("capture transport already started".into()))
-    }
-
-    async fn stop(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        let _ = self.sent.send(Sent {
-            npdu: Bytes::copy_from_slice(npdu),
-            to: Some(MacAddr::from_slice(mac)),
-        });
-        Ok(())
-    }
-
-    async fn send_broadcast(&self, npdu: &[u8]) -> Result<(), Error> {
-        let _ = self.sent.send(Sent {
-            npdu: Bytes::copy_from_slice(npdu),
-            to: None,
-        });
-        Ok(())
-    }
-
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        1476
-    }
-
-    fn local_mac(&self) -> &[u8] {
-        &[10, 0, 0, 2, 0xBA, 0xC0]
-    }
+) -> TestTransport {
+    TestTransport::builder()
+        .local_mac(&[10, 0, 0, 2, 0xBA, 0xC0])
+        .inbound(inbound)
+        .on_send(move |frame| {
+            let _ = sent.send(Sent {
+                npdu: frame.npdu,
+                to: (!frame.broadcast).then_some(frame.mac),
+            });
+            async { Ok(()) }
+        })
+        .build()
 }
 
 async fn client() -> (
-    BACnetClient<Capture>,
+    BACnetClient<TestTransport>,
     mpsc::Sender<ReceivedNpdu>,
     mpsc::UnboundedReceiver<Sent>,
 ) {
     let (inbound_tx, inbound) = mpsc::channel(4);
     let (sent, sent_rx) = mpsc::unbounded_channel();
-    let transport = Capture {
-        inbound: Some(inbound),
-        sent,
-    };
+    let transport = capture(inbound, sent);
     let client = BACnetClient::start(ClientConfig::default(), transport)
         .await
         .unwrap();
@@ -109,22 +83,20 @@ const APDU: [u8; 24] = [
 async fn write_group_sends_the_request_to_a_device_or_a_broadcast() {
     let (mut client, _inbound, mut sent) = client().await;
     let cases = [
-        (
-            WriteGroupDestination::Device(MacAddr::from_slice(&PEER)),
-            Some(&PEER[..]),
-            None,
-        ),
-        (WriteGroupDestination::LocalBroadcast, None, None),
-        (WriteGroupDestination::RemoteBroadcast(100), None, Some(100)),
-        (
-            WriteGroupDestination::RemoteBroadcast(65534),
-            None,
-            Some(65534),
-        ),
-        (WriteGroupDestination::GlobalBroadcast, None, Some(u16::MAX)),
+        (None, Some(&PEER[..]), None),
+        (Some(Broadcast::Local), None, None),
+        (Some(Broadcast::Network(100)), None, Some(100)),
+        (Some(Broadcast::Network(65534)), None, Some(65534)),
+        (Some(Broadcast::Global), None, Some(u16::MAX)),
     ];
     for (destination, to, network) in cases {
-        client.write_group(&destination, &request()).await.unwrap();
+        match destination {
+            Some(scope) => client.write_group(scope, &request()).await.unwrap(),
+            None => client
+                .write_group_directed(&PEER, &request())
+                .await
+                .unwrap(),
+        }
         let frame = sent.try_recv().expect("one frame per request");
         assert_eq!(frame.to.as_deref(), to, "{destination:?}");
         let npdu = decode_npdu(frame.npdu).unwrap();
@@ -149,7 +121,7 @@ async fn write_group_refuses_a_bad_request_or_network_before_sending() {
     let (mut client, _inbound, mut sent) = client().await;
     for network in [0, u16::MAX] {
         let result = client
-            .write_group(&WriteGroupDestination::RemoteBroadcast(network), &request())
+            .write_group(Broadcast::Network(network), &request())
             .await;
         assert!(
             matches!(result, Err(Error::Encoding(_))),
@@ -158,15 +130,11 @@ async fn write_group_refuses_a_bad_request_or_network_before_sending() {
     }
     let mut bad = request();
     bad.write_priority = 17;
-    let result = client
-        .write_group(&WriteGroupDestination::LocalBroadcast, &bad)
-        .await;
+    let result = client.write_group(Broadcast::Local, &bad).await;
     assert!(matches!(result, Err(Error::Encode(_))), "{result:?}");
     bad = request();
     bad.change_list.clear();
-    let result = client
-        .write_group(&WriteGroupDestination::GlobalBroadcast, &bad)
-        .await;
+    let result = client.write_group(Broadcast::Global, &bad).await;
     assert!(matches!(result, Err(Error::Encode(_))), "{result:?}");
     assert!(sent.try_recv().is_err(), "a refused request went out");
     client.stop().await.unwrap();

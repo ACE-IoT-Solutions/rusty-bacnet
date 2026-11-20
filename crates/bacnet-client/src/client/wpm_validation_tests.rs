@@ -24,7 +24,7 @@ async fn setup() -> (
             remote_network: 100,
             remote_mac: vec![3],
             max_apdu_length: 1476,
-            segmentation_supported: Segmentation::NONE,
+            segmentation_supported: Segmentation::NO_SEGMENTATION,
             max_segments_accepted: None,
         })
         .await
@@ -52,15 +52,25 @@ async fn write(
     if path == 0 {
         client.write_property_multiple(&[2], specs).await
     } else {
-        client.write_property_multiple_to_device(path, specs).await
+        client
+            .write_property_multiple(&client.resolve_device(path).await.unwrap(), specs)
+            .await
     }
 }
 
 // The probe below holds the device table lock across the request.
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
-async fn wpm_validation_invalid_direct_local_routed_and_unknown_never_resolve_admit_or_send() {
-    let (mut client, mut peer, mut received) = setup().await;
+async fn wpm_validation_invalid_direct_local_and_routed_never_admit_or_send() {
+    let (mut client, peer, mut received) = setup().await;
+    // A caller by instance looks the device up first; one the table doesn't
+    // hold is refused there, before any request exists.
+    assert!(client.resolve_device(999).await.is_err());
+    let stations = [
+        Station::local(&[2]),
+        client.resolve_device(10).await.unwrap(),
+        client.resolve_device(11).await.unwrap(),
+    ];
     let mut cases = vec![vec![]];
     let mut empty = specs(None);
     empty[0].list_of_properties.clear();
@@ -85,13 +95,13 @@ async fn wpm_validation_invalid_direct_local_routed_and_unknown_never_resolve_ad
         cases.push(late);
     }
     for invalid in cases {
-        for path in [0, 10, 11, 999] {
+        for station in &stations {
             // A blocking lock now: a path that took it would hang this
             // thread instead of timing out, and nextest ends the test.
             let _lookup = client.device_table.lock();
             let error = timeout(
                 Duration::from_secs(1),
-                write(&client, path, invalid.clone()),
+                client.write_property_multiple(station, invalid.clone()),
             )
             .await
             .unwrap()
@@ -113,7 +123,7 @@ async fn wpm_validation_invalid_direct_local_routed_and_unknown_never_resolve_ad
 
 #[tokio::test]
 async fn wpm_validation_valid_direct_local_routed_preserve_exact_wire_and_complete() {
-    let (mut client, mut peer, mut received) = setup().await;
+    let (mut client, peer, mut received) = setup().await;
     for path in [0, 10, 11] {
         for priority in std::iter::once(None).chain((1..=16).map(Some)) {
             let send = write(&client, path, specs(priority));

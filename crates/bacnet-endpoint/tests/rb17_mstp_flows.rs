@@ -9,8 +9,7 @@
 //! token/PFM traffic during application work preserves postponed
 //! ownership; queue/admission bounds release (MAC `WouldBlock`,
 //! egress-full, layer full-drop); cancellation and stop with an outstanding
-//! request; responder denial releases the one-use sender; non-routing
-//! discard.
+//! request; non-routing discard.
 //!
 //! Evidence level: simulator (LoopbackSerial), NOT physical bench or
 //! on-wire conformance; timing qualification is RB-26, routing is RB-25.
@@ -29,21 +28,19 @@ use bacnet_encoding::apdu::{Apdu, decode_apdu};
 use bacnet_encoding::npdu::{Npdu, NpduAddress, decode_npdu, encode_npdu};
 use bacnet_endpoint::session::SessionRole;
 use bacnet_endpoint_core::endpoint_ingress::{EndpointApduDestination, EndpointIngress};
-use bacnet_network::layer::{NetworkLayer, ReceivedApdu};
+use bacnet_network::layer::NetworkLayer;
 use bacnet_npdu::NetworkPriority;
-use bacnet_objects::database::ObjectDatabase;
-use bacnet_server::server::__endpoint_EndpointResponder as EndpointResponder;
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::mstp::{
     LoopbackSerial, MstpConfig, MstpExecutionMode, MstpTransport, SerialPort,
 };
-use bacnet_transport::port::{DataAttribute, ReceivedNpdu, TransportPort, TransportProvenance};
+use bacnet_transport::port::{DataAttribute, TransportPort};
+use bacnet_transport::test_transport::{StartMode, TestTransport};
+use bacnet_types::MacAddr;
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
-use bacnet_types::{MacAddr, error::Error};
 use bytes::{Bytes, BytesMut};
 use mstp_wire::{FrameType, MstpFrame, pfm_frame, token_frame};
 use rb17_harness::*;
-use tokio::sync::{RwLock, mpsc, oneshot};
 
 async fn dropped_sender_impl(mode: MstpExecutionMode, frames: Frames) {
     // Client-only session has no server role: the lone reply sender is
@@ -107,11 +104,10 @@ async fn mstp_dropped_sender_releases_extended_dedicated() {
 
 async fn token_during_work_impl(mode: MstpExecutionMode, frames: Frames) {
     let mut h = Harness::new(mode, SessionRole::Both, frames).await;
-    h.session
-        .server()
-        .expect("server role")
-        .suspend_next_reply()
-        .expect("arm suspension");
+    // The server's read waits for the database the test holds: the
+    // application at work.
+    let database = std::sync::Arc::clone(h.session.server().expect("server role").database());
+    let held = database.write().await;
     h.peer_deliver(&data_expecting(1, 55)).await;
     // Token + PFM arrive while the application works (order vs dispatch is
     // deliberately uncontrolled). Neither may break the pending reply
@@ -140,6 +136,7 @@ async fn token_during_work_impl(mode: MstpExecutionMode, frames: Frames) {
         "MAC must release ReplyPostponed during application work; {}",
         h.link_report()
     );
+    drop(held);
     // Ownership preserved: the token opportunity delivers the postponed
     // response to the original requester (possibly already observed above).
     match early_data {
@@ -183,56 +180,24 @@ async fn mstp_token_pfm_during_work_extended_dedicated() {
 /// `send_started` fires on send entry so the test can prove the session
 /// task consumed the first command (and is stalled) before filling the
 /// single free slot — no scheduling assumption.
-struct StallTransport {
-    tx: Option<mpsc::Sender<ReceivedNpdu>>,
-    send_started: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl StallTransport {
-    fn new() -> (Self, Arc<std::sync::atomic::AtomicBool>) {
-        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        (
-            Self {
-                tx: None,
-                send_started: Arc::clone(&flag),
-            },
-            flag,
-        )
-    }
-}
-
-impl TransportPort for StallTransport {
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        let (tx, rx) = mpsc::channel(8);
-        self.tx = Some(tx);
-        Ok(rx)
-    }
-
-    async fn stop(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    async fn send_unicast(&self, _npdu: &[u8], _mac: &[u8]) -> Result<(), Error> {
-        self.send_started
-            .store(true, std::sync::atomic::Ordering::Release);
-        std::future::pending::<()>().await;
-        #[allow(unreachable_code)]
-        Ok(())
-    }
-
-    async fn send_broadcast(&self, _npdu: &[u8]) -> Result<(), Error> {
-        std::future::pending::<()>().await;
-        #[allow(unreachable_code)]
-        Ok(())
-    }
-
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        1476
-    }
-
-    fn local_mac(&self) -> &[u8] {
-        &[0x09]
-    }
+///
+/// The returned flag is set when the first unicast starts; that send, and
+/// every broadcast, never finishes. The link stays open (the handle keeps
+/// the inbound sender) until the stack stops it.
+fn stall_transport() -> (TestTransport, Arc<std::sync::atomic::AtomicBool>) {
+    let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let started = Arc::clone(&flag);
+    let transport = TestTransport::builder()
+        .local_mac(&[0x09])
+        .start(StartMode::Fresh(8))
+        .on_send(move |frame| {
+            if !frame.broadcast {
+                started.store(true, std::sync::atomic::Ordering::Release);
+            }
+            std::future::pending()
+        })
+        .build();
+    (transport, flag)
 }
 
 #[tokio::test]
@@ -281,7 +246,7 @@ async fn mstp_queue_and_admission_bounds_release() {
     // the first send occupies the task (proven via `send_started`, not
     // scheduling); the second fills the single slot; the third is rejected
     // as full instead of hanging, and stop releases the stalled waiters.
-    let (stall, send_started) = StallTransport::new();
+    let (stall, send_started) = stall_transport();
     let mut ingress = EndpointIngress::new(stall, 1);
     let receivers = ingress.start().await.expect("ingress must start");
     let egress = receivers.egress;
@@ -480,44 +445,6 @@ async fn mstp_stop_with_outstanding_extended_tokio() {
 #[tokio::test(start_paused = true)]
 async fn mstp_stop_with_outstanding_extended_dedicated() {
     stop_outstanding_impl(dedicated(), Frames::Extended).await;
-}
-
-#[tokio::test]
-async fn mstp_responder_denial_releases_reply() {
-    // Denial (closed responder) releases the one-use reply sender without
-    // bytes: the receiver observes closure and the peer sees no traffic.
-    let (endpoint_side, mut peer_side) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
-    let mut peer_rx = peer_side.start().await.unwrap();
-    let mut ingress = EndpointIngress::new(endpoint_side, 2);
-    let receivers = ingress.start().await.unwrap();
-    let responder = EndpointResponder::new(
-        Arc::new(RwLock::new(ObjectDatabase::new())),
-        receivers.egress,
-    );
-    responder.close();
-    let (reply_tx, reply_rx) = oneshot::channel();
-    let err = responder
-        .handle(ReceivedApdu {
-            router_response: None,
-            direct_response: None,
-            apdu: read_request_apdu(7, 1),
-            source_mac: MacAddr::from_slice(&[0x02]),
-            ingress_network: None,
-            source_network: None,
-            link_layer_group: false,
-            is_group: false,
-            global_broadcast: false,
-            data_attributes: Vec::new(),
-            provenance: TransportProvenance::unverified(),
-            reply_tx: Some(reply_tx),
-        })
-        .await
-        .unwrap_err();
-    assert!(err.to_string().contains("endpoint shutdown"));
-    assert!(reply_rx.await.is_err(), "denial must release the sender");
-    assert!(peer_rx.try_recv().is_err(), "denial must send no bytes");
-    ingress.stop().await.unwrap();
-    peer_side.stop().await.unwrap();
 }
 
 async fn nonrouting_impl(mode: MstpExecutionMode, frames: Frames) {

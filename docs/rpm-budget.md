@@ -40,12 +40,15 @@ the same policy through the common Rust builder.
 The same `max_result_elements` limit also covers a single-property read of a
 Group's Present_Value: ReadProperty, ReadRange and `read_local` count the read's
 own row plus one row per member property and abort with OUT_OF_RESOURCES past
-it. The shared endpoint (`bacnet-endpoint`) has no `ServerConfig`, so its
-ReadProperty takes the limit from `SessionConfig::read_work_limit` instead
-(default 256, zero rejected by `EndpointSession::new`), set directly or with the
-`read_work_limit(...)` method on the B/IP, SC and MS/TP endpoint builders. The
-Python `BipEndpoint`, `ScEndpoint` and `MstpEndpoint` constructors take it as
-keyword-only `read_work_limit=256`, refusing zero with `ValueError`.
+it. A shared endpoint (`bacnet-endpoint`) session with a server role runs a
+full server, which takes the budget of the builder given to `with_server`, or
+the default without one (#2617); the narrow server role's own limit,
+`SessionConfig::read_work_limit` and the endpoint builders'
+`read_work_limit(...)`, is gone. The Python `BipEndpoint`,
+`ScEndpoint` and `MstpEndpoint` run that full server, and their keyword-only
+`read_work_limit=256` is its `max_result_elements` (#2617), refusing zero with
+`ValueError`.
+
 
 The unbudgeted public helper `handlers::handle_read_property_multiple` is
 gone (#2178). A host without a server reads ReadPropertyMultiple through

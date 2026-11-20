@@ -1,13 +1,22 @@
 use super::*;
+#[path = "background_lifecycle.rs"]
+mod background;
 #[path = "intrinsic_reporting_lifecycle.rs"]
 mod intrinsic;
-use crate::committed_cov::BackgroundCommit;
+#[path = "fanout_tail.rs"]
+pub(super) mod tail;
 
 #[path = "lifecycle_period.rs"]
 mod period;
 use super::binary_lighting_lifecycle::spawn_binary_lighting_operation_task as spawn_operation;
 use super::heap_futures::boxed;
+use super::server_seat::{Apdus as _, Link, Own, Started};
 use super::{audit_recipient::spawn_owned, audit_recipient_routes::AuditRoutes};
+
+#[path = "start_settings.rs"]
+pub(super) mod settings;
+#[path = "start_outputs.rs"]
+mod start_outputs;
 pub(super) use period::{MonotonicClocks, event_enrollment_period};
 
 impl<T: TransportPort + 'static> BACnetServer<T> {
@@ -20,45 +29,56 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         clock_config: Option<ClockConfig>,
         configured_device_bindings: Vec<DeviceBinding>,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<Self, Error>>>> {
-        boxed(|| {
-            Self::start_on_heap(
-                config,
-                db,
-                transport,
-                clock_config,
-                configured_device_bindings,
-            )
-        })
+        Self::start_on_link(
+            config,
+            db,
+            Own(transport),
+            clock_config,
+            configured_device_bindings,
+        )
     }
 
-    async fn start_on_heap(
+    /// [`Self::start_with_clock_mode_and_bindings`] on any [`Link`]: a
+    /// transport of the server's own, or a node's seat (#2617).
+    pub(super) fn start_on_link<L: Link<T>>(
+        config: ServerConfig,
+        db: ObjectDatabase,
+        link: L,
+        clock_config: Option<ClockConfig>,
+        configured_device_bindings: Vec<DeviceBinding>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<Self, Error>>>> {
+        boxed(|| Self::start_on_heap(config, db, link, clock_config, configured_device_bindings))
+    }
+
+    async fn start_on_heap<L: Link<T>>(
         mut config: ServerConfig,
         mut db: ObjectDatabase,
-        transport: T,
+        link: L,
         clock_config: Option<ClockConfig>,
         configured_device_bindings: Vec<DeviceBinding>,
     ) -> Result<Self, Error> {
-        if let Some(profile) = &mut config.audit_reporters {
-            profile.canonicalize()?;
-        }
-        // Validate every configured route against the concrete transport before
-        // mutating the database or starting network work. No binding takes a
-        // group address (#1493).
+        let transport = link.transport();
         // Max_APDU_Length_Accepted is fixed here for the server's life; a
         // later fall in the transport's capacity leaves it as is, and each
         // reply is sized to its route instead (#2093).
-        super::network_port::validate_apdu_capacity(&mut config, &transport)?;
+        super::network_port::validate_apdu_capacity(&mut config, transport)?;
+        // Every setting, and every configured route against the concrete
+        // transport, before mutating the database or starting network work.
+        // No binding takes a group address (#1493). A node checks the same
+        // before its own link starts (#2617).
+        let settings::StartSettings {
+            device_bindings,
+            receive_timeout,
+            request_tasks,
+        } = settings::settle(&mut config, configured_device_bindings, |mac| {
+            transport.is_group_destination(mac)
+        })?;
         crate::local_device::validate_startup(&db, &config.device)?;
         crate::local_device::bind_database(&mut db, &config.device);
-        let is_group = |mac: &[u8]| transport.is_group_destination(mac);
-        let device_bindings =
-            DeviceBindingTable::from_configured(configured_device_bindings, is_group)?;
-        let audit_routes = AuditRoutes::prepare(&mut db, &config, &device_bindings, &transport)?;
-        super::audit_forwarder::initialize(&db, &config, &device_bindings, &transport);
-        let receive_timeout = super::segmented_receive::validate_segment_timeout(&config)?;
+        let audit_routes = AuditRoutes::prepare(&mut db, &config, &device_bindings, transport)?;
+        super::audit_forwarder::initialize(&db, &config, &device_bindings, transport);
         // Settled now: every owner from here on shares it (#1521).
         let config = Arc::new(config);
-        let request_tasks = super::request_tasks::RequestTasks::for_server(&config)?;
 
         if config.device.vendor_id() == 0 {
             warn!("vendor_id is 0 (ASHRAE reserved); set a valid vendor ID for production use");
@@ -69,20 +89,31 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         // (#1526). The database isn't shared yet, so no lock is taken. This
         // runs before `network_port::start`, which can still fail; that's
         // harmless, since the drive is what any start does, and a later
-        // start over the same objects drives them the same way again.
-        db.start_outputs();
-        let membership = crate::membership::install_waker(&mut db);
+        // start over the same objects drives them the same way again. What
+        // a start began elsewhere, such as a restored Load Control shed, is
+        // released if the start fails or its future is dropped (#2479).
+        let mut outputs = start_outputs::StartedOutputs::start(db);
+        let membership = crate::membership::install_waker(outputs.db());
 
-        let (network, mut apdu_rx, audit_routes, network_controls) =
-            boxed(|| super::network_port::start(&mut db, &config, transport, audit_routes)).await?;
+        let Started {
+            network,
+            apdus: mut apdu_rx,
+            audit_routes,
+            controls: network_controls,
+            notification_transactions,
+            seated,
+            execution,
+            dcc: node_dcc,
+            number: seat_number,
+        } = boxed(|| link.start(outputs.db(), &config, audit_routes)).await?;
+        notification_transactions.set_retries(config.notification_retries);
         let local_mac = MacAddr::from_slice(network.local_mac());
 
-        let network = Arc::new(network);
         // The limiter keeps this startup identity; changing Device membership
         // later does not rebind it.
         let device_instance = Some(config.device.instance());
         let (discovery_limiter, time_sync_limiter) = request_limiters(&config, device_instance);
-        let db = Arc::new(RwLock::new(db));
+        let db = outputs.share();
         let cov_counters = Arc::new(crate::cov::AtomicCovCounters::default());
         let cov_table = Arc::new(RwLock::new(
             CovSubscriptionTable::with_policy(config.cov_policy.clone(), Arc::clone(&cov_counters))
@@ -94,10 +125,10 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
 
         let cov_in_flight = Arc::new(Semaphore::new(255));
         let learned_routers = Arc::new(Mutex::new(LearnedRouterCache::new()));
-        let notification_transactions = NotificationTransactions::new();
         let confirmed_request_tracker = Arc::new(ConfirmedRequestTracker::default());
         let device_bindings = Arc::new(RwLock::new(device_bindings));
-        let comm_state = Arc::new(CommState::default()); // ENABLE at every start
+        // ENABLE at every start, the node's too on a seat (#2617).
+        let comm_state = Arc::new(CommState::new(node_dcc));
         let dcc_timer: Arc<Mutex<crate::server::dcc_timer::TimerSlot>> =
             Arc::new(Mutex::new(Default::default()));
         let dcc_outcomes = Arc::new(dcc_outcomes::DccOutcomes::default());
@@ -114,23 +145,25 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         let target_audit = match target_audit {
             Ok(runtime) => runtime,
             Err(error) => {
-                let network = Arc::try_unwrap(network).map_err(|_| {
-                    Error::Encoding("startup cleanup has an unexpected network owner".into())
-                })?;
-                boxed(|| super::network_port::StartingNetwork::from_network(network).cleanup())
-                    .await?;
+                L::abandon(network).await?;
                 return Err(error);
             }
         };
-        let network_number_task = network_controls.map(|controls| {
-            super::network_port::spawn_number_worker(
+        let network_number_task = match (network_controls, seat_number) {
+            (Some(controls), _) => Some(super::network_port::spawn_number_worker(
                 &network,
                 &db,
                 config.registered_network_port,
                 controls,
                 target_audit.as_ref().map(Arc::downgrade),
-            )
-        });
+            )),
+            // On a seat the node's Number owner publishes; target Audit
+            // follows its notice (#2617).
+            (None, Some(number)) => target_audit
+                .as_ref()
+                .map(|audit| super::server_seat::follow_number(number, Arc::downgrade(audit))),
+            (None, None) => None,
+        };
         let network_dispatch = Arc::clone(&network);
         let config_dispatch = Arc::clone(&config);
         let notification_transactions_dispatch = Arc::clone(&notification_transactions);
@@ -162,6 +195,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 mutation_decisions: Arc::clone(&mutation_decisions),
                 warnings: Arc::default(),
                 config: Arc::clone(&config_dispatch),
+                execution,
             }),
             confirmed_request_tracker: Arc::clone(&confirmed_request_tracker),
             clock: clock.clone(),
@@ -346,8 +380,9 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                             // advertisement peers plan transfers around
                             // (#381).
                             let receives_segments = config_dispatch.device.segmentation()
-                                == Segmentation::BOTH
-                                || config_dispatch.device.segmentation() == Segmentation::RECEIVE;
+                                == Segmentation::SEGMENTED_BOTH
+                                || config_dispatch.device.segmentation()
+                                    == Segmentation::SEGMENTED_RECEIVE;
                             if !receives_segments {
                                 Self::send_server_abort(
                                     &network_dispatch,
@@ -665,35 +700,16 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                 config: &config,
             },
             &event_suppressions,
+            &learned_routers,
+            &device_bindings,
         );
 
+        // Each pass commits the transitions its changes cause with them
+        // (#2535); see `background`.
         let fault_detection_task = if config.enable_fault_detection {
             let fanout = cov_fanout.clone();
-            Some(spawn_owned(audit_owner.clone(), move || async move {
-                let detector = crate::fault_detection::FaultDetector::default();
-                let mut interval = tokio::time::interval(Duration::from_secs(10));
-                loop {
-                    interval.tick().await;
-                    let committed = {
-                        let mut db_guard = fanout.db.write().await;
-                        // The detector mutates objects in place, so snapshot
-                        // Life Safety state up front.
-                        let mut commit = BackgroundCommit::snapshot_all(&db_guard);
-                        for change in detector.evaluate(&mut db_guard) {
-                            debug!(
-                                object = %change.object_id,
-                                old = %change.old_reliability,
-                                new = %change.new_reliability,
-                                "Fault detection: reliability changed"
-                            );
-                            commit.changed(change.object_id);
-                        }
-                        commit
-                            .finish(&fanout.db, &mut db_guard, &fanout.cov_table)
-                            .await
-                    };
-                    fanout.fire(&committed).await;
-                }
+            Some(spawn_owned(audit_owner.clone(), move || {
+                background::fault_detection(fanout)
             }))
         } else {
             None
@@ -730,50 +746,33 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
         let schedule_fanout = cov_fanout.clone();
         // The 60-second Schedule pass, and the work an application's own
         // `add` or `remove` queued on the database (`crate::membership`).
-        let schedule_tick_task = Some(spawn_owned(audit_owner.clone(), move || async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
-            loop {
-                let (db, cov_table) = (&schedule_fanout.db, &schedule_fanout.cov_table);
-                let committed = tokio::select! {
-                    _ = interval.tick() => {
-                        crate::schedule::tick_schedules_committed(db, cov_table).await
-                    }
-                    () = membership.notified() => {
-                        crate::membership::settle_committed(db, cov_table).await
-                    }
-                };
-                schedule_fanout.fire(&committed).await;
-                command_runs.start(committed.command_runs);
-            }
+        let schedule_tick_task = Some(spawn_owned(audit_owner.clone(), move || {
+            background::schedules(schedule_fanout, membership, command_runs)
         }));
 
-        // One-second intrinsic-reporting task: advances the `Time_Delay`
-        // countdown for any object with a pending delayed transition and sends
-        // the EventNotification when the delay elapses. The per-write path
-        // only *seeds* a pending transition (see `fire_event_notifications`);
-        // this task is the sole confirmer, so repeated writes cannot shorten
-        // the delay (ASHRAE 135-2020 Clause 13.3). Runs unconditionally like the
-        // trend-log task — a no-pending tick is a cheap empty iteration.
+        // Intrinsic-reporting task: once a second, and when a pending
+        // transition's `Time_Delay` ends, it fires the transitions that are due
+        // and sends their EventNotifications. The per-write path only *seeds* a
+        // pending transition, due its delay after the write (see
+        // `fire_event_notifications`); this task is the sole confirmer, so
+        // repeated writes cannot shorten the delay (ASHRAE 135-2020 Clause
+        // 13.3). Runs unconditionally like the trend-log task — a no-pending
+        // sweep is a cheap empty iteration.
         //
-        // It is also what carries Reliability into event-state-detection. Per
-        // Clause 13.2.2 the FAULT determination is a standing condition, so each
-        // tick re-derives it from the object's current `Reliability` rather than
-        // reacting to a change event. Whoever writes Reliability — an object's
-        // opt-in evaluation hook, a local write, or a network write — reaches
-        // detection through this tick. The fault detector above only fans COV
-        // out for the Status_Flags change it causes (#889); it signals nothing
-        // to event detection. `enable_fault_detection` therefore governs only
-        // whether those object-owned hooks run every 10 seconds, never whether
+        // It is also what carries Reliability into event-state-detection when
+        // no writer evaluated the change. Per Clause 13.2.2 the FAULT
+        // determination is a standing condition, so each sweep re-derives it
+        // from the object's current `Reliability`. A network or local write and
+        // the fault detector's object-owned hooks above commit the transition
+        // with the change (#2535), so the sweep finds it done; a setter that
+        // bypasses them reaches detection here. `enable_fault_detection`
+        // governs only whether those hooks run every 10 seconds, never whether
         // an existing Reliability is honored.
         //
         // Six of the nine wired object types have no route that can set
         // Reliability, so the fault path is correct but inert on them (#218).
         let intrinsic_reporting_task = Some(spawn_owned(audit_owner.clone(), || {
-            intrinsic::run(
-                cov_fanout.clone(),
-                Arc::clone(&learned_routers),
-                Arc::clone(&device_bindings),
-            )
+            intrinsic::run(cov_fanout.clone())
         }));
 
         // Reports what changed while a confirmed report was outstanding, once
@@ -797,7 +796,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             config,
             discovery_limiter,
             time_sync_limiter,
-            _clock: clock,
+            clock,
             network: Some(network),
             broadcaster,
             transport_cleanup: None,
@@ -829,8 +828,11 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
             binary_lighting_operation_task,
             cov_revisit_task,
             local_mac,
+            seated,
+            execution,
         };
         boxed(|| server.execute_initial_staging_plans()).await;
+        outputs.complete();
         Ok(server)
     }
 }

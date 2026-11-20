@@ -309,7 +309,7 @@ async fn accept_idle_timeout_cleans_up_without_delivery() {
     let (mut listener, mut rx) =
         start_listener(&ca, |c| c.with_idle_timeout(Duration::from_millis(120))).await;
     let url = direct_url(&listener.local_addr());
-    let (_ws, _conn) = dial_and_handshake(&url, ca.node_config(vec!["node".into()])).await;
+    let (ws, _conn) = dial_and_handshake(&url, ca.node_config(vec!["node".into()])).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         if listener.active_connections() == 0 {
@@ -322,6 +322,16 @@ async fn accept_idle_timeout_cleans_up_without_delivery() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(rx.try_recv().is_err());
+    // Closing an idle link is on purpose, so the close says 1000 (#2463).
+    let closed = tokio::time::timeout(Duration::from_secs(5), ws.recv())
+        .await
+        .expect("the idle close did not arrive")
+        .unwrap_err();
+    assert_eq!(
+        crate::sc::ScDisconnectCause::from_error(&closed),
+        crate::sc::ScDisconnectCause::WebSocketClosed { close_status: 1000 },
+        "{closed}"
+    );
     listener.stop().await;
 }
 
@@ -565,7 +575,7 @@ async fn assert_accept_direct(hub: &crate::sc::LoopbackWebSocket, expected: u8) 
 #[tokio::test]
 async fn accept_registered_bit_is_one_while_listening_and_npdu_reaches_transport() {
     let ca = TestCa::generate();
-    let (mut transport, mut listener, mut rx, hub) = registered_listener(&ca).await;
+    let (transport, mut listener, mut rx, hub) = registered_listener(&ca).await;
     assert_accept_direct(&hub, 1).await;
     let (ws, _) = dial_and_handshake(
         &direct_url(&listener.local_addr()),
@@ -636,7 +646,7 @@ async fn assert_listener_closed(
 
 async fn registered_listener_reverts_to_zero(drop_listener: bool) {
     let ca = TestCa::generate();
-    let (mut transport, listener, mut rx, hub) = registered_listener(&ca).await;
+    let (transport, listener, mut rx, hub) = registered_listener(&ca).await;
     let addr = listener.local_addr();
     let accept_task = listener.accept_task.as_ref().unwrap().abort_handle();
     let mut listener = Some(listener);
@@ -682,7 +692,7 @@ async fn accept_registered_bit_reverts_after_drop() {
 #[tokio::test]
 async fn accept_registered_bit_reverts_if_accept_task_is_cancelled() {
     let ca = TestCa::generate();
-    let (mut transport, mut listener, _rx, hub) = registered_listener(&ca).await;
+    let (transport, mut listener, _rx, hub) = registered_listener(&ca).await;
     assert_accept_direct(&hub, 1).await;
     listener.accept_task.as_ref().unwrap().abort();
     let mut stopped = listener.shutdown_status();
@@ -702,7 +712,7 @@ async fn accept_registered_bit_reverts_if_accept_task_is_cancelled() {
 #[tokio::test]
 async fn accept_registered_bit_is_zero_without_application_intake_or_matching_identity() {
     let ca = TestCa::generate();
-    let (mut transport, mut listener, rx, hub) = registered_listener(&ca).await;
+    let (transport, mut listener, rx, hub) = registered_listener(&ca).await;
     transport.connection().unwrap().lock().await.local_vmac = [0xBB; 6];
     assert_accept_direct(&hub, 0).await;
     transport.connection().unwrap().lock().await.local_vmac = LISTENER_VMAC;
@@ -746,6 +756,9 @@ impl TestCa {
 
 #[path = "direct_response_lifecycle_tests.rs"]
 mod direct_response_lifecycle_tests;
+
+#[path = "direct_close_tests.rs"]
+mod direct_close_tests;
 
 #[path = "direct_bidirectional_tests.rs"]
 mod direct_bidirectional_tests;

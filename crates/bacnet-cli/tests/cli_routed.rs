@@ -9,7 +9,9 @@
 #[allow(dead_code)]
 mod support;
 
+use std::future::Future;
 use std::net::Ipv4Addr;
+use std::pin::Pin;
 
 use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
 use bacnet_server::server::BACnetServer;
@@ -20,7 +22,7 @@ use bacnet_transport::bvll::decode_bip_mac;
 use bacnet_transport::loopback::LoopbackTransport;
 use serde_json::{Value, json};
 use support::lab::{lab_database, lab_identity};
-use support::{Process, command, failure, run};
+use support::{Process, boxed, command, failure, run};
 
 /// The lab device's network and instance.
 const DNET: u16 = 2;
@@ -45,7 +47,16 @@ async fn site_with_database(
     .await
 }
 
-async fn site_with_config(
+/// Boxed, as the starts in it are: every test awaits it in its own poll
+/// frame, and the router's start runs under it (#2656).
+fn site_with_config(
+    database: bacnet_objects::database::ObjectDatabase,
+    config: bacnet_server::server::ServerConfig,
+) -> Pin<Box<impl Future<Output = (BACnetRouter, BACnetServer<LoopbackTransport>, u16)>>> {
+    boxed(move || start_site(database, config))
+}
+
+async fn start_site(
     database: bacnet_objects::database::ObjectDatabase,
     config: bacnet_server::server::ServerConfig,
 ) -> (BACnetRouter, BACnetServer<LoopbackTransport>, u16) {
@@ -66,11 +77,11 @@ async fn site_with_config(
             network_number: DNET,
         },
     ];
-    let StartedRouter { router, .. } = BACnetRouter::start(ports, RouterOptions::new())
+    let StartedRouter { router, .. } = boxed(|| BACnetRouter::start(ports, RouterOptions::new()))
         .await
         .expect("the router binds its ports");
     let (_, port) = decode_bip_mac(router.ports()[0].local_mac()).unwrap();
-    let server = BACnetServer::start(config, database, station)
+    let server = boxed(|| BACnetServer::start(config, database, station))
         .await
         .unwrap();
     (router, server, port)
@@ -166,6 +177,63 @@ async fn whois_router_lists_the_router_and_its_network() {
     assert_eq!(whois_router(&[]).await, expected);
     assert_eq!(whois_router(&["--dnet", "2"]).await, expected);
     assert_eq!(whois_router(&["--dnet", "77"]).await, json!([]));
+    server.stop().await.unwrap();
+    router.stop().await.unwrap();
+}
+
+/// `routing-table` (#2612) lists both of the router's networks, each with
+/// its port and no port information, and a station that never answers is an
+/// error that says so rather than an empty table.
+#[tokio::test]
+async fn routing_table_lists_the_routers_networks_and_silence_is_an_error() {
+    let (mut router, mut server, port) = site().await;
+    let routing_table = |target: String, wait: &'static str| async move {
+        let bbmd = format!("127.0.0.1:{port}");
+        run([
+            "--interface",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--foreign-bbmd",
+            &bbmd,
+            "--json",
+            "routing-table",
+            &target,
+            "--wait",
+            wait,
+        ])
+        .await
+    };
+    let output = routing_table(format!("127.0.0.1:{port}"), "2").await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let table: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(table["router"], json!(format!("127.0.0.1:{port}")));
+    assert_eq!(table["truncated"], json!(false));
+    let mut networks: Vec<u64> = table["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            assert_eq!(entry["port_info"], Value::Null, "{entry}");
+            assert!(entry["port_id"].is_u64(), "{entry}");
+            entry["network"].as_u64().unwrap()
+        })
+        .collect();
+    networks.sort_unstable();
+    assert_eq!(networks, [1, u64::from(DNET)]);
+
+    // Nothing listens on the discard port: no table, and the error says
+    // the router did not answer.
+    let output = routing_table("127.0.0.1:9".into(), "1").await;
+    failure(&output, "sent no routing table within 1s");
+
+    // A wait the clock can't hold is refused by the argument parser.
+    let output = routing_table("127.0.0.1:9".into(), "99999999999").await;
+    failure(&output, "99999999999");
     server.stop().await.unwrap();
     router.stop().await.unwrap();
 }

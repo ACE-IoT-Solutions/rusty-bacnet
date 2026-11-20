@@ -1,11 +1,13 @@
 //! The local input capability: values the application in the same device
 //! pushes into an object, outside any network write.
 
+use bacnet_types::enums::Polarity;
 use bacnet_types::error::Error;
 use bacnet_types::primitives::PropertyValue;
 
 use crate::access_control::AccessControlInput;
 use crate::command_source::CommandOrigin;
+use crate::load_control::LoadControlSetting;
 
 /// One locally sourced input, named for what it sets.
 ///
@@ -53,6 +55,21 @@ pub enum LocalInputValue {
     /// BACnetProgramState. The property is read-only on the network
     /// (Clause 12.22.4), so this is the application's only route (#2258).
     ProgramState(PropertyValue),
+    /// A configuration property of a Load Control: its Shed_Levels with
+    /// their descriptions, its Full_Duty_Baseline or its State_Description
+    /// (#2497). Only the first is writable over the network, and only per
+    /// element; the application sets all three whole.
+    LoadControl(LoadControlSetting),
+    /// The state the application read from a Binary Input's physical
+    /// input, `true` for ON (#2580). The object derives Present_Value from
+    /// it through Polarity while in service, and only keeps it while
+    /// Out_Of_Service is TRUE. A logical value goes in as
+    /// [`PresentValue`](Self::PresentValue) instead.
+    PhysicalInput(bool),
+    /// The Polarity of a Binary Input or Binary Output, NORMAL or REVERSE
+    /// (#2580). The property is read-only on the network, so this is the
+    /// application's route to it on a served object.
+    Polarity(Polarity),
 }
 
 impl LocalInputValue {
@@ -85,15 +102,20 @@ impl LocalInputValue {
 /// The built-in objects that take an input:
 ///
 /// - Present_Value: Analog, Binary and Multi-state Inputs, Analog, Binary
-///   and Multi-state Values whose Present_Value isn't commandable, the
-///   Loop, and the Life Safety Point and Zone;
+///   and Multi-state Values and Integer Values whose Present_Value isn't
+///   commandable, the Loop, and the Life Safety Point and Zone;
 /// - Tracking_Value: the Life Safety Point and Zone;
 /// - Controlled_Variable_Value: the Loop;
 /// - a sample: the Averaging object;
 /// - an access-control record: the Access Point, Credential Data Input and
 ///   Access Door, each its own kind of record;
 /// - input pulses: the Accumulator;
-/// - Program_State: the Program.
+/// - Program_State: the Program;
+/// - Shed_Levels, Full_Duty_Baseline and State_Description: the Load
+///   Control;
+/// - a physical input state: the Binary Input;
+/// - Polarity: the Binary Input and the Binary Output, which takes no
+///   other input.
 pub trait LocalInput {
     /// Apply `input`, or leave the object unchanged and return an error.
     ///
@@ -103,6 +125,9 @@ pub trait LocalInput {
     /// refuse a Present_Value with PROPERTY / WRITE_ACCESS_DENIED while
     /// Out_Of_Service is TRUE, so a client's simulated value stays served;
     /// a value of the wrong datatype or out of range fails as the
-    /// property's network write would.
+    /// property's network write would. A Binary Input's physical input
+    /// state, and the Polarity of a Binary Input or Binary Output, are
+    /// taken in or out of service, since none of them replaces a simulated
+    /// Present_Value.
     fn apply_local_input(&mut self, input: LocalInputValue) -> Result<(), Error>;
 }

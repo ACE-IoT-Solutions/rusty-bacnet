@@ -14,14 +14,25 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-/// `share_port_by_address` (#1538) binds a B/IP interface address, and
-/// `share_wildcard_port` (#2366) shares a B/IP port, so each means nothing on
-/// another transport: refuse the keyword `name` there rather than ignore it.
+/// `share_port_by_address` (#1538) binds a B/IP interface address, so it
+/// means nothing on another transport: refuse the keyword `name` there
+/// rather than ignore it.
 pub(crate) fn only_on_bip(name: &str, set: bool, transport: &str) -> PyResult<()> {
     if set && transport != "bip" {
         return Err(PyValueError::new_err(format!(
             "{name} applies only to transport='bip'"
         )));
+    }
+    Ok(())
+}
+
+/// `share_wildcard_port` shares a B/IP port (#2366) or a B/IPv6 one
+/// (#2385): refuse it on any other transport rather than ignore it.
+pub(crate) fn share_wildcard_port(set: bool, transport: &str) -> PyResult<()> {
+    if set && !matches!(transport, "bip" | "ipv6") {
+        return Err(PyValueError::new_err(
+            "share_wildcard_port applies only to transport='bip' and transport='ipv6'",
+        ));
     }
     Ok(())
 }
@@ -645,6 +656,33 @@ pub(crate) fn bdt_row(row: &BdtEntry) -> (String, String) {
         address.to_string(),
         Ipv4Addr::from(row.broadcast_mask).to_string(),
     )
+}
+
+/// FDT entries as Python reads them: a dict per entry with `address`
+/// (`"ip:port"`), `ttl` and `seconds_remaining`.
+pub(crate) fn fdt_rows(
+    py: Python<'_>,
+    entries: &[bacnet_transport::bbmd::FdtEntryWire],
+) -> PyResult<Py<PyAny>> {
+    let list = pyo3::types::PyList::empty(py);
+    for entry in entries {
+        let dict = PyDict::new(py);
+        let at = SocketAddrV4::new(Ipv4Addr::from(entry.ip), entry.port);
+        dict.set_item("address", at.to_string())?;
+        dict.set_item("ttl", entry.ttl)?;
+        dict.set_item("seconds_remaining", entry.seconds_remaining)?;
+        list.append(dict)?;
+    }
+    Ok(list.into_any().unbind())
+}
+
+/// The six-octet B/IP MAC of `"ip"` or `"ip:port"`, a BVLC request's target.
+pub(crate) fn bip_mac(text: &str, what: &str) -> PyResult<[u8; 6]> {
+    let address = parse_address(text, what)?;
+    let mut mac = [0u8; 6];
+    mac[..4].copy_from_slice(&address.ip().octets());
+    mac[4..].copy_from_slice(&address.port().to_be_bytes());
+    Ok(mac)
 }
 
 /// A BDT row: `"ip[:port]"`, its broadcasts forwarded by unicast, or

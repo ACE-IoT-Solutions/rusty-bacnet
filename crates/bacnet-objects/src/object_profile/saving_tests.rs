@@ -1,11 +1,13 @@
 use super::test_support::*;
 use super::*;
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use crate::durable::{DurableWrites, StageStep};
 // std: only the writer-thread tests use it.
 #[cfg(feature = "std")]
 use crate::traits::BACnetObject;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use std::time::Duration;
 
 #[test]
@@ -14,11 +16,14 @@ fn saved_empty_is_distinct_from_no_write_and_provisioning_stays_independent() {
         None,
         Some(TagsSnapshot::default()),
         Some(snapshot("saved")),
-        Some(TagsSnapshot { tags: Some(vec![]) }),
+        Some(TagsSnapshot {
+            tags: Some(vec![]),
+            description: None,
+        }),
     ] {
         let store = Arc::new(Memory::default());
         *store.saved.lock().unwrap() = saved.clone();
-        let mut state = ProfileState::persistent(oid(), store.clone()).unwrap();
+        let mut state = ProfileState::persistent(oid(), store.clone(), false).unwrap();
         assert_code(
             state.read(P::TAGS, None).unwrap(),
             ErrorCode::UNKNOWN_PROPERTY,
@@ -86,12 +91,13 @@ fn failed_save_and_invalid_writes_leave_served_state_and_backend_unchanged() {
 fn load_errors_and_invalid_custom_snapshots_fail_before_a_writer_runs() {
     let store = Arc::new(Memory::default());
     store.fail_load.store(true, Ordering::SeqCst);
-    assert!(ProfileState::persistent(oid(), store.clone()).is_err());
+    assert!(ProfileState::persistent(oid(), store.clone(), false).is_err());
     store.fail_load.store(false, Ordering::SeqCst);
     for invalid in [
         snapshot("invalid;name"),
         TagsSnapshot {
             tags: Some(vec![BACnetNameValue::semantic(""); MAX_TAGS + 1]),
+            description: None,
         },
         snapshot(&"x".repeat(MAX_TAGS_SNAPSHOT_BYTES)),
         TagsSnapshot {
@@ -99,16 +105,18 @@ fn load_errors_and_invalid_custom_snapshots_fail_before_a_writer_runs() {
                 "array",
                 PropertyValue::List(vec![]),
             )]),
+            description: None,
         },
         TagsSnapshot {
             tags: Some(vec![BACnetNameValue::valued(
                 "raw",
                 PropertyValue::ApplicationData(vec![0xa4, 126, 10, 6, 2, 0xb4, 12, 30, 0, 0]),
             )]),
+            description: None,
         },
     ] {
         *store.saved.lock().unwrap() = Some(invalid);
-        assert!(ProfileState::persistent(oid(), store.clone()).is_err());
+        assert!(ProfileState::persistent(oid(), store.clone(), false).is_err());
     }
     assert_eq!(store.attempts(), 0);
 }
@@ -120,6 +128,7 @@ fn combined_datetime_is_refused_before_direct_or_staged_save() {
     let pair = vec![0x0a, 0, b'a', 0xa4, 126, 10, 6, 2, 0xb4, 12, 30, 0, 0];
     for index in [None, Some(1)] {
         let invalid = write(index, PropertyValue::ApplicationData(pair.clone()));
+        #[cfg(feature = "durable-writes")]
         assert!(matches!(
             state.stage_writes(std::slice::from_ref(&invalid)),
             StageStep::Skip
@@ -135,6 +144,7 @@ fn combined_datetime_is_refused_before_direct_or_staged_save() {
     }
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn ordered_array_steps_save_once_and_each_claim_serves_its_prefix() {
     let store = Arc::new(Memory::default());
@@ -154,7 +164,8 @@ fn ordered_array_steps_save_once_and_each_claim_serves_its_prefix() {
     assert_eq!(
         store.saved(),
         Some(TagsSnapshot {
-            tags: Some(expected.clone())
+            tags: Some(expected.clone()),
+            description: None
         })
     );
     assert_eq!(state.profile().tags, Some(tags("configured")));
@@ -170,6 +181,84 @@ fn ordered_array_steps_save_once_and_each_claim_serves_its_prefix() {
     assert_eq!(state.profile().tags, Some(expected));
 }
 
+/// A staged step keeps only its write, so each write is worked out again on
+/// the Tags served as it is made (#2526): every claim, the later ones
+/// included, serves its request's prefix and takes its step, and storage
+/// ends where the stage saved it, with one save.
+#[cfg(feature = "durable-writes")]
+#[test]
+fn each_claim_makes_its_write_on_the_tags_served() {
+    let store = Arc::new(Memory::default());
+    let mut state = state(&store);
+    let element = |index, name: &str| write(Some(index), framed(&tags(name)));
+    let writes = [
+        write(Some(0), PropertyValue::Unsigned(3)),
+        element(3, "third"),
+        element(1, "first"),
+        element(3, "last"),
+        write(Some(0), PropertyValue::Unsigned(2)),
+    ];
+    fn named(names: &[&str]) -> Vec<BACnetNameValue> {
+        names
+            .iter()
+            .copied()
+            .map(BACnetNameValue::semantic)
+            .collect()
+    }
+    let served = [
+        named(&["configured", "", ""]),
+        named(&["configured", "", "third"]),
+        named(&["first", "", "third"]),
+        named(&["first", "", "last"]),
+        named(&["first", ""]),
+    ];
+    let wait = staged(state.stage_writes(&writes));
+    wait.block();
+    for (at, (write, served)) in writes.iter().zip(&served).enumerate() {
+        apply(&mut state, write).unwrap();
+        assert_eq!(state.profile().tags.as_ref(), Some(served), "write {at}");
+        assert_eq!(
+            state.has_staged_write(),
+            at + 1 < writes.len(),
+            "write {at}"
+        );
+    }
+    state.release_staged_write(&wait);
+    state.wait_for_saves();
+    let last = served[4].clone();
+    assert_eq!(
+        store.saved(),
+        Some(TagsSnapshot {
+            tags: Some(last),
+            description: None
+        })
+    );
+    assert_eq!(store.attempts(), 1);
+}
+
+/// An object dropped part way through a request puts storage back to what
+/// it served then: the writes it made, not the state before the request
+/// nor the one the stage saved. Each claim keeps the served state with the
+/// steps left (#1363, #2526).
+#[cfg(feature = "durable-writes")]
+#[test]
+fn a_drop_part_way_puts_storage_back_to_the_writes_made() {
+    let store = Arc::new(Memory::default());
+    let mut state = state(&store);
+    let writes = [
+        write(Some(1), framed(&tags("made"))),
+        write(Some(1), framed(&tags("never"))),
+    ];
+    let wait = staged(state.stage_writes(&writes));
+    wait.block();
+    assert_eq!(store.saved(), Some(snapshot("never")));
+    apply(&mut state, &writes[0]).unwrap();
+    drop(state);
+    assert_eq!(store.saved(), Some(snapshot("made")));
+    assert_eq!(store.attempts(), 2);
+}
+
+#[cfg(feature = "durable-writes")]
 #[test]
 fn invalid_middle_stops_staging_but_a_null_noop_does_not() {
     for middle in [
@@ -229,6 +318,7 @@ fn refused_or_unrelated_write_does_not_steal_another_stage() {
     assert_eq!(store.attempts(), 1);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn partial_claim_release_corrects_to_successful_prefix() {
     let store = Arc::new(Memory::default());
@@ -243,6 +333,7 @@ fn partial_claim_release_corrects_to_successful_prefix() {
     assert_eq!(store.attempts(), 2);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn dropped_forgotten_expired_and_reprovisioned_stages_correct_saved_authority() {
     for action in 0..4 {
@@ -273,6 +364,7 @@ fn dropped_forgotten_expired_and_reprovisioned_stages_correct_saved_authority() 
     }
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn failed_staged_save_never_publishes_or_needs_a_correction() {
     let store = Arc::new(Memory::default());
@@ -373,6 +465,7 @@ fn provisioning_supersedes_a_stage_without_publishing_it_or_detaching_storage() 
     assert_eq!(store.attempts(), 3);
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn an_unstaged_valid_write_supersedes_the_old_stage_in_writer_order() {
     let store = Arc::new(Memory::default());

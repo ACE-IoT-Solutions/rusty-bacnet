@@ -27,7 +27,7 @@ use std::path::Path;
 use std::sync::PoisonError;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use bacnet_ops::safety::hex;
+use bacnet_ops::octets::hex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -117,7 +117,7 @@ pub(crate) fn write(workspace: &Path, plan: &PlanGrant, used: u32) -> Result<(),
         std::process::id(),
         NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
     ));
-    bacnet_ops::safety::file::publish(&temp, &path, &text, false)
+    bacnet_tool::safety::file::publish(&temp, &path, &text, false)
         .map_err(|e| format!("cannot save {}: {e}", path.display()))
 }
 

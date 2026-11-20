@@ -7,9 +7,9 @@
 //! `timeout`, `failed`) are always distinct, because an agent's retry logic
 //! depends on the difference.
 
-use bacnet_ops::format::RowError;
 use bacnet_ops::label::kebab;
-use bacnet_types::enums::{AbortReason, ErrorClass, ErrorCode};
+use bacnet_ops::{DeviceAddress, OpsError, PropertyError};
+use bacnet_types::enums::{ErrorClass, ErrorCode};
 use bacnet_types::error::{Error, RemoteError};
 use serde_json::{Value, json};
 
@@ -61,21 +61,46 @@ impl ToolError {
         }
     }
 
-    /// A request to `device` that failed with `error`.
-    pub(crate) fn device(device: u32, error: &Error) -> Self {
-        match (error, error.remote()) {
-            (_, Some(RemoteError::Abort { reason })) if reason == AbortReason::TSM_TIMEOUT => {
+    /// The device `target` names, as written (`7`, `2:7`), is claimed by
+    /// every address of `candidates` (#2560): refused as ambiguous, naming
+    /// them. Nothing was sent.
+    pub(crate) fn ambiguous(target: &str, candidates: &[DeviceAddress]) -> Self {
+        let claims: Vec<String> = candidates.iter().map(ToString::to_string).collect();
+        Self::refused(
+            "ambiguous-device",
+            format!(
+                "device {target} is claimed by {}; name one by its address",
+                claims.join(" and ")
+            ),
+        )
+    }
+
+    /// A request to `device` that failed with `error`: a timeout (the
+    /// client's own, with how long it waited, or the state machine's
+    /// abort, with 0), the device's answer, or anything else as text.
+    pub(crate) fn device(device: u32, error: &OpsError) -> Self {
+        match error {
+            OpsError::Ambiguous { candidates, .. } => {
+                Self::ambiguous(&device.to_string(), candidates)
+            }
+            error if error.timed_out() => {
+                let after = match error {
+                    OpsError::Unreachable {
+                        source: Error::Timeout(after),
+                        ..
+                    }
+                    | OpsError::Client(Error::Timeout(after)) => after.as_millis(),
+                    _ => 0,
+                };
                 Self::Timeout {
                     device: Some(device),
-                    after_ms: 0,
+                    after_ms: u64::try_from(after).unwrap_or(u64::MAX),
                 }
             }
-            (_, Some(remote)) => Self::Bacnet(remote),
-            (Error::Timeout(after), None) => Self::Timeout {
-                device: Some(device),
-                after_ms: u64::try_from(after.as_millis()).unwrap_or(u64::MAX),
+            error => match error.remote() {
+                Some(remote) => Self::Bacnet(remote),
+                None => Self::Failed(error.to_string()),
             },
-            (other, None) => Self::Failed(other.to_string()),
         }
     }
 
@@ -176,10 +201,10 @@ pub(crate) fn remote_json(remote: &RemoteError) -> Value {
 }
 
 /// Why one property of a read has no value, as data.
-pub(crate) fn row_error_json(error: &RowError) -> Value {
+pub(crate) fn row_error_json(error: &PropertyError) -> Value {
     match error {
-        RowError::Remote(remote) => remote_json(remote),
-        RowError::NoValue => json!({ "result": "no-value" }),
+        PropertyError::Remote(remote) => remote_json(remote),
+        PropertyError::NoValue => json!({ "result": "no-value" }),
         other => json!({ "result": "failed", "message": other.to_string() }),
     }
 }
@@ -187,7 +212,7 @@ pub(crate) fn row_error_json(error: &RowError) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bacnet_types::enums::RejectReason;
+    use bacnet_types::enums::{AbortReason, RejectReason};
 
     #[test]
     fn device_errors_keep_their_names_and_numbers() {
@@ -213,14 +238,18 @@ mod tests {
             json!({ "result": "reject", "reason": "unrecognized-service", "reason_number": 9 })
         );
         assert_eq!(
-            row_error_json(&RowError::NoValue),
+            row_error_json(&PropertyError::NoValue),
             json!({ "result": "no-value" })
         );
     }
 
     #[test]
     fn a_timeout_is_not_a_device_answer() {
-        let error = Error::Timeout(std::time::Duration::from_millis(6000));
+        let at = DeviceAddress::local(&[7]).unwrap();
+        let error = OpsError::Unreachable {
+            device: at.clone(),
+            source: Error::Timeout(std::time::Duration::from_millis(6000)),
+        };
         assert_eq!(
             ToolError::device(7, &error),
             ToolError::Timeout {
@@ -228,12 +257,29 @@ mod tests {
                 after_ms: 6000
             }
         );
-        let abort = Error::Remote(RemoteError::Abort {
-            reason: AbortReason::TSM_TIMEOUT,
-        });
-        assert!(matches!(
+        let abort = OpsError::Unreachable {
+            device: at.clone(),
+            source: Error::Remote(RemoteError::Abort {
+                reason: AbortReason::TSM_TIMEOUT,
+            }),
+        };
+        assert_eq!(
             ToolError::device(7, &abort),
-            ToolError::Timeout { .. }
+            ToolError::Timeout {
+                device: Some(7),
+                after_ms: 0
+            }
+        );
+        let refused = OpsError::Refused {
+            device: at,
+            error: RemoteError::Reject {
+                reason: RejectReason::UNRECOGNIZED_SERVICE,
+            },
+            detail: None,
+        };
+        assert!(matches!(
+            ToolError::device(7, &refused),
+            ToolError::Bacnet(RemoteError::Reject { .. })
         ));
     }
 }

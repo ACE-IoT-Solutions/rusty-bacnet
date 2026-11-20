@@ -74,8 +74,9 @@ fn exiting() -> PyErr {
 
 thread_local! {
     /// Set while this thread runs a Python callback inside a server's
-    /// dispatch: a ReinitializeDevice handler (#1566), which a native lock
-    /// waits on, or a `mutation_policy` or `device_write_policy` callable.
+    /// dispatch: a ReinitializeDevice handler (#1566) or a Load Control's
+    /// `shed` or `stop` (#2479), which a native lock waits on, or a
+    /// `mutation_policy` callable, a server's or an endpoint's.
     static UNDER_NATIVE_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -127,6 +128,36 @@ where
     T: for<'py> IntoPyObject<'py> + Send + 'static,
 {
     spawn_into_py(py, fut, None)
+}
+
+/// [`future_into_py`], with `on_done` run once the asyncio future is done,
+/// cancelled included (#2612): it is a done callback, so it runs on the
+/// event loop's next turn, not when the future is marked done, and code
+/// that awaits the done future may resume before it (awaiting a done future
+/// doesn't yield, and `gather` completes done children at once). It still
+/// releases sooner than the aborted Rust future, which is dropped later on a
+/// runtime thread. A caller that needs the release at once checks `done()`
+/// itself, as the endpoint's table reads do. If the callback can't be added,
+/// the future is cancelled and `on_done` runs before the error is returned.
+/// `on_done` runs once, attached to Python, and must not block.
+pub(crate) fn future_into_py_on_done<'py, F, T>(
+    py: Python<'py>,
+    fut: F,
+    on_done: impl FnOnce() + Send + 'static,
+) -> PyResult<Bound<'py, PyAny>>
+where
+    F: Future<Output = PyResult<T>> + Send + 'static,
+    T: for<'p> IntoPyObject<'p> + Send + 'static,
+{
+    let future = spawn_into_py(py, fut, None)?;
+    let callback = Bound::new(py, RunOnDone(Mutex::new(Some(Box::new(on_done)))))?;
+    if let Err(err) = future.call_method1(intern!(py, "add_done_callback"), (&callback,)) {
+        // Nobody will await it: end the Rust future and release now.
+        let _ = future.call_method0(intern!(py, "cancel"));
+        callback.get().run();
+        return Err(err);
+    }
+    Ok(future)
 }
 
 /// Takes back a value whose asyncio future was already done, cancelled
@@ -188,8 +219,8 @@ where
     }
     if UNDER_NATIVE_LOCK.with(std::cell::Cell::get) {
         return Err(PyRuntimeError::new_err(
-            "a server callback (on_reinitialize, mutation_policy, device_write_policy) \
-             cannot start a binding operation",
+            "a server callback (on_reinitialize, mutation_policy, a Load Control's shed or \
+             stop) cannot start a binding operation",
         ));
     }
     let event_loop = py
@@ -345,6 +376,26 @@ struct AbortOnDone(AbortHandle);
 impl AbortOnDone {
     fn __call__(&self, _future: &Bound<'_, PyAny>) {
         self.0.abort();
+    }
+}
+
+/// Done callback for [`future_into_py_on_done`]: runs its closure once.
+#[pyclass(frozen)]
+struct RunOnDone(Mutex<Option<Box<dyn FnOnce() + Send>>>);
+
+impl RunOnDone {
+    fn run(&self) {
+        let on_done = self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(on_done) = on_done {
+            on_done();
+        }
+    }
+}
+
+#[pymethods]
+impl RunOnDone {
+    fn __call__(&self, _future: &Bound<'_, PyAny>) {
+        self.run();
     }
 }
 

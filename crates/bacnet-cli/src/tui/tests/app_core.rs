@@ -188,6 +188,45 @@ fn who_is_flow_warns_sends_listens_and_counts_replies() {
     assert_eq!(form.validate(AddressStyle::Bip).unwrap(), *spec);
 }
 
+/// The Who-Is form's default, sent as the worker sends it, is a local
+/// broadcast on the wire (#2560): no destination network, so no router
+/// passes it on. Global, chosen on the form, is the broadcast to every
+/// network.
+#[tokio::test]
+async fn the_default_who_is_is_a_local_broadcast_on_the_wire() {
+    use bacnet_client::client::{BACnetClient, ClientConfig};
+    use bacnet_transport::test_transport::{BIP_LOCAL_MAC, TestTransport};
+
+    let mut app = connected_app();
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Enter);
+    let commands = press(&mut app, KeyCode::Enter);
+    let [Command::WhoIs { spec, .. }] = commands.as_slice() else {
+        panic!("expected one WhoIs, got {commands:?}");
+    };
+    let port = TestTransport::builder().local_mac(&BIP_LOCAL_MAC).build();
+    let sent = port.sent();
+    let mut client = BACnetClient::start(ClientConfig::default(), port)
+        .await
+        .unwrap();
+    let global = WhoIsSpec {
+        scope: WhoIsScope::Global,
+        ..spec.clone()
+    };
+    for spec in [spec, &global] {
+        crate::tui::worker::session::send_who_is(&client, spec)
+            .await
+            .unwrap();
+    }
+    let destinations: Vec<_> = sent
+        .broadcasts()
+        .iter()
+        .map(|frame| frame.decode_npdu().destination.map(|to| to.network))
+        .collect();
+    assert_eq!(destinations, [None, Some(0xFFFF)]);
+    client.stop().await.unwrap();
+}
+
 #[test]
 fn who_is_form_waits_for_the_link() {
     let mut app = new_app(None);
@@ -278,29 +317,33 @@ fn a_newer_who_is_supersedes_the_running_one() {
     assert!(op.running(), "the stale result did not end the new request");
 }
 
+/// Every claimant of an instance is a row of its own (#2560), and the
+/// banner names each; the instance alone names none of them.
 #[test]
-fn collisions_record_every_address_for_the_banner() {
+fn every_claimant_is_a_row_and_the_banner_names_each() {
     let mut app = connected_app();
-    let retained = row(200, "10.0.0.20:47808", 1, 0);
-    let incoming = row(200, "10.0.0.21:47808", 1, 0);
-    worker(
-        &mut app,
-        WorkerEvent::Collision {
-            retained: retained.clone(),
-            incoming,
-        },
-    );
-    worker(
-        &mut app,
-        WorkerEvent::Collision {
-            retained,
-            incoming: row(200, "10.0.0.22:47808", 1, 0),
-        },
-    );
+    let claimants: Vec<_> = (20..=22)
+        .map(|host| row(200, &format!("10.0.0.{host}:47808"), 1, 0))
+        .collect();
+    for claimant in &claimants {
+        worker(&mut app, WorkerEvent::Discovered(claimant.clone()));
+    }
     assert_eq!(
         app.duplicates.lines(),
         ["instance 200 claimed by 10.0.0.20:47808, 10.0.0.21:47808 and 10.0.0.22:47808"]
     );
+    assert_eq!(app.devices.claims(200).len(), 3);
+    assert!(app.devices.get(200).is_none(), "the instance names none");
+    // One leaving takes its own row and nothing else.
+    worker(&mut app, WorkerEvent::Lost(claimants[2].clone()));
+    assert_eq!(app.devices.claims(200).len(), 2);
+    assert_eq!(
+        app.duplicates.lines(),
+        ["instance 200 claimed by 10.0.0.20:47808 and 10.0.0.21:47808"]
+    );
+    worker(&mut app, WorkerEvent::Lost(claimants[1].clone()));
+    assert_eq!(app.devices.get(200).unwrap().address, "10.0.0.20:47808");
+    assert!(app.duplicates.lines().is_empty());
 }
 
 #[test]

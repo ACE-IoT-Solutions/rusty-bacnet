@@ -11,6 +11,7 @@ use bacnet_types::primitives::{ObjectIdentifier, PropertyValue};
 use bytes::BytesMut;
 
 use super::{StateChangeValues, TimerObject};
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use crate::durable::{DurableWrites, PendingWrite, StageStep};
 use crate::traits::BACnetObject;
 use crate::write_config::test_storage::MemoryConfig;
@@ -23,14 +24,14 @@ const VALUES: PropertyIdentifier = PropertyIdentifier::STATE_CHANGE_VALUES;
 const REFERENCES: PropertyIdentifier = PropertyIdentifier::LIST_OF_OBJECT_PROPERTY_REFERENCES;
 const PRIORITY: PropertyIdentifier = PropertyIdentifier::PRIORITY_FOR_WRITING;
 
-fn values(first: f32) -> StateChangeValues {
+pub(super) fn values(first: f32) -> StateChangeValues {
     core::array::from_fn(|index| match index {
         0 => BACnetTimerStateChangeValue::Primitive(PropertyValue::Real(first)),
         _ => BACnetTimerStateChangeValue::NoValue,
     })
 }
 
-fn reference(instance: u32) -> BACnetDeviceObjectPropertyReference {
+pub(super) fn reference(instance: u32) -> BACnetDeviceObjectPropertyReference {
     BACnetDeviceObjectPropertyReference {
         object_identifier: ObjectIdentifier::new(ObjectType::ANALOG_VALUE, instance).unwrap(),
         property_identifier: 85,
@@ -48,7 +49,7 @@ fn references_value(references: &[BACnetDeviceObjectPropertyReference]) -> Prope
 }
 
 /// Timer 1 kept in `storage`, configured with `configured` at priority 9.
-fn timer(storage: &Arc<MemoryConfig>, configured: f32) -> TimerObject {
+pub(super) fn timer(storage: &Arc<MemoryConfig>, configured: f32) -> TimerObject {
     let persistence = Arc::clone(storage) as Arc<dyn WriteConfigPersistence>;
     let mut timer = TimerObject::with_persistence(1, "TMR", persistence).unwrap();
     timer
@@ -133,6 +134,7 @@ fn a_set_that_cannot_be_saved_is_refused_and_the_old_set_stays() {
 
 /// The server's path: the save runs at the stage, and the write then takes
 /// the saved set without saving again.
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_staged_write_takes_the_saved_set() {
     let storage = MemoryConfig::new();
@@ -158,8 +160,47 @@ fn a_staged_write_takes_the_saved_set() {
     assert_eq!(storage.saves(), 1);
 }
 
+/// A staged value that isn't equal to itself is still the request's own:
+/// a REAL that is no number, alone at an index and inside the whole array,
+/// takes the save its stage made and saves nothing more (#2331). A
+/// comparison by `==` took such a write for another request's and saved it
+/// again where it was.
+#[cfg(feature = "durable-writes")]
+#[test]
+fn a_staged_value_that_is_not_a_number_takes_its_save() {
+    let nan = PropertyValue::Real(f32::NAN);
+    let mut array = vec![PropertyValue::Null; 7];
+    array[4] = PropertyValue::Double(f64::NAN);
+    array[6] = nan.clone();
+    for (array_index, value) in [(Some(2), nan), (None, PropertyValue::List(array))] {
+        let storage = MemoryConfig::new();
+        let mut timer = timer(&storage, 1.0);
+        let write = PendingWrite {
+            property: VALUES,
+            array_index,
+            value,
+        };
+        let StageStep::Staged(wait) = timer.stage_writes(core::slice::from_ref(&write)) else {
+            panic!("the write didn't stage");
+        };
+        wait.block();
+        assert_eq!(storage.saves(), 1, "{array_index:?}");
+        timer
+            .write_property(write.property, write.array_index, write.value, None)
+            .unwrap();
+        timer.release_staged_write(&wait);
+        timer.wait_for_saves();
+        assert_eq!(storage.saves(), 1, "{array_index:?}: saved again");
+        let PropertyValue::Real(served) = read(&timer, VALUES, array_index.or(Some(7))) else {
+            panic!("a REAL was written");
+        };
+        assert!(served.is_nan(), "{array_index:?}");
+    }
+}
+
 /// A staged set its request never makes is put back: storage then holds
 /// what the Timer serves, here nothing written.
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_staged_set_never_made_puts_storage_back() {
     let storage = MemoryConfig::new();
@@ -182,6 +223,7 @@ fn a_staged_set_never_made_puts_storage_back() {
     assert!(!timer.state_change_saved());
 }
 
+#[cfg(feature = "durable-writes")]
 #[test]
 fn a_timer_without_the_set_stages_nothing() {
     let storage = MemoryConfig::new();
@@ -194,7 +236,6 @@ fn a_timer_without_the_set_stages_nothing() {
     };
     assert!(matches!(timer.stage_writes(&[write]), StageStep::Skip));
     // A Timer without storage offers no staging at all.
-    #[cfg(feature = "durable-writes")]
     assert!(
         TimerObject::new(2, "T2")
             .unwrap()
@@ -261,4 +302,148 @@ fn clearing_the_written_set_lets_the_configured_one_apply() {
     drop(rebuilt);
     let again = timer(&storage, 5.0);
     assert_eq!(read(&again, VALUES, Some(1)), PropertyValue::Real(5.0));
+}
+
+#[cfg(feature = "durable-writes")]
+pub(super) fn pending(
+    property: PropertyIdentifier,
+    index: Option<u32>,
+    value: PropertyValue,
+) -> PendingWrite {
+    PendingWrite {
+        property,
+        array_index: index,
+        value,
+    }
+}
+
+/// Stage `writes` on `timer` and wait for the save; the wait releases it.
+#[cfg(feature = "durable-writes")]
+pub(super) fn staged(timer: &mut TimerObject, writes: &[PendingWrite]) -> crate::durable::SaveWait {
+    let StageStep::Staged(wait) = timer.stage_writes(writes) else {
+        panic!("the writes didn't stage");
+    };
+    wait.block();
+    wait
+}
+
+#[cfg(feature = "durable-writes")]
+pub(super) fn make(timer: &mut TimerObject, write: &PendingWrite) -> Result<(), Error> {
+    let PendingWrite {
+        property,
+        array_index,
+        value,
+    } = write.clone();
+    timer.write_property(property, array_index, value, None)
+}
+
+/// What a Timer storage holds of its set and Default_Timeout.
+#[cfg(feature = "durable-writes")]
+pub(super) fn kept(storage: &MemoryConfig) -> (Option<TimerStateChange>, Option<u64>) {
+    match storage.saved() {
+        Some(WriteConfigSnapshot::Timer(saved)) => (saved.state_change, saved.default_timeout),
+        other => panic!("not a Timer's: {other:?}"),
+    }
+}
+
+#[cfg(feature = "durable-writes")]
+const TIMEOUT: PropertyIdentifier = PropertyIdentifier::DEFAULT_TIMEOUT;
+
+/// A step keeps only its write, so each write is worked out again on the
+/// configuration served as it is made (#2526): every claim, the later ones
+/// included, serves its request's prefix and takes its step, and storage
+/// ends where the stage saved it, with one save.
+#[cfg(feature = "durable-writes")]
+#[test]
+fn each_claim_makes_its_write_on_the_configuration_served() {
+    let storage = MemoryConfig::new();
+    let mut timer = timer(&storage, 1.0);
+    let real = |value| PropertyValue::Real(value);
+    let writes = [
+        pending(VALUES, Some(2), real(2.0)),
+        pending(TIMEOUT, None, PropertyValue::Unsigned(5_000)),
+        pending(VALUES, Some(1), real(3.0)),
+        pending(REFERENCES, None, references_value(&[reference(5)])),
+        pending(VALUES, Some(2), real(4.0)),
+    ];
+    let served = [
+        (1.0, 2.0, 1, false),
+        (1.0, 2.0, 1, true),
+        (3.0, 2.0, 1, true),
+        (3.0, 2.0, 5, true),
+        (3.0, 4.0, 5, true),
+    ];
+    let wait = staged(&mut timer, &writes);
+    let saved = storage.saved();
+    for (at, (write, (first, second, instance, timeout))) in writes.iter().zip(served).enumerate() {
+        make(&mut timer, write).unwrap();
+        assert_eq!(read(&timer, VALUES, Some(1)), real(first), "write {at}");
+        assert_eq!(read(&timer, VALUES, Some(2)), real(second), "write {at}");
+        let references = crate::device_reference::reference_list(&[reference(instance)]);
+        assert_eq!(read(&timer, REFERENCES, None), references, "write {at}");
+        assert_eq!(timer.default_timeout_saved(), timeout, "write {at}");
+        assert_eq!(
+            timer.has_staged_write(),
+            at + 1 < writes.len(),
+            "write {at}"
+        );
+    }
+    timer.release_staged_write(&wait);
+    timer.wait_for_saves();
+    assert_eq!(storage.saved(), saved);
+    assert_eq!(storage.saves(), 1);
+    assert_eq!(kept(&storage).1, Some(5_000));
+}
+
+/// A Timer dropped part way through a request puts storage back to what it
+/// served then: the writes it made, not the configuration before the
+/// request nor the one the stage saved (#1363).
+#[cfg(feature = "durable-writes")]
+#[test]
+fn a_drop_part_way_puts_storage_back_to_the_writes_made() {
+    let storage = MemoryConfig::new();
+    let mut timer = timer(&storage, 1.0);
+    let timeout = |value| pending(TIMEOUT, None, PropertyValue::Unsigned(value));
+    let writes = [timeout(2_000), timeout(3_000)];
+    let _wait = staged(&mut timer, &writes);
+    assert_eq!(kept(&storage).1, Some(3_000));
+    make(&mut timer, &writes[0]).unwrap();
+    drop(timer);
+    assert_eq!(kept(&storage).1, Some(2_000));
+    assert_eq!(storage.saves(), 2);
+}
+
+/// The stage saves what a request's writes leave together, each worked out
+/// on top of the ones before it: a set two writes change and a
+/// Default_Timeout, and a refused write stops it, so the writes after it
+/// save nothing.
+#[cfg(feature = "durable-writes")]
+#[test]
+fn a_requests_stage_saves_what_its_writes_leave_together() {
+    let storage = MemoryConfig::new();
+    let mut timer = timer(&storage, 1.0);
+    let writes = [
+        pending(VALUES, Some(3), PropertyValue::Real(6.0)),
+        pending(REFERENCES, None, references_value(&[reference(8)])),
+        pending(TIMEOUT, None, PropertyValue::Unsigned(7_000)),
+        pending(TIMEOUT, None, PropertyValue::Unsigned(0)),
+        pending(VALUES, Some(4), PropertyValue::Real(9.0)),
+    ];
+    let untouched = read(&timer, VALUES, Some(4));
+    let wait = staged(&mut timer, &writes);
+    let (set, timeout) = kept(&storage);
+    let set = set.expect("the set is kept");
+    let mut values = values(1.0);
+    values[2] = BACnetTimerStateChangeValue::Primitive(PropertyValue::Real(6.0));
+    assert_eq!(set.values, values);
+    assert_eq!(set.references, [reference(8)]);
+    assert_eq!(timeout, Some(7_000));
+    for write in &writes[..3] {
+        make(&mut timer, write).unwrap();
+    }
+    assert!(make(&mut timer, &writes[3]).is_err());
+    timer.release_staged_write(&wait);
+    timer.wait_for_saves();
+    assert_eq!(storage.saves(), 1);
+    assert_eq!(read(&timer, VALUES, Some(4)), untouched);
 }

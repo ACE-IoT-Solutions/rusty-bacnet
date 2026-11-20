@@ -195,18 +195,21 @@ impl PyReinitialize {
 
     fn decide(&self, context: &ReinitializeContext) -> Result<(), Error> {
         let request = PyReinitializeRequest::new(context);
+        // The answer is read under the same refusal as the call: reading it
+        // can run Python code too, such as an enum conversion or a close().
         let answer = crate::py_async::attach(|py| {
-            let returned = crate::py_async::under_native_lock(|| {
-                self.on_reinitialize.bind(py).call1((request.clone(),))
-            });
-            Ok(match returned.and_then(|value| answer(&value)) {
-                Ok(answer) => answer,
-                Err(error) => {
-                    // Shown through sys.unraisablehook, as asyncio shows a
-                    // callback's exception.
-                    error.write_unraisable(py, Some(self.on_reinitialize.bind(py)));
-                    Answer::Failed
-                }
+            crate::py_async::under_native_lock(|| {
+                let callable = self.on_reinitialize.bind(py);
+                let returned = callable.call1((request.clone(),));
+                Ok(match returned.and_then(|value| answer(&value)) {
+                    Ok(answer) => answer,
+                    Err(error) => {
+                        // Shown through sys.unraisablehook, as asyncio shows
+                        // a callback's exception.
+                        error.write_unraisable(py, Some(callable));
+                        Answer::Failed
+                    }
+                })
             })
         })
         // The interpreter is exiting: nobody can carry the request out.
@@ -369,7 +372,8 @@ pub(crate) struct EndpointReinitialize {
 
 impl EndpointReinitialize {
     /// Validate an endpoint constructor's keywords. A password needs
-    /// `on_reinitialize`, as the native session requires.
+    /// `on_reinitialize`: without a handler the server refuses every
+    /// ReinitializeDevice, so a password alone would guard nothing.
     pub(crate) fn parse(
         on_reinitialize: Option<&Bound<'_, PyAny>>,
         after_reinitialize: Option<&Bound<'_, PyAny>>,
@@ -388,11 +392,6 @@ impl EndpointReinitialize {
         })
     }
 
-    /// Whether the server role executes ReinitializeDevice.
-    pub(crate) fn enabled(&self) -> bool {
-        self.callables.is_some()
-    }
-
     /// See [`PyReinitialize::bind_event_loop`]; called by `start()`.
     pub(crate) fn bind_event_loop(&self, py: Python<'_>) -> PyResult<()> {
         match &self.callables {
@@ -401,21 +400,22 @@ impl EndpointReinitialize {
         }
     }
 
-    /// Install the handler and password on a session about to start.
+    /// Install the handler and password on the builder of the endpoint's
+    /// full server (#2617), as `BACnetServer`'s keywords install them.
     pub(crate) fn install<T>(
         &self,
-        session: bacnet_endpoint::session::EndpointSession<T>,
-    ) -> bacnet_endpoint::session::EndpointSession<T>
+        builder: bacnet_server::server::ServerBuilder<T>,
+    ) -> bacnet_server::server::ServerBuilder<T>
     where
         T: bacnet_transport::port::TransportPort + 'static,
     {
         let Some(callables) = &self.callables else {
-            return session;
+            return builder;
         };
-        let session = session.with_reinitialize(callables.handler());
+        let builder = builder.on_reinitialize(callables.handler());
         match &self.password {
-            Some(password) => session.with_reinit_password(password.clone()),
-            None => session,
+            Some(password) => builder.reinit_password(password.clone()),
+            None => builder,
         }
     }
 }

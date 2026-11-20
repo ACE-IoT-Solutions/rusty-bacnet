@@ -7,7 +7,7 @@ use std::net::Ipv4Addr;
 use std::process;
 use std::time::Duration;
 
-use bacnet_client::client::BACnetClient;
+use bacnet_client::client::{BACnetClient, Broadcast};
 use bacnet_encoding::primitives::decode_application_value;
 use bacnet_services::who_is::{DeviceInstanceRange, WhoIsRequest};
 use bacnet_transport::bip::DEFAULT_BACNET_PORT;
@@ -192,18 +192,23 @@ async fn discover_device(
         eprintln!("ERROR: local Who-Is failed: {e}");
         process::exit(1);
     }
-    if let Err(e) = client.who_is(Some(range)).await {
+    if let Err(e) = client.who_is(Broadcast::Global, Some(range)).await {
         eprintln!("ERROR: global Who-Is failed: {e}");
         process::exit(1);
     }
 
     tokio::time::sleep(Duration::from_secs(args.timeout)).await;
 
-    if client.get_device(args.device).await.is_none() {
-        eprintln!(
-            "ERROR: device {} not found after {}s Who-Is",
+    let missing = match client.get_device(args.device).await {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(format!(
+            "device {} not found after {}s Who-Is",
             args.device, args.timeout
-        );
+        )),
+        Err(e) => Some(e.to_string()),
+    };
+    if let Some(why) = missing {
+        eprintln!("ERROR: {why}");
         let _ = client.stop().await;
         process::exit(1);
     }
@@ -264,6 +269,14 @@ async fn main() {
     };
 
     discover_device(&mut client, &args).await;
+    let device = match client.resolve_device(args.device).await {
+        Ok(device) => device,
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+            let _ = client.stop().await;
+            process::exit(1);
+        }
+    };
 
     let specs: Vec<ReadAccessSpecification> = point_oids
         .iter()
@@ -291,10 +304,7 @@ async fn main() {
         specs.len()
     );
 
-    let rpm = match client
-        .read_property_multiple_from_device(args.device, specs)
-        .await
-    {
+    let rpm = match client.read_property_multiple(&device, specs).await {
         Ok(ack) => ack,
         Err(e) => {
             eprintln!("ERROR: RPM failed: {e}");

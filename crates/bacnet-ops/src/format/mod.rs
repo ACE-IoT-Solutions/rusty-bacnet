@@ -31,33 +31,43 @@ mod primitive;
 mod recipients;
 mod tagged;
 mod units;
+mod value;
 mod wire;
 
 pub use clean::{MAX_NAME_CHARS, clean_name, clean_text};
-pub(crate) use constructed::timestamp_text;
+pub use constructed::timestamp_text;
 pub use data::{Datum, Fields, PLAIN_ELEMENTS};
 pub use logged::{LogColumns, LoggedProperty, MAX_STATE_TEXT_OBJECTS};
+pub use tagged::unknown_choice;
+pub use value::Value;
 pub use wire::format_property_value;
 
 use bacnet_encoding::constructed::{ConstructedElement, ElementShape, property_element};
 use bacnet_encoding::primitives::{decode_application_value, decode_priority_date_time};
+use bacnet_encoding::tags::TagClass;
+use bacnet_encoding::tags::tree::decode_tag_tree;
 use bacnet_types::enums::{
     EngineeringUnits, ErrorClass, ErrorCode, ObjectType, PropertyIdentifier,
 };
 use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::{Date, PropertyValue, Time};
 
-use units::unit_symbol;
+pub(crate) use units::unit_symbol;
 
 /// A property as read: its raw application-tagged value, or why the device
-/// gave none.
-pub type RawRow = (PropertyIdentifier, Result<Vec<u8>, RowError>);
+/// gave none. The rows the raw readers ([`Reader`](crate::raw::Reader))
+/// and the watch hub keep, undecoded; a [`Device`](crate::Device) read
+/// returns each as a [`Reading`](crate::Reading).
+pub type RawRow = (PropertyIdentifier, Result<Vec<u8>, PropertyError>);
 
-/// Why one property of a read has no value. Structured, so a front end can
-/// report the device's error class and code as data, not only as text.
+/// Why one property of a read has no value, while the rest of the read
+/// stands: the device refused that property, or the object (an unknown
+/// object is an error row for each of its properties). Structured, so a
+/// front end can report the device's error class and code as data, not
+/// only as text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum RowError {
+pub enum PropertyError {
     /// The device answered this property with an error, a reject or an
     /// abort.
     Remote(RemoteError),
@@ -68,7 +78,7 @@ pub enum RowError {
     Other(String),
 }
 
-impl RowError {
+impl PropertyError {
     /// The device's error class and code, when it answered with an error.
     pub fn class_code(&self) -> Option<(ErrorClass, ErrorCode)> {
         match self {
@@ -78,8 +88,8 @@ impl RowError {
     }
 }
 
-impl From<Error> for RowError {
-    /// The device's error, reject or abort as [`RowError::Remote`], with a
+impl From<Error> for PropertyError {
+    /// The device's error, reject or abort as [`PropertyError::Remote`], with a
     /// structured Error PDU reduced to its class and code; anything else
     /// as text.
     fn from(error: Error) -> Self {
@@ -90,9 +100,9 @@ impl From<Error> for RowError {
     }
 }
 
-impl std::error::Error for RowError {}
+impl std::error::Error for PropertyError {}
 
-impl std::fmt::Display for RowError {
+impl std::fmt::Display for PropertyError {
     /// An error as `CLASS:CODE` (`PROPERTY:UNKNOWN_PROPERTY`), the form
     /// the TUI shows; a reject or abort, or any other failure, as its own
     /// text.
@@ -281,6 +291,15 @@ impl<'a> ValueFormat<'a> {
         }
     }
 
+    /// Whether a value of `property` at `index` would name its state with
+    /// one of this formatter's texts: they aren't all empty, and
+    /// [`StateTexts::name`] holds for the object type.
+    fn names_states(&self, property: PropertyIdentifier, index: Option<u32>) -> bool {
+        let texts = self.texts;
+        (texts.active.is_some() || texts.inactive.is_some() || !texts.states.is_empty())
+            && StateTexts::name(self.object_type, property, index)
+    }
+
     /// The same settings for another object, as a value that names one
     /// (an action's target, a group member) needs.
     pub fn for_object<'b>(
@@ -372,7 +391,11 @@ impl<'a> ValueFormat<'a> {
                 _ => self.list(texts, constructed::separator(element)),
             };
         }
-        let Some(values) = decode_all(data) else {
+        let values = decode_all(data);
+        if self.holds_tags(property, data, values.as_deref()) {
+            return tagged::tagged(data, self.floats).0;
+        }
+        let Some(values) = values else {
             return primitive::raw(data);
         };
         match values.as_slice() {
@@ -439,6 +462,29 @@ impl<'a> ValueFormat<'a> {
             return primitive::date_time(&date, &time);
         }
         primitive::text(property, value, self.floats)
+    }
+
+    /// Whether `data`, a read of `property` with no constructed form whose
+    /// application values are `values` (`None` when one doesn't decode),
+    /// holds a context-tagged element the formatter has no form for: any
+    /// but a DateTime Value's date-time priority slot. Such a value is
+    /// shown as its tags (#2618), and so is one whose framing reads but
+    /// holds an application value that doesn't decode beside a context
+    /// tag. Octets that don't frame stay hex.
+    fn holds_tags(
+        &self,
+        property: PropertyIdentifier,
+        data: &[u8],
+        values: Option<&[PropertyValue]>,
+    ) -> bool {
+        match values {
+            Some(values) => values.iter().any(|value| {
+                matches!(value, PropertyValue::ApplicationData(_))
+                    && self.priority_date_time(property, value).is_none()
+            }),
+            None => decode_tag_tree(data)
+                .is_ok_and(|nodes| nodes.iter().any(|node| node.class == TagClass::Context)),
+        }
     }
 
     /// A DateTime Value's priority slot holding a date-time: the

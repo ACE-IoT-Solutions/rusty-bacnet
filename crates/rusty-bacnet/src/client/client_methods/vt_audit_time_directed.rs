@@ -29,13 +29,7 @@ impl BACnetClient {
                 vt_class: vt_class.to_rust(),
                 local_vt_session_identifier,
             };
-            let mut buf = BytesMut::new();
-            req.encode(&mut buf);
-            let resp = c
-                .confirmed_request(&mac, ConfirmedServiceChoice::VT_OPEN, &buf)
-                .await
-                .map_err(to_py_err)?;
-            let ack = VTOpenAck::decode(&resp).map_err(to_py_err)?;
+            let ack = c.vt_open(&mac, &req).await.map_err(to_py_err)?;
             Ok(ack.remote_vt_session_identifier)
         })
     }
@@ -55,8 +49,7 @@ impl BACnetClient {
         let req = VTCloseRequest {
             list_of_remote_vt_session_identifiers: session_ids,
         };
-        let mut buf = BytesMut::new();
-        req.encode(&mut buf)
+        req.validate()
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
 
         let inner = self.inner.clone();
@@ -64,9 +57,7 @@ impl BACnetClient {
         let future = async move {
             let mac = peers.parse(&address)?;
             let c = started(&inner).await?;
-            c.confirmed_request(&mac, ConfirmedServiceChoice::VT_CLOSE, &buf)
-                .await
-                .map_err(to_py_err)?;
+            c.vt_close(&mac, &req).await.map_err(to_py_err)?;
             Ok(())
         };
         crate::py_async::future_into_py(py, crate::unit_result(future))
@@ -99,13 +90,7 @@ impl BACnetClient {
                 vt_new_data: data,
                 vt_data_flag: data_flag,
             };
-            let mut buf = BytesMut::new();
-            req.encode(&mut buf);
-            let resp = c
-                .confirmed_request(&mac, ConfirmedServiceChoice::VT_DATA, &buf)
-                .await
-                .map_err(to_py_err)?;
-            let ack = VTDataAck::decode(&resp).map_err(to_py_err)?;
+            let ack = c.vt_data(&mac, &req).await.map_err(to_py_err)?;
             crate::py_async::attach(|py| {
                 let dict = PyDict::new(py);
                 dict.set_item("all_new_data_accepted", ack.all_new_data_accepted())?;
@@ -326,33 +311,8 @@ impl BACnetClient {
     }
 
     // -----------------------------------------------------------------------
-    // Directed / Network WhoIs
-    // -----------------------------------------------------------------------
-
-    /// Send a Who-Is to a specific device address (unicast), with the same
-    /// limits rule as `who_is()`.
-    #[pyo3(signature = (address, low_limit=None, high_limit=None))]
-    fn who_is_directed<'py>(
-        &self,
-        py: Python<'py>,
-        address: String,
-        low_limit: Option<u32>,
-        high_limit: Option<u32>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let range = device_range(low_limit, high_limit)?;
-        let inner = self.inner.clone();
-        let peers = PeerAddresses::for_transport(&self.transport_type);
-        let future = async move {
-            let mac = peers.parse(&address)?;
-            let c = started(&inner).await?;
-            c.who_is_directed(&mac, range).await.map_err(to_py_err)?;
-            Ok(())
-        };
-        crate::py_async::future_into_py(py, crate::unit_result(future))
-    }
-
-    // -----------------------------------------------------------------------
-    // Auto-routing (_from_device) variants
+    // Auto-routing (_from_device) variants: each looks the instance up in
+    // the discovery table, then sends to the station the row names.
     // -----------------------------------------------------------------------
 
     /// Read a property from a device by instance number (auto-routing).
@@ -373,8 +333,9 @@ impl BACnetClient {
 
         crate::py_async::future_into_py(py, async move {
             let c = started(&inner).await?;
+            let to = c.resolve_device(device_instance).await.map_err(to_py_err)?;
             let ack = c
-                .read_property_from_device(device_instance, oid, pid, array_index)
+                .read_property(&to, oid, pid, array_index)
                 .await
                 .map_err(to_py_err)?;
             let value = decode_read_ack(&ack).map_err(to_py_err)?;
@@ -395,8 +356,9 @@ impl BACnetClient {
 
         crate::py_async::future_into_py(py, async move {
             let c = started(&inner).await?;
+            let to = c.resolve_device(device_instance).await.map_err(to_py_err)?;
             let ack = c
-                .read_property_multiple_from_device(device_instance, rust_specs)
+                .read_property_multiple(&to, rust_specs)
                 .await
                 .map_err(to_py_err)?;
             crate::py_async::attach(|py| rpm_ack_to_py(py, ack))
@@ -426,7 +388,8 @@ impl BACnetClient {
 
         let future = async move {
             let c = started(&inner).await?;
-            c.write_property_to_device(device_instance, oid, pid, array_index, encoded, priority)
+            let to = c.resolve_device(device_instance).await.map_err(to_py_err)?;
+            c.write_property(&to, oid, pid, array_index, encoded, priority)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -447,7 +410,8 @@ impl BACnetClient {
 
         let future = async move {
             let c = started(&inner).await?;
-            c.write_property_multiple_to_device(device_instance, rust_specs)
+            let to = c.resolve_device(device_instance).await.map_err(to_py_err)?;
+            c.write_property_multiple(&to, rust_specs)
                 .await
                 .map_err(to_py_err)?;
             Ok(())
@@ -462,7 +426,7 @@ impl BACnetClient {
     /// Add a device to the discovery table manually.
     ///
     /// Useful when the device address is known without sending a WhoIs.
-    /// Default values are used for max_apdu_length (1476), segmentation (NONE),
+    /// Default values are used for max_apdu_length (1476), segmentation (NO_SEGMENTATION),
     /// and vendor_id (0).
     #[pyo3(signature = (device_instance, address))]
     fn add_device<'py>(

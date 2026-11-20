@@ -50,6 +50,27 @@ pub(super) async fn next_within<T>(
     }
 }
 
+/// `wait`, with a paused clock held still while it runs.
+///
+/// A paused clock jumps to the next timer as soon as the runtime is idle,
+/// whether or not a datagram is still on its way, so a socket read under
+/// it can time out with the datagram a moment away. Tokio doesn't advance a
+/// paused clock while a blocking task runs, so one parked for as long as
+/// `wait` takes lets the datagram arrive in real time. After 5 real
+/// seconds it lets go, and the read's own deadline then fails the test.
+/// Every read of a real socket on paused time goes through here. Nothing
+/// that needs the clock to move can run inside `wait`.
+pub(super) async fn in_real_time<T>(wait: impl Future<Output = T>) -> T {
+    let (done, parked) = std::sync::mpsc::channel::<()>();
+    let hold = tokio::task::spawn_blocking(move || {
+        let _ = parked.recv_timeout(Duration::from_secs(5));
+    });
+    let out = wait.await;
+    drop(done);
+    hold.await.unwrap();
+    out
+}
+
 /// The time-to-live of the next Register-Foreign-Device `peer` receives.
 pub(super) async fn registration(peer: &UdpSocket) -> u16 {
     next(peer, |message| match message {
@@ -96,7 +117,7 @@ fn code(error: Error) -> ErrorCode {
 async fn activation_sends_the_next_registration_to_the_new_bbmd_with_the_new_ttl() {
     let old = bbmd().await;
     let new = bbmd().await;
-    let (mut transport, lent) = started(&old, 300).await;
+    let (transport, lent) = started(&old, 300).await;
     let moved = changes(Some(address_of(&new)), Some(120));
     lent.check(&moved).unwrap();
     lent.activate(&moved).unwrap();
@@ -123,7 +144,7 @@ async fn activation_sends_the_next_registration_to_the_new_bbmd_with_the_new_ttl
 #[tokio::test]
 async fn a_refused_value_leaves_the_registration_untouched() {
     let peer = bbmd().await;
-    let (mut transport, lent) = started(&peer, 300).await;
+    let (transport, lent) = started(&peer, 300).await;
     let own = transport.local_address().unwrap();
     let port = peer.local_addr().unwrap().port();
     let at = |ip: Ipv6Addr, port: u16| BACnetHostNPort {
@@ -249,7 +270,7 @@ async fn forwarded_npdus_are_trusted_from_the_new_bbmd_only() {
 #[tokio::test]
 async fn a_bbmd_the_bound_socket_cannot_reach_is_refused() {
     let peer = bbmd().await;
-    let (mut transport, lent) = started(&peer, 300).await;
+    let (transport, lent) = started(&peer, 300).await;
     let unreachable = BACnetHostNPort {
         host: BACnetHostAddress::Ip(Ipv6Addr::new(0x2001, 0xDB8, 0, 0, 0, 0, 0, 1).into()),
         port: 47808,
@@ -269,13 +290,14 @@ async fn a_bbmd_the_bound_socket_cannot_reach_is_refused() {
 /// registered, at once rather than at the next renewal.
 ///
 /// Time is paused, and real sockets let the clock jump while a datagram is
-/// on its way, so the timing is read at the gate, which a renewal reaches
-/// with no I/O in between.
+/// on its way, so each read of a BBMD's socket holds the clock still
+/// ([`in_real_time`]); the timing is read at the gate, which a renewal
+/// reaches with no I/O in between.
 #[tokio::test(start_paused = true)]
 async fn an_activation_during_a_renewal_in_flight_registers_the_new_target() {
     let old = bbmd().await;
     let new = bbmd().await;
-    let (mut transport, lent) = started(&old, 300).await;
+    let (transport, lent) = in_real_time(started(&old, 300)).await;
     let target = Arc::clone(transport.foreign_target().unwrap());
     target
         .gate
@@ -297,24 +319,27 @@ async fn an_activation_during_a_renewal_in_flight_registers_the_new_target() {
     let in_flight = next_within(&old, long, |message| match message {
         Bvll6::RegisterForeignDevice { ttl, .. } => Some(ttl),
         _ => None,
-    })
-    .await;
-    assert_eq!(in_flight, 300, "the renewal in flight goes out as read");
+    });
+    assert_eq!(
+        in_real_time(in_flight).await,
+        300,
+        "the renewal in flight goes out as read"
+    );
     let moved = next_within(&new, long, |message| match message {
         Bvll6::RegisterForeignDevice { ttl, .. } => Some(ttl),
         _ => None,
-    })
-    .await;
-    assert_eq!(moved, 120);
+    });
+    assert_eq!(in_real_time(moved).await, 120);
     transport.stop().await.unwrap();
 }
 
 /// A new time-to-live sets the renewal period: half of it, at least 30 s.
-/// The periods are read at the gate, as above.
+/// The periods are read at the gate, as above, and the registrations
+/// after, with the clock held still.
 #[tokio::test(start_paused = true)]
 async fn a_new_ttl_changes_the_renewal_period() {
     let peer = bbmd().await;
-    let (mut transport, lent) = started(&peer, 300).await;
+    let (transport, lent) = in_real_time(started(&peer, 300)).await;
     let target = Arc::clone(transport.foreign_target().unwrap());
     let reached = || target.reached.notified();
     reached().await;
@@ -335,15 +360,18 @@ async fn a_new_ttl_changes_the_renewal_period() {
     // The registrations carried the lifetimes in force.
     let mut sent = Vec::new();
     let long = Duration::from_secs(3600);
-    while sent.last() != Some(&20) || sent.len() < 6 {
-        sent.push(
-            next_within(&peer, long, |message| match message {
-                Bvll6::RegisterForeignDevice { ttl, .. } => Some(ttl),
-                _ => None,
-            })
-            .await,
-        );
-    }
+    in_real_time(async {
+        while sent.last() != Some(&20) || sent.len() < 6 {
+            sent.push(
+                next_within(&peer, long, |message| match message {
+                    Bvll6::RegisterForeignDevice { ttl, .. } => Some(ttl),
+                    _ => None,
+                })
+                .await,
+            );
+        }
+    })
+    .await;
     assert_eq!(sent[..6], [300, 300, 100, 100, 20, 20]);
     transport.stop().await.unwrap();
 }
@@ -399,7 +427,7 @@ async fn a_host_name_moves_the_running_transport() {
     let new = bbmd().await;
     let names = Arc::new(Names::default());
     names.answer("bbmd.test", Answer::addresses([Ipv6Addr::LOCALHOST]));
-    let (mut transport, lent) = started_with(&old, Some(names.clone())).await;
+    let (transport, lent) = started_with(&old, Some(names.clone())).await;
     let named = BACnetHostNPort {
         host: BACnetHostAddress::Name("bbmd.test".into()),
         port: new.local_addr().unwrap().port(),
@@ -423,7 +451,7 @@ async fn a_host_name_moves_the_running_transport() {
 async fn a_host_name_resolves_through_the_system_resolver() {
     let old = bbmd().await;
     let new = bbmd().await;
-    let (mut transport, lent) = started_with(&old, None).await;
+    let (transport, lent) = started_with(&old, None).await;
     let port = new.local_addr().unwrap().port();
     let named = BACnetHostNPort {
         host: BACnetHostAddress::Name("localhost".into()),

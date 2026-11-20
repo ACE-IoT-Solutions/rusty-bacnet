@@ -6,6 +6,8 @@ use bacnet_encoding::tags::{TagClass, encode_tag};
 use bacnet_services::alarm_event::NotificationParameters;
 use bacnet_transport::port::ReceivedNpdu;
 use bacnet_transport::port::TransportProvenance;
+use bacnet_transport::test_transport::{SendMode, TestTransport};
+use bacnet_types::constructed::OpaqueChoice;
 use bacnet_types::enums::{EventState, EventType, NotifyType, ObjectType, RejectReason};
 use bacnet_types::primitives::{BACnetTimeStamp, ObjectIdentifier, StatusFlags};
 use tokio::sync::broadcast::error::{RecvError, TryRecvError};
@@ -89,43 +91,30 @@ fn inbound(apdu: Apdu, source: Option<NpduAddress>) -> ReceivedNpdu {
     }
 }
 
-struct ReceiveTransport {
-    input: Option<mpsc::Receiver<ReceivedNpdu>>,
+/// A link fed by `input`, whose unicasts land in `output`; a broadcast is
+/// a test failure, since the client must not broadcast an event response.
+fn receive_transport(
+    input: mpsc::Receiver<ReceivedNpdu>,
     output: mpsc::Sender<(Bytes, MacAddr)>,
-}
-
-impl TransportPort for ReceiveTransport {
-    async fn start(&mut self) -> Result<mpsc::Receiver<ReceivedNpdu>, Error> {
-        Ok(self.input.take().unwrap())
-    }
-
-    async fn stop(&mut self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    async fn send_unicast(&self, npdu: &[u8], mac: &[u8]) -> Result<(), Error> {
-        self.output
-            .send((Bytes::copy_from_slice(npdu), MacAddr::from_slice(mac)))
-            .await
-            .unwrap();
-        Ok(())
-    }
-
-    async fn send_broadcast(&self, _npdu: &[u8]) -> Result<(), Error> {
-        panic!("client must not broadcast an event response")
-    }
-
-    fn local_receive_apdu_capacity(&self) -> u16 {
-        1476
-    }
-
-    fn local_mac(&self) -> &[u8] {
-        &[0x11]
-    }
+) -> TestTransport {
+    TestTransport::builder()
+        .local_mac(&[0x11])
+        .inbound(input)
+        .broadcast(SendMode::Panic(
+            "client must not broadcast an event response",
+        ))
+        .on_send(move |frame| {
+            let output = output.clone();
+            async move {
+                output.send((frame.npdu, frame.mac)).await.unwrap();
+                Ok(())
+            }
+        })
+        .build()
 }
 
 struct Harness {
-    client: BACnetClient<ReceiveTransport>,
+    client: BACnetClient<TestTransport>,
     input: mpsc::Sender<ReceivedNpdu>,
     output: mpsc::Receiver<(Bytes, MacAddr)>,
 }
@@ -135,10 +124,7 @@ impl Harness {
         let (input, input_rx) = mpsc::channel(8);
         let (output_tx, output) = mpsc::channel(8);
         let client = BACnetClient::generic_builder()
-            .transport(ReceiveTransport {
-                input: Some(input_rx),
-                output: output_tx,
-            })
+            .transport(receive_transport(input_rx, output_tx))
             .event_channel_capacity(capacity)
             .confirmed_cov_notification_ack_policy(|_| {
                 panic!("event notifications must not invoke the COV policy")
@@ -569,6 +555,66 @@ async fn immediate_reply_and_closed_channel_fallback_preserve_event_responses() 
     h.client.stop().await.unwrap();
 }
 
+/// #2474: event values under a tag Clause 21 gives no alternative (12,
+/// which it reserves, or a later revision's 30) no longer cost the
+/// notification, nor does a primitive one (#2483). The client acknowledges
+/// a confirmed one and both services deliver it, the values kept as
+/// received and every other member as sent.
+#[tokio::test]
+async fn an_unassigned_event_values_choice_is_acked_and_delivered() {
+    let mut h = Harness::new(64).await;
+    let mut rx = h.client.event_notifications();
+    for (tag, constructed, open, close) in [
+        (12, true, &[0xce][..], &[0xcf][..]),
+        (30, true, &[0xfe, 30], &[0xff, 30]),
+        // Primitive [30], two octets of contents.
+        (30, false, &[0xfa, 30], &[]),
+    ] {
+        let mut prefix = PREFIX.to_vec();
+        *prefix.last_mut().unwrap() = tag;
+        // The suffix up to and with the opening [12], then the choice
+        // around [0] 1, then the closing [12].
+        let data: Bytes = [
+            &prefix[..],
+            &SUFFIX[..9],
+            open,
+            &[0x09, 0x01],
+            close,
+            &[0xcf],
+        ]
+        .concat()
+        .into();
+        for confirmed in [true, false] {
+            h.send(inbound(request(data.clone(), confirmed, false), remote()))
+                .await;
+            if confirmed {
+                h.reply(remote(), &[0x20, INVOKE, 2]).await;
+            }
+            h.fence().await;
+            let received = rx.try_recv().unwrap();
+            assert_eq!(received.source_network, Some(200));
+            let notification = received.notification;
+            assert_eq!(notification.event_type, EventType::from_raw(tag.into()));
+            assert_eq!(
+                notification.event_object_identifier,
+                ObjectIdentifier::new(ObjectType::ANALOG_INPUT, 7).unwrap()
+            );
+            assert_eq!(notification.timestamp, BACnetTimeStamp::SequenceNumber(5));
+            assert_eq!(notification.to_state, EventState::HIGH_LIMIT);
+            assert_eq!(
+                notification.event_values,
+                Some(NotificationParameters::Opaque(OpaqueChoice {
+                    tag,
+                    constructed,
+                    data: vec![0x09, 0x01],
+                }))
+            );
+            assert_eq!(rx.try_recv().unwrap_err(), TryRecvError::Empty);
+        }
+    }
+    h.client.stop().await.unwrap();
+}
+
 #[tokio::test]
 async fn valid_confirmed_event_is_acked_without_subscribers() {
     let mut h = Harness::new(1).await;
@@ -617,10 +663,7 @@ async fn event_options_defaults_bounds_and_builders() {
         assert!(matches!(
             BACnetClient::start_with_options(
                 ClientConfig::default(),
-                ReceiveTransport {
-                    input: Some(receiver),
-                    output: input
-                },
+                receive_transport(receiver, input),
                 options,
             )
             .await,

@@ -132,7 +132,7 @@ fn audit(i: u32) -> BACnetAuditLogDatum {
 
 /// An Audit Log's storage, in memory.
 #[derive(Default)]
-struct Memory(Mutex<Option<AuditLogSnapshot>>);
+pub(super) struct Memory(Mutex<Option<AuditLogSnapshot>>);
 
 impl AuditLogPersistence for Memory {
     fn load(&self, _: ObjectIdentifier) -> Result<Option<AuditLogSnapshot>, Error> {
@@ -296,7 +296,7 @@ async fn an_event_log_pages_across_answers_and_calls() {
                         && n.to_state != EventState::NORMAL,
                 );
             }
-            EventLogDatum::LogStatus(_) => flagged += 1,
+            EventLogDatum::LogStatus(_) | EventLogDatum::Opaque { .. } => flagged += 1,
             EventLogDatum::TimeChange(_) => {}
         }
     }

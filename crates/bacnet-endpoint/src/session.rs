@@ -16,19 +16,17 @@
 //! Outbound leases use RAII guards. Ordinary `read_property*` calls release their
 //! exact lease when cancelled. Source-audited calls transfer to bounded session
 //! ownership before egress admission, so dropping their caller does not cancel
-//! admitted work. `stop()` seals admission, closes roles, joins dispatch and owned
-//! workers, then stops ingress. Undelivered audit records may be lost on shutdown.
-//! Before reporting termination, it settles forgotten durable writes and awaits
-//! queued save attempts with the database guard released. Canceling this wait
-//! preserves one settlement task for the next `stop()` call to join.
+//! admitted work. `stop()` stops the server first, whose own stop settles its
+//! objects' saves, or hands that to a task while the database is held (see
+//! [`stop`](EndpointSession::stop)), then seals admission, closes roles, joins
+//! dispatch and owned workers, and stops ingress. Undelivered audit records may be lost on shutdown.
 //! Cloned role handles keep working until shutdown, then fail closed; after
 //! the session drops, [`Weak`](std::sync::Weak) upgrade fails and every role
 //! call reports shutdown.
 //!
 //! The session keeps its object database through `stop()` and lets go of it
-//! when it drops. Every endpoint holder of the database (the session, the
-//! server role's responder, a cloned server role handle, the source Audit
-//! runtime and the session's tasks) lets go through
+//! when it drops. Every holder of the database (the session, its server,
+//! the source Audit runtime and the session's tasks) lets go through
 //! [`drop_database_off_runtime`], so whichever goes last, in async code the
 //! objects and any durable saves they wait for drop on Tokio's blocking pool,
 //! not on a runtime worker (#1561).
@@ -60,9 +58,7 @@ use bacnet_encoding::apdu::Apdu;
 use bacnet_endpoint_core::coordinator::{
     AdmissionOutcome, CoordinatorError, OutboundTransactionCoordinator,
 };
-use bacnet_endpoint_core::endpoint_ingress::{
-    ClassifierExit, EndpointIngress, PolicyOutcome, PolicyReason,
-};
+use bacnet_endpoint_core::endpoint_ingress::{EndpointIngress, PolicyOutcome, PolicyReason};
 use bacnet_network::layer::ReceivedApdu;
 use bacnet_network::network_number::LocalNetworkNumber;
 use bacnet_objects::database::ObjectDatabase;
@@ -77,26 +73,25 @@ use tokio::task::JoinHandle;
 #[path = "source_profile.rs"]
 mod source_profile;
 pub(crate) use source_profile::{RoutedBindings, check_link_bindings};
+#[path = "session_seat.rs"]
+mod seat;
+#[path = "session_server_seat.rs"]
+mod server_seat;
+pub use server_seat::read_only_server;
 #[path = "source_reporter.rs"]
 pub(crate) mod source_reporter;
 #[path = "session_start.rs"]
 mod startup;
 
-#[path = "device_writes.rs"]
-mod device_writes;
-pub use device_writes::{RESPONDER_OPT_IN_SERVICES, RESPONDER_SERVICES, ResponderOptIn};
 mod frame_observation;
 #[path = "registered_port.rs"]
 mod registered_port;
 
 use crate::roles::{
-    ClientRoleHandle, ServerRoleHandle, SessionToken, admit_once, decode_terminal,
-    inbound_canonical_peer, is_requester_lease,
+    ClientRoleHandle, SessionToken, admit_once, decode_terminal, is_requester_lease,
 };
 use bacnet_server::server::{
-    __endpoint_EndpointResponder as EndpointResponder,
-    __endpoint_NotificationTransactions as NotificationTransactions,
-    __endpoint_settle_durable_writes as settle_durable_writes, drop_database_off_runtime,
+    __endpoint_NotificationTransactions as NotificationTransactions, drop_database_off_runtime,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -113,51 +108,93 @@ enum Lifecycle {
 /// `role()` setter) and fixed for the session lifetime. Determines which
 /// role handles exist after [`start`](EndpointSession::start):
 ///
-/// - [`ClientOnly`](SessionRole::ClientOnly): `client()` is `Some`, `server()`
-///   is `None`. Inbound requests are counted (`no_server_role`) and their
-///   one-use reply sender released without sending.
-/// - [`ServerOnly`](SessionRole::ServerOnly): `server()` is `Some`,
-///   `client()` is `None`. Terminal responses with no consumer release their
-///   exact lease and count `no_client_role`.
-/// - [`Both`](SessionRole::Both): both handles are present above the one
+/// - [`ClientOnly`](SessionRole::ClientOnly): `client()` is `Some`, the
+///   server role's accessors are `None`. Inbound requests are counted
+///   (`no_server_role`) and their one-use reply sender released without
+///   sending.
+/// - [`ServerOnly`](SessionRole::ServerOnly): the server role is the full
+///   `server()` the session builds at start, the read-only one
+///   ([`read_only_server`]) unless
+///   [`with_server`](EndpointSession::with_server) gave it a builder
+///   (#2617); `client()` is `None`. Terminal responses with no consumer
+///   release their exact lease and count `no_client_role`.
+/// - [`Both`](SessionRole::Both): both roles are present above the one
 ///   shared coordinator.
+///
+/// A session with a server role needs a Device identity
+/// ([`device`](EndpointSession::device)): its start refuses one without,
+/// before the link starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionRole {
     /// Client requester only.
     ClientOnly,
-    /// Server responder + notification pool only.
+    /// Server role only: a full server ([`EndpointSession::with_server`],
+    /// or [`read_only_server`] without one).
     ServerOnly,
     /// Both sibling roles above one ingress/coordinator.
     Both,
 }
 
-/// Session tuning (bounded queues, client timers, the responder's read work
-/// limit).
+/// Session tuning (bounded queues, client timers).
 ///
 /// Typed at the public boundary: every field is validated where it matters
-/// (`queue_capacity == 0`, `read_work_limit == 0` or a
-/// `min_request_interval_ms` past an hour fails [`EndpointSession::new`];
-/// APDU/timer values flow into the client role config unchanged).
+/// (`queue_capacity == 0` or a `min_request_interval_ms` past an hour fails
+/// [`EndpointSession::new`]; APDU/timer values flow into the client role
+/// config unchanged).
 ///
 /// ```
 /// use bacnet_endpoint::session::SessionConfig;
 ///
 /// let config = SessionConfig::default();
-/// assert!(config.queue_capacity > 0);
+/// assert_eq!(config.queue_capacity, 256);
 /// assert_eq!(config.max_apdu_length, 480);
-/// assert_eq!(config.read_work_limit, 256);
 /// assert_eq!(config.min_request_interval_ms, 0);
 /// ```
 #[derive(Clone, Debug)]
 pub struct SessionConfig {
-    /// Bounded capacity for each ingress queue + egress channel.
+    /// Bounded capacity for each ingress queue (requests, answers, policy
+    /// outcomes) and the egress channel (default 256, as deep as the
+    /// network layer's own receive queue in front of them).
+    ///
+    /// What finds a queue full is dropped and counted by class in
+    /// [`policy_counters`](EndpointSession::policy_counters); a full queue
+    /// never ends the session (#2635). Each queue keeps a reserve, a quarter
+    /// of it and at least one slot from a capacity of two up: unconfirmed
+    /// requests may not take the request queue's, which stays for confirmed
+    /// requests, and answers no lease holds may not take the answer
+    /// queue's, which stays for answers to the session's own requests. A
+    /// capacity of 1 keeps no reserve, so there one Who-Is can shut out a
+    /// confirmed request. Under a flood of stray answers, then, the
+    /// session's own answers keep 64 slots at the default capacity, and 4
+    /// at 16. A [`full_client`](EndpointSession::full_client)'s answers
+    /// don't use this queue but its seat's, which has tiers of its own.
+    ///
+    /// A queued item takes a slot of at most 192 octets (176 to 184 on a
+    /// 64-bit target today) plus its NPDU or APDU (B/IP copies each NPDU to
+    /// its own size; at most about 1.5 KB). At the default the four queues
+    /// hold at most about 1.7 MB together, and a request queue full of I-Ams
+    /// about 50 KB. Tokio allocates slots in blocks of 32 as a queue first
+    /// fills, so an idle session holds next to none of it.
+    ///
+    /// A request that finds no room gets no answer, and an answer that finds
+    /// none ends its request by timeout: peers and clients with long APDU
+    /// timeouts or no retries pay one timeout for each. Raise this capacity,
+    /// and [`apdu_retries`](Self::apdu_retries), where bursts are expected.
     ///
     /// Must be greater than zero; [`EndpointSession::new`] returns
     /// [`Error::Encoding`] otherwise.
     pub queue_capacity: usize,
-    /// Client APDU timeout (ms).
+    /// The node's APDU timeout in milliseconds (default 6000): how long the
+    /// client roles wait for an answer before they send a request again,
+    /// and, with a full server ([`with_server`](EndpointSession::with_server)), how long
+    /// its confirmed notifications wait, and the Device's APDU_Timeout
+    /// (Clause 12.11.28).
     pub apdu_timeout_ms: u64,
-    /// Client APDU retries.
+    /// The node's APDU retries (default 3): how many times the client roles
+    /// send a request again, and, with a full server
+    /// ([`with_server`](EndpointSession::with_server)), its confirmed
+    /// notifications, and the Device's Number_Of_APDU_Retries
+    /// (Clause 12.11.29).
     pub apdu_retries: u8,
     /// Client max APDU length.
     ///
@@ -167,19 +204,6 @@ pub struct SessionConfig {
     /// identity's ceiling resolved against the transport's stable local
     /// receive capacity (480 for standard MS/TP, 1476 for extended MS/TP).
     pub max_apdu_length: u16,
-    /// Result rows one ReadProperty served by the server role may expand
-    /// (default 256).
-    ///
-    /// The endpoint's counterpart of the server's
-    /// [`ReadPropertyMultipleBudget::max_result_elements`](bacnet_device_core::read::ReadPropertyMultipleBudget::max_result_elements),
-    /// with the same default. A read counts its own row, and a Group's
-    /// Present_Value adds one row per member property after ALL, REQUIRED
-    /// and OPTIONAL expand. A read past the limit is answered with an Abort
-    /// carrying OUT_OF_RESOURCES before any member is read.
-    ///
-    /// Must be greater than zero; [`EndpointSession::new`] returns
-    /// [`Error::Encoding`] otherwise.
-    pub read_work_limit: usize,
     /// Least time, in milliseconds, between the client role's confirmed
     /// requests to one destination (default 0: no pacing), measured as
     /// [`ClientConfig::min_request_interval_ms`] says for `BACnetClient`
@@ -203,11 +227,6 @@ impl SessionConfig {
                 "endpoint session queue capacity must be greater than zero".into(),
             ));
         }
-        if self.read_work_limit == 0 {
-            return Err(Error::Encoding(
-                "endpoint session read work limit must be greater than zero".into(),
-            ));
-        }
         let interval = self.min_request_interval_ms;
         if interval > bacnet_client::client::MAX_MIN_REQUEST_INTERVAL_MS {
             return Err(Error::Encoding(format!(
@@ -222,12 +241,10 @@ impl SessionConfig {
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
-            queue_capacity: 16,
-            apdu_timeout_ms: 1_000,
-            apdu_retries: 0,
+            queue_capacity: 256,
+            apdu_timeout_ms: 6_000,
+            apdu_retries: 3,
             max_apdu_length: 480,
-            read_work_limit: bacnet_device_core::read::ReadPropertyMultipleBudget::default()
-                .max_result_elements,
             min_request_interval_ms: 0,
         }
     }
@@ -236,8 +253,10 @@ impl Default for SessionConfig {
 /// Snapshot of policy-outcome ownership (session-owned, bounded).
 ///
 /// The session counts every classifier/policy outcome instead of dropping it
-/// silently. Sampled via [`policy_counters`](EndpointSession::policy_counters).
+/// silently, and ingress counts by class what a full queue had no room for
+/// (#2635). Sampled via [`policy_counters`](EndpointSession::policy_counters).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PolicyCountersSnapshot {
     /// Ingress classifier outcomes owned by the session.
     pub ingress_policy: u64,
@@ -247,8 +266,22 @@ pub struct PolicyCountersSnapshot {
     pub no_client_role: u64,
     /// Terminal responses no lease claimed (unknown/peer/service/policy).
     pub unclaimed_terminal: u64,
-    /// Responder declined (group/unsupported/closed).
-    pub responder_declined: u64,
+    /// Unconfirmed requests past their share of the full request queue
+    /// (see [`SessionConfig::queue_capacity`]).
+    pub unconfirmed_full_drops: u64,
+    /// Confirmed requests for the session's own roles that its full request
+    /// queue had no room for; none was answered, and the requester's retry
+    /// is its recovery. One for a full client (its COV notification, or any
+    /// on a session with no server role) that the client's seat refuses is
+    /// counted in [`client_seat_counters`](EndpointSession::client_seat_counters)
+    /// instead.
+    pub confirmed_full_drops: u64,
+    /// Answers and segments the full answer queue had no room for; an
+    /// answer to the session's own request then ends by its timeout.
+    pub answer_full_drops: u64,
+    /// Refused APDUs (malformed, unknown PDU type, a confirmed request from
+    /// a group address) the full policy queue had no room for.
+    pub policy_full_drops: u64,
 }
 
 struct PolicyCounters {
@@ -256,7 +289,6 @@ struct PolicyCounters {
     no_server_role: u64,
     no_client_role: u64,
     unclaimed_terminal: u64,
-    responder_declined: u64,
 }
 
 struct SessionShared {
@@ -270,20 +302,23 @@ struct SessionShared {
 /// role registration, policy-outcome ownership, timers, egress and
 /// termination. Start-once/stop-once; `Drop` aborts without orphaning.
 ///
-/// An optional [`DeviceIdentity`](crate::identity::DeviceIdentity) is the
-/// single source for I-Am + Device readback + role limits when composed via
-/// [`device`](Self::device). Standalone sessions without an
-/// identity keep the `SessionConfig` 480 default untouched.
+/// A [`DeviceIdentity`](crate::identity::DeviceIdentity) is the single
+/// source for I-Am + Device readback + role limits when composed via
+/// [`device`](Self::device); a session with a server role needs one. A
+/// client-only session without an identity keeps the `SessionConfig` 480
+/// default untouched.
 ///
 /// ```no_run
 /// use bacnet_endpoint::session::{EndpointSession, SessionConfig, SessionRole};
+/// use bacnet_endpoint::DeviceIdentity;
 /// use bacnet_transport::loopback::LoopbackTransport;
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), bacnet_types::error::Error> {
 /// let (transport, _peer) = LoopbackTransport::pair(vec![0x01], vec![0x02]);
 /// let mut session =
-///     EndpointSession::new(transport, SessionRole::Both, SessionConfig::default())?;
+///     EndpointSession::new(transport, SessionRole::Both, SessionConfig::default())?
+///         .device(DeviceIdentity::new(1001, 42)?);
 /// session.start().await?;
 /// assert!(session.is_running());
 /// session.stop().await?;
@@ -300,10 +335,18 @@ pub struct EndpointSession<T: TransportPort + 'static = bacnet_transport::any::A
     coordinator: Arc<OutboundTransactionCoordinator>,
     ingress: Option<EndpointIngress<T>>,
     requester: Option<EndpointRequester>,
-    responder: Option<Arc<EndpointResponder>>,
+    /// The source Audit's pool of notifications on a session with no
+    /// server; beside a server, its pool is the server's.
     notifications: Option<Arc<NotificationTransactions>>,
     client_handle: Option<ClientRoleHandle>,
-    server_handle: Option<ServerRoleHandle>,
+    /// The full server's builder until start ([`Self::with_server`]), then
+    /// the server until stop (#2617), and the error its stop gave.
+    server_builder: Option<bacnet_server::server::ServerBuilder<T>>,
+    server: Option<bacnet_server::server::BACnetServer<T>>,
+    server_stop_error: Option<Error>,
+    /// Held while a start that built the server is unfinished: the server
+    /// takes no request until it goes, at the start's end or at stop.
+    server_gate: Option<oneshot::Sender<()>>,
     dispatch_task: Option<JoinHandle<SessionExit>>,
     network_number_task: Option<JoinHandle<()>>,
     cancel_tx: Option<oneshot::Sender<()>>,
@@ -320,19 +363,17 @@ pub struct EndpointSession<T: TransportPort + 'static = bacnet_transport::any::A
     pub(crate) source_audit_routed_bindings: Vec<(ObjectIdentifier, u16, bacnet_types::MacAddr)>,
     source_recipient: Option<Arc<crate::source_audit::recipient::SourceRecipient>>,
     stop_exit: Option<Result<SessionExit, Error>>,
-    durable_settlement: Option<JoinHandle<()>>,
     ingress_stopped: bool,
     identity: Option<crate::identity::DeviceIdentity>,
     local_receive_capacity: u16,
     bip_local_address: Option<std::net::SocketAddrV4>,
     registered_network_port: Option<ObjectIdentifier>,
     registered_port_lease: std::sync::Weak<()>,
-    device_write_authorizer: Option<bacnet_server::mutation::DeviceWriteAuthorizer>,
-    pub(crate) reinitialize: Option<bacnet_server::server::ReinitializeHandler>,
-    pub(crate) reinit_password: Option<String>,
     egress: Option<bacnet_endpoint_core::endpoint_ingress::EndpointEgress>,
     /// The B/IP transport's own exchanges, when the B/IP builder built it.
     pub(crate) bip_status: Option<bacnet_transport::bip::BvlcClientStatus>,
+    /// The B/IP transport's BBMD table reads, when the B/IP builder built it.
+    pub(crate) bip_tables: Option<bacnet_transport::bip::BvlcTableReader>,
     pub(crate) frame_tap: Option<bacnet_transport::tap::FrameTap>,
     /// The MS/TP transport's counters, when the MS/TP builder built it.
     pub(crate) mstp_diagnostics: Option<bacnet_transport::mstp::MstpDiagnostics>,
@@ -343,13 +384,12 @@ pub struct EndpointSession<T: TransportPort + 'static = bacnet_transport::any::A
 /// Terminal state of the session dispatch task.
 ///
 /// Returned by [`stop`](EndpointSession::stop): either an explicit stop won
-/// the race, the ingress classifier exited, or all dispatch receivers closed.
+/// the race, or all dispatch receivers closed, as they do when the ingress
+/// classifier ends (its input closed).
 #[derive(Debug)]
 pub enum SessionExit {
     /// Explicit `stop()` won the race.
     Cancelled,
-    /// Ingress classifier exited (input closed / policy route full/closed).
-    Ingress(ClassifierExit),
     /// Dispatch receivers all closed.
     ReceiversClosed,
 }
@@ -357,9 +397,9 @@ pub enum SessionExit {
 impl<T: TransportPort + 'static> EndpointSession<T> {
     /// Creates a session owning `transport` (not yet started).
     ///
-    /// Returns [`Error::Encoding`] when `config.queue_capacity` or
-    /// `config.read_work_limit` is zero, or `config.min_request_interval_ms`
-    /// is more than an hour. Normally built via
+    /// Returns [`Error::Encoding`] when `config.queue_capacity` is zero or
+    /// `config.min_request_interval_ms` is more than an hour. Normally built
+    /// via
     /// [`BipEndpointBuilder`](crate::bip::BipEndpointBuilder),
     /// [`ScEndpointBuilder`](crate::sc::ScEndpointBuilder), or
     /// [`MstpEndpointBuilder`](crate::mstp::MstpEndpointBuilder) instead of
@@ -388,6 +428,10 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             ..ClientConfig::default()
         };
         let local_receive_capacity = transport.local_receive_apdu_capacity();
+        // Answers to the session's own leases come before answers no lease
+        // holds when the answer queue runs short (#2635).
+        let ingress = EndpointIngress::new(transport, config.queue_capacity)
+            .with_coordinator(Arc::clone(&coordinator));
         Ok(Self {
             local_receive_capacity,
             shared: Arc::new(SessionShared {
@@ -397,16 +441,17 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                     no_server_role: 0,
                     no_client_role: 0,
                     unclaimed_terminal: 0,
-                    responder_declined: 0,
                 }),
             }),
             coordinator,
-            ingress: Some(EndpointIngress::new(transport, config.queue_capacity)),
+            ingress: Some(ingress),
             requester: None,
-            responder: None,
             notifications: None,
             client_handle: None,
-            server_handle: None,
+            server_builder: None,
+            server: None,
+            server_stop_error: None,
+            server_gate: None,
             dispatch_task: None,
             network_number_task: None,
             cancel_tx: None,
@@ -422,17 +467,14 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             source_audit_routed_bindings: Vec::new(),
             source_recipient: None,
             stop_exit: None,
-            durable_settlement: None,
             ingress_stopped: false,
             identity: None,
             bip_local_address: None,
             registered_network_port: None,
             registered_port_lease: std::sync::Weak::new(),
-            device_write_authorizer: None,
-            reinitialize: None,
-            reinit_password: None,
             egress: None,
             bip_status: None,
+            bip_tables: None,
             frame_tap: None,
             mstp_diagnostics: None,
             sc_link: None,
@@ -441,15 +483,15 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
 
     /// Attaches the local object database (before start).
     ///
-    /// Must be called before [`start`](Self::start); when the server role is
-    /// composed without an identity or database, an empty one is used. With a
+    /// Must be called before [`start`](Self::start). With a
     /// [`DeviceIdentity`](crate::identity::DeviceIdentity), omitting the database
     /// requests stock generation after receive-capacity resolution. Explicitly
     /// supplied databases, including empty ones, are preserved. Their selected
-    /// Device must match the resolved identity and declare
-    /// segmentation NONE, matching the narrow endpoint roles.
-    /// The session retains ownership even in `ClientOnly` mode and shares this
-    /// same database with the responder in `Both` mode.
+    /// Device must match the resolved identity and declare segmentation
+    /// NO_SEGMENTATION, as the session's identity must for now. The session
+    /// retains ownership even in `ClientOnly` mode; with a server role it
+    /// hands the database to its server at start, and shares it from then
+    /// on.
     ///
     /// # Panics
     /// Panics if startup has already consumed the session configuration.
@@ -464,9 +506,12 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// Activates bounded source READ reporting on direct IPv4 B/IP. The built-in
     /// Device must have a typed Audit recipient provision, even at Audit_Level
     /// NONE. Device choices use immutable builder route bindings; direct Address
-    /// choices need no binding. Monitored_Objects must be absent. `Both` requires
-    /// an explicit [`with_device_writes`](Self::with_device_writes) authorizer;
-    /// `ClientOnly` permits trusted local changes and `ServerOnly` is rejected.
+    /// choices need no binding. Monitored_Objects must be absent. `Both`
+    /// requires a server whose policy decides mutations, so that no peer
+    /// rewrites the audited Device's recipient unasked: the read-only server
+    /// a session runs without a builder does; see
+    /// [`with_server`](Self::with_server). `ClientOnly` permits trusted local
+    /// changes and `ServerOnly` is rejected.
     /// Standalone BACnetClient source reporting remains unsupported.
     ///
     /// [`start`](Self::start) requires a concrete built-in local Device
@@ -559,7 +604,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 "endpoint session cannot be started more than once".into(),
             ));
         }
-        let (device_target, source_routes) = self.prepare_start().await?;
+        let source_routes = self.prepare_start().await?;
         if self.lifecycle.compare_exchange(
             Lifecycle::Ready as u8,
             Lifecycle::Running as u8,
@@ -571,35 +616,12 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
                 "endpoint session cannot be started more than once".into(),
             ));
         }
-        let ingress = self
-            .ingress
-            .as_mut()
-            .ok_or_else(|| Error::Encoding("endpoint session ingress owner is missing".into()))?;
-        let receivers = match ingress.start().await {
-            Ok(receivers) => receivers,
-            Err(error) => {
-                let _ = self.stop().await;
-                return Err(error);
-            }
-        };
-        if let Err(error) = self
-            .publish_registered_port(
-                (receivers.bip_port.clone(), receivers.bip6_port.clone()),
-                receivers.egress.local_network_number(),
-            )
-            .await
-        {
-            let _ = self.stop().await;
-            return Err(error);
-        }
-        let bip_local_address = receivers.bip_local_address;
-        if let Err(error) = self.start_roles(receivers, source_routes, device_target) {
+        if let Err(error) = self.start_link(source_routes).await {
             // Keep cleanup ownership in self before awaiting. Cancellation leaves
             // Stopping plus intact joins; stop/Drop can still finish teardown.
             let _ = self.stop().await;
             return Err(error);
         }
-        self.bip_local_address = bip_local_address;
         Ok(())
     }
 
@@ -612,11 +634,39 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// `&mut self` so only the owner can stop; cloned role handles observe
     /// shutdown and fail closed.
     ///
-    /// With an attached database, waits for its lock and for queued durable save
-    /// attempts, including corrections for abandoned staged writes. Release any
-    /// application-held database guard so shutdown can progress. A stalled backend
-    /// keeps this call pending; completion does not certify backend success or
-    /// power-loss durability. The database remains attached after termination.
+    /// The session's server ([`with_server`](Self::with_server), or the
+    /// read-only one) is stopped first, while the link is still up, as
+    /// [`BACnetServer::stop`](bacnet_server::server::BACnetServer::stop)
+    /// describes, and its stop error, if any, is this call's. Only the
+    /// server stages saves on the session's database. Its stop joins its
+    /// work, waits up to 5 s for local writes dropped with their stage still
+    /// held to let go of it, then settles the objects' forgotten staged
+    /// writes and waits for their saves: storage that stalls keeps this call
+    /// pending, and completion does not certify backend success or
+    /// power-loss durability.
+    ///
+    /// Settling needs the database's guard. If any guard is held at that
+    /// moment, the application's or even a background reader's brief one,
+    /// the server hands the settling to a task that runs once the guard is
+    /// free, and nothing waits for that task's saves, so this call can return
+    /// before storage holds what the objects serve. It still waits for the
+    /// guard where an Audit Reporter is taken out under it (the session's
+    /// source Reporter, or the server's own Audit Reporters), but the
+    /// settling has been handed off by then. A runtime that shuts down
+    /// before that task runs drops it, and storage is then put back only as
+    /// the objects are dropped: a process that exits without running
+    /// destructors can lose it. Let go of every guard first where storage
+    /// must be settled when this returns.
+    ///
+    /// The stopped server lets go of its database handle from a task, a
+    /// runtime turn after this call returns, as a standalone server's drop
+    /// does: code that takes the database back once the session is gone
+    /// (`Arc::try_unwrap` of a clone it kept) lets that turn pass first.
+    ///
+    /// A [`full_client`](Self::full_client) still alive doesn't hold the
+    /// stop up (#2617): its tasks end, the link stops, and its requests
+    /// after that fail with the transport's stopped error; dropping it later
+    /// changes nothing. The database remains attached after termination.
     pub async fn stop(&mut self) -> Result<SessionExit, Error> {
         let state = self.lifecycle.load(Ordering::Acquire);
         if state != Lifecycle::Running as u8 && state != Lifecycle::Stopping as u8 {
@@ -633,11 +683,9 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         if let Some(source) = &self.source_audit {
             source.close();
         }
+        self.stop_server().await;
         if let Some(requester) = &self.requester {
             requester.close();
-        }
-        if let Some(responder) = &self.responder {
-            responder.close();
         }
         if let Some(notifications) = &self.notifications {
             notifications.close();
@@ -685,25 +733,14 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         self.source_audit.take();
         self.notifications.take();
         self.requester.take();
-        self.responder.take();
         self.client_handle = None;
-        self.server_handle = None;
-        if self.durable_settlement.is_none()
-            && let Some(db) = &self.database
-        {
-            self.durable_settlement = Some(tokio::spawn(settle_durable_writes(Arc::clone(db))));
-        }
-        if let Some(task) = self.durable_settlement.as_mut() {
-            // Keep the one settlement owner across canceled stop waiters.
-            let result = task.await;
-            self.durable_settlement = None;
-            result.map_err(|error| {
-                Error::Encoding(format!("endpoint durable settlement failed: {error}"))
-            })?;
-        }
         self.lifecycle
             .store(Lifecycle::Stopped as u8, Ordering::Release);
-        self.stop_exit.take().expect("joined dispatch")
+        let exit = self.stop_exit.take().expect("joined dispatch");
+        match self.server_stop_error.take() {
+            Some(error) if exit.is_ok() => Err(error),
+            _ => exit,
+        }
     }
 
     /// Borrows the client role (`None` when not composed).
@@ -712,14 +749,6 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// and after [`stop`](Self::stop) (handles are released at termination).
     pub fn client(&self) -> Option<&ClientRoleHandle> {
         self.client_handle.as_ref()
-    }
-
-    /// Borrows the server role (`None` when not composed).
-    ///
-    /// Returns `None` for [`ClientOnly`](SessionRole::ClientOnly) sessions,
-    /// and after [`stop`](Self::stop).
-    pub fn server(&self) -> Option<&ServerRoleHandle> {
-        self.server_handle.as_ref()
     }
 
     /// Clones the client role handle with its session binding.
@@ -731,26 +760,26 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         self.client_handle.clone()
     }
 
-    /// Clones the server role handle with its session binding.
-    ///
-    /// Same [`Weak`](std::sync::Weak)-token semantics as
-    /// [`cloned_client_handle`](Self::cloned_client_handle); see
-    /// [`is_session_alive`](crate::roles::ServerRoleHandle::is_session_alive).
-    pub fn cloned_server_handle(&self) -> Option<ServerRoleHandle> {
-        self.server_handle.clone()
-    }
-
     /// Samples policy-outcome ownership counters.
     ///
-    /// Every classifier/policy outcome is counted, never silently dropped.
+    /// Every classifier/policy outcome is counted, never silently dropped,
+    /// and so is every APDU a full queue had no room for.
     pub async fn policy_counters(&self) -> PolicyCountersSnapshot {
+        let drops = self
+            .ingress
+            .as_ref()
+            .map(EndpointIngress::full_drop_counters)
+            .unwrap_or_default();
         let counters = self.shared.counters.lock().await;
         PolicyCountersSnapshot {
             ingress_policy: counters.ingress_policy,
             no_server_role: counters.no_server_role,
             no_client_role: counters.no_client_role,
             unclaimed_terminal: counters.unclaimed_terminal,
-            responder_declined: counters.responder_declined,
+            unconfirmed_full_drops: drops.unconfirmed_full_drops,
+            confirmed_full_drops: drops.confirmed_full_drops,
+            answer_full_drops: drops.answer_full_drops,
+            policy_full_drops: drops.policy_full_drops,
         }
     }
 
@@ -800,6 +829,21 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         Some(status.snapshot().foreign_registration)
     }
 
+    /// Reads a BBMD's two tables, its BDT and its FDT, through this
+    /// session's own B/IP socket (#2612), as
+    /// [`BipTransport::read_bdt`](bacnet_transport::bip::BipTransport::read_bdt)
+    /// and [`read_fdt`](bacnet_transport::bip::BipTransport::read_fdt) do,
+    /// beside the roles' traffic. A read fails as one before start does
+    /// while the session is stopped. It is there for a session
+    /// [`BipEndpointBuilder`](crate::bip::BipEndpointBuilder) built, and
+    /// `None` for any other: take a
+    /// [`BipTransport::bvlc_table_reader`](bacnet_transport::bip::BipTransport::bvlc_table_reader)
+    /// before handing a transport to [`Self::new`]. It only reads; the
+    /// table writes stay on the transport.
+    pub fn bvlc_tables(&self) -> Option<bacnet_transport::bip::BvlcTableReader> {
+        self.bip_tables.clone()
+    }
+
     /// The MS/TP transport's counters (#958): a handle to the same
     /// [`MstpDiagnostics`](bacnet_transport::mstp::MstpDiagnostics) the
     /// transport updates, readable in any state, after stop included. It is
@@ -824,6 +868,16 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         self.sc_link.clone()
     }
 
+    /// Returns the composed session role (narrow admin).
+    pub fn session_role(&self) -> SessionRole {
+        self.role
+    }
+
+    /// Returns true while the session dispatch is running (narrow admin).
+    pub fn is_running(&self) -> bool {
+        self.lifecycle.load(Ordering::Acquire) == Lifecycle::Running as u8
+    }
+
     /// Broadcasts an I-Am consistent with the composed identity.
     ///
     /// Missing-identity path: errors without sending (no invented device).
@@ -833,12 +887,22 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// from [`server_config`](crate::identity::server_config).
     /// Transport-dependent: B/IP reaches the local subnet broadcast; SC
     /// relays via the hub as a broadcast NPDU. Fails when the session is not
-    /// running.
+    /// running, and with [`Error::InitiationDisabled`] while the session's
+    /// server ([`with_server`](Self::with_server)) holds a DeviceCommunicationControl
+    /// DISABLE_INITIATION: this I-Am answers no Who-Is (Clause 16.1).
     pub async fn broadcast_i_am(&self) -> Result<(), Error> {
         let identity = self
             .identity
             .as_ref()
             .ok_or_else(|| Error::Encoding("endpoint I-Am requires a composed identity".into()))?;
+        if self
+            .ingress
+            .as_ref()
+            .and_then(EndpointIngress::node_dcc)
+            .is_some_and(|dcc| dcc.is_restricted())
+        {
+            return Err(Error::InitiationDisabled { sent: false });
+        }
         let egress = self
             .egress
             .as_ref()
@@ -876,10 +940,6 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
 #[path = "source_reporter_tests.rs"]
 mod source_reporter_tests;
 
-#[cfg(test)]
-#[path = "device_write_tests.rs"]
-mod device_write_tests;
-
 impl<T: TransportPort + 'static> Drop for EndpointSession<T> {
     fn drop(&mut self) {
         // Synchronous abort path: never orphan dispatch/ingress/role work.
@@ -894,9 +954,6 @@ impl<T: TransportPort + 'static> Drop for EndpointSession<T> {
         if let Some(requester) = self.requester.take() {
             requester.close();
         }
-        if let Some(responder) = self.responder.take() {
-            responder.close();
-        }
         if let Some(notifications) = self.notifications.take() {
             notifications.close();
         }
@@ -906,12 +963,12 @@ impl<T: TransportPort + 'static> Drop for EndpointSession<T> {
         if let Some(task) = self.dispatch_task.take() {
             task.abort();
         }
-        if let Some(task) = self.durable_settlement.take() {
-            task.abort();
-        }
+        // The server's own drop aborts its work and lets go of the node's
+        // DeviceCommunicationControl hold.
+        drop(self.server.take());
         // The session's own handle, kept through stop(), goes off the
         // runtime if it is the last (#1561). Every other endpoint holder
-        // (responder, source Audit, the aborted tasks' handles) lets go the
+        // (the server, source Audit, the aborted tasks' handles) lets go the
         // same way when it drops, whichever goes last.
         if let Some(db) = self.database.take() {
             drop(drop_database_off_runtime(db));
@@ -924,20 +981,17 @@ struct DispatchParts {
     terminal: mpsc::Receiver<ReceivedApdu>,
     policy: mpsc::Receiver<PolicyOutcome>,
     requester: Option<EndpointRequester>,
-    responder: Option<Arc<EndpointResponder>>,
     notifications: Option<Arc<NotificationTransactions>>,
     coordinator: Arc<OutboundTransactionCoordinator>,
     shared: Arc<SessionShared>,
     /// The layer's network number, which the session's Number owner
     /// publishes; answers relayed with it as SNET match like direct ones.
     local_network: LocalNetworkNumber,
-    /// Routed source Audit bindings' routers, learned from traffic (#2371).
-    source_routers: Option<Arc<crate::source_audit::routers::SourceRouters>>,
 }
 
 #[path = "session_dispatch.rs"]
 mod dispatch;
-use dispatch::{DispatchEvent, next_event};
+use dispatch::{DispatchEvent, handle_ingress_policy, handle_terminal, next_event};
 
 async fn dispatch_loop(mut parts: DispatchParts, mut cancel: oneshot::Receiver<()>) -> SessionExit {
     // One consumer retains all receivers and joins; cancellation stays first.
@@ -950,7 +1004,7 @@ async fn dispatch_loop(mut parts: DispatchParts, mut cancel: oneshot::Receiver<(
         };
         match event {
             DispatchEvent::Worker(joined) => NotificationTransactions::observe(Some(joined)),
-            DispatchEvent::Inbound(received) => handle_inbound(&mut parts, received).await,
+            DispatchEvent::Inbound(received) => handle_inbound(&parts.shared, received).await,
             DispatchEvent::Terminal(received) => handle_terminal(&mut parts, received).await,
             DispatchEvent::Policy(outcome) => handle_ingress_policy(&parts.shared, outcome).await,
             DispatchEvent::Closed => return SessionExit::ReceiversClosed,
@@ -958,163 +1012,13 @@ async fn dispatch_loop(mut parts: DispatchParts, mut cancel: oneshot::Receiver<(
     }
 }
 
-async fn handle_inbound(parts: &mut DispatchParts, received: ReceivedApdu) {
-    // Preserve the full envelope structurally (raw + effective group,
-    // attributes, ingress identity, provenance) — no new decisions here
-    // beyond role presence + responder scope.
-    let _peer = inbound_canonical_peer(&received, parts.local_network.get());
-    let _link_group = received.link_layer_group;
-    let _is_group = received.is_group;
-    let _attributes = received.data_attributes.clone();
-    let _provenance = &received.provenance;
-    let _ingress = received.ingress_network;
-    if let Some(routers) = &parts.source_routers {
-        routers.observe(&received);
-    }
-    let Some(responder) = parts.responder.as_ref() else {
-        let mut counters = parts.shared.counters.lock().await;
-        counters.no_server_role += 1;
-        // One-use reply ownership: release a lone reply sender without
-        // sending bytes, mirroring queue-admission drop semantics.
-        if let Some(reply_tx) = received.reply_tx {
-            drop(reply_tx);
-        }
-        return;
-    };
-    // RB-17 deferred-reply wiring (minimal correlation, session-side): when
-    // the one-shot suspension arm is set and this request carries the MS/TP
-    // one-use prompt reply sender, drop the sender BEFORE the responder sees
-    // it. Dropping releases the MAC to send ReplyPostponed; the responder
-    // then observes `reply_tx: None` and answers through the single
-    // EndpointEgress → queue_npdu path, which the MAC transmits as
-    // DataNotExpectingReply at the next token opportunity with the identical
-    // wire invoke ID + destination. Prompt (sender present, unarmed) and
-    // token-owned (sender absent) stay distinct by construction: the
-    // responder never sees both for one request. No second serial owner, no
-    // MAC state duplication, no transport change.
-    let mut received = received;
-    if !received.provenance.is_direct_peer()
-        && received.direct_response.is_none()
-        && received.reply_tx.is_some()
-        && parts.shared.token.take_suspend()
-    {
-        let _ = received.reply_tx.take();
-    }
-    match responder.handle(received).await {
-        Ok(true) | Ok(false) => {}
-        Err(_) => {
-            let mut counters = parts.shared.counters.lock().await;
-            counters.responder_declined += 1;
-        }
-    }
-}
-
-async fn handle_terminal(parts: &mut DispatchParts, received: ReceivedApdu) {
-    let Some(apdu) = decode_terminal(&received) else {
-        let mut counters = parts.shared.counters.lock().await;
-        counters.unclaimed_terminal += 1;
-        if let Some(reply_tx) = received.reply_tx {
-            drop(reply_tx);
-        }
-        return;
-    };
-    // Inbound server transactions never allocate here: requests are not
-    // terminal traffic. A Confirmed/Unconfirmed request in this queue is a
-    // classifier violation → policy-owned, no coordinator interaction.
-    if matches!(
-        apdu,
-        Apdu::ConfirmedRequest(_) | Apdu::UnconfirmedRequest(_)
-    ) {
-        let mut counters = parts.shared.counters.lock().await;
-        counters.unclaimed_terminal += 1;
-        if let Some(reply_tx) = received.reply_tx {
-            drop(reply_tx);
-        }
-        return;
-    }
-    // Exactly one shared-coordinator admit per terminal APDU (exact-once
-    // terminal claim). Equal numeric IDs are unambiguous: the admitted
-    // lease owner selects requester vs notification.
-    let outcome = admit_once(
-        &parts.coordinator,
-        &received,
-        parts.local_network.get(),
-        &apdu,
-    );
-    let admission = match outcome {
-        Ok(AdmissionOutcome::Admitted(admission)) => {
-            if let Some(routers) = &parts.source_routers {
-                routers.observe(&received);
-            }
-            admission
-        }
-        Ok(_) => {
-            let mut counters = parts.shared.counters.lock().await;
-            counters.unclaimed_terminal += 1;
-            if let Some(reply_tx) = received.reply_tx {
-                drop(reply_tx);
-            }
-            return;
-        }
-        Err(CoordinatorError::StatePoisoned) => {
-            let mut counters = parts.shared.counters.lock().await;
-            counters.unclaimed_terminal += 1;
-            if let Some(reply_tx) = received.reply_tx {
-                drop(reply_tx);
-            }
-            return;
-        }
-    };
-    if is_requester_lease(&admission) {
-        let Some(requester) = parts.requester.as_ref() else {
-            // Lease was admitted but has no consumer: release the exact
-            // lease so exhaustion → release → reuse still holds.
-            let _ = parts.coordinator.release(admission.token());
-            let mut counters = parts.shared.counters.lock().await;
-            counters.no_client_role += 1;
-            if let Some(reply_tx) = received.reply_tx {
-                drop(reply_tx);
-            }
-            return;
-        };
-        // `complete_pre_admitted` delivers via the exact token without
-        // re-admitting; a `false` means the TSM no longer owns it (lost
-        // consumer / stale), the coordinator lease was already completed
-        // inside the TSM path on success.
-        let _ = requester
-            .complete_pre_admitted(admission, apdu, received)
-            .await;
-    } else {
-        let Some(notifications) = parts.notifications.as_ref() else {
-            let _ = parts.coordinator.release(admission.token());
-            let mut counters = parts.shared.counters.lock().await;
-            counters.no_client_role += 1;
-            if let Some(reply_tx) = received.reply_tx {
-                drop(reply_tx);
-            }
-            return;
-        };
-        let _ = notifications.complete_pre_admitted(admission, &apdu);
-        // Notification replies carry no reply sender; drop one if present.
-        if let Some(reply_tx) = received.reply_tx {
-            drop(reply_tx);
-        }
-    }
-}
-
-async fn handle_ingress_policy(shared: &Arc<SessionShared>, outcome: PolicyOutcome) {
-    // Policy-outcome ownership: the session counts every classifier outcome
-    // (malformed/unsupported/route-full/route-closed) instead of dropping it.
-    let mut counters = shared.counters.lock().await;
-    counters.ingress_policy += 1;
-    let _ = outcome.reason;
-    // Policy outcomes own the full envelope including a possible one-use
-    // reply sender; releasing here preserves single-consumer + one-use
-    // ownership without sending bytes.
-    if let Some(reply_tx) = outcome.received.reply_tx {
-        drop(reply_tx);
-    }
-    let _ = PolicyReason::MalformedApdu;
+/// A request in the session's own request queue, which no server takes: the
+/// session has no server role, or its server's seat is gone (#2617). It is
+/// counted (`no_server_role`), and its one-use reply sender is released
+/// without sending, as a full queue's drop releases one.
+async fn handle_inbound(shared: &SessionShared, received: ReceivedApdu) {
+    shared.counters.lock().await.no_server_role += 1;
+    drop(received.reply_tx);
 }
 
 #[cfg(test)]
@@ -1154,10 +1058,6 @@ mod port_retry;
 #[cfg(test)]
 #[path = "local_network_tests.rs"]
 mod local_network_tests;
-
-#[cfg(test)]
-#[path = "read_work_limit_tests.rs"]
-mod read_work_limit_tests;
 
 #[cfg(test)]
 #[path = "client_pacing_tests.rs"]

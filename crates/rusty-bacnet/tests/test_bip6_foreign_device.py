@@ -207,7 +207,7 @@ class LoopbackTests(unittest.IsolatedAsyncioTestCase):
                 for prop, expected in (
                     (P.BACNET_IPV6_MODE, V.enumerated(1)),
                     (P.FD_SUBSCRIPTION_LIFETIME, V.unsigned(60)),
-                    (P.FD_BBMD_ADDRESS, V.application_data(self.bbmd.host_n_port())),
+                    (P.FD_BBMD_ADDRESS, V.tagged(self.bbmd.host_n_port())),
                 ):
                     with self.subTest(property=prop):
                         read = await asyncio.wait_for(
@@ -290,11 +290,14 @@ class LoopbackTests(unittest.IsolatedAsyncioTestCase):
                     (None, f"localhost:{port}", True, 1, 0))
                 self.assertIn(status["last_bbmd_lookup_failure"],
                               ("unusable_address", "no_ipv6_address"))
-                # With no BBMD, a broadcast is refused, and counted.
+                # With no BBMD, a broadcast is refused, and counted: the
+                # What-Is-Network-Number the client asks before its first
+                # Who-Is (#2572), then the Who-Is.
+                self.assertEqual(status["broadcasts_refused"], 0)
                 with self.assertRaises(OSError):
-                    await client.who_is(INSTANCE, INSTANCE)
+                    await client.who_is(low=INSTANCE, high=INSTANCE)
                 status = await client.foreign_registration()
-                self.assertEqual(status["broadcasts_refused"], 1)
+                self.assertEqual(status["broadcasts_refused"], 2)
         await rerun_on_lost_port(run)
 
     async def test_the_bbmds_answer_reads_as_on_b_ip(self):
@@ -341,7 +344,7 @@ class LoopbackTests(unittest.IsolatedAsyncioTestCase):
             # Known by address: no host name to show.
             self.assertEqual((status["bbmd"], status["bbmd_name"]), (self.bbmd.address, None))
             # A Who-Is goes to the BBMD as a Distribute-Broadcast-To-Network.
-            await client.who_is(INSTANCE, INSTANCE)
+            await client.who_is(low=INSTANCE, high=INSTANCE)
             datagram, _ = await self.bbmd.next(DISTRIBUTE_BROADCAST)
             self.assertEqual(datagram[4:7], vmac(CLIENT_INSTANCE))
 

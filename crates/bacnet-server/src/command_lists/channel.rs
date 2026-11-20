@@ -285,6 +285,8 @@ async fn remember<H: RunHost>(
     member: &ChannelMember,
     datatype: Option<MemberDatatype>,
 ) {
+    #[cfg(test)]
+    remember_hook::note_request();
     let mut db = host.database().write().await;
     let runner = db
         .get_mut(&run.source)
@@ -316,9 +318,11 @@ async fn write_member<H: RunHost>(
         match remote {
             Some((device, datatype)) => (Some(device), datatype),
             None => {
+                // Read as any reference reads (#2669). For the Device's
+                // read-only Object_List and Database_Revision the datatype
+                // comes out the same either way.
                 let value = db.get(&reference.object_identifier).and_then(|object| {
-                    object
-                        .read_property(property, reference.property_array_index)
+                    db.read_object_property(object, property, reference.property_array_index)
                         .ok()
                 });
                 let object_type = reference.object_identifier.object_type();
@@ -400,4 +404,24 @@ async fn write_member<H: RunHost>(
             Err(failed.failure)
         }
     })
+}
+
+/// Test hook: how many times `remember` asked for the database's write guard
+/// on this thread, so a test that holds the database waits for that ask itself
+/// rather than for any queued writer (#2507).
+#[cfg(test)]
+pub(crate) mod remember_hook {
+    use std::cell::Cell;
+
+    thread_local! {
+        static REQUESTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn note_request() {
+        REQUESTS.with(|count| count.set(count.get() + 1));
+    }
+
+    pub(crate) fn requests() -> usize {
+        REQUESTS.with(Cell::get)
+    }
 }

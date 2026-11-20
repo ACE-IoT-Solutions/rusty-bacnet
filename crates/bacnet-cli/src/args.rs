@@ -14,8 +14,10 @@ use bacnet_types::primitives::BACnetTimeStamp;
 use clap::builder::{OsStringValueParser, TypedValueParser};
 use clap::{Parser, Subcommand, ValueEnum};
 
+mod export;
 mod mcp;
 
+pub(crate) use export::ExportFormat;
 pub(crate) use mcp::McpAction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -32,7 +34,7 @@ pub(crate) struct Cli {
     pub(crate) explicit_args: Vec<String>,
 
     /// The subcommand's canonical name, captured before extraction, for the
-    /// write guard's classification (`bacnet_ops::class`).
+    /// write guard's classification (`bacnet_tool::class`).
     #[arg(skip)]
     pub(crate) command_name: Option<String>,
 
@@ -61,7 +63,7 @@ pub(crate) struct Cli {
     /// way. Without it the CLI claims the port and fails at once when
     /// another program holds it. With it, each unicast to the port reaches
     /// only one of the programs on it, so replies can go astray. BACnet/IP
-    /// only.
+    /// and BACnet/IPv6 (--ipv6) only.
     #[arg(long, global = true)]
     pub(crate) share_port: bool,
 
@@ -85,6 +87,21 @@ pub(crate) struct Cli {
             .range(..=bacnet_client::client::MAX_MIN_REQUEST_INTERVAL_MS)
     )]
     pub(crate) min_interval_ms: u64,
+
+    /// Size requests to NETWORK through the router at ROUTER (its address
+    /// on this network, as whois-router prints it) to at most MAX_NPDU
+    /// octets of NPDU, for this run. Repeat it for more paths. Without it a
+    /// path uses 228 octets, the least every router must carry; set it below
+    /// that for an older router that carries less, whose requests otherwise
+    /// time out, or above it for a wider path. Goes before the command.
+    // Not `global`: clap keeps a repeated global flag's values from one side
+    // of the subcommand only, so some would be lost without a word.
+    #[arg(
+        long,
+        value_name = "ROUTER/NETWORK=MAX_NPDU",
+        value_parser = crate::routed_paths::parse_limit_arg
+    )]
+    pub(crate) routed_path_limit: Vec<crate::routed_paths::LimitArg>,
 
     /// Run as a foreign device registered with this BBMD (IP, host name, or
     /// either with :port), so broadcasts such as discover reach its network.
@@ -183,17 +200,17 @@ pub(crate) struct Cli {
           value_parser = crate::transport::parse_sc_connect_timeout_arg)]
     pub(crate) sc_connect_timeout: Option<u64>,
 
-    /// SC trusted site CA PEM file (required for SC; no system-root fallback).
+    /// SC trusted site CA PEM file (required for SC; no system-root fallback; read up to 1 MiB).
     // Validate emptiness only when constructing an SC client, not for discovery
     // or a feature-disabled build. Preserve native OS path bytes.
     #[arg(long, global = true, value_name = "FILE", value_parser = OsStringValueParser::new().map(PathBuf::from))]
     pub(crate) sc_ca: Option<PathBuf>,
 
-    /// SC TLS certificate PEM file.
+    /// SC TLS certificate PEM file (read up to 1 MiB).
     #[arg(long, global = true)]
     pub(crate) sc_cert: Option<PathBuf>,
 
-    /// SC TLS private key PEM file.
+    /// SC TLS private key PEM file: one unencrypted key (read up to 1 MiB).
     #[arg(long, global = true)]
     pub(crate) sc_key: Option<PathBuf>,
 
@@ -245,7 +262,7 @@ pub(crate) struct Cli {
           value_parser = crate::mstp_thread::parse_cpu)]
     pub(crate) mstp_cpus: Vec<usize>,
 
-    /// Output format (table, json).
+    /// Output format (table, json; csv too for inventory).
     #[arg(long, global = true)]
     pub(crate) format: Option<String>,
 
@@ -358,7 +375,9 @@ pub(crate) enum Command {
         action: McpAction,
     },
 
-    /// Discover BACnet devices (WhoIs).
+    /// Discover BACnet devices (WhoIs): a broadcast on this network alone,
+    /// which no router passes on, unless --dnet, --global or --target says
+    /// where else.
     #[command(alias = "whois")]
     Discover {
         /// Device instance range (e.g., "1000-2000").
@@ -367,19 +386,27 @@ pub(crate) enum Command {
         #[arg(long, default_value_t = 3)]
         wait: u64,
         /// Send directed WhoIs to a specific address instead of broadcasting.
-        #[arg(long, conflicts_with = "dnet")]
+        #[arg(long, conflicts_with_all = ["dnet", "global"])]
         target: Option<String>,
         /// Register as foreign device with a BBMD before discovering, once
         /// (for --ttl seconds). --foreign-bbmd also renews and sends the
         /// Who-Is through the BBMD.
         #[arg(long)]
         bbmd: Option<String>,
-        /// Target a specific remote network number.
-        #[arg(long)]
+        /// Broadcast on one remote network (1 to 65534) instead, through
+        /// its router.
+        #[arg(long, conflicts_with = "global", value_parser = crate::core::range::parse_dnet)]
         dnet: Option<u16>,
+        /// Broadcast on every network instead: a global broadcast, which
+        /// every router passes on. On a large routed site every device
+        /// answers it.
+        #[arg(long)]
+        global: bool,
     },
 
-    /// Find objects by name (WhoHas).
+    /// Find objects by name (WhoHas): a broadcast on this network alone,
+    /// which no router passes on, unless --dnet, --global or --target says
+    /// where else.
     #[command(alias = "whohas")]
     Find {
         /// Object name to find (quote a name with spaces). `--name NAME`
@@ -396,6 +423,19 @@ pub(crate) enum Command {
         /// Seconds to wait for responses.
         #[arg(long, default_value_t = 3)]
         wait: u64,
+        /// Send a directed WhoHas to one station on this network instead
+        /// of broadcasting.
+        #[arg(long, conflicts_with_all = ["dnet", "global"])]
+        target: Option<String>,
+        /// Broadcast on one remote network (1 to 65534) instead, through
+        /// its router.
+        #[arg(long, conflicts_with = "global", value_parser = crate::core::range::parse_dnet)]
+        dnet: Option<u16>,
+        /// Broadcast on every network instead: a global broadcast, which
+        /// every router passes on, and every device that hears it
+        /// searches its objects.
+        #[arg(long)]
+        global: bool,
     },
 
     /// Read a property.
@@ -403,10 +443,48 @@ pub(crate) enum Command {
     Read {
         /// Target device (IP address or instance number).
         target: String,
-        /// Object specifier (e.g., analog-input:1, ai:1).
+        /// Object specifier, type:instance or type,instance (e.g.,
+        /// analog-input:1, ai:1, analog-input,1).
         object: String,
         /// Property (e.g., present-value, pv).
         property: String,
+    },
+
+    /// Export a device's objects in another model's terms (experimental).
+    Export {
+        #[command(subcommand)]
+        format: ExportFormat,
+    },
+
+    /// List a device's objects as point records: each one's name, units,
+    /// state texts and whether it takes commands.
+    ///
+    /// Reads the device summary, its object list, then the objects in
+    /// batches by ReadPropertyMultiple, a few objects a request. --format
+    /// csv prints one row an object, --format json (or --json) the whole
+    /// inventory with typed values; stdout carries only that, and a
+    /// summary goes to stderr. If the device stops answering partway, what
+    /// was read is still printed and the exit status is 1.
+    Inventory {
+        /// Target device (address, instance, or routed dnet:instance).
+        target: String,
+        /// Object types to read, comma-separated (ai,ao,msv, ...);
+        /// default: every object, of any type.
+        #[arg(long, value_name = "TYPES", value_delimiter = ',')]
+        types: Vec<String>,
+        /// Also read each object's Present_Value and Status_Flags.
+        #[arg(long)]
+        values: bool,
+        /// Also read each object's COV_Increment, Min_Pres_Value,
+        /// Max_Pres_Value and Relinquish_Default, where it has them.
+        #[arg(long)]
+        settings: bool,
+        /// With --format csv: write device text exactly. Without it, a
+        /// name, description, state text or string value that starts with
+        /// =, +, -, @, a tab or a carriage return gets an apostrophe
+        /// before it, so a spreadsheet doesn't run it as a formula.
+        #[arg(long)]
+        csv_exact: bool,
     },
 
     /// Read multiple properties.
@@ -431,7 +509,7 @@ pub(crate) enum Command {
         value: String,
         /// Priority (1-16).
         #[arg(long)]
-        priority: Option<u8>,
+        priority: Option<bacnet_ops::Priority>,
     },
 
     /// Write multiple properties (WritePropertyMultiple).
@@ -440,7 +518,9 @@ pub(crate) enum Command {
         /// Target device.
         target: String,
         /// Each object, then its comma-separated writes, each with an
-        /// optional @priority: "av:1 pv=72.5@8,on=Zone ao:1 pv=10".
+        /// optional @priority: "av:1 pv=72.5@8,on=Zone ao:1 pv=10". A comma
+        /// ends a write only before a property and `=`, so a value may hold
+        /// commas (`pv=object:ai,1`); quote one that holds `, mode=`.
         #[arg(required = true, num_args = 2..)]
         specs: Vec<String>,
     },
@@ -587,12 +667,23 @@ pub(crate) enum Command {
         wait: u64,
     },
 
+    /// Read the routing table of the router at TARGET, on the local
+    /// network, without changing it (an Initialize-Routing-Table query).
+    RoutingTable {
+        /// The router's address on the local network, as `whois-router`
+        /// prints it.
+        target: String,
+        /// Seconds to wait for the router's first answer (0 to 3600).
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u64).range(0..=3600))]
+        wait: u64,
+    },
+
     /// Acknowledge an alarm.
     #[command(alias = "ack")]
     AckAlarm {
         /// Target device.
         target: String,
-        /// Object specifier (e.g., ai:1).
+        /// Object specifier (e.g., ai:1 or ai,1).
         object: String,
         /// Event state to acknowledge (0=normal, 1=fault, etc.).
         #[arg(long)]
@@ -613,7 +704,7 @@ pub(crate) enum Command {
     ReadRange {
         /// Target device.
         target: String,
-        /// Object specifier (e.g., trend-log:1).
+        /// Object specifier (e.g., trend-log:1 or trend-log,1).
         object: String,
         /// Property (default: log-buffer).
         #[arg(default_value = "log-buffer")]
@@ -626,7 +717,7 @@ pub(crate) enum Command {
     CreateObject {
         /// Target device.
         target: String,
-        /// Object specifier (type:instance, e.g., av:100).
+        /// Object specifier (type:instance or type,instance, e.g., av:100).
         object: String,
     },
 
@@ -634,7 +725,7 @@ pub(crate) enum Command {
     DeleteObject {
         /// Target device.
         target: String,
-        /// Object specifier (type:instance).
+        /// Object specifier (type:instance or type,instance).
         object: String,
     },
 
@@ -734,6 +825,7 @@ pub(crate) fn capture_sources(matches: &clap::ArgMatches) -> Result<Vec<String>,
         ));
     }
     crate::mstp::check_matches(matches)?;
+    crate::routed_paths::check_matches(matches)?;
     if matches
         .get_one::<std::net::SocketAddrV4>("nat_global_address")
         .is_some()

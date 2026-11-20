@@ -1,4 +1,5 @@
 use super::*;
+use crate::client::Station;
 use bacnet_encoding::{
     apdu::{Apdu, decode_apdu},
     npdu::decode_npdu,
@@ -11,7 +12,7 @@ async fn client_number_held_egress_preserves_routed_reject_and_apdu_dispatch() {
     let (client, inbound, mut outbound, gates) = harness(true).await;
     let client = Arc::new(client);
     inject(&inbound, &number(77, 1), true).await;
-    inject(&inbound, QUERY, true).await;
+    inject(&inbound, QUERY, false).await;
     bounded(gates.entered.acquire()).await.unwrap().forget();
     client
         .configure_routed_path_max_npdu(&[2], 100, 1497)
@@ -21,10 +22,8 @@ async fn client_number_held_egress_preserves_routed_reject_and_apdu_dispatch() {
         let client = client.clone();
         tokio::spawn(async move {
             client
-                .confirmed_request_routed(
-                    &[2],
-                    100,
-                    &[3],
+                .confirmed_request(
+                    &Station::routed(&[2], 100, &[3]),
                     ConfirmedServiceChoice::WRITE_PROPERTY,
                     &[0x44; 300],
                 )
@@ -49,10 +48,8 @@ async fn client_number_held_egress_preserves_routed_reject_and_apdu_dispatch() {
         let client = client.clone();
         tokio::spawn(async move {
             client
-                .confirmed_request_routed(
-                    &[2],
-                    100,
-                    &[3],
+                .confirmed_request(
+                    &Station::routed(&[2], 100, &[3]),
                     ConfirmedServiceChoice::WRITE_PROPERTY,
                     &[0x44; 300],
                 )

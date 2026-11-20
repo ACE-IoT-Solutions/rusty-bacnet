@@ -3,20 +3,28 @@
 //! A Notification Forwarder saves a written Recipient_List or
 //! Subscribed_Recipients, a Notification Class a written Recipient_List
 //! (#1315), an Access Rights object a written rule array, Enable (#1392) or
-//! Accompaniment (#1393), an Audit Log a Log_Enable or Buffer_Size change,
+//! Accompaniment (#1393), an Audit Log a Enable or Buffer_Size change,
 //! a Timer or Channel the configuration a peer writes to it (#2243), a
 //! Color or Color Temperature a written default (#1956), a Trend Log,
 //! Trend Log Multiple or Event Log a written reporting setting (#1952),
 //! an analog, binary or multi-state object, Access Door, Access Zone,
-//! Event or Alert Enrollment a written reporting setting (#2331), and those
+//! Event or Alert Enrollment a written reporting setting (#2331), an
+//! analog, binary or multi-state object, an Access Door, an Access Zone or
+//! an Event Enrollment a written event algorithm parameter too (#2331),
+//! a multi-state object a written State_Text (#2414), and those
 //! objects, a Timer, a Channel, the three logs, a Notification Class or
-//! Forwarder and an Access Rights object a written Description (#2364),
+//! Forwarder, an Access Rights object, a Device, the two lighting outputs
+//! and the two colour objects a written Description (#2364), and a Load
+//! Control the shed request, Enable, Description and Shed_Levels elements a
+//! peer writes (#2479, #2502),
 //! before serving it, and refuses the write if the save fails. So
 //! that the save never runs while the database guard is held, a request
 //! that makes such a write stages it first ([`DurableWrites`]): under the
 //! guard the object queues the save, the request awaits it with the guard
 //! dropped, and then runs as it always has, the object taking the saved
-//! state or refusing the write. The request releases what it staged in the
+//! state or refusing the write; an object whose stage something changed
+//! meanwhile saves the write again under the guard instead, and refuses it
+//! if that save fails (#2431). The request releases what it staged in the
 //! critical section that makes the write. An application's Audit Log purge (#1238) is staged the
 //! same way.
 //!
@@ -87,9 +95,9 @@ enum TargetValue {
 
 /// Whether a bundled object of `oid`'s type may save a write of `property`
 /// first. A forwarder saves its Recipient_List and Subscribed_Recipients, a
-/// Notification Class its Recipient_List, an Audit Log its Log_Enable and
+/// Notification Class its Recipient_List, an Audit Log its Enable and
 /// Buffer_Size, an Access Rights object its two rule arrays, Enable
-/// (property 133, named `LOG_ENABLE`) and Accompaniment, a Timer its
+/// (property 133) and Accompaniment, a Timer its
 /// State_Change_Values, List_Of_Object_Property_References and
 /// Default_Timeout (#2312), and a
 /// Channel its members, Execution_Delay, Channel_Number, Control_Groups and
@@ -99,12 +107,23 @@ enum TargetValue {
 /// settings too, the nine analog, binary and multi-state object types
 /// those reporting settings beside their Tags, and Access Door, Access Zone,
 /// Event Enrollment and Alert Enrollment the same reporting settings
-/// (#2331). A Timer, a Channel, the thirteen types with a reporting store,
-/// the three logs, a Notification Class, a forwarder and an Access Rights
-/// object keep a written Description too (#2364).
-/// Under a policy
-/// that decides mutations, only these attempts of a WritePropertyMultiple are decided
-/// ahead of the handler (#1321).
+/// (#2331). The nine analog, binary and multi-state types, Access Door,
+/// Access Zone and Event Enrollment save their event algorithm parameters
+/// too (the two time delays, an analog object's limits, Deadband and
+/// Limit_Enable, Alarm_Value, Alarm_Values, a door's Fault_Values and
+/// Masked_Alarm_Values, and an enrollment's Event_Parameters,
+/// Fault_Parameters and Time_Delay_Normal; [`kept_parameter`]), and the
+/// three multi-state types a written State_Text (#2414). A Timer, a
+/// Channel, the thirteen types
+/// with a reporting store,
+/// the three logs, a Notification Class, a forwarder, an Access Rights
+/// object, a Device, a Lighting Output, a Binary Lighting Output and the
+/// two colour objects keep a written Description too (#2364). A Load
+/// Control keeps its four request properties, Enable, a written
+/// Description (#2479) and the Shed_Levels elements written (#2502).
+/// Under a policy that decides mutations, every attempt of a
+/// WritePropertyMultiple is decided ahead of the handler (#2032); of
+/// those allowed, these are the ones staged (#1321).
 ///
 /// An object type that takes up [`DurableWrites`] is listed here too, or
 /// the server never stages its writes and they save in place under the
@@ -121,22 +140,25 @@ fn may_save(oid: ObjectIdentifier, property: PropertyIdentifier) -> bool {
         ),
         ObjectType::AUDIT_LOG => matches!(
             property,
-            PropertyIdentifier::LOG_ENABLE | PropertyIdentifier::BUFFER_SIZE
+            PropertyIdentifier::ENABLE | PropertyIdentifier::BUFFER_SIZE
         ),
         ObjectType::NOTIFICATION_CLASS => matches!(
             property,
             PropertyIdentifier::RECIPIENT_LIST | PropertyIdentifier::DESCRIPTION
         ),
-        // A colour object saves a written default with its output (#1956).
-        ObjectType::COLOR => {
-            matches!(
-                property,
-                PropertyIdentifier::TAGS | PropertyIdentifier::DEFAULT_COLOR
-            )
-        }
+        // A colour object saves a written default with its output (#1956),
+        // and a written Description (#2364).
+        ObjectType::COLOR => matches!(
+            property,
+            PropertyIdentifier::TAGS
+                | PropertyIdentifier::DEFAULT_COLOR
+                | PropertyIdentifier::DESCRIPTION
+        ),
         ObjectType::COLOR_TEMPERATURE => matches!(
             property,
-            PropertyIdentifier::TAGS | PropertyIdentifier::DEFAULT_COLOR_TEMPERATURE
+            PropertyIdentifier::TAGS
+                | PropertyIdentifier::DEFAULT_COLOR_TEMPERATURE
+                | PropertyIdentifier::DESCRIPTION
         ),
         ObjectType::ANALOG_VALUE
         | ObjectType::BINARY_VALUE
@@ -147,16 +169,22 @@ fn may_save(oid: ObjectIdentifier, property: PropertyIdentifier) -> bool {
         | ObjectType::ANALOG_OUTPUT
         | ObjectType::BINARY_OUTPUT
         | ObjectType::MULTI_STATE_OUTPUT => {
-            property == PropertyIdentifier::TAGS || kept_with_reporting(property)
-        }
-        ObjectType::LIGHTING_OUTPUT | ObjectType::BINARY_LIGHTING_OUTPUT | ObjectType::DEVICE => {
             property == PropertyIdentifier::TAGS
+                || kept_with_reporting(property)
+                || kept_parameter(oid.object_type(), property)
+        }
+        // These keep a written Description in their Tags storage (#2364).
+        ObjectType::LIGHTING_OUTPUT | ObjectType::BINARY_LIGHTING_OUTPUT | ObjectType::DEVICE => {
+            matches!(
+                property,
+                PropertyIdentifier::TAGS | PropertyIdentifier::DESCRIPTION
+            )
         }
         ObjectType::ACCESS_RIGHTS => matches!(
             property,
             PropertyIdentifier::POSITIVE_ACCESS_RULES
                 | PropertyIdentifier::NEGATIVE_ACCESS_RULES
-                | PropertyIdentifier::LOG_ENABLE
+                | PropertyIdentifier::ENABLE
                 | PropertyIdentifier::ACCOMPANIMENT
                 | PropertyIdentifier::DESCRIPTION
         ),
@@ -184,12 +212,22 @@ fn may_save(oid: ObjectIdentifier, property: PropertyIdentifier) -> bool {
                         | PropertyIdentifier::COV_RESUBSCRIPTION_INTERVAL
                 )
         }
-        ObjectType::TREND_LOG_MULTIPLE
-        | ObjectType::EVENT_LOG
-        | ObjectType::ACCESS_DOOR
-        | ObjectType::ACCESS_ZONE
-        | ObjectType::EVENT_ENROLLMENT
-        | ObjectType::ALERT_ENROLLMENT => kept_with_reporting(property),
+        ObjectType::ACCESS_DOOR | ObjectType::ACCESS_ZONE | ObjectType::EVENT_ENROLLMENT => {
+            kept_with_reporting(property) || kept_parameter(oid.object_type(), property)
+        }
+        ObjectType::TREND_LOG_MULTIPLE | ObjectType::EVENT_LOG | ObjectType::ALERT_ENROLLMENT => {
+            kept_with_reporting(property)
+        }
+        ObjectType::LOAD_CONTROL => matches!(
+            property,
+            PropertyIdentifier::REQUESTED_SHED_LEVEL
+                | PropertyIdentifier::START_TIME
+                | PropertyIdentifier::SHED_DURATION
+                | PropertyIdentifier::DUTY_WINDOW
+                | PropertyIdentifier::ENABLE
+                | PropertyIdentifier::DESCRIPTION
+                | PropertyIdentifier::SHED_LEVELS
+        ),
         _ => false,
     }
 }
@@ -198,6 +236,25 @@ fn may_save(oid: ObjectIdentifier, property: PropertyIdentifier) -> bool {
 /// keep: the reporting settings, and Description beside them (#2364).
 fn kept_with_reporting(property: PropertyIdentifier) -> bool {
     reporting_row(property) || property == PropertyIdentifier::DESCRIPTION
+}
+
+/// The event algorithm parameters an object with a reporting store keeps
+/// once written (#2331): Time_Delay and Time_Delay_Normal on the analog,
+/// binary and multi-state Input, Output and Value objects, Access Door and
+/// Access Zone; High_Limit, Low_Limit, Deadband and Limit_Enable on the
+/// analog ones; Alarm_Value on a Binary Input or Value; Alarm_Values on a
+/// Multi-state Input or Value, an Access Door and an Access Zone;
+/// Fault_Values and Masked_Alarm_Values on an Access Door; Event_Parameters,
+/// Fault_Parameters and Time_Delay_Normal on an Event Enrollment; and
+/// State_Text on a Multi-state Input, Output and Value (#2414), no event
+/// algorithm parameter but a row of the same table. Its count bounds the
+/// Alarm_Values entries the object takes, so a WritePropertyMultiple that
+/// adds a state and lists it stages both, and the list is checked against
+/// the count the request's own State_Text leaves.
+/// The list is the object crate's, so the two can't drift: a parameter the
+/// object keeps and this left out would save in place under the guard.
+fn kept_parameter(object_type: ObjectType, property: PropertyIdentifier) -> bool {
+    bacnet_objects::snapshot::write_config::keeps_parameter(object_type, property)
 }
 
 /// The reporting settings every intrinsic reporter keeps once written: the
@@ -529,14 +586,11 @@ pub(super) const SLOW_SAVE_REPEAT: Duration = Duration::from_secs(30);
 /// A second pass takes what the first waited for: an Audit Log batch whose
 /// commit was still running, which the log takes once it has landed.
 ///
-/// `stop()` does not join an application's `write_local`. One that staged
-/// its save before the stop finds its stage dropped here when it comes back
-/// for the guard, and saves in place under the guard instead; storage still
-/// leads what the object serves.
-///
 /// An application holding the database is not waited for, as with the
 /// Command runs `stop()` ends: the objects then settle from a task once it
-/// lets go, and in any case put storage back when they are dropped.
+/// lets go, and in any case put storage back when they are dropped. A task
+/// releasing a dropped local write's stage would look the same, so `stop()`
+/// waits for those first ([`StageReleases`], #2495).
 pub(super) async fn settle_forgotten(db: &Arc<RwLock<ObjectDatabase>>) {
     for _ in 0..2 {
         let waits = match db.try_write() {
@@ -550,44 +604,6 @@ pub(super) async fn settle_forgotten(db: &Arc<RwLock<ObjectDatabase>>) {
             return;
         }
         wait_for_saves(db, &waits).await;
-    }
-}
-
-/// Strict endpoint shutdown settlement after its request owners have joined.
-/// Both passes wait asynchronously for the database, then release its guard
-/// before waiting for queued saves. Completion describes finished attempts;
-/// it does not report backend success or establish power-loss durability.
-///
-/// The endpoint retains one task running this future across stop cancellation.
-/// Its database owner is installed before the future can be spawned or dropped.
-pub fn settle_endpoint(
-    db: Arc<RwLock<ObjectDatabase>>,
-) -> impl std::future::Future<Output = ()> + Send + 'static {
-    let owner = EndpointSettlementDatabase(Some(db));
-    async move {
-        let db = owner.0.as_ref().expect("settlement database");
-        for _ in 0..2 {
-            let waits = {
-                let mut guard = db.write().await;
-                settle_all(&mut guard)
-            };
-            if waits.is_empty() {
-                return;
-            }
-            wait_for_saves(db, &waits).await;
-        }
-    }
-}
-
-/// Cancellation can make this task the final database holder, even before
-/// its first poll. Preserve the endpoint's off-runtime destruction policy.
-struct EndpointSettlementDatabase(Option<Arc<RwLock<ObjectDatabase>>>);
-
-impl Drop for EndpointSettlementDatabase {
-    fn drop(&mut self) {
-        if let Some(db) = self.0.take() {
-            drop(super::drop_database_off_runtime(db));
-        }
     }
 }
 
@@ -704,6 +720,17 @@ pub(super) async fn stage(
     targets: Vec<DurableTarget>,
 ) -> StagedWrites {
     let mut staged = Vec::new();
+    stage_into(db, &targets, &mut staged).await;
+    StagedWrites(staged)
+}
+
+/// [`stage`]'s steps, each object's wait put in `staged` as soon as the
+/// object stages, ahead of the wait for its save.
+async fn stage_into(
+    db: &Arc<RwLock<ObjectDatabase>>,
+    targets: &[DurableTarget],
+    staged: &mut Vec<(ObjectIdentifier, SaveWait)>,
+) {
     // Each object stages once, with all of the request's changes to it.
     for group in targets.chunk_by(|a, b| a.oid == b.oid) {
         loop {
@@ -713,8 +740,8 @@ pub(super) async fn stage(
             };
             match step {
                 Some(StageStep::Staged(wait)) => {
-                    saved(wait.clone()).await;
-                    staged.push((group[0].oid, wait));
+                    staged.push((group[0].oid, wait.clone()));
+                    saved(wait).await;
                     break;
                 }
                 Some(StageStep::Busy(wait)) => {
@@ -725,5 +752,112 @@ pub(super) async fn stage(
             }
         }
     }
-    StagedWrites(staged)
 }
+
+/// [`stage`] for the server's local write (`write_local`, #2493, and the
+/// Audit Log purge), whose caller may drop it at any await: what an object
+/// stages is held from that moment in a [`HeldStage`], which releases it
+/// even then. It runs on a Tokio runtime, as [`stage`] does, and the stage
+/// keeps that runtime's handle. The stage counts a release it hands to a
+/// task in `releases`, the server's, so `stop()` waits for it (#2495).
+pub(super) async fn stage_held(
+    db: &Arc<RwLock<ObjectDatabase>>,
+    releases: &Arc<StageReleases>,
+    targets: Vec<DurableTarget>,
+) -> HeldStage {
+    let mut held = HeldStage {
+        db: Arc::downgrade(db),
+        runtime: tokio::runtime::Handle::current(),
+        releases: Arc::clone(releases),
+        staged: Vec::new(),
+    };
+    stage_into(db, &targets, &mut held.staged).await;
+    // Every save has run. A server's local write asks for the guard next,
+    // with no wait in between, so a test can tell when that write, and not
+    // one of the server's own tasks, waits for it (#2504).
+    #[cfg(test)]
+    releases.note_stage_saved();
+    held
+}
+
+/// What a local write staged. [`release`](Self::release)
+/// lets it go under the guard of the write's commit. Dropped first, as when
+/// the caller drops the call while a save runs, it releases at once if the
+/// guard is free, and otherwise from a task of its own on the runtime it
+/// staged on, whatever thread drops it, once the guard is free; either way
+/// the object queues the save of what it serves.
+///
+/// A server counts that task in its [`StageReleases`] until it ends, and
+/// `stop()` waits for the count to reach zero before it settles the objects
+/// (#2495), so the task never holds the guard as they settle. Limit: the
+/// wait lasts at most [`RELEASE_WAIT`](stage_releases::RELEASE_WAIT). A task
+/// still waiting then waits behind a guard `stop()` does not own, as when an
+/// application holds the database across `stop()`: the objects then settle
+/// from a task once it is free, and storage is put back after `stop()`
+/// returns. No stage can drop after the wait: an application's local write
+/// borrows the server, which `stop()` holds exclusively, and fails before it
+/// stages once `stop()` has sealed the server; a run's write is a request
+/// task, joined before the wait.
+/// The server's pass that expires a forgotten stage takes about 10 s, during
+/// which storage leads what the object serves and a later write on it
+/// waits. So the stage must not wait out its lifetime.
+pub(super) struct HeldStage {
+    db: std::sync::Weak<RwLock<ObjectDatabase>>,
+    runtime: tokio::runtime::Handle,
+    /// The server's count of release tasks.
+    releases: Arc<StageReleases>,
+    staged: Vec<(ObjectIdentifier, SaveWait)>,
+}
+
+impl HeldStage {
+    /// Release what was staged, under the guard of the write's commit.
+    pub(super) fn release(mut self, db: &mut ObjectDatabase) {
+        StagedWrites(std::mem::take(&mut self.staged)).release(db);
+    }
+}
+
+impl Drop for HeldStage {
+    fn drop(&mut self) {
+        if self.staged.is_empty() {
+            return;
+        }
+        let Some(db) = self.db.upgrade() else {
+            return;
+        };
+        let staged = StagedWrites(std::mem::take(&mut self.staged));
+        // A free guard is taken here, so a write task `stop()` aborts has put
+        // storage back by the time `stop()` joins it, and `settle_forgotten`
+        // finds nothing of the write's in flight.
+        if let Ok(mut guard) = Arc::clone(&db).try_write_owned() {
+            staged.release(&mut guard);
+            drop(guard);
+            drop(super::drop_database_off_runtime(db));
+            return;
+        }
+        // Otherwise a task waits for the guard, counted from before it is
+        // spawned so `stop()` waits for it (#2495). A runtime that has shut
+        // down drops the task, and with it its place in the count and a
+        // stage nothing could still take.
+        let release = self.releases.register();
+        self.runtime.spawn(async move {
+            let mut guard = db.write().await;
+            #[cfg(test)]
+            stage_releases::gate(&release).await;
+            staged.release(&mut guard);
+            // This order matters: the place in the count goes last. Dropped
+            // while the guard is held, it could wake `stop()` on another
+            // thread into a settle that finds the guard taken.
+            drop(guard);
+            drop(super::drop_database_off_runtime(db));
+            drop(release);
+        });
+    }
+}
+
+#[path = "stage_releases.rs"]
+pub(super) mod stage_releases;
+pub(super) use stage_releases::StageReleases;
+
+#[cfg(test)]
+#[path = "held_stage_tests.rs"]
+mod held_stage_tests;

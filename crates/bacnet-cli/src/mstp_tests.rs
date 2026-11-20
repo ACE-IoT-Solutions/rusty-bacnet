@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use bacnet_ops::destination::{self, Destination};
+use crate::destination;
+use bacnet_client::client::Broadcast;
 use bacnet_server::server::BACnetServer;
 use bacnet_transport::mstp::{LoopbackSerial, MstpTransport};
 use bacnet_types::enums::{ObjectType, PropertyIdentifier};
@@ -18,11 +19,10 @@ fn server_database() -> (
 ) {
     use bacnet_objects::analog::AnalogInputObject;
     use bacnet_objects::device::{DeviceConfig, DeviceObject};
-    use bacnet_objects::traits::BACnetObject;
     let identity = bacnet_objects::DeviceIdentity::new(SERVER_INSTANCE, 260)
         .and_then(|identity| identity.with_max_apdu(480))
         .unwrap();
-    let mut device = DeviceObject::new(DeviceConfig {
+    let device = DeviceObject::new(DeviceConfig {
         identity: identity.clone(),
         ..Default::default()
     })
@@ -34,7 +34,6 @@ fn server_database() -> (
     )
     .unwrap();
     ai2.set_present_value(51.0);
-    device.set_object_list(vec![device.object_identifier(), ai2.object_identifier()]);
     let mut db = bacnet_objects::database::ObjectDatabase::new();
     db.add(Box::new(device)).unwrap();
     db.add(Box::new(ai2)).unwrap();
@@ -630,9 +629,9 @@ async fn the_cli_client_discovers_and_reads_a_server_on_the_trunk() {
     let deadline = Duration::from_secs(30);
     let device = tokio::time::timeout(deadline, async {
         loop {
-            client.who_is(None).await.unwrap();
+            client.who_is(Broadcast::Global, None).await.unwrap();
             for _ in 0..20 {
-                if let Some(device) = client.get_device(SERVER_INSTANCE).await {
+                if let Some(device) = client.get_device(SERVER_INSTANCE).await.unwrap() {
                     return device;
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -649,25 +648,11 @@ async fn the_cli_client_discovers_and_reads_a_server_on_the_trunk() {
         let to = destination::resolve(&client, target, Duration::from_secs(1))
             .await
             .unwrap();
-        let ack = match &to {
-            Destination::Mac(mac) => {
-                assert_eq!(mac.as_slice(), [SERVER_MAC], "{target}");
-                client
-                    .read_property(mac, ai2, PropertyIdentifier::PRESENT_VALUE, None)
-                    .await
-            }
-            Destination::Device(instance) => {
-                client
-                    .read_property_from_device(
-                        *instance,
-                        ai2,
-                        PropertyIdentifier::PRESENT_VALUE,
-                        None,
-                    )
-                    .await
-            }
-        }
-        .unwrap();
+        assert_eq!(to.address.mac(), [SERVER_MAC], "{target}");
+        let ack = to
+            .read_property(&client, ai2, PropertyIdentifier::PRESENT_VALUE, None)
+            .await
+            .unwrap();
         let (value, _) =
             bacnet_encoding::primitives::decode_application_value(&ack.property_value, 0).unwrap();
         assert_eq!(value, PropertyValue::Real(51.0), "{target}");

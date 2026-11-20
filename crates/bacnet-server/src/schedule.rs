@@ -56,8 +56,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::committed_cov::{BackgroundCommit, CommittedCov};
+use crate::committed_cov::{BackgroundCommit, CommitTransition, CommittedCov};
 use crate::cov::CovSubscriptionTable;
+use bacnet_device_core::write::local;
 use bacnet_objects::clock::ClockFrame;
 use bacnet_objects::command_source::CommandOrigin;
 use bacnet_objects::database::ObjectDatabase;
@@ -111,21 +112,24 @@ pub async fn tick_schedules(db: &Arc<RwLock<ObjectDatabase>>) {
 
 /// Evaluate schedules for the live server, returning the COV fanout owed for
 /// the objects they wrote, and any Command runs those writes started, once
-/// the database guard is dropped.
+/// the database guard is dropped. Each object the pass changed commits its
+/// intrinsic transition under the pass's guard through `transition` (#2535).
 pub(crate) async fn tick_schedules_committed(
     db: &Arc<RwLock<ObjectDatabase>>,
     cov_table: &RwLock<CovSubscriptionTable>,
+    transition: CommitTransition<'_>,
 ) -> CommittedCov {
     let mut db_w = db.write().await;
     let schedules = db_w.find_by_type(ObjectType::SCHEDULE);
     let commit = pass(&mut db_w, schedules);
-    commit.finish(db, &mut db_w, cov_table).await
+    commit.finish(db, &mut db_w, cov_table, transition).await
 }
 
 /// Evaluate the Schedules among `written`, objects a write just committed to,
 /// under `db_w`, the guard on `db` that committed it; returns the COV fanout
 /// owed for the objects they wrote, and any Command runs those writes
-/// started, once that guard is dropped.
+/// started, once that guard is dropped. Each object the pass changed
+/// commits its transition under that guard through `transition` (#2535).
 ///
 /// This is the pass [`tick_schedules_committed`] runs, limited to those
 /// Schedules, so the new contents take effect without waiting for the next
@@ -135,6 +139,7 @@ pub(crate) async fn reevaluate_written(
     db_w: &mut ObjectDatabase,
     written: &[ObjectIdentifier],
     cov_table: &RwLock<CovSubscriptionTable>,
+    transition: CommitTransition<'_>,
 ) -> CommittedCov {
     let schedules: Vec<_> = written
         .iter()
@@ -145,7 +150,7 @@ pub(crate) async fn reevaluate_written(
         return CommittedCov::default();
     }
     let commit = pass(db_w, schedules);
-    commit.finish(db, db_w, cov_table).await
+    commit.finish(db, db_w, cov_table, transition).await
 }
 
 /// Retry, under `db_w`, the refused references that name objects just added
@@ -351,14 +356,14 @@ fn deliver(
 /// The origin a Schedule's writes carry: the local Device, with the Schedule
 /// as the initiating object, while both are in the database.
 fn command_origin(db: &ObjectDatabase, schedule: ObjectIdentifier) -> Option<CommandOrigin> {
-    crate::command_source::resolve_local(db, crate::LocalCommandSource::Object(schedule)).ok()
+    local::resolve_source(db, local::LocalCommandSource::Object(schedule)).ok()
 }
 
 /// [`command_origin`] for a Schedule already out of the database: the local
 /// Device, while its object is here, with `schedule` as the initiating
 /// object, the origin its writes carried while it was in.
 fn removed_origin(db: &ObjectDatabase, schedule: ObjectIdentifier) -> Option<CommandOrigin> {
-    match crate::command_source::resolve_local(db, crate::LocalCommandSource::ServerDevice) {
+    match local::resolve_source(db, local::LocalCommandSource::ServerDevice) {
         Ok(CommandOrigin::Local { owner_device, .. }) => Some(CommandOrigin::Local {
             owner_device,
             initiating_object: Some(schedule),
@@ -457,7 +462,7 @@ fn write_targets(
             reference.property_array_index,
         )
         .and_then(|()| {
-            crate::command_source::write_target(
+            local::write_as(
                 target_obj,
                 property,
                 reference.property_array_index,

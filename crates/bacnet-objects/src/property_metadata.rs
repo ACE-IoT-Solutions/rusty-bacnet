@@ -140,7 +140,7 @@ pub enum PropertyWriteCapability {
     /// The property-write route is available whatever Out_Of_Service and
     /// command ownership say. The object's own checks may still refuse a
     /// value, or a write in some state: an Audit Log refuses a Buffer_Size
-    /// write while Log_Enable is TRUE, for example.
+    /// write while Enable is TRUE, for example.
     Always,
     /// The property-write route is available only while Out_Of_Service is true.
     WhenOutOfService,
@@ -317,6 +317,62 @@ pub(crate) const COV_INCREMENT_ROW: PropertyMetadata = PropertyMetadata::new(
     Some(PropertyPresenceCondition::CovReporting),
     PropertyWriteCapability::Always,
 );
+
+/// The Property_List row every object type has, read-only.
+pub(crate) const PROPERTY_LIST_ROW: PropertyMetadata = PropertyMetadata::new(
+    PropertyIdentifier::PROPERTY_LIST,
+    PropertyConformance::RequiredRead,
+    None,
+    PropertyWriteCapability::ReadOnly,
+);
+
+/// One static table of the rows of `groups`, in order, so a table can be
+/// written as the groups of rows it shares with others (#2182). The join
+/// runs at compile time: the table is the one slice it would be written out
+/// by hand, and the groups cost nothing at run time.
+macro_rules! joined_rows {
+    ($($group:expr),+ $(,)?) => {{
+        const GROUPS: &[&[$crate::property_metadata::PropertyMetadata]] = &[$($group),+];
+        const ROWS: [$crate::property_metadata::PropertyMetadata;
+            $crate::property_metadata::row_count(GROUPS)] =
+            $crate::property_metadata::join_rows(GROUPS);
+        &ROWS
+    }};
+}
+pub(crate) use joined_rows;
+
+/// How many rows `groups` hold together, for [`joined_rows!`].
+pub(crate) const fn row_count(groups: &[&[PropertyMetadata]]) -> usize {
+    let mut count = 0;
+    let mut group = 0;
+    while group < groups.len() {
+        count += groups[group].len();
+        group += 1;
+    }
+    count
+}
+
+/// The rows of `groups` in one array of their [`row_count`], for
+/// [`joined_rows!`].
+pub(crate) const fn join_rows<const N: usize>(
+    groups: &[&[PropertyMetadata]],
+) -> [PropertyMetadata; N] {
+    // Every slot is overwritten below; Property_List only fills the array.
+    let mut rows = [PROPERTY_LIST_ROW; N];
+    let mut filled = 0;
+    let mut group = 0;
+    while group < groups.len() {
+        let mut row = 0;
+        while row < groups[group].len() {
+            rows[filled] = groups[group][row];
+            filled += 1;
+            row += 1;
+        }
+        group += 1;
+    }
+    assert!(filled == N, "the array holds every row of the groups");
+    rows
+}
 
 /// Whether `property` belongs in an object's Property_List.
 ///

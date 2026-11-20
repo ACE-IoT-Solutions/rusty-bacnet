@@ -1,10 +1,11 @@
 //! Saving object state off the object database lock (#1270).
 //!
 //! The Audit Log, the Notification Forwarder, the Notification Class, the
-//! Access Rights object, and the Timer and Channel keep state in storage the
-//! application provides ([`AuditLogPersistence`],
+//! Access Rights object, the Timer and Channel, and the Load Control keep
+//! state in storage the application provides ([`AuditLogPersistence`],
 //! [`NotificationForwarderPersistence`], [`NotificationClassPersistence`],
-//! [`AccessRightsPersistence`] and [`WriteConfigPersistence`]).
+//! [`AccessRightsPersistence`], [`WriteConfigPersistence`] and
+//! [`LoadControlPersistence`]).
 //! A storage call can be slow, since the file backends write, synchronize and
 //! rename, so none of these objects makes one while its caller holds the
 //! database's write guard. They all follow the pattern this module provides.
@@ -61,7 +62,12 @@
 //! - a write nobody staged, such as application code writing through the
 //!   database;
 //! - an in-place change to an Audit Log, such as `add_record`, which first
-//!   lets a staged commit land, waiting for it if it is still running.
+//!   lets a staged commit land, waiting for it if it is still running;
+//! - the last write of a request whose stage an object keeping reporting
+//!   rows finds stale: something changed the object between the stage and
+//!   the write (a setter, the inhibit follower), so the rows the write
+//!   leaves aren't those the stage saved. The step isn't taken, and the
+//!   write saves where it is, as one nobody staged (#2431).
 //!
 //! A write nobody staged takes the place of a staged write it doesn't match
 //! only when the object will make it: a write the object refuses leaves the
@@ -135,6 +141,7 @@
 //! [`AccessRightsPersistence`]: crate::access_control::AccessRightsPersistence
 //! [`LogPersistence`]: crate::log_persistence::LogPersistence
 //! [`WriteConfigPersistence`]: crate::write_config::WriteConfigPersistence
+//! [`LoadControlPersistence`]: crate::load_control::LoadControlPersistence
 
 use alloc::sync::Arc;
 use core::future::Future;
@@ -177,10 +184,11 @@ pub use file::MemoryFiles;
 /// It counts from the end of the save, so a slow save never uses it up. Past
 /// it the request is taken to be gone, and the object drops the staged state
 /// at the next stage or operation task call.
-#[cfg(not(test))]
+#[cfg(all(not(test), feature = "durable-writes"))]
 pub(crate) const STAGED_WRITE_LIFETIME: core::time::Duration = core::time::Duration::from_secs(10);
 /// Short in tests, so one can watch a forgotten staged write go.
 #[cfg(test)]
+#[cfg_attr(not(feature = "durable-writes"), allow(dead_code))]
 pub(crate) const STAGED_WRITE_LIFETIME: core::time::Duration =
     core::time::Duration::from_millis(300);
 
@@ -250,7 +258,7 @@ impl Event {
 pub struct SaveWait {
     event: Arc<Event>,
     /// A second wait this one also ends after, when an object that keeps
-    /// two kinds of state in storage settles both ([`and`](Self::and)).
+    /// two kinds of state in storage settles both (`and`).
     then: Option<Arc<SaveWait>>,
 }
 
@@ -260,6 +268,7 @@ impl SaveWait {
     }
 
     /// A wait that ends once both this wait and `other` have.
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn and(self, other: SaveWait) -> SaveWait {
         let then = match self.then {
             Some(then) => SaveWait::clone(&then).and(other),
@@ -377,6 +386,7 @@ impl SaveTicket {
     /// releasing a staged write can show it staged it. A colour object
     /// stages a Tags write and a default write for one request, and hands
     /// it their two waits joined (#1956).
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn issued(&self, wait: &SaveWait) -> bool {
         Arc::ptr_eq(&self.slot.done, &wait.event)
             || wait.then.as_deref().is_some_and(|then| self.issued(then))
@@ -393,7 +403,7 @@ impl SaveTicket {
     }
 
     /// Whether a staged write waiting on this save has outlived
-    /// [`STAGED_WRITE_LIFETIME`] by now. Never without std, which has no
+    /// `STAGED_WRITE_LIFETIME` by now. Never without std, which has no
     /// clock to tell.
     pub(crate) fn outlived(&self) -> bool {
         #[cfg(feature = "std")]

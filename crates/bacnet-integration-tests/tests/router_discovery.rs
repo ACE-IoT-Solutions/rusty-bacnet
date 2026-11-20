@@ -9,8 +9,10 @@
 
 use std::time::Duration;
 
-use bacnet_client::client::{BACnetClient, DiscoveredRouter};
-use bacnet_network::layer::{NetworkReport, ReceivedNetworkReport};
+use bacnet_client::client::{
+    BACnetClient, Broadcast, DiscoveredRouter, RoutingTableError, RoutingTableWait, Station,
+};
+use bacnet_network::layer::{NetworkReport, ReceivedNetworkReport, RoutingTableEntry};
 use bacnet_network::router::{BACnetRouter, RouterOptions, RouterPort, StartedRouter};
 use bacnet_npdu::{RejectMessageReason, RejectMessageToNetwork};
 use bacnet_objects::analog::AnalogInputObject;
@@ -84,7 +86,10 @@ async fn who_has_collects_the_i_have_of_a_local_server() {
         WhoHasObject::Name(NAME.into()),
         WhoHasObject::Identifier(supply_air()),
     ] {
-        let replies = client.who_has_replies(object, None, WAIT).await.unwrap();
+        let replies = client
+            .who_has_replies(Broadcast::Global, object, None, WAIT)
+            .await
+            .unwrap();
         assert_eq!(replies.len(), 1, "{replies:?}");
         let reply = &replies[0];
         assert_eq!(reply.i_have.device_identifier, device());
@@ -97,23 +102,40 @@ async fn who_has_collects_the_i_have_of_a_local_server() {
     // No such name, and a range that leaves the device out: nothing, once
     // the wait is over.
     let unknown = client
-        .who_has_replies(WhoHasObject::Name("Return Air Temp".into()), None, WAIT)
+        .who_has_replies(
+            Broadcast::Global,
+            WhoHasObject::Name("Return Air Temp".into()),
+            None,
+            WAIT,
+        )
         .await
         .unwrap();
     assert_eq!(unknown, []);
     let elsewhere = DeviceInstanceRange::new(1, 10).unwrap();
     let out_of_range = client
-        .who_has_replies(WhoHasObject::Name(NAME.into()), Some(elsewhere), WAIT)
+        .who_has_replies(
+            Broadcast::Global,
+            WhoHasObject::Name(NAME.into()),
+            Some(elsewhere),
+            WAIT,
+        )
         .await
         .unwrap();
     assert_eq!(out_of_range, []);
 
     // An I-Have for another question, heard during the wait, isn't kept.
     let (unrelated, sent) = tokio::join!(
-        client.who_has_replies(WhoHasObject::Name("Return Air Temp".into()), None, WAIT),
+        client.who_has_replies(
+            Broadcast::Global,
+            WhoHasObject::Name("Return Air Temp".into()),
+            None,
+            WAIT
+        ),
         async {
             tokio::time::sleep(Duration::from_millis(10)).await;
-            client.who_has(WhoHasObject::Name(NAME.into()), None).await
+            client
+                .who_has(Broadcast::Global, WhoHasObject::Name(NAME.into()), None)
+                .await
         }
     );
     sent.unwrap();
@@ -146,7 +168,12 @@ async fn the_same_answer_twice_is_listed_once() {
         peer
     });
     let replies = client
-        .who_has_replies(WhoHasObject::Name(NAME.into()), None, WAIT)
+        .who_has_replies(
+            Broadcast::Global,
+            WhoHasObject::Name(NAME.into()),
+            None,
+            WAIT,
+        )
         .await
         .unwrap();
     assert_eq!(replies.len(), 1, "{replies:?}");
@@ -162,7 +189,7 @@ async fn every_i_have_reaches_the_event_subscribers() {
     let mut client = client(client_end).await;
     let mut events = client.i_have_events();
     client
-        .who_has(WhoHasObject::Name(NAME.into()), None)
+        .who_has(Broadcast::Global, WhoHasObject::Name(NAME.into()), None)
         .await
         .unwrap();
     let event = tokio::time::timeout(WAIT, events.recv())
@@ -241,10 +268,8 @@ async fn the_router_and_its_remote_network_are_found_and_reached() {
 
     // The device behind the router is read through it.
     let ack = client
-        .read_property_routed(
-            &[ROUTER_MAC],
-            REMOTE,
-            &[STATION],
+        .read_property(
+            &Station::routed(&[ROUTER_MAC], REMOTE, &[STATION]),
             supply_air(),
             PropertyIdentifier::OBJECT_NAME,
             None,
@@ -267,7 +292,12 @@ async fn the_router_and_its_remote_network_are_found_and_reached() {
 async fn who_has_finds_an_object_behind_the_router() {
     let (mut router, mut server, mut client) = routed_site().await;
     let replies = client
-        .who_has_replies(WhoHasObject::Name(NAME.into()), None, WAIT)
+        .who_has_replies(
+            Broadcast::Global,
+            WhoHasObject::Name(NAME.into()),
+            None,
+            WAIT,
+        )
         .await
         .unwrap();
     assert_eq!(replies.len(), 1, "{replies:?}");
@@ -286,7 +316,7 @@ async fn who_has_finds_an_object_behind_the_router() {
 async fn a_reject_for_an_unknown_network_is_surfaced() {
     let (mut router, mut server, mut client) = routed_site().await;
     let mut reports = client.network_reports();
-    client.who_is_network(99, None).await.unwrap();
+    client.who_is(Broadcast::Network(99), None).await.unwrap();
     let received = next_report(&mut reports).await;
     assert_eq!(received.source_mac.as_slice(), [ROUTER_MAC]);
     assert_eq!(
@@ -324,4 +354,77 @@ async fn the_router_answers_what_is_network_number() {
     client.stop().await.unwrap();
     server.stop().await.unwrap();
     router.stop().await.unwrap();
+}
+
+/// A router with three ports returns its whole table to a query from the
+/// client's link, and the query changes nothing: asking twice gives the
+/// same table, and the router still routes.
+#[tokio::test(start_paused = true)]
+async fn the_routing_table_of_a_three_port_router_is_read() {
+    let (client_end, near) = LoopbackTransport::pair(vec![0x0A], vec![ROUTER_MAC]);
+    let (far_a, _station_a) = LoopbackTransport::pair(vec![0x02], vec![0x05]);
+    let (far_b, _station_b) = LoopbackTransport::pair(vec![0x03], vec![0x06]);
+    let port = |transport, network_number| RouterPort {
+        transport: AnyTransport::Loopback(transport),
+        network_number,
+    };
+    let StartedRouter { mut router, .. } = BACnetRouter::start(
+        vec![port(near, 1), port(far_a, 2), port(far_b, 3)],
+        RouterOptions::new(),
+    )
+    .await
+    .unwrap();
+    let mut client = client(client_end).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let first = client
+        .routing_table(&[ROUTER_MAC], RoutingTableWait::default())
+        .await
+        .unwrap();
+    let again = client
+        .routing_table(&[ROUTER_MAC], RoutingTableWait::default())
+        .await
+        .unwrap();
+    assert_eq!(first, again, "a query changes nothing");
+    assert!(!first.truncated);
+    let mut networks: Vec<(u16, u8)> = first
+        .entries
+        .iter()
+        .map(|entry| (entry.network, entry.port_id))
+        .collect();
+    networks.sort_unstable();
+    // Every network the router joins, each with the port that reaches it.
+    assert_eq!(
+        networks
+            .iter()
+            .map(|&(network, _)| network)
+            .collect::<Vec<_>>(),
+        [1, 2, 3],
+        "{first:?}"
+    );
+    let mut ports: Vec<u8> = networks.iter().map(|&(_, port)| port).collect();
+    ports.sort_unstable();
+    ports.dedup();
+    assert_eq!(ports.len(), 3, "one port each: {first:?}");
+    assert!(
+        first
+            .entries
+            .iter()
+            .all(|entry: &RoutingTableEntry| entry.port_info.is_empty())
+    );
+
+    // A router that is gone gives an error, never an empty table: on this
+    // loopback link its end closing stops the client's dispatch too.
+    router.stop().await.unwrap();
+    let gone = client
+        .routing_table(&[ROUTER_MAC], RoutingTableWait::default())
+        .await;
+    assert!(
+        matches!(
+            gone,
+            Err(RoutingTableError::ClientStopped | RoutingTableError::Send(_))
+        ),
+        "{gone:?}"
+    );
+    client.stop().await.unwrap();
 }

@@ -11,7 +11,7 @@
 //!
 //! A request can make several writes to one object: a WritePropertyMultiple
 //! that provisions an Access Rights object writes both rule arrays and
-//! Enable. The object folds them into one staged save. [`steps`] works out,
+//! Enable. The object folds them into one staged save. `steps` works out,
 //! in the request's order, the state each write leaves on top of the ones
 //! before it; a write the object will refuse ends the list, since the
 //! request makes no write after it, and a NULL the object refuses as the
@@ -36,7 +36,7 @@
 //! `stop()` aborts requests, and an application can drop a local write's
 //! future. Its staged write then lingers, and storage may hold a state the
 //! object never served. Two checks drop it once
-//! [`STAGED_WRITE_LIFETIME`] has passed since
+//! `STAGED_WRITE_LIFETIME` has passed since
 //! its save finished: the next stage of a write to the object
 //! ([`busy`](StagedSaves::busy)), and the object's call from the server's
 //! once-a-second operation task ([`expire`](StagedSaves::expire)), which
@@ -46,38 +46,51 @@
 //! Neither check runs once the server has stopped, so two more cover the
 //! end of an object's life (#1363). The server's `stop()`, once it has
 //! joined every request, drops what is still staged
-//! ([`drop_forgotten`](StagedSaves::drop_forgotten)) and waits for the
+//! (`drop_forgotten`) and waits for the
 //! correcting save. And an object dropped with a write still staged puts
 //! storage back as it goes: `StagedSaves` keeps, beside the staged write,
 //! the state the object served at its latest storage call, and its `Drop`
 //! saves that state, unless the staged save failed, before the writer's own
 //! drop waits for its thread. An object that stages through `StagedSaves` gets
-//! this without a `Drop` of its own; [`stage`](StagedSaves::stage) takes
+//! this without a `Drop` of its own; `stage` takes
 //! the served state, and [`correct`](StagedSaves::correct) keeps it current.
 
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use crate::prelude::*;
+#[cfg(feature = "durable-writes")]
 use alloc::collections::VecDeque;
+#[cfg(feature = "durable-writes")]
 use alloc::sync::Arc;
 use core::time::Duration;
 #[cfg(all(test, feature = "std"))]
 use std::time::Instant;
 
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use bacnet_types::enums::{ErrorClass, ErrorCode, PropertyIdentifier};
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
 use bacnet_types::error::{Error, RemoteError};
 use bacnet_types::primitives::PropertyValue;
 
-use super::{
-    Event, PendingWrite, STAGED_WRITE_LIFETIME, SaveTicket, SaveWait, SaveWriter, StageStep,
-};
+#[cfg(feature = "durable-writes")]
+use super::{Event, STAGED_WRITE_LIFETIME, SaveTicket};
+#[cfg_attr(not(feature = "durable-writes"), allow(unused_imports))]
+use super::{PendingWrite, SaveWait, SaveWriter, StageStep};
 
-/// One write of a staged save, and the state `N` it leaves.
+/// One write of a staged save, and what the object takes for it, `N`.
 pub(crate) struct Step<N> {
     /// The write as its request makes it. Its array index is part of it, so
     /// a write of the same value to another element of an array can't take
     /// this one's state.
+    #[cfg(feature = "durable-writes")]
     write: PendingWrite,
-    /// The state the write leaves, on top of the steps before it, in the
-    /// form the object holds it.
+    /// What the object takes as the write is made, in the form it holds it:
+    /// the state the write leaves on top of the steps before it; or only
+    /// what the write sets, made then on the state served (an Access Rights
+    /// rule or array size, #2526); or nothing of its own, for an object that
+    /// works the write out again or makes it on its own state (Tags and a
+    /// kept Description, #2546; a Channel, a Timer and a Load Control,
+    /// #2526; a log, #2431; and the reporting rows, #2414, whose last step
+    /// keeps the snapshot its stage saved).
     pub(crate) next: N,
 }
 
@@ -90,6 +103,7 @@ pub(crate) struct Step<N> {
 /// server answers it as a success that leaves the property as it is
 /// (#1396); none of the properties these objects save is commandable or
 /// takes a NULL. So the steps go on past it.
+#[cfg(feature = "durable-writes")]
 pub(crate) fn steps<N>(
     writes: &[PendingWrite],
     mut next: impl FnMut(&[Step<N>], &PendingWrite) -> Result<Option<N>, Error>,
@@ -112,6 +126,7 @@ pub(crate) fn steps<N>(
 /// Whether `error`, an object's refusal of `value`, is a NULL refused as
 /// the wrong datatype: a value that encodes as one application NULL,
 /// refused with PROPERTY / INVALID_DATA_TYPE.
+#[cfg(feature = "durable-writes")]
 fn relinquishes_nothing(value: &PropertyValue, error: &Error) -> bool {
     let (Error::Remote(RemoteError::Error { class, code }) | Error::Structured { class, code, .. }) =
         error
@@ -121,8 +136,38 @@ fn relinquishes_nothing(value: &PropertyValue, error: &Error) -> bool {
     is_null(value) && *class == ErrorClass::PROPERTY && *code == ErrorCode::INVALID_DATA_TYPE
 }
 
+/// Whether `staged` and `written` are one written value: the same
+/// datatype holding the same bits, element by element through a list.
+///
+/// `==` isn't that test. A REAL or Double that is no number doesn't equal
+/// itself, so a request's own write would pass for another request's and
+/// be saved again where it stands, under the caller's lock (#2331); and
+/// the two zeros are equal, though a step worked out from one isn't the
+/// state a write of the other leaves.
+#[cfg(feature = "durable-writes")]
+pub(crate) fn same_written(staged: &PropertyValue, written: &PropertyValue) -> bool {
+    match (staged, written) {
+        (PropertyValue::Real(staged), PropertyValue::Real(written)) => {
+            staged.to_bits() == written.to_bits()
+        }
+        (PropertyValue::Double(staged), PropertyValue::Double(written)) => {
+            staged.to_bits() == written.to_bits()
+        }
+        (PropertyValue::List(staged), PropertyValue::List(written)) => {
+            staged.len() == written.len()
+                && staged
+                    .iter()
+                    .zip(written)
+                    .all(|(staged, written)| same_written(staged, written))
+        }
+        // No other datatype holds a floating-point number.
+        _ => staged == written,
+    }
+}
+
 /// Whether `value` encodes as one application NULL: `Null` itself, the raw
 /// octets a raw-octet property receives for one, or a list of one NULL.
+#[cfg(feature = "durable-writes")]
 fn is_null(value: &PropertyValue) -> bool {
     match value {
         PropertyValue::Null => true,
@@ -135,6 +180,7 @@ fn is_null(value: &PropertyValue) -> bool {
 /// The writes staged for a request: the steps it has still to take, saving
 /// on the writer as one, and the snapshot `S` of the state the object serves
 /// meanwhile.
+#[cfg(feature = "durable-writes")]
 struct StagedWrite<S, N> {
     /// The steps not taken yet, in the request's order; never empty.
     steps: VecDeque<Step<N>>,
@@ -169,12 +215,16 @@ struct StagedWrite<S, N> {
 /// to keep the copy a staged write holds current.
 pub(crate) struct StagedSaves<S: Send + 'static, N> {
     writer: SaveWriter<S>,
+    #[cfg(feature = "durable-writes")]
     staged: Option<StagedWrite<S, N>>,
     /// A staged write was dropped whose save did not fail, so storage may
     /// hold a state the object never served: the served state that write
     /// kept, if it kept one. [`correct`](Self::correct) saves a fresh
     /// snapshot instead; a drop saves this one.
+    #[cfg(feature = "durable-writes")]
     correction: Option<Option<S>>,
+    #[cfg(not(feature = "durable-writes"))]
+    _staged: core::marker::PhantomData<N>,
 }
 
 impl<S: Send + 'static, N> StagedSaves<S, N> {
@@ -182,8 +232,12 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
     pub(crate) fn new(writer: SaveWriter<S>) -> Self {
         Self {
             writer,
+            #[cfg(feature = "durable-writes")]
             staged: None,
+            #[cfg(feature = "durable-writes")]
             correction: None,
+            #[cfg(not(feature = "durable-writes"))]
+            _staged: core::marker::PhantomData,
         }
     }
 
@@ -193,19 +247,21 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
     /// is dropped.
     /// Without std there is no clock to tell, so only the operation task's
     /// call ([`expire`](Self::expire)) drops one.
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn busy(&mut self) -> Option<SaveWait> {
         self.busy_unless(SaveTicket::outlived)
     }
 
     /// [`busy`](Self::busy), judged at `now`.
     // std: judged on the wall clock.
-    #[cfg(all(test, feature = "std"))]
+    #[cfg(all(test, feature = "std", feature = "durable-writes"))]
     pub(crate) fn busy_at(&mut self, now: Instant) -> Option<SaveWait> {
         self.busy_unless(|ticket| ticket.outlived_at(now))
     }
 
     /// The wait for a staged write that holds the object, unless `outlived`
     /// says it has gone on too long; then it is dropped.
+    #[cfg(feature = "durable-writes")]
     fn busy_unless(&mut self, outlived: impl FnOnce(&SaveTicket) -> bool) -> Option<SaveWait> {
         let staged = self.staged.as_ref()?;
         if !outlived(&staged.ticket) {
@@ -220,6 +276,7 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
     /// `served`, the state the object serves now, with every step's state
     /// put into it by `apply`. `served` stays with the steps, as what storage
     /// goes back to should they be dropped. No steps stage nothing.
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn stage(
         &mut self,
         steps: Vec<Step<N>>,
@@ -241,12 +298,33 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
     }
 
     /// Stage `steps` as [`stage`](Self::stage) does, saving `snapshot`,
+    /// which the caller built with every step's state in it, and keeping
+    /// `served` beside them: for steps that hold less than the state they
+    /// leave, so a stage keeps one copy of it whatever the steps' number
+    /// (the reporting rows, #2414; Tags, a Channel, a Timer, a Load Control
+    /// and an Access Rights object, #2526).
+    #[cfg(feature = "durable-writes")]
+    pub(crate) fn stage_built(
+        &mut self,
+        steps: Vec<Step<N>>,
+        base: u64,
+        snapshot: S,
+        served: S,
+    ) -> StageStep {
+        if steps.is_empty() {
+            return StageStep::Skip;
+        }
+        self.stage_saving(steps, base, snapshot, Some(served))
+    }
+
+    /// Stage `steps` as [`stage`](Self::stage) does, saving `snapshot`,
     /// which the caller built with every step's state in it, and keeping no
     /// served state beside them. The caller puts storage back itself once a
     /// dropped staged write leaves a correction due
     /// ([`take_correction`](Self::take_correction)): a durable log commits
     /// the state it serves then, records included, rather than have a copy
     /// of them kept for the whole stage (#1952).
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn stage_snapshot(
         &mut self,
         steps: Vec<Step<N>>,
@@ -259,6 +337,7 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
         self.stage_saving(steps, base, snapshot, None)
     }
 
+    #[cfg(feature = "durable-writes")]
     fn stage_saving(
         &mut self,
         steps: Vec<Step<N>>,
@@ -294,6 +373,7 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
     /// server's once-a-second task a forgotten write goes within the lifetime
     /// and one tick of its save. A save still running never expires. A clock
     /// that moved back, such as a newly bound one, starts the count again.
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn expire(&mut self, now: Duration) {
         let Some(staged) = self.staged.as_mut() else {
             return;
@@ -317,6 +397,12 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
     /// this write; a staged write is left as it is then, for the object to
     /// [drop](Self::drop_staged) only once it knows the write will be made
     /// (#1424).
+    ///
+    /// The step is this write when its value is the staged one bit for bit
+    /// ([`same_written`]), so a value that isn't equal to itself, a REAL
+    /// that is no number, is still taken by the request that staged it
+    /// (#2331).
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn claim(
         &mut self,
         property: PropertyIdentifier,
@@ -324,18 +410,38 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
         value: &PropertyValue,
         base: u64,
     ) -> Option<Result<N, Error>> {
+        self.claim_unless(property, array_index, value, base, |_| false)
+    }
+
+    /// [`claim`](Self::claim), for an object whose step keeps what its stage
+    /// saved, or one it might not be able to make: once the save has
+    /// succeeded, a step that `stale` says the object would no longer save,
+    /// or can't make, isn't taken. That is `None`, as for another write, so
+    /// the object makes or refuses the write where it is (#2431, #2526).
+    #[cfg(feature = "durable-writes")]
+    pub(crate) fn claim_unless(
+        &mut self,
+        property: PropertyIdentifier,
+        array_index: Option<u32>,
+        value: &PropertyValue,
+        base: u64,
+        stale: impl FnOnce(&N) -> bool,
+    ) -> Option<Result<N, Error>> {
         let staged = self.staged.as_mut()?;
         let next = &staged.steps.front()?.write;
         if next.property != property
             || next.array_index != array_index
             || staged.base.wrapping_add(staged.taken) != base
-            || next.value != *value
+            || !same_written(&next.value, value)
         {
             return None;
         }
         if let Err(error) = staged.ticket.take_outcome() {
             self.staged.take().expect("matched above").released.set();
             return Some(Err(error));
+        }
+        if stale(&staged.steps.front().expect("matched above").next) {
+            return None;
         }
         let step = staged.steps.pop_front().expect("matched above");
         staged.taken = staged.taken.wrapping_add(1);
@@ -347,6 +453,7 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
 
     /// Whether writes are staged that their request has still to take or
     /// release.
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn is_staged(&self) -> bool {
         self.staged.is_some()
     }
@@ -364,6 +471,7 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
 
     /// The request that staged a write and was given `wait` is done. A
     /// staged write another request made is left alone.
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn release(&mut self, wait: &SaveWait) {
         if self
             .staged
@@ -375,6 +483,7 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
     }
 
     /// Drop the staged write, if any, waking the requests that wait for it.
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn drop_staged(&mut self) {
         let Some(staged) = self.staged.take() else {
             return;
@@ -389,6 +498,7 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
 
     /// Whether a dropped staged write left a correction due, clearing it:
     /// for a caller that queues the correcting save its own way.
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn take_correction(&mut self) -> bool {
         self.correction.take().is_some()
     }
@@ -398,6 +508,7 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
     /// state at once; it lands after the dropped write's save, since saves
     /// run in order. If a write is still staged, keep the state with it
     /// instead, for a drop of the object to put back.
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn correct(&mut self, served: impl FnOnce() -> S) {
         if self.take_correction() {
             self.writer.submit_coalescing(served());
@@ -406,10 +517,31 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
         }
     }
 
+    /// [`correct`](Self::correct), after a storage call that took one staged
+    /// step: a staged write still holding the object brings the served state
+    /// it keeps up to date with `follow`, in place, rather than having it
+    /// built again (Access Rights, #2526; Tags and a kept Description,
+    /// #2546). A correction still due saves `served()`, as `correct` does.
+    /// For Tags an allocation test pins the copy this saves
+    /// (`staged_commit_copies.rs`). For Access Rights none can: the tests
+    /// run in debug builds, where its own check builds the whole state.
+    #[cfg(feature = "durable-writes")]
+    pub(crate) fn correct_with(&mut self, served: impl FnOnce() -> S, follow: impl FnOnce(&mut S)) {
+        if self.take_correction() {
+            self.writer.submit_coalescing(served());
+        } else if let Some(staged) = self.staged.as_mut() {
+            match staged.served.as_mut() {
+                Some(kept) => follow(kept),
+                None => staged.served = Some(served()),
+            }
+        }
+    }
+
     /// No request is left to take or release the staged write, as once the
     /// server's `stop()` has joined its requests: drop it, queue the save of
     /// `served` that leaves due, and return a wait that ends once every save
     /// queued so far has run.
+    #[cfg(feature = "durable-writes")]
     pub(crate) fn drop_forgotten(&mut self, served: impl FnOnce() -> S) -> SaveWait {
         self.drop_staged();
         self.correct(served);
@@ -440,6 +572,7 @@ impl<S: Send + 'static, N> StagedSaves<S, N> {
     }
 }
 
+#[cfg(feature = "durable-writes")]
 impl<S: Send + 'static, N> Drop for StagedSaves<S, N> {
     /// The object is going away with nothing left to take a staged write.
     /// Drop it as a release would, and put storage back to the served state
@@ -452,5 +585,53 @@ impl<S: Send + 'static, N> Drop for StagedSaves<S, N> {
     }
 }
 
-#[cfg(test)]
+/// Without `durable-writes` no object stages: the built-in objects don't
+/// implement `DurableWrites` and nothing here queues a staged save, so the
+/// only staged state is none. These stand in for the calls the objects'
+/// inline saving paths make, so that code compiles unchanged and none of the
+/// staging code is linked. A write to an object with storage saves on the
+/// writer's own path, as one nobody staged does.
+#[cfg(not(feature = "durable-writes"))]
+impl<S: Send + 'static, N> StagedSaves<S, N> {
+    pub(crate) fn busy(&mut self) -> Option<SaveWait> {
+        None
+    }
+
+    pub(crate) fn expire(&mut self, _now: Duration) {}
+
+    pub(crate) fn claim(
+        &mut self,
+        _property: PropertyIdentifier,
+        _array_index: Option<u32>,
+        _value: &PropertyValue,
+        _base: u64,
+    ) -> Option<Result<N, Error>> {
+        None
+    }
+
+    pub(crate) fn claim_unless(
+        &mut self,
+        _property: PropertyIdentifier,
+        _array_index: Option<u32>,
+        _value: &PropertyValue,
+        _base: u64,
+        _stale: impl FnOnce(&N) -> bool,
+    ) -> Option<Result<N, Error>> {
+        None
+    }
+
+    pub(crate) fn is_staged(&self) -> bool {
+        false
+    }
+
+    pub(crate) fn drop_staged(&mut self) {}
+
+    pub(crate) fn take_correction(&mut self) -> bool {
+        false
+    }
+
+    pub(crate) fn correct(&mut self, _served: impl FnOnce() -> S) {}
+}
+
+#[cfg(all(test, feature = "durable-writes"))]
 mod tests;

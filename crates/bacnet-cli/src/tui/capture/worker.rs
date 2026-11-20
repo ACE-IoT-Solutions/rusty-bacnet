@@ -19,8 +19,6 @@ use std::time::{Duration, SystemTime};
 
 use bacnet_client::client::BACnetClient;
 use bacnet_ops::target::AddressStyle;
-use bacnet_transport::bip::BipTransport;
-use bacnet_transport::bip6::Bip6Transport;
 use bacnet_transport::mstp::MstpTransport;
 use bacnet_transport::mstp::codec::Frame;
 use bacnet_transport::mstp::monitor::{LineErrorKind, LineEvent, MonitorFrames, MonitorRecord};
@@ -232,9 +230,13 @@ pub(crate) fn route(
 /// header and data, a line error as a frame with no octets.
 fn from_record(record: MonitorRecord, epoch: SystemTime) -> CaptureFrame {
     let time = epoch + record.at;
-    let line = |link: &str, problem: String, destination: Option<u8>| {
+    // `refused` marks a frame the decoder refused (a CRC or header check),
+    // a parse failure as `summarize_frame` reports one; noise and a frame
+    // abort never were a frame, so they carry a problem only.
+    let line = |link: &str, problem: String, destination: Option<u8>, refused: bool| {
         let summary = FrameSummary {
-            link: link.into(),
+            link_message: link.into(),
+            parse_error: refused.then(|| problem.clone()),
             problem: Some(problem),
             link_destination: destination.map(|d| AddressStyle::Mstp.format(&[d])),
             ..FrameSummary::default()
@@ -256,7 +258,7 @@ fn from_record(record: MonitorRecord, epoch: SystemTime) -> CaptureFrame {
                     let summary = summarize_frame(Framing::Mstp, &wire);
                     (Bytes::from(wire), summary)
                 }
-                Err(error) => line("frame", format!("not encodable: {error}"), None),
+                Err(error) => line("frame", format!("not encodable: {error}"), None, false),
             }
         }
         LineEvent::Error {
@@ -274,10 +276,13 @@ fn from_record(record: MonitorRecord, epoch: SystemTime) -> CaptureFrame {
                 }
             ),
             destination,
+            true,
         ),
-        LineEvent::Noise { octets } => line("noise", format!("{octets} octets of noise"), None),
-        LineEvent::FrameAbort => line("frame-abort", "a frame stopped midway".into(), None),
-        _ => line("line-event", "unknown line event".into(), None),
+        LineEvent::Noise { octets } => {
+            line("noise", format!("{octets} octets of noise"), None, false)
+        }
+        LineEvent::FrameAbort => line("frame-abort", "a frame stopped midway".into(), None, false),
+        _ => line("line-event", "unknown line event".into(), None, false),
     };
     let (source, destination, via) = route(
         summary.link_source.clone().unwrap_or_default(),
@@ -302,10 +307,10 @@ fn from_record(record: MonitorRecord, epoch: SystemTime) -> CaptureFrame {
 /// The frame tap of a transport the CLI builds, and its link.
 pub(crate) fn tap_of<T: TransportPort + 'static>(transport: &T) -> Option<(FrameTap, Framing)> {
     let any = transport as &dyn Any;
-    if let Some(bip) = any.downcast_ref::<BipTransport>() {
+    if let Some(bip) = transport.bip_transport() {
         return Some((bip.frame_tap().clone(), Framing::Bip));
     }
-    if let Some(bip6) = any.downcast_ref::<Bip6Transport>() {
+    if let Some(bip6) = transport.bip6_transport() {
         return Some((bip6.frame_tap().clone(), Framing::Bip6));
     }
     #[cfg(feature = "sc-tls")]

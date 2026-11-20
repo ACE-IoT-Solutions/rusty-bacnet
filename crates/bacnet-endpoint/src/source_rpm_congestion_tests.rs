@@ -1,4 +1,4 @@
-use super::super::queued::Gated;
+use super::super::queued::gated;
 use super::*;
 use bacnet_transport::loopback::LoopbackTransport;
 use tokio::sync::{Notify, Semaphore};
@@ -45,13 +45,13 @@ async fn congestion(mode: u8) {
         .provision_audit_recipient(BACnetRecipient::Device(oid(ObjectType::DEVICE, 999)))
         .unwrap();
     let mut session = EndpointSession::new(
-        Gated {
-            inner: transport,
-            entered: entered.clone(),
-            gate: gate.clone(),
-        },
+        gated(transport, entered.clone(), gate.clone()),
         SessionRole::ClientOnly,
-        SessionConfig::default(),
+        // Sixteen slots, the default before #2635, so the queue fills below.
+        SessionConfig {
+            queue_capacity: 16,
+            ..SessionConfig::default()
+        },
     )
     .unwrap()
     .with_database(db)
@@ -77,7 +77,7 @@ async fn congestion(mode: u8) {
     let env = receive(&mut received).await;
     let (invoke, rpm) = request(&env);
     entered.notified().await; // consume the request's transport-entry marker
-    // Fill the default16-slot queue behind one held unrelated transport send.
+    // Fill the 16-slot queue behind one held unrelated transport send.
     // This deterministically forces the summary itself to encounter QueueFull.
     let egress = session.egress.as_ref().unwrap();
     let enqueue = || {

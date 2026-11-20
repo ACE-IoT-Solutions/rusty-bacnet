@@ -1,4 +1,5 @@
-//! The reservation follows the final network owner even when stop cannot unwrap it.
+//! Without a stop the reservation follows the final network owner; a stop
+//! releases it at once, whoever else still holds the network (#2617).
 use super::*;
 use bacnet_objects::network_port::{BipPortConfig, NetworkPortObject};
 
@@ -58,7 +59,13 @@ async fn registered_port_keeps_lease(stop_first: bool) -> std::io::Result<()> {
     let network = server.test_network().clone();
     let address = network.transport().bip_port().unwrap().endpoint;
     if stop_first {
-        assert!(server.stop().await.is_err());
+        // The stop goes through the network this test still holds: the
+        // reservation and the port go with it.
+        server.stop().await.unwrap();
+        assert!(matches!(db.write().await.remove(&oid), Ok(Some(_))));
+        std::net::UdpSocket::bind(address).map(drop)?;
+        drop((server, network));
+        return Ok(());
     }
     drop(server);
     assert!(db.write().await.remove(&oid).is_err());
@@ -79,6 +86,10 @@ async fn registered_port_keeps_lease(stop_first: bool) -> std::io::Result<()> {
     std::net::UdpSocket::bind(address).map(drop)
 }
 
+/// The server's twin of the endpoint test: the SimpleAck to a reserved audit
+/// notification is admitted while the learning control waits behind a reader
+/// for the write guard, with neither the control nor the database in its way
+/// (#2514), and stop aborts that control without waiting for the reader.
 #[tokio::test]
 async fn network_number_server_held_learning_preserves_audit_ack_progress() {
     use bacnet_endpoint_core::coordinator::CanonicalPeer;
@@ -127,6 +138,7 @@ async fn network_number_server_held_learning_preserves_audit_ack_progress() {
         .unwrap();
     let db = server.database().clone();
     let guard = db.read().await;
+    let requested = crate::network_number::control_writers_requested();
     peer.send_to(
         &[
             0x81, 4, 0, 16, 10, 1, 1, 8, 0xba, 0xc0, 1, 0x80, 0x13, 0, 19, 1,
@@ -135,8 +147,10 @@ async fn network_number_server_held_learning_preserves_audit_ack_progress() {
     )
     .await
     .unwrap();
+    // The learning control's own write is the one to wait for: the server's
+    // tasks queue for the guard too, so a queued writer alone proves nothing.
     tokio::time::timeout(Duration::from_secs(1), async {
-        while db.try_read().is_ok() {
+        while crate::network_number::control_writers_requested() == requested {
             tokio::task::yield_now().await;
         }
     })

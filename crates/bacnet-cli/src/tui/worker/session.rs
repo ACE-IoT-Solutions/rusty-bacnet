@@ -7,15 +7,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bacnet_client::client::BACnetClient;
-use bacnet_ops::engine::Engine;
 use bacnet_ops::limits::RequestLimits;
 use bacnet_ops::target::AddressStyle;
-use bacnet_services::who_is::WhoIsRequest;
+use bacnet_ops::{Client, DeviceAddress, Scope};
 use bacnet_transport::port::TransportPort;
 use bacnet_transport::sc::ScEvent;
-use bacnet_types::enums::UnconfirmedServiceChoice;
 use bacnet_types::error::Error;
-use bytes::BytesMut;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -431,7 +428,6 @@ async fn serve_with<T: TransportPort + 'static>(
     }
     tracing::info!("connected; local address {local}");
     let mut devices = client.device_events();
-    let mut collisions = client.device_collision_events();
     if sink
         .deliver(WorkerEvent::Connected {
             local: local.clone(),
@@ -450,8 +446,8 @@ async fn serve_with<T: TransportPort + 'static>(
         let (sc_stop, sc_stop_rx) = mpsc::channel::<()>(1);
         // Likewise for the MCP listener, which ends its agents' sessions.
         let (attach_stop, attach_stop_rx) = mpsc::channel::<()>(1);
-        // The watch list and attached agents read through one engine.
-        let engine = Arc::new(Engine::new(Arc::clone(&client), Arc::clone(&rate)));
+        // The watch list and attached agents read through one `bacnet_ops` client.
+        let ops = Client::new(Arc::clone(&client), Arc::clone(&rate));
         let quiet = options.safety.passive;
         // The browser and the watch list run beside this loop under
         // `join!`, so their jobs keep being polled while an arm here awaits;
@@ -492,7 +488,8 @@ async fn serve_with<T: TransportPort + 'static>(
                                 sink.deliver(WorkerEvent::OpFinished { op: old, outcome: OpOutcome::Cancelled }).await;
                             }
                             if let WhoIsScope::Directed { to: DirectedTo::Bip6(peer), .. } = &spec.scope {
-                                let vmac = Box::pin(bacnet_ops::target::bip6_vmac(client.transport(), *peer));
+                                let lookup = bacnet_ops::target::bip6_vmac(client.transport(), *peer);
+                                let vmac = Box::pin(async move { lookup.await.map_err(|e| crate::destination::with_link_flag(e.to_string())) });
                                 resolving = Some(Resolving { op, spec, vmac });
                             } else {
                                 listening = who_is(&client, &sink, op, &spec).await;
@@ -565,18 +562,13 @@ async fn serve_with<T: TransportPort + 'static>(
                         }
                     }
                     received = devices.recv(), if feed.devices_open => feed.on_device(&sink, received),
-                    received = collisions.recv(), if feed.collisions_open => {
-                        if let Some(event) = feed.on_collision(&sink, received) {
-                            sink.deliver(event).await;
-                        }
-                    }
                     () = tokio::time::sleep_until(deadline), if listening.is_some() => {
                         if let Some((op, _)) = listening.take() {
                             sink.deliver(WorkerEvent::OpFinished { op, outcome: OpOutcome::Completed }).await;
                         }
                     }
                     _ = resync.tick(), if feed.needs_resync => {
-                        let rows = client.discovered_devices().await.iter().map(|d| feed.row(d)).collect();
+                        let rows = client.discovered_devices().await.iter().filter_map(|d| feed.row(d)).collect();
                         if sink.offer(WorkerEvent::Snapshot(rows)) == super::Offer::Sent {
                             feed.needs_resync = false;
                         }
@@ -591,7 +583,7 @@ async fn serve_with<T: TransportPort + 'static>(
                 }
             }
         };
-        let watch_hub = super::watch::hub(&engine, &options.watch);
+        let watch_hub = super::watch::hub(&ops, &options.watch);
         tokio::join!(
             Box::pin(session),
             Box::pin(super::browse::run(&client, &sink, browse_rx, &rate)),
@@ -616,7 +608,7 @@ async fn serve_with<T: TransportPort + 'static>(
             Box::pin(crate::tui::capture::worker::run(
                 &*client, &sink, capture_rx, style
             )),
-            Box::pin(attached(&engine, &sink, &options, (attach_stop_rx, lend)))
+            Box::pin(attached(&ops, &sink, &options, (attach_stop_rx, lend)))
         );
     }
     stop_shared(client).await;
@@ -646,7 +638,7 @@ fn lent_desk() -> ((), Option<mpsc::Receiver<std::convert::Infallible>>) {
 /// The MCP listener, while the session runs.
 #[cfg(feature = "mcp")]
 async fn attached<T: TransportPort + 'static>(
-    engine: &Arc<Engine<T>>,
+    client: &Client<T>,
     sink: &EventSink,
     options: &SessionOptions,
     (stop, desk): (
@@ -654,13 +646,13 @@ async fn attached<T: TransportPort + 'static>(
         mpsc::Sender<bacnet_mcp::attach::DeskJob<T>>,
     ),
 ) {
-    crate::tui::attach::run(engine, options.attach.as_ref(), sink, stop, desk).await;
+    crate::tui::attach::run(client, options.attach.as_ref(), sink, stop, desk).await;
 }
 
 /// No MCP listener without the `mcp` feature.
 #[cfg(not(feature = "mcp"))]
 async fn attached<T: TransportPort + 'static>(
-    _engine: &Arc<Engine<T>>,
+    _client: &Client<T>,
     _sink: &EventSink,
     _options: &SessionOptions,
     _: (mpsc::Receiver<()>, ()),
@@ -746,31 +738,27 @@ async fn failed_who_is(sink: &EventSink, op: OpId, error: String) {
     .await;
 }
 
-/// Send the Who-Is `spec` describes. A directed one to a B/IPv6 address
-/// must have had its VMAC found first ([`WhoIsSpec::with_vmac`]).
-async fn send_who_is<T: TransportPort + 'static>(
+/// Send the Who-Is `spec` describes, through the scope every front end
+/// shares (#2560). A directed one to a B/IPv6 address must have had its
+/// VMAC found first ([`WhoIsSpec::with_vmac`]).
+pub(crate) async fn send_who_is<T: TransportPort + 'static>(
     client: &BACnetClient<T>,
     spec: &WhoIsSpec,
 ) -> Result<(), String> {
-    let range = spec.range;
-    let sent = match &spec.scope {
-        WhoIsScope::Local => {
-            let mut buf = BytesMut::new();
-            WhoIsRequest { range }.encode(&mut buf);
-            client
-                .broadcast_unconfirmed(UnconfirmedServiceChoice::WHO_IS, &buf)
-                .await
-        }
-        WhoIsScope::Global => client.who_is(range).await,
+    let scope = match &spec.scope {
+        WhoIsScope::Local => Scope::Local,
+        WhoIsScope::Global => Scope::Global,
         WhoIsScope::Directed {
             to: DirectedTo::Mac(mac),
             ..
-        } => client.who_is_directed(mac, range).await,
+        } => Scope::Directed(DeviceAddress::local(mac)?),
         WhoIsScope::Directed {
             to: DirectedTo::Bip6(peer),
             ..
         } => return Err(format!("the VMAC at {peer} has not been found")),
-        WhoIsScope::Network(dnet) => client.who_is_network(*dnet, range).await,
+        WhoIsScope::Network(dnet) => Scope::Network(*dnet),
     };
-    sent.map_err(|error| error.to_string())
+    bacnet_ops::raw::who_is(client, &scope, spec.range)
+        .await
+        .map_err(|error| error.to_string())
 }

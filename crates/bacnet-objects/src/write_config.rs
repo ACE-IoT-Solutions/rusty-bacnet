@@ -38,13 +38,111 @@
 //! the format: a [`ReportingWriteConfig`], kept once an object opts in with
 //! its `with_reporting_persistence` builder call.
 //!
+//! Twelve of them keep the event algorithm parameters a peer writes in
+//! that file too (#2331), every one but the Alert Enrollment. The analog,
+//! binary and multi-state Input, Output and Value objects, Access Door and
+//! Access Zone keep Time_Delay and Time_Delay_Normal, all eleven;
+//! High_Limit, Low_Limit, Deadband and Limit_Enable on the analog
+//! ones; Alarm_Value on a Binary Input or Value; Alarm_Values on a
+//! Multi-state Input or Value, an Access Door and an Access Zone;
+//! Fault_Values and Masked_Alarm_Values on an Access Door. They are
+//! an [`AlgorithmWriteConfig`] in the `algorithm` field of the object's
+//! [`ReportingWriteConfig`], stored as kind 6 of the format. They follow
+//! the reporting settings' rules, and a rebuilt object's detector starts
+//! with them. Of these only the lists have setters (`set_alarm_values`,
+//! and a door's `set_fault_values` and `set_masked_alarm_values`), which
+//! give way to a saved list like the other setters. For the rest an
+//! application sets its own values with `write_property` before the
+//! builder call, and a saved write then goes over them. A `write_property`
+//! after the builder call is a write like a peer's, and is kept. Storage
+//! holding a value the object refuses on the wire, or a parameter its type
+//! doesn't keep, fails the builder call.
+//!
+//! An Access Door's and an Access Zone's lists are checked against their
+//! enumerations alone (a named or proprietary state other than NORMAL), on
+//! a write and on a load alike, so no saved list is one the rebuilt object
+//! would refuse. A door that has taken its saved lists settles
+//! Door_Alarm_State as it does after a write of one: a state the lists no
+//! longer admit goes back to NORMAL.
+//!
+//! An Event Enrollment keeps Event_Parameters, Fault_Parameters and
+//! Time_Delay_Normal there (#2331), as the `event_parameters`,
+//! `fault_parameters` and `time_delay_normal` of its
+//! [`AlgorithmWriteConfig`]. Its Time_Delay is a member of
+//! Event_Parameters (Table 12-15) and kept with them, so nothing is kept
+//! twice, and Event_Type and Fault_Type follow the two parameter sets
+//! (Clauses 12.12.5 and 12.12.22), so they follow the restored ones. The
+//! file holds each set in its BACnet encoding, at most 64 KiB of it: an
+//! enrollment with storage refuses a longer write with RESOURCES /
+//! NO_SPACE_TO_WRITE_PROPERTY before anything is saved, and one without
+//! takes what it always took. `set_event_parameters`,
+//! `set_fault_parameters` and `set_time_delay_normal` give way to a saved
+//! row like the other setters. A restore puts each value where a write
+//! puts it, and like a write of Event_Parameters or Time_Delay_Normal it
+//! drops a delay counting under the old value; Event_State, Reliability and
+//! the algorithms' baselines stay, and the server's next pass evaluates
+//! with the restored values.
+//!
+//! A write of the enrollment's parameters is checked against the written
+//! value alone, so every saved value is one the rebuilt enrollment takes
+//! on the wire, and none fails the builder call or is restored unchecked.
+//! With storage the check is the load's own: the value's encoding has to
+//! read back through the framed decoder, which the flat list form an
+//! in-process `write_property` may hand over doesn't always do, so nothing
+//! is saved that wouldn't reopen. Without storage that form is taken as
+//! before.
+//! What isn't kept can still differ on the rebuilt enrollment:
+//! Object_Property_Reference, which peers can't write, and the event type
+//! given to `new`. That type is the Event_Type served for the legacy octet
+//! layout and for a proprietary alternative (tag 64 and up), and the
+//! algorithm the legacy layout is evaluated by; a proprietary alternative
+//! is never evaluated. Saved parameters that don't suit them show as
+//! they do on any enrollment configured that way: an event algorithm whose
+//! monitored value has another datatype raises nothing and reports no
+//! fault, and a fault algorithm that can't run on it reports
+//! CONFIGURATION_ERROR. An Alert Enrollment keeps no parameter: it has
+//! none a peer writes.
+//!
+//! A Multi-state Input, Output or Value keeps a written State_Text there
+//! too (#2414), the `state_text` of its [`AlgorithmWriteConfig`], and with
+//! it Number_Of_States, which is the number of labels: written whole, at
+//! index 0 (the count) or one label at a time, the whole array is kept. A
+//! rebuilt object serves the saved labels and their count over the
+//! application's. With storage, a write that would leave more than 1,024
+//! labels or a label past 512 octets of UTF-8 is refused with RESOURCES /
+//! NO_SPACE_TO_WRITE_PROPERTY before anything is saved; without storage a
+//! write takes what it always took. `set_number_of_states` gives way to a
+//! saved State_Text like the other setters, still refusing zero. A restore
+//! takes the labels as a write would and repairs nothing that names a
+//! state; on a fresh object everything that does is state 1, and the
+//! object works its Reliability out again, as after a write.
+//!
+//! One wire rule doesn't fail the builder call: an Alarm_Values entry past
+//! Number_Of_States, which a write refuses (#1429). With State_Text kept,
+//! a peer that raises the count and lists a new state leaves both in
+//! storage, and the rebuilt object has the count the list needs. Such a
+//! list can still arise three ways: the application shrinks the count
+//! (`set_number_of_states`, or a build with fewer states than a saved list
+//! names); the object has no storage for State_Text (none attached, or a
+//! file saved before #2414 holding none); or a list configured before the
+//! builder call meets a restored State_Text with fewer states. A saved list
+//! is restored as it was written, since it mustn't stop the object from
+//! starting. The object holds it as it holds a list a local shrink
+//! leaves: it serves it, and a write of the same list is refused. What
+//! follows differs by type, and is the cost of opening. A Multi-state
+//! Input reports no fault, and the entries within its states still alarm.
+//! A Multi-state Value reports CONFIGURATION_ERROR and goes to FAULT, and
+//! while it is there no listed state raises OFFNORMAL, the ones within its
+//! states included: it raises no alarm on its value until a list within
+//! its states is written or the states are there again.
+//!
 //! Each of these object types keeps a written Description in the same file
 //! too (#2364), as kind 5 of the format wrapped around the kind it writes,
 //! with the same rules. A Timer and a Channel drop it with their
 //! `clear_written_config`, and the reporting objects with
 //! `clear_written_reporting`. The three logs, Notification Class,
-//! Notification Forwarder and Access Rights keep it in their own formats
-//! (see [`crate::snapshot`]). On every other object type a written
+//! Notification Forwarder, Access Rights and Load Control keep it in their
+//! own formats (see [`crate::snapshot`]). On every other object type a written
 //! Description lasts until a restart.
 //!
 //! A Command has nothing here: its Action is read-only over the network
@@ -63,22 +161,76 @@ pub(crate) mod saving;
 #[cfg(feature = "std")]
 pub use persistence::FileWriteConfigPersistence;
 pub use persistence::{
-    ChannelMembers, ChannelWriteConfig, ReportingWriteConfig, TimerStateChange, TimerWriteConfig,
-    WriteConfigPersistence, WriteConfigSnapshot,
+    AlgorithmWriteConfig, ChannelMembers, ChannelWriteConfig, ReportingWriteConfig,
+    TimerStateChange, TimerWriteConfig, WriteConfigPersistence, WriteConfigSnapshot,
 };
 
+// Access Door's and Access Zone's parameters: their setters, the clear and
+// a request's staged writes.
+#[cfg(all(test, feature = "event-reporting"))]
+#[path = "write_config/access_parameter_rules_tests.rs"]
+mod access_parameter_rules_tests;
+// Access Door's and Access Zone's parameters, kept as the others'.
+#[cfg(all(test, feature = "event-reporting"))]
+#[path = "write_config/access_parameters_tests.rs"]
+mod access_parameters_tests;
+// What a restore does to a door and a zone beyond storing the values.
+#[cfg(all(test, feature = "event-reporting"))]
+#[path = "write_config/access_restore_tests.rs"]
+mod access_restore_tests;
 // A written Description kept beside the rest (#2364).
 #[cfg(test)]
 #[path = "write_config/description_tests.rs"]
 mod description_tests;
+// An Event Enrollment's parameters: what is kept, the setters, the clear
+// and a request's staged writes.
+#[cfg(all(test, feature = "event-reporting"))]
+#[path = "write_config/enrollment_parameters_tests.rs"]
+mod enrollment_parameters_tests;
+// An Event Enrollment's parameters across a rebuild: the cap, the file's
+// octets and what a restore does.
+#[cfg(all(test, feature = "event-reporting"))]
+#[path = "write_config/enrollment_restore_tests.rs"]
+mod enrollment_restore_tests;
+// Every row of the format's table, through the object of each type that
+// keeps it.
+#[cfg(all(test, feature = "event-reporting"))]
+#[path = "write_config/parameter_table_tests.rs"]
+mod parameter_table_tests;
+// The event algorithm parameters kept beside the reporting settings.
+#[cfg(all(test, feature = "event-reporting"))]
+#[path = "write_config/parameters_tests.rs"]
+mod parameters_tests;
 // std: these load and save through the file backend.
 #[cfg(all(test, feature = "std"))]
 #[path = "write_config/persistence_tests.rs"]
 mod persistence_tests;
+// The binary and multi-state objects' parameters: the rules a request, a
+// restart and the object's own state hold them to.
+#[cfg(all(test, feature = "event-reporting"))]
+#[path = "write_config/state_parameter_rules_tests.rs"]
+mod state_parameter_rules_tests;
+// The binary and multi-state objects' parameters, kept as the analog ones.
+#[cfg(all(test, feature = "event-reporting"))]
+#[path = "write_config/state_parameters_tests.rs"]
+mod state_parameters_tests;
+// A multi-state object's State_Text and count, kept beside its parameters
+// (#2414).
+#[cfg(all(test, feature = "event-reporting"))]
+#[path = "write_config/state_text_tests.rs"]
+mod state_text_tests;
 // event-reporting: the reporting persistence these test is compiled with it.
 #[cfg(all(test, feature = "event-reporting"))]
 #[path = "write_config/reporting_tests.rs"]
 mod reporting_tests;
+// An application setter between a request's stage and its commit (#2431).
+#[cfg(all(test, feature = "event-reporting", feature = "durable-writes"))]
+#[path = "write_config/staged_setter_tests.rs"]
+mod staged_setter_tests;
+// Where storage goes when a superseding write's save fails (#2526).
+#[cfg(all(test, feature = "event-reporting", feature = "durable-writes"))]
+#[path = "write_config/reporting_put_back_tests.rs"]
+mod reporting_put_back_tests;
 // The other object types with intrinsic reporting: Access Door and Zone,
 // Event and Alert Enrollment.
 #[cfg(all(test, feature = "event-reporting"))]

@@ -61,6 +61,9 @@ pub(super) struct CommandRunner<T: TransportPort + 'static> {
     event_suppressions: Arc<super::event_suppression::EventSuppressions>,
     config: Arc<ServerConfig>,
     tasks: RequestTaskSpawner,
+    /// The count `stop()` waits on of tasks releasing a dropped write's
+    /// stage (#2495).
+    stage_releases: Arc<super::durable_writes::StageReleases>,
 }
 
 impl<T: TransportPort + 'static> Clone for CommandRunner<T> {
@@ -77,6 +80,7 @@ impl<T: TransportPort + 'static> Clone for CommandRunner<T> {
             event_suppressions: Arc::clone(&self.event_suppressions),
             config: Arc::clone(&self.config),
             tasks: self.tasks.clone(),
+            stage_releases: Arc::clone(&self.stage_releases),
         }
     }
 }
@@ -96,6 +100,7 @@ impl<T: TransportPort + 'static> CommandRunner<T> {
             event_suppressions: Arc::clone(&services.event_suppressions),
             config: Arc::clone(&services.config),
             tasks: tasks.clone(),
+            stage_releases: tasks.stage_releases(),
         }
     }
 
@@ -113,6 +118,7 @@ impl<T: TransportPort + 'static> CommandRunner<T> {
             event_suppressions: Arc::clone(&services.event_suppressions),
             config: Arc::clone(&services.config),
             tasks: services.tasks.clone(),
+            stage_releases: services.tasks.stage_releases(),
         }
     }
 
@@ -131,6 +137,7 @@ impl<T: TransportPort + 'static> CommandRunner<T> {
             event_suppressions: Arc::clone(writer.event_suppressions),
             config: Arc::clone(writer.config),
             tasks: server.request_tasks.spawner(),
+            stage_releases: Arc::clone(writer.stage_releases),
         }
     }
 
@@ -202,7 +209,7 @@ impl<T: TransportPort + 'static> CommandRunner<T> {
             bindings: &self.device_bindings,
             comm_state: &self.comm_state,
             timeout: Duration::from_millis(self.config.cov_retry_timeout_ms),
-            retries: DEFAULT_APDU_RETRIES,
+            retries: self.config.notification_retries,
             max_apdu: u32::from(self.config.device.max_apdu_length()),
         }
     }
@@ -220,6 +227,7 @@ impl<T: TransportPort + 'static> CommandRunner<T> {
             device_bindings: &self.device_bindings,
             event_suppressions: &self.event_suppressions,
             config: &self.config,
+            stage_releases: &self.stage_releases,
         }
     }
 }
@@ -263,6 +271,9 @@ impl<T: TransportPort + 'static> RunHost for CommandRunner<T> {
                     property: command.property_identifier,
                     array_index: command.property_array_index,
                     priority: command.priority,
+                    source: bacnet_device_core::write::local::LocalCommandSource::Object(
+                        run.source,
+                    ),
                 },
                 value,
                 run,

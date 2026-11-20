@@ -11,15 +11,21 @@
 //! from when the table began it), as the server's worker does, so its
 //! last answer is never awaited past the table's deadline for the report.
 //! A report the COV table fenced, the host couldn't send, or whose object
-//! the host deleted, leaves the table at once.
+//! the host deleted, leaves the table at once. Event notifications share
+//! the table: they time out and resend alike, and their cutoff runs from
+//! their first send, since they wait in the outbox for an invoke ID rather
+//! than end unsent; deleting their object doesn't end them, as the
+//! server's notification workers don't.
 
 use alloc::vec::Vec;
 
+use bacnet_encoding::npdu::view::NetworkPriority;
 use bacnet_time::{Duration, Instant};
 use bacnet_types::constructed::BACnetAddress;
 use bacnet_types::primitives::ObjectIdentifier;
 
-use crate::cov::{SubscriberEndpoint, Token};
+use super::{Destination, NotifyService};
+use crate::cov::Token;
 
 /// One confirmed notification out.
 #[derive(Debug)]
@@ -31,8 +37,12 @@ pub(super) struct Outstanding {
     object: [u8; 4],
     /// Who answers it, and whose invoke ID it holds.
     pub(super) peer: BACnetAddress,
-    pub(super) to: SubscriberEndpoint,
+    pub(super) to: Destination,
+    /// The NPDU priority it goes out at.
+    pub(super) priority: NetworkPriority,
     pub(super) invoke_id: u8,
+    /// Which service it is.
+    pub(super) service: NotifyService,
     /// Its service parameters, for a resend.
     pub(super) params: Vec<u8>,
     /// When the current attempt's answer is overdue.
@@ -49,8 +59,8 @@ impl Outstanding {
     pub(super) fn new(
         (token, object): (Token, ObjectIdentifier),
         peer: BACnetAddress,
-        to: SubscriberEndpoint,
-        invoke_id: u8,
+        (to, priority): (Destination, NetworkPriority),
+        (invoke_id, service): (u8, NotifyService),
         params: Vec<u8>,
         (deadline, cutoff): (Instant, Instant),
         retries: u8,
@@ -60,7 +70,9 @@ impl Outstanding {
             object: object.encode(),
             peer,
             to,
+            priority,
             invoke_id,
+            service,
             params,
             deadline,
             cutoff,
@@ -95,10 +107,14 @@ impl ConfirmedTable {
         Some(self.out.swap_remove(at))
     }
 
-    /// A notification reporting `object`, taken out.
+    /// A COV notification reporting `object`, taken out.
     pub(super) fn take_object(&mut self, object: ObjectIdentifier) -> Option<Outstanding> {
         let object = object.encode();
-        let at = self.out.iter().position(|out| out.object == object)?;
+        let cov = |out: &Outstanding| out.service != NotifyService::Event;
+        let at = self
+            .out
+            .iter()
+            .position(|out| out.object == object && cov(out))?;
         Some(self.out.swap_remove(at))
     }
 
@@ -152,6 +168,17 @@ impl ConfirmedTable {
                 }
             })
             .min()
+    }
+
+    /// When the notification `token` names times out next, as
+    /// [`next_deadline`](Self::next_deadline) reckons each.
+    pub(super) fn deadline_of(&self, token: Token) -> Option<Instant> {
+        let out = self.out.iter().find(|out| out.token == token)?;
+        Some(if out.resend {
+            out.cutoff
+        } else {
+            out.deadline.min(out.cutoff)
+        })
     }
 
     /// Whether a notification waits to be resent.

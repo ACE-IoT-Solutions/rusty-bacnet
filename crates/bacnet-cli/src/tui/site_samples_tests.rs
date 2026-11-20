@@ -101,6 +101,10 @@ fn devices() -> DeviceTable {
     for (instance, station) in [(1001, None), (2001, Some((2u16, [5u8])))] {
         table.upsert(DeviceRow {
             instance,
+            at: match station {
+                Some((network, mac)) => bacnet_ops::DeviceAddress::new(network, &mac).unwrap(),
+                None => "10.0.1.20:47808".parse().unwrap(),
+            },
             address: match station {
                 Some((network, mac)) => routed_station(network, &mac).unwrap(),
                 None => "10.0.1.20:47808".into(),
@@ -109,7 +113,7 @@ fn devices() -> DeviceTable {
             network: station.map(|(network, _)| network),
             vendor_id: 260,
             max_apdu: 1476,
-            segmentation: Segmentation::NONE,
+            segmentation: Segmentation::NO_SEGMENTATION,
             last_seen: std::time::Instant::now(),
         });
     }

@@ -7,7 +7,7 @@ async fn client_number_cancelled_stop_retains_task_joins_and_transport_cleanup()
     inject(&inbound, &number(77, 1), true).await;
     inject(&inbound, QUERY, false).await;
     bounded(gates.entered.acquire()).await.unwrap().forget();
-    inject(&inbound, QUERY, true).await;
+    inject(&inbound, QUERY, false).await;
     gates.hold_stop.store(true, Ordering::SeqCst);
     {
         let stop = client.stop();
@@ -56,7 +56,7 @@ async fn client_number_cancelled_stop_retains_task_joins_and_transport_cleanup()
 async fn client_number_drop_aborts_pending_and_queued_replies() {
     let (client, inbound, mut outbound, gates) = harness(true).await;
     inject(&inbound, &number(77, 1), true).await;
-    inject(&inbound, QUERY, true).await;
+    inject(&inbound, QUERY, false).await;
     bounded(gates.entered.acquire()).await.unwrap().forget();
     inject(&inbound, QUERY, false).await;
     drop(client);
@@ -75,27 +75,35 @@ async fn client_number_worker_queue_is_bounded_and_closes_on_abort() {
     use super::super::network_number;
     use bacnet_network::network_number::NumberControl;
     let (mut client, _, mut outbound, gates) = harness(true).await;
-    let (tx, task) = network_number::spawn(&client.network);
+    let owner = network_number::Owner {
+        discovery: std::sync::Arc::clone(&client.device_table),
+        device_tx: client.device_tx.clone(),
+        collision_tx: client.device_collision_tx.clone(),
+        link_returns: None,
+    };
+    let (tx, task) = network_number::spawn(&client.network, owner);
     tx.try_send(NumberControl::NumberIs {
         number: 77,
         flag: 1,
     })
     .unwrap();
-    tx.try_send(NumberControl::WhatIs).unwrap();
+    tx.try_send(NumberControl::WhatIs { broadcast: false })
+        .unwrap();
     bounded(gates.entered.acquire()).await.unwrap().forget();
     // The reply follows the announcement, so the layer already holds it.
     assert_eq!(client.network.local_network_number().get(), Some(77));
     for _ in 0..network_number::CAPACITY {
-        tx.try_send(NumberControl::WhatIs).unwrap();
+        tx.try_send(NumberControl::WhatIs { broadcast: false })
+            .unwrap();
     }
     assert!(matches!(
-        tx.try_send(NumberControl::WhatIs),
+        tx.try_send(NumberControl::WhatIs { broadcast: false }),
         Err(tokio::sync::mpsc::error::TrySendError::Full(_))
     ));
     task.abort();
     let _ = task.await;
     assert!(matches!(
-        tx.try_send(NumberControl::WhatIs),
+        tx.try_send(NumberControl::WhatIs { broadcast: false }),
         Err(tokio::sync::mpsc::error::TrySendError::Closed(_))
     ));
     client.stop().await.unwrap();

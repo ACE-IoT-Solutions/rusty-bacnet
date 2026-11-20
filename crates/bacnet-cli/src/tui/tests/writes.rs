@@ -157,6 +157,7 @@ pub(super) fn writes_sent(site: &Site) -> usize {
 
 pub(super) fn spec(value: Option<&str>, priority: u8) -> WriteSpec {
     WriteSpec {
+        address: bacnet_ops::DeviceAddress::local(&LAB_MAC).unwrap(),
         device: LAB,
         object: ao1(),
         property: PropertyIdentifier::PRESENT_VALUE,
@@ -199,7 +200,8 @@ async fn priority_12_previews_that_present_value_will_not_change() {
     arm(&mut site).await;
     write(&mut site, "42", "12").await;
     let planned = &preview(&site.app).items[0];
-    assert_eq!(planned.effect, Effect::Unchanged { held_by: Some(10) });
+    let ten = bacnet_ops::Priority::new(10).ok();
+    assert_eq!(planned.effect, Effect::Unchanged { held_by: ten });
     assert_eq!(preview(&site.app).gate, Gate::Allowed(Tier::T1));
     assert_snapshot!("write_preview_p12_120x40", screen(&mut site.app, 120, 40));
     assert_snapshot!("write_preview_p12_80x24", screen(&mut site.app, 80, 24));
@@ -584,6 +586,7 @@ async fn a_passive_session_puts_nothing_on_the_wire() {
         Command::Browse {
             req: 1,
             device: LAB,
+            at: bacnet_ops::DeviceAddress::local(&LAB_MAC).unwrap(),
             read: crate::tui::point::BrowseRead::Device,
         },
         Command::Watch(crate::tui::watched::WatchCommand::Add {
@@ -594,6 +597,7 @@ async fn a_passive_session_puts_nothing_on_the_wire() {
                 object: ao1(),
                 property: PropertyIdentifier::PRESENT_VALUE,
             },
+            at: Some(bacnet_ops::DeviceAddress::local(&LAB_MAC).unwrap()),
         }),
         Command::Safety(SafetyCommand::Arm {
             reason: String::new(),

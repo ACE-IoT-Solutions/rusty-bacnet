@@ -1,9 +1,10 @@
 use super::*;
 use bacnet_services::read_range::{RangeSpec, ReadRangeAck, ReadRangeRequest};
+use bacnet_transport::test_transport::TestTransport;
 use bacnet_types::primitives::{Date, Time};
 
 fn range_start(
-    session: &EndpointSession<BusPort>,
+    session: &EndpointSession<TestTransport>,
     mac: &[u8],
     range: Option<RangeSpec>,
 ) -> tokio::task::JoinHandle<Result<ReadRangeAck, Error>> {
@@ -90,8 +91,8 @@ fn ranges() -> Vec<Option<RangeSpec>> {
 
 #[tokio::test(start_paused = true)]
 async fn source_read_range_choices_empty_and_multiple_items_both_modes() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     for confirmed in [false, true] {
         let mut session = session(database(confirmed), SessionRole::Both, &sink);
         session.start().await.unwrap();
@@ -117,10 +118,7 @@ async fn source_read_range_choices_empty_and_multiple_items_both_modes() {
                 let (record, delivery_id) = notification(&envelope, confirmed);
                 assert_eq!(record.invoke_id, Some(invoke));
                 assert_eq!(record.operation, AuditOperation::READ);
-                assert_eq!(
-                    record.source_timestamp,
-                    Some(BACnetTimeStamp::SequenceNumber(sequence))
-                );
+                assert_stamp(&record.source_timestamp, true, sequence);
                 sequence += 1;
                 assert_eq!(
                     record.source_device,
@@ -158,8 +156,8 @@ async fn source_read_range_choices_empty_and_multiple_items_both_modes() {
 
 #[tokio::test(start_paused = true)]
 async fn source_read_range_terminal_errors_and_segmented_attempt_are_reported() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
     for case in 0..9 {
@@ -258,8 +256,8 @@ async fn source_read_range_terminal_errors_and_segmented_attempt_are_reported() 
 
 #[tokio::test(start_paused = true)]
 async fn source_read_range_invalid_preflight_does_not_consume_sequence_or_lease() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
     let client = session.cloned_client_handle().unwrap();
@@ -318,10 +316,13 @@ async fn source_read_range_invalid_preflight_does_not_consume_sequence_or_lease(
             .read_range_with_destination(
                 bacnet_endpoint_core::endpoint_ingress::EndpointApduDestination::LocalBroadcast,
                 vec![],
-                target(),
-                PropertyIdentifier::LOG_BUFFER,
-                None,
-                None
+                bacnet_services::read_range::ReadRangeRequest {
+                    object_identifier: target(),
+                    property_identifier: PropertyIdentifier::LOG_BUFFER,
+                    property_array_index: None,
+                    range: None,
+                },
+                bacnet_services::read_range::ReadRangeValidation::Strict,
             )
             .await
             .is_err()
@@ -359,8 +360,8 @@ async fn source_read_range_invalid_preflight_does_not_consume_sequence_or_lease(
 async fn source_read_range_lenient_keeps_a_zero_first_sequence_page() {
     use bacnet_services::read_range::{ReadRangeValidation, ReadRangeViolation};
 
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
     let request = ReadRangeRequest {
@@ -434,8 +435,8 @@ async fn read_log_page_finds_the_oldest_record_and_decodes_its_page() {
     use bacnet_encoding::constructed::encode_log_record;
     use bacnet_types::constructed::{BACnetLogRecord, LogDatum};
 
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, _records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, _records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
     let client = session.cloned_client_handle().unwrap();
@@ -517,8 +518,8 @@ async fn read_log_page_finds_the_oldest_record_and_decodes_its_page() {
 
 #[tokio::test(start_paused = true)]
 async fn source_read_range_cancelled_caller_keeps_one_retry_record_and_stop_releases() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
     session.client_config.apdu_retries = 1;
     session.start().await.unwrap();
@@ -551,9 +552,9 @@ async fn source_read_range_cancelled_caller_keeps_one_retry_record_and_stop_rele
 
 #[tokio::test(start_paused = true)]
 async fn source_read_range_snapshot_and_generation_survive_recipient_change() {
-    let (mut peer, mut requests) = network().await;
-    let (mut old, mut old_records) = network().await;
-    let (mut new, mut new_records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (old, mut old_records) = network().await;
+    let (new, mut new_records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &old);
     session.start().await.unwrap();
     let read = range_start(&session, peer.local_mac(), None);
@@ -615,8 +616,8 @@ async fn source_read_range_snapshot_and_generation_survive_recipient_change() {
 
 #[tokio::test(start_paused = true)]
 async fn source_read_range_drop_unblocks_retained_caller_and_releases_database() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, _records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, _records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
     let db = Arc::clone(session.database.as_ref().unwrap());

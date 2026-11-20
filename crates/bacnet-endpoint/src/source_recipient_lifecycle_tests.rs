@@ -48,12 +48,11 @@ fn protected(db: &mut ObjectDatabase) {
 
 #[tokio::test(start_paused = true)]
 async fn source_recipient_canceled_stop_keeps_sealed_membership_until_retry_barrier() {
-    let (mut sink, _records) = network().await;
+    let (sink, _records) = network().await;
     let mut session = session(database(false), SessionRole::Both, &sink);
     session.start().await.unwrap();
     let db = session.database.as_ref().unwrap().clone();
     let client = session.cloned_client_handle().unwrap();
-    let server = session.cloned_server_handle().unwrap();
     let token = session.shared.token.clone();
     let mut guard = db.write().await;
     protected(&mut guard);
@@ -63,7 +62,6 @@ async fn source_recipient_canceled_stop_keeps_sealed_membership_until_retry_barr
             .is_err()
     );
     assert!(!token.is_open());
-    assert!(!server.is_session_alive());
     protected(&mut guard);
     assert!(
         guard
@@ -113,7 +111,7 @@ async fn source_recipient_canceled_stop_keeps_sealed_membership_until_retry_barr
 
 #[tokio::test(start_paused = true)]
 async fn source_recipient_drop_does_not_pin_membership_for_dormant_external_read() {
-    let (mut sink, _records) = network().await;
+    let (sink, _records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
     let db = session.database.as_ref().unwrap().clone();
@@ -147,8 +145,8 @@ async fn source_recipient_drop_does_not_pin_membership_for_dormant_external_read
 
 #[tokio::test(start_paused = true)]
 async fn source_recipient_protected_topology_preserves_pending_failure_then_releases() {
-    let (mut peer, mut requests) = network().await;
-    let (mut sink, mut records) = network().await;
+    let (peer, mut requests) = network().await;
+    let (sink, mut records) = network().await;
     let mut session = session(
         failures::failure_database(false),
         SessionRole::ClientOnly,
@@ -183,7 +181,7 @@ async fn source_recipient_protected_topology_preserves_pending_failure_then_rele
 
 #[tokio::test(start_paused = true)]
 async fn public_recipient_write_rechecks_sealed_owner_after_database_wait() {
-    let (mut sink, mut records) = network().await;
+    let (sink, mut records) = network().await;
     let mut session = session(database(false), SessionRole::ClientOnly, &sink);
     session.start().await.unwrap();
     let db = session.database.as_ref().unwrap().clone();

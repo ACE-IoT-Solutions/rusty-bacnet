@@ -1,7 +1,7 @@
 //! Writes over MCP (#2068; design §7): the server's write session, who may
 //! approve a write ([`Approver`], and its waiting form [`WaitingApprover`]),
 //! the sealed confirmation state ([`seal`]), and the MCP front end as a
-//! caller of the shared write desk (`bacnet_ops::safety::desk`), which owns
+//! caller of the shared write desk (`bacnet_tool::safety::desk`), which owns
 //! the ledger and the audit log.
 //!
 //! The tools themselves are `tools/write.rs` and `tools/revert.rs`; an
@@ -17,8 +17,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bacnet_ops::safety::desk::{Caller, Waiting};
-use bacnet_ops::safety::{DEFAULT_MINUTES, Level, Preview, Tier, hex};
+use bacnet_ops::octets::hex;
+use bacnet_tool::safety::desk::{Caller, Waiting};
+use bacnet_tool::safety::{DEFAULT_MINUTES, Level, Preview, Tier};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tokio::time::Instant;
@@ -354,8 +355,10 @@ impl Approver for PlanApprover<'_> {
     }
 }
 
-/// A digest of what a person confirmed: each write's target, value,
-/// pre-image, slot holder, commandability and tier.
+/// A digest of what a person confirmed: the device's address (#2560), and
+/// each write's target, value, pre-image, slot holder, commandability and
+/// tier. A target that names its device by instance resolves again on the
+/// retry, so a device that moved meanwhile fails the confirmation.
 pub(crate) fn preview_digest(preview: &Preview) -> String {
     let items: Vec<Value> = preview
         .items
@@ -371,7 +374,13 @@ pub(crate) fn preview_digest(preview: &Preview) -> String {
             ])
         })
         .collect();
-    let canonical = json!([preview.device, preview.batch, preview.gate.name(), items]);
+    let canonical = json!([
+        preview.device,
+        preview.address.to_string(),
+        preview.batch,
+        preview.gate.name(),
+        items
+    ]);
     hex(&Sha256::digest(canonical.to_string().as_bytes()))
 }
 
@@ -393,6 +402,17 @@ pub(crate) struct McpCaller<'a> {
     /// TUI's, #2185): its level, refusal and going are this caller's, and
     /// it hears of the ledger's changes too.
     host: Option<&'a dyn Caller>,
+    /// For a revert, what the address the desk finds each entry's device
+    /// at is checked against before anything is sent there (#2560).
+    reverting: Option<Reverting<'a>>,
+}
+
+/// What a revert's entries are checked against where the desk finds their
+/// devices: the server's policy, and for an attached revert the address
+/// the person confirmed, in its local form.
+struct Reverting<'a> {
+    policy: &'a crate::Policy,
+    confirmed: Option<bacnet_ops::DeviceAddress>,
 }
 
 /// The ledger ids a handed-off write has recorded, shared with its call.
@@ -414,6 +434,7 @@ impl McpCaller<'_> {
             sending: None,
             announced: AtomicBool::new(false),
             host: None,
+            reverting: None,
         }
     }
 
@@ -428,6 +449,18 @@ impl<'a> McpCaller<'a> {
     /// This caller, on the desk `host` lends it.
     pub(crate) fn hosted(mut self, host: &'a dyn Caller) -> Self {
         self.host = Some(host);
+        self
+    }
+
+    /// This caller, for a revert under `policy`: each entry's device is
+    /// checked where the desk finds it, and for an attached revert it must
+    /// be at `confirmed` (local form), the address the person confirmed.
+    pub(crate) fn reverting(
+        mut self,
+        policy: &'a crate::Policy,
+        confirmed: Option<bacnet_ops::DeviceAddress>,
+    ) -> Self {
+        self.reverting = Some(Reverting { policy, confirmed });
         self
     }
 }
@@ -472,9 +505,47 @@ impl Caller for McpCaller<'_> {
         }
     }
 
+    /// Never, on the TUI's desk too: the server sends no Who-Is but
+    /// `bacnet_discover`'s, under its broad-discovery gate, so a revert
+    /// reports a device it can't reach without one as not reverted.
+    fn may_look(&self) -> bool {
+        false
+    }
+
+    /// The policy, at the address the desk found (its network, local form)
+    /// and the entry's instance; for an attached revert, the address
+    /// confirmed. Found once, by the desk, so what is checked is what is
+    /// sent to.
+    fn revert_refusal(
+        &self,
+        entry: &bacnet_tool::safety::ledger::Entry,
+        at: &bacnet_ops::DeviceAddress,
+    ) -> Option<String> {
+        let reverting = self.reverting.as_ref()?;
+        let network = at.network();
+        if !reverting.policy.allows_network(network) {
+            return Some(format!(
+                "network {network} is not in this server's [mcp] networks"
+            ));
+        }
+        if !reverting.policy.allows_device(entry.device) {
+            return Some(format!(
+                "device {} is not in this server's [mcp] devices",
+                entry.device
+            ));
+        }
+        match &reverting.confirmed {
+            Some(confirmed) if confirmed != at => Some(format!(
+                "device {} is at {at} now, not at {confirmed} where its revert was confirmed",
+                entry.device
+            )),
+            _ => None,
+        }
+    }
+
     fn ledger_changed<'a>(
         &'a self,
-        entries: &'a [bacnet_ops::safety::ledger::Entry],
+        entries: &'a [bacnet_tool::safety::ledger::Entry],
     ) -> Waiting<'a> {
         // The `sending` rows are in the file now: tell the ledger's
         // subscribers, and again once they settle, however they settle.
@@ -486,8 +557,8 @@ impl Caller for McpCaller<'_> {
             let ids = entries
                 .iter()
                 .filter(|e| {
-                    e.state == bacnet_ops::safety::ledger::State::Sending
-                        && e.run == bacnet_ops::safety::run_id()
+                    e.state == bacnet_tool::safety::ledger::State::Sending
+                        && e.run == bacnet_tool::safety::run_id()
                 })
                 .map(|e| e.id);
             *sending.lock().unwrap_or_else(PoisonError::into_inner) = ids.collect();
