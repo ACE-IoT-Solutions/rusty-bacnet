@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries for the next release are fragment files in [`changelog.d/`](changelog.d/), assembled here when a version is released. Add one per change instead of editing this file: [`changelog.d/README.md`](changelog.d/README.md) has the format, and `python3 scripts/changelog.py preview` shows the section they make.
 
+## [0.16.1] - 2026-11-20
+
+With unlimited recovery enabled, each BACnet/SC backoff round tries the primary
+hub once, then tries an available failover hub. Recovery continues across rounds
+while either hub can be retried. Set `reconnect_forever=True` on `RouterScPort`
+or pass `ScReconnect(retry_forever=True)` to an SC client or endpoint.
+
+### Migration notes
+
+- **Breaking (Rust API).** Add `retry_forever: false` to complete `ScReconnectConfig` literals to keep finite retries. Set it to `true` for continuous recovery. Python `ScReconnect` accepts the same optional keyword. ([7909bb0](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/7909bb023a9a35163044cc5196ac234df15afdf7))
+
+### Fixed
+
+- **SC reconnect (Rust and Python).** Unlimited recovery tries the primary and an available failover in each backoff round. A node can reconnect to either hub after a prolonged outage. ([7909bb0](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/7909bb023a9a35163044cc5196ac234df15afdf7))
+
 ## [0.16.0] - 2026-11-20
 
 ACE 0.16.0 brings the upstream shared-endpoint client and server to the private
