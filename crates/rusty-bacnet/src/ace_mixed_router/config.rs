@@ -21,8 +21,7 @@ const ROUTED_BVLC_LENGTH: u16 = 5705;
 pub struct PyRouterBipPort {
     #[pyo3(get)]
     pub(super) network_number: u16,
-    #[pyo3(get)]
-    pub(super) interface: String,
+    pub(super) interface: Ipv4Addr,
     #[pyo3(get)]
     pub(super) port: u16,
     #[pyo3(get)]
@@ -33,9 +32,16 @@ pub struct PyRouterBipPort {
 
 #[pymethods]
 impl PyRouterBipPort {
+    /// The selected IPv4 interface address.
+    #[getter]
+    fn interface(&self) -> String {
+        self.interface.to_string()
+    }
+
     #[new]
     #[pyo3(signature = (network_number, interface="0.0.0.0", port=0xBAC0, broadcast_address="255.255.255.255", reuse_port=false))]
     fn new(
+        py: Python<'_>,
         network_number: u16,
         interface: &str,
         port: u16,
@@ -43,15 +49,13 @@ impl PyRouterBipPort {
         reuse_port: bool,
     ) -> PyResult<Self> {
         validate_network_number(network_number)?;
-        interface.parse::<Ipv4Addr>().map_err(|error| {
-            PyValueError::new_err(format!("invalid interface IPv4 address: {error}"))
-        })?;
+        let interface = crate::bip_options::interface_ipv4(py, interface)?;
         broadcast_address.parse::<Ipv4Addr>().map_err(|error| {
             PyValueError::new_err(format!("invalid broadcast IPv4 address: {error}"))
         })?;
         Ok(Self {
             network_number,
-            interface: interface.to_owned(),
+            interface,
             port,
             broadcast_address: broadcast_address.to_owned(),
             reuse_port,
@@ -261,13 +265,9 @@ pub(super) fn validate_ports(ports: &[PyRouterPortConfig]) -> PyResult<()> {
         }
         match port {
             PyRouterPortConfig::Bip(port) => {
-                let interface = port
-                    .interface
-                    .parse::<Ipv4Addr>()
-                    .expect("RouterBipPort validated its interface");
                 // Port zero requests a fresh ephemeral endpoint for each
                 // transport, so equal pre-bind tuples are not duplicates.
-                if port.port != 0 && !bip_endpoints.insert((interface, port.port)) {
+                if port.port != 0 && !bip_endpoints.insert((port.interface, port.port)) {
                     return Err(PyValueError::new_err(format!(
                         "duplicate B/IP router endpoint {}:{}",
                         port.interface, port.port

@@ -58,7 +58,7 @@ impl fmt::Display for AttachmentId {
 /// BACnet/IP attachment configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BipConfig {
-    /// Local IPv4 interface or address selector.
+    /// B/IP IPv4 literal or exact OS interface name, resolved at admission.
     pub interface: String,
     /// UDP port. Zero requests an ephemeral port.
     pub port: u16,
@@ -221,6 +221,39 @@ impl RuntimeConfig {
         }
         validate_attachments(&self.attachments)
     }
+}
+
+/// Resolve names before admitting a runtime generation. A retry or rollback
+/// uses that generation's selected addresses even if interface names change.
+pub(crate) async fn resolve_interfaces(
+    mut attachments: Vec<AttachmentConfig>,
+) -> Result<Vec<AttachmentConfig>, RuntimeError> {
+    let needs_lookup = attachments.iter().any(|attachment| {
+        matches!(&attachment.transport,
+        TransportConfig::Bip(config) if config.interface.parse::<Ipv4Addr>().is_err())
+    });
+    if !needs_lookup {
+        return Ok(attachments);
+    }
+    tokio::task::spawn_blocking(move || {
+        for attachment in &mut attachments {
+            if let TransportConfig::Bip(config) = &mut attachment.transport {
+                config.interface = bacnet_transport::bip::resolve_interface_ipv4(&config.interface)
+                    .map_err(|error| {
+                        RuntimeError::attachment_config(
+                            attachment.id,
+                            format!("invalid B/IP interface: {error}"),
+                        )
+                    })?
+                    .to_string();
+            }
+        }
+        Ok(attachments)
+    })
+    .await
+    .map_err(|error| {
+        RuntimeError::invalid_config(format!("interface lookup worker failed: {error}"))
+    })?
 }
 
 pub(crate) fn validate_attachments(attachments: &[AttachmentConfig]) -> Result<(), RuntimeError> {

@@ -11,7 +11,9 @@ use crate::batch::{
     DevicePath, OperationId, ReadBatch, ReadBatchOperation, ReadOutcome, WriteBatch,
     WriteBatchOperation, WriteOutcome,
 };
-use crate::config::{AttachmentConfig, AttachmentId, RuntimeConfig, validate_attachments};
+use crate::config::{
+    AttachmentConfig, AttachmentId, RuntimeConfig, resolve_interfaces, validate_attachments,
+};
 use crate::error::RuntimeError;
 use crate::health::{AttachmentState, ReconcileReport, RuntimeHealth, StopReport};
 
@@ -65,7 +67,8 @@ pub struct BacnetRuntime {
 
 impl BacnetRuntime {
     /// Validates configuration and starts all configured B/IP attachments.
-    pub async fn start(config: RuntimeConfig) -> Result<Self, RuntimeError> {
+    pub async fn start(mut config: RuntimeConfig) -> Result<Self, RuntimeError> {
+        config.attachments = resolve_interfaces(config.attachments).await?;
         config.validate()?;
         let (operation_count, _) = watch::channel(0);
         let inner = Arc::new(RuntimeInner {
@@ -201,6 +204,7 @@ impl BacnetRuntime {
         revision: u64,
         desired: Vec<AttachmentConfig>,
     ) -> Result<ReconcileReport, RuntimeError> {
+        let desired = resolve_interfaces(desired).await?;
         validate_attachments(&desired)?;
         let _lifecycle = self.inner.lifecycle.lock().await;
         if self.inner.stopped.load(Ordering::Acquire) {

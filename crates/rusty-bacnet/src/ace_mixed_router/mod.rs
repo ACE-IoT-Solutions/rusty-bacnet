@@ -479,7 +479,7 @@ async fn build_router_port(
     let network_number = configured.network_number();
     match configured {
         PyRouterPortConfig::Bip(config) => {
-            let interface = config.interface.parse().expect("validated B/IP interface");
+            let interface = config.interface;
             let broadcast = config
                 .broadcast_address
                 .parse()

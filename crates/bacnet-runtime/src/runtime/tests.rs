@@ -424,3 +424,28 @@ async fn direct_read_batch_round_trips_through_bip() {
     responder.await.unwrap();
     runtime.stop().await.unwrap();
 }
+
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
+#[tokio::test]
+async fn named_and_literal_bip_attachments_reconcile_to_one_identity() {
+    let literal = attachment(2614, 0);
+    let mut named = literal.clone();
+    let TransportConfig::Bip(bip) = &mut named.transport else {
+        unreachable!()
+    };
+    bip.interface = if cfg!(target_vendor = "apple") {
+        "lo0"
+    } else {
+        "lo"
+    }
+    .into();
+    let runtime = BacnetRuntime::start(RuntimeConfig {
+        attachments: vec![named],
+        ..RuntimeConfig::default()
+    })
+    .await
+    .unwrap();
+    let report = runtime.reconcile(1, vec![literal]).await.unwrap();
+    assert!(report.idempotent);
+    runtime.stop().await.unwrap();
+}
