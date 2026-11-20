@@ -517,11 +517,8 @@ async fn build_router_port(
             let reconnect = ScReconnectConfig {
                 initial_delay_ms: config.reconnect_initial_delay_ms,
                 max_delay_ms: config.reconnect_max_delay_ms,
-                max_retries: if config.reconnect_forever {
-                    u32::MAX
-                } else {
-                    config.reconnect_max_retries
-                },
+                max_retries: config.reconnect_max_retries,
+                retry_forever: config.reconnect_forever,
             };
             let mut hubs = ScHubDialer::new(&primary, tls)
                 .connect_timeout_ms(SC_DIAL_TIMEOUT.as_millis() as u64);

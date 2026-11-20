@@ -192,7 +192,7 @@ class ScFrameTests(ClientScFixture):
                     index = 1
                     owner = self.router(relay.url, failover_hub=failover,
                                         reconnect_initial_delay_ms=50, reconnect_max_delay_ms=50,
-                                        reconnect_max_retries=1)
+                                        reconnect_max_retries=2**32 - 1, reconnect_forever=True)
                     close = owner.stop
                 else:
                     index = None
