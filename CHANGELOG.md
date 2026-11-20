@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries for the next release are fragment files in [`changelog.d/`](changelog.d/), assembled here when a version is released. Add one per change instead of editing this file: [`changelog.d/README.md`](changelog.d/README.md) has the format, and `python3 scripts/changelog.py preview` shows the section they make.
 
+## [0.17.0] - 2026-11-20
+
+Shared endpoints can serve nine standard point types with initial values while
+their client discovers stations, reads network-port tables and queries remote
+routers. Python callers can inspect decoded service fields and interpret
+proprietary property values using an external declaration. B/IP constructors
+also accept operating-system interface names. The migration notes cover Rust
+discovery signatures and the Python read, validation and endpoint API changes.
+
+### Migration notes
+
+- **Breaking (Rust API).** Pass a `bacnet_client::client::Station` to `bacnet_ops::Scope::Directed` and `Discover::directed`. Convert an existing `DeviceAddress` with `.into()`. Match `OpsError::UnknownDevice.asked` against `Option<Scope>` to distinguish a station-directed lookup from a broadcast. (#2599). ([6e04abe](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/6e04abeb02a91aa31dfcd93f50bdec67f78c6488))
+
+- **Breaking (Rust API).** Pass `None` as the second argument to `NetworkLayer::send_routing_table_query` for a local query, or a destination station for a routed query. `BACnetClient::routing_table` accepts a `ToStation`, including existing link MACs (#2612). ([08aa4df](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/08aa4df88ac7da1710f9f2a2aade831c3b14b9de))
+
+- **Breaking (Python API).** Handle an invalid B/IP `interface` at `BACnetClient` or `BACnetServer` construction. It now raises `ValueError` there. Previously, starting the client or server raised `RuntimeError` (#2614). ([5c5c5d6](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/5c5c5d655e216f5a2f3cf986519bca23bbf6abcc))
+
+- **Breaking (Rust API).** Import `Field`, `decode_tree`, `decode_npdu_tree` and `decode_apdu_tree` from `bacnet_ops::decode::tree`. Update dependencies that used `bacnet_tool::decode::tree` (#2633). ([7f5a218](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/7f5a2188be5ed24727c835eff4a59f74536de510))
+
+- **Breaking (Python API).** Handle duplicate endpoint object names or identifiers at the `add_*` call. Earlier registrations remain available for startup. Supply a finite initial Analog Input value and use instances 0 through 4194302 (#2688). ([dd3dd15](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/dd3dd15af6a22d4f8778816e56cde98123b7f720))
+
+- **Breaking (Rust API).** Pass a destination MAC before the wait in `BACnetClient::discover_routers` and `bacnet_ops::Client::discover_routers`. To broadcast, use `None` in these calls and in `who_is_router_to_network` calls that previously passed an explicit broadcast MAC (#2689). ([1b816c1](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/1b816c12bdabc9f330c3534e54fef3ab1431bbae))
+
+- **Breaking (Python API).** For whole Network Port properties 414 and 415, handle `bdt` and `fdt` in place of `tagged` or an empty `list`. Read entry dictionaries from `.value`, including an empty list for an empty table. Compare wire bytes using `.octets` (#2690). ([c9f4592](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/c9f45921d307a61fd9de4429969bfb207591afe7))
+
+### Added
+
+- Python’s `who_is` and `discover` accept `scope=RoutedTarget(...)`. The Who-Is keeps its station’s network and MAC even without a known router. Rust’s `BACnetClient::localized_device_snapshot()` returns one row per station and the local network number used (#2599). ([6e04abe](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/6e04abeb02a91aa31dfcd93f50bdec67f78c6488))
+
+- Read a remote router's routing table with `routing_table(RoutedTarget(...))`. The client selects an explicit, cached or uniquely advertised next hop. Native routers address every chunk to the original requester (#2612). ([08aa4df](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/08aa4df88ac7da1710f9f2a2aade831c3b14b9de))
+
+- B/IP Python clients, servers, endpoints and router ports accept an OS interface name. Rust callers can use `bacnet_transport::bip::resolve_interface_ipv4`. A name with several usable IPv4 addresses reports the choices and accepts an explicit address (#2614). ([8383bed](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/8383bedcc55c56a0450fe7a36e7d823d7027faf0))
+
+- Python property reads expose the returned object, property, index and original value bytes. Decode those bytes offline with `decode_property_as` using a caller-selected primitive, collection shape and optional integer names. Every decode result retains its input (#2618). ([f4eb707](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/f4eb707b872a6cd693cdf9bc8c2cb30b46e94082))
+
+- Python’s `decode_frame_tree(octets, link)` returns immutable `FieldNode` trees with named service fields, source spans and partial diagnostics. The shared decoder reports MS/TP data CRC validity without displaying payload-derived checksum values (#2633). ([7f5a218](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/7f5a2188be5ed24727c835eff4a59f74536de510))
+
+- Shared Python endpoints serve Analog, Binary and Multi-state Inputs, Outputs and Values with initial `present_value`. For commandable points this sets Relinquish_Default and leaves the priority array empty (#2688). ([dd3dd15](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/dd3dd15af6a22d4f8778816e56cde98123b7f720))
+
+- **Router discovery.** Send Who-Is-Router-To-Network to one local router with Python's `discover_routers(destination=...)` or the CLI's `whois-router --via ADDRESS`. The result contains that router's own answers (#2689). ([1b816c1](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/1b816c12bdabc9f330c3534e54fef3ab1431bbae))
+
+- Python reads of the Network Port BBMD distribution and foreign-device table properties return tagged `bdt` and `fdt` values with ordered entry dictionaries. Writing the value back preserves its wire bytes (#2690). ([7f3ecb5](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/7f3ecb5bcf8e99b5d0d8af97df19119ec7eaf766))
+
+### Fixed
+
+- Embedded routers keep their static memory in BSS while returning multi-chunk routing tables. A refused chunk ends only its own requester's continuation (#2612). ([9f6ce32](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/9f6ce32bee820683c1f6b59131deb0619324689e))
+
+- **B/IP discovery.** An explicit loopback interface on a wildcard socket refuses local limited broadcasts before they can reach a LAN and make the device discover itself. Configure the loopback subnet's broadcast address to discover on loopback (#2691). ([498b324](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/498b3243bb22539bd286051db91871d653cc6f8a))
+
 ## [0.16.1] - 2026-11-20
 
 With unlimited recovery enabled, each BACnet/SC backoff round tries the primary
