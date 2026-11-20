@@ -1155,12 +1155,16 @@ fmt_functions = 0
 div64_functions = 0
 memmove_functions = 0
 
+# 2026-11-20 (#2612): routed table replies encode both ends of the return
+# path and size each chunk for its relay. At Rust 1.99 the RV32IMC router
+# measures 51,168 text and 53,170 flash bytes. These two budgets include
+# the usual 12% headroom. Its 15,744-byte static stays entirely in BSS.
 [riscv32imc-unknown-none-elf.router]
-text = 50896
+text = 57312
 rodata = 2048
 data = 64
 bss = 17376
-flash = 52960
+flash = 59552
 ram = 17376
 fmt_functions = 0
 div64_functions = 0
