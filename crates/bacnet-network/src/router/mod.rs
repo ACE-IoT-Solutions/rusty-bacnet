@@ -102,7 +102,8 @@ use bacnet_transport::port::{DataAttribute, TransportPort};
 use bacnet_types::MacAddr;
 use bacnet_types::error::Error;
 use bytes::Bytes;
-pub use counters::Counters;
+use counters::PortCounterEntry;
+pub use counters::{Counters, PortCounters, RouterPortCounters};
 pub use originate::OriginateFailure;
 use tokio::sync::mpsc;
 
@@ -137,12 +138,24 @@ enum SendRequest {
         data_attributes: Vec<DataAttribute>,
         reject_origin: Option<bacnet_router_core::router::RejectOrigin>,
         response: Option<replies::ReplyCompletion>,
+        count_forward: bool,
     },
     Broadcast {
         npdu: Bytes,
         data_attributes: Vec<DataAttribute>,
         reject_origin: Option<bacnet_router_core::router::RejectOrigin>,
+        count_forward: bool,
     },
+}
+
+impl SendRequest {
+    pub(super) fn counts_as_forward(&self) -> bool {
+        match self {
+            Self::Unicast { count_forward, .. } | Self::Broadcast { count_forward, .. } => {
+                *count_forward
+            }
+        }
+    }
 }
 
 /// A router port: a transport bound to a specific BACnet network number.
@@ -313,6 +326,7 @@ impl BACnetRouter {
             gate,
             control_tx,
             options.engine_options(),
+            &options.isolated_ports,
         )
         .await?;
         Ok(StartedRouter {
@@ -348,6 +362,20 @@ impl BACnetRouter {
     /// which read them.
     pub fn counters(&self) -> Counters {
         self.shared.engine.counters()
+    }
+
+    /// Cumulative forwarding counters in the configured port order.
+    ///
+    /// Each entry is keyed by its zero-based `config_index` and configured
+    /// BACnet `network_number`. The snapshot remains available after
+    /// [`Self::stop`] and complements, rather than partitions, the aggregate
+    /// [`Self::counters`] totals.
+    pub fn port_counters(&self) -> Vec<RouterPortCounters> {
+        self.shared
+            .port_counters
+            .iter()
+            .map(PortCounterEntry::snapshot)
+            .collect()
     }
 
     /// NPDUs refused on any port since start because an address in them was
@@ -419,6 +447,30 @@ impl BACnetRouter {
     /// group at another UDP port, another B/IP network, is counted.
     pub fn group_dadr_drops(&self) -> u64 {
         self.counters().group_dadr_drops
+    }
+
+    /// Reannounce this router's directly connected networks on one recovered
+    /// port, using the same bounded output queue and wire messages as startup.
+    ///
+    /// `port` is the zero-based position passed to [`Self::start`]. This
+    /// returns an error after [`Self::stop`] or when the index is out of range.
+    /// Queue refusal is accounted by the router engine like a startup
+    /// announcement refusal.
+    pub fn reannounce_port(&self, port: usize) -> Result<(), Error> {
+        if port >= self.port_info.len() {
+            return Err(Error::Encoding(format!(
+                "Router port index {port} is unavailable"
+            )));
+        }
+        let Some(outputs) = self.outputs.upgrade() else {
+            return Err(Error::Encoding(
+                "Router port announcements are unavailable after stop".to_string(),
+            ));
+        };
+        // A running router has at most 255 ports, checked at start.
+        self.shared
+            .announce_port(PortId(port as u8), &outputs.send_txs);
+        Ok(())
     }
 
     /// Immutable post-start address snapshots in configured-port order.
@@ -535,6 +587,8 @@ mod r7_reply_tests;
 mod rb06_convergence_tests;
 #[cfg(test)]
 mod rb09_control_policy_tests;
+#[cfg(test)]
+mod reannounce_tests;
 #[cfg(test)]
 mod reject_tests;
 #[cfg(test)]

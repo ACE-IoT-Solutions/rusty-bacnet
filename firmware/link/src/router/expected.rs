@@ -135,12 +135,24 @@ const SENT: [Option<(u8, Kind, bool)>; SENDS] = slots([
 
 /// Step 6's NPDU of 1494 octets would leave at 1498 on MS/TP, whose limit
 /// is 1497; the reject names network 2.
-const EVENTS_SEEN: [Option<Event>; EVENTS] = slots([Event::TooLong {
-    port: PortId(1),
-    octets: 1498,
-    limit: 1497,
-    rejected: Some(2),
-}]);
+const EVENTS_SEEN: [Option<Event>; EVENTS] = slots([
+    // Step 5 reports each unroutable request, including the retry during
+    // the discovery cooldown, before rejecting it to the source.
+    Event::NoRoute {
+        port: PortId(0),
+        network: 9,
+    },
+    Event::NoRoute {
+        port: PortId(0),
+        network: 9,
+    },
+    Event::TooLong {
+        port: PortId(1),
+        octets: 1498,
+        limit: 1497,
+        rejected: Some(2),
+    },
+]);
 
 const UNICAST: BvlcFunction = BvlcFunction::ORIGINAL_UNICAST_NPDU;
 const BROADCAST: BvlcFunction = BvlcFunction::ORIGINAL_BROADCAST_NPDU;

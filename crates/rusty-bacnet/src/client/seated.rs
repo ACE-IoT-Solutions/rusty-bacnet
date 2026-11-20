@@ -13,7 +13,11 @@ impl BACnetClient {
     /// full client ([`state::ClientState::seat`]) before handing it out.
     /// The start keywords of a standalone client have no use here; they
     /// keep their defaults.
-    pub(crate) fn seated(transport: &str) -> Self {
+    pub(crate) fn seated(
+        transport: &str,
+        primary_hub: Option<&str>,
+        failover_hub: Option<&str>,
+    ) -> Self {
         Self {
             inner: Arc::new(state::ClientState::seated()),
             seated: true,
@@ -27,7 +31,7 @@ impl BACnetClient {
             bip6_foreign: None,
             multicast: None,
             apdu_timeout_ms: 0,
-            sc_hub: None,
+            sc_hub: primary_hub.map(str::to_owned),
             sc_vmac: None,
             sc_device_uuid: [0; 16],
             sc_npdu_admission_policy: bacnet_transport::sc::ScNpduAdmissionPolicy::default(),
@@ -37,7 +41,7 @@ impl BACnetClient {
             sc_heartbeat_interval_ms: None,
             sc_heartbeat_timeout_ms: None,
             reconnect: None,
-            sc_failover_hub: None,
+            sc_failover_hub: failover_hub.map(str::to_owned),
             sc_connect_timeout_ms: None,
             ipv6_interface: None,
             ipv6_device_instance: None,

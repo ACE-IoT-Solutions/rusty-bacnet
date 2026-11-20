@@ -6,7 +6,11 @@ use std::task::{Context, Waker};
 async fn owner_close_releases_receiver_and_wakes_pending_read() {
     let tap = bacnet_transport::tap::FrameTap::new();
     let owner = FrameSubscriptions::default();
-    let iterator = owner.subscribe(tap.subscribe(), "local".into(), Clock::fixed());
+    let iterator = owner.subscribe(
+        tap.subscribe(),
+        FrameContext::local("local"),
+        Clock::fixed(),
+    );
     let (pending, _hook) = iterator.subscription.stream.next();
     tokio::pin!(pending);
     assert!(
@@ -19,7 +23,11 @@ async fn owner_close_releases_receiver_and_wakes_pending_read() {
     owner.close();
     assert_eq!(tap.counters().subscribers, 0);
     assert!(pending.await.is_none());
-    let fresh = owner.subscribe(tap.subscribe(), "new generation".into(), Clock::fixed());
+    let fresh = owner.subscribe(
+        tap.subscribe(),
+        FrameContext::local("new generation"),
+        Clock::fixed(),
+    );
     assert!(iterator.subscription.stream.next().0.await.is_none());
     assert_eq!(tap.counters().subscribers, 1);
     drop(fresh);
@@ -30,7 +38,11 @@ async fn owner_close_releases_receiver_and_wakes_pending_read() {
 async fn cancelling_native_wait_keeps_subscription_until_iterator_drop() {
     let tap = bacnet_transport::tap::FrameTap::new();
     let owner = FrameSubscriptions::default();
-    let iterator = owner.subscribe(tap.subscribe(), "local".into(), Clock::fixed());
+    let iterator = owner.subscribe(
+        tap.subscribe(),
+        FrameContext::local("local"),
+        Clock::fixed(),
+    );
     {
         let (pending, _hook) = iterator.subscription.stream.next();
         tokio::pin!(pending);
@@ -130,7 +142,7 @@ fn a_frame_repr_is_short() {
     tap_record(&tap, TapDirection::Inbound, &octets);
     let frame = PyFrame {
         frame: receiver.try_recv().unwrap(),
-        local_address: "127.0.0.1:47808".into(),
+        context: Arc::new(FrameContext::local("127.0.0.1:47808")),
         missed_before: 0,
         monotonic: 0.0,
     };
@@ -176,7 +188,7 @@ async fn after_a_gap_of_two() -> (
     let owner = FrameSubscriptions::default();
     let iterator = owner.subscribe(
         tap.subscribe_with_capacity(1),
-        "local".into(),
+        FrameContext::local("local"),
         Clock::fixed(),
     );
     for octet in 0..3 {

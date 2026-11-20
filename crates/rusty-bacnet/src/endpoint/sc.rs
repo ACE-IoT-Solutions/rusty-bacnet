@@ -116,6 +116,7 @@ impl ScEndpointConfig {
 /// manager). BIPv6/Ethernet have no endpoint owner.
 #[pyclass(name = "ScEndpoint", module = "rusty_bacnet")]
 pub struct PyScEndpoint {
+    frames: Arc<crate::frames::FrameSubscriptions>,
     lifecycle: Lifecycle<Running, PendingObject>,
     config: ScEndpointConfig,
     /// Each start's receiver for the first `connection_events()` call; the
@@ -347,8 +348,11 @@ impl PyScEndpoint {
             super::source_audit::AuditLink::Sc(vmac),
             server.decides_mutations(),
         )?;
+        let frames = Arc::new(crate::frames::FrameSubscriptions::default());
+        let observer = frames.clone();
         Ok(Self {
-            lifecycle: Lifecycle::new(),
+            lifecycle: Lifecycle::new().with_close_observer(move || observer.close()),
+            frames,
             config: ScEndpointConfig {
                 hub_url: sc_hub.to_string(),
                 vmac,
@@ -463,7 +467,12 @@ impl PyScEndpoint {
     /// `connection_status()`, or this endpoint's `connection_events()`,
     /// whose first call holds the events from the start.
     fn client<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let client = super::running::client(py, self.lifecycle.session.clone(), "sc")?;
+        let seated = crate::client::BACnetClient::seated(
+            "sc",
+            Some(&self.config.hub_url),
+            self.config.failover_hub.as_deref(),
+        );
+        let client = super::running::client(py, self.lifecycle.session.clone(), seated)?;
         crate::py_async::future_into_py(py, client)
     }
 
@@ -476,6 +485,29 @@ impl PyScEndpoint {
             self.config.identity.instance(),
         );
         crate::py_async::future_into_py(py, server)
+    }
+
+    /// Observe plaintext BVLC-SC frames on this endpoint's active hub link.
+    #[pyo3(signature = (capacity=1024))]
+    fn frames<'py>(&self, py: Python<'py>, capacity: usize) -> PyResult<Bound<'py, PyAny>> {
+        let capacity = crate::frames::capacity(capacity)?;
+        let clock = crate::frames::Clock::get(py)?;
+        let lifecycle = self.lifecycle.clone();
+        let frames = self.frames.clone();
+        let context = crate::frames::FrameContext {
+            local_address: self.vmac_hex().into(),
+            primary_hub: Some(self.config.hub_url.clone()),
+            failover_hub: self.config.failover_hub.clone(),
+            port_index: None,
+        };
+        crate::py_async::future_into_py(py, async move {
+            let guard = lifecycle.session.read().await;
+            let receiver = guard
+                .as_ref()
+                .and_then(|session| session.frames(capacity))
+                .ok_or_else(|| PyRuntimeError::new_err("endpoint not started"))?;
+            Ok(frames.subscribe(receiver, context, clock))
+        })
     }
 
     /// VMAC hex for this SC node (validated startup config).

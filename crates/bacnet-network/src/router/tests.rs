@@ -60,6 +60,16 @@ async fn router_forwards_between_networks() {
         .await
         .unwrap();
 
+    // A B/IP port's post-start MAC is its bound address and UDP port, so an
+    // ephemeral bind (port 0) shows a real port here.
+    let bound_port = |index: usize| {
+        let mac = router.ports()[index].local_mac();
+        u16::from_be_bytes([mac[4], mac[5]])
+    };
+    assert_ne!(bound_port(0), 0);
+    assert_ne!(bound_port(1), 0);
+    assert_eq!(router.ports().get(2).map(|info| info.index()), None);
+
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let apdu = vec![0x10, 0x08];
@@ -86,6 +96,40 @@ async fn router_forwards_between_networks() {
     drop(table);
 
     router.stop().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropping_router_aborts_all_owned_port_tasks() {
+    use super::driven_port::driven;
+    use tokio::time::timeout;
+
+    let (first, first_handle) = driven(1, 1497);
+    let (second, second_handle) = driven(2, 1497);
+    let ports = vec![
+        RouterPort {
+            transport: first,
+            network_number: 100,
+        },
+        RouterPort {
+            transport: second,
+            network_number: 200,
+        },
+    ];
+    let StartedRouter { router, .. } = BACnetRouter::start(ports, RouterOptions::new())
+        .await
+        .unwrap();
+    let mut handles = [first_handle, second_handle];
+
+    drop(router);
+
+    for handle in &mut handles {
+        timeout(Duration::from_secs(1), async {
+            while handle.sent.recv().await.is_some() {}
+        })
+        .await
+        .expect("the router-owned sender task did not stop on drop");
+        assert!(handle.frames.is_closed());
+    }
 }
 
 #[tokio::test]
@@ -158,6 +202,17 @@ async fn forward_unicast_drops_hop_count_zero() {
     h.dispatch(h.ctx(0, &[0x0A], apdu_to(2000, &[0x01, 0x02], 0)))
         .await;
     h.assert_quiet();
+}
+
+#[tokio::test]
+async fn no_route_is_attributed_to_the_ingress_port() {
+    let mut h = Harness::two_port();
+    h.dispatch(h.ctx(0, &[0x0A], apdu_to(3000, &[0x01], 10)))
+        .await;
+
+    assert_eq!(h.port_counters()[0].no_route_drops, 1);
+    assert_eq!(h.port_counters()[1].no_route_drops, 0);
+    assert_eq!(h.counters().rejects, 1);
 }
 
 #[tokio::test]

@@ -8,6 +8,7 @@
 
 use pyo3::prelude::*;
 
+mod ace_mixed_router;
 mod algorithm_keywords;
 mod app_transport;
 mod bip_options;
@@ -95,6 +96,12 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sc_inspection::register(m)?;
     endpoint::register(m)?;
     router::register(m)?;
+    m.add_class::<ace_mixed_router::PyRouterBipPort>()?;
+    m.add_class::<ace_mixed_router::PyRouterScPort>()?;
+    m.add_class::<ace_mixed_router::PyRouterPortHealth>()?;
+    m.add_class::<ace_mixed_router::PyRouterPortCounters>()?;
+    m.add_class::<ace_mixed_router::PyRouterRouteEntry>()?;
+    m.add_class::<ace_mixed_router::PyAceMixedRouter>()?;
     reinitialize::register(m)?;
     load_shedder::register(m)?;
     mutation_policy::register(m)?;

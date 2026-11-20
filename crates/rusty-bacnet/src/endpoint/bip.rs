@@ -8,6 +8,9 @@
 //! plus transport addressing. No post-start configuration mutation exists.
 //! The default vendor identifier is 555 and flows through this single identity.
 
+#[path = "bip_observation.rs"]
+mod observation;
+
 use std::net::Ipv4Addr;
 
 use bacnet_endpoint::bip::BipEndpointBuilder;
@@ -500,60 +503,6 @@ impl PyBipEndpoint {
         self.close(py)
     }
 
-    /// Subscribe to raw frames on the endpoint's existing socket, including
-    /// malformed received datagrams. A full queue drops new frames; the next
-    /// frame queued reports the gap in `Frame.missed_before`. Close ends
-    /// every subscription, waking pending reads.
-    #[pyo3(signature = (capacity=1024))]
-    fn frames<'py>(&self, py: Python<'py>, capacity: usize) -> PyResult<Bound<'py, PyAny>> {
-        let capacity = crate::frames::capacity(capacity)?;
-        let clock = crate::frames::Clock::get(py)?;
-        let lifecycle = self.lifecycle.clone();
-        let frames = self.frames.clone();
-        crate::py_async::future_into_py(py, async move {
-            let guard = lifecycle.session.read().await;
-            let session = guard
-                .as_ref()
-                .ok_or_else(|| PyRuntimeError::new_err("endpoint not started"))?;
-            let receiver = session
-                .frames(capacity)
-                .ok_or_else(|| PyRuntimeError::new_err("endpoint not started"))?;
-            let address = session
-                .bip_local_address()
-                .and_then(|socket| {
-                    crate::frames::local_address(DataLink::Bip, &[], Some(socket.into()))
-                })
-                .ok_or_else(|| PyRuntimeError::new_err("endpoint not started"))?;
-            Ok(frames.subscribe(receiver, address, clock))
-        })
-    }
-
-    /// Subscribe to a record of every I-Am the endpoint's socket receives,
-    /// as `BACnetClient.i_am_arrivals` does, leaving out and counting its
-    /// own I-Am come back to it: from its own address, of its own device
-    /// instance. Close ends every subscription, waking pending reads.
-    #[pyo3(signature = (capacity=1024))]
-    fn i_am_arrivals<'py>(&self, py: Python<'py>, capacity: usize) -> PyResult<Bound<'py, PyAny>> {
-        let capacity = crate::frames::capacity(capacity)?;
-        let clock = crate::frames::Clock::get(py)?;
-        let lifecycle = self.lifecycle.clone();
-        let frames = self.frames.clone();
-        let instance = self.config.identity.instance();
-        crate::py_async::future_into_py(py, async move {
-            let guard = lifecycle.session.read().await;
-            let not_started = || PyRuntimeError::new_err("endpoint not started");
-            let session = guard.as_ref().ok_or_else(not_started)?;
-            let receiver = session.frames(capacity).ok_or_else(not_started)?;
-            let own = session.bip_local_address().ok_or_else(not_started)?;
-            Ok(crate::i_am_arrivals::subscribe(
-                &frames,
-                receiver,
-                Some((own.into(), instance)),
-                clock,
-            ))
-        })
-    }
-
     /// The `BACnetClient` on this endpoint's socket (#2617): the standalone
     /// class, with all its calls, on the endpoint's one address. While it
     /// runs, each call returns the same object; once its `stop()` has
@@ -563,7 +512,8 @@ impl PyBipEndpoint {
     /// failed (naming the cause). With `source_audit_reporter`, its reads
     /// and writes are audited (#2617).
     fn client<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let client = super::running::client(py, self.lifecycle.session.clone(), "bip")?;
+        let seated = crate::client::BACnetClient::seated("bip", None, None);
+        let client = super::running::client(py, self.lifecycle.session.clone(), seated)?;
         crate::py_async::future_into_py(py, client)
     }
 
@@ -583,19 +533,6 @@ impl PyBipEndpoint {
     }
 
     /// Actual announced IP and bound UDP port while the endpoint is active.
-    /// Raises RuntimeError before startup publication and during/after teardown.
-    fn local_address<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let inner = self.lifecycle.session.clone();
-        crate::py_async::future_into_py(py, async move {
-            let guard = inner.read().await;
-            guard
-                .as_ref()
-                .and_then(|session| session.bip_local_address())
-                .map(|address| address.to_string())
-                .ok_or_else(|| PyRuntimeError::new_err("endpoint is not active"))
-        })
-    }
-
     /// Bounded snapshot: liveness, identity, transport, leases, policy counts.
     ///
     /// Counts and kind labels only — no keys, certs, or payloads. Raises

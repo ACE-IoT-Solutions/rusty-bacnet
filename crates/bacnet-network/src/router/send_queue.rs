@@ -17,6 +17,7 @@ use tokio::sync::mpsc::error::{TryRecvError, TrySendError};
 use bacnet_router_core::router::Backlog;
 
 use super::SendRequest;
+use super::counters::PortCounterState;
 use super::engine::EngineGuard;
 
 pub(super) const CAPACITY: usize = 256;
@@ -30,6 +31,7 @@ struct State {
     /// The engine counts the port as congested, so it wants to hear the
     /// backlog as it drains too (#1697).
     watched: bool,
+    counters: Option<Arc<PortCounterState>>,
 }
 
 struct Shared {
@@ -63,7 +65,15 @@ pub(super) struct Sender(Arc<Shared>);
 
 pub(super) struct Receiver(Arc<Shared>);
 
+#[cfg(test)]
 pub(super) fn channel(capacity: usize) -> (Sender, Receiver) {
+    channel_with_counters(capacity, None)
+}
+
+pub(super) fn channel_with_counters(
+    capacity: usize,
+    counters: Option<Arc<PortCounterState>>,
+) -> (Sender, Receiver) {
     assert!(capacity > 0);
     let shared = Arc::new(Shared {
         state: Mutex::new(State {
@@ -73,6 +83,7 @@ pub(super) fn channel(capacity: usize) -> (Sender, Receiver) {
             senders: 1,
             receiver: true,
             watched: false,
+            counters,
         }),
         ready: Notify::new(),
     });
@@ -111,6 +122,18 @@ impl Sender {
     /// Whether the receiver reports the backlog as it drains.
     pub(super) fn set_watched(&self, watched: bool) {
         self.0.set_watched(watched);
+    }
+
+    /// Account for a forwarded request refused after polling the engine.
+    pub(super) fn record_forward_refusal(&self, error: &TrySendError<()>) {
+        let counters = self.0.lock().counters.clone();
+        let Some(counters) = counters else {
+            return;
+        };
+        match error {
+            TrySendError::Full(()) => counters.output_full(),
+            TrySendError::Closed(()) => counters.shutdown(),
+        }
     }
 }
 
@@ -192,12 +215,20 @@ impl Receiver {
 
 impl Drop for Receiver {
     fn drop(&mut self) {
-        let discarded = {
+        let (discarded, counters) = {
             let mut state = self.0.lock();
             state.receiver = false;
             state.len = 0;
-            std::mem::take(&mut state.lanes)
+            (std::mem::take(&mut state.lanes), state.counters.clone())
         };
+        if let Some(counters) = counters {
+            let dropped = discarded
+                .iter()
+                .flatten()
+                .filter(|request| request.counts_as_forward())
+                .count();
+            counters.shutdown_many(dropped);
+        }
         // Release payloads even while senders still own the shared state.
         drop(discarded);
     }

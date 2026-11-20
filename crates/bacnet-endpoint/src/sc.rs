@@ -405,8 +405,10 @@ impl ScEndpointBuilder {
             transport = transport.with_reconnect(config);
         }
         let link = transport.link_monitor();
+        let tap = transport.frame_tap().clone();
         let mut endpoint = EndpointSession::new(wrap(transport), self.role, self.session.clone())?;
         endpoint.sc_link = Some(link);
+        endpoint.frame_tap = Some(tap);
         if let Some(db) = self.database.take() {
             endpoint = endpoint.with_database(db);
         }

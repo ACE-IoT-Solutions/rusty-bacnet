@@ -5,7 +5,7 @@ use bacnet_transport::port::TransportPort;
 use bacnet_transport::tap::FrameTapReceiver;
 
 impl<T: TransportPort + 'static> EndpointSession<T> {
-    /// Subscribe to raw frames on a B/IP-builder session's transport.
+    /// Subscribe to raw frames on a B/IP or SC session's transport.
     ///
     /// Returns `None` outside the running state or when the builder did not
     /// supply a tap. Each receiver has its own bounded queue; full queues

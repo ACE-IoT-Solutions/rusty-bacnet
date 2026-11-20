@@ -21,8 +21,8 @@ table; `test_site_samples.py` fails when this file is out of date. Run
 | sh | CLI arguments parsed by the CLI (--help) | 29 |
 | sh | host example run with cargo | 1 |
 | sh | not checked (class C) | 1 |
-| sh | not checked (class F) | 18 |
-| sh | run against a loopback server | 14 |
+| sh | not checked (class F) | 19 |
+| sh | run against a loopback server | 13 |
 | sh | run or compiled by another CI test | 8 |
 | sh | script options parsed by the script's own parser | 1 |
 | text | not checked (class G) | 2 |
@@ -117,7 +117,7 @@ table; `test_site_samples.py` fails when this file is out of date. Run
 | start/installation.mdx:113 | sh | `<Code lang="sh" code={`cargo install bacnet-cli --version...` | not checked (class F) | installs or builds software |
 | start/installation.mdx:117 | sh | `cargo install --path crates/bacnet-cli --locked --feature...` | not checked (class F) | installs or builds software |
 | start/installation.mdx:155 | sh | `<Code lang="sh" code={`python3 --version` | not checked (class F) | installs or builds software |
-| start/installation.mdx:161 | sh | `.venv/bin/python -c "from rusty_bacnet import BACnetClien...` | run against a loopback server |  |
+| start/installation.mdx:161 | sh | `.venv/bin/python -c "from rusty_bacnet import BACnetClien...` | not checked (class F) | upstream distribution name differs from the ACE wheel |
 | start/installation.mdx:172 | powershell | `<Code lang="powershell" code={String.raw`py -3.13 -m venv...` | not checked (class F) | PowerShell; the job that runs this test is Linux only |
 | start/installation.mdx:175 | powershell | `.\.venv\Scripts\python.exe -c "from rusty_bacnet import B...` | not checked (class F) | PowerShell; the job that runs this test is Linux only |
 | start/installation.mdx:207 | toml | `<Code lang="toml" code={`[dependencies]` | run or compiled by another CI test |  |

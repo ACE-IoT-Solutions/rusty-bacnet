@@ -96,11 +96,29 @@ pub(crate) fn posix_seconds(at: SystemTime) -> f64 {
     }
 }
 
+/// Link identity and configured hub URLs for one owner's frame subscription.
+#[derive(Clone, Default)]
+pub(crate) struct FrameContext {
+    pub(crate) local_address: Arc<str>,
+    pub(crate) port_index: Option<usize>,
+    pub(crate) primary_hub: Option<String>,
+    pub(crate) failover_hub: Option<String>,
+}
+
+impl FrameContext {
+    pub(crate) fn local(address: impl Into<Arc<str>>) -> Self {
+        Self {
+            local_address: address.into(),
+            ..Self::default()
+        }
+    }
+}
+
 /// One transport observation. Its times belong to capture, not iteration.
 #[pyclass(name = "Frame", module = "rusty_bacnet", frozen)]
 pub(crate) struct PyFrame {
     frame: TappedFrame,
-    local_address: Arc<str>,
+    context: Arc<FrameContext>,
     missed_before: u64,
     monotonic: f64,
 }
@@ -141,7 +159,33 @@ impl PyFrame {
     /// form [`peer`](Self::peer) uses (see [`local_address`]).
     #[getter]
     fn local_address(&self) -> &str {
-        &self.local_address
+        &self.context.local_address
+    }
+
+    /// The mixed router's configured port index.
+    #[getter]
+    fn port_index(&self) -> Option<usize> {
+        self.context.port_index
+    }
+
+    /// Configured hub URL of the connection on which this frame was captured.
+    #[getter]
+    fn hub_url(&self) -> Option<&str> {
+        use bacnet_transport::sc::ScActiveHub;
+        match self.frame.peer {
+            TapPeer::ScHub(ScActiveHub::Primary) => self.context.primary_hub.as_deref(),
+            TapPeer::ScHub(ScActiveHub::Failover) => self.context.failover_hub.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Capture time from the wall clock, in integer Unix nanoseconds.
+    #[getter]
+    fn timestamp_unix_ns(&self) -> i128 {
+        match self.frame.timestamp.duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(since) => since.as_nanos() as i128,
+            Err(before) => -(before.duration().as_nanos() as i128),
+        }
     }
 
     /// The other end on the link (see [`peer_text`]): the next hop, not a
@@ -178,7 +222,7 @@ impl PyFrame {
 }
 
 /// A MAC in lowercase colon hex, as SC addresses are written.
-fn hex_address(mac: &[u8]) -> String {
+pub(crate) fn hex_address(mac: &[u8]) -> String {
     mac.iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<Vec<_>>()
@@ -261,6 +305,8 @@ pub(crate) trait TapStream: Send + 'static {
     fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<Self::Item>>;
     /// Frames lost to the full queue so far.
     fn dropped(&self) -> u64;
+    /// Detach and synchronize with an in-flight publication before counting the last drop.
+    fn close(self) -> u64;
 }
 
 impl TapStream for FrameTapReceiver {
@@ -272,6 +318,10 @@ impl TapStream for FrameTapReceiver {
 
     fn dropped(&self) -> u64 {
         FrameTapReceiver::dropped(self)
+    }
+
+    fn close(self) -> u64 {
+        FrameTapReceiver::close(self)
     }
 }
 
@@ -322,7 +372,7 @@ impl<R: TapStream> SourceState<R> {
     fn close(&self) {
         if let Some(receiver) = self.receiver().take() {
             self.final_missed
-                .store(receiver.dropped(), std::sync::atomic::Ordering::Relaxed);
+                .store(receiver.close(), std::sync::atomic::Ordering::Relaxed);
         }
         self.closed.notify_waiters();
     }
@@ -477,12 +527,12 @@ impl FrameSubscriptions {
     pub(crate) fn subscribe(
         &self,
         receiver: FrameTapReceiver,
-        local_address: Arc<str>,
+        context: FrameContext,
         clock: Clock,
     ) -> PyFrameIterator {
         PyFrameIterator {
             subscription: self.open(receiver),
-            local_address,
+            context: Arc::new(context),
             clock,
         }
     }
@@ -526,7 +576,7 @@ impl Drop for FrameSubscriptions {
 #[pyclass(name = "FrameIterator", module = "rusty_bacnet", frozen)]
 pub(crate) struct PyFrameIterator {
     subscription: Arc<Subscription<FrameTapReceiver>>,
-    local_address: Arc<str>,
+    context: Arc<FrameContext>,
     clock: Clock,
 }
 
@@ -536,13 +586,13 @@ impl PyFrameIterator {
     fn converter(
         &self,
     ) -> impl FnOnce(TappedFrame, &Gaps<FrameTapReceiver>) -> PyFrame + Send + 'static + use<> {
-        let local_address = self.local_address.clone();
+        let context = self.context.clone();
         let clock = self.clock;
         move |frame, gaps| PyFrame {
             missed_before: gaps.missed_before(frame.missed_before),
             monotonic: clock.seconds(frame.monotonic_timestamp),
             frame,
-            local_address,
+            context,
         }
     }
 }

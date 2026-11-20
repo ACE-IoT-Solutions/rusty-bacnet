@@ -492,7 +492,8 @@ impl PyMstpEndpoint {
     /// audited with `source_audit_reporter`. Its requests wait for this
     /// node's token as the server role's answers do.
     fn client<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let client = super::running::client(py, self.lifecycle.session.clone(), "mstp")?;
+        let seated = crate::client::BACnetClient::seated("mstp", None, None);
+        let client = super::running::client(py, self.lifecycle.session.clone(), seated)?;
         crate::py_async::future_into_py(py, client)
     }
 

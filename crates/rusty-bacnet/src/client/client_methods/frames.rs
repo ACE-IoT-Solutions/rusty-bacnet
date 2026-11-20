@@ -14,6 +14,8 @@ impl BACnetClient {
     fn frames<'py>(&self, py: Python<'py>, capacity: usize) -> PyResult<Bound<'py, PyAny>> {
         let capacity = crate::frames::capacity(capacity)?;
         let clock = crate::frames::Clock::get(py)?;
+        let primary_hub = self.sc_hub.clone();
+        let failover_hub = self.sc_failover_hub.clone();
         let inner = self.inner.clone();
         crate::py_async::future_into_py(py, async move {
             let client = started(&inner).await?;
@@ -31,9 +33,16 @@ impl BACnetClient {
                 .ok_or_else(|| {
                     PyRuntimeError::new_err("the client's transport reports no local address")
                 })?;
-            Ok(inner
-                .frames
-                .subscribe(tap.subscribe_with_capacity(capacity), address, clock))
+            Ok(inner.frames.subscribe(
+                tap.subscribe_with_capacity(capacity),
+                crate::frames::FrameContext {
+                    local_address: address,
+                    primary_hub,
+                    failover_hub,
+                    port_index: None,
+                },
+                clock,
+            ))
         })
     }
 }

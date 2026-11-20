@@ -32,6 +32,7 @@ pub(super) fn wire_port(
                     npdu: frame.npdu,
                     data_attributes: frame.attributes,
                     reject_origin: None,
+                    count_forward: false,
                 }
             } else {
                 SendRequest::Unicast {
@@ -40,6 +41,7 @@ pub(super) fn wire_port(
                     data_attributes: frame.attributes,
                     response: None,
                     reject_origin: None,
+                    count_forward: false,
                 }
             };
             let queued = outgoing

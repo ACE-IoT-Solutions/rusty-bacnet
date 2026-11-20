@@ -240,7 +240,11 @@ async fn the_owners_close_ends_arrival_iterators_too() {
     let owner = FrameSubscriptions::default();
     let own = Some((DEVICE.parse().unwrap(), 1));
     let iterator = subscribe(&owner, tap.subscribe(), own, Clock::fixed());
-    let frames = owner.subscribe(tap.subscribe(), "local".into(), Clock::fixed());
+    let frames = owner.subscribe(
+        tap.subscribe(),
+        crate::frames::FrameContext::local("local"),
+        Clock::fixed(),
+    );
     inbound(&tap, &bip(&npdu(&[0x10, 0x00, 0xC4], None), None));
     // This owner's own I-Am come back to it.
     inbound(&tap, &bip(&npdu(&i_am(1), None), None));

@@ -387,7 +387,7 @@ are rejected; this standalone profile still permits property selectors.
 ```python
 def write_property_multiple(
     self,
-    address: str,
+    address: str | RoutedTarget,
     specs: list[tuple[ObjectIdentifier, list[tuple[PropertyIdentifier, PropertyValue, Optional[int], Optional[int]]]]],
 ) -> Awaitable[None]
 ```
@@ -2070,6 +2070,9 @@ link (see "Raw frame observation" in docs/python-api.md).
 
 Properties:
 
+- `port_index: int | None`: Configured mixed-router port index.
+- `hub_url: str | None`: Configured SC hub URL associated with the captured frame.
+- `timestamp_unix_ns: int`: Wall-clock time of capture, in integer Unix nanoseconds.
 - `monotonic: float`: Capture time in seconds on the clock and origin of `time.monotonic()`, so `time.monotonic() - frame.monotonic` is the frame's age. It never decreases within a subscription. The first `frames()` call in the process pairs the capture clock with `time.monotonic()` once, and each capture converts by its offset from that pair. Both read the same OS clock on Linux (`CLOCK_MONOTONIC`), on macOS (`mach_absolute_time`) and on Windows from Python 3.13 (`QueryPerformanceCounter`); neither counts system sleep on Linux or macOS, both count it on Windows. On Windows with Python 3.11 or 3.12, `time.monotonic()` reads `GetTickCount64` instead: it also counts sleep, but moves in 10-16 ms steps, so a value can sit up to one step away from it, and the two counters are not guaranteed to stay in step over a long run.
 - `timestamp: float`: Capture time as POSIX seconds from the wall clock, as `time.time()`: comparable with other machines' clocks, but a clock adjustment can move it either way, so order frames by `monotonic`.
 - `direction: Literal["inbound", "outbound", "other"]`: `"inbound"` or `"outbound"` (`"other"` only for a direction a later release adds).
@@ -2177,6 +2180,8 @@ Properties:
 - `forwarded: bool`: True when the frame carried an origin other than its sender: a BBMD forwarded it. Never on SC or MS/TP.
 - `source_network: Optional[int]`: SNET, when a router relayed the I-Am from another network.
 - `source_address: Optional[bytes]`: SADR, the device's MAC on `source_network`.
+- `destination_network: int | None`: DNET carried by the received NPDU.
+- `destination_address: bytes | None`: DADR, empty for a network broadcast and absent without a DNET.
 - `broadcast: bool`: A link broadcast or a broadcast on a network. False for an MS/TP I-Am one station unicast to another, which the bus lets this station hear.
 - `device_address: Optional[str]`: The device's address as `BACnetClient.device()` takes it: `link_source` for a device on this link, `"5:0x07"` for one a router relayed. None when those name no one station. The calls that take an `address` don't take `"5:0x07"`: for a routed record, `read_property`, `read_property_multiple`, `read_range`, `read_log_page`, `write_property`, `atomic_read_file` and `atomic_write_file` take `RoutedTarget(rec.source_network, rec.source_address, router=rec.next_hop_router)`.
 - `next_hop_router: Optional[str]`: The router that relayed it, when `source_network` is set: its `link_source`.

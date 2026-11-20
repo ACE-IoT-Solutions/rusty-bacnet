@@ -245,6 +245,7 @@ async fn queue_full_keeps_marks_bounded_and_local() {
                 data_attributes: Vec::new(),
 
                 reject_origin: None,
+                count_forward: false,
             },
         )
         .unwrap();

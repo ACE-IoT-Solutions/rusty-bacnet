@@ -2,7 +2,7 @@
 pub(crate) mod application;
 mod config;
 mod errors;
-mod lifecycle;
+pub(crate) mod lifecycle;
 mod publication;
 mod records;
 mod session;

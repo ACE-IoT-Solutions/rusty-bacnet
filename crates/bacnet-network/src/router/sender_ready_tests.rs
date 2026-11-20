@@ -27,6 +27,18 @@ fn request() -> SendRequest {
         data_attributes: Vec::new(),
 
         reject_origin: None,
+        count_forward: false,
+    }
+}
+
+fn forwarded_unicast() -> SendRequest {
+    SendRequest::Unicast {
+        npdu: Bytes::from_static(&[1, 0, 0x10, 8]),
+        mac: bacnet_types::MacAddr::from_slice(&[2]),
+        data_attributes: Vec::new(),
+        reject_origin: None,
+        response: None,
+        count_forward: true,
     }
 }
 
@@ -135,4 +147,36 @@ async fn a_replenished_ready_sender_can_be_aborted_and_joined_before_exhaustion(
         tx.try_send(bacnet_npdu::NetworkPriority::Normal, request()),
         Err(TrySendError::Closed(_))
     ));
+}
+
+#[tokio::test]
+async fn sender_records_forward_success_and_error_per_port() {
+    for fail in [false, true] {
+        let (tx, rx) = send_queue::channel(1);
+        tx.try_send(bacnet_npdu::NetworkPriority::Normal, forwarded_unicast())
+            .unwrap();
+        drop(tx);
+        let shared = shared();
+        super::run(
+            TestTransport::builder()
+                .on_send(move |_| async move {
+                    if fail {
+                        Err(bacnet_types::error::Error::Encoding(
+                            "injected send failure".into(),
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .build(),
+            PortId(0),
+            rx,
+            Arc::clone(&shared),
+            std::sync::Weak::new(),
+        )
+        .await;
+        let snapshot = shared.port_counters[0].snapshot();
+        assert_eq!(snapshot.forwarded_unicast, u64::from(!fail));
+        assert_eq!(snapshot.send_errors, u64::from(fail));
+    }
 }

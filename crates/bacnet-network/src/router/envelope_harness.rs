@@ -306,6 +306,14 @@ impl Harness {
         self.shared.engine.counters()
     }
 
+    pub(super) fn port_counters(&self) -> Vec<super::RouterPortCounters> {
+        self.shared
+            .port_counters
+            .iter()
+            .map(super::counters::PortCounterEntry::snapshot)
+            .collect()
+    }
+
     /// The rewrites the engine couldn't write so far, noted as expected:
     /// the harness checks, when it is dropped, that there were no others.
     pub(super) fn take_write_failures(&self) -> u64 {

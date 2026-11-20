@@ -132,6 +132,17 @@ pub struct Claim<'c> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    /// A routed data frame had no usable route for its destination network.
+    ///
+    /// This is separate from the aggregate reject count so a hosted caller
+    /// can attribute the failed lookup to the ingress port without changing
+    /// the engine's routing decision or its aggregate counters.
+    NoRoute {
+        /// The ingress port whose route lookup failed.
+        port: PortId,
+        /// The destination network that could not be reached.
+        network: u16,
+    },
     /// A learning claim installed or refreshed a route.
     Learned {
         /// The network.

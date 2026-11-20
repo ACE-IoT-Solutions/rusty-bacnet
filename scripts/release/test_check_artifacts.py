@@ -18,10 +18,10 @@ class WheelSetTests(unittest.TestCase):
     PY = ["3.11", "3.12"]
 
     def names(self, version="1.2.0", platforms=LINUX):
-        out = [f"rusty_bacnet-{version}.tar.gz"]
+        out = [f"ace_rusty_bacnet-{version}.tar.gz"]
         for py in ("cp311", "cp312"):
             for plat in platforms:
-                out.append(f"rusty_bacnet-{version}-{py}-{py}-{plat}.whl")
+                out.append(f"ace_rusty_bacnet-{version}-{py}-{py}-{plat}.whl")
         return out
 
     def test_complete_set(self):
@@ -32,7 +32,7 @@ class WheelSetTests(unittest.TestCase):
         self.assertEqual((errors, len(wheels)), ([], 10))
 
     def test_missing_and_unexpected_wheels(self):
-        names = self.names()[:-1] + ["rusty_bacnet-1.2.0-cp312-cp312-manylinux_2_39_x86_64.whl"]
+        names = self.names()[:-1] + ["ace_rusty_bacnet-1.2.0-cp312-cp312-manylinux_2_39_x86_64.whl"]
         errors, _ = checks.check_wheel_set(names, self.PY, LINUX, "1.2.0")
         self.assertTrue(any("missing wheel for tag cp312-cp312-manylinux_2_17_aarch64" in e for e in errors))
         self.assertTrue(any("unexpected wheel" in e and "2_39" in e for e in errors))
@@ -45,13 +45,13 @@ class WheelSetTests(unittest.TestCase):
         self.assertTrue(any("unexpected wheel" in e and "macosx_13_0" in e for e in errors))
 
     def test_version_mismatch_and_missing_sdist(self):
-        names = self.names()[1:] + ["rusty_bacnet-1.3.0.tar.gz"]
+        names = self.names()[1:] + ["ace_rusty_bacnet-1.3.0.tar.gz"]
         names[0] = names[0].replace("1.2.0", "1.1.0")
         errors, _ = checks.check_wheel_set(names, self.PY, LINUX, "1.2.0")
         self.assertTrue(any("has version 1.1.0, the release 1.2.0" in e for e in errors))
-        self.assertTrue(any("rusty_bacnet-1.3.0.tar.gz has version 1.3.0, the release 1.2.0" in e for e in errors))
+        self.assertTrue(any("ace_rusty_bacnet-1.3.0.tar.gz has version 1.3.0, the release 1.2.0" in e for e in errors))
         errors, _ = checks.check_wheel_set(self.names()[1:], self.PY, LINUX, "1.2.0")
-        self.assertIn("expected one rusty_bacnet sdist, found 0", errors)
+        self.assertIn("expected one ace_rusty_bacnet sdist, found 0", errors)
 
     def test_pre_release_wheels_use_the_pep440_version(self):
         errors, _ = checks.check_wheel_set(self.names("1.2.0rc1"), self.PY, LINUX, checks.pep440("1.2.0-rc.1"))
@@ -72,14 +72,14 @@ class WheelSetTests(unittest.TestCase):
             d = Path(tmp)
             notices = d / "THIRD-PARTY-NOTICES"
             notices.write_bytes(b"notices")
-            good, bad, missing = (f"rusty_bacnet-1.2.0-cp31{i}-cp31{i}-x.whl" for i in (1, 2, 3))
+            good, bad, missing = (f"ace_rusty_bacnet-1.2.0-cp31{i}-cp31{i}-x.whl" for i in (1, 2, 3))
             for name, payload in ((good, b"notices"), (bad, b"other")):
                 with zipfile.ZipFile(d / name, "w") as whl:
-                    whl.writestr("rusty_bacnet-1.2.0.dist-info/licenses/THIRD-PARTY-NOTICES", payload)
+                    whl.writestr("ace_rusty_bacnet-1.2.0.dist-info/licenses/THIRD-PARTY-NOTICES", payload)
             with zipfile.ZipFile(d / missing, "w") as whl:
                 whl.writestr("rusty_bacnet/__init__.py", "")
-            with tarfile.open(d / "rusty_bacnet-1.2.0.tar.gz", "w:gz") as tar:
-                tar.add(notices, "rusty_bacnet-1.2.0/crates/rusty-bacnet/THIRD-PARTY-NOTICES")
+            with tarfile.open(d / "ace_rusty_bacnet-1.2.0.tar.gz", "w:gz") as tar:
+                tar.add(notices, "ace_rusty_bacnet-1.2.0/crates/rusty-bacnet/THIRD-PARTY-NOTICES")
             errors = checks.check_notices(d, {1: good, 2: bad, 3: missing}, "1.2.0", notices)
         self.assertEqual(len(errors), 2, errors)
         self.assertTrue(any(bad in e and "differs" in e for e in errors))

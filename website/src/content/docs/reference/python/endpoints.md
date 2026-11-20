@@ -736,6 +736,14 @@ def server(self) -> Awaitable[BACnetServer]
 The `BACnetServer` the endpoint's session runs on its hub
 connection (#2617), as `BipEndpoint.server()` gives one.
 
+### ScEndpoint.frames
+
+```python
+def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]
+```
+
+Observe plaintext BVLC-SC messages on the running endpoint's hub link.
+
 ### ScEndpoint.local_address
 
 ```python

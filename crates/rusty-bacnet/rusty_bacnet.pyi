@@ -4794,6 +4794,18 @@ class Frame:
     decoded header summary. ``local_address`` and ``peer`` use one form per
     link (see "Raw frame observation" in docs/python-api.md)."""
     @property
+    def port_index(self) -> int | None:
+        """Configured mixed-router port index."""
+        ...
+    @property
+    def hub_url(self) -> str | None:
+        """Configured SC hub URL associated with the captured frame."""
+        ...
+    @property
+    def timestamp_unix_ns(self) -> int:
+        """Wall-clock time of capture, in integer Unix nanoseconds."""
+        ...
+    @property
     def monotonic(self) -> float:
         """Capture time in seconds on the clock and origin of
         ``time.monotonic()``, so ``time.monotonic() - frame.monotonic`` is
@@ -5030,6 +5042,14 @@ class IAmArrival:
     @property
     def source_address(self) -> Optional[bytes]:
         """SADR, the device's MAC on ``source_network``."""
+        ...
+    @property
+    def destination_network(self) -> int | None:
+        """DNET carried by the received NPDU."""
+        ...
+    @property
+    def destination_address(self) -> bytes | None:
+        """DADR, empty for a network broadcast and absent without a DNET."""
         ...
     @property
     def broadcast(self) -> bool:
@@ -5466,7 +5486,7 @@ class BACnetClient:
 
     def write_property_multiple(
         self,
-        address: str,
+        address: str | RoutedTarget,
         specs: list[
             tuple[
                 ObjectIdentifier,
@@ -10139,6 +10159,9 @@ class ScEndpoint:
         connection (#2617), as ``BipEndpoint.server()`` gives one."""
         ...
 
+    def frames(self, capacity: int = 1024) -> Awaitable[FrameIterator]:
+        """Observe plaintext BVLC-SC messages on the running endpoint's hub link."""
+        ...
     def local_address(self) -> Awaitable[str]:
         """VMAC hex for this SC node."""
         ...
@@ -10353,6 +10376,113 @@ class MstpEndpoint:
 # ---------------------------------------------------------------------------
 # Owned B/IP routing (#1858)
 # ---------------------------------------------------------------------------
+
+class RouterBipPort:
+    def __init__(
+        self,
+        network_number: int,
+        interface: str = "0.0.0.0",
+        port: int = 0xBAC0,
+        broadcast_address: str = "255.255.255.255",
+        reuse_port: bool = False,
+    ) -> None: ...
+    network_number: int
+    interface: str
+    port: int
+    broadcast_address: str
+    reuse_port: bool
+
+class RouterScPort:
+    def __init__(
+        self,
+        network_number: int,
+        primary_hub: str,
+        local_vmac: bytes,
+        device_uuid: bytes,
+        ca_cert: str,
+        client_cert: str,
+        client_key: str,
+        failover_hub: Optional[str] = None,
+        heartbeat_interval_ms: int = 30000,
+        heartbeat_timeout_ms: int = 60000,
+        reconnect_initial_delay_ms: int = 10000,
+        reconnect_max_delay_ms: int = 600000,
+        reconnect_max_retries: int = 10,
+        reconnect_forever: bool = False,
+        max_npdu_length: int = 1497,
+        max_bvlc_length: int = 5705,
+    ) -> None: ...
+    network_number: int
+    primary_hub: str
+    local_vmac: bytes
+    device_uuid: bytes
+    ca_cert: str
+    client_cert: str
+    client_key: str
+    failover_hub: Optional[str]
+    heartbeat_interval_ms: int
+    heartbeat_timeout_ms: int
+    reconnect_initial_delay_ms: int
+    reconnect_max_delay_ms: int
+    reconnect_max_retries: int
+    reconnect_forever: bool
+    max_npdu_length: int
+    max_bvlc_length: int
+
+class RouterPortHealth:
+    config_index: int
+    network_number: int
+    transport_kind: str
+    identity: str
+    state: str
+    detail: Optional[str]
+    active_hub: Optional[str]
+    last_error: Optional[str]
+    attempt: int
+    since: Optional[float]
+
+class RouterPortCounters:
+    config_index: int
+    network_number: int
+    transport_kind: str
+    identity: str
+    forwarded_unicast: int
+    forwarded_broadcast: int
+    send_errors: int
+    output_full_drops: int
+    no_route_drops: int
+    shutdown_drops: int
+
+class RouterRouteEntry:
+    network_number: int
+    port_index: int
+    directly_connected: bool
+    next_hop_mac: bytes
+    reachability: str
+    last_seen_age_s: Optional[float]
+    busy_remaining_s: Optional[float]
+    flap_count: int
+    last_port_change_age_s: Optional[float]
+
+class AceMixedRouter:
+    @classmethod
+    def from_ports(
+        cls,
+        ports: list[Union[RouterBipPort, RouterScPort]],
+        *,
+        announce_interval_s: Optional[float] = None,
+        isolate_sc_ports: bool = False,
+    ) -> AceMixedRouter: ...
+    async def start(self) -> None: ...
+    async def stop(self) -> None: ...
+    def frames(self, port_index: int, capacity: int = 1024) -> Awaitable[FrameIterator]:
+        """Observe future frames on one running port, indexed in configuration order.
+        SC records contain plaintext BVLC-SC messages across primary/failover changes."""
+        ...
+    async def local_address(self) -> str: ...
+    async def port_health(self) -> list[RouterPortHealth]: ...
+    async def port_counters(self) -> list[RouterPortCounters]: ...
+    async def routing_table(self) -> list[RouterRouteEntry]: ...
 
 class BipRouterPort:
     """Immutable unopened B/IP port configuration; network_number is 1..65534.

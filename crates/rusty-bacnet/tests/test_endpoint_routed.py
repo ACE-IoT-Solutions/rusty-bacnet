@@ -152,7 +152,7 @@ def answer(network, station, request, value=0):
                  + b"\x4e\x21\x07\x4f\x1f")
     elif service == 26:  # ReadRange: no items, no flags
         reply = bytes([0x30, invoke, service]) + body[:7] + b"\x3a\x05\x00\x49\x00\x5e\x5f"
-    elif service == 15:  # WriteProperty: a SimpleACK
+    elif service in (15, 16):  # WriteProperty and WritePropertyMultiple return a SimpleACK
         reply = bytes([0x20, invoke, service])
     else:
         return None
@@ -282,6 +282,12 @@ class RoutedWireTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await asyncio.wait_for(client.write_property(
             self.target, AI_1, P.DESCRIPTION, rb.PropertyValue.character_string("x")), 5))
         self.assert_routed(self.requests, {15})
+
+    async def test_write_property_multiple_through_the_router(self):
+        client = await self.endpoint.client()
+        specs = [(AI_1, [(P.DESCRIPTION, rb.PropertyValue.character_string("routed"), None, None)])]
+        self.assertIsNone(await asyncio.wait_for(client.write_property_multiple(self.target, specs), 5))
+        self.assert_routed(self.requests, {16})
 
     async def test_every_call_names_the_station_behind_the_router(self):
         await self.every_call_names_the_station(self.role)

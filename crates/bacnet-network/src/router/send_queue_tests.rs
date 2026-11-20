@@ -6,13 +6,24 @@ use std::task::{Context, Poll, Wake, Waker};
 use bacnet_npdu::NetworkPriority;
 use bytes::Bytes;
 
-use super::{CAPACITY, SendRequest, TryRecvError, TrySendError, channel};
+use super::{CAPACITY, SendRequest, TryRecvError, TrySendError, channel, channel_with_counters};
+use crate::router::counters::PortCounterEntry;
 
 fn request(priority: u8, tag: u8) -> SendRequest {
     SendRequest::Broadcast {
         npdu: Bytes::from(vec![priority, tag]),
         data_attributes: Vec::new(),
         reject_origin: None,
+        count_forward: false,
+    }
+}
+
+fn forwarded_request(tag: u8) -> SendRequest {
+    SendRequest::Broadcast {
+        npdu: Bytes::from(vec![0, tag]),
+        data_attributes: Vec::new(),
+        reject_origin: None,
+        count_forward: true,
     }
 }
 
@@ -123,6 +134,7 @@ fn receiver_drop_releases_every_lane_and_closed_wins_over_full() {
                 npdu,
                 data_attributes: Vec::new(),
                 reject_origin: None,
+                count_forward: false,
             },
         )
         .unwrap();
@@ -133,6 +145,22 @@ fn receiver_drop_releases_every_lane_and_closed_wins_over_full() {
     let Err(TrySendError::Closed(())) = tx.try_send(prio(3), request(3, 88)) else {
         panic!("dropped receiver must close admission");
     };
+}
+
+#[test]
+fn forwarded_queue_refusals_and_shutdown_are_counted_per_port() {
+    let entry = PortCounterEntry::test(42, 0);
+    let (tx, rx) = channel_with_counters(2, Some(Arc::clone(&entry.state)));
+    tx.try_send(prio(1), forwarded_request(1)).unwrap();
+    tx.try_send(prio(1), forwarded_request(2)).unwrap();
+    let Err(error) = tx.try_send(prio(1), forwarded_request(3)) else {
+        panic!("the bounded queue must refuse the third forwarded request");
+    };
+    tx.record_forward_refusal(&error);
+    assert_eq!(entry.snapshot().output_full_drops, 1);
+
+    drop(rx);
+    assert_eq!(entry.snapshot().shutdown_drops, 2);
 }
 
 #[derive(Default)]

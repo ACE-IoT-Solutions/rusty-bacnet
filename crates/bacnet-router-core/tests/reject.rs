@@ -70,7 +70,24 @@ fn reject_path_follows_the_origin() {
     );
     assert_eq!(outcome, Outcome::Handled);
     assert!(reject_of(&sent).is_none());
-    assert_eq!(host.events, [Event::OwnOrigin { network: 44 }]);
+    assert_eq!(
+        host.events,
+        [
+            Event::NoRoute {
+                port: bacnet_router_core::PortId(0),
+                network: 44,
+            },
+            Event::NoRoute {
+                port: bacnet_router_core::PortId(0),
+                network: 44,
+            },
+            Event::NoRoute {
+                port: bacnet_router_core::PortId(0),
+                network: 44,
+            },
+            Event::OwnOrigin { network: 44 },
+        ]
+    );
 
     // A remote SNET whose SADR happens to equal one of the router's MACs:
     // another node, so it is answered, through the link sender.

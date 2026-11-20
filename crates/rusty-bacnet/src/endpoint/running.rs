@@ -259,11 +259,11 @@ pub(crate) async fn server(
 pub(crate) fn client(
     py: Python<'_>,
     session: Arc<tokio::sync::RwLock<Option<Running>>>,
-    transport: &'static str,
+    candidate: BACnetClient,
 ) -> PyResult<impl Future<Output = PyResult<Py<BACnetClient>>> + Send + 'static> {
     // Made here, with the interpreter attached, and filled under the
     // session lock; unused when a client already runs.
-    let candidate = Py::new(py, BACnetClient::seated(transport))?;
+    let candidate = Py::new(py, candidate)?;
     let state = candidate.borrow(py).state();
     let candidate = Arc::new(candidate);
     Ok(async move {

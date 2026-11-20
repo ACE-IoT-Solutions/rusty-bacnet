@@ -31,7 +31,7 @@ The server, its policies and counters, and the BACnet/SC hub.
 
 Owned B/IP routing between numbered networks.
 
-[`BACnetRouter`](/rusty-bacnet/reference/python/router/#bacnetrouter), [`BipRouterPort`](/rusty-bacnet/reference/python/router/#biprouterport), [`RouterPortInfo`](/rusty-bacnet/reference/python/router/#routerportinfo), [`RouterRoute`](/rusty-bacnet/reference/python/router/#routerroute), [`RouterCleanupFailure`](/rusty-bacnet/reference/python/router/#routercleanupfailure)
+[`BACnetRouter`](/rusty-bacnet/reference/python/router/#bacnetrouter), [`RouterBipPort`](/rusty-bacnet/reference/python/router/#routerbipport), [`RouterScPort`](/rusty-bacnet/reference/python/router/#routerscport), [`RouterPortHealth`](/rusty-bacnet/reference/python/router/#routerporthealth), [`RouterPortCounters`](/rusty-bacnet/reference/python/router/#routerportcounters), [`RouterRouteEntry`](/rusty-bacnet/reference/python/router/#routerrouteentry), [`AceMixedRouter`](/rusty-bacnet/reference/python/router/#acemixedrouter), [`BipRouterPort`](/rusty-bacnet/reference/python/router/#biprouterport), [`RouterPortInfo`](/rusty-bacnet/reference/python/router/#routerportinfo), [`RouterRoute`](/rusty-bacnet/reference/python/router/#routerroute), [`RouterCleanupFailure`](/rusty-bacnet/reference/python/router/#routercleanupfailure)
 
 ## [Shared endpoints](/rusty-bacnet/reference/python/endpoints/)
 

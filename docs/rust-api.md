@@ -3647,6 +3647,18 @@ described below (`network_control_receiver_with_admission()` for a tracked
 one). The start returns a `StartedRouter` holding the router, the
 local APDU receiver and, when asked for, the network-control receiver.
 
+To allow each SC hub to reach a shared B/IP network while keeping the hubs
+separate, select their zero-based positions in the input port list. With
+ports ordered as B/IP, SC A, SC B, use
+`RouterOptions::new().isolated_ports([1, 2])`. The router blocks transit
+between those two ports, including routed broadcasts and learned routes.
+The router filters its own discovery replies and route announcements, and
+the broadcast route and congestion lists it relays. It forwards the contents
+of third-party messages addressed across permitted links unchanged.
+The router's local application retains access to all ports. The policy
+applies to traffic crossing this router. Other routers on a shared network
+make their own forwarding decisions. The default selection is empty.
+
 Every port of one router has the same transport type. `RouterPort`'s
 defaults to `AnyTransport` (#2043), so a router that mixes link types takes
 a `Vec<RouterPort>` of `AnyTransport` ports; one whose ports share a
@@ -9215,6 +9227,50 @@ functions, with its audit and COV capture as the observer. The `objects`
 image of the [firmware link test](ci.md#firmware-link-test) links
 `Responder::handle` over a `bacnet-objects` database, writing a Binary Value,
 reading it back, and reading two Present_Values with ReadPropertyMultiple.
+
+## bacnet-runtime
+
+`bacnet-runtime` is the bounded, supervised application layer for managing a
+set of BACnet attachments. The initial 0.13 port deliberately supports B/IP
+attachments only. It owns client startup and shutdown, transactional whole-set
+reconciliation, health snapshots, and ordered read/write batches.
+
+`BacnetRuntime::start` validates the complete configuration and rolls back any
+attachments already started if a later bind fails. `reconcile` accepts a newer
+complete revision, rejects reconciliation while a batch is active, and restores
+the prior attachment set if replacement fails. `stop` is idempotent, refuses
+new work, cancels runtime-owned batches, and then stops every attachment within
+the configured deadline.
+
+Batch admission is bounded by `max_inflight_operations` and
+`scheduler_capacity`; `max_batch_items` bounds each operation. Inputs execute
+in caller order and each outcome retains its `input_index`. Dropping an
+operation handle cancels its task. A `DevicePath::Direct` target contains a
+six-octet B/IP MAC (IPv4 address followed by UDP port). A
+`DevicePath::Routed` target contains the immediate B/IP router's six-octet MAC,
+a DNET in 1..=65534, and a byte-exact DADR of 1..=18 octets. Outcomes return the
+exact admitted path so duplicate or leading-zero addresses are not normalized.
+Routes must be supplied explicitly; this slice does not discover router
+topology or choose a path automatically.
+
+The optional foreign-device BBMD target accepts an IPv4 address or host name,
+with an optional port, using upstream's `ForeignBbmd` validation and lookup.
+
+Health snapshots include attachment state, the actual local B/IP MAC, active
+operation counts, and managed foreign-device registration state. The event,
+discovery, cache, and COV counters are reserved and remain zero in this slice.
+Attachment state describes runtime lifecycle; it is not an independent probe
+of the client's receive task. A rejected or expired foreign-device lease keeps
+the attachment `Running` for unicast traffic and reports
+`ForeignDeviceRegistrationFailed` through `last_error`.
+
+MS/TP, BACnet/SC, router discovery/topology, raw I-Am observation, and COV
+supervision are represented in configuration only so requests fail with
+`UnsupportedTransport`; they are not silently approximated. Applications that
+need those capabilities should continue using their lower-level crates until
+the corresponding runtime slices land.
+
+---
 
 ## bacnet-client
 

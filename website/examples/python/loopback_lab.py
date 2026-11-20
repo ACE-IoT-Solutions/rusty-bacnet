@@ -35,9 +35,9 @@ def check_version() -> None:
     # The project's CI sets this to the version of the wheel it just built.
     expected = os.environ.get("BACNET_LAB_EXPECTED_VERSION") or EXPECTED_VERSION
     try:
-        installed = version("rusty-bacnet")
+        installed = version("ace-rusty-bacnet")
     except PackageNotFoundError as exc:
-        raise RuntimeError(f"Install rusty-bacnet=={expected} in this Python environment first.") from exc
+        raise RuntimeError(f"Install ace-rusty-bacnet=={expected} in this Python environment first.") from exc
     if installed != expected:
         raise RuntimeError(f"This lab targets {expected}; installed package is {installed}. Use a matching environment.")
 

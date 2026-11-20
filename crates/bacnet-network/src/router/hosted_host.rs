@@ -18,9 +18,11 @@ use bacnet_router_core::router::{Claim, ControlClass, Event, Host};
 use bacnet_transport::port::TransportProvenance;
 use bacnet_transport::warn_throttle::WarnThrottle;
 use bacnet_types::MacAddr;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use super::control_policy::{ControlAuthContext, ControlGate, ControlTrust};
+use super::counters::PortCounterEntry;
 use crate::router_table::ROUTE_CAP;
 
 /// The router's throttles for the engine's warnings that can come once
@@ -42,19 +44,23 @@ pub(super) struct HostedHost<'a> {
     /// How the transport learned of the arrival's origin; unverified for
     /// the sweep, which authorizes nothing.
     provenance: TransportProvenance,
+    /// Per-port counters, when this host is handling an ingress frame.
+    port_counters: Option<Arc<[PortCounterEntry]>>,
 }
 
 impl<'a> HostedHost<'a> {
-    /// The host for a frame that arrived with `provenance`.
-    pub(super) fn new(
+    /// The host for an ingress frame, with per-port accounting enabled.
+    pub(super) fn with_counters(
         gate: &'a ControlGate,
         warnings: &'a EngineWarnings,
         provenance: TransportProvenance,
+        port_counters: Arc<[PortCounterEntry]>,
     ) -> Self {
         Self {
             gate,
             warnings,
             provenance,
+            port_counters: Some(port_counters),
         }
     }
 }
@@ -79,6 +85,16 @@ impl Host for HostedHost<'_> {
 
     fn observe(&mut self, event: Event) {
         match event {
+            Event::NoRoute { port, .. } => {
+                if let Some(counter) = self
+                    .port_counters
+                    .as_ref()
+                    .and_then(|counters| counters.get(usize::from(port.0)))
+                {
+                    counter.state.no_route();
+                }
+                log(event);
+            }
             Event::HopCountSpent { network } => match self.warnings.hop_count.note() {
                 Some(dropped) => warn!(
                     network,

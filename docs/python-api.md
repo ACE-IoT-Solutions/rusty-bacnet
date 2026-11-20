@@ -579,6 +579,73 @@ neither is raised. A read that could read nothing raises.
 
 ---
 
+## AceMixedRouter
+
+ACE mixed-router callers migrating from the 0.14 integration must import
+`AceMixedRouter` and replace `BACnetRouter.from_ports(...)` with
+`AceMixedRouter.from_ports(...)`. The upstream `BACnetRouter` above now owns
+the B/IP application client/server API. Its `BipRouterPort` configuration
+and `close()` lifecycle are separate from the ACE typed ports and `stop()`.
+`AceMixedRouter` does not expose application attachment. It does expose
+per-port forwarding counters, while the upstream `BACnetRouter` retains its
+separate application-facing API.
+
+`AceMixedRouter` composes two or more typed B/IP or BACnet/SC ports over the
+native 0.15 routing engine. Construction validates configuration without I/O;
+`start()` binds/dials every port and `stop()` joins the router tasks. Both
+awaitables return `None`, and a stopped router can be started again.
+
+```python
+from rusty_bacnet import AceMixedRouter, RouterBipPort
+
+router = AceMixedRouter.from_ports([
+    RouterBipPort(100, interface="192.0.2.10", port=47808),
+    RouterBipPort(200, interface="198.51.100.10", port=47808),
+])
+await router.start()
+print(await router.local_address())
+print(await router.port_health())
+print(await router.port_counters())
+print(await router.routing_table())
+await router.stop()
+```
+
+To observe traffic on one port, use `await router.frames(port_index)`. The index
+is its zero-based position in the list passed to `from_ports`. See
+[Raw frame observation](#raw-frame-observation) for fields and lifetime.
+
+For a B/IP port shared by several SC hubs, use
+`AceMixedRouter.from_ports(ports, isolate_sc_ports=True)`. B/IP can reach
+each hub and each hub can reach B/IP. The router suppresses direct transit
+between distinct SC ports, including broadcasts. It filters its own
+discovery replies and announcements, and the broadcast route and congestion
+lists it relays. Third-party messages addressed across permitted links keep
+their original contents. Isolation is off by default and applies only at this router.
+
+`announce_interval_s`, when set, must be at least one second. Startup already
+announces every port. The interval repeats those announcements; an SC recovery
+also reannounces only that port through the native router's bounded send queue.
+
+`RouterScPort` requires a `wss://` primary hub, non-reserved six-byte VMAC,
+nonzero 16-byte durable device UUID, and explicit mutual-TLS credential paths.
+The upstream transport fixes local receive capacity at 1497-octet NPDU
+and 5705-octet BVLC values. Other receive-limit values are rejected.
+An optional `failover_hub` must differ from the primary; upstream's SC dialer
+handles initial failover, reconnect, and primary restoration. For compatibility with the earlier
+Python router, `reconnect_max_retries=0` is rejected unless
+`reconnect_forever=True`; the latter maps to the upstream finite retry counter's
+maximum value.
+
+`port_health()` reports a bound B/IP port as `Up`; SC reports connection state,
+active primary or failover hub, reconnect attempt, post-start connection error, and
+elapsed time in the current state. `port_counters()` returns cumulative
+per-configured-port forwarding, refusal, and no-route counts; it complements
+the native router's aggregate counters. `routing_table()` returns detached,
+sorted route snapshots, so it never lends the live router lock to Python. After
+`stop()`, all three methods return their last snapshot; in particular, an
+`Up` health value is historical and does not assert that a stopped link remains
+available.
+
 ## B/IP router
 
 `BACnetRouter` owns forwarding across configured B/IP networks (Clause 6).
@@ -6982,7 +7049,29 @@ asyncio.run(client_example())
 
 ---
 
+### Migrating ACE 0.15.3 capture and routed calls
+
+Use `frame.monotonic` for elapsed time and `frame.timestamp` for POSIX seconds.
+`frame.link` now uses the transport token that `decode_frame` accepts, such as
+`"bip"` or `"sc"`. Read the decoded link message from `summary.link_message`.
+`frame.missed_before` reports the gap immediately before a frame and
+`iterator.missed` reports the total.
+
+Pass a direct address as a string. For a routed address use
+`RoutedTarget(network, address, router=next_hop)`; the next hop is optional
+when the client can learn the route. `write_property_multiple` accepts the
+same target forms as `read_property_multiple`. A shared endpoint hands out
+the full `BACnetClient` and `BACnetServer` from `client()` and `server()`.
+
 ## Raw frame observation
+
+ACE mixed routers also support `await router.frames(port_index, capacity=1024)`.
+Each record carries the configured `Frame.port_index`. A running `ScEndpoint`
+offers `await endpoint.frames(capacity=1024)`. Its plaintext BVLC-SC messages
+and the mixed router's SC records carry the configured `hub_url` selected by
+the hub role at capture time. Queued primary frames keep that URL after
+failover. `Frame.timestamp_unix_ns` preserves integer wall-clock precision.
+
 
 `BipEndpoint.frames(capacity=1024)` and `BACnetClient.frames(capacity=1024)`
 return an awaitable for a `FrameIterator` on the owner's existing transport,
@@ -7195,6 +7284,9 @@ in the scanner's terms:
 
 - `device_address`: the device as `device()` takes it, `link_source` for one
   on this link, `"5:0x07"` for one behind a router;
+- `destination_network` and `destination_address`: DNET and DADR carried by
+  the observed NPDU. Both are `None` without a destination. A broadcast on
+  a numbered network or on every network has an empty address (`b""`).
 - `next_hop_router`: `link_source` when routed, else None;
 - `forwarding_bbmd`: `link_sender` when `forwarded`, else None.
 

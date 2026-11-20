@@ -365,6 +365,7 @@ async fn init_query_answered_in_hardened_full_queue_bounded() {
                     data_attributes: Vec::new(),
 
                     reject_origin: None,
+                    count_forward: false,
                 },
             )
             .unwrap();
@@ -400,6 +401,7 @@ async fn init_query_answered_in_hardened_full_queue_bounded() {
                     data_attributes: Vec::new(),
 
                     reject_origin: None,
+                    count_forward: false,
                 },
             )
             .unwrap();
