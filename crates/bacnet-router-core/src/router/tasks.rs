@@ -312,7 +312,7 @@ impl<
                 } else {
                     self.announce_end()
                 };
-                self.next_announcement(task.cursor).map(|(at, len)| {
+                self.next_announcement(task.cursor, end).map(|(at, len)| {
                     next = Some(at + 1).filter(|&cursor| cursor < end);
                     let kind = if at & 1 == 0 {
                         Kind::Announce(NetworkMessageType::NETWORK_NUMBER_IS)
@@ -363,11 +363,11 @@ impl<
 
     /// Write the next startup announcement from `cursor` (port index × 2 +
     /// step): a Network-Number-Is with the port's number (Clause 6.4.20);
-    /// then an I-Am-Router listing every other port's network, in
+    /// then an I-Am-Router listing the networks visible from that port, in
     /// port order, when there is another port. Returns its cursor and its
     /// length (`None`: the writer refused it), or `None` when none is left.
-    fn next_announcement(&mut self, cursor: u32) -> Option<(u32, Option<usize>)> {
-        for at in cursor..self.announce_end() {
+    fn next_announcement(&mut self, cursor: u32, end: u32) -> Option<(u32, Option<usize>)> {
+        for at in cursor..end {
             let port = PortId((at >> 1) as u8);
             if at & 1 == 0 {
                 return Some((at, self.write_number_is(port)));

@@ -267,18 +267,19 @@ class RoutedFileWireTests(unittest.IsolatedAsyncioTestCase):
         valid = stream_ack(3, b"ok", True)
 
         async def scenario(client):
-            for body, expect_error in ((valid[:-1], True), (valid, False)):
-                self.wire.script = lambda request, invoke, service, request_body: [
-                    bytes([0x30, invoke, service]) + body]
-                read = client.atomic_read_file(self.target, FILE_1, "stream",
-                                               start_position=3, requested_octet_count=2)
-                if expect_error:
-                    with self.assertRaises(rb.BacnetError):
-                        await asyncio.wait_for(read, 5)
-                else:
-                    reply = await asyncio.wait_for(read, 5)
-                    self.assertEqual((reply["data"], reply["start_position"], reply["end_of_file"]),
-                                     (b"ok", 3, True))
+            for address in (self.router.address, self.target):
+                for body, expect_error in ((valid[:-1], True), (valid, False)):
+                    self.wire.script = lambda request, invoke, service, request_body: [
+                        bytes([0x30, invoke, service]) + body]
+                    read = client.atomic_read_file(address, FILE_1, "stream",
+                                                   start_position=3, requested_octet_count=2)
+                    if expect_error:
+                        with self.assertRaisesRegex(rb.BacnetError, "missing closing tag"):
+                            await asyncio.wait_for(read, 5)
+                    else:
+                        reply = await asyncio.wait_for(read, 5)
+                        self.assertEqual((reply["data"], reply["start_position"], reply["end_of_file"]),
+                                         (b"ok", 3, True))
 
         await self.run_both(scenario)
 
@@ -302,10 +303,14 @@ class RoutedFileWireTests(unittest.IsolatedAsyncioTestCase):
             try:
                 await asyncio.wait_for(admitted, 5)
                 self.assertEqual(self.router.received[-1][1], source)
+                self.assertEqual((await endpoint.status())["active_leases"], 1)
+                self.assertFalse(pending.done())
                 async with rb.BACnetClient(interface="127.0.0.1", port=0) as observer:
                     name = await observer.read_property(local, rb.ObjectIdentifier(O.DEVICE, NEAR),
                                                         rb.PropertyIdentifier.OBJECT_NAME)
                     self.assertEqual(name, rb.PropertyValue.character_string("File test"))
+                self.assertEqual((await endpoint.status())["active_leases"], 1)
+                self.assertFalse(pending.done())
             finally:
                 pending.cancel()
                 with self.assertRaises(asyncio.CancelledError):
@@ -317,6 +322,7 @@ class RoutedFileWireTests(unittest.IsolatedAsyncioTestCase):
                 bytes([0x30, invoke, service]) + stream_ack(0, b"ok", True)]
             result = await client.atomic_read_file(self.target, FILE_1, "stream", requested_octet_count=2)
             self.assertEqual(result["data"], b"ok")
+            self.assertEqual((await endpoint.status())["active_leases"], 0)
             self.assertEqual(self.router.received[-1][1], source)
 
     async def test_a_routed_write_names_the_station(self):

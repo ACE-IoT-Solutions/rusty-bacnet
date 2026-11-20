@@ -104,6 +104,10 @@ fn startup_announcements_do_not_expose_other_isolated_ports() {
     r.start();
     let sent = drain(&mut r);
     assert_eq!(egress(&sent), [0, 1]);
+    assert!(r.announce_port(bacnet_router_core::PortId(0)));
+    let recovery = drain(&mut r);
+    assert_eq!(egress(&recovery), [0]);
+    assert_eq!(recovery[0].kind, Kind::Announce(Msg::NETWORK_NUMBER_IS));
     assert!(
         sent.iter()
             .all(|s| s.kind == Kind::Announce(Msg::NETWORK_NUMBER_IS))

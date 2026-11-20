@@ -155,9 +155,12 @@ class NativeFutureInventoryTests(unittest.TestCase):
             "ScHub": [source / "hub.rs"],
             "CovNotificationIterator": [source / "types/cov.rs"],
             # endpoint/builders.rs holds the methods the three owners share.
-            **{name: [source / f"endpoint/{stem}.rs", source / "endpoint/builders.rs"]
-               for name, stem in (
-                ("BipEndpoint", "bip"), ("ScEndpoint", "sc"), ("MstpEndpoint", "mstp"))},
+            **{name: [source / f"endpoint/{stem}.rs" for stem in (*stems, "builders")]
+               for name, stems in (
+                ("BipEndpoint", ("bip", "bip_observation")),
+                ("ScEndpoint", ("sc",)),
+                ("MstpEndpoint", ("mstp",)),
+            )},
         }
         classes = installed_classes()
         for name, paths in groups.items():

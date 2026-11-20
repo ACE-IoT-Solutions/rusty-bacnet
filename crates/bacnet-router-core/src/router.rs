@@ -417,8 +417,8 @@ where
     }
 
     /// Queue the startup-style announcements for one port: its configured
-    /// Network-Number-Is, then an I-Am-Router listing every other directly
-    /// connected network (none for a one-port router).
+    /// Network-Number-Is, then an I-Am-Router listing the other directly
+    /// connected networks visible from that port, when there are any.
     ///
     /// A host calls this after a port recovers so peers on that data link can
     /// rebuild routing state without broadcasting duplicate announcements on
