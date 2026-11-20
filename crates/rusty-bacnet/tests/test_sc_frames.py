@@ -1,11 +1,13 @@
 """Capture the running node's plaintext and independently compare the mTLS peer's bytes."""
 import asyncio
 import gc
+import math
 import socket
 import time
 
 from rusty_bacnet import AceMixedRouter, RouterBipPort, RouterScPort, ScEndpoint, ScReconnect
 from sc_client_fixture import ClientScFixture, mtls
+import test_frames
 
 NODE = bytes.fromhex("020000000002")
 REMOTE = bytes.fromhex("020000000004")
@@ -104,15 +106,19 @@ class ScFrameTests(ClientScFixture):
 
         # A BVLC-SC control is exchanged on the same connection after detach.
         heartbeat, ack = b"\x0a\0\x24\x68", b"\x0b\0\x24\x68"
-        before = time.time_ns()
+        before = time.monotonic(), time.time()
         await self.send_frame(writer, heartbeat)
         await self.peer_message(reader, lambda p: p == ack)
-        after = time.time_ns()
+        after = time.monotonic(), time.time()
+        controls = []
         for octets, direction in ((heartbeat, "inbound"), (ack, "outbound")):
             frame = await next_matching(sc, lambda f: f.octets == octets)
             self.check_sc(frame, direction, url, 1)
-            self.assertLessEqual(before, frame.timestamp_unix_ns)
-            self.assertLessEqual(frame.timestamp_unix_ns, after)
+            controls.append(frame)
+            self.assertAlmostEqual(frame.timestamp_unix_ns / 1_000_000_000, frame.timestamp,
+                                   delta=math.ulp(frame.timestamp))
+        # The peer saw the ACK before Python consumed either captured record.
+        test_frames.FrameTests.assert_captured_between(self, controls, before, after)
 
         pending = anext(sc)
         await router.stop()

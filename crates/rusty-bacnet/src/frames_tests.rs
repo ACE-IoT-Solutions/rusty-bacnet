@@ -152,6 +152,26 @@ fn a_frame_repr_is_short() {
     );
 }
 
+/// Integer Unix nanoseconds retain digits lost in POSIX seconds at this date.
+#[test]
+fn frame_unix_nanoseconds_preserve_the_native_timestamp_on_both_sides_of_epoch() {
+    let tap = bacnet_transport::tap::FrameTap::new();
+    let mut receiver = tap.subscribe();
+    tap_record(&tap, TapDirection::Inbound, &[0x81]);
+    let mut frame = PyFrame {
+        frame: receiver.try_recv().unwrap(),
+        context: Arc::new(FrameContext::local("local")),
+        missed_before: 0,
+        monotonic: 0.0,
+    };
+    // A whole number of Windows 100 ns ticks, with more precision than f64 seconds.
+    let delta = std::time::Duration::new(1_700_000_000, 123_456_700);
+    frame.frame.timestamp = SystemTime::UNIX_EPOCH + delta;
+    assert_eq!(frame.timestamp_unix_ns(), 1_700_000_000_123_456_700);
+    frame.frame.timestamp = SystemTime::UNIX_EPOCH - delta;
+    assert_eq!(frame.timestamp_unix_ns(), -1_700_000_000_123_456_700);
+}
+
 /// What a B/IP transport would hand its tap, from 192.0.2.9:47808.
 fn tap_record(tap: &bacnet_transport::tap::FrameTap, direction: TapDirection, octets: &[u8]) {
     tap.record_for_test(
