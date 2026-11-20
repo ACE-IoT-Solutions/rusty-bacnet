@@ -171,11 +171,7 @@ pub struct PyBipEndpoint {
 
 impl PyBipEndpoint {
     fn push_pending(&self, obj: PendingObject) -> PyResult<()> {
-        self.lifecycle.push(obj).map_err(|()| {
-            PyRuntimeError::new_err(
-                "cannot add objects while endpoint is starting, running, or stopping",
-            )
-        })
+        super::common::register_pending(&self.lifecycle, &self.config.identity, obj)
     }
 }
 
@@ -446,7 +442,7 @@ impl PyBipEndpoint {
         name: &str,
         members: Option<Vec<PyReadAccessSpec>>,
     ) -> PyResult<()> {
-        self.push_pending(pending_group(instance, name, members)?)
+        self.push_pending(pending_group(instance, name, members))
     }
 
     /// Start after lifecycle admission. A second explicit start fails.
