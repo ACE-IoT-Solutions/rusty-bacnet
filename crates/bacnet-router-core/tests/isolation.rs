@@ -261,3 +261,16 @@ fn an_isolated_request_with_no_egress_leaves_discovery_available_to_local_origin
     assert_eq!(r.counters().solicitations, 0);
     assert_eq!(search_ports(&mut r, None, at(1)), [0, 1]);
 }
+
+#[test]
+fn routed_table_query_to_another_isolated_port_stays_hidden() {
+    let mut r = configured(Options::HOSTED);
+    let query = bytes(&Npdu {
+        destination: Some(addr(3, &[3])),
+        ..Npdu::message(Msg::INITIALIZE_ROUTING_TABLE, &[0])
+    });
+    assert!(sends(&mut r, 1, &query).is_empty());
+    let answer = sends(&mut r, 0, &query);
+    assert_eq!(answer.len(), 1);
+    assert_eq!(answer[0].parsed().source, Some(addr(3, &[3])));
+}
