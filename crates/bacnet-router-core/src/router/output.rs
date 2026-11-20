@@ -12,7 +12,7 @@
 use super::config::{PortConfig, isolated, isolated_pair};
 use super::counters::bump;
 use super::host::{Event, Host};
-use super::tasks::{Task, TaskKind};
+use super::tasks::Task;
 use super::{RejectOrigin, Storage};
 use crate::npdu::{NetworkMessageType, RejectMessageReason};
 use crate::npdu::{NetworkPriority, Npdu};
@@ -336,8 +336,9 @@ pub(super) struct Outputs {
     pub(super) current: Current,
     tasks: [Task; QUEUE],
     len: usize,
-    /// The last send polled came from a table answer.
-    last_table_ack: bool,
+    /// The exact continuation of the last table chunk polled, while it
+    /// is still at the queue front. The cursor distinguishes later chunks.
+    last_table_ack: Option<(super::ReplyPlan, u32)>,
     /// The port of the last send polled.
     last_port: PortId,
 }
@@ -347,7 +348,7 @@ impl Outputs {
         current: Current::NONE,
         tasks: [Task::EMPTY; QUEUE],
         len: 0,
-        last_table_ack: false,
+        last_table_ack: None,
         last_port: PortId(0),
     };
 
@@ -537,7 +538,11 @@ impl<
     pub(super) fn poll(&mut self) -> Action<'_> {
         loop {
             if let Some((port, broadcast)) = self.next_target() {
-                self.out.last_table_ack = self.out.current.table_ack;
+                self.out.last_table_ack = if self.out.current.table_ack {
+                    self.out.front().and_then(|task| task.table_continuation())
+                } else {
+                    None
+                };
                 self.out.last_port = port;
                 let current = &self.out.current;
                 return Action::Send(Send {
@@ -645,11 +650,8 @@ impl<
     /// The caller refused the send just polled: end the table answer it
     /// belonged to. [`Router::refused`](super::Router::refused) counts it.
     pub(super) fn end_refused_answer(&mut self) {
-        if core::mem::take(&mut self.out.last_table_ack)
-            && self
-                .out
-                .front()
-                .is_some_and(|task| task.kind == TaskKind::TableAck)
+        if let Some(continued) = self.out.last_table_ack.take()
+            && self.out.front().and_then(|task| task.table_continuation()) == Some(continued)
         {
             self.out.pop();
         }
