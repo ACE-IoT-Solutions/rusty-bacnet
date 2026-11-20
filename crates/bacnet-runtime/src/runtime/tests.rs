@@ -440,12 +440,22 @@ async fn named_and_literal_bip_attachments_reconcile_to_one_identity() {
     }
     .into();
     let runtime = BacnetRuntime::start(RuntimeConfig {
-        attachments: vec![named],
+        attachments: vec![named.clone()],
         ..RuntimeConfig::default()
     })
     .await
     .unwrap();
-    let report = runtime.reconcile(1, vec![literal]).await.unwrap();
-    assert!(report.idempotent);
+    let bound = runtime.health().await.attachments[0]
+        .local_mac
+        .clone()
+        .unwrap();
+    for config in [literal, named] {
+        let report = runtime.reconcile(1, vec![config]).await.unwrap();
+        assert!(report.idempotent);
+        assert_eq!(
+            runtime.health().await.attachments[0].local_mac.as_ref(),
+            Some(&bound)
+        );
+    }
     runtime.stop().await.unwrap();
 }
