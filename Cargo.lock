@@ -668,7 +668,6 @@ version = "0.16.1"
 dependencies = [
  "bacnet-client",
  "bacnet-encoding",
- "bacnet-npdu",
  "bacnet-objects",
  "bacnet-ops",
  "bacnet-services",
@@ -677,7 +676,6 @@ dependencies = [
  "bytes",
  "futures-util",
  "libc",
- "proptest",
  "serde",
  "serde_json",
  "tempfile",

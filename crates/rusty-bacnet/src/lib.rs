@@ -19,6 +19,7 @@ mod errors;
 mod event_stream;
 mod export_223;
 mod frame_decode;
+mod frame_tree;
 mod frames;
 mod group_members;
 mod high_level;
@@ -88,6 +89,7 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sc_events::register(m)?;
     frames::register(m)?;
     frame_decode::register(m)?;
+    frame_tree::register(m)?;
     i_am_arrivals::register(m)?;
     discovery::register(m)?;
     routed_paths::register(m)?;
