@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries for the next release are fragment files in [`changelog.d/`](changelog.d/), assembled here when a version is released. Add one per change instead of editing this file: [`changelog.d/README.md`](changelog.d/README.md) has the format, and `python3 scripts/changelog.py preview` shows the section they make.
 
+## [0.17.1] - 2026-11-21
+
+### Added
+
+- The ACE Python bindings now support CPython 3.10. GitHub Releases offer 25 wheels for CPython 3.10 through 3.14 on Linux x86_64 and aarch64, macOS Intel and Apple Silicon, and Windows x64. The ACE private index carries the 10 CPython 3.10 and 3.13 wheels across those five platforms. ([0bd5132](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/0bd5132959197872cc9e3d44728ff8f552e99769))
+
 ## [0.17.0] - 2026-11-20
 
 Shared endpoints can serve nine standard point types with initial values while
