@@ -6,6 +6,8 @@ export const base = '/rusty-bacnet/';
  * loopback lab script).
  */
 export const release = '0.15.0';
+/** CPython versions with published wheels for the public release above. */
+export const releasePythons = ['3.11', '3.12', '3.13', '3.14'];
 export const repository = 'https://github.com/jscott3201/rusty-bacnet';
 /** The download URL of one of the release's assets on its GitHub release copy. */
 export function releaseAsset(file) {

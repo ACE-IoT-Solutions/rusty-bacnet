@@ -4,7 +4,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { parseDocument } from 'yaml';
 import navigation from '../../src/data/navigation.json' with { type: 'json' };
 import downloads from '../../src/data/downloads.json' with { type: 'json' };
-import { release } from '../../src/lib/site.mjs';
+import { release, releasePythons } from '../../src/lib/site.mjs';
 import { newer } from '../../scripts/reference-rust.mjs';
 
 // A release PR changes `release` in src/lib/site.mjs. MDX pages and components
@@ -90,11 +90,14 @@ const option = (args, name) => {
   return args.slice(start + 1, end === -1 ? undefined : end);
 };
 
-test('the installation page lists exactly the assets release.yml publishes', async () => {
+test('the installation page lists the public release assets and the current workflow covers the declared Python versions', async () => {
   const document = parseDocument(await readRepo('.github/workflows/release.yml'), { uniqueKeys: true });
   assert.deepEqual(document.errors, []);
   const workflow = document.toJS();
-  const pythons = workflow.env.PYTHONS.split(/\s+/);
+  const packaging = await readRepo('crates/rusty-bacnet/pyproject.toml');
+  const declared = [...packaging.matchAll(/^\s*"Programming Language :: Python :: (3\.\d+)",?$/gm)].map(match => match[1]);
+  assert.ok(declared.length > 0, 'package declares supported CPython versions');
+  assert.deepEqual(workflow.env.PYTHONS.split(/\s+/), declared, 'release builds every declared CPython');
   const glibc = workflow.env.GLIBC;
   const check = workflow.jobs.verify.steps.filter(step => step.run?.includes('check_artifacts.py'));
   assert.equal(check.length, 1, 'one verify step runs check_artifacts.py');
@@ -114,14 +117,14 @@ test('the installation page lists exactly the assets release.yml publishes', asy
   }
   assert.ok(page.includes(`${word(downloads.length)} CLI executables`));
 
-  // The wheels: one per CPython in PYTHONS per platform tag, and the sdist.
+  // The published wheels: one per release interpreter and platform tag, plus the sdist.
   const rows = Object.fromEntries([...page.matchAll(/^\| [^|`]+ \| `([^`]+)` \| ([^|]+) \|$/gm)].map(match => [match[1], match[2]]));
   assert.deepEqual(Object.keys(rows).sort(), [...wheelPlatforms].sort(), `${install}'s wheel table`);
   for (const tag of wheelPlatforms.filter(tag => tag.startsWith('manylinux_'))) assert.equal(rows[tag], `glibc ${glibc} or newer`, tag);
   for (const [build, version] of Object.entries(macos)) assert.equal(rows[cli[build]], `macOS ${version} or later`, cli[build]);
-  assert.ok(page.includes(`CPython **${pythons.slice(0, -1).join(', ')}, and ${pythons.at(-1)}**`), 'the Python versions');
-  assert.ok(page.includes(`(\`cp${pythons[0].replace('.', '')}\` to \`cp${pythons.at(-1).replace('.', '')}\`)`));
-  assert.ok(page.includes(`${word(pythons.length * wheelPlatforms.length)} Python wheels, <code>rusty_bacnet-{release}-cp3XY-cp3XY-PLATFORM.whl</code>`));
+  assert.ok(page.includes(`CPython **${releasePythons.slice(0, -1).join(', ')}, and ${releasePythons.at(-1)}**`), 'the Python versions');
+  assert.ok(page.includes(`(\`cp${releasePythons[0].replace('.', '')}\` to \`cp${releasePythons.at(-1).replace('.', '')}\`)`));
+  assert.ok(page.includes(`${word(releasePythons.length * wheelPlatforms.length)} Python wheels, <code>rusty_bacnet-{release}-cp3XY-cp3XY-PLATFORM.whl</code>`));
   assert.ok(page.includes('<code>rusty_bacnet-{release}.tar.gz</code>'));
 
   // THIRD-PARTY-NOTICES goes into the release beside them, and release_api.py adds SHA256SUMS.
