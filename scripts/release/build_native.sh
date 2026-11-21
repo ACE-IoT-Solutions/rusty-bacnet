@@ -2,14 +2,14 @@
 # Build the macOS or Windows release artifacts on a runner of that platform
 # and architecture (#1472):
 #
-#   scripts/release/build_native.sh <target> <cli asset name> <python>...
+#   scripts/release/build_native.sh <target> <cli asset name> <build python> <wheel python>...
 #
 # With the runner's own C toolchain and linker (Xcode's on macOS, MSVC on
 # Windows) and the Rust toolchain that rust-toolchain.toml pins, which the job
 # installs first, it builds:
-# 1. a wheel for each <python> (an interpreter's path) into dist/, with the
+# 1. a wheel for each <wheel python> (an interpreter's path) into dist/, with the
 #    maturin wheel that maturin-requirements.txt pins by version and sha256,
-#    installed into a venv of the first one;
+#    installed into a venv of <build python> (3.11 or newer);
 # 2. the CLI with sc-tls into out/<cli asset name>.
 # Both use the `dist` profile (fat LTO, #973; Cargo.toml).
 #
@@ -24,13 +24,17 @@
 set -euo pipefail
 
 fail() { echo "error: build_native.sh: $*" >&2; exit 1; }
-[ $# -ge 3 ] || fail "usage: build_native.sh <target> <cli asset name> <python>..."
-target=$1 cli=$2
-shift 2
+[ $# -ge 4 ] || fail "usage: build_native.sh <target> <cli asset name> <build python> <wheel python>..."
+target=$1 cli=$2 build_python=$3
+shift 3
 root=$(cd "$(dirname "$0")/../.." && pwd)
 
 # D:/a/... paths on Windows, which both bash and native programs accept.
 native_path() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else printf '%s\n' "$1"; fi; }
+
+build_python=$(native_path "$build_python")
+"$build_python" -c 'import sys; sys.exit(sys.version_info < (3, 11))' \
+  || fail "maturin's build Python must be 3.11 or newer"
 
 exe='' wheel_flags='' cli_flags=''
 case $target in
@@ -56,7 +60,7 @@ interpreters=()
 for python in "$@"; do interpreters+=("$(native_path "$python")"); done
 tmp=$(native_path "${RUNNER_TEMP:-$(mktemp -d)}")
 venv=$tmp/maturin-venv
-"${interpreters[0]}" -m venv "$venv"
+"$build_python" -m venv "$venv"
 bin=$venv/bin
 if [ -d "$venv/Scripts" ]; then bin=$venv/Scripts; fi
 "$bin/python" -m pip install -q --disable-pip-version-check --require-hashes --only-binary :all: \

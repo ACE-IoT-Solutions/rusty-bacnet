@@ -380,7 +380,7 @@ jobs:
             [ -n "${!var:-}" ] || { echo "::error::no CPython $py is set up for this job; add a setup-python step"; exit 1; }
             interpreters+=("${!var}")
           done
-          bash scripts/release/build_native.sh "$TARGET" "$CLI" "${interpreters[@]}"
+          bash scripts/release/build_native.sh "$TARGET" "$CLI" "$PY312" "${interpreters[@]}"
       # The MCP bundle for Claude Desktop (#2304): the CLI binary just built,
       # byte for byte, with a manifest that runs `bacnet mcp serve --stdio`.
       # No second build; the artifact check compares the two.

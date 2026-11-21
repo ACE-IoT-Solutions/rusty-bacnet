@@ -2508,8 +2508,9 @@ its default builder, which needs no CMake. Its build checks the compiler for
 GCC's `memcmp` bug, which GCC 10.2 doesn't have.
 
 **macOS and Windows** ([`build_native.sh`](../scripts/release/build_native.sh)).
-The job installs the pinned toolchain and the five CPythons, and the script
-builds the wheels with the pinned maturin, in a venv, then the CLI with
+The job installs the pinned toolchain and the five target CPythons. A separate
+CPython 3.12 venv runs the hash-pinned maturin for all five wheel builds. The
+script then builds the CLI with
 `--features sc-tls,mcp`.
 
 Both scripts install maturin with `pip install --require-hashes --only-binary
