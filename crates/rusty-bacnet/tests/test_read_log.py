@@ -17,6 +17,8 @@ import socket
 import time
 import unittest
 
+from async_compat import async_timeout, sock_recvfrom, sock_sendto
+
 import rusty_bacnet
 from rusty_bacnet import (
     BACnetClient,
@@ -69,11 +71,11 @@ async def serve_wrapped_pages(sock: socket.socket, answers: int) -> None:
     """Answer `answers` confirmed requests with the wrapped page."""
     loop = asyncio.get_running_loop()
     for _ in range(answers):
-        frame, peer = await loop.sock_recvfrom(sock, 1500)
+        frame, peer = await sock_recvfrom(loop, sock, 1500)
         # BVLC (4 octets), NPDU 01 04 (expecting reply), then the
         # confirmed-request header: type, max segments/APDU, invoke ID.
         invoke_id = frame[8]
-        await loop.sock_sendto(sock, wrapped_page_ack(invoke_id), peer)
+        await sock_sendto(loop, sock, wrapped_page_ack(invoke_id), peer)
 
 
 class ReadLogLiveTests(unittest.IsolatedAsyncioTestCase):
@@ -90,9 +92,9 @@ class ReadLogLiveTests(unittest.IsolatedAsyncioTestCase):
             peer.bind(("127.0.0.1", 0))
             peer.setblocking(False)
             for _ in range(NOTIFICATIONS):
-                await loop.sock_sendto(peer, FRAME, (ip, int(port)))
+                await sock_sendto(loop, peer, FRAME, (ip, int(port)))
         async with BACnetClient(interface="127.0.0.1", port=0) as client:
-            async with asyncio.timeout(WAIT):
+            async with async_timeout(WAIT):
                 while True:
                     result = await client.read_range(
                         self.address, LOG, PropertyIdentifier.LOG_BUFFER
@@ -272,9 +274,9 @@ class EventValuesTests(unittest.IsolatedAsyncioTestCase):
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as peer:
                 peer.bind(("127.0.0.1", 0))
                 peer.setblocking(False)
-                await loop.sock_sendto(peer, VALUED_FRAME, (ip, int(port)))
+                await sock_sendto(loop, peer, VALUED_FRAME, (ip, int(port)))
             async with BACnetClient(interface="127.0.0.1", port=0) as client:
-                async with asyncio.timeout(WAIT):
+                async with async_timeout(WAIT):
                     while True:
                         result = await client.read_range(
                             address, LOG, PropertyIdentifier.LOG_BUFFER

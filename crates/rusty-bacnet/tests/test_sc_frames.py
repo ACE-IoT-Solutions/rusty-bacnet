@@ -5,6 +5,8 @@ import math
 import socket
 import time
 
+from async_compat import async_timeout, sock_sendto
+
 from rusty_bacnet import AceMixedRouter, RouterBipPort, RouterScPort, ScEndpoint, ScReconnect
 from sc_client_fixture import ClientScFixture, mtls
 import test_frames
@@ -14,7 +16,7 @@ REMOTE = bytes.fromhex("020000000004")
 
 
 async def next_matching(frames, predicate):
-    async with asyncio.timeout(30):
+    async with async_timeout(30):
         async for frame in frames:
             if predicate(frame):
                 return frame
@@ -48,7 +50,7 @@ class ScFrameTests(ClientScFixture):
                           sc_client_key=self.path("client.key"), **options)
 
     async def peer_message(self, reader, predicate):
-        async with asyncio.timeout(30):
+        async with async_timeout(30):
             while True:
                 opcode, payload = await self.frame(reader, True)
                 self.assertEqual(opcode, 2)
@@ -84,7 +86,7 @@ class ScFrameTests(ClientScFixture):
         who_is = b"\x10\x08"
         npdu = b"\x01\x20\x00\xc8\x06" + REMOTE + b"\x10" + who_is
         datagram = b"\x81\x0a" + (len(npdu) + 4).to_bytes(2, "big") + npdu
-        await loop.sock_sendto(udp, datagram, (ip, int(port)))
+        await sock_sendto(loop, udp, datagram, (ip, int(port)))
         wire = await self.peer_message(reader, lambda p: p.startswith(b"\x01")
                                        and p.endswith(who_is))
         forwarded = await next_matching(sc, lambda f: f.octets == wire)

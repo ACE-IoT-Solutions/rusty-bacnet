@@ -62,6 +62,8 @@ done
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
 python_executable=$(uv python find)
+# The release helper reads TOML with the standard library. Its wheel may target 3.10.
+metadata_python=$(uv python find '>=3.11')
 
 if [[ "$allow_dirty" == false ]] && [[ -n "$(git status --porcelain)" ]]; then
     echo "error: refusing to release from a dirty worktree" >&2
@@ -86,7 +88,7 @@ if [[ "$actual_version" != "$EXPECTED_VERSION" ]]; then
 fi
 
 crate_dir=$(dirname "$manifest_path")
-project_name=$("$python_executable" -c '
+project_name=$("$metadata_python" -c '
 import sys, tomllib
 with open(sys.argv[1], "rb") as handle:
     print(tomllib.load(handle)["project"]["name"])

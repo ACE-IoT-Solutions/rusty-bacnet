@@ -8,10 +8,11 @@ a server's callable. Without one the server is read-only. It replaces the
 alone.
 """
 
-import asyncio
 import inspect
 import sys
 import unittest
+
+from async_compat import async_timeout
 
 from rusty_bacnet import (
     BACnetClient,
@@ -89,7 +90,7 @@ class EndpointMutationPolicyTests(unittest.IsolatedAsyncioTestCase):
         # callable about every object, not the Device's two properties alone.
         policy = Recorder(lambda context: context.object_identifier == DEVICE)
         endpoint, client, address = await self.serve(mutation_policy=policy)
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             await client.write_property(address, DEVICE, DESCRIPTION,
                                         PropertyValue.character_string("lobby"))
             self.assertEqual(await self.description(client, address), "lobby")
@@ -116,7 +117,7 @@ class EndpointMutationPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_permissive_lets_any_peer_write_as_a_standalone_server(self):
         endpoint, client, address = await self.serve(mutation_policy="permissive")
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             await client.write_property(address, AI1, OUT_OF_SERVICE,
                                         PropertyValue.boolean(True))
             server = await endpoint.server()
@@ -125,7 +126,7 @@ class EndpointMutationPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_deny_all_denies_subscriptions_too(self):
         _, client, address = await self.serve(mutation_policy="deny_all")
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             for write in (
                 lambda: client.write_property(address, DEVICE, DESCRIPTION,
                                               PropertyValue.character_string("no")),
@@ -141,7 +142,7 @@ class EndpointMutationPolicyTests(unittest.IsolatedAsyncioTestCase):
         # The 0.15.0 default (no device_write_policy: no WriteProperty) holds
         # for the full server: no peer writes, even the Device (#2617).
         _, client, address = await self.serve()
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             before = await self.description(client, address)
             with self.assertRaises(BacnetProtocolError) as caught:
                 await client.write_property(address, DEVICE, DESCRIPTION,
@@ -172,7 +173,7 @@ class EndpointMutationPolicyTests(unittest.IsolatedAsyncioTestCase):
                                             broadcast_address="127.0.0.1",
                                             apdu_timeout_ms=2000) as client:
                         address = await endpoint.local_address()
-                        async with asyncio.timeout(10):
+                        async with async_timeout(10):
                             before = await self.description(client, address)
                             with self.assertRaises(BacnetProtocolError) as caught:
                                 await client.write_property(

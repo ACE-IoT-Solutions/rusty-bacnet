@@ -17,6 +17,8 @@ import socket
 import unittest
 from typing import Any
 
+from async_compat import sock_recvfrom, sock_sendto
+
 from rusty_bacnet import (
     UNSPECIFIED,
     BACnetClient,
@@ -57,14 +59,14 @@ class Peer:
                    prop: PropertyIdentifier, index: int | None, octets: bytes) -> PropertyValue:
         loop = asyncio.get_running_loop()
         read = asyncio.ensure_future(client.read_property(self.address, oid, prop, index))
-        wire, remote = await asyncio.wait_for(loop.sock_recvfrom(self.sock, 2048), 2)
+        wire, remote = await asyncio.wait_for(sock_recvfrom(loop, self.sock, 2048), 2)
         ack = bytes([0x30, wire[8], 12]) + wire[10:] + b"\x3e" + octets + b"\x3f"
-        await loop.sock_sendto(self.sock, frame(ack), remote)
+        await sock_sendto(loop, self.sock, frame(ack), remote)
         return await asyncio.wait_for(read, 2)
 
     async def received(self) -> bytes:
         loop = asyncio.get_running_loop()
-        wire, _ = await asyncio.wait_for(loop.sock_recvfrom(self.sock, 2048), 2)
+        wire, _ = await asyncio.wait_for(sock_recvfrom(loop, self.sock, 2048), 2)
         return wire
 
 

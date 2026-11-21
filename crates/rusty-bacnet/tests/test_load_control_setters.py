@@ -12,6 +12,8 @@ import os
 import tempfile
 import unittest
 
+from async_compat import async_timeout
+
 from rusty_bacnet import (
     BACnetClient,
     BACnetServer,
@@ -122,7 +124,7 @@ class SetterTests(unittest.IsolatedAsyncioTestCase):
     async def test_shed_levels_change_and_reach_a_request_under_way(self):
         shedder = Shedder()
         node, client, address = await self.serve(shedder)
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             await self.request(client, address)
             self.assertEqual(await self.state(node), COMPLIANT)
             self.assertEqual(shedder.requests[-1].shed_level, 1)
@@ -151,7 +153,7 @@ class SetterTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_baseline_is_set_cleared_and_checked(self):
         shedder = Shedder()
         node, client, address = await self.serve(shedder)
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             await self.request(client, address)
             self.assertIsNone(shedder.requests[-1].full_duty_baseline)
             await node.set_load_control_full_duty_baseline_local(LC1, 250.5)
@@ -175,7 +177,7 @@ class SetterTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_state_description_follows_the_state(self):
         shedder = Shedder()
         node, _, _ = await self.serve(shedder, state_description="Idle")
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             asked = len(shedder.requests)
             await node.set_load_control_state_description_local(LC1, "Shedding 2 of 3")
             self.assertEqual(await node.read_property(LC1, P.STATE_DESCRIPTION),
@@ -193,7 +195,7 @@ class SetterTests(unittest.IsolatedAsyncioTestCase):
             lambda oid: node.set_load_control_full_duty_baseline_local(oid, None),
             lambda oid: node.set_load_control_state_description_local(oid, None),
         )
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             for call in calls:
                 with self.assertRaises(BacnetProtocolError) as caught:
                     await call(ObjectIdentifier(ObjectType.LOAD_CONTROL, 9))
@@ -214,7 +216,7 @@ class SetterTests(unittest.IsolatedAsyncioTestCase):
             return ("compliant", level(2), level(2))
 
         node, client, address = await self.serve(Shedder(shed))
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             await self.request(client, address)
             self.assertEqual(await self.state(node), COMPLIANT)
         self.assertTrue(failures)
@@ -234,7 +236,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             client = BACnetClient(interface="127.0.0.1", port=0, apdu_timeout_ms=2000)
             await client.__aenter__()
             try:
-                async with asyncio.timeout(10):
+                async with async_timeout(10):
                     address = await node.local_address()
                     await client.write_property(address, LC1, P.REQUESTED_SHED_LEVEL,
                                                 V.application_data(b"\x19\x02"))
@@ -259,7 +261,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
                 shed=second.shed, stop=second.stop, storage_path=path)
             await node.start()
             try:
-                async with asyncio.timeout(10):
+                async with async_timeout(10):
                     self.assertEqual((await node.read_property(LC1, P.PRESENT_VALUE)).value,
                                      COMPLIANT)
                     self.assertTrue(second.requests)
@@ -291,7 +293,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             client = BACnetClient(interface="127.0.0.1", port=0, apdu_timeout_ms=2000)
             await client.__aenter__()
             try:
-                async with asyncio.timeout(10):
+                async with async_timeout(10):
                     address = await node.local_address()
                     await client.write_property(address, LC1, P.SHED_LEVELS, V.unsigned(5),
                                                 array_index=2)
@@ -301,7 +303,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
 
             node = await serve()
             try:
-                async with asyncio.timeout(10):
+                async with async_timeout(10):
                     self.assertEqual(await node.read_property(LC1, P.SHED_LEVELS),
                                      V.list([V.unsigned(1), V.unsigned(5), V.unsigned(3)]))
                     # The application's route replaces them, and the file
@@ -312,7 +314,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
 
             node = await serve()
             try:
-                async with asyncio.timeout(10):
+                async with async_timeout(10):
                     self.assertEqual(await node.read_property(LC1, P.SHED_LEVELS),
                                      V.list([V.unsigned(1), V.unsigned(2), V.unsigned(3)]))
             finally:
@@ -334,7 +336,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
             client = BACnetClient(interface="127.0.0.1", port=0, apdu_timeout_ms=2000)
             await client.__aenter__()
             try:
-                async with asyncio.timeout(10):
+                async with async_timeout(10):
                     address = await node.local_address()
                     await client.write_property(address, LC1, P.SHED_LEVELS,
                                                 V.list([V.unsigned(4), V.unsigned(8)]))
@@ -361,7 +363,7 @@ class StorageTests(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(clear=clear):
                     node = await serve(**clear)
                     try:
-                        async with asyncio.timeout(10):
+                        async with async_timeout(10):
                             self.assertEqual(await node.read_property(LC1, P.SHED_LEVELS),
                                              V.list([V.unsigned(1), V.unsigned(2)]))
                     finally:

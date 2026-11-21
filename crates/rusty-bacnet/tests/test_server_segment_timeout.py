@@ -5,6 +5,8 @@ from pathlib import Path
 import socket
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 import rusty_bacnet
 from rusty_bacnet import BACnetServer, Segmentation
 
@@ -55,8 +57,8 @@ class SegmentWireTests(unittest.IsolatedAsyncioTestCase):
     async def exchange(self, address, apdu):
         npdu = b"\x01\x04" + apdu
         wire = b"\x81\x0a" + (len(npdu) + 4).to_bytes(2, "big") + npdu
-        await self.loop.sock_sendto(self.sock, wire, address)
-        reply, _ = await asyncio.wait_for(self.loop.sock_recvfrom(self.sock, 4096), 2)
+        await sock_sendto(self.loop, self.sock, wire, address)
+        reply, _ = await asyncio.wait_for(sock_recvfrom(self.loop, self.sock, 4096), 2)
         self.assertEqual(reply[:2], b"\x81\x0a")
         self.assertEqual(int.from_bytes(reply[2:4], "big"), len(reply))
         apdu = reply[6:]
@@ -92,7 +94,7 @@ class SegmentWireTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(reply, b"\x41\x03\x00\x01")
                         reply = await self.exchange(address, b"\x0a\x05\x03\x01\x01\x0c" + service[4:])
                         self.assertEqual(reply, b"\x41\x03\x01\x01")
-                        reply, _ = await asyncio.wait_for(self.loop.sock_recvfrom(self.sock, 4096), 2)
+                        reply, _ = await asyncio.wait_for(sock_recvfrom(self.loop, self.sock, 4096), 2)
                         self.assertEqual(reply[6:], b"\x30\x03\x0c" + service + b"\x3e\x22\x17\x70\x3f")
                     else:
                         self.assertEqual(reply, b"\x71\x03\x04")

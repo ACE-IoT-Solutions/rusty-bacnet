@@ -5,6 +5,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from async_compat import async_timeout
+
 import rusty_bacnet as rb
 
 
@@ -71,7 +73,7 @@ class DelayedTargetAuditTests(unittest.IsolatedAsyncioTestCase):
                             await client.write_property(address, target, rb.PropertyIdentifier.PRESENT_VALUE, rb.PropertyValue.enumerated(value))
                         self.assertEqual(await records(), [], "long delay retains the ordinary prefix")
                         await client.write_property(address, reporter, rb.PropertyIdentifier.SEND_NOW, rb.PropertyValue.boolean(True))
-                        async with asyncio.timeout(5):
+                        async with async_timeout(5):
                             while len(found := await records()) < 3:
                                 await asyncio.sleep(.01)
                         self.assertEqual(len(found), 3)
@@ -80,7 +82,7 @@ class DelayedTargetAuditTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(await client.read_property(address, reporter, rb.PropertyIdentifier.SEND_NOW), rb.PropertyValue.boolean(False))
                         await client.write_property(address, reporter, rb.PropertyIdentifier.MAXIMUM_SEND_DELAY, rb.PropertyValue.unsigned(0))
                         await client.write_property(address, target, rb.PropertyIdentifier.PRESENT_VALUE, rb.PropertyValue.enumerated(1))
-                        async with asyncio.timeout(5):
+                        async with async_timeout(5):
                             while len(found := await records()) < 5:
                                 await asyncio.sleep(.01)
                         self.assertEqual(len(found), 5, "internal command reset emits no WRITE")

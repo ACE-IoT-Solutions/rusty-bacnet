@@ -17,6 +17,8 @@ import pickle
 import threading
 import unittest
 
+from async_compat import async_timeout
+
 import rusty_bacnet as rb
 from bvll_peer import RawPeer, bvll, mac
 from test_endpoint_routed import answer, finish, request_of
@@ -164,10 +166,10 @@ class RoutedPathLimitWireTests(unittest.IsolatedAsyncioTestCase):
         read = asyncio.ensure_future(
             self.client.read_property(self.target, AI_1, P.PRESENT_VALUE))
         try:
-            async with asyncio.timeout(5):
+            async with async_timeout(5):
                 while await self.client.below_minimum_reject_drops() < 1:
                     await asyncio.sleep(0.01)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             counted.set()
             read.cancel()
             await asyncio.gather(read, return_exceptions=True)

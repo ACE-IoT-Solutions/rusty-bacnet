@@ -17,6 +17,8 @@ import struct
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout
+
 import rusty_bacnet
 from rusty_bacnet import (
     BACnetClient,
@@ -172,7 +174,7 @@ class TrendLogCovLiveServerTests(unittest.TestCase):
             ) as client:
 
                 async def logged(at_least: int) -> list[tuple[float, int]]:
-                    async with asyncio.timeout(WAIT):
+                    async with async_timeout(WAIT):
                         while True:
                             result = await client.read_range(
                                 address, LOG, PropertyIdentifier.LOG_BUFFER

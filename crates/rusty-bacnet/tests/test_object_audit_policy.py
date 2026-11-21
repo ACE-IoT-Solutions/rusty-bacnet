@@ -6,6 +6,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from async_compat import async_timeout
+
 import rusty_bacnet as rb
 
 
@@ -88,7 +90,7 @@ class ObjectAuditPolicyTests(unittest.IsolatedAsyncioTestCase):
                         await client.write_property(address,av,rb.PropertyIdentifier.AUDIT_LEVEL,rb.PropertyValue.enumerated(1)) # AUDIT_ALL
                         await client.write_property(address,av,rb.PropertyIdentifier.PRESENT_VALUE,rb.PropertyValue.real(2.0))
                         query={"audit_log":rb.ObjectIdentifier(rb.ObjectType.AUDIT_LOG,1),"query_parameters":{"kind":"by_target","target_device_identifier":rb.ObjectIdentifier(rb.ObjectType.DEVICE,8121),"successful_actions_only":0},"requested_count":16}
-                        async with asyncio.timeout(5):
+                        async with async_timeout(5):
                             while True:
                                 result=await client.audit_log_query_typed(parent_address,query)
                                 if len(result["records"])>=3: break

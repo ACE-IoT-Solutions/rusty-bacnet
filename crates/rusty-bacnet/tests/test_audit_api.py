@@ -13,6 +13,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Callable, Literal, cast
 
+from async_compat import async_timeout, sock_sendto
+
 import rusty_bacnet
 from rusty_bacnet import (
     AuditOperation,
@@ -137,7 +139,7 @@ def audit_snapshot(storage: str) -> dict[str, bytes]:
 
 async def bounded_reporter_test(exercise: Awaitable[None]) -> None:
     # Includes startup, client calls and joined shutdown, not only delivery polling.
-    async with asyncio.timeout(15):
+    async with async_timeout(15):
         await exercise
 
 
@@ -767,7 +769,7 @@ class AuditContractArtifactTests(unittest.TestCase):
                                                         ObjectIdentifier(ObjectType.ANALOG_VALUE, 1),
                                                         PropertyIdentifier.PRESENT_VALUE,
                                                         PropertyValue.real(42.5))
-                            async with asyncio.timeout(5):
+                            async with async_timeout(5):
                                 while True:
                                     records = (await client.audit_log_query_typed(parent_address, query))["records"]
                                     if records:
@@ -1088,7 +1090,7 @@ class AuditContractArtifactTests(unittest.TestCase):
                             await client.write_property(child_address, target, prop, value, priority=priority)
                         self.assertEqual(await child.read_property(target, prop), value)
                         if expected:
-                            async with asyncio.timeout(5):
+                            async with async_timeout(5):
                                 while True:
                                     ack = await client.audit_log_query_typed(parent_address, query)
                                     if ack["records"]:
@@ -1342,7 +1344,7 @@ class AuditContractArtifactTests(unittest.TestCase):
                         self.assertEqual(len((await client.audit_log_query_typed(child_address, child_query))["records"]), 1)
                         # Child ACK proves only child commit, not parent delivery. Observe parent
                         # commit with a bounded query loop, not a fixed dispatch-order sleep.
-                        async with asyncio.timeout(5):
+                        async with async_timeout(5):
                             while True:
                                 forwarded = await client.audit_log_query_typed(parent_address, parent_query)
                                 if forwarded["records"]:
@@ -1452,7 +1454,7 @@ class AuditContractArtifactTests(unittest.TestCase):
                     ))
                     # Unconfirmed completion means sent, not stored: poll the query
                     # under a deadline rather than assuming dispatch task ordering.
-                    async with asyncio.timeout(3):
+                    async with async_timeout(3):
                         while True:
                             ack = await client.audit_log_query_typed(address, query)
                             if len(ack["records"]) == 4:
@@ -1531,11 +1533,11 @@ class AuditContractArtifactTests(unittest.TestCase):
 
             async def send(server: BACnetServer, frame: bytes) -> None:
                 ip, port = (await server.local_address()).split(":")
-                await loop.sock_sendto(peer, frame, (ip, int(port)))
+                await sock_sendto(loop, peer, frame, (ip, int(port)))
 
             async def silence(server: BACnetServer, frame: bytes) -> None:
                 await send(server, frame)
-                with self.assertRaises(TimeoutError):
+                with self.assertRaises(asyncio.TimeoutError):
                     await asyncio.wait_for(loop.sock_recv(peer, 2048), 0.1)
 
             server = receiver("allow_all")
@@ -1889,7 +1891,7 @@ class WriteGroupAuditTests(unittest.TestCase):
                             await child.local_address(), 27, 12,
                             [(11, 9, PropertyValue.real(5.0))],
                         )
-                        async with asyncio.timeout(5):
+                        async with async_timeout(5):
                             while True:
                                 ack = await client.audit_log_query_typed(
                                     await parent.local_address(), query)

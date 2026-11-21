@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from async_compat import async_timeout, sock_recvfrom, sock_sendto
+
 import rusty_bacnet
 from rusty_bacnet import BACnetServer
 
@@ -111,16 +113,16 @@ class AdmissionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.sock.close()
 
     async def send(self, apdu):
-        await self.loop.sock_sendto(self.sock, packet(apdu), self.address)
+        await sock_sendto(self.loop, self.sock, packet(apdu), self.address)
 
     async def read_replies(self):
         # Keep the client socket drained so no reply is lost to a full buffer.
         while True:
-            wire, _ = await self.loop.sock_recvfrom(self.sock, 2048)
+            wire, _ = await sock_recvfrom(self.loop, self.sock, 2048)
             self.replies.put_nowait(wire)
 
     async def reply_until(self, predicate):
-        async with asyncio.timeout(2):
+        async with async_timeout(2):
             while True:
                 wire = await self.replies.get()
                 self.assertEqual(wire[:2], b"\x81\x0a")
@@ -130,7 +132,7 @@ class AdmissionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     return wire[6:]
 
     async def counters_until(self, predicate):
-        async with asyncio.timeout(2):
+        async with async_timeout(2):
             while True:
                 counters = await self.server.request_admission_counters()
                 self.assertEqual(set(counters), FIELDS)

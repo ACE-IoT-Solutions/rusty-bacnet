@@ -110,8 +110,9 @@ cargo nextest run -p bacnet-types -p bacnet-encoding -p bacnet-services --no-def
 cargo test --doc -p bacnet-types -p bacnet-encoding -p bacnet-services --no-default-features --locked
 ```
 
-The Python job builds the PyO3 extension in debug mode into a fresh venv with
-Ubuntu 24.04's own Python (3.12) and runs the unittest suite. The SC tests
+The Python job builds the PyO3 extension and runs the full unittest suite in
+separate CPython 3.10 and system 3.12 venvs. On 3.10 the test fixtures use
+the pinned timeout backport in `crates/rusty-bacnet/tests/requirements.txt`. The SC tests
 generate certificates with the `openssl` CLI. Cargo Deny covers the bindings'
 dependencies too; only `bacnet-benchmarks` is excluded.
 
@@ -2135,7 +2136,7 @@ waits for them (see [CI gate](#ci-gate)).
 | Validate | Runs the release script tests (`scripts/release/test_*.py`, `scripts/test_changelog.py`). Checks, with `release_version.py`, that every publishable crate has the workspace version, except `bacnet-time`, which versions on its own, and, for a tag, that the tag is `v<version>` and the commit is on `dev`'s or `main`'s first-parent history (`git rev-list --first-parent`), so a commit inside a merged PR's branch doesn't qualify. For a tag, checks that no `changelog.d/` fragment is left unassembled. Extracts the notes with `changelog_notes.py` and writes `THIRD-PARTY-NOTICES`. |
 | CI gate | `ci_gate.py` on the release commit (a PR's head on a PR's dry run). On a tag it waits for the CI run the tag's push started; a dry run checks once and only warns. See [CI gate](#ci-gate). |
 | Crates and sdist | `cargo publish --workspace --dry-run --locked`, which packages every publishable crate and builds each against the others as published. Then `cargo package` for the `crates` artifact, and `maturin sdist`. |
-| Build (linux-x86_64, linux-aarch64, macos-x86_64, macos-arm64, windows-x86_64) | The wheels for CPython 3.11 to 3.14 (`PYTHONS`) and the CLI, on each platform's own runner, then the CLI's MCP bundle from that binary (`mcpb.py pack`, no second build). See [Builds](#builds) and [MCP bundles](#mcp-bundles). |
+| Build (linux-x86_64, linux-aarch64, macos-x86_64, macos-arm64, windows-x86_64) | The wheels for CPython 3.10 to 3.14 (`PYTHONS`) and the CLI, on each platform's own runner, then the CLI's MCP bundle from that binary (`mcpb.py pack`, no second build). See [Builds](#builds) and [MCP bundles](#mcp-bundles). |
 | Check the artifacts | `check_artifacts.py` over every file, then the `release-assets` artifact: what the publish jobs upload. See below. |
 | Smoke test (Linux x86_64, Linux aarch64, macOS arm64, macOS x86_64, Windows x86_64) | Each platform's wheels and CLI, run on that platform. See [Smoke tests](#smoke-tests). |
 | Publish plan (dry run) | Dry runs only, read only: `release_api.py plan`, `publish_crates.sh --dry-run`, the draft's bundle check (`mcpb.py adopt` on the unsigned bundles), and, for information, each MCP bundle's signature state and `mcpb verify`'s answer. See [Publish plan](#publish-plan-dry-run). |
@@ -2199,9 +2200,8 @@ but its smoke test would then have no runner.
 Every file gets the static checks above, and the smoke tests run every wheel
 and CLI on its own platform: Linux on both architectures, on Ubuntu 24.04 and
 in CentOS 7 (glibc 2.17), macOS on Apple Silicon and Intel, and Windows. The
-Python suite runs against the installed cp312 wheel on both Linux
-architectures; on macOS and Windows, native tests run it against each PR's
-own build. These tests show that the files load and work on those hosts.
+Python suite runs against the installed cp310 wheel on every platform and the
+cp312 wheel on both Linux architectures. These tests show that the files load and work on those hosts.
 They say nothing about hardware, or about older macOS and Windows versions
 than the runners'.
 
@@ -2255,7 +2255,7 @@ needs it.
 
 Each Smoke test job downloads its platform's `wheels-<platform>` and
 `cli-<platform>` artifacts, the same files `release-assets` holds, and sets up
-CPython 3.11 to 3.14 with `actions/setup-python`. The jobs are independent:
+CPython 3.10 to 3.14 with `actions/setup-python`. The jobs are independent:
 one failing doesn't cancel the others.
 
 - **Wheels.** Each wheel, installed with `pip --no-index --no-deps` into a
@@ -2286,7 +2286,7 @@ one failing doesn't cancel the others.
   must answer `initialize` with a read-only title and `tools/list` with
   exactly the manifest's tools, each annotated read-only.
 - **Python suite** (Linux): `python -m unittest discover -s
-  crates/rusty-bacnet/tests` against the installed cp312 wheel.
+  crates/rusty-bacnet/tests` against cp310 on every platform and cp312 on both Linux architectures.
 - **glibc 2.17** (Linux):
   [`smoke_glibc217.sh`](../scripts/release/smoke_glibc217.sh) runs the cp312
   wheel's `wheel_smoke.py` and the CLI's `cli_smoke.sh`, capture included, in
@@ -2394,8 +2394,8 @@ a malformed signature block fails the job.
     binary's asset name with `.mcpb` for `.exe` (see
     [MCP bundles](#mcp-bundles));
   - `rusty_bacnet-<version>.tar.gz`, the sdist;
-  - twenty wheels, `rusty_bacnet-<version>-cp3XY-cp3XY-<platform>.whl` for
-    CPython 3.11 to 3.14 on five platforms:
+  - twenty-five wheels, `ace_rusty_bacnet-<version>-cp3XY-cp3XY-<platform>.whl` for
+    CPython 3.10 to 3.14 on five platforms:
     `manylinux_2_17_x86_64.manylinux2014_x86_64`,
     `manylinux_2_17_aarch64.manylinux2014_aarch64`, `macosx_10_12_x86_64`,
     `macosx_11_0_arm64` and `win_amd64`;
@@ -2508,7 +2508,7 @@ its default builder, which needs no CMake. Its build checks the compiler for
 GCC's `memcmp` bug, which GCC 10.2 doesn't have.
 
 **macOS and Windows** ([`build_native.sh`](../scripts/release/build_native.sh)).
-The job installs the pinned toolchain and the four CPythons, and the script
+The job installs the pinned toolchain and the five CPythons, and the script
 builds the wheels with the pinned maturin, in a venv, then the CLI with
 `--features sc-tls,mcp`.
 

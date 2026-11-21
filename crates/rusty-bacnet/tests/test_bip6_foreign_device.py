@@ -12,6 +12,8 @@ import socket
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout
+
 import rusty_bacnet
 from rusty_bacnet import (
     BACnetClient, BACnetServer, Bbmd, BipEndpoint, ForeignDevice, ObjectIdentifier,
@@ -51,7 +53,7 @@ def localhost_is_ipv6_loopback() -> bool:
 
 async def eventually(check, seconds=5.0):
     """Poll the coroutine function ``check`` until it returns a true value."""
-    async with asyncio.timeout(seconds):
+    async with async_timeout(seconds):
         while not (result := await check()):
             await asyncio.sleep(0.02)
         return result
@@ -90,7 +92,7 @@ class FakeBbmd:
     async def next(self, prefix: bytes, seconds: float = 10.0):
         """The next datagram starting with ``prefix`` and its sender, polled
         since Windows' default event loop has no add_reader."""
-        async with asyncio.timeout(seconds):
+        async with async_timeout(seconds):
             while True:
                 try:
                     datagram, sender = self.sock.recvfrom(2048)

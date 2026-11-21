@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout
+
 import rusty_bacnet as rb
 
 O = rb.ObjectType
@@ -61,7 +63,7 @@ class EndpointSourceAuditTests(unittest.IsolatedAsyncioTestCase):
         return [entry["record"]["datum"]["audit_notification"] for entry in result["records"]]
 
     async def wait_for(self, count):
-        async with asyncio.timeout(5):
+        async with async_timeout(5):
             while len(found := await self.records()) < count:
                 await asyncio.sleep(0.01)
         return found

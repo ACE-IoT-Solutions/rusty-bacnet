@@ -19,6 +19,8 @@ import socket
 import unittest
 from typing import Any
 
+from async_compat import sock_recvfrom, sock_sendto
+
 import rusty_bacnet
 from rusty_bacnet import (
     BACnetClient,
@@ -379,9 +381,9 @@ class TypedReadCopyPickleTests(unittest.IsolatedAsyncioTestCase):
                                     apdu_timeout_ms=2000) as client:
                 read = asyncio.ensure_future(
                     client.read_property(address, AI_1, P.EVENT_TIME_STAMPS, 1))
-                wire, remote = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                wire, remote = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                 ack = bytes([0x30, wire[8], 12]) + wire[10:] + b"\x3e" + octets + b"\x3f"
-                await loop.sock_sendto(peer, frame(ack), remote)
+                await sock_sendto(loop, peer, frame(ack), remote)
                 value = await asyncio.wait_for(read, 2)
         self.assertEqual(value.tag, "timestamp")
         stamp = value.value

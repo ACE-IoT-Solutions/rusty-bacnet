@@ -112,12 +112,14 @@ async def client_case(explicit):
             iam = b"\x01\x00\x10\x00\xc4" + ((8 << 22) | 654).to_bytes(4, "big")
             iam += b"\x22\x04\x00\x91\x03\x22\x03\xe7"
             peer.sendto(frame(1, b"\x40\x88\x32", data[4:7] + iam), source)
-            async with asyncio.timeout(DEADLINE):
+            async def discovered():
                 while True:
                     devices = await client.discovered_devices()
                     if devices:
-                        break
+                        return devices
                     await asyncio.sleep(0)
+
+            devices = await asyncio.wait_for(discovered(), DEADLINE)
             assert len(devices) == 1
             device = devices[0]
             assert device.object_identifier.instance == 654

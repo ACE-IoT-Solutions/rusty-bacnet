@@ -3,6 +3,8 @@ import asyncio
 import socket
 import unittest
 
+from async_compat import async_timeout, sock_recvfrom, sock_sendto
+
 from rusty_bacnet import BACnetServer
 
 
@@ -26,10 +28,10 @@ class PeerAdmissionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             async def send(sock, apdu):
                 npdu = b"\x01\x00" + apdu
                 wire = b"\x81\x0a" + (4 + len(npdu)).to_bytes(2, "big") + npdu
-                await loop.sock_sendto(sock, wire, address)
+                await sock_sendto(loop, sock, wire, address)
 
             async def quiescent():
-                async with asyncio.timeout(3):
+                async with async_timeout(3):
                     while True:
                         counters = await server.request_admission_counters()
                         if counters["confirmed_active"] == counters["abort_active"] == 0:
@@ -49,7 +51,7 @@ class PeerAdmissionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                             + counters["unconfirmed_overloaded_total"])
 
                 seen = markers(await server.request_admission_counters())
-                async with asyncio.timeout(3):
+                async with async_timeout(3):
                     while markers(await server.request_admission_counters()) == seen:
                         # UnconfirmedPrivateTransfer: unsupported here, so ignored.
                         await send(sock, b"\x10\x04")
@@ -81,9 +83,9 @@ class PeerAdmissionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     except BlockingIOError:
                         break
                 await send(sock, b"\x00\x05\xfa\x0c")
-                async with asyncio.timeout(3):
+                async with async_timeout(3):
                     while True:
-                        wire, _ = await loop.sock_recvfrom(sock, 65536)
+                        wire, _ = await sock_recvfrom(loop, sock, 65536)
                         if len(wire) >= 8 and wire[7] == 250:
                             # The handler rejects the empty ReadProperty as
                             # MISSING_REQUIRED_PARAMETER (5); an overload

@@ -20,6 +20,8 @@ import socket
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout, sock_sendto
+
 from rusty_bacnet import BACnetClient, BACnetServer, ObjectIdentifier, ObjectType, PropertyIdentifier
 
 DEVICE = 2395
@@ -72,8 +74,8 @@ class ClockZoneTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(sock.close)
         before = (await self.server.request_admission_counters())["unconfirmed_admitted_total"]
         ip, port = self.address.rsplit(":", 1)
-        await asyncio.get_running_loop().sock_sendto(sock, utc_sync_frame(when), (ip, int(port)))
-        async with asyncio.timeout(3):
+        await sock_sendto(asyncio.get_running_loop(), sock, utc_sync_frame(when), (ip, int(port)))
+        async with async_timeout(3):
             while True:
                 counters = await self.server.request_admission_counters()
                 if (counters["unconfirmed_admitted_total"] > before

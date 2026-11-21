@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout
+
 from rusty_bacnet import (AuditOperation, BACnetClient, BACnetServer, BacnetError, BipEndpoint,
                           MstpEndpoint, ObjectIdentifier, ObjectType, PropertyIdentifier,
                           ReinitializedState, ScEndpoint, ScHub)
@@ -299,7 +301,7 @@ class ScSessionTests(unittest.IsolatedAsyncioTestCase):
                     address = await owner.local_address()
                     await client.reinitialize_device(address, ReinitializedState.WARMSTART)
                     self.assertIsNone(await (await owner.server()).report_device_reset_local())
-                    async with asyncio.timeout(10):
+                    async with async_timeout(10):
                         while len(found := await records()) < before + 2:
                             await asyncio.sleep(0.05)
                 finally:

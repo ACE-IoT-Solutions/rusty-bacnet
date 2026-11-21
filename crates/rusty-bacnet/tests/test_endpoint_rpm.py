@@ -4,6 +4,8 @@ import asyncio
 import socket
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 from rusty_bacnet import (
     BACnetClient, BACnetServer, BipEndpoint, BacnetError,
     ObjectIdentifier, ObjectType, PropertyIdentifier, PropertyValue,
@@ -65,7 +67,7 @@ class EndpointRpmTests(unittest.IsolatedAsyncioTestCase):
                         task = asyncio.ensure_future(role.read_property_multiple(address, [
                             (oid, [(PropertyIdentifier.OBJECT_NAME, None), (PropertyIdentifier.OBJECT_LIST, 0)])]))
                         try:
-                            wire, remote = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                            wire, remote = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                             self.assertEqual(wire[9], 14)
                             # Object[0], list[1]; result[2], optional index[3], value[4]/error[5].
                             first = b"\x29\x4d\x4e\x21\x2a\x4f"
@@ -79,7 +81,7 @@ class EndpointRpmTests(unittest.IsolatedAsyncioTestCase):
                             body = b"\x0c" + object_bytes + b"\x1e" + results + b"\x1f"
                             if fault == "malformed": body = b"\x00"
                             payload = b"\x01\x00\x30" + bytes([wire[8], 14]) + body
-                            await loop.sock_sendto(peer, b"\x81\x0a" + (len(payload) + 4).to_bytes(2, "big") + payload, remote)
+                            await sock_sendto(loop, peer, b"\x81\x0a" + (len(payload) + 4).to_bytes(2, "big") + payload, remote)
                             if fault == "malformed":
                                 with self.assertRaises(BacnetError): await asyncio.wait_for(task, 2)
                             elif fault:

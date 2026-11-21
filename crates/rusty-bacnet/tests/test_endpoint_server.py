@@ -12,6 +12,8 @@ import asyncio
 import datetime
 import unittest
 
+from async_compat import async_timeout, sock_sendto
+
 from rusty_bacnet import (
     BACnetClient, BACnetServer, BipEndpoint, ObjectIdentifier, ObjectType,
     PropertyIdentifier, PropertyValue,
@@ -81,7 +83,7 @@ class EndpointServerWireTests(unittest.IsolatedAsyncioTestCase):
     async def settled(self, server, admitted):
         """Wait until the server has admitted at least `admitted` unconfirmed
         requests and runs none; the admitted total."""
-        async with asyncio.timeout(3):
+        async with async_timeout(3):
             while True:
                 counters = await server.request_admission_counters()
                 if (counters["unconfirmed_admitted_total"] >= admitted
@@ -97,7 +99,7 @@ class EndpointServerWireTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(sock.close)
         ip, port = (await owner.local_address()).rsplit(":", 1)
         when = datetime.datetime(year, 2, 3, 10, tzinfo=UTC)
-        await asyncio.get_running_loop().sock_sendto(
+        await sock_sendto(asyncio.get_running_loop(),
             sock, time_sync_frame(when, service=service), (ip, int(port)))
         await self.settled(server, admitted + 1)
         return (await server.read_property(DEVICE, PropertyIdentifier.LOCAL_DATE)).value[0]

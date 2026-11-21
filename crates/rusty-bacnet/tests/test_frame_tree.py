@@ -1,6 +1,7 @@
 """Detailed offline fields from native-emitted traffic and explicit link fixtures."""
-import asyncio
 import unittest
+
+from async_compat import async_timeout
 
 import rusty_bacnet as rb
 
@@ -55,7 +56,7 @@ class CapturedFieldTreeTests(unittest.IsolatedAsyncioTestCase):
                     )
                 self.assertEqual(result.value, "Test sensor")
                 seen = set()
-                async with asyncio.timeout(10):
+                async with async_timeout(10):
                     async for frame in frames:
                         summary = rb.decode_frame(frame.octets, frame.link)
                         if summary.service != "read-property":

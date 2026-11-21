@@ -18,6 +18,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout
+
 import rusty_bacnet
 from rusty_bacnet import (
     BACnetClient,
@@ -172,7 +174,7 @@ class LogRestartTests(unittest.IsolatedAsyncioTestCase):
                     PropertyValue.boolean(True),
                     source_object=None,
                 )
-                async with asyncio.timeout(WAIT):
+                async with async_timeout(WAIT):
                     while await self.read(
                         server, MULTIPLE, PropertyIdentifier.TOTAL_RECORD_COUNT
                     ) != PropertyValue.unsigned(expected):

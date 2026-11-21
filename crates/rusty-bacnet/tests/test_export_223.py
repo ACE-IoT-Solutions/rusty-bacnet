@@ -17,6 +17,8 @@ import re
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout
+
 import rusty_bacnet
 from rusty_bacnet import (
     BACnetClient,
@@ -357,7 +359,7 @@ class ExportTests(unittest.IsolatedAsyncioTestCase):
             ) as client:
                 await client.add_device(DEVICE, relay_address(relay))
                 export = asyncio.ensure_future(client.export_223_experimental(DEVICE))
-                async with asyncio.timeout(10):
+                async with async_timeout(10):
                     while relay.requests < 3:
                         await asyncio.sleep(0.01)
                 export.cancel()

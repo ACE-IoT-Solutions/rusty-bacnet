@@ -19,6 +19,8 @@ import pickle
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout
+
 import rusty_bacnet
 from rusty_bacnet import (
     AbortReason,
@@ -508,7 +510,7 @@ class CancelledTests(Lab):
         await c.__aenter__()
         try:
             pending = asyncio.ensure_future((await c.device(self.address)).relinquish(AO, 8))
-            async with asyncio.timeout(10):
+            async with async_timeout(10):
                 while len(self.relay.requests) < 2:
                     await asyncio.sleep(0.01)
             self.assertEqual(self.relay.services, [WRITE_PROPERTY, READ_PROPERTY_MULTIPLE])

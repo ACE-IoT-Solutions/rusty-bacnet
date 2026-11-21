@@ -15,6 +15,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout
+
 import rusty_bacnet as rb
 from bvll_peer import RawPeer, bvll, mac
 
@@ -225,7 +227,7 @@ class FullClientTests(unittest.IsolatedAsyncioTestCase):
         await client.subscribe_cov(address, 2, AI_1, confirmed=True, lifetime=60)
         await server.set_present_value_local(AI_1, rb.PropertyValue.real(15.0))
         delivered = set()
-        async with asyncio.timeout(5):
+        async with async_timeout(5):
             async for notification in notifications:
                 delivered.add((notification.subscriber_process_identifier,
                                notification.delivery))
@@ -242,14 +244,14 @@ class FullClientTests(unittest.IsolatedAsyncioTestCase):
             await client.read_property(peer.address, AI_1, P.PRESENT_VALUE)
         # Both iterators see the client's request leave the one socket.
         for frames in (mine, its):
-            async with asyncio.timeout(5):
+            async with async_timeout(5):
                 async for frame in frames:
                     if frame.direction == "outbound" and frame.peer == peer.address:
                         break
         await asyncio.wait_for(self.endpoint.close(), 10)
         for frames in (mine, its):
             with self.assertRaises(StopAsyncIteration):
-                async with asyncio.timeout(5):
+                async with async_timeout(5):
                     while True:
                         await frames.__anext__()
 
@@ -275,12 +277,12 @@ class FullClientTests(unittest.IsolatedAsyncioTestCase):
         peer = silent_peer(self)
         # A read in flight holds the stop until it ends.
         read = asyncio.ensure_future(client.read_property(peer.address, AI_1, P.PRESENT_VALUE))
-        async with asyncio.timeout(5):
+        async with async_timeout(5):
             while not peer.received:
                 await asyncio.sleep(0.01)
         stop = asyncio.ensure_future(client.stop())
         # The stop is admitted once the client refuses new work.
-        async with asyncio.timeout(5):
+        async with async_timeout(5):
             while True:
                 try:
                     await client.who_is()
@@ -308,7 +310,7 @@ class FullClientTests(unittest.IsolatedAsyncioTestCase):
         peer = RawPeer(observe)
         self.addCleanup(peer.close)
         target = rb.RoutedTarget(5, b"\x07", router=peer.address)
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             pending = asyncio.ensure_future(client.discover(scope=target, wait=60))
             datagram, source = await received.get()
             self.assertEqual(datagram[4:], bytes.fromhex("01 20 00 05 01 07 ff 10 08"))
@@ -325,13 +327,13 @@ class FullClientTests(unittest.IsolatedAsyncioTestCase):
         client = await self.endpoint.client()
         peer = silent_peer(self)
         read = asyncio.ensure_future(client.read_property(peer.address, AI_1, P.PRESENT_VALUE))
-        async with asyncio.timeout(5):
+        async with async_timeout(5):
             while not peer.received:
                 await asyncio.sleep(0.01)
         read.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await read
-        async with asyncio.timeout(5):
+        async with async_timeout(5):
             while (await self.endpoint.status())["active_leases"]:
                 await asyncio.sleep(0.01)
         device = rb.ObjectIdentifier(O.DEVICE, ENDPOINT)
@@ -348,7 +350,7 @@ class FullClientTests(unittest.IsolatedAsyncioTestCase):
         peer = silent_peer(self)
         reads = [asyncio.ensure_future(client.read_property(peer.address, AI_1, P.PRESENT_VALUE))
                  for _ in range(3)]
-        async with asyncio.timeout(5):
+        async with async_timeout(5):
             while len(peer.received) < 3:
                 await asyncio.sleep(0.01)
         loop = asyncio.get_running_loop()
@@ -425,7 +427,7 @@ class AuditedEndpointTests(unittest.IsolatedAsyncioTestCase):
                  "requested_count": 32}
         async with rb.BACnetClient(interface="127.0.0.1", port=0,
                                    broadcast_address="127.0.0.1") as reader:
-            async with asyncio.timeout(5):
+            async with async_timeout(5):
                 while True:
                     result = await reader.audit_log_query_typed(self.sink_address, query)
                     found = [entry["record"]["datum"]["audit_notification"]
@@ -465,7 +467,7 @@ class AuditedEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(peer.close)
         client = await self.endpoint.client()
         read = asyncio.ensure_future(client.read_property(peer.address, AI_1, P.PRESENT_VALUE))
-        async with asyncio.timeout(5):
+        async with async_timeout(5):
             while not heard:
                 await asyncio.sleep(0.01)
         read.cancel()

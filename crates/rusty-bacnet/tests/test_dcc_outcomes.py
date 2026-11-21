@@ -6,6 +6,8 @@ from pathlib import Path
 import socket
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 from rusty_bacnet import BACnetServer
 
 FIELDS = {f"{name}_total" for name in (
@@ -42,8 +44,8 @@ class DccOutcomeTests(unittest.IsolatedAsyncioTestCase):
                 npdu = b"\x01\x00" + bytes([0, 5, invoke, 17]) + payload
                 wire = b"\x81\x0a" + (len(npdu) + 4).to_bytes(2, "big") + npdu
                 loop = asyncio.get_running_loop()
-                await loop.sock_sendto(sock, wire, (ip, int(port)))
-                await asyncio.wait_for(loop.sock_recvfrom(sock, 2048), 2)
+                await sock_sendto(loop, sock, wire, (ip, int(port)))
+                await asyncio.wait_for(sock_recvfrom(loop, sock, 2048), 2)
                 expected = before.copy()
                 expected[outcome] += 1
                 self.assertEqual(await target.dcc_outcome_counters(), expected)

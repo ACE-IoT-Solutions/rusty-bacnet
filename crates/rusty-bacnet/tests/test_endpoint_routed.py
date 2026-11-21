@@ -19,6 +19,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout
+
 import rusty_bacnet as rb
 from bvll_peer import RawPeer, bvll, mac
 from test_bip_modes import accepted_registration
@@ -243,7 +245,7 @@ class RoutedWireTests(unittest.IsolatedAsyncioTestCase):
             return ()
 
         self.router.handler = replies
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             arrivals = await self.role.i_am_arrivals()
             found = await self.role.discover(scope=self.target, low=FAR, high=FAR)
             [row] = found
@@ -484,7 +486,7 @@ class LearnedRouteWireTests(unittest.IsolatedAsyncioTestCase):
         # So does an I-Am the station sends on its own: its row is the route.
         ip, port = (await self.endpoint.local_address()).rsplit(":", 1)
         self.bbmd.send(i_am(5, b"\x0b", FAR + 1), (ip, int(port)))
-        async with asyncio.timeout(5):
+        async with async_timeout(5):
             while not any(row.object_identifier.instance == FAR + 1
                           for row in await self.role.discovered_devices()):
                 await asyncio.sleep(0.01)
@@ -505,7 +507,7 @@ class LearnedRouteWireTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancelling_the_call_that_asked_strands_no_other(self):
         silent = rb.RoutedTarget(5, b"\x0d")
         first = asyncio.ensure_future(self.role.read_property(silent, AI_1, P.PRESENT_VALUE))
-        async with asyncio.timeout(5):
+        async with async_timeout(5):
             while not self.who_is:
                 await asyncio.sleep(0.01)
         rest = [asyncio.ensure_future(self.role.read_property(silent, AI_1, P.PRESENT_VALUE))
@@ -547,7 +549,7 @@ class RoutedRouterTests(unittest.IsolatedAsyncioTestCase):
             for _ in range(NOTIFICATIONS):
                 peer.sendto(FRAME, (ip, int(number)))
         async with rb.BACnetClient(interface="127.0.0.1", port=0, broadcast_address="127.0.0.1") as client:
-            async with asyncio.timeout(5):
+            async with async_timeout(5):
                 while (await client.read_range(self.far_address, LOG, P.LOG_BUFFER)
                        )["item_count"] < NOTIFICATIONS:
                     await asyncio.sleep(0.05)
@@ -678,7 +680,7 @@ class RoutedRouterTests(unittest.IsolatedAsyncioTestCase):
                 result = await client.audit_log_query_typed(sink_address, query)
                 return [entry["record"]["datum"]["audit_notification"]
                         for entry in result["records"]]
-            async with asyncio.timeout(5):
+            async with async_timeout(5):
                 while len(found := await records()) < 7:
                     await asyncio.sleep(0.02)
         station = {"kind": "address", "network_number": 5, "mac_address": mac(self.far_address)}

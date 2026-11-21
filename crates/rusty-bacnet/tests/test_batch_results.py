@@ -5,6 +5,8 @@ from pathlib import Path
 import socket
 import unittest
 
+from async_compat import sock_sendto
+
 import rusty_bacnet as rb
 from test_batch_concurrency import METHODS, OID, PID, receive, requests
 
@@ -12,7 +14,7 @@ from test_batch_concurrency import METHODS, OID, PID, receive, requests
 async def reply(peer, remote, apdu):
     payload = b"\x01\x00" + apdu
     frame = b"\x81\x0a" + (len(payload) + 4).to_bytes(2, "big") + payload
-    await asyncio.get_running_loop().sock_sendto(peer, frame, remote)
+    await sock_sendto(asyncio.get_running_loop(), peer, frame, remote)
 
 
 def success(wire):

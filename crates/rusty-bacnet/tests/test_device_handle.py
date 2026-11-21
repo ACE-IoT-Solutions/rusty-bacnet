@@ -18,6 +18,8 @@ import inspect
 import pickle
 import unittest
 
+from async_compat import async_timeout
+
 import rusty_bacnet
 from rusty_bacnet import (
     BACnetClient,
@@ -634,7 +636,7 @@ class InFlightTests(Lab):
         await c.__aenter__()
         dev = await c.device(self.address)
         pending = asyncio.ensure_future(dev.read("ai:4"))
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             while not self.relay.requests:
                 await asyncio.sleep(0.01)
         # The stop waits for the call, which ends when its request times
@@ -651,7 +653,7 @@ class InFlightTests(Lab):
         try:
             dev = await c.device(self.address)
             pending = asyncio.ensure_future(dev.read_many(["ai:4", "ao:1"]))
-            async with asyncio.timeout(10):
+            async with async_timeout(10):
                 while not self.relay.requests:
                     await asyncio.sleep(0.01)
             pending.cancel()

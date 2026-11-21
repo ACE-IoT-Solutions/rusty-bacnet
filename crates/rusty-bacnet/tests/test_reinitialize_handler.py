@@ -8,6 +8,8 @@ import sys
 import unittest
 import warnings
 
+from async_compat import async_timeout
+
 from rusty_bacnet import (
     BACnetClient, BACnetServer, Bbmd, BipEndpoint, ErrorClass, ErrorCode,
     ForeignDevice, ObjectIdentifier, ObjectType, PropertyIdentifier as P,
@@ -79,7 +81,7 @@ class Peer:
         """The next datagram: a reply's APDU, or the MARKER."""
         # Poll rather than use a loop reader: Windows' default event loop
         # has no add_reader.
-        async with asyncio.timeout(2):
+        async with async_timeout(2):
             while True:
                 try:
                     datagram = self.sock.recv(2048)
@@ -100,7 +102,7 @@ def server(**keywords):
 
 
 async def eventually(check, seconds=5.0):
-    async with asyncio.timeout(seconds):
+    async with async_timeout(seconds):
         while not check():
             await asyncio.sleep(0.01)
 
@@ -386,7 +388,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         async def registration(peer):
             """The time-to-live of the next Register-Foreign-Device `peer`
             receives, polled since a test may not use add_reader."""
-            async with asyncio.timeout(10):
+            async with async_timeout(10):
                 while True:
                     try:
                         datagram = peer.sock.recv(2048)

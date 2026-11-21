@@ -5,6 +5,8 @@ import pickle
 import socket
 import unittest
 
+from async_compat import async_timeout, sock_recvfrom, sock_sendto
+
 import rusty_bacnet as rb
 from test_bip_modes import accepted_registration
 from test_router import port
@@ -67,7 +69,7 @@ class RoutingTableTests(unittest.IsolatedAsyncioTestCase):
             for network, destination, networks in [(None, router.address, [5, 7]), (7, router.mac, [7])]:
                 [heard] = await client.discover_routers(network, destination=destination, wait=1.5)
                 self.assertEqual((heard.mac, heard.networks), (router.mac, networks))
-                async with asyncio.timeout(10):
+                async with async_timeout(10):
                     async for frame in frames:
                         summary = rb.decode_frame(frame.octets, frame.link)
                         if frame.direction == "outbound" and summary.network_message == "who-is-router-to-network":
@@ -91,7 +93,7 @@ class RoutingTableTests(unittest.IsolatedAsyncioTestCase):
             frames = await endpoint.frames()
             waiting = asyncio.ensure_future(client.discover_routers(destination=silent.address, wait=60))
             try:
-                async with asyncio.timeout(10):
+                async with async_timeout(10):
                     async for frame in frames:
                         if frame.direction == "outbound" and frame.peer == silent.address:
                             self.assertEqual(rb.decode_frame(frame.octets, frame.link).network_message,
@@ -117,7 +119,7 @@ class RoutingTableTests(unittest.IsolatedAsyncioTestCase):
             reference = await self.client.routing_table(self.ports[0].mac)
             self.assertEqual([(e.network, e.port_id) for e in table.entries],
                              [(e.network, e.port_id) for e in reference.entries])
-            async with asyncio.timeout(5):
+            async with async_timeout(5):
                 async for frame in frames:
                     if frame.direction == "outbound" and frame.octets[4:8] == bytes([1, 0x84, 6, 0]):
                         self.assertEqual(frame.local_address, address)
@@ -175,13 +177,13 @@ class RoutingTableTests(unittest.IsolatedAsyncioTestCase):
 
         async def answer():
             loop = asyncio.get_running_loop()
-            data, peer = await loop.sock_recvfrom(sock, 2048)
+            data, peer = await sock_recvfrom(loop, sock, 2048)
             # BVLL Original-Unicast-NPDU, then NPDU version 1, network
             # message, type 3, a reason and a network number.
             self.assertEqual(data[4:8], b"\x01\x84\x06\x00")
             for reason, network in ((2, 77), (3, 0)):
                 npdu = bytes([1, 0x80, 3, reason]) + network.to_bytes(2, "big")
-                await loop.sock_sendto(sock, b"\x81\x0a" + (4 + len(npdu)).to_bytes(2, "big") + npdu, peer)
+                await sock_sendto(loop, sock, b"\x81\x0a" + (4 + len(npdu)).to_bytes(2, "big") + npdu, peer)
 
         answering = asyncio.ensure_future(answer())
         with self.assertRaises(rb.BacnetNetworkRejectError) as caught:

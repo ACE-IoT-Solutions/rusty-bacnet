@@ -67,7 +67,7 @@ env:
   GLIBC: "2.17"
   # The CPython versions with wheels. The build and smoke jobs set up exactly
   # these with setup-python; change both together.
-  PYTHONS: "3.11 3.12 3.13 3.14"
+  PYTHONS: "3.10 3.11 3.12 3.13 3.14"
 
 defaults:
   run:
@@ -334,6 +334,12 @@ jobs:
       # Each interpreter's path comes from its step's output; none is put on PATH.
       - if: runner.os != 'Linux'
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: py310
+        with:
+          python-version: "3.10"
+          update-environment: false
+      - if: runner.os != 'Linux'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         id: py311
         with:
           python-version: "3.11"
@@ -362,6 +368,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           CLI: ${{ matrix.cli }}
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos }}
+          PY310: ${{ steps.py310.outputs.python-path }}
           PY311: ${{ steps.py311.outputs.python-path }}
           PY312: ${{ steps.py312.outputs.python-path }}
           PY313: ${{ steps.py313.outputs.python-path }}
@@ -500,6 +507,11 @@ jobs:
           name: cli-${{ matrix.platform }}
           path: assets
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: py310
+        with:
+          python-version: "3.10"
+          update-environment: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         id: py311
         with:
           python-version: "3.11"
@@ -524,6 +536,7 @@ jobs:
       # Windows) and a loopback client/server round trip (wheel_smoke.py).
       - name: Wheels, each CPython
         env:
+          PY310: ${{ steps.py310.outputs.python-path }}
           PY311: ${{ steps.py311.outputs.python-path }}
           PY312: ${{ steps.py312.outputs.python-path }}
           PY313: ${{ steps.py313.outputs.python-path }}
@@ -578,13 +591,18 @@ jobs:
           python=$RUNNER_TEMP/venv-cp312/bin/python
           if [ "$RUNNER_OS" = Windows ]; then python=$(cygpath -m "$RUNNER_TEMP")/venv-cp312/Scripts/python; fi
           "$python" -I scripts/release/mcpb.py smoke "assets/${CLI%.exe}.mcpb"
-      # The Python suite against the installed cp312 wheel. Native tests run it
-      # on macOS and Windows against each PR's own build.
+      # Exercise 3.10's actual event loop on every target, including Windows IOCP.
       - name: Python suite
-        if: runner.os == 'Linux'
         run: |
           openssl version
-          "$RUNNER_TEMP/venv-cp312/bin/python" -m unittest discover -s crates/rusty-bacnet/tests
+          tags=(cp310)
+          if [ "$RUNNER_OS" = Linux ]; then tags+=(cp312); fi
+          for tag in "${tags[@]}"; do
+            python=$RUNNER_TEMP/venv-$tag/bin/python
+            if [ "$RUNNER_OS" = Windows ]; then python=$(cygpath -m "$RUNNER_TEMP")/venv-$tag/Scripts/python; fi
+            "$python" -m pip install --require-hashes --only-binary=:all: -r crates/rusty-bacnet/tests/requirements.txt
+            "$python" -m unittest discover -s crates/rusty-bacnet/tests
+          done
       - name: Wheel and CLI on glibc 2.17
         if: runner.os == 'Linux'
         env:
@@ -958,6 +976,12 @@ jobs:
       - *checkout
       - *toolchain
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: py310
+        with:
+          python-version: "3.10"
+          update-environment: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: py313
         with:
           python-version: "3.13"
       - uses: astral-sh/setup-uv@b75a909f75acd358c2196fb9a5f1299a9a8868a4 # v6.7.0
@@ -973,23 +997,18 @@ jobs:
           name: notices
           path: crates/rusty-bacnet
       - *release-assets
-      - name: Select the CPython 3.13 release wheels
+      - name: Select the private CPython release wheels
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
           mkdir -p dist/release-wheels
-          cp release/ace_rusty_bacnet-"$VERSION"-cp313-cp313-*.whl dist/release-wheels/
-          wheels=(dist/release-wheels/*.whl)
-          [ ${#wheels[@]} = 5 ] || { echo "::error::expected five CPython 3.13 wheels, found ${#wheels[@]}"; exit 1; }
-          for pattern in \
-            '*manylinux*x86_64.whl' \
-            '*manylinux*aarch64.whl' \
-            '*macosx*x86_64.whl' \
-            '*macosx*arm64.whl' \
-            '*win_amd64.whl'; do
-            matches=$(find dist/release-wheels -maxdepth 1 -type f -name "$pattern" | wc -l)
-            [ "$matches" = 1 ] \
-              || { echo "::error::expected one wheel matching $pattern, found $matches"; exit 1; }
+          shopt -s nullglob
+          for tag in cp310 cp313; do
+            wheels=(release/ace_rusty_bacnet-"$VERSION-$tag-$tag"-*.whl)
+            [ ${#wheels[@]} = 5 ] || { echo "::error::expected five $tag wheels, found ${#wheels[@]}"; exit 1; }
+            for platform in manylinux_2_17_x86_64.manylinux2014_x86_64 manylinux_2_17_aarch64.manylinux2014_aarch64 macosx_10_12_x86_64 macosx_11_0_arm64 win_amd64; do
+              cp "release/ace_rusty_bacnet-$VERSION-$tag-$tag-$platform.whl" dist/release-wheels/
+            done
           done
       - name: Build and validate the repaired source distribution
         env:
@@ -1009,14 +1028,16 @@ jobs:
       - name: Publish and verify the private release
         env:
           VERSION: ${{ needs.validate.outputs.version }}
+          PY310: ${{ steps.py310.outputs.python-path }}
+          PY313: ${{ steps.py313.outputs.python-path }}
           UV_PUBLISH_USERNAME: tailscale
           UV_PUBLISH_PASSWORD: tailscale
         run: |
           [ -n "$TAILSCALE_ACL_TAG" ] || { echo "::error::TAILSCALE_ACL_TAG is required"; exit 1; }
           curl --fail --silent --show-error --retry 5 --retry-all-errors "$PRIVATE_INDEX_URL" >/dev/null
           sdists=(dist/python/"$VERSION"/ace_rusty_bacnet-"$VERSION".tar.gz)
-          wheels=(dist/release-wheels/ace_rusty_bacnet-"$VERSION"-cp313-cp313-*.whl)
-          [ ${#sdists[@]} = 1 ] && [ -f "${sdists[0]}" ] && [ ${#wheels[@]} = 5 ] \
+          wheels=(dist/release-wheels/ace_rusty_bacnet-"$VERSION"-*.whl)
+          [ ${#sdists[@]} = 1 ] && [ -f "${sdists[0]}" ] && [ ${#wheels[@]} = 10 ] \
             || { echo "::error::private artifact set is incomplete"; exit 1; }
           uv publish --publish-url "$PRIVATE_PUBLISH_URL" --check-url "$PRIVATE_INDEX_URL" \
             --trusted-publishing never --no-attestations "${sdists[0]}" "${wheels[@]}"
@@ -1025,11 +1046,14 @@ jobs:
           for artifact in "${sdists[@]}" "${wheels[@]}"; do
             grep -Fq "$(basename "$artifact")" <<<"$page"
           done
-          uv venv --python python3.13 dist/published-smoke
-          uv pip install --python dist/published-smoke/bin/python --no-cache --no-deps \
-            --index-url "$PRIVATE_INDEX_URL" --only-binary=:all: "ace-rusty-bacnet==$VERSION"
-          (cd dist && PYTHONPATH='' published-smoke/bin/python -I -c \
-            'import importlib.metadata as m, os, rusty_bacnet; assert m.version("ace-rusty-bacnet") == os.environ["VERSION"]')
+          for version in 310 313; do
+            var=PY$version
+            venv="dist/published-smoke-$version"
+            uv venv --python "${!var}" "$venv"
+            uv pip install --python "$venv/bin/python" --no-cache --no-deps \
+              --index-url "$PRIVATE_INDEX_URL" --only-binary=:all: "ace-rusty-bacnet==$VERSION"
+            "$venv/bin/python" -I scripts/release/wheel_smoke.py --version "$VERSION"
+          done
 
   # Publishes the draft the GitHub draft job staged, unchanged: it must be that
   # draft, holding exactly these files with their digests and the same

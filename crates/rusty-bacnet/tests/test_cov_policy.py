@@ -7,6 +7,8 @@ from pathlib import Path
 import socket
 import unittest
 
+from async_compat import async_timeout
+
 from rusty_bacnet import (
     BACnetClient, BACnetServer, BacnetProtocolError, ErrorClass, ErrorCode,
     ObjectIdentifier, ObjectType, PropertyValue,
@@ -52,7 +54,7 @@ def free_udp_port():
 
 async def settle(server, **fields):
     """Wait until each named counter reaches its value, then sample all."""
-    async with asyncio.timeout(2):
+    async with async_timeout(2):
         while True:
             counters = await server.cov_counters()
             if all(counters[name] == value for name, value in fields.items()):

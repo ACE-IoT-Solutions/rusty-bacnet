@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout
+
 import rusty_bacnet as rb
 
 
@@ -88,7 +90,7 @@ class MultipleTargetReporters(unittest.IsolatedAsyncioTestCase):
                             query = dict(audit_log=rb.ObjectIdentifier(rb.ObjectType.AUDIT_LOG, 7),
                                          query_parameters=dict(kind="by_target", target_device_identifier=rb.ObjectIdentifier(rb.ObjectType.DEVICE, 8), successful_actions_only=0), requested_count=20)
                             expected = 1 if overlap else 2
-                            async with asyncio.timeout(5):
+                            async with async_timeout(5):
                                 while True:
                                     records = (await client.audit_log_query_typed(parent_address, query))["records"]
                                     if len(records) >= expected:

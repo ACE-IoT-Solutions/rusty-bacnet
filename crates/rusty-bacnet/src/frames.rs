@@ -32,7 +32,7 @@ pub(crate) fn capacity(capacity: usize) -> PyResult<usize> {
 /// Both read the same OS clock on Linux (`CLOCK_MONOTONIC`), on macOS
 /// (`mach_absolute_time`, which `CLOCK_UPTIME_RAW` is) and on Windows from
 /// Python 3.13 (`QueryPerformanceCounter`), so the pair stays in step. On
-/// Windows, Python 3.11 and 3.12 read `GetTickCount64` instead (see
+/// Windows, Python 3.10 through 3.12 read `GetTickCount64` instead (see
 /// `Frame.monotonic`'s docs).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Clock {
@@ -126,8 +126,8 @@ pub(crate) struct PyFrame {
 #[pymethods]
 impl PyFrame {
     /// Capture time in seconds on `time.monotonic()`'s clock and origin; it
-    /// never decreases within a subscription. On Windows with Python 3.11
-    /// or 3.12 it can sit up to one 10-16 ms step of that clock away.
+    /// never decreases within a subscription. On Windows with Python 3.10
+    /// through 3.12 it can sit up to one 10-16 ms step of that clock away.
     #[getter]
     fn monotonic(&self) -> f64 {
         self.monotonic

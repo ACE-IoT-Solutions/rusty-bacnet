@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Linux release artifacts for one architecture (#1472):
 #
-#   PYTHONS="3.11 3.12 3.13 3.14" scripts/release/build_linux.sh <x86_64|aarch64>
+#   PYTHONS="3.10 3.11 3.12 3.13 3.14" scripts/release/build_linux.sh <x86_64|aarch64>
 #
 # On the runner it runs itself in the manylinux2014 image pinned in
 # .github/ci-pins.env (CentOS 7: glibc 2.17, GCC 10), with the checkout at

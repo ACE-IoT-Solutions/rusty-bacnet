@@ -8,6 +8,8 @@ from pathlib import Path
 import socket
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 import rusty_bacnet
 from rusty_bacnet import (BACnetClient, BACnetServer, BipEndpoint,
                          BacnetProtocolError, ObjectIdentifier, ObjectType,
@@ -56,14 +58,14 @@ class EndpointWriteTests(unittest.IsolatedAsyncioTestCase):
                         self.assertTrue(inspect.isawaitable(future))
                         task = asyncio.ensure_future(future)
                         try:
-                            wire, remote = await asyncio.wait_for(loop.sock_recvfrom(peer, 4096), 2)
+                            wire, remote = await asyncio.wait_for(sock_recvfrom(loop, peer, 4096), 2)
                             self.assertEqual(wire[9], 15)
                             expected = b"\x0c" + ((2 << 22) | 7).to_bytes(4, "big") + b"\x19\x55\x29\x02\x3e" + raw + b"\x3f"
                             if priority is not None: expected += b"\x49" + bytes([priority])
                             self.assertEqual(wire[10:], expected)
                             payload = b"\x01\x00" + (b"\x50" if error else b"\x20") + bytes([wire[8], 15])
                             if error: payload += b"\x91\x02\x91\x28"
-                            await loop.sock_sendto(peer, b"\x81\x0a" + (len(payload)+4).to_bytes(2,"big") + payload, remote)
+                            await sock_sendto(loop, peer, b"\x81\x0a" + (len(payload)+4).to_bytes(2,"big") + payload, remote)
                             if error:
                                 with self.assertRaises(BacnetProtocolError): await asyncio.wait_for(task, 2)
                             else: self.assertIsNone(await asyncio.wait_for(task, 2))

@@ -1,0 +1,3 @@
+# The Python 3.10 suite uses the same-task timeout context backported from asyncio.
+async-timeout==5.0.1 ; python_version == "3.10" \
+    --hash=sha256:39e3809566ff85354557ec2398b55e096c8364bacac9405a7a1fa429e77fe76c

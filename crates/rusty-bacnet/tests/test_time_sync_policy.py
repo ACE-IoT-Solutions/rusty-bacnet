@@ -17,6 +17,8 @@ import socket
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout, sock_sendto
+
 import rusty_bacnet
 from rusty_bacnet import BACnetClient, BACnetServer, ObjectIdentifier, ObjectType, PropertyIdentifier
 
@@ -136,7 +138,7 @@ class TimeSyncPolicyWireTests(unittest.IsolatedAsyncioTestCase):
     async def settled(self, admitted: int) -> int:
         """Wait until at least `admitted` unconfirmed requests were admitted
         and none is still running; return the admitted total."""
-        async with asyncio.timeout(3):
+        async with async_timeout(3):
             while True:
                 counters = await self.server.request_admission_counters()
                 if (counters["unconfirmed_admitted_total"] >= admitted
@@ -147,7 +149,7 @@ class TimeSyncPolicyWireTests(unittest.IsolatedAsyncioTestCase):
     async def send(self, sock: socket.socket, frame: bytes) -> None:
         """Send one time sync and wait until the server has handled it."""
         ip, port = self.address.rsplit(":", 1)
-        await asyncio.get_running_loop().sock_sendto(sock, frame, (ip, int(port)))
+        await sock_sendto(asyncio.get_running_loop(), sock, frame, (ip, int(port)))
         self.admitted = await self.settled(self.admitted + 1)
 
     async def clock(self) -> datetime.datetime:

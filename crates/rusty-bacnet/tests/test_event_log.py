@@ -15,6 +15,8 @@ import socket
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout, sock_sendto
+
 import rusty_bacnet
 from rusty_bacnet import (
     BACnetClient,
@@ -104,12 +106,12 @@ class EventLogLiveServerTests(unittest.TestCase):
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as peer:
                 peer.bind(("127.0.0.1", 0))
                 peer.setblocking(False)
-                await loop.sock_sendto(peer, FRAME, (ip, int(port)))
+                await sock_sendto(loop, peer, FRAME, (ip, int(port)))
             address = await server.local_address()
             async with BACnetClient(
                 interface="127.0.0.1", port=0, apdu_timeout_ms=2000
             ) as client:
-                async with asyncio.timeout(WAIT):
+                async with async_timeout(WAIT):
                     while True:
                         result = await client.read_range(
                             address, COLLECTING, PropertyIdentifier.LOG_BUFFER

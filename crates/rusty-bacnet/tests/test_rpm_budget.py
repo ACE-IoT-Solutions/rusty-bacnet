@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from async_compat import async_timeout, sock_recvfrom, sock_sendto
+
 import rusty_bacnet
 from rusty_bacnet import BACnetServer
 
@@ -56,8 +58,8 @@ class RpmNativeTests(unittest.IsolatedAsyncioTestCase):
                     service = b"\x0c\x00\x00\x00\x01\x1e\x09\x55\x09\x55\x1f"
                     npdu = b"\x01\x00" + bytes([2 if segmented else 0, 5, invoke, 14]) + service
                     wire = b"\x81\x0a" + (len(npdu) + 4).to_bytes(2, "big") + npdu
-                    await loop.sock_sendto(sock, wire, (ip, int(port)))
-                    reply, _ = await asyncio.wait_for(loop.sock_recvfrom(sock, 4096), 2)
+                    await sock_sendto(loop, sock, wire, (ip, int(port)))
+                    reply, _ = await asyncio.wait_for(sock_recvfrom(loop, sock, 4096), 2)
                     self.assertEqual(reply[:2], b"\x81\x0a")
                     self.assertEqual(int.from_bytes(reply[2:4], "big"), len(reply))
                     if expected is not None:
@@ -67,7 +69,7 @@ class RpmNativeTests(unittest.IsolatedAsyncioTestCase):
                         ack = b"\x0c\x00\x00\x00\x01\x1e" + element * 2 + b"\x1f"
                         self.assertEqual(reply[6:], bytes([0x30, invoke, 14]) + ack)
                     # Native completion, not a timing delay, separates invocations.
-                    async with asyncio.timeout(2):
+                    async with async_timeout(2):
                         while (await server.request_admission_counters())["confirmed_active"]:
                             await asyncio.sleep(0)
                     with self.assertRaises(BlockingIOError):

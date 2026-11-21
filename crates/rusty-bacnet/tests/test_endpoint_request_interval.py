@@ -7,12 +7,13 @@ then spaces its reads of one device by at least the interval.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import time
 import unittest
 from pathlib import Path
 from typing import Any
+
+from async_compat import async_timeout
 
 import rusty_bacnet
 from rusty_bacnet import (
@@ -102,7 +103,7 @@ class RequestIntervalWireTests(unittest.IsolatedAsyncioTestCase):
             # Python 3.12's Windows monotonic clock has coarse ticks; use the
             # high-resolution performance counter for this strict duration check.
             started = time.perf_counter_ns()
-            async with asyncio.timeout(10):
+            async with async_timeout(10):
                 for _ in range(3):
                     await role.read_property(address, oid, PropertyIdentifier.PRESENT_VALUE)
             elapsed = time.perf_counter_ns() - started

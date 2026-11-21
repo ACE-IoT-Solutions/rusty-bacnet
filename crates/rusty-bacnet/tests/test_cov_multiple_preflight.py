@@ -3,6 +3,8 @@ import asyncio
 import socket
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 from rusty_bacnet import BACnetClient, ObjectIdentifier, ObjectType, PropertyIdentifier
 
 OID = ObjectIdentifier(ObjectType.ANALOG_INPUT, 1)
@@ -64,8 +66,8 @@ class CovMultiplePreflightTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(ValueError):
                         client.subscribe_cov_property_multiple(
                             address, 1, specs, False, max_notification_delay=10, lifetime=300)
-                with self.assertRaises(TimeoutError):
-                    await asyncio.wait_for(asyncio.get_running_loop().sock_recvfrom(peer, 2048), .1)
+                with self.assertRaises(asyncio.TimeoutError):
+                    await asyncio.wait_for(sock_recvfrom(asyncio.get_running_loop(), peer, 2048), .1)
 
     async def test_finite_and_whole_cancel_awaitables_send_exact_wire(self):
         loop = asyncio.get_running_loop()
@@ -81,12 +83,12 @@ class CovMultiplePreflightTests(unittest.IsolatedAsyncioTestCase):
                 ):
                     operation = client.subscribe_cov_property_multiple(address, 1, specs, False, **timing)
                     self.assertTrue(hasattr(operation, "__await__"))
-                    packet, sender = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                    packet, sender = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                     self.assertEqual(packet[:2], b"\x81\x0a")
                     self.assertEqual(packet[4:6], b"\x01\x04")
                     self.assertEqual(packet[6] & 0xf0, 0)
                     self.assertEqual(packet[9], 30)  # SubscribeCOVPropertyMultiple
                     self.assertEqual(packet[10:], expected)
                     reply = b"\x81\x0a\x00\x09\x01\x00\x20" + bytes((packet[8], 30))
-                    await loop.sock_sendto(peer, reply, sender)
+                    await sock_sendto(loop, peer, reply, sender)
                     await asyncio.wait_for(operation, 2)

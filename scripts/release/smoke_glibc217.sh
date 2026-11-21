@@ -6,7 +6,7 @@
 # On the runner it runs itself in the manylinux2014 image that the artifacts
 # were built in (CentOS 7, glibc 2.17; pinned in .github/ci-pins.env), with the
 # checkout at /io and <assets dir> inside it. In the image it installs the
-# cp312 wheel into the image's CPython 3.12 and runs wheel_smoke.py, then
+# 3.10 and 3.12 wheels into their matching interpreters and runs wheel_smoke.py, then
 # cli_smoke.sh with the CLI, including the packet capture that its static
 # libpcap does. check_artifacts.py has already checked that nothing in them
 # needs a newer glibc; this shows that they run there.
@@ -35,10 +35,12 @@ if [ "${RELEASE_IN_IMAGE:-}" != 1 ]; then
 fi
 
 ldd --version | sed -n 1p
-python=/opt/python/cp312-cp312/bin/python
-wheels=("$assets"/ace_rusty_bacnet-*-cp312-cp312-manylinux*_"$arch".whl)
-[ ${#wheels[@]} = 1 ] && [ -f "${wheels[0]}" ] || fail "expected one cp312 $arch wheel in $assets, found: ${wheels[*]}"
-"$python" -m pip install -q --disable-pip-version-check --root-user-action=ignore --no-index --no-deps "${wheels[0]}"
-"$python" -I scripts/release/wheel_smoke.py --version "$version"
+for tag in cp310 cp312; do
+  python=/opt/python/$tag-$tag/bin/python
+  wheels=("$assets"/ace_rusty_bacnet-*-"$tag-$tag"-manylinux*_"$arch".whl)
+  [ ${#wheels[@]} = 1 ] && [ -f "${wheels[0]}" ] || fail "expected one $tag $arch wheel in $assets, found: ${wheels[*]}"
+  "$python" -m pip install -q --disable-pip-version-check --root-user-action=ignore --no-index --no-deps "${wheels[0]}"
+  "$python" -I scripts/release/wheel_smoke.py --version "$version"
+done
 chmod +x "$assets/$cli"
-bash scripts/release/cli_smoke.sh --expect-version "$version" "$assets/$cli" "$python"
+bash scripts/release/cli_smoke.sh --expect-version "$version" "$assets/$cli" /opt/python/cp312-cp312/bin/python

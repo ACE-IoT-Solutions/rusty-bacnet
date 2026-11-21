@@ -1,10 +1,11 @@
 """Installed ReadRange contract and real B/IP operations, on a standalone
 client and on the BACnetClient an endpoint hands out (#2617)."""
-import asyncio
 import ast
 from pathlib import Path
 import tempfile
 import unittest
+
+from async_compat import async_timeout
 
 import rusty_bacnet
 from rusty_bacnet import (
@@ -36,7 +37,7 @@ class EndpointReadRangeTests(unittest.IsolatedAsyncioTestCase):
                 await client.add_list_element(address, oid, pid, entries)
                 for options, count in (({}, 4), ({"range_type": "position", "reference_index": 1, "count": 2}, 2),
                                        ({"range_type": "position", "reference_index": 0, "count": 2}, 0)):
-                    async with asyncio.timeout(5):
+                    async with async_timeout(5):
                         actual = await role.read_range(address, oid, pid, **options)
                         expected = await client.read_range(address, oid, pid, **options)
                     self.assertEqual(actual, expected)

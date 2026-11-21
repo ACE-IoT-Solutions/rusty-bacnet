@@ -3,6 +3,8 @@ import asyncio
 import socket
 import unittest
 
+from async_compat import async_timeout, sock_recvfrom, sock_sendto
+
 from rusty_bacnet import (
     BACnetClient, BACnetServer, BipEndpoint, BacnetError,
     ObjectIdentifier, ObjectType, PropertyIdentifier, PropertyValue,
@@ -21,7 +23,7 @@ class ReadPropertyCorrelationTests(unittest.IsolatedAsyncioTestCase):
                 for reader in (role, client):
                     for instance in (4194303, 9123):
                         with self.subTest(reader=type(reader).__name__, instance=instance):
-                            async with asyncio.timeout(3):
+                            async with async_timeout(3):
                                 value = await reader.read_property(
                                     await server.local_address(),
                                     ObjectIdentifier(ObjectType.DEVICE, instance),
@@ -62,7 +64,7 @@ class ReadPropertyCorrelationTests(unittest.IsolatedAsyncioTestCase):
                                 pending = asyncio.ensure_future(reader.read_property(
                                     address, ObjectIdentifier(kind, requested), PropertyIdentifier.OBJECT_NAME))
                                 try:
-                                    wire, remote = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                                    wire, remote = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                                     self.assertEqual(wire[:2], b"\x81\x0a")
                                     self.assertEqual(wire[4:6], b"\x01\x04")  # expecting reply
                                     self.assertEqual(wire[9], 12)  # confirmed ReadProperty
@@ -78,7 +80,7 @@ class ReadPropertyCorrelationTests(unittest.IsolatedAsyncioTestCase):
                                         body = b"\x00"
                                     payload = b"\x01\x00\x30" + bytes([wire[8], 12]) + body
                                     response = b"\x81\x0a" + (len(payload) + 4).to_bytes(2, "big") + payload
-                                    await loop.sock_sendto(peer, response, remote)
+                                    await sock_sendto(loop, peer, response, remote)
                                     if fault:
                                         with self.assertRaises(BacnetError):
                                             await asyncio.wait_for(pending, 2)

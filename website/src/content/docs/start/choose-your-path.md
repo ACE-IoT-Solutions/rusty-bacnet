@@ -27,7 +27,7 @@ Plain `bacnet` on a terminal opens a full-screen terminal UI: discovery, a devic
 
 Choose Python for scripts, data collection, integration prototypes, or a small test device. The distribution is `rusty-bacnet`; the Python import is `rusty_bacnet`. The binding uses asynchronous I/O.
 
-[Read a property with Python](/rusty-bacnet/start/python/) shows a complete script and explains the network assumptions. Python 3.11 or later is the declared minimum; an installable wheel for your exact interpreter and platform is a separate question.
+[Read a property with Python](/rusty-bacnet/start/python/) shows a complete script and explains the network assumptions. Python 3.11 or later is the minimum for the public release shown here; an installable wheel for your exact interpreter and platform is a separate question.
 
 ## Embed with Rust
 

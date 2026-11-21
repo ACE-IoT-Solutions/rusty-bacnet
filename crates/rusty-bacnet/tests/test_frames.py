@@ -13,6 +13,8 @@ import sys
 import time
 import unittest
 
+from async_compat import sock_sendto
+
 from port_retry import rerun_on_lost_port
 from rusty_bacnet import BACnetClient, BACnetServer, BipEndpoint, EnableDisable, Frame, FrameIterator
 from rusty_bacnet import ObjectIdentifier, ObjectType, PropertyIdentifier, PropertyValue
@@ -42,7 +44,7 @@ class FrameTests(unittest.IsolatedAsyncioTestCase):
 
     async def send(self, peer, address, payload):
         host, port = address.rsplit(":", 1)
-        await asyncio.get_running_loop().sock_sendto(peer, payload, (host, int(port)))
+        await sock_sendto(asyncio.get_running_loop(), peer, payload, (host, int(port)))
 
     def assert_captured_between(self, frames, before, after):
         """One subscription's frames: each one's times fall between readings

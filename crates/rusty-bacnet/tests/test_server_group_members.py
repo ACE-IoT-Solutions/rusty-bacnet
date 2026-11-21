@@ -8,10 +8,11 @@ local read returns the same value, and rpm_max_result_elements limits it.
 from __future__ import annotations
 
 import ast
-import asyncio
 import inspect
 import unittest
 from pathlib import Path
+
+from async_compat import async_timeout
 
 import rusty_bacnet
 from rusty_bacnet import (
@@ -163,7 +164,7 @@ class ServerGroupWireTests(unittest.IsolatedAsyncioTestCase):
                 for instance in (1, 2):
                     group = ObjectIdentifier(ObjectType.GROUP, instance)
                     try:
-                        async with asyncio.timeout(5):
+                        async with async_timeout(5):
                             await client.read_property(address, group, PV)
                         results.append(None)
                     except BacnetAbortError as error:

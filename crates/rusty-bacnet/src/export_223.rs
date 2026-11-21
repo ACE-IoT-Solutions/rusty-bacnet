@@ -77,10 +77,11 @@ pub(crate) async fn read(
         Err(InventoryHalt::ObjectList(stop)) => {
             let note = format!("Object_List element {} of {}", stop.index, stop.total);
             let error = to_py_err(stop.error);
-            crate::py_async::attach(|py| {
-                error.value(py).call_method1("add_note", (note,))?;
-                Ok(())
-            })?;
+            let _ = crate::py_async::attach(|py| {
+                // This freshly constructed exception has one note. Keep the
+                // device error even if its diagnostic metadata cannot be set.
+                error.value(py).setattr("__notes__", [note])
+            });
             Err(error)
         }
         Err(InventoryHalt::Cancelled) => unreachable!("nothing sets the export's stop flag"),

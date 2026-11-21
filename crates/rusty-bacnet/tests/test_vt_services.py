@@ -3,6 +3,8 @@ import asyncio
 import socket
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 from rusty_bacnet import BacnetError, BACnetClient, VTClass
 
 VT_OPEN, VT_CLOSE, VT_DATA = 21, 22, 23
@@ -28,12 +30,12 @@ class VirtualTerminalTests(unittest.IsolatedAsyncioTestCase):
             address = f"127.0.0.1:{peer.getsockname()[1]}"
             async with BACnetClient(interface="127.0.0.1", port=0) as client:
                 operation = call(client, address)
-                packet, sender = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                packet, sender = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                 self.assertEqual(packet[:2], b"\x81\x0a")
                 self.assertEqual(packet[4:6], b"\x01\x04")
                 self.assertEqual(packet[6] & 0xF0, 0)
                 self.assertEqual(packet[9], service)
-                await loop.sock_sendto(peer, reply_for(packet), sender)
+                await sock_sendto(loop, peer, reply_for(packet), sender)
                 return packet[10:], await asyncio.wait_for(operation, 2)
 
     async def test_vt_open_sends_class_and_local_identifier(self):
@@ -116,9 +118,9 @@ class VirtualTerminalTests(unittest.IsolatedAsyncioTestCase):
             async with BACnetClient(interface="127.0.0.1", port=0) as client:
                 with self.assertRaises(ValueError):
                     await client.vt_close(address, [])
-                with self.assertRaises(TimeoutError):
+                with self.assertRaises(asyncio.TimeoutError):
                     await asyncio.wait_for(
-                        asyncio.get_running_loop().sock_recvfrom(peer, 2048), 0.1
+                        sock_recvfrom(asyncio.get_running_loop(), peer, 2048), 0.1
                     )
 
 

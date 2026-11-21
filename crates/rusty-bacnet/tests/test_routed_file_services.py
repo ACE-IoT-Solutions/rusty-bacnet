@@ -15,6 +15,8 @@ loop has no add_reader.
 import asyncio
 import unittest
 
+from async_compat import async_timeout
+
 import rusty_bacnet as rb
 from bvll_peer import RawPeer, bvll
 from test_bip_modes import accepted_registration
@@ -315,7 +317,7 @@ class RoutedFileWireTests(unittest.IsolatedAsyncioTestCase):
                 pending.cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await pending
-            async with asyncio.timeout(5):
+            async with async_timeout(5):
                 while (await endpoint.status())["active_leases"]:
                     await asyncio.sleep(0)
             self.wire.script = lambda request, invoke, service, body: [

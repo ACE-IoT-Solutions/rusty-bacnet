@@ -20,6 +20,8 @@ import socket
 import unittest
 from typing import Any
 
+from async_compat import sock_recvfrom, sock_sendto
+
 from rusty_bacnet import (
     BACnetClient,
     BACnetServer,
@@ -322,8 +324,8 @@ class TypedListReadTests(unittest.IsolatedAsyncioTestCase):
                 subscribe = asyncio.ensure_future(self.client.subscribe_cov(
                     f"127.0.0.1:{peer.getsockname()[1]}", 1, NF_1, confirmed=False,
                     lifetime=None))
-                wire, remote = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
-                await loop.sock_sendto(peer, frame(bytes([0x20, wire[8], 5])), remote)
+                wire, remote = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
+                await sock_sendto(loop, peer, frame(bytes([0x20, wire[8], 5])), remote)
                 await asyncio.wait_for(subscribe, 2)
                 values = b"".join(
                     context_unsigned(0, prop.to_raw()) + b"\x2e" + octets + b"\x2f"
@@ -333,7 +335,7 @@ class TypedListReadTests(unittest.IsolatedAsyncioTestCase):
                 body = (context_unsigned(0, 1) + object_id(1, REMOTE_DEVICE)
                         + object_id(2, NF_1) + context_unsigned(3, 0)
                         + b"\x4e" + values + b"\x4f")
-                await loop.sock_sendto(peer, frame(b"\x10\x02" + body), remote)
+                await sock_sendto(loop, peer, frame(b"\x10\x02" + body), remote)
                 notification = await asyncio.wait_for(notifications.get(), 3)
             finally:
                 listener.cancel()
@@ -366,16 +368,16 @@ class FallbackTests(unittest.IsolatedAsyncioTestCase):
                         expected = PropertyValue.tagged(octets)
                         read = asyncio.ensure_future(
                             client.read_property(address, NF_1, P.RECIPIENT_LIST))
-                        wire, remote = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                        wire, remote = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                         ack = bytes([0x30, wire[8], 12]) + wire[10:] + b"\x3e" + octets + b"\x3f"
-                        await loop.sock_sendto(peer, frame(ack), remote)
+                        await sock_sendto(loop, peer, frame(ack), remote)
                         self.assertEqual(await asyncio.wait_for(read, 2), expected)
                         rpm = asyncio.ensure_future(client.read_property_multiple(
                             address, [(NF_1, [(P.RECIPIENT_LIST, None)])]))
-                        wire, remote = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                        wire, remote = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                         body = (object_id(0, NF_1) + b"\x1e" + context_unsigned(2, 102)
                                 + b"\x4e" + octets + b"\x4f\x1f")
-                        await loop.sock_sendto(peer, frame(bytes([0x30, wire[8], 14]) + body),
+                        await sock_sendto(loop, peer, frame(bytes([0x30, wire[8], 14]) + body),
                                                remote)
                         self.assertEqual(rpm_values(await asyncio.wait_for(rpm, 2)), [expected])
 

@@ -6,6 +6,8 @@ from pathlib import Path
 import socket
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 import rusty_bacnet
 from rusty_bacnet import BACnetClient, BACnetServer, ObjectIdentifier, ObjectType, PropertyIdentifier, PropertyValue
 
@@ -23,13 +25,13 @@ def requests(name, instances):
 
 
 async def receive(peer):
-    return await asyncio.wait_for(asyncio.get_running_loop().sock_recvfrom(peer, 2048), 2)
+    return await asyncio.wait_for(sock_recvfrom(asyncio.get_running_loop(), peer, 2048), 2)
 
 
 async def reply_read(peer, wire, remote):
     body = wire[10:] + b"\x3e\x21\x2a\x3f"
     payload = b"\x01\x00\x30" + bytes([wire[8], 12]) + body
-    await asyncio.get_running_loop().sock_sendto(peer, b"\x81\x0a" + (len(payload) + 4).to_bytes(2, "big") + payload, remote)
+    await sock_sendto(asyncio.get_running_loop(), peer, b"\x81\x0a" + (len(payload) + 4).to_bytes(2, "big") + payload, remote)
 
 
 class BatchConcurrencyTests(unittest.IsolatedAsyncioTestCase):
@@ -81,8 +83,8 @@ class BatchConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                 task = asyncio.ensure_future(client.read_property_from_devices(requests(METHODS[0], [1, 2, 3]), max_concurrent=2))
                 try:
                     first, second = await receive(peers[0]), await receive(peers[1])
-                    with self.assertRaises(TimeoutError):
-                        await asyncio.wait_for(asyncio.get_running_loop().sock_recvfrom(peers[2], 2048), .05)
+                    with self.assertRaises(asyncio.TimeoutError):
+                        await asyncio.wait_for(sock_recvfrom(asyncio.get_running_loop(), peers[2], 2048), .05)
                     await reply_read(peers[1], *second)
                     third = await receive(peers[2])
                     await reply_read(peers[2], *third)
@@ -108,8 +110,8 @@ class BatchConcurrencyTests(unittest.IsolatedAsyncioTestCase):
                         task.cancel()
                         with self.assertRaises(asyncio.CancelledError):
                             await task
-                        with self.assertRaises(TimeoutError):
-                            await asyncio.wait_for(asyncio.get_running_loop().sock_recvfrom(peer, 2048), .1)
+                        with self.assertRaises(asyncio.TimeoutError):
+                            await asyncio.wait_for(sock_recvfrom(asyncio.get_running_loop(), peer, 2048), .1)
                         # The same client remains usable after each cancellation.
                         later = asyncio.ensure_future(client.read_property_from_devices(requests(METHODS[0], [9123]), max_concurrent=1))
                         try:

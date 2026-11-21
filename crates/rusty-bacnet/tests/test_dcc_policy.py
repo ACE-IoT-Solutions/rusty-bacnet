@@ -7,6 +7,8 @@ import socket
 import unittest
 from typing import Any
 
+from async_compat import async_timeout, sock_recvfrom, sock_sendto
+
 import rusty_bacnet
 from rusty_bacnet import BACnetClient, BACnetServer, EnableDisable, ReinitializedState
 
@@ -254,8 +256,8 @@ class DccNativeTests(unittest.IsolatedAsyncioTestCase):
         wire = b"\x81\x0a" + (len(npdu) + 4).to_bytes(2, "big") + npdu
         ip, port = (await server.local_address()).rsplit(":", 1)
         loop = asyncio.get_running_loop()
-        await loop.sock_sendto(sock, wire, (ip, int(port)))
-        reply, _ = await asyncio.wait_for(loop.sock_recvfrom(sock, 2048), 2)
+        await sock_sendto(loop, sock, wire, (ip, int(port)))
+        reply, _ = await asyncio.wait_for(sock_recvfrom(loop, sock, 2048), 2)
         self.assertEqual(reply[:2], b"\x81\x0a")
         self.assertEqual(int.from_bytes(reply[2:4], "big"), len(reply))
         offset = 6
@@ -263,7 +265,7 @@ class DccNativeTests(unittest.IsolatedAsyncioTestCase):
             offset += 4 + reply[8]  # DNET, DLEN, DADR, hop count
         apdu = reply[offset:]
         self.assertEqual(apdu[1:3], bytes([invoke, 17]))
-        async with asyncio.timeout(2):
+        async with async_timeout(2):
             while (await server.request_admission_counters())["confirmed_active"]:
                 await asyncio.sleep(0)
         return apdu
@@ -321,7 +323,7 @@ class DccNativeTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.02)
             self.assertEqual(await server.comm_state(), EnableDisable.DISABLE_INITIATION)
             self.assertEqual((await self.exchange(server, sock, 2, 2, None, False, 0))[0], 0x20)
-            async with asyncio.timeout(2):
+            async with async_timeout(2):
                 while await server.comm_state() != EnableDisable.ENABLE:
                     await asyncio.sleep(0)
         finally:

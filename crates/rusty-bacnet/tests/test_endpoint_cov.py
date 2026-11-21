@@ -18,6 +18,8 @@ import socket
 import struct
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 from rusty_bacnet import (
     BACnetClient, BipEndpoint, MstpEndpoint, ObjectIdentifier, ObjectType,
     PropertyIdentifier, PropertyValue, Reliability, ScEndpoint,
@@ -77,12 +79,12 @@ class Subscriber:
     async def send(self, to, invoke_id, service, body):
         ip, port = to.rsplit(":", 1)
         loop = asyncio.get_running_loop()
-        await loop.sock_sendto(self.sock, request(invoke_id, service, body), (ip, int(port)))
+        await sock_sendto(loop, self.sock, request(invoke_id, service, body), (ip, int(port)))
 
     async def apdu(self, timeout=2.0):
         """The next APDU the endpoint sends, from a local, unrouted NPDU."""
         loop = asyncio.get_running_loop()
-        data, _ = await asyncio.wait_for(loop.sock_recvfrom(self.sock, 2048), timeout)
+        data, _ = await asyncio.wait_for(sock_recvfrom(loop, self.sock, 2048), timeout)
         assert data[:2] == b"\x81\x0a", data.hex()
         npdu = data[4:]
         assert npdu[0] == 1 and npdu[1] & 0x28 == 0, data.hex()
@@ -90,7 +92,7 @@ class Subscriber:
 
     async def quiet(self, timeout=0.2):
         """Nothing more arrives within ``timeout``."""
-        with contextlib.suppress(TimeoutError):
+        with contextlib.suppress(asyncio.TimeoutError):
             extra = await self.apdu(timeout)
             raise AssertionError(f"unexpected APDU {extra.hex()}")
 

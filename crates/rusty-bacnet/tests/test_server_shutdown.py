@@ -3,6 +3,8 @@ import asyncio
 import socket
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 import rusty_bacnet as rb
 from port_retry import rerun_on_lost_port
 
@@ -43,7 +45,7 @@ class ServerShutdownTests(unittest.IsolatedAsyncioTestCase):
                 # proves Rust has entered the drain while retaining the owner lock.
                 first = asyncio.ensure_future(server.stop())
                 pending.append(first)
-                wire, remote = await asyncio.wait_for(loop.sock_recvfrom(recipient, 4096), 2)
+                wire, remote = await asyncio.wait_for(sock_recvfrom(loop, recipient, 4096), 2)
                 self.assertEqual(wire[:2], b"\x81\x0a")
                 self.assertEqual(wire[9], 32)  # ConfirmedAuditNotification.
                 self.assertEqual(wire[4], 1)
@@ -64,7 +66,7 @@ class ServerShutdownTests(unittest.IsolatedAsyncioTestCase):
                 done, _ = await asyncio.wait([second], timeout=0.05)
                 self.assertEqual(done, set(), "cancelled stop lost its cleanup owner")
                 payload = b"\x01\x00\x20" + bytes([wire[8], wire[9]])
-                await loop.sock_sendto(recipient, b"\x81\x0a\x00\x09" + payload, remote)
+                await sock_sendto(loop, recipient, b"\x81\x0a\x00\x09" + payload, remote)
                 self.assertIsNone(await asyncio.wait_for(second, 2))
                 self.assertIsNone(await server.stop())
                 with self.assertRaises(RuntimeError):

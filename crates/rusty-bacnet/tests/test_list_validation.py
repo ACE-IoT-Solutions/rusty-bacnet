@@ -3,6 +3,8 @@ import asyncio
 import socket
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 from rusty_bacnet import BACnetClient, BacnetProtocolError, ObjectIdentifier, ObjectType, PropertyIdentifier
 
 OID = ObjectIdentifier(ObjectType.NOTIFICATION_CLASS, 1)
@@ -46,8 +48,8 @@ class ListValidationTests(unittest.IsolatedAsyncioTestCase):
                     for call in calls(client, body, index, address):
                         with self.assertRaises(ValueError):
                             call()
-                with self.assertRaises(TimeoutError):
-                    await asyncio.wait_for(asyncio.get_running_loop().sock_recvfrom(peer, 2048), .1)
+                with self.assertRaises(asyncio.TimeoutError):
+                    await asyncio.wait_for(sock_recvfrom(asyncio.get_running_loop(), peer, 2048), .1)
 
     async def test_both_services_preserve_structural_values_and_exact_wire(self):
         loop = asyncio.get_running_loop()
@@ -61,14 +63,14 @@ class ListValidationTests(unittest.IsolatedAsyncioTestCase):
                         for service, call in zip((8, 9), calls(client, body, index, address)):
                             with self.subTest(body=body.hex(), index=index, service=service):
                                 operation = call()
-                                packet, sender = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                                packet, sender = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                                 self.assertEqual(packet[:2], b"\x81\x0a")
                                 self.assertEqual(packet[4:6], b"\x01\x04")
                                 self.assertEqual(packet[6] & 0xf0, 0)
                                 self.assertEqual(packet[9], service)
                                 self.assertEqual(packet[10:], b"\x0c\x03\xc0\x00\x01\x1a\x02\x58" + encoded_index + b"\x3e" + body + b"\x3f")
                                 reply = b"\x81\x0a\x00\x09\x01\x00\x20" + bytes((packet[8], service))
-                                await loop.sock_sendto(peer, reply, sender)
+                                await sock_sendto(loop, peer, reply, sender)
                                 await asyncio.wait_for(operation, 2)
 
     async def test_change_list_error_reaches_python_with_its_element_number(self):
@@ -85,10 +87,10 @@ class ListValidationTests(unittest.IsolatedAsyncioTestCase):
                     for service, call in zip((8, 9), calls(client, b"\x21\x01\x21\x02", None, address)):
                         with self.subTest(service=service, element=element):
                             operation = call()
-                            packet, sender = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                            packet, sender = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                             npdu = b"\x01\x00" + bytes((0x50, packet[8], service)) + body
                             reply = b"\x81\x0a" + (4 + len(npdu)).to_bytes(2, "big") + npdu
-                            await loop.sock_sendto(peer, reply, sender)
+                            await sock_sendto(loop, peer, reply, sender)
                             with self.assertRaises(BacnetProtocolError) as raised:
                                 await asyncio.wait_for(operation, 2)
                             self.assertEqual(raised.exception.error_class, 5)

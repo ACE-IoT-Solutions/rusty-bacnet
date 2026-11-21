@@ -11,6 +11,8 @@ import struct
 import time
 import unittest
 
+from async_compat import async_timeout
+
 import rusty_bacnet as rb
 from bvll_peer import RawPeer, bvll
 from test_endpoint_routed import answer, finish, request_of
@@ -103,7 +105,7 @@ class EndpointBvlcTableTests(unittest.IsolatedAsyncioTestCase):
         ai = rb.ObjectIdentifier(O.ANALOG_INPUT, 1)
         read = asyncio.ensure_future(role.read_property(peer.address, ai, P.PRESENT_VALUE))
         try:
-            async with asyncio.timeout(5):
+            async with async_timeout(5):
                 while not held:
                     await asyncio.sleep(0.01)
             device = rb.ObjectIdentifier(O.DEVICE, ENDPOINT)
@@ -132,7 +134,7 @@ class EndpointBvlcTableTests(unittest.IsolatedAsyncioTestCase):
     async def test_close_during_a_read_fails_it_as_a_read_after_close(self):
         silent = self.peer(lambda data, source: None)
         read = asyncio.ensure_future(self.endpoint.read_bdt(silent.address))
-        async with asyncio.timeout(5):
+        async with async_timeout(5):
             while not silent.received:
                 await asyncio.sleep(0.01)
         # close() doesn't wait for the read's answer.
@@ -150,7 +152,7 @@ class EndpointBvlcTableTests(unittest.IsolatedAsyncioTestCase):
 
         peer = self.peer(handle)
         first = asyncio.ensure_future(self.endpoint.read_bdt(peer.address))
-        async with asyncio.timeout(5):
+        async with async_timeout(5):
             while not answered:
                 await asyncio.sleep(0.01)
         # While it is wanted, the same read beside it is refused, as
@@ -245,7 +247,7 @@ class TableReadAcrossLoopsTests(unittest.TestCase):
         async def leave_one():
             await endpoint.start()
             endpoint.read_bdt(peer.address)  # never awaited
-            async with asyncio.timeout(5):
+            async with async_timeout(5):
                 while not answered:
                     await asyncio.sleep(0.01)
 
@@ -254,7 +256,7 @@ class TableReadAcrossLoopsTests(unittest.TestCase):
                 # Within the left-over read's 3 seconds: still in flight in Rust.
                 self.assertEqual(await asyncio.wait_for(endpoint.read_bdt(peer.address), 2), rows)
                 cancelled = endpoint.read_bdt(peer.address)
-                async with asyncio.timeout(5):
+                async with async_timeout(5):
                     while len(answered) < 3:
                         await asyncio.sleep(0.01)
                 cancelled.cancel()

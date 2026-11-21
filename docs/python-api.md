@@ -12,7 +12,7 @@ Python and Rust expose different configuration surfaces: the bindings don't
 wrap every Rust API, so check this reference before assuming a Rust option
 exists in Python.
 
-**Requirements:** Python >= 3.11
+**ACE bindings in this source tree require CPython 3.10 or later.** Python 3.10 is supported for existing deployments.
 
 Native asynchronous methods return an `asyncio.Future` immediately when called
 inside a running event loop. Their installed signatures use ordinary `def` with
@@ -44,7 +44,7 @@ Install the published 0.15.0 package with:
 pip install "rusty-bacnet==0.15.0"
 ```
 
-Wheels cover CPython 3.11 to 3.14 on Linux (glibc 2.17 or newer; x86_64,
+The upstream 0.15.0 wheels cover CPython 3.11 to 3.14 on Linux (glibc 2.17 or newer; x86_64,
 aarch64), macOS (x86_64 on 10.12 or later, arm64 on 11.0 or later) and Windows
 (x64), each with BACnet/IPv6, BACnet/SC and MS/TP.
 
@@ -7204,7 +7204,7 @@ Rust when the transport hands the frame over, not when Python reads it:
   pairs the capture clock with `time.monotonic()` once. Both read the same OS
   clock on Linux (`CLOCK_MONOTONIC`), on macOS (`mach_absolute_time`) and on
   Windows from Python 3.13 (`QueryPerformanceCounter`). On Windows with Python
-  3.11 or 3.12, `time.monotonic()` reads `GetTickCount64`, which moves in 10-16
+  3.10 through 3.12, `time.monotonic()` reads `GetTickCount64`, which moves in 10-16
   ms steps: a value there can sit up to one step away from it, and the two
   counters are not guaranteed to stay in step over a long run.
 - `timestamp` is the wall-clock capture time in POSIX seconds, as `time.time()`

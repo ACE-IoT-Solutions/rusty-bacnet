@@ -430,10 +430,14 @@ jobs:
       - *disk
 
   python:
-    name: Python bindings
+    name: Python bindings (${{ matrix.python }})
     needs: plan
     if: ${{ !cancelled() && needs.plan.outputs.skip != 'true' }}
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
     timeout-minutes: 30
     env:
       # venv for the maturin build; libpython for the PyO3 crate's test binaries.
@@ -442,6 +446,15 @@ jobs:
       - *checkout
       - *apt
       - *toolchain
+      - if: matrix.python == '3.10'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: legacy-python
+        with:
+          python-version: "3.10"
+      - if: matrix.python == '3.10'
+        env:
+          PYTHON_PATH: ${{ steps.legacy-python.outputs.python-path }}
+        run: echo "PYO3_PYTHON=$PYTHON_PATH" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           cache-bin: false
@@ -451,7 +464,7 @@ jobs:
       # A debug extension builds faster, and the suite doesn't need release speed.
       - name: Build the extension (maturin develop)
         run: |
-          python3 -m venv "$RUNNER_TEMP/venv"
+          "$PYO3_PYTHON" -m venv "$RUNNER_TEMP/venv"
           . "$RUNNER_TEMP/venv/bin/activate"
           python --version
           maturin develop -m crates/rusty-bacnet/Cargo.toml --locked
@@ -459,6 +472,7 @@ jobs:
       - name: Python tests
         run: |
           . "$RUNNER_TEMP/venv/bin/activate"
+          python -m pip install --require-hashes --only-binary=:all: -r crates/rusty-bacnet/tests/requirements.txt
           openssl version
           python -m unittest discover -s crates/rusty-bacnet/tests
       # The website's samples (#1989): the loopback lab's tests, and the CLI
@@ -468,10 +482,10 @@ jobs:
       # target directory and dev profile, so the CLI build adds little; the
       # dev runs cache it with the rest.
       - name: Build the CLI for the website samples
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.python == '3.12' }}
         run: cargo build -p bacnet-cli --locked
       - name: Website sample tests
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.python == '3.12' }}
         env:
           BACNET_CLI: ${{ github.workspace }}/target/debug/bacnet
         run: |

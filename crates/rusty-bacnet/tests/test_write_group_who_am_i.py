@@ -4,6 +4,8 @@ import asyncio
 import socket
 import unittest
 
+from async_compat import sock_recvfrom
+
 from rusty_bacnet import BACnetClient, ObjectIdentifier, ObjectType, PropertyValue
 
 REAL_72 = bytes([0x44, 0x42, 0x90, 0x00, 0x00])
@@ -107,7 +109,7 @@ class WriteGroupTests(unittest.IsolatedAsyncioTestCase):
             address = f"127.0.0.1:{peer.getsockname()[1]}"
             async with BACnetClient(interface="127.0.0.1", port=0) as client:
                 await client.write_group(address, 1, 8, [(5, None, REAL_72)])
-                packet, _ = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                packet, _ = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                 # Unconfirmed-Request APDU, service choice 10, then the service data.
                 self.assertEqual(packet[4:6], b"\x01\x00")
                 self.assertEqual(packet[6:8], b"\x10\x0a")
@@ -119,7 +121,7 @@ class WriteGroupTests(unittest.IsolatedAsyncioTestCase):
                 await client.write_group(
                     address, 258, 16, [(300, 10, b"\x00"), (0, None, b"\x11")], True
                 )
-                packet, _ = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                packet, _ = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                 self.assertEqual(
                     packet[8:],
                     bytes.fromhex("0a 01 02 19 10 2e 0a 01 2c 19 0a 00 09 00 11 2f 39 01"),
@@ -135,7 +137,7 @@ class WriteGroupTests(unittest.IsolatedAsyncioTestCase):
             address = f"127.0.0.1:{peer.getsockname()[1]}"
             async with BACnetClient(interface="127.0.0.1", port=0) as client:
                 await client.write_group(address, 1, 8, [(5, None, PropertyValue.real(72.0))])
-                packet, _ = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                packet, _ = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                 self.assertEqual(
                     packet[8:],
                     bytes.fromhex("09 01 19 08 2e 09 05 44 42 90 00 00 2f"),
@@ -148,7 +150,7 @@ class WriteGroupTests(unittest.IsolatedAsyncioTestCase):
                     (8, None, bytearray(b"\x21\x03")),
                 ]
                 await client.write_group(address, 258, 16, change_list, True)
-                packet, _ = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                packet, _ = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                 self.assertEqual(
                     packet[8:],
                     bytes.fromhex(
@@ -162,7 +164,7 @@ class WriteGroupTests(unittest.IsolatedAsyncioTestCase):
                 for value in (framed, PropertyValue.application_data(framed)):
                     with self.subTest(value=value):
                         await client.write_group(address, 1, 8, [(5, None, value)])
-                        packet, _ = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                        packet, _ = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                         self.assertEqual(
                             packet[8:], bytes.fromhex("09 01 19 08 2e 09 05") + framed + b"\x2f"
                         )
@@ -176,7 +178,7 @@ class WriteGroupTests(unittest.IsolatedAsyncioTestCase):
                     for value in (framed, PropertyValue.application_data(framed)):
                         with self.subTest(value=value):
                             await client.write_group(address, 1, 8, [(5, None, value)])
-                            packet, _ = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                            packet, _ = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                             self.assertEqual(
                                 packet[8:],
                                 bytes.fromhex("09 01 19 08 2e 09 05") + framed + b"\x2f",

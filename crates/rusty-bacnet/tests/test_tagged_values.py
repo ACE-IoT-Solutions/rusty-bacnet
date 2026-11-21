@@ -15,6 +15,8 @@ import pickle
 import socket
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 from rusty_bacnet import (
     BACnetClient,
     ObjectIdentifier,
@@ -126,9 +128,9 @@ class VendorReadTests(unittest.IsolatedAsyncioTestCase):
             async with BACnetClient(interface="127.0.0.1", port=0, apdu_timeout_ms=2000) as client:
                 read = asyncio.ensure_future(
                     client.read_property(address, VENDOR_OBJECT, VENDOR_PROPERTY))
-                wire, remote = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                wire, remote = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                 ack = bytes([0x30, wire[8], 12]) + wire[10:] + b"\x3e" + octets + b"\x3f"
-                await loop.sock_sendto(peer, frame(ack), remote)
+                await sock_sendto(loop, peer, frame(ack), remote)
                 return await asyncio.wait_for(read, 2)
 
     async def test_a_vendor_property_reads_as_its_tags(self) -> None:

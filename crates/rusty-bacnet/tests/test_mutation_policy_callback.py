@@ -13,6 +13,8 @@ import threading
 import unittest
 import warnings
 
+from async_compat import async_timeout
+
 from rusty_bacnet import (
     BACnetClient,
     BACnetServer,
@@ -83,7 +85,7 @@ class MutationCallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_allow_sees_a_redacted_frozen_context(self):
         policy = Recorder()
         server, client, address = await self.serve(policy)
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             await client.write_property(address, AV1, PV, PropertyValue.real(42.0), priority=9)
             self.assertEqual((await client.read_property(address, AV1, PV)).value, 42.0)
         [context] = policy.contexts
@@ -116,7 +118,7 @@ class MutationCallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_deny_answers_service_request_denied_and_changes_nothing(self):
         policy = Recorder(lambda context: context.object_identifier != AV2)
         server, client, address = await self.serve(policy)
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             before = await client.read_property(address, AV2, PV)
             with self.assertRaises(BacnetProtocolError) as caught:
                 await client.write_property(address, AV2, PV, PropertyValue.real(7.0))
@@ -134,7 +136,7 @@ class MutationCallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_create_and_delete_contexts(self):
         policy = Recorder(lambda context: context.service == "delete_object")
         server, client, address = await self.serve(policy)
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             with self.assertRaises(BacnetProtocolError) as caught:
                 await client.create_object(address, ObjectType.ANALOG_VALUE)
             self.assert_denied(caught)
@@ -151,7 +153,7 @@ class MutationCallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_write_property_multiple_asks_each_element(self):
         policy = Recorder(lambda context: context.object_identifier == AV1)
         server, client, address = await self.serve(policy)
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             with self.assertRaises(BacnetProtocolError):
                 await client.write_property_multiple(address, [
                     (AV1, [(PV, PropertyValue.real(11.0), None, None)]),
@@ -172,7 +174,7 @@ class MutationCallbackTests(unittest.IsolatedAsyncioTestCase):
 
         policy = Recorder(lambda context: context.object_identifier != CH2)
         server, client, address = await self.serve(policy, channels)
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             await client.write_group(address, 5, 8, [(11, None, PropertyValue.real(72.0))])
             while (await server.read_property(AO1, PV)).value != 72.0:
                 await asyncio.sleep(0.01)
@@ -208,7 +210,7 @@ class MutationCallbackTests(unittest.IsolatedAsyncioTestCase):
             address, [(AV1, [(PV, PropertyValue.real(5.0), None, None)])]))
         try:
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
-            async with asyncio.timeout(5):
+            async with async_timeout(5):
                 self.assertEqual((await other.read_property(address, AV2, PV)).value, 0.0)
                 self.assertFalse(writing.done())
                 await server.stop()
@@ -245,7 +247,7 @@ class MutationCallbackTests(unittest.IsolatedAsyncioTestCase):
                         async with BACnetClient(interface="127.0.0.1", port=0,
                                                 apdu_timeout_ms=2000) as client:
                             address = await server.local_address()
-                            async with asyncio.timeout(10):
+                            async with async_timeout(10):
                                 with self.assertRaises(BacnetProtocolError) as caught:
                                     await client.write_property(
                                         address, AV1, PV, PropertyValue.real(5.0))
@@ -276,7 +278,7 @@ class MutationCallbackTests(unittest.IsolatedAsyncioTestCase):
 
         server, client, address = await self.serve(lambda context: Mistaken())
         with UnraisableCapture() as capture:
-            async with asyncio.timeout(10):
+            async with async_timeout(10):
                 with self.assertRaises(BacnetProtocolError) as caught:
                     await client.write_property(address, AV1, PV, PropertyValue.real(5.0))
                 self.assert_denied(caught)

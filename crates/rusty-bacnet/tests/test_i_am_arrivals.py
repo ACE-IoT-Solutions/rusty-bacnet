@@ -13,6 +13,8 @@ import struct
 import time
 import unittest
 
+from async_compat import async_timeout
+
 import rusty_bacnet as rb
 import test_frames
 from bvll_peer import RawPeer, bvll, mac
@@ -312,7 +314,7 @@ class IAmArrivalTests(Arrivals):
         await client.who_is(scope="local", low=723, high=723)
         # Startup's What-Is-Network-Number may precede the requested broadcast.
         _, port = self.to(await endpoint.local_address())
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             async for frame in frames:
                 if frame.direction == "outbound":
                     self.assertEqual(frame.peer, f"127.255.255.255:{port}")

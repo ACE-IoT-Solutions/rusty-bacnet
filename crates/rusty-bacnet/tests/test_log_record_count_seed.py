@@ -15,6 +15,8 @@ import inspect
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout
+
 import rusty_bacnet
 from rusty_bacnet import (
     BACnetClient,
@@ -128,7 +130,7 @@ class SeededLogLiveServerTests(unittest.TestCase):
                     PropertyValue.boolean(True),
                     source_object=None,
                 )
-                async with asyncio.timeout(WAIT):
+                async with async_timeout(WAIT):
                     while await total(MULTIPLE) != PropertyValue.unsigned(expected):
                         await asyncio.sleep(0.02)
 

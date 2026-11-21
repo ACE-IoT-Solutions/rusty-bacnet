@@ -16,6 +16,8 @@ import struct
 import unittest
 from pathlib import Path
 
+from async_compat import async_timeout
+
 import rusty_bacnet
 from rusty_bacnet import (
     BACnetClient,
@@ -275,7 +277,7 @@ class TrendLogMultipleLiveServerTests(unittest.TestCase):
                     )
 
                 async def records(oid: ObjectIdentifier, values: tuple, at_least: int) -> int:
-                    async with asyncio.timeout(WAIT):
+                    async with async_timeout(WAIT):
                         while True:
                             result = await read_log(oid)
                             count = value_records(result["item_data"], values)

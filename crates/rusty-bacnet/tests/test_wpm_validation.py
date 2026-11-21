@@ -3,6 +3,8 @@ import asyncio
 import socket
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 from rusty_bacnet import BACnetClient, BACnetServer, ObjectIdentifier, ObjectType, PropertyIdentifier, PropertyValue
 
 OID = ObjectIdentifier(ObjectType.DEVICE, 9123)
@@ -54,8 +56,8 @@ class WpmValidationTests(unittest.IsolatedAsyncioTestCase):
                     for call in calls(client, request, address):
                         with self.assertRaises(ValueError):
                             call()
-                with self.assertRaises(TimeoutError):
-                    await asyncio.wait_for(asyncio.get_running_loop().sock_recvfrom(peer, 2048), .1)
+                with self.assertRaises(asyncio.TimeoutError):
+                    await asyncio.wait_for(sock_recvfrom(asyncio.get_running_loop(), peer, 2048), .1)
 
     async def test_valid_priorities_and_noncommandable_null_keep_state(self):
         server = BACnetServer(9123, interface="127.0.0.1", port=0)
@@ -86,12 +88,12 @@ class WpmValidationTests(unittest.IsolatedAsyncioTestCase):
                     request = [(OID, [(PropertyIdentifier.from_raw(600), value, 16, 0)])]
                     for call in calls(client, request, address):
                         operation = call()
-                        packet, sender = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+                        packet, sender = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
                         self.assertEqual(packet[:2], b"\x81\x0a")
                         self.assertEqual(packet[4:6], b"\x01\x04")
                         self.assertEqual(packet[6] & 0xf0, 0)
                         self.assertEqual(packet[9], 16)  # WritePropertyMultiple
                         self.assertEqual(packet[10:], b"\x0c\x02\x00\x23\xa3\x1e\x0a\x02\x58\x19\x00\x2e" + encoded + b"\x2f\x39\x10\x1f")
                         reply = b"\x81\x0a\x00\x09\x01\x00\x20" + bytes((packet[8], 16))
-                        await loop.sock_sendto(peer, reply, sender)
+                        await sock_sendto(loop, peer, reply, sender)
                         await asyncio.wait_for(operation, 2)

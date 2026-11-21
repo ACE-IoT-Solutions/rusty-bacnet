@@ -273,7 +273,7 @@ The [installation guide](https://jscott3201.github.io/rusty-bacnet/start/install
 has every platform and checksum step.
 
 - **Python** 3.11 or newer: `python -m pip install rusty-bacnet` (import
-  `rusty_bacnet`).
+  `rusty_bacnet`). The ACE source distribution, `ace-rusty-bacnet`, also supports CPython 3.10.
 - **CLI:** download the `bacnet-<os>-<arch>` executable from the
   [latest release](https://github.com/jscott3201/rusty-bacnet/releases/latest),
   check it against `SHA256SUMS` and put it on your `PATH` as `bacnet`, or run

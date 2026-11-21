@@ -10,6 +10,8 @@ import asyncio
 import socket
 import unittest
 
+from async_compat import sock_recvfrom
+
 from rusty_bacnet import BACnetClient, BacnetError, ObjectIdentifier, ObjectType, PropertyIdentifier
 
 OID = ObjectIdentifier(ObjectType.ANALOG_VALUE, 1)
@@ -53,23 +55,23 @@ class DeviceRangeTests(unittest.IsolatedAsyncioTestCase):
                 for limits, _ in REFUSED:
                     with self.assertRaises(ValueError):
                         client.who_is(scope=address, **limits)
-                with self.assertRaises(TimeoutError):
-                    await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 0.1)
+                with self.assertRaises(asyncio.TimeoutError):
+                    await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 0.1)
 
                 await client.who_is(scope=address, low=10, high=20)
-                frame, _ = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 3)
+                frame, _ = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 3)
                 # Who-Is with [0] low limit 10 and [1] high limit 20.
                 self.assertTrue(
                     frame.endswith(bytes([0x10, 0x08, 0x09, 0x0A, 0x19, 0x14])), frame.hex()
                 )
 
                 await client.who_is(scope=address)
-                frame, _ = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 3)
+                frame, _ = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 3)
                 self.assertTrue(frame.endswith(bytes([0x10, 0x08])), frame.hex())
 
                 # The highest instance is a limit like any other.
                 await client.who_is(scope=address, low=4194303, high=4194303)
-                frame, _ = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 3)
+                frame, _ = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 3)
                 self.assertTrue(
                     frame.endswith(bytes([0x0B, 0x3F, 0xFF, 0xFF, 0x1B, 0x3F, 0xFF, 0xFF])),
                     frame.hex(),

@@ -4,6 +4,8 @@ import socket
 import unittest
 from typing import Any
 
+from async_compat import async_timeout, sock_recvfrom, sock_sendto
+
 from rusty_bacnet import BACnetServer, EnableDisable
 
 
@@ -69,10 +71,10 @@ class RecoveryNativeTests(unittest.IsolatedAsyncioTestCase):
                         body += bytes([0x2d, len(content)]) + content
                     npdu = b"\x01\x00" + bytes([0, 5, invoke, 17]) + body
                     wire = b"\x81\x0a" + (len(npdu) + 4).to_bytes(2, "big") + npdu
-                    await loop.sock_sendto(sock, wire, (ip, int(port)))
-                    reply, _ = await asyncio.wait_for(loop.sock_recvfrom(sock, 2048), 2)
+                    await sock_sendto(loop, sock, wire, (ip, int(port)))
+                    reply, _ = await asyncio.wait_for(sock_recvfrom(loop, sock, 2048), 2)
                     self.assertEqual(reply[7], invoke)
-                    async with asyncio.timeout(2):
+                    async with async_timeout(2):
                         while True:
                             counters = await server.request_admission_counters()
                             if counters["confirmed_active"] == counters["abort_active"] == 0:

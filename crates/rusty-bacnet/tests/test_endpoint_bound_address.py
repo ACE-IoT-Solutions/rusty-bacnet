@@ -3,6 +3,8 @@ import asyncio
 import socket
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 from rusty_bacnet import BipEndpoint
 
 
@@ -32,11 +34,11 @@ class BoundAddressTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(int(port), 0)
             self.assertEqual((await endpoint.status())["local_address"], address)
             # Independent RP of Device:786 Object_Identifier (invoke ID 1).
-            await asyncio.get_running_loop().sock_sendto(
+            await sock_sendto(asyncio.get_running_loop(),
                 peer, bytes.fromhex("810a001101000005010c0c02000312194b"), (host, int(port))
             )
             reply, source = await asyncio.wait_for(
-                asyncio.get_running_loop().sock_recvfrom(peer, 2048), 2
+                sock_recvfrom(asyncio.get_running_loop(), peer, 2048), 2
             )
             self.assertEqual(source, (host, int(port)))
             self.assertEqual(reply[6:9], bytes.fromhex("30010c"))

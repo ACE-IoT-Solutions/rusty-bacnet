@@ -1,10 +1,11 @@
 """Installed native policy transfer, with real B/IP service-family controls."""
 
 import ast
-import asyncio
 import inspect
 from pathlib import Path
 import unittest
+
+from async_compat import async_timeout
 
 import rusty_bacnet
 from rusty_bacnet import (
@@ -75,7 +76,7 @@ class MutationPolicyWireTests(unittest.IsolatedAsyncioTestCase):
                     async with BACnetClient(interface="127.0.0.1", port=0, apdu_timeout_ms=2000) as client:
                         target = ObjectIdentifier(ObjectType.ANALOG_VALUE, 1)
                         value = PropertyValue.real(42.0)
-                        async with asyncio.timeout(5):
+                        async with async_timeout(5):
                             await client.write_property(await server.local_address(), target, PropertyIdentifier.PRESENT_VALUE, value)
                             self.assertEqual(await server.read_property(target, PropertyIdentifier.PRESENT_VALUE), value)
                 finally:
@@ -96,7 +97,7 @@ class MutationPolicyWireTests(unittest.IsolatedAsyncioTestCase):
         try:
             async with BACnetClient(interface="127.0.0.1", port=0, apdu_timeout_ms=2000) as client:
                 address = await server.local_address()
-                async with asyncio.timeout(15):
+                async with async_timeout(15):
                     before_value = await client.read_property(address, av, pv)
                     before_list = await server.read_property(msi, alarms)
                     before_file = await client.atomic_read_file(address, file, "stream", requested_octet_count=64)

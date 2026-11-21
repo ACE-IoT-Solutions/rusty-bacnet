@@ -12,6 +12,8 @@ import sys
 import unittest
 import warnings
 
+from async_compat import async_timeout
+
 from rusty_bacnet import (
     BACnetClient,
     BACnetServer,
@@ -139,7 +141,7 @@ class LoadControlTests(unittest.IsolatedAsyncioTestCase):
         node, _, _ = await self.serve(
             Shedder(), full_duty_baseline=250.5, state_description="Normal",
             agreed_duty_window=15)
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             self.assertEqual(await node.read_property(LC1, P.SHED_LEVELS),
                              V.list([V.unsigned(1), V.unsigned(2), V.unsigned(3)]))
             self.assertEqual(
@@ -152,7 +154,7 @@ class LoadControlTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_optional_rows_are_absent_unless_given(self):
         node, _, _ = await self.serve(Shedder())
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             for prop in (P.FULL_DUTY_BASELINE, P.STATE_DESCRIPTION):
                 with self.assertRaises(BacnetProtocolError) as caught:
                     await node.read_property(LC1, prop)
@@ -162,7 +164,7 @@ class LoadControlTests(unittest.IsolatedAsyncioTestCase):
         shedder = Shedder()
         node, client, address = await self.serve(shedder, full_duty_baseline=250.0,
                                                  agreed_duty_window=15)
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             await self.request(client, address)
             self.assertEqual(await self.state(node), COMPLIANT)
             request = shedder.requests[-1]
@@ -194,7 +196,7 @@ class LoadControlTests(unittest.IsolatedAsyncioTestCase):
     async def test_deleting_the_object_during_a_request_stops_the_loads(self):
         shedder = Shedder()
         node, client, address = await self.serve(shedder)
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             await self.request(client, address)
             self.assertEqual(await self.state(node), COMPLIANT)
             await client.delete_object(address, LC1)
@@ -212,7 +214,7 @@ class LoadControlTests(unittest.IsolatedAsyncioTestCase):
                 shedder = Shedder(answer)
                 node, client, address = await self.serve(shedder)
                 with UnraisableCapture() as capture:
-                    async with asyncio.timeout(10):
+                    async with async_timeout(10):
                         await self.request(client, address)
                         # Nothing shed after Start_Time: non-compliant, and
                         # the levels at the choice's default.
@@ -230,7 +232,7 @@ class LoadControlTests(unittest.IsolatedAsyncioTestCase):
         shedder = Shedder(shed)
         node, client, address = await self.serve(shedder)
         with UnraisableCapture() as capture:
-            async with asyncio.timeout(10):
+            async with async_timeout(10):
                 await self.request(client, address)
                 self.assertEqual(await self.state(node), NON_COMPLIANT)
         self.assertIsInstance(capture.seen[0].exc_value, TypeError)
@@ -245,7 +247,7 @@ class LoadControlTests(unittest.IsolatedAsyncioTestCase):
         shedder.stop = stop
         node, client, address = await self.serve(shedder)
         with UnraisableCapture() as capture:
-            async with asyncio.timeout(10):
+            async with async_timeout(10):
                 await self.request(client, address)
                 await client.write_property(address, LC1, P.START_TIME, UNSPECIFIED_START)
                 self.assertEqual(await self.state(node), INACTIVE)
@@ -263,7 +265,7 @@ class LoadControlTests(unittest.IsolatedAsyncioTestCase):
             return ("compliant", level(2), level(2))
 
         node, client, address = await self.serve(Shedder(shed))
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             await self.request(client, address)
         self.assertTrue(failures)
         self.assertIn("cannot start a binding operation", failures[0])
@@ -292,7 +294,7 @@ class LoadControlTests(unittest.IsolatedAsyncioTestCase):
 
         node, client, address = await self.serve(
             Shedder(lambda request: ("compliant", Level(), level(2))))
-        async with asyncio.timeout(10):
+        async with async_timeout(10):
             await self.request(client, address)
             self.assertEqual(await self.state(node), COMPLIANT)
         self.assertTrue(failures)
@@ -308,7 +310,7 @@ class LoadControlTests(unittest.IsolatedAsyncioTestCase):
         node, client, address = await self.serve(shedder)
         with UnraisableCapture() as capture, warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            async with asyncio.timeout(10):
+            async with async_timeout(10):
                 await self.request(client, address)
                 await client.write_property(address, LC1, P.START_TIME, UNSPECIFIED_START)
                 # The request ends all the same.

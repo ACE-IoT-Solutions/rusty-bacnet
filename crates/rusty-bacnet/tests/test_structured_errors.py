@@ -5,6 +5,8 @@ import asyncio
 import socket
 import unittest
 
+from async_compat import sock_recvfrom, sock_sendto
+
 from rusty_bacnet import (
     BACnetClient,
     BacnetProtocolError,
@@ -48,9 +50,9 @@ class StructuredErrorTests(unittest.IsolatedAsyncioTestCase):
         """Answer the request `operation` sends with an Error PDU carrying
         `body`, and return the BacnetProtocolError it raises."""
         loop = asyncio.get_running_loop()
-        packet, sender = await asyncio.wait_for(loop.sock_recvfrom(peer, 2048), 2)
+        packet, sender = await asyncio.wait_for(sock_recvfrom(loop, peer, 2048), 2)
         npdu = b"\x01\x00" + bytes((0x50, packet[8], packet[9])) + body
-        await loop.sock_sendto(peer, b"\x81\x0a" + (4 + len(npdu)).to_bytes(2, "big") + npdu, sender)
+        await sock_sendto(loop, peer, b"\x81\x0a" + (4 + len(npdu)).to_bytes(2, "big") + npdu, sender)
         with self.assertRaises(BacnetProtocolError) as raised:
             await asyncio.wait_for(operation, 2)
         return raised.exception

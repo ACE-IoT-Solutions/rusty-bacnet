@@ -2,6 +2,8 @@
 import asyncio
 import unittest
 
+from async_compat import async_timeout
+
 import rusty_bacnet as rb
 from bvll_peer import RawPeer, bvll, mac
 
@@ -34,7 +36,7 @@ class RoutedRoutingTableTests(unittest.IsolatedAsyncioTestCase):
             # Original-Unicast-NPDU, DER, DNET 9, DADR 3, hop count 255,
             # Initialize-Routing-Table with zero entries.
             query = bvll(0x0A, bytes.fromhex("01 a4 0009 01 03 ff 06 00"))
-            async with asyncio.timeout(10):
+            async with async_timeout(10):
                 first = asyncio.ensure_future(client.routing_table(target, wait=60, total=60))
                 data, source = await arrivals.get()
                 self.assertEqual(data, query)

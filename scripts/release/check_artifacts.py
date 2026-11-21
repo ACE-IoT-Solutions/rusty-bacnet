@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check the release artifacts before anything is published (#943, #944, #1472).
 
-    check_artifacts.py DIR --release-version 0.12.0 --glibc 2.17 --python 3.11 3.12 3.13 3.14 \
+    check_artifacts.py DIR --release-version 0.12.0 --glibc 2.17 --python 3.10 3.11 3.12 3.13 3.14 \
         --wheel-platform manylinux_2_17_x86_64.manylinux2014_x86_64 macosx_11_0_arm64 win_amd64 \
         --cli bacnet-linux-amd64=linux_x86_64 bacnet-macos-arm64=macosx_11_0_arm64 \
               bacnet-windows-amd64.exe=win_amd64 \

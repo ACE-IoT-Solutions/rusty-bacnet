@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from async_compat import async_timeout, sock_recvfrom, sock_sendto
+
 import rusty_bacnet
 from rusty_bacnet import BACnetServer
 
@@ -83,8 +85,8 @@ class AtomicReadFileNativeTests(unittest.IsolatedAsyncioTestCase):
                                     request = b"\xc4\x02\x80\x00\x01" + bytes([choice, 0x31, 0]) + count_wire + bytes([choice + 1])
                                     npdu = header + bytes([2 if segmented else 0, peer, invoke, 6]) + request
                                     wire = b"\x81\x0a" + (len(npdu) + 4).to_bytes(2, "big") + npdu
-                                    await loop.sock_sendto(sock, wire, (ip, int(port)))
-                                    reply, _ = await asyncio.wait_for(loop.sock_recvfrom(sock, 4096), 2)
+                                    await sock_sendto(loop, sock, wire, (ip, int(port)))
+                                    reply, _ = await asyncio.wait_for(sock_recvfrom(loop, sock, 4096), 2)
                                     self.assertEqual(reply[:2], b"\x81\x0a")
                                     self.assertEqual(int.from_bytes(reply[2:4], "big"), len(reply))
                                     if routed:
@@ -97,7 +99,7 @@ class AtomicReadFileNativeTests(unittest.IsolatedAsyncioTestCase):
                                         if empty:
                                             expected = b"\x11\x1e\x31\x00\x21\x00\x1f" if record else b"\x11\x0e\x31\x00\x60\x0f"
                                         self.assertEqual(apdu, bytes([0x30, invoke, 6]) + expected)
-                                    async with asyncio.timeout(2):
+                                    async with async_timeout(2):
                                         while (await server.request_admission_counters())["confirmed_active"]:
                                             await asyncio.sleep(0)
                                     with self.assertRaises(BlockingIOError):

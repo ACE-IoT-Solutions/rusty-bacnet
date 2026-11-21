@@ -3,6 +3,8 @@ import asyncio
 import socket
 import unittest
 
+from async_compat import sock_recvfrom
+
 from rusty_bacnet import BACnetClient, BACnetServer, ObjectIdentifier, ObjectType, PropertyIdentifier, PropertyValue
 
 OID = ObjectIdentifier(ObjectType.DEVICE, 9123)
@@ -46,8 +48,8 @@ class WritePriorityTests(unittest.IsolatedAsyncioTestCase):
                     for call in calls(client, priority, address):
                         with self.assertRaises(ValueError):
                             call()
-                with self.assertRaises(TimeoutError):
-                    await asyncio.wait_for(asyncio.get_running_loop().sock_recvfrom(peer, 2048), .1)
+                with self.assertRaises(asyncio.TimeoutError):
+                    await asyncio.wait_for(sock_recvfrom(asyncio.get_running_loop(), peer, 2048), .1)
 
     async def test_all_valid_priorities_noncommandable_and_null_unchanged(self):
         server = BACnetServer(9123, interface="127.0.0.1", port=0)

@@ -5,6 +5,8 @@ import pickle
 import socket
 import unittest
 
+from async_compat import sock_sendto
+
 from rusty_bacnet import (
     BACnetClient, BipEndpoint, FrameSummary, ObjectIdentifier, ObjectType,
     PropertyIdentifier, decode_frame, decode_frame_tree,
@@ -149,7 +151,7 @@ class TrapTranscriptTests(unittest.IsolatedAsyncioTestCase):
                     peer.setblocking(False)
                     host, port = (await endpoint.local_address()).rsplit(":", 1)
                     for octets in (b"malformed transcript packet", FORWARDED):
-                        await asyncio.get_running_loop().sock_sendto(peer, octets, (host, int(port)))
+                        await sock_sendto(asyncio.get_running_loop(), peer, octets, (host, int(port)))
                         frame = await asyncio.wait_for(anext(frames), 10)
                         self.assertEqual(frame.octets, octets)
                         summary = decode_frame(frame.octets, link=frame.link)

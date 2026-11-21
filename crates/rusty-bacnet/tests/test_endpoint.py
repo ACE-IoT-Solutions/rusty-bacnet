@@ -26,6 +26,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from async_compat import sock_recvfrom
+
 from rusty_bacnet import (
     BacnetAbortError,
     BacnetError,
@@ -488,7 +490,7 @@ class BipFunctionalTests(unittest.IsolatedAsyncioTestCase):
                 ))
                 try:
                     wire, source = await asyncio.wait_for(
-                        asyncio.get_running_loop().sock_recvfrom(peer, 2048), 5
+                        sock_recvfrom(asyncio.get_running_loop(), peer, 2048), 5
                     )
                     self.assertEqual(await first.local_address(), f"{source[0]}:{source[1]}")
                     self.assertEqual(wire[:2], b"\x81\x0a")

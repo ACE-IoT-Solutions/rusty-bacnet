@@ -11,8 +11,14 @@ import enum
 import ipaddress
 import os
 import pathlib
+import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from typing import Any, Awaitable, Literal, NotRequired, Optional, TypedDict, Union
+from typing import Any, Awaitable, Literal, Optional, Union
+
+if sys.version_info >= (3, 11):
+    from typing import NotRequired, TypedDict
+else:
+    from typing_extensions import NotRequired, TypedDict
 
 UNSPECIFIED: Literal[255]
 """What an unspecified date or time field holds, the year included: dates
@@ -4887,7 +4893,7 @@ class Frame:
         (``CLOCK_MONOTONIC``), on macOS (``mach_absolute_time``) and on
         Windows from Python 3.13 (``QueryPerformanceCounter``); neither
         counts system sleep on Linux or macOS, both count it on Windows. On
-        Windows with Python 3.11 or 3.12, ``time.monotonic()`` reads
+        Windows with Python 3.10 through 3.12, ``time.monotonic()`` reads
         ``GetTickCount64`` instead: it also counts sleep, but moves in 10-16
         ms steps, so a value can sit up to one step away from it, and the two
         counters are not guaranteed to stay in step over a long run."""
