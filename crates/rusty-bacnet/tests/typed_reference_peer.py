@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import socket
 
+from async_compat import sock_recvfrom, sock_sendto
 from rusty_bacnet import (BACnetClient, BipEndpoint, ObjectIdentifier,
                          PropertyIdentifier, ErrorClass, ErrorCode)
 
@@ -76,7 +77,7 @@ class ReferencePeer:
                             else client.read_property(address, target.oid, target.prop, index))
                 operation = asyncio.ensure_future(call)
                 try:
-                    packet, sender = await asyncio.wait_for(loop.sock_recvfrom(peer, 4096), 2)
+                    packet, sender = await asyncio.wait_for(sock_recvfrom(loop, peer, 4096), 2)
                     test.assertEqual(packet[:2], b"\x81\x0a")
                     test.assertEqual(int.from_bytes(packet[2:4], "big"), len(packet))
                     test.assertEqual(packet[4:6], b"\x01\x04")
@@ -127,7 +128,7 @@ class ReferencePeer:
                     if echo:
                         operation = asyncio.ensure_future(client.write_property(
                             address, target.oid, target.prop, result, array_index=index))
-                        written, sender = await asyncio.wait_for(loop.sock_recvfrom(peer, 4096), 2)
+                        written, sender = await asyncio.wait_for(sock_recvfrom(loop, peer, 4096), 2)
                         test.assertEqual(written[9], 15)
                         test.assertEqual(written[10:], identity + b"\x3e" + octets + b"\x3f")
                         await self.reply(peer, sender, bytes((0x20, written[8], 15)))
@@ -139,5 +140,6 @@ class ReferencePeer:
 
     async def reply(self, peer, sender, apdu):
         body = b"\x01\x00" + apdu
-        await asyncio.get_running_loop().sock_sendto(
+        await sock_sendto(
+            asyncio.get_running_loop(),
             peer, b"\x81\x0a" + (4 + len(body)).to_bytes(2, "big") + body, sender)

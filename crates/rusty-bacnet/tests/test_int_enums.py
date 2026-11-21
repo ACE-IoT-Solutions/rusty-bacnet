@@ -47,6 +47,7 @@ class IntEnumClassTests(unittest.TestCase):
                     self.assertIs(cls.from_raw(int(member)), member)
                     self.assertEqual(repr(member), f"{cls.__name__}.{member.name}")
                     self.assertEqual(str(member), str(int(member)))
+                    self.assertEqual(f"{member:04x}", format(int(member), "04x"))
 
     def test_known_values(self) -> None:
         self.assertEqual(EngineeringUnits.DEGREES_CELSIUS, 62)
@@ -70,6 +71,8 @@ class IntEnumClassTests(unittest.TestCase):
                 self.assertIsNone(value.name)
                 self.assertEqual(value.to_raw(), raw)
                 self.assertEqual(repr(value), f"{cls.__name__}({raw})")
+                self.assertEqual(str(value), str(raw))
+                self.assertEqual(format(value, "d"), str(raw))
                 for copied in [
                     copy.copy(value),
                     copy.deepcopy(value),

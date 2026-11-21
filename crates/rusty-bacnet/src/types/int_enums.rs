@@ -35,6 +35,11 @@ import enum
 class BacnetIntEnum(enum.IntEnum):
     """Base of the rusty_bacnet IntEnum classes."""
 
+    # Use integer display and formatting on every supported Python, including
+    # 3.10 where IntEnum inherited Enum's symbolic string conversion.
+    __str__ = int.__repr__
+    __format__ = int.__format__
+
     @classmethod
     def _missing_(cls, value):
         if isinstance(value, bool) or not isinstance(value, int):
