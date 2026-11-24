@@ -78,6 +78,7 @@ fn rusty_bacnet(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Register client and server classes
     m.add_class::<client::BACnetClient>()?;
+    m.add_class::<client::PyConfirmedCovLease>()?;
     m.add_class::<server::BACnetServer>()?;
     m.add_class::<hub::PyScHub>()?;
     m.add_class::<hub_bindings::PyScHubCertificateBinding>()?;

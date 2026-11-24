@@ -20,6 +20,11 @@ pub enum COVNotificationDelivery {
 pub enum ConfirmedCOVNotificationResponse {
     /// Send the standard SimpleAck response.
     Ack,
+    /// Send a service Error with this class and code.
+    Error(
+        bacnet_types::enums::ErrorClass,
+        bacnet_types::enums::ErrorCode,
+    ),
     /// Send a Reject PDU with the supplied reason.
     Reject(RejectReason),
     /// Do not respond; the remote sender will time out or retry.
@@ -283,6 +288,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         network: &Arc<NetworkLayer<T>>,
         cov_tx: &broadcast::Sender<COVEvent>,
         policy: &ConfirmedCOVNotificationAckPolicy,
+        registry: Option<&cov_registry::Registry>,
         source_mac: &[u8],
         source_network: &Option<NpduAddress>,
         reply: InboundReply,
@@ -301,6 +307,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             source_network,
             COVNotificationDelivery::Confirmed,
         ) {
+            Ok(event) if registry.is_some_and(|registry| !registry.allows(&event)) => {
+                ConfirmedCOVNotificationResponse::Error(
+                    bacnet_types::enums::ErrorClass::SERVICES,
+                    bacnet_types::enums::ErrorCode::UNKNOWN_SUBSCRIPTION,
+                )
+            }
             Ok(event) => {
                 debug!(
                     process = event.subscriber_process_identifier(),

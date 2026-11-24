@@ -487,9 +487,19 @@ impl PyMstpEndpoint {
     /// fresh one once its `stop()` has finished, its reads and writes
     /// audited with `source_audit_reporter`. Its requests wait for this
     /// node's token as the server role's answers do.
-    fn client<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (*, confirmed_cov_subscription_limit=None))]
+    fn client<'py>(
+        &self,
+        py: Python<'py>,
+        confirmed_cov_subscription_limit: Option<std::num::NonZeroUsize>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let seated = crate::client::BACnetClient::seated("mstp", None, None);
-        let client = super::running::client(py, self.lifecycle.session.clone(), seated)?;
+        let client = super::running::client(
+            py,
+            self.lifecycle.session.clone(),
+            seated,
+            confirmed_cov_subscription_limit,
+        )?;
         crate::py_async::future_into_py(py, client)
     }
 

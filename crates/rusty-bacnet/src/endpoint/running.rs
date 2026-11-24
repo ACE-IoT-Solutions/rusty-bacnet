@@ -58,6 +58,7 @@ pub(crate) struct Running {
 struct Seated {
     object: Arc<Py<BACnetClient>>,
     state: ClientInner,
+    cov_limit: Option<std::num::NonZeroUsize>,
 }
 
 impl Running {
@@ -85,6 +86,7 @@ impl Running {
         &self,
         candidate: Arc<Py<BACnetClient>>,
         state: ClientInner,
+        cov_limit: Option<std::num::NonZeroUsize>,
     ) -> PyResult<Arc<Py<BACnetClient>>> {
         let mut slot = self
             .client
@@ -92,6 +94,11 @@ impl Running {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(seated) = slot.as_ref() {
             match seated.state.liveness() {
+                Liveness::Started if seated.cov_limit != cov_limit => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "confirmed_cov_subscription_limit differs from the active endpoint client",
+                    ));
+                }
                 Liveness::Started => return Ok(Arc::clone(&seated.object)),
                 Liveness::Stopping => {
                     return Err(PyRuntimeError::new_err(
@@ -108,7 +115,9 @@ impl Running {
                 Liveness::Stopped => {}
             }
         }
-        let core = self.session.full_client().map_err(to_py_err)?;
+        let mut options = bacnet_client::client::ClientOptions::default();
+        options.confirmed_cov_subscription_limit = cov_limit;
+        let core = self.session.full_client_with(options).map_err(to_py_err)?;
         let own_instance = self.session.identity().map(|identity| identity.instance());
         if !state.seat(core, own_instance) {
             return Err(PyRuntimeError::new_err(
@@ -118,6 +127,7 @@ impl Running {
         *slot = Some(Seated {
             object: Arc::clone(&candidate),
             state,
+            cov_limit,
         });
         Ok(candidate)
     }
@@ -260,6 +270,7 @@ pub(crate) fn client(
     py: Python<'_>,
     session: Arc<tokio::sync::RwLock<Option<Running>>>,
     candidate: BACnetClient,
+    cov_limit: Option<std::num::NonZeroUsize>,
 ) -> PyResult<impl Future<Output = PyResult<Py<BACnetClient>>> + Send + 'static> {
     // Made here, with the interpreter attached, and filled under the
     // session lock; unused when a client already runs.
@@ -272,7 +283,7 @@ pub(crate) fn client(
             let running = guard.as_ref().ok_or_else(|| {
                 PyRuntimeError::new_err("endpoint not started — use 'async with' or await start()")
             })?;
-            running.client(Arc::clone(&candidate), state)?
+            running.client(Arc::clone(&candidate), state, cov_limit)?
         };
         crate::py_async::attach(move |py| {
             let object = chosen.clone_ref(py);

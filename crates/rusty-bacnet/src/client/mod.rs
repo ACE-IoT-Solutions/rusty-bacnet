@@ -266,6 +266,7 @@ pub struct BACnetClient {
     /// A client on an endpoint's link (#2617): its endpoint starts it,
     /// and `async with` only enters it.
     seated: bool,
+    confirmed_cov_subscription_limit: Option<std::num::NonZeroUsize>,
     transport_type: String,
     // BIP config
     interface: std::net::Ipv4Addr,
@@ -340,6 +341,8 @@ mod client_methods {
     mod sc_peer;
     mod vt_audit_time_directed;
 }
+mod cov_registry;
+pub(crate) use cov_registry::PyConfirmedCovLease;
 mod handles;
 mod routed;
 mod seated;

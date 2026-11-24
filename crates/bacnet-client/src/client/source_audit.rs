@@ -312,6 +312,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             tsm: Arc::clone(&self.tsm),
             device_table: Arc::clone(&self.device_table),
             cov_tx: self.cov_tx.clone(),
+            cov_registry: self.cov_registry.clone(),
             event_tx: self.event_tx.clone(),
             device_tx: self.device_tx.clone(),
             device_collision_tx: self.device_collision_tx.clone(),

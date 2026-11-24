@@ -44,7 +44,8 @@ impl BACnetClient {
         sc_control_rate_limit=None,
         router=None,
         write_policy=None,
-        resolve_scope=None
+        resolve_scope=None,
+        confirmed_cov_subscription_limit=None
     ))]
     fn new(
         py: Python<'_>,
@@ -88,6 +89,7 @@ impl BACnetClient {
         router: Option<PyRef<'_, crate::router::PyBACnetRouter>>,
         write_policy: Option<PyRef<'_, crate::high_level::PyWritePolicy>>,
         resolve_scope: Option<Bound<'_, PyAny>>,
+        confirmed_cov_subscription_limit: Option<std::num::NonZeroUsize>,
     ) -> PyResult<Self> {
         let resolve_scope =
             crate::high_level::resolve_scope_arg(resolve_scope.as_ref(), transport)?;
@@ -195,6 +197,7 @@ impl BACnetClient {
             min_request_interval_ms,
             write_policy: write_policy.map_or_else(Default::default, |policy| policy.0),
             resolve_scope,
+            confirmed_cov_subscription_limit,
         })
     }
 
@@ -240,6 +243,7 @@ impl BACnetClient {
         let router = slf.borrow().router.clone();
         let write_policy = slf.borrow().write_policy;
         let resolve_scope = slf.borrow().resolve_scope;
+        let cov_limit = slf.borrow().confirmed_cov_subscription_limit;
 
         crate::py_async::future_into_py(py, async move {
             let mut slot = state::starting(&inner).await?;
@@ -257,6 +261,7 @@ impl BACnetClient {
                             .share_wildcard_port(share_wildcard_port)
                             .mode(bip_mode)
                             .multicast(multicast)
+                            .confirmed_cov_subscription_limit(cov_limit)
                             .apdu_timeout_ms(timeout_ms)
                             .min_request_interval_ms(min_request_interval_ms)
                             .build_into(),
@@ -272,6 +277,7 @@ impl BACnetClient {
                         .interface(interface)
                         .port(port)
                         .share_wildcard_port(share_wildcard_port)
+                        .confirmed_cov_subscription_limit(cov_limit)
                         .apdu_timeout_ms(timeout_ms)
                         .min_request_interval_ms(min_request_interval_ms);
                     if let Some(instance) = ipv6_device_instance {
@@ -309,6 +315,7 @@ impl BACnetClient {
                         .device_uuid(sc_device_uuid)
                         .npdu_per_origin_limit(sc_npdu_admission_policy.per_origin_limit)
                         .control_rate_limit(sc_npdu_admission_policy.control_rate)
+                        .confirmed_cov_subscription_limit(cov_limit)
                         .apdu_timeout_ms(timeout_ms)
                         .min_request_interval_ms(min_request_interval_ms);
                     if let Some(ms) = sc_heartbeat_interval_ms {
@@ -340,6 +347,7 @@ impl BACnetClient {
                     Box::pin(
                         client::BACnetClient::generic_builder()
                             .transport(AppTransport::from(transport))
+                            .confirmed_cov_subscription_limit(cov_limit)
                             .apdu_timeout_ms(timeout_ms)
                             .min_request_interval_ms(min_request_interval_ms)
                             .build(),
@@ -359,6 +367,7 @@ impl BACnetClient {
                     Box::pin(
                         client::BACnetClient::generic_builder()
                             .transport(AppTransport::Router(port))
+                            .confirmed_cov_subscription_limit(cov_limit)
                             .apdu_timeout_ms(timeout_ms)
                             .min_request_interval_ms(min_request_interval_ms)
                             .build(),

@@ -81,6 +81,15 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 invoke_id,
                 reject_reason,
             }),
+            ConfirmedCOVNotificationResponse::Error(error_class, error_code) => {
+                Apdu::Error(bacnet_encoding::apdu::ErrorPdu {
+                    invoke_id,
+                    service_choice,
+                    error_class,
+                    error_code,
+                    error_data: Bytes::new(),
+                })
+            }
             ConfirmedCOVNotificationResponse::NoResponse => return,
         };
 

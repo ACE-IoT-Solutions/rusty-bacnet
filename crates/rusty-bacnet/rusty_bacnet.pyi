@@ -5221,6 +5221,13 @@ class IAmArrivalIterator:
         leaves nothing out. Readable after close."""
         ...
 
+class ConfirmedCovLease:
+    """Local expectation for confirmed single-object COV notifications."""
+
+    def close(self) -> None:
+        """Withdraw this expectation without sending a request."""
+        ...
+
 class BACnetClient:
     """Async BACnet client for reading/writing properties on remote devices.
 
@@ -5331,6 +5338,7 @@ class BACnetClient:
         router: Optional[BACnetRouter] = None,
         write_policy: Optional[WritePolicy] = None,
         resolve_scope: Literal["local", "global"] | int | None = None,
+        confirmed_cov_subscription_limit: int | None = None,
     ) -> None:
         """``write_policy`` (default None, which is ``WritePolicy()``): the
         priorities ``Device.write`` and ``relinquish`` may use. The default
@@ -6152,6 +6160,14 @@ class BACnetClient:
 
     # --- COV subscriptions ---
 
+    def expect_confirmed_cov(
+        self, address: str | RoutedTarget, subscriber_process_identifier: int,
+        monitored_object_identifier: ObjectIdentifier, *, initiating_device_instance: int | None = None,
+    ) -> Awaitable[ConfirmedCovLease]:
+        """Register before sending SubscribeCOV. Keep the lease alive through renewals;
+        closing or dropping it withdraws this local expectation."""
+        ...
+
     def subscribe_cov(
         self,
         address: str | RoutedTarget,
@@ -6271,7 +6287,7 @@ class BACnetClient:
         """Get an async iterator for incoming COV notifications of both kinds:
         ``CovNotification`` (one object) and ``CovNotificationMultiple``
         (several objects, from ``subscribe_cov_property_multiple``). The client
-        acknowledges a confirmed one of either kind whether or not it knows the
+        by default acknowledges a confirmed one of either kind whether or not it knows the
         subscription; match one by its ``subscriber_process_identifier`` and
         source.
         An unsubscribed sender's broadcast can bring a
@@ -10079,7 +10095,7 @@ class BipEndpoint:
         _exc_tb: Any = None,
     ) -> Awaitable[None]: ...
 
-    def client(self) -> Awaitable[BACnetClient]:
+    def client(self, *, confirmed_cov_subscription_limit: int | None = None) -> Awaitable[BACnetClient]:
         """The ``BACnetClient`` on this endpoint's socket (#2617): the
         standalone class, with all its calls, on the endpoint's one address.
         While it runs, each call returns the same object; once its ``stop()``
@@ -10311,7 +10327,7 @@ class ScEndpoint:
         _exc_tb: Any = None,
     ) -> Awaitable[None]: ...
 
-    def client(self) -> Awaitable[BACnetClient]:
+    def client(self, *, confirmed_cov_subscription_limit: int | None = None) -> Awaitable[BACnetClient]:
         """The ``BACnetClient`` on this endpoint's hub connection (#2617): the
         standalone class, with all its calls, on the endpoint's one address.
         While it runs, each call returns the same object; once its ``stop()``
@@ -10530,7 +10546,7 @@ class MstpEndpoint:
         _exc_tb: Any = None,
     ) -> Awaitable[None]: ...
 
-    def client(self) -> Awaitable[BACnetClient]:
+    def client(self, *, confirmed_cov_subscription_limit: int | None = None) -> Awaitable[BACnetClient]:
         """The ``BACnetClient`` on this endpoint's serial link (#2617): the
         standalone class, with all its calls, on the endpoint's one address.
         While it runs, each call returns the same object; once its ``stop()``

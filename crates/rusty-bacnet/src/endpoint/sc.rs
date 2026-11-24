@@ -462,13 +462,23 @@ impl PyScEndpoint {
     /// `connected`: read the link's state now with its
     /// `connection_status()`, or this endpoint's `connection_events()`,
     /// whose first call holds the events from the start.
-    fn client<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (*, confirmed_cov_subscription_limit=None))]
+    fn client<'py>(
+        &self,
+        py: Python<'py>,
+        confirmed_cov_subscription_limit: Option<std::num::NonZeroUsize>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let seated = crate::client::BACnetClient::seated(
             "sc",
             Some(&self.config.hub_url),
             self.config.failover_hub.as_deref(),
         );
-        let client = super::running::client(py, self.lifecycle.session.clone(), seated)?;
+        let client = super::running::client(
+            py,
+            self.lifecycle.session.clone(),
+            seated,
+            confirmed_cov_subscription_limit,
+        )?;
         crate::py_async::future_into_py(py, client)
     }
 

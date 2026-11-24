@@ -164,9 +164,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// ConfirmedCOVNotificationMultiple and UnconfirmedCOVNotificationMultiple),
     /// in the order they arrive. Each call returns a new independent receiver.
     ///
-    /// The client acknowledges a confirmed notification of either form, and
-    /// publishes it here, whether or not it knows the subscription: it keeps
-    /// no list of them. Match one by its subscriber process identifier and
+    /// By default the client acknowledges and publishes any decoded confirmed
+    /// notification. With strict admission it publishes only confirmed
+    /// single-object notifications admitted by [`Self::expect_confirmed_cov`].
+    /// Match a notification by its subscriber process identifier and
     /// its source ([`Station::is_source_of`]), or set
     /// [`ClientOptions::with_confirmed_cov_notification_ack_policy`] to
     /// answer otherwise. A notification the sender sends again, its answer

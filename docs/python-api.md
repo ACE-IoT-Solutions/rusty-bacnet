@@ -2550,6 +2550,48 @@ separately under one DB/snapshot borrow and retains existing lifetime fences.
 These server guarantees do not add empty finite Multiple contexts, delayed
 Multiple notifications or general numeric-array reduction.
 
+#### Local admission of confirmed COV
+
+Pass a positive `confirmed_cov_subscription_limit` to `BACnetClient(...)` or
+`await endpoint.client(confirmed_cov_subscription_limit=...)` to start with
+an empty, bounded registry. Register before subscribing so an immediate
+notification can be acknowledged. For example:
+
+```python
+events = await client.cov_notifications()
+lease = await client.expect_confirmed_cov(
+    address, process, object_id, initiating_device_instance=device_instance
+)
+try:
+    await client.subscribe_cov(address, process, object_id, confirmed=True, lifetime=300)
+    try:
+        async for event in events:
+            await handle_event(event)
+    finally:
+        await client.unsubscribe_cov(address, process, object_id)
+finally:
+    lease.close()
+```
+
+Registration and close are local operations. Duplicate and over-capacity
+registrations raise `BacnetError`. A `str` matches the immediate source MAC
+on the local link. A `RoutedTarget` matches its source network and station
+address, plus the immediate router when specified. Matching also checks the
+subscriber process, monitored object and optional initiating device. Matching
+confirmed single-object notifications reach the iterator and receive a
+SimpleACK. Unmatched confirmed notifications, including the multiple-object
+service, receive a services/unknown-subscription Error and produce no event.
+Unconfirmed notifications continue to reach the iterator.
+
+Keep the lease through renewals. Explicitly unsubscribe when ending the
+remote subscription; close the lease when local admission should end.
+A client restart or a new endpoint seat begins with an empty registry.
+Repeated calls for the current endpoint client must specify the same limit.
+Closing or dropping an older lease cannot withdraw its replacement. On the
+wire, delayed messages with the same source, process and object can be
+indistinguishable. Choose a fresh process identifier for a new subscription
+when those messages could still arrive.
+
 #### `subscribe_cov(address, subscriber_process_identifier, monitored_object_identifier, confirmed, lifetime=None)`
 
 `confirmed` explicitly selects notification mode. A `None` or zero lifetime
@@ -2632,7 +2674,7 @@ Returns an awaitable that yields an async iterator. Await the factory before
 iterating; it can be called multiple times for independent consumers. It
 yields both kinds of notification, a `CovNotification` about one object and
 a `CovNotificationMultiple` about several, in the order they arrived. The
-client acknowledges a confirmed notification of either kind whether or not it
+client by default acknowledges a confirmed notification of either kind whether or not it
 knows the subscription, so match one by its `subscriber_process_identifier`
 and source. An unsubscribed sender's broadcast can bring a
 `CovNotificationMultiple` too, so check `kind` (or `isinstance`) before

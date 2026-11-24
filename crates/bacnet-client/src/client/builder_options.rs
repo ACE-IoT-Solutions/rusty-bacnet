@@ -1,6 +1,15 @@
 use super::*;
 
 impl<T: TransportPort + 'static> ClientBuilder<T> {
+    /// Enable strict confirmed COV admission with this many local expectations.
+    pub fn confirmed_cov_subscription_limit(
+        mut self,
+        limit: Option<std::num::NonZeroUsize>,
+    ) -> Self {
+        self.options.confirmed_cov_subscription_limit = limit;
+        self
+    }
+
     /// Set the independent event notification broadcast channel capacity.
     pub fn event_channel_capacity(mut self, capacity: usize) -> Self {
         self.options.event_channel_capacity = capacity;
@@ -73,6 +82,15 @@ impl BipClientBuilder {
     /// [`BipTransport::set_bbmd_resolver`].
     pub fn bbmd_resolver(mut self, resolver: Arc<dyn BbmdResolver>) -> Self {
         self.bbmd_resolver = Some(resolver);
+        self
+    }
+
+    /// Enable strict confirmed COV admission with this many local expectations.
+    pub fn confirmed_cov_subscription_limit(
+        mut self,
+        limit: Option<std::num::NonZeroUsize>,
+    ) -> Self {
+        self.options.confirmed_cov_subscription_limit = limit;
         self
     }
 
@@ -165,6 +183,15 @@ impl Bip6ClientBuilder {
         self
     }
 
+    /// Enable strict confirmed COV admission with this many local expectations.
+    pub fn confirmed_cov_subscription_limit(
+        mut self,
+        limit: Option<std::num::NonZeroUsize>,
+    ) -> Self {
+        self.options.confirmed_cov_subscription_limit = limit;
+        self
+    }
+
     /// Set the independent event notification broadcast channel capacity.
     pub fn event_channel_capacity(mut self, capacity: usize) -> Self {
         self.options.event_channel_capacity = capacity;
@@ -222,6 +249,15 @@ impl Bip6ClientBuilder {
 
 #[cfg(feature = "sc-tls")]
 impl ScClientBuilder {
+    /// Enable strict confirmed COV admission with this many local expectations.
+    pub fn confirmed_cov_subscription_limit(
+        mut self,
+        limit: Option<std::num::NonZeroUsize>,
+    ) -> Self {
+        self.options.confirmed_cov_subscription_limit = limit;
+        self
+    }
+
     /// Set the independent event notification broadcast channel capacity.
     pub fn event_channel_capacity(mut self, capacity: usize) -> Self {
         self.options.event_channel_capacity = capacity;

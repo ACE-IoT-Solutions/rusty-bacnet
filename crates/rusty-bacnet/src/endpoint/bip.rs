@@ -508,9 +508,19 @@ impl PyBipEndpoint {
     /// after close, and while the last client is still stopping or its stop
     /// failed (naming the cause). With `source_audit_reporter`, its reads
     /// and writes are audited (#2617).
-    fn client<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (*, confirmed_cov_subscription_limit=None))]
+    fn client<'py>(
+        &self,
+        py: Python<'py>,
+        confirmed_cov_subscription_limit: Option<std::num::NonZeroUsize>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let seated = crate::client::BACnetClient::seated("bip", None, None);
-        let client = super::running::client(py, self.lifecycle.session.clone(), seated)?;
+        let client = super::running::client(
+            py,
+            self.lifecycle.session.clone(),
+            seated,
+            confirmed_cov_subscription_limit,
+        )?;
         crate::py_async::future_into_py(py, client)
     }
 

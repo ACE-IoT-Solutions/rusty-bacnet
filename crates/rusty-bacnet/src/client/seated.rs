@@ -21,6 +21,7 @@ impl BACnetClient {
         Self {
             inner: Arc::new(state::ClientState::seated()),
             seated: true,
+            confirmed_cov_subscription_limit: None,
             transport_type: transport.to_string(),
             interface: std::net::Ipv4Addr::UNSPECIFIED,
             port: 0,

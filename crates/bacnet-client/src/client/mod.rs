@@ -188,6 +188,8 @@ pub struct ClientOptions {
     /// Capacity of the independent event notification broadcast channel (default 64).
     /// Slow receivers observe lag; valid confirmed notifications are still acknowledged.
     pub event_channel_capacity: usize,
+    /// Maximum local expectations for confirmed COV. None accepts every decoded notification.
+    pub confirmed_cov_subscription_limit: Option<std::num::NonZeroUsize>,
     confirmed_cov_notification_ack_policy: ConfirmedCOVNotificationAckPolicy,
     /// See [`Self::with_node_dcc_override`].
     node_dcc_override: bool,
@@ -217,6 +219,7 @@ impl Default for ClientOptions {
         Self {
             cov_channel_capacity: DEFAULT_COV_CHANNEL_CAPACITY,
             event_channel_capacity: DEFAULT_EVENT_CHANNEL_CAPACITY,
+            confirmed_cov_subscription_limit: None,
             confirmed_cov_notification_ack_policy:
                 cov_notifications::default_confirmed_cov_notification_ack_policy(),
             node_dcc_override: false,
@@ -618,6 +621,7 @@ pub struct BACnetClient<T: TransportPort = AnyTransport> {
     /// beside it (#2572).
     device_table: Arc<network_number::Discovery>,
     cov_tx: broadcast::Sender<COVEvent>,
+    cov_registry: Option<Arc<cov_registry::Registry>>,
     event_tx: broadcast::Sender<ReceivedEventNotification>,
     device_tx: broadcast::Sender<DeviceEvent>,
     device_collision_tx: broadcast::Sender<DeviceCollisionEvent>,
@@ -898,6 +902,8 @@ mod builder_build;
 mod builder_options;
 mod cov;
 mod cov_notifications;
+mod cov_registry;
+pub use cov_registry::ConfirmedCovLease;
 mod cov_renewal;
 mod device_events;
 mod device_mgmt;

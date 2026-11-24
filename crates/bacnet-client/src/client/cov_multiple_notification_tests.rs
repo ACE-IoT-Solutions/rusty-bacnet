@@ -648,3 +648,6 @@ fn the_event_reports_the_initiating_device_of_either_kind() {
         );
     }
 }
+
+#[path = "cov_registry_wire_tests.rs"]
+mod registry;
