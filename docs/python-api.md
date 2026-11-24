@@ -2576,7 +2576,8 @@ finally:
 Registration and close are local operations. Duplicate and over-capacity
 registrations raise `BacnetError`. A `str` matches the immediate source MAC
 on the local link. A `RoutedTarget` matches its source network and station
-address, plus the immediate router when specified. Matching also checks the
+address, plus the immediate router when specified. A station on this client’s
+current local network can notify directly from its MAC. Matching also checks the
 subscriber process, monitored object and optional initiating device. Matching
 confirmed single-object notifications reach the iterator and receive a
 SimpleACK. Unmatched confirmed notifications, including the multiple-object

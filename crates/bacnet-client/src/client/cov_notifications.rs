@@ -307,7 +307,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             source_network,
             COVNotificationDelivery::Confirmed,
         ) {
-            Ok(event) if registry.is_some_and(|registry| !registry.allows(&event)) => {
+            Ok(event)
+                if registry.is_some_and(|registry| {
+                    !registry.allows(&event, network.local_network_number().get())
+                }) =>
+            {
                 ConfirmedCOVNotificationResponse::Error(
                     bacnet_types::enums::ErrorClass::SERVICES,
                     bacnet_types::enums::ErrorCode::UNKNOWN_SUBSCRIPTION,

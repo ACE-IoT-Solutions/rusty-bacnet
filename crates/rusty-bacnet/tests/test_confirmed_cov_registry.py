@@ -6,6 +6,7 @@ import unittest
 
 import rusty_bacnet as rb
 from async_compat import sock_recvfrom
+from bvll_peer import mac
 from test_endpoint_routed import request_of
 from test_routed_cov import AI_1, FAR, STATION, notification, relay
 
@@ -76,6 +77,15 @@ class ConfirmedCovRegistryTests(unittest.IsolatedAsyncioTestCase):
             outstanding.close()
             self.assertEqual(await self.send_confirmed(to, 21, 7, 50), bytes.fromhex("20 15 01"))
             current.close()
+
+    async def test_own_network_target_accepts_a_direct_notification(self):
+        async with rb.BipEndpoint(device_instance=100, vendor_id=42, interface="127.0.0.1",
+                                  port=0, broadcast_address="127.255.255.255",
+                                  network_number=50, registered_network_port=1) as endpoint:
+            ip, port = (await endpoint.local_address()).rsplit(":", 1)
+            client = await endpoint.client(confirmed_cov_subscription_limit=1)
+            target = rb.RoutedTarget(50, mac(self.peer), router="127.0.0.1:1")
+            await self.strict_exchange(client, (ip, int(port)), target, None)
 
     async def test_default_seat_acknowledges_without_registration(self):
         async with rb.BipEndpoint(**self.kwargs, device_instance=100, vendor_id=42) as endpoint:

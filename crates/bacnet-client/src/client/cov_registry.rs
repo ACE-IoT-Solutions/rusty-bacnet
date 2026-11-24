@@ -27,7 +27,7 @@ impl Registry {
         })
     }
 
-    pub(super) fn allows(&self, event: &COVEvent) -> bool {
+    pub(super) fn allows(&self, event: &COVEvent, local_network: Option<u16>) -> bool {
         let COVEvent::Object(received) = event else {
             return false;
         };
@@ -47,7 +47,19 @@ impl Registry {
             entries.contains_key(&key)
         };
         match (received.source_network, received.source_address.as_deref()) {
-            (None, None) => matches(Station::local(&received.source_mac)),
+            (None, None) => {
+                matches(Station::local(&received.source_mac))
+                    || entries.keys().any(|key| {
+                        // A remote target can become local after the expectation was
+                        // registered. Its subscription then travels without a router.
+                        key.process == n.subscriber_process_identifier
+                            && key.object == n.monitored_object_identifier
+                            && key
+                                .initiator
+                                .is_none_or(|device| device == n.initiating_device_identifier)
+                            && key.source.is_source_of(event, local_network)
+                    })
+            }
             (Some(network), Some(mac)) => {
                 matches(Station::routed(&received.source_mac, network, mac))
                     || matches(Station::remote(network, mac))
@@ -92,7 +104,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// Admit confirmed notifications from this station for a process and
     /// monitored object, optionally restricted to the initiating device.
     /// Register before sending SubscribeCOV when strict admission is enabled.
-    /// A routed station with a router also requires its immediate source MAC.
+    /// A notification with a routed source also has to match any specified router.
     pub fn expect_confirmed_cov(
         &self,
         source: Station,

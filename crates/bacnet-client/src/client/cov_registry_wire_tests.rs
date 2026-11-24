@@ -148,3 +148,39 @@ async fn registry_capacity_and_close_are_local_and_lease_qualified() {
     pair.assert_quiet().await;
     pair.stop().await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_routed_expectation_accepts_direct_after_learning_its_network() {
+    let options = ClientOptions {
+        confirmed_cov_subscription_limit: std::num::NonZeroUsize::new(2),
+        ..ClientOptions::default()
+    };
+    let mut pair = pair(options).await;
+    let notice = cov_notification(6);
+    let object = notice.monitored_object_identifier;
+    let _lease = pair
+        .client
+        .expect_confirmed_cov(Station::routed(&[0x98], 55, &PEER), 6, object, None)
+        .unwrap();
+    expect_unknown(&mut pair, SINGLE, 1, payload(&notice), None).await;
+    pair.client
+        .network
+        .local_network_number()
+        .publish(bacnet_types::network_number::NetworkNumber::configured(55).unwrap());
+    pair.send(confirmed(2, SINGLE, payload(&notice)), None)
+        .await;
+    assert!(matches!(pair.answer().await.1, Apdu::SimpleAck(ack) if ack.invoke_id == 2));
+    assert_eq!(
+        pair.next_event().await.into_object().unwrap().notification,
+        notice
+    );
+    let zero = pair
+        .client
+        .expect_confirmed_cov(Station::remote(0, &PEER), 7, object, None)
+        .unwrap();
+    pair.send(confirmed(3, SINGLE, payload(&cov_notification(7))), None)
+        .await;
+    assert!(matches!(pair.answer().await.1, Apdu::SimpleAck(ack) if ack.invoke_id == 3));
+    drop(zero);
+    pair.stop().await;
+}
