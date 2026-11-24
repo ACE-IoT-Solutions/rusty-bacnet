@@ -1,14 +1,20 @@
 //! Window negotiation with a peer that waits for SegmentACK 0.
 
 use bacnet_encoding::apdu::{Apdu, ComplexAck};
+use bacnet_encoding::constructed::encode_log_record;
 use bacnet_encoding::primitives::encode_app_octet_string;
+use bacnet_services::file::{AtomicReadFileAck, FileAccessMethod, FileReadAckMethod};
 use bacnet_services::read_property::ReadPropertyACK;
+use bacnet_services::read_range::{RangeSpec, ReadRangeAck, ReadRangeRequest, ReadRangeValidation};
 use bacnet_services::rpm::{ReadAccessResult, ReadPropertyMultipleACK, ReadResultElement};
 use bacnet_transport::loopback::LoopbackTransport;
 use bacnet_transport::port::{ReceivedNpdu, TransportPort};
-use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+use bacnet_types::constructed::{
+    BACnetLogRecord, LogDatum, PropertyReference, ReadAccessSpecification,
+};
 use bacnet_types::enums::{ConfirmedServiceChoice, ObjectType, PropertyIdentifier};
-use bacnet_types::primitives::ObjectIdentifier;
+use bacnet_types::error::ReadRangeViolation;
+use bacnet_types::primitives::{Date, ObjectIdentifier, Time};
 use bytes::{Bytes, BytesMut};
 use tokio::sync::mpsc;
 
@@ -43,7 +49,7 @@ async fn send_windowed_response(
     service: ConfirmedServiceChoice,
     payload: BytesMut,
 ) {
-    let Apdu::ConfirmedRequest(request) = recv_apdu(&mut rx, "property request").await else {
+    let Apdu::ConfirmedRequest(request) = recv_apdu(&mut rx, "confirmed request").await else {
         panic!("expected a confirmed request");
     };
     assert_eq!(request.service_choice, service);
@@ -126,6 +132,94 @@ async fn read_property_multiple_negotiates_window_before_segment_one() {
             server,
             rx,
             ConfirmedServiceChoice::READ_PROPERTY_MULTIPLE,
+            payload
+        )
+    );
+    assert_eq!(result.unwrap(), expected);
+    client.stop().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn read_range_preserves_segmented_trend_page_with_sequence_zero() {
+    let (mut client, server, rx) = start().await;
+    let request = ReadRangeRequest {
+        object_identifier: ObjectIdentifier::new(ObjectType::TREND_LOG, 1).unwrap(),
+        property_identifier: PropertyIdentifier::LOG_BUFFER,
+        property_array_index: None,
+        range: Some(RangeSpec::BySequenceNumber {
+            reference_seq: 0,
+            count: 2,
+        }),
+    };
+    let record = BACnetLogRecord {
+        date: Date {
+            year: 126,
+            month: 11,
+            day: 24,
+            day_of_week: 2,
+        },
+        time: Time {
+            hour: 12,
+            minute: 0,
+            second: 0,
+            hundredths: 0,
+        },
+        log_datum: LogDatum::AnyValue(property_value()),
+        status_flags: None,
+    };
+    let mut item_data = BytesMut::new();
+    encode_log_record(&record, &mut item_data).unwrap();
+    let expected = ReadRangeAck {
+        object_identifier: request.object_identifier,
+        property_identifier: request.property_identifier,
+        property_array_index: None,
+        result_flags: (true, false, true),
+        item_count: 1,
+        item_data: item_data.to_vec(),
+        first_sequence_number: Some(0),
+    };
+    let mut payload = BytesMut::new();
+    expected.encode(&mut payload);
+    let (result, ()) = tokio::join!(
+        client.read_range_with(SERVER_MAC, &request, ReadRangeValidation::Lenient),
+        send_windowed_response(server, rx, ConfirmedServiceChoice::READ_RANGE, payload)
+    );
+    let reply = result.unwrap();
+    assert_eq!(
+        reply.violations,
+        [ReadRangeViolation::ZeroFirstSequenceNumber]
+    );
+    assert_eq!(reply.ack.result_flags, expected.result_flags);
+    assert_eq!(reply.ack.first_sequence_number, Some(0));
+    assert_eq!(reply.ack.item_count, 1);
+    assert_eq!(reply.ack.item_data, expected.item_data);
+    assert_eq!(reply.ack.trend_log_records().unwrap(), [record]);
+    client.stop().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn atomic_read_file_decodes_segmented_final_stream_window() {
+    let (mut client, server, rx) = start().await;
+    let file = ObjectIdentifier::new(ObjectType::FILE, 1).unwrap();
+    let window = FileAccessMethod::Stream {
+        file_start_position: 3072,
+        requested_octet_count: 2048,
+    };
+    let expected = AtomicReadFileAck {
+        end_of_file: true,
+        access: FileReadAckMethod::Stream {
+            file_start_position: 3072,
+            file_data: (0..=255).cycle().take(1800).collect(),
+        },
+    };
+    let mut payload = BytesMut::new();
+    expected.encode(&mut payload);
+    let (result, ()) = tokio::join!(
+        client.atomic_read_file_decoded(SERVER_MAC, file, window),
+        send_windowed_response(
+            server,
+            rx,
+            ConfirmedServiceChoice::ATOMIC_READ_FILE,
             payload
         )
     );
