@@ -18,6 +18,7 @@ use crate::udp_metadata::{
 use super::io::{RecvContext, receive};
 use super::multicast::GroupSwap;
 use super::receive_counters::{DropReason, ReceiveDrops};
+use super::receive_health::{BipReceiveHealth, ReceiveRun};
 use super::socket::{BipSocket, BoundSockets};
 
 /// Which of a transport's sockets a datagram arrived on (socket.rs).
@@ -140,6 +141,7 @@ async fn read_on(listener: Option<&mut Listener>) -> io::Result<ReceivedDatagram
 pub(super) struct Listeners {
     primary: Listener,
     broadcast: [Option<Listener>; 3],
+    health: ReceiveRun,
     /// Whether the start bound broadcast listeners, so that datagrams are
     /// handed up in the order the kernel received them across the sockets
     /// (#1546). Fixed at open: it stays on after a listener closes.
@@ -153,7 +155,7 @@ pub(super) struct Listeners {
 pub(super) type Source = Option<usize>;
 
 /// The listener slot a B/IP-M node's group listener takes.
-const GROUP_SLOT: usize = 2;
+pub(super) const GROUP_SLOT: usize = 2;
 
 impl Listeners {
     /// Hand the sockets one start bound to tokio. Each keeps `lease` until
@@ -176,9 +178,42 @@ impl Listeners {
         Ok(Self {
             primary,
             broadcast,
+            health: ReceiveRun::default(),
             ordered,
             reads: 0,
         })
+    }
+
+    fn subnet_count(&self) -> usize {
+        self.broadcast[..GROUP_SLOT].iter().flatten().count()
+    }
+
+    pub(super) fn publish_health(&self, monitor: &BipReceiveHealth, per_address: bool) {
+        self.health.publish(
+            monitor,
+            per_address,
+            self.subnet_count(),
+            self.broadcast[GROUP_SLOT].is_some(),
+        );
+    }
+
+    /// Apply the disposition for a failed read. Only a fatal primary error ends the loop.
+    pub(super) fn handle_error(
+        &mut self,
+        source: Source,
+        error: &io::Error,
+        drops: &ReceiveDrops,
+    ) -> bool {
+        match receive_failed(source, error, drops) {
+            AfterReceiveError::Continue => true,
+            AfterReceiveError::CloseListener(index) => {
+                self.broadcast[index] = None;
+                self.health
+                    .closed(self.subnet_count(), self.broadcast[GROUP_SLOT].is_some());
+                true
+            }
+            AfterReceiveError::Stop => false,
+        }
     }
 
     /// Read a B/IP-M node's new group listener in place of the old one, or,
@@ -195,6 +230,8 @@ impl Listeners {
             self.ordered = true;
         }
         self.broadcast[GROUP_SLOT] = listener;
+        self.health
+            .replace_group(self.broadcast[GROUP_SLOT].is_some());
     }
 
     /// The socket every send leaves from.
@@ -351,11 +388,11 @@ pub(super) async fn receive_loop(
                 let data = listeners.data(source, received.len);
                 handle_datagram(data, &received, arrival, &local, &ctx).await;
             }
-            Err(e) => match receive_failed(source, &e, &ctx.drops) {
-                AfterReceiveError::Continue => {}
-                AfterReceiveError::CloseListener(index) => listeners.broadcast[index] = None,
-                AfterReceiveError::Stop => break,
-            },
+            Err(e) => {
+                if !listeners.handle_error(source, &e, &ctx.drops) {
+                    break;
+                }
+            }
         }
     }
 }

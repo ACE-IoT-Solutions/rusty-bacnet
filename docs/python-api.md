@@ -7504,6 +7504,19 @@ lets it: under the read-only default no peer writes, so there
 its local writes. Other object types aren't available on an endpoint yet;
 use a standalone `BACnetServer` for them.
 
+On a running `BipEndpoint`, `(await endpoint.status())["transport_health"]`
+reports whether its local receive sockets are ready. `primary_receive_active`
+tracks the receive loop. `broadcast_listeners_required` and
+`broadcast_listeners_active` count separate subnet broadcast sockets. A
+wildcard receiver can be ready with both counts at zero. If a required
+listener fails, unicast can continue while `ready` is false. Optional subnet
+listeners opened for multicast count toward the active total only.
+`group_listener_required` and `group_listener_active` describe the separate
+multicast socket currently assigned to the loop. Windows joins multicast on
+the primary, so both flags are false there. This snapshot sends no traffic.
+If the session is no longer active, `status()` raises `RuntimeError`.
+Check foreign-device registration separately with `foreign_registration()`.
+
 `await endpoint.status()` returns a redacted snapshot (`is_running`,
 `device_instance`, `vendor_id`, `max_apdu`, `transport`, `local_address`,
 `active_leases`, plus policy counters and the client seat's counts). A full

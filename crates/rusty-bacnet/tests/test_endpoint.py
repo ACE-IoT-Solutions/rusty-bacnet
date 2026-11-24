@@ -400,6 +400,7 @@ class BipLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     "vendor_id",
                     "max_apdu",
                     "transport",
+                    "transport_health",
                     "local_address",
                     "active_leases",
                     "ingress_policy",
@@ -421,6 +422,14 @@ class BipLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status["device_instance"], 5555)
             self.assertEqual(status["vendor_id"], 99)
             self.assertEqual(status["transport"], "bip")
+            self.assertEqual(status["transport_health"], {
+                "ready": True,
+                "primary_receive_active": True,
+                "broadcast_listeners_required": 0,
+                "broadcast_listeners_active": 0,
+                "group_listener_required": False,
+                "group_listener_active": False,
+            })
             self.assertIn("127.0.0.1", status["local_address"])
             blob = repr(status).lower()
             for token in ("key", "cert", "pem", "uuid", "begin"):

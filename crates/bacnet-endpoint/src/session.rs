@@ -372,6 +372,7 @@ pub struct EndpointSession<T: TransportPort + 'static = bacnet_transport::any::A
     egress: Option<bacnet_endpoint_core::endpoint_ingress::EndpointEgress>,
     /// The B/IP transport's own exchanges, when the B/IP builder built it.
     pub(crate) bip_status: Option<bacnet_transport::bip::BvlcClientStatus>,
+    pub(crate) bip_health: Option<bacnet_transport::bip::receive_health::BipReceiveHealth>,
     /// The B/IP transport's BBMD table reads, when the B/IP builder built it.
     pub(crate) bip_tables: Option<bacnet_transport::bip::BvlcTableReader>,
     pub(crate) frame_tap: Option<bacnet_transport::tap::FrameTap>,
@@ -474,6 +475,7 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             registered_port_lease: std::sync::Weak::new(),
             egress: None,
             bip_status: None,
+            bip_health: None,
             bip_tables: None,
             frame_tap: None,
             mstp_diagnostics: None,
@@ -813,6 +815,13 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         (self.is_running() && self.egress.as_ref().is_some_and(|egress| egress.is_open()))
             .then_some(self.bip_local_address)
             .flatten()
+    }
+
+    /// Local receive socket readiness for a session built with the B/IP builder.
+    pub fn bip_transport_health(
+        &self,
+    ) -> Option<bacnet_transport::bip::receive_health::BipReceiveHealthSnapshot> {
+        self.bip_health.as_ref().map(|monitor| monitor.snapshot())
     }
 
     /// How the transport's foreign-device registration is going (#938):

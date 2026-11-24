@@ -93,6 +93,7 @@ mod io;
 mod own_broadcast;
 mod rate_limit;
 mod receive_counters;
+pub mod receive_health;
 pub use fanout::{FanoutCounters, FanoutPolicy};
 #[cfg(test)]
 use ingress::{Arrival, handle_datagram};
@@ -170,6 +171,7 @@ pub struct BipTransport {
     group_drops: groups::GroupDrops,
     /// See [`Self::receive_counters`].
     receive_drops: Arc<ReceiveDrops>,
+    receive_health: receive_health::BipReceiveHealth,
     /// See [`Self::frame_tap`].
     frame_tap: crate::tap::FrameTap,
     /// See [`Self::send_counters`].
@@ -239,6 +241,7 @@ impl BipTransport {
             fanout_counters,
             group_drops: groups::GroupDrops::default(),
             receive_drops: Arc::default(),
+            receive_health: Default::default(),
             frame_tap: crate::tap::FrameTap::new(),
             send_refusals: Arc::default(),
             fanout_limiter,
@@ -395,6 +398,7 @@ impl BipTransport {
         if let Some(node) = &self.node {
             node.stop();
         }
+        self.receive_health.stop();
         self.detach_foreign_device();
         #[cfg(test)]
         {
@@ -744,6 +748,7 @@ impl TransportPort for BipTransport {
             listener_interface,
             interface_mismatch_seen: Default::default(),
         };
+        listeners.publish_health(&self.receive_health, plan.by_address);
         self.tasks.push(tokio::spawn(receive_loop(
             listeners, ingress, recv_ctx, group_swap,
         )));

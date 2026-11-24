@@ -538,7 +538,7 @@ impl PyBipEndpoint {
         let inner = self.lifecycle.session.clone();
         let config = self.config.clone();
         crate::py_async::future_into_py(py, async move {
-            let snapshot = {
+            let (counters, leases, running, address, seat, health) = {
                 let guard = inner.read().await;
                 let session = guard
                     .as_ref()
@@ -550,27 +550,44 @@ impl PyBipEndpoint {
                 let leases = session.active_leases();
                 let running = session.is_running();
                 let seat = session.seat_counts();
-                (counters, leases, running, address, seat)
+                let health = session
+                    .bip_transport_health()
+                    .ok_or_else(|| PyRuntimeError::new_err("B/IP receive health unavailable"))?;
+                (counters, leases, running, address, seat, health)
             };
             // Lock released before touching Python.
             crate::py_async::attach(|py| {
                 let dict = PyDict::new(py);
-                dict.set_item("is_running", snapshot.2)?;
+                dict.set_item("is_running", running)?;
                 dict.set_item("device_instance", config.identity.instance())?;
                 dict.set_item("vendor_id", config.identity.vendor_id())?;
                 dict.set_item("max_apdu", config.identity.max_apdu_length())?;
                 dict.set_item("transport", "bip")?;
-                dict.set_item("local_address", snapshot.3.to_string())?;
-                dict.set_item("active_leases", snapshot.1)?;
-                dict.set_item("ingress_policy", snapshot.0.ingress_policy)?;
-                dict.set_item("no_server_role", snapshot.0.no_server_role)?;
-                dict.set_item("no_client_role", snapshot.0.no_client_role)?;
-                dict.set_item("unclaimed_terminal", snapshot.0.unclaimed_terminal)?;
-                dict.set_item("unconfirmed_full_drops", snapshot.0.unconfirmed_full_drops)?;
-                dict.set_item("confirmed_full_drops", snapshot.0.confirmed_full_drops)?;
-                dict.set_item("answer_full_drops", snapshot.0.answer_full_drops)?;
-                dict.set_item("policy_full_drops", snapshot.0.policy_full_drops)?;
-                snapshot.4.add_to(&dict)?;
+                dict.set_item("local_address", address.to_string())?;
+                dict.set_item("active_leases", leases)?;
+                dict.set_item("ingress_policy", counters.ingress_policy)?;
+                dict.set_item("no_server_role", counters.no_server_role)?;
+                dict.set_item("no_client_role", counters.no_client_role)?;
+                dict.set_item("unclaimed_terminal", counters.unclaimed_terminal)?;
+                dict.set_item("unconfirmed_full_drops", counters.unconfirmed_full_drops)?;
+                dict.set_item("confirmed_full_drops", counters.confirmed_full_drops)?;
+                dict.set_item("answer_full_drops", counters.answer_full_drops)?;
+                dict.set_item("policy_full_drops", counters.policy_full_drops)?;
+                seat.add_to(&dict)?;
+                let sockets = PyDict::new(py);
+                sockets.set_item("ready", health.ready())?;
+                sockets.set_item("primary_receive_active", health.primary_receive_active)?;
+                sockets.set_item(
+                    "broadcast_listeners_required",
+                    health.broadcast_listeners_required,
+                )?;
+                sockets.set_item(
+                    "broadcast_listeners_active",
+                    health.broadcast_listeners_active,
+                )?;
+                sockets.set_item("group_listener_required", health.group_listener_required)?;
+                sockets.set_item("group_listener_active", health.group_listener_active)?;
+                dict.set_item("transport_health", sockets)?;
                 Ok(dict.into_any().unbind())
             })
         })

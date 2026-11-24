@@ -81,6 +81,78 @@ fn open(listener: bool) -> (Listeners, SocketAddr, Option<SocketAddr>) {
     (listeners, primary_at, listener_at)
 }
 
+#[tokio::test(start_paused = true)]
+async fn receive_health_tracks_listener_loss_while_unicast_continues() {
+    let monitor = receive_health::BipReceiveHealth::default();
+    let drops = ReceiveDrops::default();
+    let (mut listeners, primary, _) = open(true);
+    listeners.publish_health(&monitor, true);
+    let initial = monitor.snapshot();
+    assert!(initial.ready());
+    assert_eq!(
+        (
+            initial.broadcast_listeners_required,
+            initial.broadcast_listeners_active
+        ),
+        (1, 1)
+    );
+
+    let invalid = std::io::Error::from(std::io::ErrorKind::InvalidData);
+    assert!(listeners.handle_error(Some(0), &invalid, &drops));
+    assert!(listeners.handle_error(None, &invalid, &drops));
+    assert_eq!(monitor.snapshot(), initial);
+    let fatal = std::io::Error::other("listener stopped");
+    assert!(listeners.handle_error(Some(0), &fatal, &drops));
+    let degraded = monitor.snapshot();
+    assert!(!degraded.ready());
+    assert!(degraded.primary_receive_active);
+    assert_eq!(
+        (
+            degraded.broadcast_listeners_required,
+            degraded.broadcast_listeners_active
+        ),
+        (1, 0)
+    );
+    let peer = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    peer.send_to(b"still receiving", primary).unwrap();
+    let (source, received) = listeners.recv().await;
+    assert_eq!(source, None);
+    assert_eq!(
+        listeners.data(source, received.unwrap().len),
+        b"still receiving"
+    );
+    assert!(!listeners.handle_error(None, &fatal, &drops));
+    drop(listeners);
+    assert_eq!(monitor.snapshot(), Default::default());
+}
+
+#[tokio::test(start_paused = true)]
+async fn receive_health_follows_the_group_socket_and_only_the_current_run() {
+    let monitor = receive_health::BipReceiveHealth::default();
+    let drops = ReceiveDrops::default();
+    let (mut old, _, _) = open(true);
+    old.publish_health(&monitor, false);
+    let fatal = std::io::Error::other("listener stopped");
+    assert!(old.handle_error(Some(0), &fatal, &drops));
+    assert!(monitor.snapshot().ready(), "optional subnet listener");
+    let group =
+        ingress::Listener::open_group(loopback_socket(), None, &crate::tap::FrameTap::new())
+            .unwrap();
+    old.replace_group(Some(group));
+    assert!(monitor.snapshot().group_listener_active);
+    assert!(old.handle_error(Some(ingress::GROUP_SLOT), &fatal, &drops));
+    assert!(monitor.snapshot().group_listener_required);
+    assert!(!monitor.snapshot().ready());
+    old.replace_group(None);
+    assert!(monitor.snapshot().ready());
+    let (new, _, _) = open(false);
+    new.publish_health(&monitor, false);
+    drop(old);
+    assert!(monitor.snapshot().ready(), "previous run retired");
+    drop(new);
+    assert!(!monitor.snapshot().ready(), "current worker dropped");
+}
+
 /// A socket that receives stamped datagrams, once the kernel stamps them:
 /// Linux starts stamping arrivals a moment after the first socket on the
 /// host asks, and stops after the last one closes (see

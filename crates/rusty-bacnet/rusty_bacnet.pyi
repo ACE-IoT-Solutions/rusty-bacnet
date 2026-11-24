@@ -9781,6 +9781,19 @@ class EndpointStatus(TypedDict):
     are counted: a confirmed request counted here went unanswered, and its
     requester's retry is its recovery."""
 
+class BipReceiveHealth(TypedDict):
+    """Local receive sockets. Counts describe separate subnet broadcast listeners,
+    and the group flags describe a separate B/IP multicast listener."""
+    ready: bool
+    primary_receive_active: bool
+    broadcast_listeners_required: int
+    broadcast_listeners_active: int
+    group_listener_required: bool
+    group_listener_active: bool
+
+class BipEndpointStatus(EndpointStatus):
+    transport_health: BipReceiveHealth
+
 class ReadRangeResult(TypedDict):
     object_id: ObjectIdentifier
     property_id: PropertyIdentifier
@@ -10093,7 +10106,7 @@ class BipEndpoint:
         """Active announced IP and actual UDP port; RuntimeError outside active state."""
         ...
 
-    def status(self) -> Awaitable[EndpointStatus]:
+    def status(self) -> Awaitable[BipEndpointStatus]:
         """Bounded snapshot (RuntimeError before start/after close)."""
         ...
 

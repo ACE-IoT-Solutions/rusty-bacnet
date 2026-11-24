@@ -44,7 +44,9 @@ mod tests {
             .build_session()
             .unwrap();
         assert!(session.frames(4).is_none(), "not started");
+        assert!(!session.bip_transport_health().unwrap().ready());
         session.start().await.unwrap();
+        assert!(session.bip_transport_health().unwrap().ready());
         let mut frames = session.frames(4).expect("running");
         let to = session.bip_local_address().unwrap();
         let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -60,6 +62,7 @@ mod tests {
         assert_eq!(frame.missed_before, 0);
         session.stop().await.unwrap();
         assert!(session.frames(4).is_none(), "stopped");
+        assert!(!session.bip_transport_health().unwrap().ready());
     }
 
     /// A session no B/IP builder made has no tap to hand out, running or not.
@@ -71,6 +74,7 @@ mod tests {
                 .unwrap();
         session.start().await.unwrap();
         assert!(session.frames(4).is_none());
+        assert!(session.bip_transport_health().is_none());
         session.stop().await.unwrap();
     }
 }
