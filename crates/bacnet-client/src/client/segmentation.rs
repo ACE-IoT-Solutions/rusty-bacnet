@@ -360,10 +360,9 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         state.last_sequence_number = seq;
         state.window_position += 1;
 
-        // Per-window SegmentAck: only ack at window boundary or final segment (Clause 5.2.2)
-        let should_ack = !ack.more_follows || state.window_position >= state.actual_window_size;
-
-        if should_ack {
+        // ACK segment zero to establish the window. Segment one starts the first full window.
+        let window_complete = state.window_position >= state.actual_window_size;
+        if first_accepted_segment || window_complete || !ack.more_follows {
             state.window_position = 0;
             state.initial_sequence_number = state.last_sequence_number;
             state.duplicate_count = 0;

@@ -147,13 +147,14 @@ pub(super) async fn expect_segment_ack(
     rx: &mut mpsc::Receiver<ReceivedNpdu>,
     invoke_id: u8,
     seq: u8,
-) {
+) -> u8 {
     match recv_apdu(rx, &format!("ack for response segment {seq}")).await {
         Apdu::SegmentAck(ack) => {
             assert!(!ack.negative_ack);
             assert!(!ack.sent_by_server, "a client's SegmentAck is server=FALSE");
             assert_eq!(ack.invoke_id, invoke_id);
             assert_eq!(ack.sequence_number, seq);
+            ack.actual_window_size
         }
         other => panic!("expected SegmentAck for segment {seq}, got {other:?}"),
     }

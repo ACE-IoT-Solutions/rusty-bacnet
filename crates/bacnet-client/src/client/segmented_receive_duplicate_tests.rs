@@ -148,11 +148,12 @@ async fn window_one_duplicate_gets_immediate_negative_ack_without_payload_mutati
     finish(task, &[0x10, 0x20]).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn incomplete_window_silences_ndup_duplicates_then_naks_the_next() {
     let (task, server, mut rx, invoke_id) = start_reassembly().await;
 
     send_segment(&server, invoke_id, 0, 3, true, &[0x10]).await;
+    expect_segment_ack(&mut rx, invoke_id, 0, 3, false, "initial ACK").await;
     send_segment(&server, invoke_id, 1, 3, true, &[0x20]).await;
     for _ in 0..3 {
         send_segment(&server, invoke_id, 0, 3, true, &[0xEE]).await;
@@ -168,34 +169,36 @@ async fn incomplete_window_silences_ndup_duplicates_then_naks_the_next() {
     expect_silence(&mut rx, "duplicate after counter reset").await;
 
     send_segment(&server, invoke_id, 2, 3, true, &[0x30]).await;
-    expect_segment_ack(&mut rx, invoke_id, 2, 3, false, "window-boundary ACK").await;
-
     send_segment(&server, invoke_id, 3, 3, true, &[0x40]).await;
+    expect_segment_ack(&mut rx, invoke_id, 3, 3, false, "window-boundary ACK").await;
+
+    send_segment(&server, invoke_id, 4, 3, true, &[0x50]).await;
     for _ in 0..3 {
-        send_segment(&server, invoke_id, 3, 3, true, &[0xEE]).await;
+        send_segment(&server, invoke_id, 4, 3, true, &[0xEE]).await;
     }
     expect_silence(&mut rx, "duplicates after window-boundary reset").await;
-    send_segment(&server, invoke_id, 3, 3, true, &[0xEE]).await;
+    send_segment(&server, invoke_id, 4, 3, true, &[0xEE]).await;
     expect_segment_ack(
         &mut rx,
         invoke_id,
-        3,
+        4,
         3,
         true,
         "post-boundary threshold NAK",
     )
     .await;
 
-    send_segment(&server, invoke_id, 4, 3, false, &[0x50]).await;
-    expect_segment_ack(&mut rx, invoke_id, 4, 3, false, "final ACK").await;
-    finish(task, &[0x10, 0x20, 0x30, 0x40, 0x50]).await;
+    send_segment(&server, invoke_id, 5, 3, false, &[0x60]).await;
+    expect_segment_ack(&mut rx, invoke_id, 5, 3, false, "final ACK").await;
+    finish(task, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60]).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn out_of_order_and_window_boundary_reset_the_duplicate_baseline() {
     let (task, server, mut rx, invoke_id) = start_reassembly().await;
 
     send_segment(&server, invoke_id, 0, 4, true, &[0x10]).await;
+    expect_segment_ack(&mut rx, invoke_id, 0, 4, false, "initial ACK").await;
     send_segment(&server, invoke_id, 1, 4, true, &[0x20]).await;
     send_segment(&server, invoke_id, 0, 4, true, &[0xEE]).await;
     expect_silence(&mut rx, "duplicate before gap").await;
@@ -212,11 +215,12 @@ async fn out_of_order_and_window_boundary_reset_the_duplicate_baseline() {
     expect_segment_ack(&mut rx, invoke_id, 2, 4, true, "post-gap threshold NAK").await;
 
     send_segment(&server, invoke_id, 3, 4, true, &[0x40]).await;
-    expect_segment_ack(&mut rx, invoke_id, 3, 4, false, "window-boundary ACK").await;
-    send_segment(&server, invoke_id, 3, 4, true, &[0xEE]).await;
-    expect_segment_ack(&mut rx, invoke_id, 3, 4, true, "post-boundary baseline NAK").await;
+    send_segment(&server, invoke_id, 4, 4, true, &[0x50]).await;
+    expect_segment_ack(&mut rx, invoke_id, 4, 4, false, "window-boundary ACK").await;
+    send_segment(&server, invoke_id, 4, 4, true, &[0xEE]).await;
+    expect_segment_ack(&mut rx, invoke_id, 4, 4, true, "post-boundary baseline NAK").await;
 
-    send_segment(&server, invoke_id, 4, 4, false, &[0x50]).await;
-    expect_segment_ack(&mut rx, invoke_id, 4, 4, false, "final ACK").await;
-    finish(task, &[0x10, 0x20, 0x30, 0x40, 0x50]).await;
+    send_segment(&server, invoke_id, 5, 4, false, &[0x60]).await;
+    expect_segment_ack(&mut rx, invoke_id, 5, 4, false, "final ACK").await;
+    finish(task, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60]).await;
 }

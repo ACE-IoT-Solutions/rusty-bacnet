@@ -1052,6 +1052,8 @@ mod segmentation_retransmit_tests;
 #[cfg(test)]
 mod segmented_receive_duplicate_tests;
 #[cfg(test)]
+mod segmented_receive_handshake_tests;
+#[cfg(test)]
 mod segmented_receive_lifecycle_tests;
 #[cfg(test)]
 mod segmented_request_ordering_tests;
