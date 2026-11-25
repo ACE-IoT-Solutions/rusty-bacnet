@@ -1,11 +1,15 @@
 # Foreign-device lease and routed return path
 
-Run the installed CPython 3.13 Linux SDK against three scripted UDP peers in a new rootless Podman namespace. The BBMD, router and untrusted forwarder have distinct loopback IPs on port 47808. Both endpoint generations bind 127.0.0.1:47809. The endpoint has an explicit Network Port on network 7. An endpoint without a known local number can also ask for it on first hearing a routed device. The container needs only Python 3.13, venv and pip. The launcher verifies mounted inputs in the container and compares the installed native extension with the wheel. Supply the full Git SHA you associate with the wheel as an operator declaration.
+Run the installed CPython 3.13 Linux SDK against three scripted UDP peers in a new rootless Podman namespace. The BBMD, router and untrusted forwarder have distinct loopback IPs on port 47808. Both endpoint generations bind 127.0.0.1:47809. The container needs only Python 3.13, venv and pip. The launcher verifies mounted inputs in the container and compares the installed native extension with the wheel. Supply the full Git SHA you associate with the wheel as an operator declaration.
 
 ```sh
 python3 scripts/interop/foreign_routed/run.py --image "$IMAGE" --wheel "$WHEEL" \
-  --source "$SDK_SOURCE" --output target/foreign-routed-run
+  --source "$SDK_SOURCE" --output target/foreign-routed-unknown
+python3 scripts/interop/foreign_routed/run.py --image "$IMAGE" --wheel "$WHEEL" \
+  --source "$SDK_SOURCE" --profile configured7 --output target/foreign-routed-configured7
 ```
+
+The default `unknown` profile starts without a local network number. The BBMD must see exactly one Distribute-Broadcast-To-Network carrying What-Is-Network-Number after the first forwarded routed I-Am, and one after registration recovers from a lapse. The peer leaves both questions unanswered. The `configured7` profile declares local network 7 on a registered Network Port and expects zero such packets. The replacement owner opens only an explicit routed read, which triggers no initial discovery question in either profile.
 
 The BBMD accepts the endpoint's initial registration and a renewal. Its forwarded I-Am names a remote station on network 5, reached via the router. The probe uses the public arrival fields to build a routed target and checks a ReadProperty exchange on the router socket. An untrusted forwarder sends the same forwarded COV bytes as the BBMD. Distinct accepted values fence the event stream. A confirmed COV admitted by the strict lease receives a routed SimpleACK at the router. The observer verifies delivery, effective source, station and value octets.
 

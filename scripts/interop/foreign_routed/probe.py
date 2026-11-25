@@ -48,8 +48,13 @@ def routed(apdu, *, forwarded=False, reply_expected=False):
     return bvll(4, mac(ROUTER) + npdu) if forwarded else bvll(10, npdu)
 
 
-def to_station(apdu, *, reply_expected=False):
-    return bvll(10, bytes([1, 0x24 if reply_expected else 0x20]) + STATION_FIELD + b"\xff" + apdu)
+def to_station(apdu, *, reply_expected=False, local_source=False):
+    control = 0x24 if reply_expected else 0x20
+    source = b""
+    if local_source:
+        control |= 0x08
+        source = struct.pack(">HB", 7, 6) + mac(OWNER)
+    return bvll(10, bytes([1, control]) + STATION_FIELD + source + b"\xff" + apdu)
 
 
 def notification(value, *, confirmed=False):
@@ -67,6 +72,10 @@ class Peers:
         self.phase = "initial"
         self.ttl = 4
         self.disposition = "accept"
+        self.unknown = report["profile"] == "unknown"
+        self.question_due = None
+        self.questions = asyncio.Queue()
+        self.recovery_reply_sent = False
         self.silent_registrations = 0
         self.router_queue = asyncio.Queue()
         self.sockets = {}
@@ -88,6 +97,22 @@ class Peers:
         self.log(source, OWNER, data)
         self.sockets[source].sendto(data, OWNER)
 
+    def expect_question(self, cause):
+        if self.unknown:
+            check(self.question_due is None, f"unanswered wire expectation: {self.question_due}")
+            self.question_due = cause
+
+    async def saw_question(self, cause):
+        if self.unknown:
+            observed = await asyncio.wait_for(self.questions.get(), 15)
+            check(observed == cause, f"number question after {observed}, expected {cause}")
+
+    def require_routed(self, frame, apdu, *, reply_expected=False):
+        if frame == to_station(apdu, reply_expected=reply_expected):
+            return
+        check(not self.unknown and frame == to_station(apdu, reply_expected=reply_expected, local_source=True),
+              f"wrong packet at R in {self.phase}: {frame.hex()}")
+
     def receive(self, peer):
         try:
             data, sender = self.sockets[peer].recvfrom(65535)
@@ -97,12 +122,21 @@ class Peers:
                 self.router_queue.put_nowait(data)
                 return
             check(peer == BBMD, "rogue forwarder received a reply")
+            if data == bytes.fromhex("81090007018012"):
+                check(self.question_due is not None, f"unsolicited number question in {self.phase}")
+                self.report["network_number_questions"].append(self.question_due)
+                self.questions.put_nowait(self.question_due)
+                self.question_due = None
+                return
             check(self.ttl is not None and data == bvll(5, struct.pack(">H", self.ttl)),
                   f"unexpected packet at B during {self.phase}: {data.hex()}")
             if self.disposition == "silent":
                 self.silent_registrations += 1
             else:
                 refused = self.disposition == "refuse_once"
+                if self.phase == "recovery" and not self.recovery_reply_sent:
+                    self.expect_question("accepted_after_lapse")
+                    self.recovery_reply_sent = True
                 self.send(BBMD, bvll(0, struct.pack(">H", 0x30 if refused else 0)))
                 if refused:
                     self.disposition = "silent"
@@ -128,11 +162,9 @@ async def read(client, target, peers, rb, value):
     ai = rb.ObjectIdentifier(rb.ObjectType.ANALOG_INPUT, 1)
     requested = client.read_property(target, ai, rb.PropertyIdentifier.PRESENT_VALUE)
     frame = await peers.router_queue.get()
-    # BVLL + NPDU with destination and hop count + two confirmed-request header bytes.
-    invoke_offset = len(to_station(b"")) + 2
-    invoke = frame[invoke_offset]
-    expected = to_station(bytes([2, 3, invoke, 12]) + PV_REFERENCE, reply_expected=True)
-    check(frame == expected, f"unexpected routed RP at R: {frame.hex()}")
+    # The invoke precedes the service and exact reference in either routed NPDU layout.
+    invoke = frame[-len(PV_REFERENCE) - 2]
+    peers.require_routed(frame, bytes([2, 3, invoke, 12]) + PV_REFERENCE, reply_expected=True)
     raw_value = bytes((0x21, value))
     peers.send(ROUTER, routed(bytes([0x30, invoke, 12]) + PV_REFERENCE + b"\x3e" + raw_value + b"\x3f"))
     got = await requested
@@ -144,6 +176,7 @@ async def routed_notifications(client, peers, rb, ai):
     arrivals = await client.i_am_arrivals()
     events = await client.cov_notifications()
     i_am = bytes.fromhex("1000 c4") + DEVICE_OID + bytes.fromhex("2205c4 9103 22022b")
+    peers.expect_question("first_routed_i_am")
     peers.send(BBMD, routed(i_am, forwarded=True))
     record = await anext(arrivals)
     check(record.forwarded and record.object_identifier == rb.ObjectIdentifier(rb.ObjectType.DEVICE, FAR)
@@ -154,6 +187,7 @@ async def routed_notifications(client, peers, rb, ai):
     peers.report["i_am"] = dict(sender=record.link_sender, source=record.link_source,
                                  router=record.next_hop_router, station=record.source_address.hex(),
                                  network=record.source_network, device=record.object_identifier.instance)
+    await peers.saw_question("first_routed_i_am")
     await read(client, target, peers, rb, 11)
 
     async def heard(value, delivery):
@@ -181,7 +215,7 @@ async def routed_notifications(client, peers, rb, ai):
     try:
         peers.send(ROUTER, notification(19, confirmed=True))
         ack = await peers.router_queue.get()
-        check(ack == to_station(bytes.fromhex("204101")), f"wrong COV ACK at R: {ack.hex()}")
+        peers.require_routed(ack, bytes.fromhex("204101"))
         await heard(19, "confirmed")
     finally:
         lease.close()
@@ -193,8 +227,9 @@ async def exercise(report):
     import rusty_bacnet as rb
 
     def endpoint(ttl):
+        number = dict(network_number=7, registered_network_port=1) if report["profile"] == "configured7" else {}
         return rb.BipEndpoint(device_instance=100, interface=OWNER[0], port=OWNER[1],
-                              broadcast_address="127.255.255.255", network_number=7, registered_network_port=1,
+                              broadcast_address="127.255.255.255", **number,
                               max_apdu=480, apdu_retries=0,
                               foreign_device=rb.ForeignDevice(address(BBMD), ttl=ttl, renewal=1))
 
@@ -234,6 +269,7 @@ async def exercise(report):
             peers.phase = "recovery"
             peers.disposition = "accept"
             await peers.registration(owner, "recovered", lambda s: accepted(s) and s["accepted"] > refused["accepted"])
+            await peers.saw_question("accepted_after_lapse")
         finally:
             await close(owner)
         peers.phase = "original_closed"
@@ -270,7 +306,8 @@ async def exercise(report):
 
 def main():
     wheel = Path(sys.argv[1])
-    report = dict(packets=[], states={}, reads=[], events=[], peer_errors=[], cleanup_errors=[])
+    report = dict(profile=sys.argv[2], network_number_questions=[], packets=[], states={}, reads=[],
+                  events=[], peer_errors=[], cleanup_errors=[])
     try:
         report["mounted_inputs"] = json.loads(wheel.with_name("inputs.json").read_text())
         report["namespace"] = os.readlink("/proc/self/ns/net")

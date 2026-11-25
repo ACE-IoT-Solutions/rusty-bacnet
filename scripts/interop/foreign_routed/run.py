@@ -30,7 +30,7 @@ subprocess.run([sys.executable, '-I', '-m', 'venv', '/tmp/sdk'], check=True)
 exe = '/tmp/sdk/bin/python'
 subprocess.run([exe, '-I', '-m', 'pip', '--disable-pip-version-check', 'install',
                 '--no-index', '--no-deps', str(root / wheel.name)], check=True)
-os.execv(exe, [exe, '-I', str(root / 'probe.py'), str(root / wheel.name)])
+os.execv(exe, [exe, '-I', str(root / 'probe.py'), str(root / wheel.name), sys.argv[3]])
 """
 
 
@@ -56,7 +56,7 @@ def qualify(args, report):
     report["expected_inputs"] = expected
     cid = podman("create", "--network", "none", "--cap-drop", "ALL", "--entrypoint", "python3.13",
                  "-v", f"{HERE}:/fixture:ro", "-v", f"{wheel}:/wheel/{wheel.name}:ro", image,
-                 "-I", "-S", "-c", BOOT, "/wheel/" + wheel.name, json.dumps(expected)).stdout.strip()
+                 "-I", "-S", "-c", BOOT, "/wheel/" + wheel.name, json.dumps(expected), args.profile).stdout.strip()
     if not re.fullmatch("[a-f0-9]{64}", cid):
         raise ValueError("engine returned invalid container ID")
     report["container"] = cid
@@ -66,7 +66,8 @@ def qualify(args, report):
         report["container_exit"] = proc.returncode
         podman("cp", cid + ":/tmp/receipt.json", str(args.output / "receipt.json"))
         receipt = json.loads((args.output / "receipt.json").read_text())
-        if proc.returncode or not receipt["success"] or receipt["mounted_inputs"] != expected:
+        if (proc.returncode or not receipt["success"] or receipt["mounted_inputs"] != expected
+                or receipt["profile"] != args.profile):
             raise ValueError(f"probe failed; see receipt.json and container.log in {args.output}")
     finally:
         if not (args.output / "receipt.json").exists():
@@ -86,13 +87,15 @@ def main():
     parser.add_argument("--image", required=True)
     parser.add_argument("--wheel", required=True, type=Path)
     parser.add_argument("--source", required=True, help="operator-declared source SHA of the wheel")
+    parser.add_argument("--profile", choices=["unknown", "configured7"], default="unknown",
+                        help="default unknown local network number or registered Network Port 7")
     parser.add_argument("--connection")
     parser.add_argument("--output", required=True, type=Path, help="new receipt directory")
     args = parser.parse_args()
     if not re.fullmatch("[a-f0-9]{40}", args.source):
         parser.error("--source requires a full source commit SHA")
     args.output.mkdir(parents=True, exist_ok=False)
-    report = {"operator_declared_source": args.source, "cleanup_errors": []}
+    report = {"operator_declared_source": args.source, "profile": args.profile, "cleanup_errors": []}
     try:
         qualify(args, report)
     except (Exception, KeyboardInterrupt):
