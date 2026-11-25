@@ -150,7 +150,10 @@ class NativeFutureInventoryTests(unittest.TestCase):
         """
         source = Path(__file__).resolve().parents[1] / "src"
         groups = {
-            "BACnetClient": sorted((source / "client/client_methods").glob("*.rs")),
+            "BACnetClient": [
+                *sorted((source / "client/client_methods").glob("*.rs")),
+                source / "client/cov_registry.rs",
+            ],
             "BACnetServer": sorted((source / "server/server_methods").glob("*.rs")),
             "ScHub": [source / "hub.rs"],
             "CovNotificationIterator": [source / "types/cov.rs"],

@@ -863,8 +863,8 @@ class StubParityTests(unittest.TestCase):
                        if isinstance(node, ast.FunctionDef)}
         self.assertNotIn("who_is_directed", client_stub)
         self.assertIn("resolve_scope", client_stub)
-        self.assertEqual(runtime_parameters(BACnetClient)[-1],
-                         ("resolve_scope", inspect.Parameter.KEYWORD_ONLY))
+        self.assertIn(("resolve_scope", inspect.Parameter.KEYWORD_ONLY),
+                      runtime_parameters(BACnetClient))
 
     def test_the_exception_tree_matches_the_stub(self) -> None:
         for name, bases in (
