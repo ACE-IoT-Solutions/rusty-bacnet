@@ -673,39 +673,52 @@ async fn a_drop_midway_leaves_nothing_behind() {
     assert_eq!(log.len(), sent);
 }
 
-/// The hand-over never waits: a segment the reassembly queue has no room
-/// for draws an Abort (BUFFER_OVERFLOW), a requester's Abort is dropped,
-/// and each is counted.
+/// The worker has accepted the first segment and is stalled sending its ACK.
 #[tokio::test(start_paused = true)]
-async fn what_a_full_queue_cannot_take_is_aborted_and_counted() {
+async fn full_handoff_drops_repeated_final_segment_without_terminating_the_queued_request() {
     let mut lab = lab(true).await;
-    let (queue, _never_read) = mpsc::channel(1);
-    lab.client.tsm.lock().request_reassembly = Some(Box::new(RequestReassembly::stalled(queue)));
-    // The first fills the queue; the second finds no room.
-    lab.from(&PEER, &segments(30, COV, &cov_body(62), 8, 1)[0])
-        .await;
-    lab.from(&PEER, &segments(31, COV, &cov_body(62), 8, 1)[0])
-        .await;
-    aborted(lab.next(&PEER).await, 31, AbortReason::BUFFER_OVERFLOW);
-    lab.from(
-        &PEER,
-        &Apdu::Abort(AbortPdu {
-            sent_by_server: false,
-            invoke_id: 30,
-            abort_reason: AbortReason::OTHER,
-        }),
-    )
-    .await;
+    let handle = lab.client.transport().handle();
+    let mut events = lab.client.cov_notifications();
+    let data = cov_body(62);
+    let parts = segments(30, COV, &data, data.len().div_ceil(2), 1);
+    handle.block_next_send();
+    lab.from(&PEER, &parts[0]).await;
+    handle.wait_blocked().await;
+    segment_ack(lab.next(&PEER).await, 30, 0, false, 1);
+
+    lab.from(&PEER, &parts[1]).await;
+    let other_abort = Apdu::Abort(AbortPdu {
+        sent_by_server: false,
+        invoke_id: 30,
+        abort_reason: AbortReason::OTHER,
+    });
+    for _ in 1..QUEUE {
+        lab.from(&OTHER, &other_abort).await;
+    }
+    // Both a repeat and another peer's Abort arrive to a full queue. The
+    // original final segment is still queued for execution.
+    lab.from(&PEER, &parts[1]).await;
+    lab.from(&OTHER, &other_abort).await;
     lab.dispatch_fence().await;
-    let drops = lab
-        .client
-        .tsm
-        .lock()
-        .request_reassembly
-        .as_ref()
-        .unwrap()
-        .full_drops;
-    assert_eq!(drops, 2);
+    assert_eq!(
+        lab.client
+            .tsm
+            .lock()
+            .request_reassembly
+            .as_ref()
+            .unwrap()
+            .full_drops,
+        2
+    );
+    handle.release_sends(1);
+    segment_ack(lab.next(&PEER).await, 30, 1, false, 1);
+    simple_ack(lab.next(&PEER).await, 30, COV);
+    assert_eq!(
+        events.try_recv().unwrap().subscriber_process_identifier(),
+        62
+    );
+    lab.quiet().await;
+    assert!(events.try_recv().is_err());
     lab.client.stop().await.unwrap();
 }
 

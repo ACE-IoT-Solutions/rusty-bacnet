@@ -26,7 +26,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             event_tx,
             confirmed_cov_ack_policy,
             cov_registry,
-            cov_segment_timeout,
+            cov_segments,
             device_tx,
             device_collision_tx,
             i_have_tx,
@@ -395,10 +395,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     return;
                 }
                 if req.segmented {
-                    if let Some(timeout) = cov_segment_timeout
+                    if let Some(settings) = cov_segments
                         && is_confirmed_cov_notification(req.service_choice)
                     {
-                        if let Some((reply, invoke_id)) = Self::hand_off_segment(
+                        Self::hand_off_segment(
                             request_reassembly::HandOff {
                                 tsm,
                                 network,
@@ -407,22 +407,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                 policy: confirmed_cov_ack_policy,
                                 limits,
                             },
-                            timeout,
+                            settings,
                             source_mac,
                             source_network,
                             reply,
                             req,
-                        ) {
-                            Self::send_server_abort(
-                                network,
-                                source_mac,
-                                source_network,
-                                reply,
-                                invoke_id,
-                                bacnet_types::enums::AbortReason::BUFFER_OVERFLOW,
-                            )
-                            .await;
-                        }
+                        );
                         return;
                     }
                     Self::send_server_abort(

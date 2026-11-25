@@ -13661,7 +13661,10 @@ A seated client reassembles incoming confirmed COV in either form when the
 Device declares segmented receive or both. It uses the Device segment timeout,
 then checks its current subscription policy on the complete request. The
 request's segment and service replies preserve the inbound route. The client's
-own request settings continue to control segmented read responses.
+own request settings continue to control segmented read responses. When the
+worker's 64-entry queue fills, the dispatcher drops additional segments and
+requester Aborts. Accepted segments stay queued and the sender may retry.
+Stopping the endpoint waits for this worker to release its transfers.
 
 ### Source Audit of the full client
 
@@ -13863,10 +13866,10 @@ session.stop().await?; // stops the server, then the link
   server rejects a ConfirmedCOVNotification the Device lists, and a full
   client on a `ServerOnly` session executes services the Device doesn't
   list. Following the attached client would cost every ReadProperty a read
-  of shared state. Segmentation_Supported is the identity's and the server
-  follows it; the full client keeps its own segmentation settings for now
-  (a later step of #2617), and it can't reassemble a segmented
-  ConfirmedCOVNotification, which it aborts.
+  of shared state. The server follows the Device's Segmentation_Supported.
+  With SEGMENTED_RECEIVE or SEGMENTED_BOTH, the full client reassembles both
+  confirmed COV forms using the Device's APDU_Segment_Timeout. Its outbound
+  requests keep their own setting for accepting segmented responses.
 - DeviceCommunicationControl binds the whole node (Clause 16.1). While the
   server holds a DISABLE_INITIATION it accepted, nothing on the node
   initiates but I-Am answers to Who-Is and audit notifications, and nothing

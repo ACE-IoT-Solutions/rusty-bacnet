@@ -148,3 +148,71 @@ async fn requesters_abort_leaves_the_nodes_outbound_read_alive_and_dcc_allows_re
     session.stop().await.unwrap();
     operator.stop().await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn stopping_the_node_destroys_the_blocked_worker_while_its_client_is_retained() {
+    use bacnet_client::client::{ClientOptions, ConfirmedCOVNotificationResponse};
+    use std::sync::Arc;
+
+    let wire = Wire::new();
+    let port = wire.port(NODE);
+    let handle = port.handle();
+    let log = port.sent();
+    let mut session = EndpointSession::new(
+        port.build(),
+        SessionRole::ClientOnly,
+        SessionConfig::default(),
+    )
+    .unwrap()
+    .device(
+        DeviceIdentity::new(NODE_DEVICE, 42)
+            .unwrap()
+            .with_segmentation(Segmentation::SEGMENTED_RECEIVE),
+    );
+    session.start().await.unwrap();
+    // The policy is retained by dispatch and the worker. When both tasks
+    // release it the weak marker stops upgrading, even with the client alive.
+    let marker = Arc::new(());
+    let gone = Arc::downgrade(&marker);
+    let client = session
+        .full_client_with(
+            ClientOptions::default().with_confirmed_cov_notification_ack_policy(move |_| {
+                let _keep = &marker;
+                ConfirmedCOVNotificationResponse::Ack
+            }),
+        )
+        .unwrap();
+    let mut events = client.cov_notifications();
+    let peer = Wire::mac(PEER);
+    let [first, last] = parts(88);
+    handle.block_next_send();
+    deliver(&wire, &peer, &first);
+    handle.wait_blocked().await;
+    deliver(&wire, &peer, &last);
+    // Follow the final segment with a whole unsupported request. Its Reject
+    // proves dispatch queued the preceding segment while the worker was held.
+    let mut fence = decode_apdu(decode_npdu(node::cov_notification(89)).unwrap().payload).unwrap();
+    let Apdu::ConfirmedRequest(request) = &mut fence else {
+        unreachable!()
+    };
+    request.service_choice = ConfirmedServiceChoice::READ_PROPERTY;
+    deliver(&wire, &peer, &fence);
+    wait_for(
+        &log,
+        &peer,
+        |apdu| matches!(apdu, Apdu::Reject(reject) if reject.invoke_id == 89),
+    )
+    .await;
+    session.stop().await.unwrap();
+    assert!(
+        gone.upgrade().is_none(),
+        "the worker still holds the policy"
+    );
+    assert_eq!(handle.stops(), 1);
+    let before = log.len();
+    handle.release_sends(1);
+    tokio::task::yield_now().await;
+    assert_eq!(log.len(), before);
+    assert!(events.try_recv().is_err());
+    assert!(client.who_is(Broadcast::Global, None).await.is_err());
+}

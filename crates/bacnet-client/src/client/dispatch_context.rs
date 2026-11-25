@@ -13,8 +13,8 @@ pub(super) struct DispatchContext<'a, T: TransportPort + 'static> {
     /// Broadcast channel for COV notifications.
     pub(super) cov_tx: &'a broadcast::Sender<COVEvent>,
     pub(super) cov_registry: Option<&'a Arc<cov_registry::Registry>>,
-    /// Receive timeout for segmented confirmed COV, when enabled.
-    pub(super) cov_segment_timeout: Option<Duration>,
+    /// Receive settings for segmented confirmed COV, when enabled.
+    pub(super) cov_segments: Option<&'a request_reassembly::Settings>,
     /// Broadcast channel for event notifications.
     pub(super) event_tx: &'a broadcast::Sender<ReceivedEventNotification>,
     /// How confirmed COV notifications are acknowledged.

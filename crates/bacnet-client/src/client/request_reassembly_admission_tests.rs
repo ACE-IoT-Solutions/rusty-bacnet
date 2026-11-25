@@ -42,6 +42,7 @@ async fn a_due_transfer_expires_before_a_busy_peers_queued_segments() {
             .unwrap();
     }
     let worker = tokio::spawn(BACnetClient::reassemble(
+        None,
         Arc::downgrade(&lab.client.network),
         receiver,
         Arc::new(SyncMutex::new(table)),

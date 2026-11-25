@@ -739,7 +739,9 @@ impl Tsm {
         self.cancel_all_transactions();
         self.coordinator = None;
         self.leasing = None;
-        self.request_reassembly = None;
+        if let Some(reassembly) = &self.request_reassembly {
+            reassembly.abort();
+        }
     }
 
     #[cfg(test)]

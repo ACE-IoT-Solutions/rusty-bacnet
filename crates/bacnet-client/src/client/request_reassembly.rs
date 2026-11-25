@@ -1,8 +1,9 @@
 //! Bounded answering-side reassembly for confirmed COV. A lazy worker owns its
 //! timers and processes segments and requester Aborts in arrival order. The
-//! dispatch task answers queue overflow inline, after releasing the TSM lock.
+//! dispatch task drops and counts overflow. Only the worker answers a transfer.
 use std::sync::Weak;
 
+use bacnet_endpoint_core::seat::SeatHold;
 use bacnet_endpoint_core::segmented_request::{Opening, Receipt, Segment, SegmentedRequests};
 use bacnet_types::enums::AbortReason;
 use tokio::sync::mpsc::error::TrySendError;
@@ -44,15 +45,10 @@ pub(crate) struct RequestReassembly {
 }
 
 impl RequestReassembly {
-    /// A reassembly whose task never takes from `queue`, for a test to
-    /// fill it.
-    #[cfg(test)]
-    pub(super) fn stalled(queue: mpsc::Sender<Handed>) -> Self {
-        Self {
-            queue,
-            task: None,
-            full_drops: 0,
-            table: Weak::new(),
+    /// Request cancellation without losing the join for a subsequent client stop.
+    pub(crate) fn abort(&self) {
+        if let Some(task) = &self.task {
+            task.abort();
         }
     }
 
@@ -67,10 +63,15 @@ impl RequestReassembly {
 
 impl Drop for RequestReassembly {
     fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+        self.abort();
     }
+}
+
+/// Receive settings for the dispatch task and the worker it may start.
+pub(super) struct Settings {
+    pub(super) timeout: Duration,
+    /// The endpoint's stop waits for every clone, including the lazy worker's.
+    pub(super) hold: Option<SeatHold>,
 }
 
 /// What starting the reassembly task and handing it a segment take,
@@ -115,12 +116,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     #[inline]
     pub(super) fn hand_off_segment(
         at: HandOff<'_, T>,
-        segment_timeout: Duration,
+        settings: &Settings,
         source_mac: &[u8],
         source_network: &Option<NpduAddress>,
         reply: InboundReply,
         request: ConfirmedRequestPdu,
-    ) -> Option<(InboundReply, u8)> {
+    ) {
         let handed = Handed::Segment {
             source_mac: MacAddr::from_slice(source_mac),
             source_network: source_network.clone(),
@@ -131,17 +132,14 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
 
         let reassembly = tsm
             .request_reassembly
-            .get_or_insert_with(|| Box::new(Self::start_reassembly(&at, segment_timeout)));
+            .get_or_insert_with(|| Box::new(Self::start_reassembly(&at, settings)));
         match reassembly.queue.try_send(handed) {
-            Ok(()) => None,
-            Err(TrySendError::Full(Handed::Segment { reply, request, .. })) => {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
                 reassembly.full_drops = reassembly.full_drops.saturating_add(1);
-                Some((reply, request.invoke_id))
             }
-            Err(TrySendError::Full(Handed::Abort { .. })) => unreachable!("handed a segment"),
             Err(TrySendError::Closed(_)) => {
                 tsm.request_reassembly = None;
-                None
             }
         }
     }
@@ -175,9 +173,9 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     }
 
     /// Start the reassembly task.
-    fn start_reassembly(at: &HandOff<'_, T>, segment_timeout: Duration) -> RequestReassembly {
+    fn start_reassembly(at: &HandOff<'_, T>, settings: &Settings) -> RequestReassembly {
         let (queue, received) = mpsc::channel(QUEUE);
-        let table = SegmentedRequests::new(segment_timeout)
+        let table = SegmentedRequests::new(settings.timeout)
             .with_max_segments(at.limits.max_reassembly_segments);
         let table = Arc::new(SyncMutex::new(table));
         #[cfg(test)]
@@ -190,6 +188,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             response_warning: WarnThrottle::default(),
         };
         let task = tokio::spawn(Self::reassemble(
+            settings.hold.clone(),
             Arc::downgrade(at.network),
             received,
             table,
@@ -207,6 +206,9 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// The reassembly task: take each segment and Abort in turn, and end
     /// each transfer when its timer is due.
     async fn reassemble(
+        // Function parameters drop in reverse order. Keep the seat until the
+        // table, queued replies and any in-flight network send have gone.
+        _hold: Option<SeatHold>,
         network: Weak<NetworkLayer<T>>,
         mut queue: mpsc::Receiver<Handed>,
         table: Arc<SyncMutex<SegmentedRequests>>,

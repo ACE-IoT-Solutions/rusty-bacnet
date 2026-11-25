@@ -206,6 +206,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         let device_table_dispatch = Arc::clone(&device_table);
         inbound.bind(&tsm, &device_table);
         let seat = inbound.seat();
+        let cov_segments = cov_segment_timeout.map(|timeout| request_reassembly::Settings {
+            timeout,
+            hold: seat.as_ref().and_then(|seat| seat.hold()),
+        });
         let (cov_tx, _) = broadcast::channel::<COVEvent>(options.cov_channel_capacity);
         let cov_tx_dispatch = cov_tx.clone();
         let cov_registry = options
@@ -386,7 +390,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                         network: network_dispatch,
                                         cov_tx: &cov_tx_dispatch,
                                         cov_registry: dispatch_registry.as_ref(),
-                                        cov_segment_timeout,
+                                        cov_segments: cov_segments.as_ref(),
                                         event_tx: &event_tx_dispatch,
                                         confirmed_cov_ack_policy: &confirmed_cov_ack_policy,
                                         device_tx: &device_tx_dispatch,
