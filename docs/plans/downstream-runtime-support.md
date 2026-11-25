@@ -180,6 +180,16 @@ keeps its bytes and reports its local `decode_error`. Neighboring values and
 remote property errors retain their own results. Edge projection and
 persistence checks remain in the acceptance table below.
 
+## Independent software peer
+
+BACnet4J 6.1.1 on Java 17 served both client owners from its regular Device
+object on isolated Linux arm64 loopback. The candidate at `97015c3d3` and
+published 0.17.2 passed segmented RP and two-selector RPM. The candidate
+also reassembled two Java confirmed COV requests on a shared endpoint and
+returned the strict admission Error and SimpleACK. The captured APDUs and
+returned values were checked on each path. [Fixture, exact wheel hashes and
+segment counts](../../scripts/interop/bacnet4j/README.md).
+
 ## Remaining acceptance work
 
 | Owner | Required evidence |
@@ -189,4 +199,4 @@ persistence checks remain in the acceptance table below.
 | Edge COV lifecycle | Register and retain leases before subscribing. Exercise renewal, cancellation, late notifications and delivery across attachment replacement. |
 | Edge attachment lifecycle | Drain work by attachment generation during replacement. Exercise readiness in heartbeat and HTTP, failed replacement and rollback. Set device identity and router forwarding policy for multi-attachment deployments. |
 | Linux deployment | Qualify pinned x86_64 and aarch64 release wheels in the deployed host-network layout, including public interface broadcast isolation, source selection, bind failures and rebind. |
-| Wire and performance qualification | Capture idle, discovery and subscription traffic under the downstream workload to check the no-hidden-traffic requirement. Measure shared endpoint and Python workloads with concurrent COV traffic, including latency and resident memory. Exercise physical networks and an independent vendor peer in addition to bacpypes3. |
+| Wire and performance qualification | Capture idle, discovery and subscription traffic under the downstream workload to check the no-hidden-traffic requirement. Measure shared endpoint and Python workloads with concurrent COV traffic, including latency and resident memory. Exercise physical networks and a vendor controller in the deployment. BACnet4J supplies independent software-peer evidence on loopback. |
