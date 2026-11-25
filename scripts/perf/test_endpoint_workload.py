@@ -66,6 +66,10 @@ class WorkloadTests(unittest.TestCase):
                 self.assertEqual(ledger["acks"], {k: [0, 2, 3] for k in ("rp", "rpm", "cov")})
                 self.assertEqual(set(row["value_sha256"]), {"rp", "rpm", "cov"})
                 digests.update(row["value_sha256"].values())
+                times = row["timestamps_ns"]
+                self.assertEqual(times["cov_first_send"], ledger["cov_send_ns"])
+                for name, start in (("rp", "rp_submit"), ("rpm", "rpm_submit"), ("cov", "cov_first_send")):
+                    self.assertEqual(row["latency_ns"][name], times[name + "_validated"] - times[start])
             self.assertEqual(len(digests), 9)
             counts = report["summary"]["peer_counts"]
             self.assertEqual((counts["rx_request_rp"], counts["rx_request_rpm"], counts["rx_simple_ack_cov"]), (2, 2, 2))
@@ -74,6 +78,20 @@ class WorkloadTests(unittest.TestCase):
             self.assertEqual(report["summary"]["measured_failed"], 0)
             for latency in report["summary"]["latency_ns"].values():
                 self.assertEqual(latency["n"], 2)
+            measured = [row for row in report["rounds"] if row["phase"] == "measured" and row["complete"]]
+            groups = report["summary"]["by_read_order"]
+            self.assertEqual(sum(group["count"] for group in groups.values()), len(measured))
+            for first in ("rp", "rpm"):
+                group = groups[first + "_first"]
+                observed = [row for row in measured if row["peer"]["read_order"][0] == first]
+                self.assertEqual(group["count"], len(observed))
+                if observed:
+                    for name in ("rp", "rpm", "cov"):
+                        latency = group["latency_ns"][name]
+                        self.assertEqual(latency["n"], len(observed))
+                        self.assertEqual(latency["max"], max(row["latency_ns"][name] for row in observed))
+                else:
+                    self.assertIsNone(group["latency_ns"])
             # Matching filename/ABI with a different native binary must fail before sampling.
             wrong = out / Path(WHEEL).name
             with zipfile.ZipFile(wrong, "w") as archive:

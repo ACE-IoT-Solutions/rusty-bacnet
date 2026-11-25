@@ -185,16 +185,27 @@ async def sample(args, report):
         await endpoint.close()
 
 
+def latency_summary(rows):
+    result = {}
+    for name in ("rp", "rpm", "cov"):
+        values = sorted(row["latency_ns"][name] for row in rows)
+        if values:
+            result[name] = {"n": len(values), "max": values[-1], **{
+                f"p{p}": values[math.ceil(p * len(values) / 100) - 1] for p in (50, 95, 99)}}
+    return result
+
+
 def summarize(report):
     rows = [row for row in report["rounds"] if row["phase"] == "measured"]
     complete = [row for row in rows if row["complete"]]
+    by_order = {}
+    for first in ("rp", "rpm"):
+        group = [row for row in complete if row["peer"]["read_order"][0] == first]
+        by_order[first + "_first"] = {"count": len(group), "latency_ns": latency_summary(group) if group else None}
     summary = {"measured_completed": len(complete), "measured_failed": len(rows) - len(complete),
-               "measured_unstarted": report["parameters"]["rounds"] - len(rows), "latency_ns": {}}
-    for name in ("rp", "rpm", "cov"):
-        values = sorted(row["latency_ns"][name] for row in complete)
-        if values:
-            summary["latency_ns"][name] = {"n": len(values), "max": values[-1], **{
-                f"p{p}": values[math.ceil(p * len(values) / 100) - 1] for p in (50, 95, 99)}}
+               "measured_unstarted": report["parameters"]["rounds"] - len(rows),
+               "latency_scope": "observed_read_order_mixture", "latency_ns": latency_summary(complete),
+               "by_read_order": by_order}
     counts = Counter()
     for row in rows:
         counts.update(row.get("peer", {}).get("counts", {}))

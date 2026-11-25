@@ -45,6 +45,12 @@ Python value validation for each read, and the peer's first COV send through
 Python event validation for COV. Read latency includes time queued on the
 shared route. Raw timestamps, value digests, read admission order and exact
 peer counts are retained. The p50, p95 and p99 summaries use nearest ranks.
+The top-level latency summary combines the observed mix of RP-first and
+RPM-first rounds. The first read waits for COV, and the second waits for COV
+and the first read. Changing the mix alone can move the pooled tail ranks.
+`summary.by_read_order` reports the round count and all three latency
+distributions separately for each admission order. An unobserved order has
+count zero and a null latency summary.
 A correctness failure returns a nonzero process exit code and writes the
 failed phase, available round data and exception to the output file.
 
@@ -71,8 +77,10 @@ blocks. For example, run A, A as a same-wheel noise control, then A, B, B, A.
 Repeat that block with distinct filenames. For two independent builds of the
 baseline use A, A′, then A, B, B, A′, and retain each wheel's hash. Use enough
 rounds for CPU accounting and tail ranks to stabilize; 500 measured rounds
-after warmup is a starting point. Report per-sample results and the observed
-spread across repeats. Evaluate successful samples separately from failures.
+after warmup is a starting point. Report the admission-order counts for each
+arm. Compare RP-first with RP-first and RPM-first with RPM-first across arms
+and repeats. If either arm has no rounds for an order, that comparison is
+inconclusive. Report the observed spread across repeats. Evaluate successful samples separately from failures.
 The harness sets no latency, CPU or memory threshold.
 
 A short artifact correctness check runs the CLI, verifies three exchanges,
