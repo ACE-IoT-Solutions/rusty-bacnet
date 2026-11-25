@@ -1614,6 +1614,9 @@ sends one joined buffer.
 
 ## 11. How to reproduce
 
+For shared Python endpoint polling under incoming segmented COV, see the
+[loopback workload and A/B commands](docs/shared-endpoint-workload.md).
+
 Run one suite at a time on an idle machine. Each Criterion suite takes 1 to
 2 minutes, each stress scenario 10 seconds per step. For an A/B against
 0.13.0, build tag `v0.13.0` with the `benchmarks/` directory and

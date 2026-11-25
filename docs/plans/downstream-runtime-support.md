@@ -157,7 +157,10 @@ notification worker queue and shutdown while a client handle survives.
 Both cases in `test_endpoint_mixed_workload.py` ran on macOS arm64 loopback
 with CPython 3.13 and a local wheel built from `f90a6b430`. They cover the exchanges
 observed by the test peer. Deployment traffic captures and shared-client
-performance measurements remain open.
+performance qualification remain open. The [shared-endpoint measurement
+harness](../shared-endpoint-workload.md) now records routed RP/RPM and
+segmented COV latency, endpoint process CPU and peak RSS against a scripted
+peer. Matched repeated runs yield local measurements for this specific workload.
 
 ## Unreleased Python read diagnostics and property observations
 
