@@ -48,6 +48,13 @@ second owner's live address and must receive the same error. The neighbor
 remains readable. A fresh container restores the first address with a new
 Device name; both names are read again before close and a final bind check.
 
+Before executing any mounted fixture module or installing the wheel, the
+controller and each worker hash the mounted Python sources and wheel from
+inside the container. The runner supplies the expected local digests as
+command arguments and records the actual mounted digests. A different file
+at the same absolute path on a remote engine stops that container before it
+opens a BACnet socket.
+
 The JSON receipt records each container ID and inspected network mode, effective
 UID, kernel namespace IDs and UID map. The process map must agree with the
 rootless engine map. It also records the operator-declared source commit, wheel

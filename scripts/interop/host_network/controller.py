@@ -10,7 +10,7 @@ import time
 
 from bacpypes3.apdu import APDU, IAmRequest, ReadPropertyACK, ReadPropertyRequest, WhoIsRequest
 from bacpypes3.pdu import PDU
-from bacpypes3.primitivedata import CharacterString
+from bacpypes3.primitivedata import CharacterString, ObjectType
 
 from common import emit, failure, identity
 
@@ -69,7 +69,8 @@ def discover(sock, config):
                 apdu, record = receive(sock, deadline)
                 iam = IAmRequest.decode(apdu)
                 instance = int(iam.iAmDeviceIdentifier[1])
-                if instance not in pending or record["source"] != [targets[instance], config["port"]]:
+                if (iam.iAmDeviceIdentifier[0] != ObjectType.device or instance not in pending
+                        or record["source"] != [targets[instance], config["port"]]):
                     raise ValueError(f"unexpected I-Am instance {instance} from {record['source']}")
                 pending.remove(instance)
                 responses.append({**record, "instance": instance})

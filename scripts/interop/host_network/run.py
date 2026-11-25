@@ -15,6 +15,27 @@ import sys
 FIXTURE = Path(__file__).resolve().parent
 
 
+# Pass this code through argv: a remote mount must be verified before any
+# mounted Python file, pip installer or SDK extension can execute.
+VERIFY_INPUTS = """
+import hashlib, json, os, pathlib, sys
+expected = json.loads(sys.argv[1])
+actual = {"fixture_sha256": {}, "wheel_sha256": None}
+try:
+    for name in expected["fixture_sha256"]:
+        with (pathlib.Path("/probe") / name).open("rb") as stream:
+            actual["fixture_sha256"][name] = hashlib.file_digest(stream, "sha256").hexdigest()
+    with open(sys.argv[2], "rb") as stream:
+        actual["wheel_sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
+except OSError as error:
+    actual["error"] = str(error)
+print(json.dumps(actual), flush=True)
+if actual != expected:
+    sys.exit(1)
+os.execv(sys.argv[3], sys.argv[3:])
+"""
+
+
 def check(condition, message):
     if not condition:
         raise ValueError(message)
@@ -42,12 +63,13 @@ class Engine:
             raise RuntimeError(f"podman {args[0]} failed: {result.stderr.strip()}")
         return result.stdout.strip()
 
-    async def start(self, role, uid, command, *, wheel=False):
-        mounts = ["-v", f"{FIXTURE}:/probe:ro"]
-        if wheel:
-            mounts += ["-v", f"{self.wheel}:/wheel/{self.wheel.name}:ro"]
+    async def start(self, role, uid, command):
+        mounted_wheel = "/wheel/" + self.wheel.name
+        mounts = ["-v", f"{FIXTURE}:/probe:ro", "-v", f"{self.wheel}:{mounted_wheel}:ro"]
+        expected = {key: self.report[key] for key in ("fixture_sha256", "wheel_sha256")}
         container = self.run("create", "--interactive", "--network", "host", "--user", f"{uid}:{uid}",
-                             *mounts, "--entrypoint", command[0], self.image, *command[1:])
+                             *mounts, "--entrypoint", "/usr/bin/python3.13", self.image,
+                             "-I", "-S", "-c", VERIFY_INPUTS, json.dumps(expected), mounted_wheel, *command)
         self.report["containers"][role] = {"id": container, "uid_requested": uid}
         mode = self.run("inspect", "--format", "{{.HostConfig.NetworkMode}}", container)
         self.report["containers"][role]["network_mode"] = mode
@@ -55,6 +77,9 @@ class Engine:
         proc = await asyncio.create_subprocess_exec(*self.command, "start", "-ai", container, stdin=asyncio.subprocess.PIPE,
                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         self.attached[role] = proc, asyncio.create_task(proc.stderr.read())
+        mounted = await self.receive(role)
+        self.report["containers"][role]["mounted"] = mounted
+        check(mounted == expected, f"{role} mounted inputs differ from the runner's fixture or wheel")
         first = await self.receive(role)
         self.report["containers"][role]["startup"] = first
         identity = first["identity"]
@@ -136,7 +161,7 @@ async def worker(engine, role, config, index, name, uid, *, must_start=True):
                '/tmp/sdk/bin/python -m pip --no-cache-dir --disable-pip-version-check install --no-index --no-deps "$1" >&2\n'
                'exec /tmp/sdk/bin/python /probe/worker.py "$@"')
     record = await engine.start(role, uid, ["/bin/sh", "-c", install, "start", wheel, entry["cidr"],
-                                            str(config["port"]), str(entry["instance"]), name], wheel=True)
+                                            str(config["port"]), str(entry["instance"]), name])
     if must_start:
         addr = f'{ipaddress.IPv4Interface(entry["cidr"]).ip}:{config["port"]}'
         check(record["started"] and record["address"] == addr, f"{role} startup or address failed: {record}")
