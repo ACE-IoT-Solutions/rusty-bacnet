@@ -21,7 +21,7 @@ use bacnet_services::object_mgmt::{CreateObjectAck, CreateObjectRequest, DeleteO
 use bacnet_services::private_transfer::{PrivateTransferAck, PrivateTransferRequest};
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
 use bacnet_services::read_range::ReadRangeValidation;
-use bacnet_services::read_range::{ReadRangeAck, ReadRangeReply, ReadRangeRequest};
+use bacnet_services::read_range::{ReadRangeReply, ReadRangeRequest};
 use bacnet_services::rpm::{ReadPropertyMultipleACK, ReadPropertyMultipleRequest};
 use bacnet_services::text_message::TextMessageRequest;
 use bacnet_services::virtual_terminal::{
@@ -256,7 +256,7 @@ impl Confirmed for ReadPropertyMultipleRequest {
         self.encode(buf)
     }
     fn answer(self, data: Bytes) -> Result<ReadPropertyMultipleACK, Error> {
-        ReadPropertyMultipleACK::decode(&data)
+        crate::acks::read_property_multiple(&data)
     }
 }
 
@@ -275,7 +275,7 @@ impl Confirmed for Range<'_> {
         self.request.encode(buf)
     }
     fn answer(self, data: Bytes) -> Result<ReadRangeReply, Error> {
-        ReadRangeReply::check(self.request, ReadRangeAck::decode(&data)?, self.validation)
+        crate::acks::read_range(self.request, &data, self.validation)
     }
 }
 

@@ -159,7 +159,14 @@ with CPython 3.13 and a local wheel built from `f90a6b430`. They cover the excha
 observed by the test peer. Deployment traffic captures and shared-client
 performance measurements remain open.
 
-## Unreleased Python property observations
+## Unreleased Python read diagnostics and property observations
+
+Direct and routed wire tests exercise whole service-payload truncation in
+ReadProperty, ReadPropertyMultiple, ReadRange and both decoded AtomicReadFile
+access methods on the standalone and shared client. A complete first RPM value
+followed by a truncated error row fails the full read. The error reports the
+first absent byte and required and available sizes. Published 0.17.2 predates
+these diagnostics.
 
 Single and Multiple COV rows preserve the received tagged value octets in
 `raw`. For both client owners, the wire tests distinguish a non-minimal

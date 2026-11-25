@@ -4,7 +4,44 @@
 
 use bacnet_services::file::{AtomicReadFileAck, FileAccessMethod, FileReadAckMethod};
 use bacnet_services::read_property::{ReadPropertyACK, ReadPropertyRequest};
+use bacnet_services::read_range::{
+    ReadRangeAck, ReadRangeReply, ReadRangeRequest, ReadRangeValidation,
+};
+use bacnet_services::rpm::ReadPropertyMultipleACK;
 use bacnet_types::{enums::ObjectType, error::Error, primitives::ObjectIdentifier};
+
+/// Only a short read against the complete service payload establishes its end offset.
+fn decode<T>(
+    bytes: &[u8],
+    service: &'static str,
+    parser: impl FnOnce(&[u8]) -> Result<T, Error>,
+) -> Result<T, Error> {
+    parser(bytes).map_err(|err| match err {
+        Error::BufferTooShort { need, have } if have == bytes.len() && need > have => {
+            Error::Decoding(err.to_decode_error(have).within(service))
+        }
+        other => other,
+    })
+}
+
+/// Decode the complete ReadPropertyMultiple ACK before accessing individual rows.
+pub(crate) fn read_property_multiple(bytes: &[u8]) -> Result<ReadPropertyMultipleACK, Error> {
+    decode(
+        bytes,
+        "ReadPropertyMultiple ACK",
+        ReadPropertyMultipleACK::decode,
+    )
+}
+
+/// Decode the ReadRange ACK, then check it against the original request.
+pub(crate) fn read_range(
+    request: &ReadRangeRequest,
+    bytes: &[u8],
+    validation: ReadRangeValidation,
+) -> Result<ReadRangeReply, Error> {
+    let ack = decode(bytes, "ReadRange ACK", ReadRangeAck::decode)?;
+    ReadRangeReply::check(request, ack, validation)
+}
 
 /// A ReadProperty acknowledgement for `request`: it must name the object,
 /// property and array index read (Clause 15.5). A request by the Device or
@@ -18,7 +55,7 @@ pub(crate) fn read_property(
     request: &ReadPropertyRequest,
     bytes: &[u8],
 ) -> Result<ReadPropertyACK, Error> {
-    let ack = ReadPropertyACK::decode(bytes)?;
+    let ack = decode(bytes, "ReadProperty ACK", ReadPropertyACK::decode)?;
     let requested = request.object_identifier;
     let reported = ack.object_identifier;
     // 15.5.2 permits these request aliases; 15.5.1.2 identifies the object
@@ -62,7 +99,7 @@ pub(crate) fn atomic_read_file(
     access: &FileAccessMethod,
     bytes: &[u8],
 ) -> Result<AtomicReadFileAck, Error> {
-    let ack = AtomicReadFileAck::decode(bytes)?;
+    let ack = decode(bytes, "AtomicReadFile ACK", AtomicReadFileAck::decode)?;
     validate_atomic_read_file_ack(access, &ack)?;
     Ok(ack)
 }
@@ -105,5 +142,52 @@ pub(crate) fn validate_atomic_read_file_ack(
             0,
             "AtomicReadFile ACK access method does not match the request",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bacnet_types::error::{DecodeError, DecodingKind};
+
+    #[test]
+    fn whole_ack_guard_preserves_slice_sizes_and_existing_errors() {
+        let bytes = [0u8; 4];
+        for (need, have) in [(3, 2), (4, 4), (3, 4), (7, 6)] {
+            let result = decode::<()>(&bytes, "test ACK", |_| {
+                Err(Error::BufferTooShort { need, have })
+            });
+            assert!(
+                matches!(result, Err(Error::BufferTooShort { need: n, have: h }) if (n,h) == (need,have))
+            );
+        }
+        let inner = DecodeError::new(DecodingKind::InvalidTag, 1, "inner tag {}")
+            .within("field")
+            .at_item(2)
+            .with_value(7);
+        assert!(
+            matches!(decode::<()>(&bytes, "test ACK", |_| Err(inner.into())),
+                         Err(Error::Decoding(fault)) if fault == inner)
+        );
+        assert!(
+            matches!(decode::<()>(&bytes, "test ACK", |_| Err(Error::Encoding("request".into()))),
+                         Err(Error::Encoding(message)) if message == "request")
+        );
+    }
+
+    #[test]
+    fn complete_file_ack_retains_inner_decoder_offset_and_details() {
+        let bytes = [0x11, 0x0e, 0x31, 0, 0x0f];
+        let access = FileAccessMethod::Stream {
+            file_start_position: 0,
+            requested_octet_count: 3,
+        };
+        let Error::Decoding(inner) = AtomicReadFileAck::decode(&bytes).unwrap_err() else {
+            panic!("expected the stream's missing file-data diagnostic");
+        };
+        assert_eq!((inner.kind, inner.offset), (DecodingKind::Missing, 2));
+        assert!(
+            matches!(atomic_read_file(&access, &bytes), Err(Error::Decoding(fault)) if fault == inner)
+        );
     }
 }

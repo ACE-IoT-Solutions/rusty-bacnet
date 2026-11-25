@@ -43,7 +43,7 @@ pub(crate) fn decode_ack(
     request: &ReadPropertyMultipleRequest,
     bytes: &[u8],
 ) -> Result<ReadPropertyMultipleACK, Error> {
-    let ack = ReadPropertyMultipleACK::decode(bytes)?;
+    let ack = crate::acks::read_property_multiple(bytes)?;
     let mismatch = || Error::decoding(0, "RPM ACK does not match ordered request occurrences");
     if request.list_of_read_access_specs.len() != ack.list_of_read_access_results.len() {
         return Err(mismatch());

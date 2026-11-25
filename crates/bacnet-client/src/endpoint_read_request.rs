@@ -1,8 +1,6 @@
 //! Closed set of endpoint reads sharing transaction and source-reporting ownership.
 use super::*;
-use bacnet_services::read_range::{
-    ReadRangeAck, ReadRangeReply, ReadRangeRequest, ReadRangeValidation,
-};
+use bacnet_services::read_range::{ReadRangeReply, ReadRangeRequest, ReadRangeValidation};
 use bacnet_services::rpm::{ReadPropertyMultipleACK, ReadPropertyMultipleRequest};
 use bacnet_types::enums::{ErrorClass, ErrorCode, ObjectType};
 
@@ -93,8 +91,7 @@ impl EndpointReadRequest {
                 crate::endpoint_rpm::decode_ack(request, bytes).map(EndpointReadAck::Multiple)
             }
             Self::Range(request, validation) => {
-                ReadRangeReply::check(request, ReadRangeAck::decode(bytes)?, *validation)
-                    .map(EndpointReadAck::Range)
+                crate::acks::read_range(request, bytes, *validation).map(EndpointReadAck::Range)
             }
         }
     }
@@ -156,6 +153,72 @@ impl EndpointReadAck {
         match self {
             Self::Range(reply) => Ok(reply),
             _ => Err(Error::Encoding("endpoint read result kind mismatch".into())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bacnet_types::constructed::{PropertyReference, ReadAccessSpecification};
+    use bacnet_types::error::DecodingKind;
+
+    #[test]
+    fn bounded_endpoint_read_profile_preserves_whole_ack_truncation() {
+        let object = ObjectIdentifier::new(ObjectType::MULTI_STATE_VALUE, 1).unwrap();
+        let property = PropertyIdentifier::PRESENT_VALUE;
+        let rp = EndpointReadRequest::Property(ReadPropertyRequest {
+            object_identifier: object,
+            property_identifier: property,
+            property_array_index: None,
+        });
+        let rpm = EndpointReadRequest::Multiple(ReadPropertyMultipleRequest {
+            list_of_read_access_specs: vec![ReadAccessSpecification {
+                object_identifier: object,
+                list_of_property_references: [property, PropertyIdentifier::DESCRIPTION]
+                    .map(|property_identifier| PropertyReference {
+                        property_identifier,
+                        property_array_index: None,
+                    })
+                    .to_vec(),
+            }],
+        });
+        let range = EndpointReadRequest::Range(
+            ReadRangeRequest {
+                object_identifier: ObjectIdentifier::new(ObjectType::TREND_LOG, 1).unwrap(),
+                property_identifier: PropertyIdentifier::LOG_BUFFER,
+                property_array_index: None,
+                range: None,
+            },
+            ReadRangeValidation::Strict,
+        );
+        for (request, bytes, need, context) in [
+            (rp, &[0x0c, 0, 0][..], 5, "ReadProperty ACK"),
+            (
+                rpm,
+                &[
+                    0x0c, 4, 0xc0, 0, 1, 0x1e, 0x29, 0x55, 0x4e, 0x21, 7, 0x4f, 0x29, 0x1c, 0x5e,
+                    0x92, 0,
+                ],
+                18,
+                "ReadPropertyMultiple ACK",
+            ),
+            (
+                range,
+                &[0x0c, 5, 0, 0, 1, 0x19, 0x83, 0x3a, 5],
+                10,
+                "ReadRange ACK",
+            ),
+        ] {
+            request.validate().unwrap();
+            let Error::Decoding(fault) = request.decode(bytes).unwrap_err() else {
+                panic!("expected structured truncation of {context}");
+            };
+            assert_eq!(fault.kind, DecodingKind::Missing);
+            assert_eq!(
+                (fault.offset, fault.context, fault.values),
+                (bytes.len(), context, [need, bytes.len() as u64])
+            );
         }
     }
 }

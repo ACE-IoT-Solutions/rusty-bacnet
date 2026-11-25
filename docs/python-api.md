@@ -7118,6 +7118,14 @@ for the human-readable diagnostic. Other native failures, including some
 short-buffer errors, still raise the base `BacnetError`. Catch
 `BacnetTransportError` to identify a transport failure.
 
+For a truncated ReadProperty, ReadPropertyMultiple, ReadRange or decoded
+AtomicReadFile ACK, the native service parser can report the required size
+against the complete service payload. In that case `kind` is `missing`,
+`offset` is the first absent byte (the payload length), and `values` holds
+the required and available sizes. `context` names the service ACK and
+`read_context` is `None`. A decoder working inside a field can report its
+own offset relative to that field.
+
 When the client has validated a ReadProperty ACK against the request and
 the binding then fails to interpret its value, `error.read_context` holds
 the responder's object identifier, property identifier, optional array index
