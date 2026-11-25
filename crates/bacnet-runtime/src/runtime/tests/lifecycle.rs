@@ -14,10 +14,9 @@ fn available() -> u16 {
 }
 
 fn bound(port: u16) {
-    assert_eq!(
-        socket(port).unwrap_err().kind(),
-        std::io::ErrorKind::AddrInUse
-    );
+    let error = socket(port).expect_err("an active attachment must retain its exclusive socket");
+    let conflict = RuntimeError::start(AttachmentId::from(0), error.into());
+    assert_eq!(conflict.code, crate::ErrorCode::BindConflict, "{conflict}");
 }
 
 fn after_start(
