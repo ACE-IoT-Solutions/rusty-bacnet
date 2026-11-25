@@ -489,8 +489,8 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     /// [`DeviceIdentity`](crate::identity::DeviceIdentity), omitting the database
     /// requests stock generation after receive-capacity resolution. Explicitly
     /// supplied databases, including empty ones, are preserved. Their selected
-    /// Device must match the resolved identity and declare segmentation
-    /// NO_SEGMENTATION, as the session's identity must for now. The session
+    /// Device must match the resolved identity. Without an identity a selected
+    /// Device must declare NO_SEGMENTATION. The session
     /// retains ownership even in `ClientOnly` mode; with a server role it
     /// hands the database to its server at start, and shares it from then
     /// on.

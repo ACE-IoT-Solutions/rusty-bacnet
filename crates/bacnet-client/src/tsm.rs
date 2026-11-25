@@ -267,6 +267,8 @@ pub struct Tsm {
     restricted: bool,
     /// The client's registrations go to its node's source Audit.
     diverted: bool,
+    pub(crate) request_reassembly:
+        Option<Box<crate::client::request_reassembly::RequestReassembly>>,
 }
 
 impl Tsm {
@@ -280,6 +282,7 @@ impl Tsm {
             leasing: None,
             restricted: false,
             diverted: false,
+            request_reassembly: None,
         }
     }
 

@@ -47,10 +47,12 @@ slots, 4 MiB saved-payload budget and 256-segment limit remain in force.
 
 `DeviceIdentity` is shared by full servers and endpoints, with a 5000 ms
 segment timeout. `with_apdu_segment_timeout_ms(...)` changes both.
-The narrow `EndpointSession` roles require `NO_SEGMENTATION` in both an explicit identity
-and the selected Device database, and reject unsupported declarations before
-ingress. Client timers remain caller-owned; this does not change their coupling
-or add segmentation to endpoint roles.
+An identified endpoint checks its selected Device against the identity. Its
+full server follows the Device declaration. Its full client receives segmented
+confirmed COV when that Device declares receive or both and uses the Device
+segment timeout for these requests. Its own outbound read transactions keep
+their configured segmented-response acceptance and APDU timeout. An anonymous
+session with a selected Device requires that Device to declare `NO_SEGMENTATION`.
 
 The Python full server accepts keyword-only `segmentation_supported` (default
 `Segmentation.NO_SEGMENTATION`) and `apdu_segment_timeout_ms` (default 5000). It constructs

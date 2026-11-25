@@ -41,6 +41,9 @@
 //! - an Abort or Segment-ACK sent by a requester is about a request the
 //!   node serves: it goes to the server seat, or to the endpoint's answer
 //!   queue when there is none;
+//! - the client seat gets a copy of a requester's Abort without reply
+//!   authority to end an incoming COV transfer. The server seat or endpoint
+//!   retains the original;
 //! - every network control goes to the client seat, beside the endpoint's
 //!   own Number owner. The server seat gets none: the node's one Number
 //!   owner answers for the network number.
@@ -404,6 +407,9 @@ pub struct NodeDevice {
 /// [module docs](self). Its parts are for the client that runs on it.
 #[non_exhaustive]
 pub struct ClientSeat<T: TransportPort> {
+    /// Segmentation capability and segment timeout advertised by the node's Device, when present.
+    #[doc(hidden)]
+    pub device_segmentation: Option<(bacnet_types::enums::Segmentation, std::time::Duration)>,
     /// The node's started network layer. The seat never stops it.
     #[doc(hidden)]
     pub network: Arc<NetworkLayer<T>>,
@@ -662,6 +668,7 @@ impl SeatSlot {
     ) -> Result<ClientSeat<T>, Error> {
         let made = self.make(Role::Client, &coordinator, roles, capacity)?;
         Ok(ClientSeat {
+            device_segmentation: None,
             network,
             coordinator,
             apdus: made.apdus,

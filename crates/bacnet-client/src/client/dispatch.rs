@@ -26,6 +26,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             event_tx,
             confirmed_cov_ack_policy,
             cov_registry,
+            cov_segment_timeout,
             device_tx,
             device_collision_tx,
             i_have_tx,
@@ -330,9 +331,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                 // must not, echoed back or spoofed, complete the very
                 // transaction it was trying to abort.
                 if !abt.sent_by_server {
-                    debug!(
-                        invoke_id = abt.invoke_id,
-                        "Ignoring Abort PDU with server=FALSE"
+                    Self::hand_off_abort(
+                        tsm,
+                        source_mac,
+                        source_network,
+                        abt.invoke_id,
+                        &provenance,
                     );
                     return;
                 }
@@ -391,6 +395,36 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                     return;
                 }
                 if req.segmented {
+                    if let Some(timeout) = cov_segment_timeout
+                        && is_confirmed_cov_notification(req.service_choice)
+                    {
+                        if let Some((reply, invoke_id)) = Self::hand_off_segment(
+                            request_reassembly::HandOff {
+                                tsm,
+                                network,
+                                cov_tx,
+                                registry: cov_registry,
+                                policy: confirmed_cov_ack_policy,
+                                limits,
+                            },
+                            timeout,
+                            source_mac,
+                            source_network,
+                            reply,
+                            req,
+                        ) {
+                            Self::send_server_abort(
+                                network,
+                                source_mac,
+                                source_network,
+                                reply,
+                                invoke_id,
+                                bacnet_types::enums::AbortReason::BUFFER_OVERFLOW,
+                            )
+                            .await;
+                        }
+                        return;
+                    }
                     Self::send_server_abort(
                         network,
                         source_mac,
@@ -407,7 +441,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                         network,
                         cov_tx,
                         confirmed_cov_ack_policy,
-                        cov_registry,
+                        cov_registry.map(Arc::as_ref),
                         source_mac,
                         source_network,
                         reply,

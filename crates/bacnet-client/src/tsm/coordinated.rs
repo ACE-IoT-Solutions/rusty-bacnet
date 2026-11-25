@@ -148,6 +148,7 @@ impl Tsm {
             leasing: Some(Arc::clone(&coordinator)),
             restricted: false,
             diverted: false,
+            request_reassembly: None,
             coordinator: Some(coordinator),
         }
     }
@@ -738,6 +739,7 @@ impl Tsm {
         self.cancel_all_transactions();
         self.coordinator = None;
         self.leasing = None;
+        self.request_reassembly = None;
     }
 
     #[cfg(test)]

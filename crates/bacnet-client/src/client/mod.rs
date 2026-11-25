@@ -903,6 +903,7 @@ mod builder_options;
 mod cov;
 mod cov_notifications;
 mod cov_registry;
+pub(crate) mod request_reassembly;
 pub use cov_registry::ConfirmedCovLease;
 mod cov_renewal;
 mod device_events;

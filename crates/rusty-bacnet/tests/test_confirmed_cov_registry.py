@@ -87,6 +87,50 @@ class ConfirmedCovRegistryTests(unittest.IsolatedAsyncioTestCase):
             target = rb.RoutedTarget(50, mac(self.peer), router="127.0.0.1:1")
             await self.strict_exchange(client, (ip, int(port)), target, None)
 
+    async def segmented_apdu(self, to, invoke, seq, more, payload, network=None):
+        frame = bytes((0x0C if more else 0x08, 5, invoke, seq, 2, 1)) + payload
+        self.sock.sendto(relay(network, STATION, frame), to)
+        return await self.routed_reply(to, network)
+
+    async def routed_reply(self, to, network):
+        datagram, source = await self.receive()
+        self.assertEqual(source, to)
+        reply = request_of(datagram)
+        self.assertEqual((reply["dnet"], reply["dadr"]),
+                         (network, None if network is None else STATION))
+        return reply["apdu"]
+
+    async def test_endpoint_segmented_cov_follows_device_receive_capability(self):
+        for capability in (None, rb.Segmentation.SEGMENTED_TRANSMIT,
+                           rb.Segmentation.SEGMENTED_RECEIVE, rb.Segmentation.SEGMENTED_BOTH):
+            with self.subTest(capability=capability):
+                async with rb.BipEndpoint(**self.kwargs, device_instance=100, vendor_id=42,
+                                          segmentation=capability) as endpoint:
+                    ip, port = (await endpoint.local_address()).rsplit(":", 1)
+                    to = (ip, int(port))
+                    client = await endpoint.client(confirmed_cov_subscription_limit=1)
+                    events = await client.cov_notifications()
+                    body = notification(8, 17.0)[2:]
+                    first = await self.segmented_apdu(to, 10, 0, True, body[:8], 50)
+                    if capability in (None, rb.Segmentation.SEGMENTED_TRANSMIT):
+                        self.assertEqual(first, bytes.fromhex("71 0a 04"))
+                        continue
+                    self.assertEqual(first, bytes.fromhex("41 0a 00 02"))
+                    last = await self.segmented_apdu(to, 10, 1, False, body[8:], 50)
+                    self.assertEqual(last, bytes.fromhex("41 0a 01 02"))
+                    self.assertEqual(await self.routed_reply(to, 50),
+                                     bytes.fromhex("50 0a 01 91 05 91 4f"))
+                    body = notification(7, 17.0)[2:]
+                    lease = await client.expect_confirmed_cov(
+                        rb.RoutedTarget(50, STATION, router=self.peer), 7, AI_1)
+                    self.assertEqual(await self.segmented_apdu(to, 11, 0, True, body[:8], 50),
+                                     bytes.fromhex("41 0b 00 02"))
+                    self.assertEqual(await self.segmented_apdu(to, 11, 1, False, body[8:], 50),
+                                     bytes.fromhex("41 0b 01 02"))
+                    self.assertEqual(await self.routed_reply(to, 50), bytes.fromhex("20 0b 01"))
+                    self.assertEqual((await asyncio.wait_for(anext(events), 5)).subscriber_process_identifier, 7)
+                    lease.close()
+
     async def test_default_seat_acknowledges_without_registration(self):
         async with rb.BipEndpoint(**self.kwargs, device_instance=100, vendor_id=42) as endpoint:
             ip, port = (await endpoint.local_address()).rsplit(":", 1)

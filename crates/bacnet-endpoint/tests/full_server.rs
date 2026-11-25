@@ -19,6 +19,9 @@ mod wire;
 #[path = "full_server/node.rs"]
 mod node;
 
+#[path = "full_server/segmented_cov.rs"]
+mod segmented_cov;
+
 /// What a session refuses before its link starts when it would build a
 /// full server (#2617).
 #[path = "full_server/refusals.rs"]

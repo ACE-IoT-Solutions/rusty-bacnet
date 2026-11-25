@@ -24,7 +24,10 @@ subscription lifecycle.
 
 Strict COV admission currently covers single-object notifications. The strict
 client returns unknown-subscription for confirmed multiple-object notifications.
-Incoming segmented confirmed COV requests remain a separate receive limitation.
+Both confirmed COV forms can be reassembled before admission. An identified
+endpoint enables this with Device receive or both. Its default Device still
+declares no segmentation. A completed nonzero final segment cannot repeat an
+event, while a retransmission of the whole request can.
 Unconfirmed events remain available to passive consumers. The adapter owns
 SubscribeCOV, renewals, cancellation, process identifier allocation and event
 scheduling. Reusing an identifier immediately can admit a late notification
@@ -37,8 +40,14 @@ whose wire identity matches the new subscription.
 | Edge value and inventory projection | Compare legacy enum labels, raw values, null and empty values and vendor declarations. Preserve Object_List completeness before tombstoning. Compare canonical state JSON and hashes for schedule, calendar, notification and reference projections. |
 | Edge trend and file consumers | Exercise a trend cursor through MAX → 0 → 1, committing its checkpoint only after PubAck. Reproduce the existing four-byte big-endian length framing for each record-file record. |
 | Edge attachment lifecycle | Drain work by attachment generation during replacement. Exercise readiness in heartbeat and HTTP, failed replacement and rollback. Set device identity and router forwarding policy for multi-attachment deployments. |
-| Linux deployment | Build and install pinned x86_64 and aarch64 wheels. Exercise rootless multi-UID listeners on port 47808, per-interface broadcast isolation, source address selection, bind failures and rebind. |
+| Linux deployment | Qualify pinned x86_64 and aarch64 release wheels in the deployed host-network layout, including public interface broadcast isolation, source selection, bind failures and rebind. |
 | Wire and performance qualification | Capture idle, discovery and subscription traffic under the downstream workload to check the no-hidden-traffic requirement. Run representative performance and physical network qualification. |
 
-Local macOS loopback results cover the transactions above. Linux, rootless
-container, physical network and performance qualification remain open.
+At `dc3e77de2`, 11 selected transport tests passed on Linux arm64. A rootless
+Podman test installed the CPython 3.13 wheel and drove two endpoints under
+different UIDs on separate loopback addresses sharing port 47808. It checked
+broadcast reception, source IP and port, independent property values, bind
+conflicts and recovery after a failed replacement. The local trace is
+`target/downstream-linux/results/cross-uid-dc3.json`. That run used an
+isolated Linux network namespace. Host-network deployment, x86_64, physical
+network and performance qualification remain open.

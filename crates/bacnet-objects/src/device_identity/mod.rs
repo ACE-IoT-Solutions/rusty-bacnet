@@ -83,18 +83,15 @@ impl DeviceIdentity {
         Ok(self)
     }
 
-    /// Overrides segmentation support for a matching full server.
-    ///
-    /// An EndpointSession still requires NO_SEGMENTATION and refuses any
-    /// other identity before its link starts. A full server uses this
-    /// declaration with the segment timeout supplied by this identity.
+    /// Sets the Device segmentation declaration. A full server and the
+    /// endpoint client's incoming confirmed COV receiver follow this setting.
     pub fn with_segmentation(mut self, segmentation: Segmentation) -> Self {
         self.segmentation_supported = segmentation;
         self
     }
 
-    /// Sets the Device and full-server segment timeout. EndpointSession roles
-    /// require segmentation NO_SEGMENTATION; client timers remain caller-owned.
+    /// Sets the Device segment timeout used by the full server and by an
+    /// endpoint client receiving segmented confirmed COV.
     pub fn with_apdu_segment_timeout_ms(mut self, timeout_ms: u64) -> Self {
         self.apdu_segment_timeout_ms = timeout_ms;
         self

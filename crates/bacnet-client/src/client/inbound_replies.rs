@@ -8,6 +8,9 @@ pub(super) struct InboundReply {
     reply_tx: Option<oneshot::Sender<Bytes>>,
 }
 impl InboundReply {
+    pub(super) fn route(&self) -> &ResponseRoute {
+        &self.route
+    }
     pub(super) fn new(route: ResponseRoute, reply_tx: Option<oneshot::Sender<Bytes>>) -> Self {
         Self { route, reply_tx }
     }

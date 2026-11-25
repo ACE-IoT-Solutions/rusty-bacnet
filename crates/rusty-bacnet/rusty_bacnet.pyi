@@ -6293,9 +6293,9 @@ class BACnetClient:
         An unsubscribed sender's broadcast can bring a
         ``CovNotificationMultiple`` too, so check ``kind`` (or use
         ``isinstance``) before reading a ``CovNotification``'s fields. A
-        segmented COV-multiple request is answered with an Abort (the client
-        does not support segmentation; tracked in #2646), and a confirmed
-        notification sent again, its answer lost, is published again.
+        segmented confirmed notification is reassembled when receive segmentation is
+        enabled. The endpoint client follows its Device's receive capability. A whole
+        request retransmitted after completion can be published again.
         """
         ...
 

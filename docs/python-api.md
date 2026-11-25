@@ -2679,10 +2679,12 @@ client by default acknowledges a confirmed notification of either kind whether o
 knows the subscription, so match one by its `subscriber_process_identifier`
 and source. An unsubscribed sender's broadcast can bring a
 `CovNotificationMultiple` too, so check `kind` (or `isinstance`) before
-reading a `CovNotification`'s fields. A segmented COV-multiple request is
-answered with an Abort (the client does not support segmentation; tracked in
-#2646), and a confirmed notification sent again, its answer lost, is
-published again.
+reading a `CovNotification`'s fields. A standalone client with segmented
+receive enabled reassembles both confirmed COV forms. An endpoint client
+uses the Device's declared receive capability and segment timeout for incoming
+notifications. It applies the same COV admission policy after reassembly.
+A repeated nonzero final segment after completion draws an Abort. A sender
+that starts the whole request again may cause a second publication.
 
 ```python
 notifications = await client.cov_notifications()
@@ -7699,8 +7701,10 @@ async with endpoint:
   and Who-Has among them, so the endpoint is discoverable, and the Device's
   Protocol_Services_Supported lists them, with the client's I-Am, I-Have and
   COV notifications beside them. A ConfirmedEventNotification is the
-  server's to acknowledge. Segmentation stays as the identity declares it:
-  `segmentation` must still be NO_SEGMENTATION on an endpoint.
+  server's to acknowledge. The Device defaults to `NO_SEGMENTATION`.
+  Set `segmentation` to `Segmentation.SEGMENTED_RECEIVE` or
+  `Segmentation.SEGMENTED_BOTH` to receive segmented confirmed COV.
+  The client's requests can still accept segmented read responses under the default.
 - **Who may write.** The keyword-only `mutation_policy` takes what
   `BACnetServer`'s does: `"permissive"` (any peer), `"deny_all"` (no peer,
   COV subscriptions included) or a callable that gets a `MutationContext`

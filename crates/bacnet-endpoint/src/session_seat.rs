@@ -12,14 +12,22 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
             return Err(Error::Encoding("endpoint session is not running".into()));
         }
         let server = matches!(self.role, SessionRole::ServerOnly | SessionRole::Both);
-        self.ingress
+        let mut seat = self
+            .ingress
             .as_ref()
             .ok_or_else(|| Error::Encoding("endpoint session ingress owner is missing".into()))?
             .client_seat(
                 Arc::clone(&self.coordinator),
                 SeatRoles::new(server),
                 CLIENT_SEAT_QUEUE,
+            )?;
+        seat.device_segmentation = self.identity.as_ref().map(|id| {
+            (
+                id.segmentation(),
+                std::time::Duration::from_millis(id.apdu_segment_timeout_ms()),
             )
+        });
+        Ok(seat)
     }
 
     /// A full [`BACnetClient`] on this session's link, beside its server

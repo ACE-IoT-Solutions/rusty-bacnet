@@ -587,7 +587,7 @@ impl<T: TransportPort + 'static> BACnetServer<T> {
                                     source_network.clone(),
                                     req,
                                 );
-                                ack_to_send = initial_ack;
+                                ack_to_send = Some(initial_ack);
                                 if !req.more_follows {
                                     final_total = Some(1);
                                 }

@@ -82,7 +82,10 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         // changes (#2617).
         preparation.session.default_server();
         preparation.session.check_server_builder()?;
-        preparation.session.validate_segmentation().await?;
+        preparation
+            .session
+            .validate_anonymous_segmentation()
+            .await?;
         preparation.session.prepare_identity().await?;
         preparation.session.check_server_settings().await?;
         let routes = preparation.session.prepare_source_audit_reporter()?;
@@ -97,20 +100,14 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
         Ok(routes)
     }
 
-    /// The session's roles take no segmented request or answer yet: refuse
-    /// an identity, or an attached database's Device, that declares
-    /// segmentation other than NO_SEGMENTATION.
-    async fn validate_segmentation(&self) -> Result<(), Error> {
+    /// With an identity, prepare_identity validates the selected Device against
+    /// its declarations. An anonymous session cannot adopt a segmentation
+    /// capability or segment timeout from an unbound database.
+    async fn validate_anonymous_segmentation(&self) -> Result<(), Error> {
         use bacnet_types::enums::{PropertyIdentifier, Segmentation};
         use bacnet_types::primitives::PropertyValue;
-        if self
-            .identity
-            .as_ref()
-            .is_some_and(|identity| identity.segmentation() != Segmentation::NO_SEGMENTATION)
-        {
-            return Err(Error::Encoding(
-                "EndpointSession roles require segmentation NO_SEGMENTATION".into(),
-            ));
+        if self.identity.is_some() {
+            return Ok(());
         }
         if let Some(database) = self.database.as_ref() {
             let database = database.read().await;

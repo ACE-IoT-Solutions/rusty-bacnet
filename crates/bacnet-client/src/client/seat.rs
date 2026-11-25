@@ -19,6 +19,7 @@ use bacnet_endpoint_core::seat::{
 };
 use bacnet_network::layer::{ApduReceiver, ReceivedApdu, ReceivedNetworkControl};
 use bacnet_network::network_number::NumberControl;
+use bacnet_types::enums::Segmentation;
 
 use super::dispatch_turn::{Turn, TurnOrder};
 use super::lifecycle::Controls;
@@ -468,6 +469,16 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         )?;
         config.validate_window()?;
         options.validate()?;
+        let cov_timeout = match seat.device_segmentation {
+            Some((segmentation, timeout)) => matches!(
+                segmentation,
+                Segmentation::SEGMENTED_BOTH | Segmentation::SEGMENTED_RECEIVE
+            )
+            .then_some(timeout),
+            None => config
+                .segmented_response_accepted
+                .then(|| Duration::from_millis(config.apdu_timeout_ms)),
+        };
         let ClientSeat {
             network,
             coordinator,
@@ -496,6 +507,12 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
             dcc: (dcc, options.node_dcc_override),
             _follows: None,
         };
-        Ok(Self::assemble(config, options, inbound, coordinator))
+        Ok(Self::assemble(
+            config,
+            options,
+            inbound,
+            coordinator,
+            cov_timeout,
+        ))
     }
 }

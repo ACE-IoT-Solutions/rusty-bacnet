@@ -149,7 +149,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     ///
     /// The notifications such a subscription brings arrive on
     /// [`Self::cov_notifications`] as [`COVEvent::Multiple`], beside the
-    /// single-object ones, in the order they came.
+    /// single-object ones.
     pub async fn subscribe_cov_property_multiple(
         &self,
         to: &(impl ToStation + ?Sized),
@@ -162,8 +162,11 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
     /// object ([`COVEvent::Object`]: ConfirmedCOVNotification and
     /// UnconfirmedCOVNotification) or about several ([`COVEvent::Multiple`]:
     /// ConfirmedCOVNotificationMultiple and UnconfirmedCOVNotificationMultiple),
-    /// in the order they arrive. Each call returns a new independent receiver.
+    /// as each notification finishes decoding. Each call returns a new independent receiver.
     ///
+    /// A segmented confirmed notification is reassembled before it reaches the
+    /// policy. A standalone client follows its configured receive setting, and
+    /// an endpoint client follows its Device's receive capability and timeout.
     /// By default the client acknowledges and publishes any decoded confirmed
     /// notification. With strict admission it publishes only confirmed
     /// single-object notifications admitted by [`Self::expect_confirmed_cov`].

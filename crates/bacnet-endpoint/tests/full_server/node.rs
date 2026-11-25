@@ -78,7 +78,7 @@ fn disabled(result: Result<(), Error>) -> bool {
 
 /// A ConfirmedCOVNotification from the other client, for the node's client
 /// to acknowledge.
-fn cov_notification(invoke_id: u8) -> Bytes {
+pub(super) fn cov_notification(invoke_id: u8) -> Bytes {
     let mut parameters = BytesMut::new();
     COVNotificationRequest {
         subscriber_process_identifier: 1,

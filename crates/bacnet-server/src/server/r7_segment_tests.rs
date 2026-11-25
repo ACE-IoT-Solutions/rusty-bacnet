@@ -9,7 +9,7 @@ use bacnet_types::enums::EngineeringUnits;
 fn open(
     received: &ReceivedApdu,
     request: &ConfirmedRequestPdu,
-) -> (SegRecvKey, SegmentedRequestState, Option<SegmentAckPdu>) {
+) -> (SegRecvKey, SegmentedRequestState, SegmentAckPdu) {
     let mut payload = RequestPayload::new(request);
     payload
         .save_new(0, request.service_request.clone(), Some(0))
@@ -71,13 +71,7 @@ async fn r7_segment_opening_context_drives_ack_reassembly_and_retarget_abort() {
         .await;
     let (key, state, ack) = open(&received, &first);
     let mut states = HashMap::from([(key.clone(), state)]);
-    send_ack(
-        &context,
-        &received,
-        &received.response_route(),
-        ack.unwrap(),
-    )
-    .await;
+    send_ack(&context, &received, &received.response_route(), ack).await;
     assert!(matches!(
         routed.response(2000, 4).await.0,
         Apdu::SegmentAck(_)

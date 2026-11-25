@@ -10497,12 +10497,12 @@ bring, or `Multiple(ReceivedCOVNotificationMultiple)` for those of a
 SubscribeCOVPropertyMultiple subscription (#2654). Both carry the same
 source fields and delivery, and `COVEvent` reads the fields they share
 (`subscriber_process_identifier()`, `time_remaining()`, `source_mac()` and
-so on); `Station::is_source_of` matches either by its source. The client
-acknowledges a confirmed notification of either form whether or not it knows
-the subscription, and publishes it; `confirmed_cov_notification_ack_policy`
-sees the `COVEvent` and may answer otherwise. A notification sent again,
-its answer lost, is acknowledged and published again. A segmented confirmed
-notification is aborted unread (#2646). `ManagedCOVSubscription` renews
+so on); `Station::is_source_of` matches either by its source. By default the client acknowledges and publishes a decoded confirmed
+notification of either form. A custom response policy may choose another
+answer. With strict admission, the registry checks the complete notification
+before policy evaluation or publication. Enabled receive segmentation brings
+both forms through the same admission. A whole request retried after a lost
+answer may be published again. `ManagedCOVSubscription` renews
 SubscribeCOV and SubscribeCOVProperty subscriptions only.
 
 `COVNotificationMultipleRequest::decode` is lenient about times: the clause
@@ -13656,6 +13656,12 @@ let session = BipEndpointBuilder::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOS
 assert!(session.bvlc_tables().is_some());
 # Ok::<(), bacnet_types::error::Error>(())
 ```
+
+A seated client reassembles incoming confirmed COV in either form when the
+Device declares segmented receive or both. It uses the Device segment timeout,
+then checks its current subscription policy on the complete request. The
+request's segment and service replies preserve the inbound route. The client's
+own request settings continue to control segmented read responses.
 
 ### Source Audit of the full client
 

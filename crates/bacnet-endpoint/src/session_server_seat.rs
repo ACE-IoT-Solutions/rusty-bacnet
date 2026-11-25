@@ -54,11 +54,9 @@ impl<T: TransportPort + 'static> EndpointSession<T> {
     ///   notifications) beside the server's services (Clause 12.11.14);
     /// - Segmentation_Supported, Max_Segments_Accepted and
     ///   APDU_Segment_Timeout are the identity's, which the server follows.
-    ///   A [`full_client`](Self::full_client) keeps its own segmentation
-    ///   settings for now (a later step of #2617): it accepts segmented
-    ///   answers even where the Device says it receives none, and it
-    ///   aborts a segmented ConfirmedCOVNotification, which it can't
-    ///   reassemble;
+    ///   A [`full_client`](Self::full_client) follows the Device's receive capability
+    ///   and segment timeout for incoming confirmed COV. Its outbound requests
+    ///   retain their own segmented-response acceptance;
     /// - a registered Network Port ([`with_registered_network_port`](Self::with_registered_network_port))
     ///   is the session's to reserve and publish, and the server serves it
     ///   for wildcard reads; written values take effect through the

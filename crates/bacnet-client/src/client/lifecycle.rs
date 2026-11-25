@@ -161,7 +161,16 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         )?;
         let coordinator = Arc::new(OutboundTransactionCoordinator::new());
         let inbound = Own::new(Arc::new(network), apdu_rx, network_control_rx);
-        Ok(Self::assemble(config, options, inbound, coordinator))
+        let cov_timeout = config
+            .segmented_response_accepted
+            .then(|| Duration::from_millis(config.apdu_timeout_ms));
+        Ok(Self::assemble(
+            config,
+            options,
+            inbound,
+            coordinator,
+            cov_timeout,
+        ))
     }
 
     /// Build the client on a started network layer: its state, its dispatch
@@ -173,6 +182,7 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         options: ClientOptions,
         mut inbound: S,
         coordinator: Arc<OutboundTransactionCoordinator>,
+        cov_segment_timeout: Option<Duration>,
     ) -> Self {
         let network = Arc::clone(inbound.network());
         let local_mac = MacAddr::from_slice(network.local_mac());
@@ -375,7 +385,8 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
                                         device_table: &device_table_dispatch,
                                         network: network_dispatch,
                                         cov_tx: &cov_tx_dispatch,
-                                        cov_registry: dispatch_registry.as_deref(),
+                                        cov_registry: dispatch_registry.as_ref(),
+                                        cov_segment_timeout,
                                         event_tx: &event_tx_dispatch,
                                         confirmed_cov_ack_policy: &confirmed_cov_ack_policy,
                                         device_tx: &device_tx_dispatch,
@@ -545,6 +556,10 @@ impl<T: TransportPort + 'static> BACnetClient<T> {
         join_owned_task(&mut self.dispatch_task).await;
         join_owned_task(&mut self.device_purge_task).await;
         self.tsm.lock().cancel_all_transactions();
+        let reassembly = self.tsm.lock().request_reassembly.take();
+        if let Some(reassembly) = reassembly {
+            reassembly.end().await;
+        }
         // On a seat the node owns the network layer and stops it (#2617).
         if self.device_table.asking.seated {
             return Ok(());
@@ -568,6 +583,7 @@ impl<T: TransportPort> Drop for BACnetClient<T> {
         self.abort_owned_tasks();
         if let Some(mut tsm) = self.tsm.try_lock() {
             tsm.cancel_all_transactions();
+            tsm.request_reassembly = None;
         }
     }
 }

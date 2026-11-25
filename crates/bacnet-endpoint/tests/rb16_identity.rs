@@ -673,7 +673,7 @@ fn identity_maps_its_segment_timeout_to_both_database_builders_and_full_server()
 }
 
 #[tokio::test(start_paused = true)]
-async fn endpoint_roles_reject_non_none_identity_before_consuming_transport() {
+async fn endpoint_roles_reject_invalid_or_mismatched_identity_before_consuming_transport() {
     for role in [
         SessionRole::ClientOnly,
         SessionRole::ServerOnly,
@@ -694,8 +694,16 @@ async fn endpoint_roles_reject_non_none_identity_before_consuming_transport() {
             let error = endpoint
                 .start()
                 .await
-                .expect_err("the session's roles cannot claim segmentation yet");
-            assert!(error.to_string().contains("segmentation NO_SEGMENTATION"));
+                .expect_err("invalid or mismatched Device declaration");
+            if mode == Segmentation::from_raw(64) {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("invalid Device segmentation support")
+                );
+            } else {
+                assert!(error.to_string().contains("must match identity"), "{error}");
+            }
             // Failed validation leaves configuration and the unstarted transport
             // reusable. A valid identity can start the exact same session.
             let mut endpoint = endpoint.device(identity);
@@ -706,7 +714,7 @@ async fn endpoint_roles_reject_non_none_identity_before_consuming_transport() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn endpoint_roles_reject_a_segmented_database_and_allow_correction() {
+async fn endpoint_roles_reject_anonymous_or_mismatched_segmented_database_and_allow_correction() {
     for role in [
         SessionRole::ClientOnly,
         SessionRole::ServerOnly,
@@ -731,11 +739,12 @@ async fn endpoint_roles_reject_a_segmented_database_and_allow_correction() {
             .start()
             .await
             .expect_err("database cannot claim unsupported segmentation");
-        assert!(
-            error
-                .to_string()
-                .contains("selected Device requires segmentation NO_SEGMENTATION")
-        );
+        let expected = if role == SessionRole::ClientOnly {
+            "selected Device requires segmentation NO_SEGMENTATION"
+        } else {
+            "must match identity"
+        };
+        assert!(error.to_string().contains(expected), "{error}");
         let mut endpoint = endpoint.with_database(identity.build_database().unwrap());
         endpoint.start().await.unwrap();
         endpoint.stop().await.unwrap();

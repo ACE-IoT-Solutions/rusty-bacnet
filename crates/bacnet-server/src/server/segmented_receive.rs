@@ -390,6 +390,7 @@ pub(super) fn classify_non_next_segment(
         );
     }
     state.initial_sequence_number = state.last_acked_seq;
+    state.window_pos = 0;
     state.duplicate_count = 0;
     Some(SegmentAckPdu {
         negative_ack: true,
@@ -407,9 +408,8 @@ pub(super) fn initial_state(
     source_mac: MacAddr,
     source_network: Option<NpduAddress>,
     request: &ConfirmedRequestPdu,
-) -> (SegmentedRequestState, Option<SegmentAckPdu>) {
+) -> (SegmentedRequestState, SegmentAckPdu) {
     let actual_window_size = request.proposed_window_size.unwrap_or(0);
-    let should_ack = !request.more_follows || actual_window_size <= 1;
     let now = runtime_clock::now();
     let state = SegmentedRequestState {
         source_mac,
@@ -423,17 +423,17 @@ pub(super) fn initial_state(
         initial_sequence_number: 0,
         duplicate_count: 0,
         last_acked_seq: 0,
-        window_pos: if should_ack { 0 } else { 1 },
+        window_pos: 0,
         actual_window_size,
         accepted_segments: 1,
     };
-    let ack = should_ack.then_some(SegmentAckPdu {
+    let ack = SegmentAckPdu {
         negative_ack: false,
         sent_by_server: true,
         invoke_id: request.invoke_id,
         sequence_number: request.sequence_number.unwrap_or(0),
         actual_window_size,
-    });
+    };
     (state, ack)
 }
 
