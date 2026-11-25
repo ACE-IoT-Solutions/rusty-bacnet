@@ -200,6 +200,18 @@ failed. The neighbor remained readable across replacement and restoration.
 The receipt checks distinct Linux host UIDs, a common network namespace and
 release of the sockets. [Run instructions and loopback scope](../../scripts/interop/host_network/README.md).
 
+## Normal B/IP traffic capture
+
+The opt-in shared and standalone loopback fixture captures every record on the
+only interface in a private Linux namespace. Its expected trace includes
+startup, a finite idle period with local health/lease operations, two directed
+discoveries, RP/RPM and a strict segmented COV subscription with an explicit
+renewal and cancellation. With the local network number unknown, the first
+directed Who-Is emits a local What-Is-Network-Number followed by the requested
+Who-Is. A second directed Who-Is has no network-number question. The first
+question counts toward the downstream traffic budget. The run retains its pcap and reports any unexpected frame, including
+an unrelated-port UDP negative control. [Fixture and commands](../../scripts/interop/traffic_capture/README.md)
+
 ## Remaining acceptance work
 
 | Owner | Required evidence |
@@ -209,4 +221,4 @@ release of the sockets. [Run instructions and loopback scope](../../scripts/inte
 | Edge COV lifecycle | Register and retain leases before subscribing. Exercise renewal, cancellation, late notifications and delivery across attachment replacement. |
 | Edge attachment lifecycle | Drain work by attachment generation during replacement. Exercise readiness in heartbeat and HTTP, failed replacement and rollback. Set device identity and router forwarding policy for multi-attachment deployments. |
 | Linux deployment | Qualify pinned x86_64 and aarch64 release wheels in the deployed host-network layout, including public interface broadcast isolation, source selection, bind failures and rebind. |
-| Wire and performance qualification | Capture idle, discovery and subscription traffic under the downstream workload to check the no-hidden-traffic requirement. Measure shared endpoint and Python workloads with concurrent COV traffic, including latency and resident memory. Exercise physical networks and a vendor controller in the deployment. BACnet4J supplies independent software-peer evidence on loopback. |
+| Wire and performance qualification | Compare the isolated normal-profile trace with the operational traffic budget, legacy trace and deployed Edge workload, including FDR and learned routes where used. Measure shared endpoint and Python workloads with concurrent COV traffic, including latency and resident memory. Exercise physical networks and a vendor controller in the deployment. BACnet4J supplies independent software-peer evidence on loopback. |
