@@ -450,7 +450,11 @@ def __aexit__(
 ### BipEndpoint.client
 
 ```python
-def client(self) -> Awaitable[BACnetClient]
+def client(
+    self,
+    *,
+    confirmed_cov_subscription_limit: int | None = None,
+) -> Awaitable[BACnetClient]
 ```
 
 The `BACnetClient` on this endpoint's socket (#2617): the
@@ -489,7 +493,7 @@ Active announced IP and actual UDP port; RuntimeError outside active state.
 ### BipEndpoint.status
 
 ```python
-def status(self) -> Awaitable[EndpointStatus]
+def status(self) -> Awaitable[BipEndpointStatus]
 ```
 
 Bounded snapshot (RuntimeError before start/after close).
@@ -932,7 +936,11 @@ def __aexit__(
 ### ScEndpoint.client
 
 ```python
-def client(self) -> Awaitable[BACnetClient]
+def client(
+    self,
+    *,
+    confirmed_cov_subscription_limit: int | None = None,
+) -> Awaitable[BACnetClient]
 ```
 
 The `BACnetClient` on this endpoint's hub connection (#2617): the
@@ -1394,7 +1402,11 @@ def __aexit__(
 ### MstpEndpoint.client
 
 ```python
-def client(self) -> Awaitable[BACnetClient]
+def client(
+    self,
+    *,
+    confirmed_cov_subscription_limit: int | None = None,
+) -> Awaitable[BACnetClient]
 ```
 
 The `BACnetClient` on this endpoint's serial link (#2617): the
@@ -1445,6 +1457,14 @@ def broadcast_i_am(self) -> Awaitable[None]
 
 Broadcast one I-Am (MS/TP local broadcast).
 
+## BipEndpointStatus
+
+`class BipEndpointStatus(EndpointStatus)`
+
+Attributes:
+
+- `transport_health: BipReceiveHealth`
+
 ## EndpointStatus
 
 `class EndpointStatus(TypedDict)`
@@ -1487,6 +1507,22 @@ Keys:
 - `client_seat_control_full_drops: int`: Network controls dropped the same way.
 - `server_seat_apdus: int`: APDUs handed to the endpoint's server (#2617), over the session's run.
 - `server_seat_full_drops: int`: APDUs the server's queue refused, never waited for, as the client's are counted: a confirmed request counted here went unanswered, and its requester's retry is its recovery.
+
+## BipReceiveHealth
+
+`class BipReceiveHealth(TypedDict)`
+
+Local receive sockets. Counts describe separate subnet broadcast listeners,
+and the group flags describe a separate B/IP multicast listener.
+
+Keys:
+
+- `ready: bool`
+- `primary_receive_active: bool`
+- `broadcast_listeners_required: int`
+- `broadcast_listeners_active: int`
+- `group_listener_required: bool`
+- `group_listener_active: bool`
 
 ## ReadRangeResult
 
@@ -1539,8 +1575,11 @@ Keys:
 
 `class ReadPropertyResult(TypedDict)`
 
+One RPM ACK row. decode\_error carries a local value projection failure.
+
 Keys:
 
+- `decode_error: BacnetError | None`
 - `property_id: PropertyIdentifier`
 - `array_index: int | None`
 - `value: PropertyValue | bytes | None`

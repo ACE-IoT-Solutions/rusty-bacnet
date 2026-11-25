@@ -63,6 +63,32 @@ Attributes:
 - `error_parameters: Optional[bytes]`
 - `vt_session_identifiers: Optional[list[int]]`
 
+## BacnetDecodingError
+
+`class BacnetDecodingError(BacnetError)`
+
+A native decoder reported a structured fault. The byte offset is local to that decoder.
+Unclassified native failures can still raise the base BacnetError.
+
+For a short read against the entire RP, RPM, ReadRange or decoded AtomicReadFile
+ACK, kind is "missing", offset is the service payload length, values contains
+the required and available sizes, and context names the ACK.
+The diagnostic label takes up to two numeric values. Unused slots are zero.
+The decoder may identify a context and zero-based item index.
+read\_context holds the exact value octets when Python projection of a
+correlated ReadProperty ACK or an individual ReadPropertyMultiple ACK value failed.
+It is None for other decoding failures.
+
+Attributes:
+
+- `kind: Literal["invalid_encoding", "out_of_range", "overflow", "invalid_tag", "missing", "trailing", "unsupported"]`
+- `offset: int`
+- `context: str | None`
+- `label: str`
+- `values: tuple[int, int]`
+- `index: int | None`
+- `read_context: PropertyReadContext | None`
+
 ## BacnetTimeoutError
 
 `class BacnetTimeoutError(BacnetError)`

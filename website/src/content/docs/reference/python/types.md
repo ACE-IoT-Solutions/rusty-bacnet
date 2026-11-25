@@ -142,7 +142,7 @@ past the end.
 
 ## PropertyReadContext
 
-Address and exact property value octets returned in a successful RP or RPM ACK.
+Address and exact octets of a value returned in an RP or RPM ACK.
 
 Properties:
 
@@ -192,7 +192,8 @@ docs/python-api.md, "Typed constructed values"): Recipient\_List
 (`"port_permission"`: `(port_id, enabled)`), a Group's
 List\_Of\_Group\_Members (`"read_access_specification"`:
 `(object_id, [(property_id, array_index), ...])`) and Present\_Value
-(`"read_access_result"`: a `ReadAccessResult`), a Command's Action
+(`"read_access_result"`: an object\_id and embedded results with
+property\_id, array\_index, value and error), a Command's Action
 (`"action_list"`: a list of `ActionCommand` with every key), the
 object reference lists and Accompaniment
 (`"device_object_reference"`: an `ObjectIdentifier`, or
@@ -244,8 +245,8 @@ Lighting\_Command, a vendor's proprietary property) is `tagged`
 back unchanged. Every tag reads without the property's datatype
 (Clause 20.2.1.6); a context-tagged primitive's contents stay
 `bytes`, since only the property's datatype says what they are.
-- A UCS-4 CharacterString reads as Unicode text. A scalar string writes as UTF-8.
-  Read `.read_context.raw` for the original RP/RPM value octets, or the COV row's `raw` field.
+- UCS-4 CharacterStrings decode to Unicode text. Scalar strings write as UTF-8.
+RP/RPM read contexts and COV observation rows retain the received octets.
 - Content this type has no form for (a DBCS or JIS string, bad
 UTF-8, an ENUMERATED past 32 bits, anywhere in the value), or a tree
 past the decoder's 10,000 elements, is `application_data` holding
@@ -1043,6 +1044,14 @@ def allows(self, priority: int) -> bool
 
 Whether a relinquish at `priority` may go.
 
+## CovMultiplePropertyValue
+
+`class CovMultiplePropertyValue(CovPropertyValue)`
+
+Attributes:
+
+- `time_of_change: tuple[int, int, int, int] | None`
+
 ## CovNotification
 
 A Change-of-Value notification about one object received from a remote
@@ -1060,7 +1069,7 @@ Properties:
 - `source_mac: bytes`
 - `source_network: Optional[int]`
 - `source_address: Optional[bytes]`
-- `values: Any`: List of property value change entries: dicts with `property_id`, `array_index` and `value`. `value` is a `PropertyValue` shaped as a read result is, or `bytes` when the octets' framing is broken.
+- `values: list[CovPropertyValue]`: Each entry includes the received value octets in `raw`. `value` is a `PropertyValue` shaped as a read result is, or `bytes` when the octets' framing is broken.
 
 ## CovNotificationMultiple
 
@@ -1081,7 +1090,7 @@ Properties:
 - `source_mac: bytes`
 - `source_network: Optional[int]`
 - `source_address: Optional[bytes]`
-- `objects: Any`: The objects reported, in order: dicts with `monitored_object_identifier` and `values`. Each value is a dict with `property_id`, `array_index`, `value` (as in `CovNotification.values`) and `time_of_change`, an `(hour, minute, second, hundredths)` tuple, or `None` when the subscription didn't ask for timestamps. One property may appear more than once, a timestamped one changing several times.
+- `objects: list[CovObjectValues]`: The objects reported, in order: dicts with `monitored_object_identifier` and `values`. Each value is a dict with `property_id`, `array_index`, `raw`, `value` (as in `CovNotification.values`) and `time_of_change`, an `(hour, minute, second, hundredths)` tuple, or `None` when the subscription didn't ask for timestamps. One property may appear more than once, a timestamped one changing several times.
 
 ## CovNotificationIterator
 
@@ -1970,6 +1979,26 @@ Keys:
 - `audit_log: ObjectIdentifier`
 - `records: list[AuditLogRecordResult]`
 - `no_more_items: bool`
+
+## CovPropertyValue
+
+`class CovPropertyValue(TypedDict)`
+
+Keys:
+
+- `property_id: PropertyIdentifier`
+- `array_index: int | None`
+- `value: PropertyValue | bytes`
+- `raw: bytes`
+
+## CovObjectValues
+
+`class CovObjectValues(TypedDict)`
+
+Keys:
+
+- `monitored_object_identifier: ObjectIdentifier`
+- `values: list[CovMultiplePropertyValue]`
 
 ## ForeignRegistrationStatus
 

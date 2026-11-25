@@ -130,6 +130,7 @@ def __init__(
     router: Optional[BACnetRouter] = None,
     write_policy: Optional[WritePolicy] = None,
     resolve_scope: Literal["local", "global"] | int | None = None,
+    confirmed_cov_subscription_limit: int | None = None,
 ) -> None
 ```
 
@@ -290,9 +291,10 @@ def read_property(
 Read a single property from a remote device.
 
 ACK object/property/index must match. Device/Network Port instance 4194303
-requests accept a same-type concrete ACK. Malformed/mismatched ACKs raise
-BacnetError; this method returns the property value, not ACK metadata,
-shaped as `PropertyValue` describes for read results.
+requests accept a same-type concrete ACK. An identity mismatch raises
+BacnetDecodingError with read\_context set to None. If Python cannot
+interpret the validated ACK’s value, a structured decoding error
+carries its original value octets in read\_context.raw.
 `address` is a `str` on the local link, or a `RoutedTarget` for
 a station behind a router (#2617), as `RoutedTarget` describes.
 
@@ -1048,6 +1050,22 @@ The table holds one device per address: adding an instance at an
 address that holds another replaces it, so `get_device()` no longer
 finds the instance that was there (#2560).
 
+### BACnetClient.expect_confirmed_cov
+
+```python
+def expect_confirmed_cov(
+    self,
+    address: str | RoutedTarget,
+    subscriber_process_identifier: int,
+    monitored_object_identifier: ObjectIdentifier,
+    *,
+    initiating_device_instance: int | None = None,
+) -> Awaitable[ConfirmedCovLease]
+```
+
+Register before sending SubscribeCOV. Keep the lease alive through renewals;
+closing or dropping it withdraws this local expectation.
+
 ### BACnetClient.subscribe_cov
 
 ```python
@@ -1182,7 +1200,7 @@ def cov_notifications(self) -> Awaitable[CovNotificationIterator]
 Get an async iterator for incoming COV notifications of both kinds:
 `CovNotification` (one object) and `CovNotificationMultiple`
 (several objects, from `subscribe_cov_property_multiple`). The client
-acknowledges a confirmed one of either kind whether or not it knows the
+by default acknowledges a confirmed one of either kind whether or not it knows the
 subscription; match one by its `subscriber_process_identifier` and
 source.
 An unsubscribed sender's broadcast can bring a
@@ -2259,6 +2277,18 @@ def aclose(self) -> Awaitable[None]
 ```
 
 Idempotently stop this subscription, without stopping its owner.
+
+## ConfirmedCovLease
+
+Local expectation for confirmed single-object COV notifications.
+
+### ConfirmedCovLease.close
+
+```python
+def close(self) -> None
+```
+
+Withdraw this expectation without sending a request.
 
 ## _DeviceReadBatchResult
 
