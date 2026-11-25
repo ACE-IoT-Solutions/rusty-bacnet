@@ -4,7 +4,7 @@ import pickle
 import unittest
 from contextlib import asynccontextmanager
 
-from rusty_bacnet import (BACnetClient, BACnetServer, BACnetTimeStamp, BacnetError,
+from rusty_bacnet import (BACnetClient, BACnetServer, BACnetTimeStamp, BacnetDecodingError, BacnetError,
                          BacnetProtocolError, ErrorClass, ErrorCode, ObjectIdentifier,
                          ObjectType, PropertyIdentifier, PropertyValue)
 from typed_reference_peer import ReferencePeer, Target
@@ -143,12 +143,24 @@ class PeerReferenceReadTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_broken_service_framing_remains_a_read_error(self):
         for target in (TARGETS[0], TARGETS[3]):
-            for malformed in (b"\x0c\x00\x00", b"\x0e\x1f"):
-                for route in ("rp", "rpm"):
-                    with self.subTest(target=target, route=route, raw=malformed):
-                        with self.assertRaises(BacnetError) as raised:
-                            await ReferencePeer(self, target).read(malformed, route=route)
-                        self.assertIs(type(raised.exception), BacnetError)
+            # Truncated RP hits the native short-buffer error. Each of the
+            # other frames reaches a decoder that identifies a tag fault.
+            for route, malformed, offset in (
+                ("rp", b"\x0c\x00\x00", None),
+                ("rpm", b"\x0c\x00\x00", 20),
+                ("rp", b"\x0e\x1f", 9),
+                ("rpm", b"\x0e\x1f", 10),
+            ):
+                with self.subTest(target=target, route=route, raw=malformed):
+                    with self.assertRaises(BacnetError) as raised:
+                        await ReferencePeer(self, target).read(malformed, route=route)
+                    error = raised.exception
+                    if offset is None:
+                        self.assertIs(type(error), BacnetError)
+                    else:
+                        self.assertIs(type(error), BacnetDecodingError)
+                        self.assertEqual((error.kind, error.offset), ("invalid_tag", offset))
+                        self.assertIsNone(error.read_context)
         # Malformed inner RPM values rejected upstream are covered separately at
         # the Rust converter boundary, where that category remains raw bytes.
 

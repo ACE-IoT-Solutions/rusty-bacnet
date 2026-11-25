@@ -163,13 +163,17 @@ fn application_elements(octets: &[u8]) -> Result<Option<Vec<usize>>, Error> {
 
 /// Decode a ReadProperty ACK's value, shaped by the object, property and
 /// array index the ACK names.
-pub(crate) fn decode_read_ack(ack: &ReadPropertyACK) -> Result<PyPropertyValue, Error> {
+pub(crate) fn decode_read_ack(ack: ReadPropertyACK) -> pyo3::PyResult<PyPropertyValue> {
     decode_ack_value(
         ack.object_identifier,
         ack.property_identifier,
         ack.property_array_index,
         &ack.property_value,
     )
+    .map_err(|error| match error {
+        Error::Decoding(fault) => crate::errors::decoding_error(fault, Some(ack.into())),
+        other => crate::errors::to_py_err(other),
+    })
 }
 
 /// Decode a successful RP or RPM value and retain the fields returned by its ACK.

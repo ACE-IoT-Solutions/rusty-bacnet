@@ -84,7 +84,7 @@ pub(crate) use property_reference::{
     check_device, local_device, localize, property_reference_from_py, property_references_from_py,
 };
 pub use property_value::PyPropertyValue;
-use read_context::PyPropertyReadContext;
+pub(crate) use read_context::PyPropertyReadContext;
 pub(crate) use read_value::{decode_read_ack, decode_read_value};
 pub(crate) use routed_target::PyRoutedTarget;
 pub(crate) use rpm_wpm::{

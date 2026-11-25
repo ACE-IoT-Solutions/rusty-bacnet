@@ -6,7 +6,7 @@ import unittest
 from async_compat import async_timeout, sock_recvfrom, sock_sendto
 
 from rusty_bacnet import (
-    BACnetClient, BACnetServer, BipEndpoint, BacnetError,
+    BACnetClient, BACnetServer, BipEndpoint, BacnetDecodingError,
     ObjectIdentifier, ObjectType, PropertyIdentifier, PropertyValue,
 )
 
@@ -82,8 +82,13 @@ class ReadPropertyCorrelationTests(unittest.IsolatedAsyncioTestCase):
                                     response = b"\x81\x0a" + (len(payload) + 4).to_bytes(2, "big") + payload
                                     await sock_sendto(loop, peer, response, remote)
                                     if fault:
-                                        with self.assertRaises(BacnetError):
+                                        with self.assertRaises(BacnetDecodingError) as raised:
                                             await asyncio.wait_for(pending, 2)
+                                        error = raised.exception
+                                        self.assertIsNone(error.read_context)
+                                        self.assertEqual(error.offset, 0)
+                                        self.assertEqual(error.kind, "invalid_tag" if fault == "malformed"
+                                                         else "invalid_encoding")
                                     else:
                                         self.assertEqual(await asyncio.wait_for(pending, 2), PropertyValue.unsigned(42))
                                 finally:
@@ -92,3 +97,52 @@ class ReadPropertyCorrelationTests(unittest.IsolatedAsyncioTestCase):
                                     await asyncio.gather(pending, return_exceptions=True)
             finally:
                 await endpoint.close()
+
+    async def test_correlated_legacy_event_parameters_preserve_exact_bytes_on_projection_failure(self):
+        from test_batch_concurrency import receive
+        from test_batch_results import reply
+        from test_typed_tags_reads import reader
+
+        # The service decoder accepts this historical opaque representation.
+        # Its extended tag is outside the range the generic value reader takes.
+        raw = bytes.fromhex("fe ff 01 ff ff 3f 49 08 02 ff ff")
+        obj = ObjectIdentifier(ObjectType.EVENT_ENROLLMENT, 1)
+        prop = PropertyIdentifier.EVENT_PARAMETERS
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as peer:
+            peer.bind(("127.0.0.1", 0))
+            peer.setblocking(False)
+            address = f"127.0.0.1:{peer.getsockname()[1]}"
+            for endpoint in (False, True):
+                async with reader(endpoint) as client:
+                    await client.add_device(9102, address)
+                    for method in ("read_property", "read_property_from_device", "read_property_from_devices"):
+                        with self.subTest(endpoint=endpoint, method=method):
+                            if method == "read_property_from_devices":
+                                operation = client.read_property_from_devices([(9102, obj, prop, None)])
+                            elif method == "read_property_from_device":
+                                operation = client.read_property_from_device(9102, obj, prop)
+                            else:
+                                operation = client.read_property(address, obj, prop)
+                            wire, remote = await receive(peer)
+                            self.assertEqual(wire[9], 12)
+                            await reply(peer, remote, bytes((0x30, wire[8], 12)) + wire[10:]
+                                        + b"\x3e" + raw + b"\x3f")
+                            if method == "read_property_from_devices":
+                                row, = await asyncio.wait_for(operation, 2)
+                                self.assertIsNone(row["value"])
+                                error = row["error"]
+                                self.assertIsInstance(error, BacnetDecodingError)
+                            else:
+                                with self.assertRaises(BacnetDecodingError) as raised:
+                                    await asyncio.wait_for(operation, 2)
+                                error = raised.exception
+                            self.assertEqual((error.kind, error.offset), ("invalid_tag", 1))
+                            self.assertIsNone(error.index)
+                            self.assertIsNone(error.context)
+                            self.assertEqual(error.values, (255, 0))
+                            self.assertEqual(str(error), "decoding error at offset 1: invalid extended tag number 255")
+                            context = error.read_context
+                            self.assertEqual(context.object_id, obj)
+                            self.assertEqual(context.property_id, prop.to_raw())
+                            self.assertIsNone(context.array_index)
+                            self.assertEqual(context.raw, raw)

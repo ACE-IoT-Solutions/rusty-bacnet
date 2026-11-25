@@ -47,9 +47,7 @@ impl BACnetClient {
             }
             .map_err(to_py_err)?;
 
-            let value = decode_read_ack(&ack).map_err(to_py_err)?;
-
-            Ok(value)
+            decode_read_ack(ack)
         })
     }
 
@@ -319,14 +317,14 @@ impl BACnetClient {
                         dict.set_item("request_index", r.request_index)?;
                         dict.set_item("device_instance", r.device_instance)?;
                         match r.result {
-                            Ok(ack) => match decode_read_ack(&ack) {
+                            Ok(ack) => match decode_read_ack(ack) {
                                 Ok(value) => {
                                     dict.set_item("value", value)?;
                                     dict.set_item("error", py.None())?;
                                 }
                                 Err(e) => {
                                     dict.set_item("value", py.None())?;
-                                    dict.set_item("error", to_py_err(e).value(py))?;
+                                    dict.set_item("error", e.value(py))?;
                                 }
                             },
                             Err(e) => {

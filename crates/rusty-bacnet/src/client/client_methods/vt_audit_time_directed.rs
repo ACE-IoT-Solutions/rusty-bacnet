@@ -338,8 +338,7 @@ impl BACnetClient {
                 .read_property(&to, oid, pid, array_index)
                 .await
                 .map_err(to_py_err)?;
-            let value = decode_read_ack(&ack).map_err(to_py_err)?;
-            Ok(value)
+            decode_read_ack(ack)
         })
     }
 

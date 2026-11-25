@@ -14,13 +14,24 @@ use pyo3::types::PyBytes;
     skip_from_py_object
 )]
 #[derive(Debug, Clone)]
-pub(super) struct PyPropertyReadContext {
+pub(crate) struct PyPropertyReadContext {
     object: ObjectIdentifier,
     #[pyo3(get)]
     pub(super) property_id: u32,
     #[pyo3(get)]
     pub(super) array_index: Option<u32>,
     octets: Bytes,
+}
+
+impl From<bacnet_services::read_property::ReadPropertyACK> for PyPropertyReadContext {
+    fn from(ack: bacnet_services::read_property::ReadPropertyACK) -> Self {
+        Self {
+            object: ack.object_identifier,
+            property_id: ack.property_identifier.to_raw(),
+            array_index: ack.property_array_index,
+            octets: Bytes::from(ack.property_value),
+        }
+    }
 }
 
 #[pymethods]

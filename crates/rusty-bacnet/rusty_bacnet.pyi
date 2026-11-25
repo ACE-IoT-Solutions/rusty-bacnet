@@ -3976,6 +3976,24 @@ class BacnetProtocolError(BacnetError):
     error_parameters: Optional[bytes]
     vt_session_identifiers: Optional[list[int]]
 
+class BacnetDecodingError(BacnetError):
+    """A native decoder reported a structured fault. The byte offset is local to that decoder.
+    Unclassified native failures can still raise the base BacnetError.
+
+    The diagnostic label takes up to two numeric values. Unused slots are zero.
+    The decoder may identify a context and zero-based item index.
+    read_context holds the exact value octets when Python projection of a
+    correlated ReadProperty ACK failed. It is None for other decoding failures.
+    """
+    kind: Literal["invalid_encoding", "out_of_range", "overflow", "invalid_tag", "missing", "trailing", "unsupported"]
+    offset: int
+    context: str | None
+    label: str
+    values: tuple[int, int]
+    index: int | None
+    read_context: PropertyReadContext | None
+
+
 class BacnetTimeoutError(BacnetError):
     """Raised when a BACnet operation times out."""
     ...
@@ -5488,9 +5506,10 @@ class BACnetClient:
         """Read a single property from a remote device.
 
         ACK object/property/index must match. Device/Network Port instance 4194303
-        requests accept a same-type concrete ACK. Malformed/mismatched ACKs raise
-        BacnetError; this method returns the property value, not ACK metadata,
-        shaped as ``PropertyValue`` describes for read results.
+        requests accept a same-type concrete ACK. An identity mismatch raises
+        BacnetDecodingError with read_context set to None. If Python cannot
+        interpret the validated ACK’s value, a structured decoding error
+        carries its original value octets in read_context.raw.
         ``address`` is a ``str`` on the local link, or a ``RoutedTarget`` for
         a station behind a router (#2617), as ``RoutedTarget`` describes.
         """

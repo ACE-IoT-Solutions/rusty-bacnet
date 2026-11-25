@@ -2383,8 +2383,9 @@ where a node is, not which VMAC it has. Find the VMAC with
 
 Clients, an endpoint's included, validate the ACK's object, property and array
 index. Device or Network Port instance `4194303` requests accept a concrete
-same-type identifier reported by the peer; unresolved wildcard and mismatched
-ACKs raise `BacnetError`. The return value is the decoded property value,
+same-type identifier reported by the peer. An unresolved wildcard or identity
+mismatch raises `BacnetDecodingError` with `read_context` set to `None`.
+The return value is the decoded property value,
 with every element kept as [Read results](#read-results) describes.
 The bundled server resolves the Device alias. Full-server RP/RPM and endpoint RP
 also resolve the Network Port alias when that owner explicitly registers a port;
@@ -7050,6 +7051,7 @@ All BACnet errors are raised as Python exceptions:
 | Exception | Meaning |
 |-----------|---------|
 | `BacnetError` | Base exception for all BACnet errors |
+| `BacnetDecodingError` | A native decoder reported a structured fault. `kind` identifies it and `offset` is the byte position within that decoder’s input. |
 | `BacnetProtocolError` | A remote or local BACnet protocol check returned an error (class + code) |
 | `BacnetTimeoutError` | Request timed out (APDU retries exhausted) |
 | `BacnetRejectError` | Remote device rejected the request |
@@ -7087,6 +7089,25 @@ except BacnetAbortError as e:
 except BacnetError as e:
     print(f"BACnet error: {e}")
 ```
+
+`BacnetDecodingError.kind` is one of `invalid_encoding`, `out_of_range`,
+`overflow`, `invalid_tag`, `missing`, `trailing` or `unsupported`.
+The decoder reports a `label` and two numeric `values` used by its message.
+Unused numeric slots are zero. The optional `context` names the production
+or member being decoded, and the optional `index` identifies a zero-based
+list position. Applications can branch on `kind` and display `str(error)`
+for the human-readable diagnostic. Other native failures, including some
+short-buffer errors, still raise the base `BacnetError`. Catch
+`BacnetTransportError` to identify a transport failure.
+
+When the client has validated a ReadProperty ACK against the request and
+the binding then fails to interpret its value, `error.read_context` holds
+the responder's object identifier, property identifier, optional array index
+and the original value bytes in `.raw`. This applies to direct and routed
+`read_property`, discovery-based `read_property_from_device`, and individual
+errors returned by `read_property_from_devices`. An invalid or mismatched
+ACK leaves `read_context` as `None`. RPM retains its existing per-value
+fallback to raw bytes.
 
 `BacnetProtocolError` has `error_class` and `error_code` attributes, `ErrorClass` and `ErrorCode` members that compare equal to the wire integers; `BacnetRejectError.reason` and `BacnetAbortError.reason` are `RejectReason` and `AbortReason` members (#1816). Some services answer with a structured error body (Clause 21) that adds fields; each attribute below is `None` unless the device's error carried it:
 

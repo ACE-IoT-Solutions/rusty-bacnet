@@ -24,6 +24,8 @@ create_exception!(rusty_bacnet, BacnetBvlcNakError, BacnetError);
 create_exception!(rusty_bacnet, BacnetBvlcUnexpectedResponseError, BacnetError);
 create_exception!(rusty_bacnet, BacnetNetworkRejectError, BacnetError);
 
+mod decoding;
+pub(crate) use decoding::decoding_error;
 mod lookup;
 pub(crate) use lookup::{Lookup, lookup_error};
 #[cfg(test)]
@@ -95,6 +97,7 @@ const REQUEST_CUT_OFF: &str = "the request ended without an answer: the client s
 /// threads, so the attributes are set through the exit gate (#1002).
 pub fn to_py_err(err: Error) -> PyErr {
     match err {
+        Error::Decoding(fault) => decoding_error(fault, None),
         Error::Remote(RemoteError::Error { class, code }) => protocol_error(
             format!(
                 "BACnet error: class={} code={}",
@@ -434,6 +437,7 @@ fn reference<'py>(
 /// Register exception types with the module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("BacnetError", m.py().get_type::<BacnetError>())?;
+    decoding::register(m)?;
     let protocol = m.py().get_type::<BacnetProtocolError>();
     for name in DETAIL_ATTRIBUTES {
         protocol.setattr(name, m.py().None())?;
