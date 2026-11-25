@@ -9247,8 +9247,9 @@ rollback restores the prior configuration and keeps its revision and generation.
 Failed cleanup or rollback closes command admission and retains unresolved
 owners. Health reports these owners until shutdown is confirmed.
 
-`stop` closes admission, cancels batches and waits for shutdown within the
-configured deadline. After cancellation or a timeout, call `stop` again to
+`stop` first waits for lifecycle admission, including any reconcile transaction
+already in progress. It then closes command admission, cancels batches and
+applies the configured shutdown budget to draining batches and attachments. After cancellation or a timeout, call `stop` again to
 resume the remaining joins. Keep the Tokio executor running through cleanup.
 Dropping the executor or process cannot confirm task completion.
 
