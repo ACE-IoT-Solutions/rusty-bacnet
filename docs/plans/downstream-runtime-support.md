@@ -1,10 +1,50 @@
 # Downstream BACnet runtime support
 
-The ACE 0.17.1 candidate starts at `753eec9ff`. The edge migration branch
+The ACE private Python index ships `ace-rusty-bacnet==0.17.2` from commit
+`aa5c452364663155b77429729b2dd84f46f74b8f`. Its 0.17.1 base was
+`753eec9ff`. The edge migration branch
 `feature/rusty-bacnet-migration` records its requirements in
 `docs/reviews/bacnet-rusty-full-parity-2026-11-24.md` at local commit
 `b718d9dc`. The reference Python backend at `39256f1` includes local receive
 readiness (`cf6f40a`) and Linux `SO_REUSEADDR` behavior (`39256f1`).
+
+## Published 0.17.2
+
+CI, Native and the build-only release workflow passed on the published source
+commit. The release workflow built and smoke-tested artifacts on five platforms.
+[CI](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45644635261) ·
+[Native](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45644640939) ·
+[Release build](https://github.com/ACE-IoT-Solutions/rusty-bacnet/actions/runs/45646121969)
+
+All 11 files served by the ACE private index matched the staged SHA-256 hashes.
+They comprise CPython 3.10 and 3.13 wheels for Linux x86_64 and aarch64, macOS
+x86_64 and arm64, and Windows amd64, plus the source archive. Fresh installs
+from that index passed smoke tests on macOS arm64 with both Python versions
+and on Linux aarch64 with Python 3.13. The unpacked source archive passed
+`cargo check --locked --offline -p rusty-bacnet --lib`.
+
+| Published artifact used in these checks | SHA-256 |
+| --- | --- |
+| CPython 3.10, macOS arm64 | `9a85673e1314692a678e0876c5a023bd752d5643460bb1577a5d57ded044f8c9` |
+| CPython 3.13, macOS arm64 | `1cdccecf619683015270b637ee28aced147d9754debe5adc3a53fb64e3b93ed8` |
+| CPython 3.13, manylinux 2.17 aarch64 | `4a5b795ae65184b1088c6dc42f4df58892d5f1a80af4b2f4b3589bb4d41c4f73` |
+| Source archive | `871569982588aa50b35ef84447f7b32f523338427890e6dd205f28b57b7ca895` |
+
+The published manylinux aarch64 wheel also passed the segmented COV probe with
+bacpypes3 0.0.106. The standalone and shared endpoint clients each received
+13-segment requests, returned seven SegmentACKs per request, rejected the
+unknown subscription and delivered the admitted notification with its full
+6,000-character description. On the same wheel, UIDs 10001 and 10002 shared
+UDP port 47808 on different loopback addresses in an isolated Linux namespace.
+Both received broadcasts and returned their own Device identities. An occupied
+address refused another bind, and restoring one endpoint after a failed
+replacement left the other readable.
+
+The local release records are under `dist/python/0.17.2/`.
+`publication-manifest.json` and `published-index-verification.json` record
+each filename, size and digest. `sdist-verification.json` records the offline
+check, `release-readiness.json` records the gates and installation smokes, and
+`linux-qualification/release-*.json` contains the COV and cross-UID traces.
 
 ## Native behavior available to the adapter
 
@@ -93,6 +133,7 @@ results are in `target/downstream-linux/perf-bcc0422c2/summary.md` and
 | --- | --- |
 | Edge value and inventory projection | Compare legacy enum labels, raw values, null and empty values and vendor declarations. Preserve Object_List completeness before tombstoning. Compare canonical state JSON and hashes for schedule, calendar, notification and reference projections. |
 | Edge trend and file consumers | Exercise a trend cursor through MAX → 0 → 1, committing its checkpoint only after PubAck. Reproduce the existing four-byte big-endian length framing for each record-file record. |
+| Edge COV lifecycle | Register and retain leases before subscribing. Exercise renewal, cancellation, late notifications and delivery across attachment replacement. |
 | Edge attachment lifecycle | Drain work by attachment generation during replacement. Exercise readiness in heartbeat and HTTP, failed replacement and rollback. Set device identity and router forwarding policy for multi-attachment deployments. |
 | Linux deployment | Qualify pinned x86_64 and aarch64 release wheels in the deployed host-network layout, including public interface broadcast isolation, source selection, bind failures and rebind. |
-| Wire and performance qualification | Capture idle, discovery and subscription traffic under the downstream workload to check the no-hidden-traffic requirement. Measure shared endpoint and Python workloads with concurrent COV traffic, including latency and resident memory. Qualify physical networks. |
+| Wire and performance qualification | Capture idle, discovery and subscription traffic under the downstream workload to check the no-hidden-traffic requirement. Measure shared endpoint and Python workloads with concurrent COV traffic, including latency and resident memory. Exercise physical networks and an independent vendor peer in addition to bacpypes3. |

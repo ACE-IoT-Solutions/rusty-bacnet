@@ -51,6 +51,7 @@ Use local Codebase Memory as the first structural code-intelligence layer. The c
   - No unpolled sibling future holding a queued lock waiter (#1494).
   - Futures used in `select!` must be cancel-safe.
 - **Releases.** Tagging publishes irreversibly to crates.io, PyPI and GitHub Releases, and needs the maintainer's explicit approval for each release. The flow is in `_spec/roadmap-0.15/09-release-process.md`.
+- **Source tag before package publication.** Before the first upload of a version to any package index, push its `v<version>` tag to `origin` and verify that the remote tag resolves to the exact commit used to build and test the release artifacts. This applies to the ACE private index for `ace-rusty-bacnet` and to direct uploads such as `uv publish`. A feature branch alone cannot authorize an upload. Publish the matching GitHub Release with the tested artifacts. Published tags and artifacts are immutable. Corrections require a new version.
 - **Local-only files.** `_spec/` and `CLAUDE.md` are gitignored. Never commit them.
 
 ## Default behavior
