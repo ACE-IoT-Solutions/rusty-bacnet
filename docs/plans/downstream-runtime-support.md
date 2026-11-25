@@ -190,6 +190,16 @@ returned the strict admission Error and SimpleACK. The captured APDUs and
 returned values were checked on each path. [Fixture, exact wheel hashes and
 segment counts](../../scripts/interop/bacnet4j/README.md).
 
+## Separate rootless containers
+
+On Linux arm64 the candidate wheel from `97015c3d3` also passed the shared
+port and failed replacement sequence with the two attachments in separate
+containers using the Podman guest host network. The controller verified
+both I-Am source addresses and Device names, and a third UID's occupied bind
+failed. The neighbor remained readable across replacement and restoration.
+The receipt checks distinct Linux host UIDs, a common network namespace and
+release of the sockets. [Run instructions and loopback scope](../../scripts/interop/host_network/README.md).
+
 ## Remaining acceptance work
 
 | Owner | Required evidence |
