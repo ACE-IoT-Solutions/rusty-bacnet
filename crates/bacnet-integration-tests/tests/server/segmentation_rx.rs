@@ -52,6 +52,29 @@ async fn send_raw_apdu(
         .unwrap();
 }
 
+async fn assert_segment_ack(
+    rx: &mut bacnet_network::layer::ApduReceiver,
+    invoke_id: u8,
+    sequence_number: u8,
+    actual_window_size: u8,
+    negative_ack: bool,
+) {
+    let frame = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+        .await
+        .expect("timed out waiting for SegmentAck")
+        .expect("channel closed while waiting for SegmentAck");
+    assert_eq!(
+        bacnet_encoding::apdu::decode_apdu(frame.apdu).unwrap(),
+        Apdu::SegmentAck(bacnet_encoding::apdu::SegmentAck {
+            invoke_id,
+            sequence_number,
+            actual_window_size,
+            negative_ack,
+            sent_by_server: true,
+        })
+    );
+}
+
 /// When a client sends a segmented ConfirmedRequest (ReadProperty split across
 /// two segments), the server should reassemble it, process the full request,
 /// and return a correct ReadPropertyACK.
@@ -283,12 +306,7 @@ async fn server_naks_segmented_request_gap_with_last_good_sequence() {
     );
     send_raw_apdu(&raw_network, &server_mac, seg0).await;
 
-    assert!(
-        tokio::time::timeout(Duration::from_millis(200), raw_rx.recv())
-            .await
-            .is_err(),
-        "server should not ACK before the negotiated window boundary"
-    );
+    assert_segment_ack(&mut raw_rx, invoke_id, 0, 2, false).await;
 
     let seg2 = segmented_read_property_pdu(
         invoke_id,
@@ -299,21 +317,7 @@ async fn server_naks_segmented_request_gap_with_last_good_sequence() {
     );
     send_raw_apdu(&raw_network, &server_mac, seg2).await;
 
-    let received = tokio::time::timeout(Duration::from_secs(3), raw_rx.recv())
-        .await
-        .expect("Timed out waiting for negative SegmentAck")
-        .expect("Channel closed while waiting for negative SegmentAck");
-    let decoded = bacnet_encoding::apdu::decode_apdu(received.apdu).unwrap();
-    match decoded {
-        Apdu::SegmentAck(sa) => {
-            assert!(sa.sent_by_server);
-            assert!(sa.negative_ack);
-            assert_eq!(sa.invoke_id, invoke_id);
-            assert_eq!(sa.sequence_number, 0);
-            assert_eq!(sa.actual_window_size, 2);
-        }
-        other => panic!("Expected SegmentAck, got {:?}", other),
-    }
+    assert_segment_ack(&mut raw_rx, invoke_id, 0, 2, true).await;
 
     server.stop().await.unwrap();
 }
@@ -328,49 +332,23 @@ async fn server_acks_segmented_request_at_window_boundary() {
     let mut raw_rx = raw_network.start().await.unwrap();
     let raw_network = Arc::new(raw_network);
 
-    let payload = read_property_service_payload();
-    let mid = payload.len() / 2;
+    let payload = Bytes::from(read_property_service_payload());
     let invoke_id = 45;
-
-    let seg0 = segmented_read_property_pdu(
-        invoke_id,
-        0,
-        true,
-        Some(2),
-        Bytes::copy_from_slice(&payload[..mid]),
-    );
+    let seg0 = segmented_read_property_pdu(invoke_id, 0, true, Some(2), payload.slice(..1));
     send_raw_apdu(&raw_network, &server_mac, seg0).await;
-    assert!(
-        tokio::time::timeout(Duration::from_millis(200), raw_rx.recv())
-            .await
-            .is_err(),
-        "server should wait for the second segment before ACKing a two-segment window"
-    );
+    assert_segment_ack(&mut raw_rx, invoke_id, 0, 2, false).await;
 
-    let seg1 = segmented_read_property_pdu(
-        invoke_id,
-        1,
-        true,
-        Some(2),
-        Bytes::copy_from_slice(&payload[mid..]),
-    );
+    // The first complete window after the opening ACK covers segments 1 and 2.
+    // Any early ACK for segment 1 would be the next reply and fail the check.
+    let seg1 = segmented_read_property_pdu(invoke_id, 1, true, Some(2), payload.slice(1..2));
     send_raw_apdu(&raw_network, &server_mac, seg1).await;
+    let seg2 = segmented_read_property_pdu(invoke_id, 2, true, Some(2), payload.slice(2..3));
+    send_raw_apdu(&raw_network, &server_mac, seg2).await;
+    assert_segment_ack(&mut raw_rx, invoke_id, 2, 2, false).await;
 
-    let received = tokio::time::timeout(Duration::from_secs(3), raw_rx.recv())
-        .await
-        .expect("Timed out waiting for SegmentAck")
-        .expect("Channel closed while waiting for SegmentAck");
-    let decoded = bacnet_encoding::apdu::decode_apdu(received.apdu).unwrap();
-    match decoded {
-        Apdu::SegmentAck(sa) => {
-            assert!(sa.sent_by_server);
-            assert!(!sa.negative_ack);
-            assert_eq!(sa.invoke_id, invoke_id);
-            assert_eq!(sa.sequence_number, 1);
-            assert_eq!(sa.actual_window_size, 2);
-        }
-        other => panic!("Expected SegmentAck, got {:?}", other),
-    }
+    let seg3 = segmented_read_property_pdu(invoke_id, 3, false, Some(2), payload.slice(3..));
+    send_raw_apdu(&raw_network, &server_mac, seg3).await;
+    assert_segment_ack(&mut raw_rx, invoke_id, 3, 2, false).await;
 
     server.stop().await.unwrap();
 }

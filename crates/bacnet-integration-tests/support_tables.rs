@@ -80,7 +80,7 @@ const PYTHON_METHOD_SUFFIXES: &[&str] = &[
 /// ReadProperty and ReadPropertyMultiple readers, and `device`, whose
 /// `Device` handle's calls send those two and WriteProperty, #2561); the
 /// rest send
-/// none: lifecycle, accessors (`write_policy`, `resolve_scope`), event
+/// none: local COV expectations, lifecycle, accessors (`write_policy`, `resolve_scope`), event
 /// streams, and BVLL or network-layer messages. Generation
 /// fails on a method that is neither here nor named after a service, and on
 /// an entry here the stub no longer has.
@@ -99,6 +99,7 @@ const PYTHON_OTHER_METHODS: &[&str] = &[
     "resolve_scope",
     "i_have_events",
     "cov_notifications",
+    "expect_confirmed_cov",
     "network_reports",
     "connection_events",
     "frames",
