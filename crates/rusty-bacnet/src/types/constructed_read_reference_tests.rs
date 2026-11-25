@@ -159,7 +159,7 @@ fn rpm_converter_keeps_typed_raw_value_raw_bytes_and_embedded_error_distinct() {
         assert!(
             local_fault
                 .get_type()
-                .is(&py.get_type::<crate::errors::BacnetError>())
+                .is(py.get_type::<crate::errors::BacnetError>())
         );
         let result = read_access_result_to_py(py, result).unwrap();
         let rows = result.get_item("results").unwrap().unwrap();
