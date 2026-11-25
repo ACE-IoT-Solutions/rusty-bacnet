@@ -89,12 +89,19 @@ async fn remote_property_error_and_malformed_value_exit_unsuccessfully() {
         assert!(!output.status.success(), "{output:?}");
         assert!(output.stdout.is_empty(), "{output:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let expected = if malformed {
-            "BufferTooShort"
+        if malformed {
+            for field in [
+                "Decoding(",
+                "offset: 11,",
+                "kind: Missing,",
+                r#"context: "ReadProperty ACK""#,
+                "values: [13, 11]",
+            ] {
+                assert!(stderr.contains(field), "{stderr}");
+            }
         } else {
-            "UNKNOWN_PROPERTY"
-        };
-        assert!(stderr.contains(expected), "{stderr}");
+            assert!(stderr.contains("UNKNOWN_PROPERTY"), "{stderr}");
+        }
         assert!(!stderr.to_lowercase().contains("timeout"), "{stderr}");
     }
 }
