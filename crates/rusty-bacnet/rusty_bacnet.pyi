@@ -2478,7 +2478,8 @@ class PropertyValue:
       (``"port_permission"``: ``(port_id, enabled)``), a Group's
       List_Of_Group_Members (``"read_access_specification"``:
       ``(object_id, [(property_id, array_index), ...])``) and Present_Value
-      (``"read_access_result"``: a ``ReadAccessResult``), a Command's Action
+      (``"read_access_result"``: an object_id and embedded results with
+      property_id, array_index, value and error), a Command's Action
       (``"action_list"``: a list of ``ActionCommand`` with every key), the
       object reference lists and Accompaniment
       (``"device_object_reference"``: an ``ObjectIdentifier``, or
