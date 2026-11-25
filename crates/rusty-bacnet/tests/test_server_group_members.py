@@ -116,6 +116,16 @@ class ServerGroupRegistrationTests(unittest.TestCase):
         self.assertEqual(server._pending_registration_count(), 3)
 
 
+def assert_group_matches_rpm(test, members, rpm):
+    """Compare each member with its RPM row, which also reports local projection errors."""
+    expected = []
+    for member in members:
+        for row in member["results"]:
+            test.assertNotIn("decode_error", row)
+        expected.append({**member, "results": [dict(row, decode_error=None) for row in member["results"]]})
+    test.assertEqual(rpm, expected)
+
+
 class ServerGroupWireTests(unittest.IsolatedAsyncioTestCase):
     async def test_present_value_is_served_one_result_per_member(self) -> None:
         server = make_server()
@@ -139,7 +149,7 @@ class ServerGroupWireTests(unittest.IsolatedAsyncioTestCase):
                          "value": PropertyValue.character_string("AI-1"), "error": None},
                     ],
                 }])
-                self.assertEqual(served.value, await client.read_property_multiple(
+                assert_group_matches_rpm(self, served.value, await client.read_property_multiple(
                     address, [(AI_1, [(PV, None), (NAME, None)])]))
                 self.assertEqual(await server.read_property(group, PV), served)
                 empty = ObjectIdentifier(ObjectType.GROUP, 2)

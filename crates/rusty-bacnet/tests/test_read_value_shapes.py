@@ -16,6 +16,8 @@ import contextlib
 import unittest
 from typing import Any
 
+from test_server_group_members import assert_group_matches_rpm
+
 from rusty_bacnet import (
     BACnetClient,
     BACnetServer,
@@ -222,8 +224,8 @@ class ClientReadShapeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_group_present_value_holds_every_member(self) -> None:
         value = await self.read(GROUP_1, P.PRESENT_VALUE)
-        self.assertEqual(value.value,
-                         await self.client.read_property_multiple(self.address, GROUP_MEMBERS))
+        assert_group_matches_rpm(self, value.value,
+                                 await self.client.read_property_multiple(self.address, GROUP_MEMBERS))
         self.assertEqual(value.read_context.object_id, GROUP_1)
         for member in value.value:
             for row in member["results"]:

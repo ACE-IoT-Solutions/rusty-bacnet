@@ -90,7 +90,8 @@ fn project_read_result(
             },
         )?;
         elem_dict.set_item("array_index", elem.property_array_index)?;
-        if let Some(value_bytes) = &elem.property_value {
+        let mut decode_error = None;
+        if let Some(value_bytes) = elem.property_value {
             let property = elem.property_identifier;
             let index = elem.property_array_index;
             let decoded = if from_ack {
@@ -98,22 +99,33 @@ fn project_read_result(
                     result.object_identifier,
                     property,
                     index,
-                    value_bytes,
+                    &value_bytes,
                 )
             } else {
                 decode_read_value(
                     result.object_identifier.object_type(),
                     property,
                     index,
-                    value_bytes,
+                    &value_bytes,
                 )
             };
             match decoded {
                 Ok(val) => {
                     elem_dict.set_item("value", val)?;
                 }
-                Err(_) => {
-                    elem_dict.set_item("value", PyBytes::new(py, value_bytes))?;
+                Err(error) => {
+                    elem_dict.set_item("value", PyBytes::new(py, &value_bytes))?;
+                    if from_ack {
+                        let error = super::read_value::projection_error(error, || {
+                            PyPropertyReadContext::new(
+                                result.object_identifier,
+                                property.to_raw(),
+                                index,
+                                value_bytes.into(),
+                            )
+                        });
+                        decode_error = Some(error.into_value(py));
+                    }
                 }
             }
             elem_dict.set_item("error", py.None())?;
@@ -124,6 +136,9 @@ fn project_read_result(
         } else {
             elem_dict.set_item("value", py.None())?;
             elem_dict.set_item("error", py.None())?;
+        }
+        if from_ack {
+            elem_dict.set_item("decode_error", decode_error)?;
         }
         results_list.append(elem_dict)?;
     }

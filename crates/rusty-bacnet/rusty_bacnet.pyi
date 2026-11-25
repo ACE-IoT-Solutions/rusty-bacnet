@@ -2409,7 +2409,7 @@ def enum_name(property: PropertyIdentifier, value: int) -> str | None:
 
 
 class PropertyReadContext:
-    """Address and exact property value octets returned in a successful RP or RPM ACK."""
+    """Address and exact octets of a value returned in an RP or RPM ACK."""
 
     @property
     def object_id(self) -> ObjectIdentifier: ...
@@ -3583,6 +3583,19 @@ class WritePolicy:
     def __repr__(self) -> str: ...
 
 
+class CovPropertyValue(TypedDict):
+    property_id: PropertyIdentifier
+    array_index: int | None
+    value: PropertyValue | bytes
+    raw: bytes
+
+class CovMultiplePropertyValue(CovPropertyValue):
+    time_of_change: tuple[int, int, int, int] | None
+
+class CovObjectValues(TypedDict):
+    monitored_object_identifier: ObjectIdentifier
+    values: list[CovMultiplePropertyValue]
+
 class CovNotification:
     """A Change-of-Value notification about one object received from a remote
     device: a ConfirmedCOVNotification or UnconfirmedCOVNotification, which
@@ -3618,9 +3631,9 @@ class CovNotification:
     def source_address(self) -> Optional[bytes]: ...
 
     @property
-    def values(self) -> Any:
-        """List of property value change entries: dicts with ``property_id``,
-        ``array_index`` and ``value``. ``value`` is a ``PropertyValue`` shaped
+    def values(self) -> list[CovPropertyValue]:
+        """Each entry includes the received value octets in ``raw``.
+        ``value`` is a ``PropertyValue`` shaped
         as a read result is, or ``bytes`` when the octets' framing is broken."""
         ...
 
@@ -3671,10 +3684,10 @@ class CovNotificationMultiple:
     def source_address(self) -> Optional[bytes]: ...
 
     @property
-    def objects(self) -> Any:
+    def objects(self) -> list[CovObjectValues]:
         """The objects reported, in order: dicts with
         ``monitored_object_identifier`` and ``values``. Each value is a dict
-        with ``property_id``, ``array_index``, ``value`` (as in
+        with ``property_id``, ``array_index``, ``raw``, ``value`` (as in
         ``CovNotification.values``) and ``time_of_change``, an ``(hour,
         minute, second, hundredths)`` tuple, or ``None`` when the
         subscription didn't ask for timestamps. One property may appear more
@@ -3983,7 +3996,8 @@ class BacnetDecodingError(BacnetError):
     The diagnostic label takes up to two numeric values. Unused slots are zero.
     The decoder may identify a context and zero-based item index.
     read_context holds the exact value octets when Python projection of a
-    correlated ReadProperty ACK failed. It is None for other decoding failures.
+    correlated ReadProperty ACK or an individual ReadPropertyMultiple ACK value failed.
+    It is None for other decoding failures.
     """
     kind: Literal["invalid_encoding", "out_of_range", "overflow", "invalid_tag", "missing", "trailing", "unsupported"]
     offset: int
@@ -9878,6 +9892,8 @@ class LogPage(TypedDict):
     wrapped: bool
 
 class ReadPropertyResult(TypedDict):
+    """One RPM ACK row. decode_error carries a local value projection failure."""
+    decode_error: BacnetError | None
     property_id: PropertyIdentifier
     array_index: int | None
     value: PropertyValue | bytes | None

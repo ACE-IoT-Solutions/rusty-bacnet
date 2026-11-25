@@ -262,6 +262,17 @@ fn group_present_value_reads_as_read_property_multiple_results() {
         let mut octets = BytesMut::new();
         ack.encode(&mut octets).unwrap();
         let expected = rpm_ack_to_py(py, ack).unwrap().into_bound(py);
+        for member in expected.cast::<PyList>().unwrap() {
+            let results = member.get_item("results").unwrap();
+            for row in results.cast::<PyList>().unwrap() {
+                // Embedded Group results have no local RPM projection diagnostic.
+                assert!(
+                    row.call_method1("pop", ("decode_error",))
+                        .unwrap()
+                        .is_none()
+                );
+            }
+        }
         assert_typed(
             py,
             (ObjectType::GROUP, PropertyIdentifier::PRESENT_VALUE),

@@ -1311,7 +1311,7 @@ collection's elements back to back), for comparing with a capture or for
 | Notification Class, Notification Forwarder | Recipient_List | `"destination"` | a `Destination` mapping with every key | `add_notification_forwarder(recipients=...)` |
 | Notification Forwarder | Port_Filter | `"port_permission"` | `(port_id, enabled)` | `add_notification_forwarder(port_filter=...)` |
 | Group | List_Of_Group_Members | `"read_access_specification"` | `(object_id, [(property_id, array_index), ...])` | `add_group(members=...)` |
-| Group | Present_Value | `"read_access_result"` | a `read_property_multiple` result: `{"object_id": ..., "results": [...]}` | none: the members' results |
+| Group | Present_Value | `"read_access_result"` | `{"object_id": ..., "results": [...]}` containing embedded property values and remote errors | none: the members' results |
 | Command | Action | `"action_list"` | a list of `ActionCommand` mappings with every key | `add_command(action=...)`, which ignores `write_successful` |
 | Access Door, Access Point, Staging | Door_Members, Access_Doors, Target_References | `"device_object_reference"` | an `ObjectIdentifier`, or `(device, object)` when the reference names a device | `door_members=`, `access_doors=`; `target_references=` takes the `ObjectIdentifier` form only |
 | Access Point | Authentication_Policy_List | `"authentication_policy"` | `([(credential_data_input, index), ...], order_enforced, timeout)`, each reference an `ObjectIdentifier` or `(device, object)` | `add_access_point(authentication_policies=...)`, paired with the Authentication_Policy_Names element |
@@ -1500,11 +1500,15 @@ Each item in `.values` is a dict:
     "property_id": PropertyIdentifier,
     "array_index": int | None,
     "value": PropertyValue | bytes,
+    "raw": bytes,
 }
 ```
 
 `value` follows the [read result](#read-results) rule, using the monitored
-object's type; octets whose framing is broken come back as `bytes`.
+object's type. A value with broken framing comes back as `bytes`. The `raw`
+field contains the original tagged value octets for every row. For example,
+the three octets `22 00 07` decode to unsigned 7, whose `.octets` is `21 07`.
+The notification retains `22 00 07` in `raw`.
 
 ---
 
@@ -1536,6 +1540,7 @@ Each item in `.objects` is a dict:
             "property_id": PropertyIdentifier,
             "array_index": int | None,
             "value": PropertyValue | bytes,
+            "raw": bytes,
             "time_of_change": (hour, minute, second, hundredths) | None,
         },
     ],
@@ -1543,6 +1548,7 @@ Each item in `.objects` is a dict:
 ```
 
 `value` decodes as in `CovNotification.values`, using that object's type.
+Each row carries the received value octets in `raw`.
 `time_of_change` is there when the subscription asked for timestamps for
 that property; such a property may appear more than once, once for each
 change the device queued since its last notification.
@@ -2459,16 +2465,28 @@ results = await client.read_property_multiple("192.168.1.100:47808", [
 for obj in results:
     print(f"Object: {obj['object_id']}")
     for prop in obj['results']:
-        if prop['value'] is not None:
+        if prop['decode_error'] is not None:
+            print(prop['property_id'], prop['decode_error'], prop['value'].hex())
+        elif prop['value'] is not None:
             print(f"  {prop['property_id']}: {prop['value'].value}")
         elif prop['error'] is not None:
             ec, ev = prop['error']
             print(f"  {prop['property_id']}: ERROR {ec} {ev}")
 ```
 
-Return format: `list[dict]` where each dict has:
-- `"object_id"`: `ObjectIdentifier`
-- `"results"`: `list[dict]` with `"property_id"`, `"array_index"`, `"value"` (PropertyValue shaped as [Read results](#read-results) describes, raw `bytes` when the octets' framing is broken, or None on error), `"error"` (tuple of ErrorClass, ErrorCode or None)
+Each object dictionary contains `object_id` and an ordered list of `results`.
+Each result identifies its `property_id` and optional `array_index`.
+
+| Result from a decoded RPM ACK | `value` | `error` | `decode_error` |
+| --- | --- | --- | --- |
+| Projected value, including opaque application data | `PropertyValue` | `None` | `None` |
+| Remote property error | `None` | `(ErrorClass, ErrorCode)` | `None` |
+| Local projection failed | Original value `bytes` | `None` | `BacnetError` |
+
+A structured local failure yields a `BacnetDecodingError` whose `read_context`
+contains the returned selector and exact value octets. Sibling rows remain in
+order. If the service decoder rejects the ACK envelope, the call raises. Group
+Present_Value member dictionaries keep their existing fields.
 
 #### `write_property_multiple(address, specs)`
 
@@ -6180,9 +6198,9 @@ member by member when it is added, with the same `ValueError` and
 rebuilds the Group's Present_Value from the members on every read, one result
 per member, and each member row counts against `rpm_max_result_elements`; a
 read past it is aborted with OUT_OF_RESOURCES (see [RPM budgets](rpm-budget.md)).
-List_Of_Group_Members reads back in the spec shape, and Present_Value as the
-`read_property_multiple` results of the members (see
-[typed constructed values](#typed-constructed-values)).
+List_Of_Group_Members reads back in the spec shape. Present_Value contains
+the embedded property values and remote errors for each member.
+[Typed constructed values](#typed-constructed-values)
 
 #### Extended Value Types
 
@@ -7106,8 +7124,9 @@ the responder's object identifier, property identifier, optional array index
 and the original value bytes in `.raw`. This applies to direct and routed
 `read_property`, discovery-based `read_property_from_device`, and individual
 errors returned by `read_property_from_devices`. An invalid or mismatched
-ACK leaves `read_context` as `None`. RPM retains its existing per-value
-fallback to raw bytes.
+ACK leaves `read_context` as `None`. A structured projection failure in an RPM
+ACK row carries the returned selector and octets on `row["decode_error"].read_context`.
+The row also preserves the raw value bytes.
 
 `BacnetProtocolError` has `error_class` and `error_code` attributes, `ErrorClass` and `ErrorCode` members that compare equal to the wire integers; `BacnetRejectError.reason` and `BacnetAbortError.reason` are `RejectReason` and `AbortReason` members (#1816). Some services answer with a structured error body (Clause 21) that adds fields; each attribute below is `None` unless the device's error carried it:
 
@@ -8924,8 +8943,8 @@ for outcome in outcomes:
         print(original_request, outcome["value"])
 ```
 
-RPM property-level `(ErrorClass, ErrorCode)` tuples and undecodable application
-values returned as `bytes` remain nested RPM data, not top-level item errors.
+RPM property errors stay in the nested row’s `error` field. A local value
+projection failure keeps its bytes in `value` and its exception in `decode_error`.
 Genuine Python result-construction exceptions propagate from the whole batch;
 they are not fabricated BACnet item failures. Mixed success means outcomes in a
 completed batch. Cancellation returns no partial list, cancels pending requests,

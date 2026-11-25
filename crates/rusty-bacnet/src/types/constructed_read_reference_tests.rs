@@ -1,8 +1,8 @@
 //! Independent reference octets and the distinction between read fallback layers.
 use super::*;
 use crate::types::read_value::decode_read_value;
-use crate::types::rpm_wpm::read_access_result_to_py;
-use bacnet_services::rpm::ReadResultElement;
+use crate::types::rpm_wpm::{read_access_result_to_py, rpm_ack_to_py};
+use bacnet_services::rpm::{ReadPropertyMultipleACK, ReadResultElement};
 use bacnet_types::enums::{ErrorClass, ErrorCode};
 use pyo3::types::{PyDict, PyList};
 
@@ -129,6 +129,38 @@ fn rpm_converter_keeps_typed_raw_value_raw_bytes_and_embedded_error_distinct() {
     };
     Python::initialize();
     Python::attach(|py| {
+        let ack = ReadPropertyMultipleACK {
+            list_of_read_access_results: vec![result.clone()],
+        };
+        let ack = rpm_ack_to_py(py, ack).unwrap();
+        let ack_rows = ack
+            .bind(py)
+            .get_item(0)
+            .unwrap()
+            .get_item("results")
+            .unwrap();
+        // Synthetic truncation exercises the existing unclassified buffer error.
+        // The other rows cover a typed value, opaque value and a remote error.
+        for index in [0, 1, 3] {
+            assert!(
+                ack_rows
+                    .get_item(index)
+                    .unwrap()
+                    .get_item("decode_error")
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        let local_fault = ack_rows
+            .get_item(2)
+            .unwrap()
+            .get_item("decode_error")
+            .unwrap();
+        assert!(
+            local_fault
+                .get_type()
+                .is(&py.get_type::<crate::errors::BacnetError>())
+        );
         let result = read_access_result_to_py(py, result).unwrap();
         let rows = result.get_item("results").unwrap().unwrap();
         let rows = rows.cast::<PyList>().unwrap();
@@ -161,6 +193,7 @@ fn rpm_converter_keeps_typed_raw_value_raw_bytes_and_embedded_error_distinct() {
             broken
         );
         assert!(raw.get_item("error").unwrap().unwrap().is_none());
+        assert!(!raw.contains("decode_error").unwrap());
         let error = rows.get_item(3).unwrap();
         let error = error.cast::<PyDict>().unwrap();
         assert!(error.get_item("value").unwrap().unwrap().is_none());

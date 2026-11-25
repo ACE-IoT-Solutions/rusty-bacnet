@@ -18,7 +18,7 @@ fn delivery_name(delivery: COVNotificationDelivery) -> &'static str {
 }
 
 /// One reported value of an object of type `object_type`, as a dict with
-/// `property_id`, `array_index` and `value`. The value decodes as a
+/// `property_id`, `array_index`, `raw` and `value`. The value decodes as a
 /// `read_property` result does; octets whose framing is broken come back as
 /// `bytes`.
 fn value_dict<'py>(
@@ -31,9 +31,11 @@ fn value_dict<'py>(
     let dict = PyDict::new(py);
     dict.set_item("property_id", PyPropertyIdentifier { inner: property })?;
     dict.set_item("array_index", array_index)?;
+    let raw = PyBytes::new(py, octets);
+    dict.set_item("raw", &raw)?;
     match decode_read_value(object_type, property, array_index, octets) {
         Ok(value) => dict.set_item("value", value)?,
-        Err(_) => dict.set_item("value", PyBytes::new(py, octets))?,
+        Err(_) => dict.set_item("value", raw)?,
     }
     Ok(dict)
 }
@@ -96,7 +98,7 @@ impl PyCovNotification {
             .map(|mac| PyBytes::new(py, mac).into_any().unbind())
     }
 
-    /// List of property values as dicts with `property_id`, `array_index`, `value`.
+    /// List of property values as dicts with `property_id`, `array_index`, `value` and the original octets in `raw`.
     ///
     /// Each value decodes as a `read_property` result does; octets whose
     /// framing is broken come back as `bytes`.
@@ -208,7 +210,7 @@ impl PyCovNotificationMultiple {
 
     /// The objects reported, in order, as dicts with
     /// `monitored_object_identifier` and `values`: each value a dict with
-    /// `property_id`, `array_index`, `value` (decoded as for
+    /// `property_id`, `array_index`, `raw`, `value` (decoded as for
     /// `CovNotification.values`) and `time_of_change`, an
     /// `(hour, minute, second, hundredths)` tuple, or `None` when the
     /// subscription didn't ask for timestamps.

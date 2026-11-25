@@ -170,10 +170,18 @@ pub(crate) fn decode_read_ack(ack: ReadPropertyACK) -> pyo3::PyResult<PyProperty
         ack.property_array_index,
         &ack.property_value,
     )
-    .map_err(|error| match error {
-        Error::Decoding(fault) => crate::errors::decoding_error(fault, Some(ack.into())),
+    .map_err(|error| projection_error(error, || ack.into()))
+}
+
+/// Preserve the returned selector and octets for a structured RP or RPM projection fault.
+pub(super) fn projection_error(
+    error: Error,
+    context: impl FnOnce() -> super::PyPropertyReadContext,
+) -> pyo3::PyErr {
+    match error {
+        Error::Decoding(fault) => crate::errors::decoding_error(fault, Some(context())),
         other => crate::errors::to_py_err(other),
-    })
+    }
 }
 
 /// Decode a successful RP or RPM value and retain the fields returned by its ACK.

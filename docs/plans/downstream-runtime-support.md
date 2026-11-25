@@ -159,6 +159,17 @@ with CPython 3.13 and a local wheel built from `f90a6b430`. They cover the excha
 observed by the test peer. Deployment traffic captures and shared-client
 performance measurements remain open.
 
+## Unreleased Python property observations
+
+Single and Multiple COV rows preserve the received tagged value octets in
+`raw`. For both client owners, the wire tests distinguish a non-minimal
+unsigned encoding from its canonical write encoding, a BACnet Null, an
+empty octet string and an opaque string. An accepted RPM ACK can also carry
+a legacy value that the Python binding cannot project. The affected row
+keeps its bytes and reports its local `decode_error`. Neighboring values and
+remote property errors retain their own results. Edge projection and
+persistence checks remain in the acceptance table below.
+
 ## Remaining acceptance work
 
 | Owner | Required evidence |

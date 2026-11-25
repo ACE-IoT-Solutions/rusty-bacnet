@@ -7,7 +7,7 @@ Supported_Formats, Stages and Target_References) reads back through
 BACnetClient, its ReadPropertyMultiple, the endpoint client role and its
 ReadPropertyMultiple, and the local BACnetServer.read_property as a list of
 those same values, and an indexed read as one of them. A Group's
-Present_Value reads as the read_property_multiple results of its members. A
+Present_Value holds the embedded read results of its members. A
 COV notification value decodes the same way, and a value that isn't the
 expected production reads as its tags (``tagged``, #2618).
 """
@@ -21,6 +21,7 @@ import unittest
 from typing import Any
 
 from async_compat import sock_recvfrom, sock_sendto
+from test_server_group_members import assert_group_matches_rpm
 
 from rusty_bacnet import (
     BACnetClient,
@@ -249,8 +250,8 @@ class TypedListReadTests(unittest.IsolatedAsyncioTestCase):
     async def test_group_present_value_reads_as_its_members_results(self) -> None:
         present_value = await self.read(GROUP_1, P.PRESENT_VALUE)
         self.assertEqual(present_value.tag, "list")
-        self.assertEqual(present_value.value,
-                         await self.client.read_property_multiple(self.address, GROUP_MEMBERS))
+        assert_group_matches_rpm(self, present_value.value,
+                                 await self.client.read_property_multiple(self.address, GROUP_MEMBERS))
         [ai_1, ai_2] = present_value.value
         self.assertEqual(ai_1["object_id"], AI_1)
         self.assertEqual([row["value"] for row in ai_1["results"]],

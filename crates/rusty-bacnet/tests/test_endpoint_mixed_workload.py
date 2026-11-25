@@ -166,7 +166,7 @@ class MixedWorkloadTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(item["object_id"], DEVICE)
             first, second = item["results"]
             self.assertEqual(first, dict(property_id=P.OBJECT_NAME, array_index=None,
-                                         value=rb.PropertyValue.character_string("ab"), error=None))
+                                         value=rb.PropertyValue.character_string("ab"), error=None, decode_error=None))
             self.assertEqual((second["property_id"], second["array_index"], second["value"]),
                              (P.OBJECT_LIST, 0, None))
             self.assertEqual(tuple(map(int, second["error"])), (2, 32))

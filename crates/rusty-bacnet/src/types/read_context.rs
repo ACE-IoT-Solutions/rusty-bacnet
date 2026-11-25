@@ -1,4 +1,4 @@
-//! Provenance of a successful ReadProperty or ReadPropertyMultiple value.
+//! Provenance of a value returned in a ReadProperty or ReadPropertyMultiple ACK.
 
 use super::{PyObjectIdentifier, PyPropertyValue};
 use bacnet_types::primitives::ObjectIdentifier;
@@ -25,11 +25,27 @@ pub(crate) struct PyPropertyReadContext {
 
 impl From<bacnet_services::read_property::ReadPropertyACK> for PyPropertyReadContext {
     fn from(ack: bacnet_services::read_property::ReadPropertyACK) -> Self {
+        Self::new(
+            ack.object_identifier,
+            ack.property_identifier.to_raw(),
+            ack.property_array_index,
+            ack.property_value.into(),
+        )
+    }
+}
+
+impl PyPropertyReadContext {
+    pub(super) fn new(
+        object: ObjectIdentifier,
+        property_id: u32,
+        array_index: Option<u32>,
+        octets: Bytes,
+    ) -> Self {
         Self {
-            object: ack.object_identifier,
-            property_id: ack.property_identifier.to_raw(),
-            array_index: ack.property_array_index,
-            octets: Bytes::from(ack.property_value),
+            object,
+            property_id,
+            array_index,
+            octets,
         }
     }
 }
@@ -57,12 +73,12 @@ impl PyPropertyValue {
         array_index: Option<u32>,
         raw: &[u8],
     ) -> Self {
-        self.context = Some(PyPropertyReadContext {
+        self.context = Some(PyPropertyReadContext::new(
             object,
             property_id,
             array_index,
-            octets: Bytes::copy_from_slice(raw),
-        });
+            Bytes::copy_from_slice(raw),
+        ));
         self
     }
 }
