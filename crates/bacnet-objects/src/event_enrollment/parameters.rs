@@ -26,7 +26,7 @@ pub(crate) fn framed_event_parameters(bytes: &[u8]) -> Result<BACnetEventParamet
         Ok((parameters, consumed)) if consumed == bytes.len() => Ok(parameters),
         // The one value the decoder can't convert is a string in a
         // character set it doesn't support (a change-of-characterstring
-        // alarm value in DBCS, JIS or UCS-4).
+        // alarm value in DBCS or JIS).
         Err(error) if matches!(error.decode_fault(), Some((_, DecodingKind::Unsupported))) => Err(
             common::protocol_error(ErrorClass::PROPERTY, ErrorCode::CHARACTER_SET_NOT_SUPPORTED),
         ),

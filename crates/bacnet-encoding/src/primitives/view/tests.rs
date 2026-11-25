@@ -390,7 +390,10 @@ fn character_string_checks_agree_on_generated_contents() {
             }
             _ => panic!("{contents:02X?}: view {view:?}, owned {owned:?}"),
         }
-        if matches!(charset, charset::UTF8 | charset::UCS2 | charset::ISO_8859_1) {
+        if matches!(
+            charset,
+            charset::UTF8 | charset::UCS4 | charset::UCS2 | charset::ISO_8859_1
+        ) {
             assert_eq!(
                 decode_character_string(&contents).is_ok(),
                 view.is_ok(),

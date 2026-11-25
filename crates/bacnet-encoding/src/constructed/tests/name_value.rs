@@ -126,7 +126,7 @@ fn name_value_refuses_malformed_octets_without_panicking() {
         // The name runs past the data, or isn't valid UTF-8.
         &[0x0D, 0x08, 0x00, 0x65],
         &[0x0A, 0x00, 0xFF],
-        // An unsupported character set (UCS-4).
+        // A UCS-4 name with one payload octet.
         &[0x0A, 0x03, 0x61],
         // A REAL cut short, and one with the wrong length.
         &[0x0A, 0x00, 0x61, 0x44, 0x44, 0x80],

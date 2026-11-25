@@ -111,7 +111,7 @@ fn tagged_values_and_nodes_compare_hash_and_rebuild_from_octets() {
         assert!(!nodes[0].eq(&nodes[2]).unwrap());
         // Octets that aren't a tree, or not one node, refuse to rebuild.
         let class = py.get_type::<PyPropertyValue>();
-        for octets in [&[0x1E][..], &[0x09, 0x01, 0x75, 0x05, 3, 0, 0, 0, 0x41]] {
+        for octets in [&[0x1E][..], &[0x09, 0x01, 0x73, 2, 0x30, 0x21]] {
             let error = class
                 .call_method1("tagged", (octets.to_vec(),))
                 .unwrap_err();

@@ -50,8 +50,7 @@ pub enum DecodingKind {
     /// input: arguments beyond those the production has.
     Trailing,
     /// A well-formed encoding the decoder doesn't handle: a CharacterString
-    /// in a character set it can't convert (IBM/Microsoft DBCS, JIS X 0208
-    /// or UCS-4), or a segmented APDU, or one of a PDU type, that the
+    /// in a character set it can't convert (IBM/Microsoft DBCS or JIS X 0208), or a segmented APDU, or one of a PDU type, that the
     /// allocation-free APDU header doesn't read.
     Unsupported,
 }

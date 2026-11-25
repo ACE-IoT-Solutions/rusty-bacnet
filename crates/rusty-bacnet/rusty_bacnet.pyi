@@ -2532,7 +2532,9 @@ class PropertyValue:
       back unchanged. Every tag reads without the property's datatype
       (Clause 20.2.1.6); a context-tagged primitive's contents stay
       ``bytes``, since only the property's datatype says what they are.
-    - Content this type has no form for (a UCS-4, DBCS or JIS string, bad
+    - UCS-4 CharacterStrings decode to Unicode text. Scalar strings write as UTF-8.
+      RP/RPM read contexts and COV observation rows retain the received octets.
+    - Content this type has no form for (a DBCS or JIS string, bad
       UTF-8, an ENUMERATED past 32 bits, anywhere in the value), or a tree
       past the decoder's 10,000 elements, is ``application_data`` holding
       the octets exactly as served.

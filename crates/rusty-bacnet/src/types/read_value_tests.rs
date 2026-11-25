@@ -181,7 +181,7 @@ fn malformed_octets_are_an_error_wherever_they_sit() {
 fn well_framed_content_the_model_cannot_hold_comes_back_as_octets() {
     // Each element is well framed, but PropertyValue has no form for it.
     let unrepresentable: [&[u8]; 6] = [
-        &[0x75, 0x05, 0x03, 0, 0, 0, 0x41], // UCS-4 CharacterString "A"
+        &[0x75, 0x05, 0x03, 0, 0, 0xd8, 0], // UCS-4 surrogate
         &[0x74, 0x01, 0x03, 0xB5, 0x41],    // DBCS, code page 949
         &[0x73, 0x02, 0x30, 0x21],          // JIS X 0208
         &[0x73, 0x00, 0xFF, 0xFE],          // UTF-8 that isn't
@@ -259,6 +259,10 @@ pub(super) fn application_values() -> Vec<(Vec<u8>, PropertyValue)> {
         (
             vec![0x63, 0x12, 0x34, 0xFF],
             PropertyValue::OctetString(vec![0x12, 0x34, 0xFF]),
+        ),
+        (
+            vec![0x75, 5, 3, 0, 0, 3, 0xa9],
+            PropertyValue::CharacterString("Ω".into()),
         ),
         (
             vec![0x73, 0x00, b'h', b'i'],

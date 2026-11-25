@@ -194,7 +194,7 @@ fn tags_take_array_writes_and_the_profile_rows_none() {
             ErrorCode::INVALID_DATA_TYPE,
         );
     }
-    // A name in UCS-4 (character set 3), which isn't decoded.
+    // A UCS-4 name whose payload is shorter than one character.
     assert_refused(
         write_at(&mut db, oid, TAGS, None, &[0x0A, 0x03, 0x61]),
         ErrorCode::INVALID_DATA_ENCODING,

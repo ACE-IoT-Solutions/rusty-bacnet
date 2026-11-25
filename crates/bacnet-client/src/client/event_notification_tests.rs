@@ -252,6 +252,7 @@ async fn valid_events_preserve_payload_metadata_and_service_specific_replies() {
         (Some(&[0, b'O', b'K']), Some("OK")),
         (Some(&[4, 0, b'O', 0, b'K']), Some("OK")),
         (Some(&[5, 0xe9]), Some("é")),
+        (Some(&[3, 0, 0, 3, 0xa9]), Some("Ω")),
     ];
     for confirmed in [true, false] {
         for source in [None, remote()] {
@@ -280,7 +281,7 @@ fn invalid_text_cases() -> Vec<Vec<u8>> {
         vec![4, 0xd8, 0], // UCS-2 surrogate.
         vec![1, b'A'],
         vec![2, b'A'],
-        vec![3, 0, 0, 0, b'A'], // Unsupported charsets.
+        vec![3, 0, 0, 0xd8, 0], // UCS-4 surrogate.
         vec![0xfe, b'A'],       // Unknown charset.
     ];
     let mut extended = vec![0; 300];

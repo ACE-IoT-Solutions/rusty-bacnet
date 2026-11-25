@@ -17,9 +17,10 @@ fn decode_requesting_source(content: &[u8]) -> Result<String, Error> {
     match content.first().copied() {
         Some(
             primitives::charset::IBM_MICROSOFT_DBCS
-            | primitives::charset::JIS_X_0208
-            | primitives::charset::UCS4,
+            | primitives::charset::JIS_X_0208,
         ) => Ok(String::new()),
+        // This service accepts an unreadable UCS-4 operator name as an empty source.
+        Some(primitives::charset::UCS4) => Ok(primitives::decode_character_string(content).unwrap_or_default()),
         _ => primitives::decode_character_string(content),
     }
 }
@@ -35,7 +36,7 @@ pub struct LifeSafetyOperationRequest {
     /// device.
     pub requesting_process_identifier: u32,
     /// Identity of the human operator behind the request. Decoding yields an empty string when the
-    /// source uses a character set the stack cannot decode.
+    /// source uses DBCS or JIS, or contains malformed UCS-4 text.
     pub requesting_source: String,
     /// Operation requested (silence, reset, unsilence and their audible/visual variants).
     pub request: LifeSafetyOperation,
@@ -166,7 +167,7 @@ mod tests {
 
     #[test]
     fn unsupported_requesting_source_charsets_use_empty_string() {
-        for charset in [1, 2, 3] {
+        for charset in [1, 2] {
             let decoded = LifeSafetyOperationRequest::decode(&raw_request_with_source(
                 charset,
                 &[0, 0, 0, 1],
@@ -178,7 +179,20 @@ mod tests {
     }
 
     #[test]
-    fn malformed_supported_requesting_source_still_errors() {
+    fn ucs4_requesting_source_recovers_valid_text_and_preserves_malformed_admission() {
+        for (contents, expected) in [
+            (&[0, 0, 3, 0xa9, 0, 1, 0xf9, 0x80][..], "Ω🦀"),
+            (&[0, 0, 1], ""),
+            (&[0, 0, 0xd8, 0], ""),
+        ] {
+            let request = LifeSafetyOperationRequest::decode(&raw_request_with_source(3, contents)).unwrap();
+            assert_eq!(request.requesting_source, expected);
+            assert_eq!(request.request, LifeSafetyOperation::SILENCE);
+        }
+    }
+
+    #[test]
+    fn malformed_utf8_requesting_source_still_errors() {
         assert!(LifeSafetyOperationRequest::decode(&raw_request_with_source(0, &[0xff])).is_err());
     }
 

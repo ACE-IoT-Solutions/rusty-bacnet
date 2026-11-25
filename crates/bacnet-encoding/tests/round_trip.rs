@@ -355,10 +355,15 @@ proptest! {
         prop_assert_eq!(validate_application_value(&buf, 0).ok(), Some(buf.len()));
     }
 
-    /// A CharacterString in UCS-2 or ISO 8859-1, which the encoder never
+    /// A CharacterString in UCS-4, UCS-2 or ISO 8859-1, which the encoder never
     /// writes, decodes to the same text as its UTF-8 form.
     #[test]
     fn other_character_sets(text in prop::collection::vec(any::<char>(), 0..80)) {
+        let contents: Vec<u8> = text.iter().flat_map(|&c| u32::from(c).to_be_bytes()).collect();
+        let buf = character_string_in(charset::UCS4, &contents);
+        let (value, end) = decode_application_value(&buf, 0).unwrap();
+        prop_assert_eq!(value, PropertyValue::CharacterString(text.iter().collect()));
+        prop_assert_eq!(end, buf.len());
         let ucs2: String = text
             .iter()
             .copied()

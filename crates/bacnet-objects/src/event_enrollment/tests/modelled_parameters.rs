@@ -72,14 +72,32 @@ fn an_alarm_string_in_an_unsupported_character_set_is_refused_as_such() {
     let mut ee =
         EventEnrollmentObject::new(1, "EE-1", EventType::CHANGE_OF_CHARACTERSTRING).unwrap();
     // change-of-characterstring [17] { [0] 0, [1] { a JIS X 0208 string } }
-    // (character set 2), and the same with UCS-4 (3) and DBCS (1).
-    for charset in [2u8, 3, 1] {
+    // (character set 2), and the same with DBCS (1).
+    for charset in [2u8, 1] {
         let wire = vec![
             0xFE, 0x11, 0x09, 0x00, 0x1E, 0x73, charset, 0x30, 0x42, 0x1F, 0xFF, 0x11,
         ];
         refused_with(write(&mut ee, wire), ErrorCode::CHARACTER_SET_NOT_SUPPORTED);
         assert_eq!(stored(&ee), BACnetEventParameter::None, "charset {charset}");
     }
+}
+
+#[test]
+fn a_ucs4_alarm_value_decodes_and_a_malformed_update_preserves_it() {
+    let mut ee =
+        EventEnrollmentObject::new(1, "EE-1", EventType::CHANGE_OF_CHARACTERSTRING).unwrap();
+    let mut wire = vec![
+        0xfe, 0x11, 0x09, 0, 0x1e, 0x75, 5, 3, 0, 0, 3, 0xa9, 0x1f, 0xff, 0x11,
+    ];
+    write(&mut ee, wire.clone()).unwrap();
+    let expected = BACnetEventParameter::ChangeOfCharacterstring {
+        time_delay: 0,
+        list_of_alarm_values: vec!["Ω".into()],
+    };
+    assert_eq!(stored(&ee), expected);
+    wire[10] = 0xd8; // U+D8A9 is a surrogate.
+    refused_with(write(&mut ee, wire), ErrorCode::INVALID_DATA_TYPE);
+    assert_eq!(stored(&ee), expected);
 }
 
 #[test]

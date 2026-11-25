@@ -39,7 +39,7 @@ pub fn password_fits(password: &str) -> bool {
 }
 
 /// Whether a decoded password is longer than [`MAX_PASSWORD_CHARS`]. The
-/// decoder has already converted UTF-8, UCS-2 and ISO 8859-1 contents to a
+/// decoder has already converted UTF-8, UCS-4, UCS-2 and ISO 8859-1 contents to a
 /// `String`, one `char` per character of the sender's set.
 fn password_too_long(password: Option<&String>) -> bool {
     password.is_some_and(|s| !password_fits(s))
@@ -681,6 +681,10 @@ mod tests {
             decoded_passwords(raw_password_requests(5, &latin1)),
             [None, None]
         );
+        let ucs4 = [0, 1, 0xf9, 0x80].repeat(21);
+        let expected = "🦀".repeat(20);
+        assert_eq!(decoded_passwords(raw_password_requests(3, &ucs4[..80])), [Some(expected.clone()), Some(expected)]);
+        assert_eq!(decoded_passwords(raw_password_requests(3, &ucs4)), [None, None]);
         // UCS-2: two octets a character (U+30D1, three UTF-8 octets).
         let ucs2 = [0x30, 0xd1].repeat(21);
         let expected = "\u{30d1}".repeat(20);
@@ -719,7 +723,7 @@ mod tests {
     /// character set, so a server checks the request as one without it.
     #[test]
     fn decoders_take_an_empty_password_as_absent() {
-        for charset in [0, 4, 5] {
+        for charset in [0, 3, 4, 5] {
             let [dcc, reinit] = raw_password_requests(charset, &[]);
             let dcc = DeviceCommunicationControlRequest::decode(&dcc).unwrap();
             assert_eq!(dcc.password, None);

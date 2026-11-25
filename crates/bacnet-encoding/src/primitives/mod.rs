@@ -252,6 +252,7 @@ fn character_string_too_long() -> Error {
 ///
 /// The first byte is the charset identifier. Supported charsets:
 /// - 0 (UTF-8)
+/// - 3 (UCS-4, big-endian Unicode scalars)
 /// - 4 (UCS-2, big-endian)
 /// - 5 (ISO-8859-1)
 ///
@@ -261,10 +262,7 @@ fn character_string_too_long() -> Error {
 #[cfg(feature = "alloc")]
 pub fn decode_character_string(data: &[u8]) -> Result<String, Error> {
     // Character sets the standard defines but this decoder doesn't convert.
-    if let Some(
-        &unsupported @ (charset::IBM_MICROSOFT_DBCS | charset::JIS_X_0208 | charset::UCS4),
-    ) = data.first()
-    {
+    if let Some(&unsupported @ (charset::IBM_MICROSOFT_DBCS | charset::JIS_X_0208)) = data.first() {
         return Err(contents_fault(
             DecodingKind::Unsupported,
             "unsupported charset: {}",
@@ -276,6 +274,12 @@ pub fn decode_character_string(data: &[u8]) -> Result<String, Error> {
     view::check_character_string(data)?;
     let payload = &data[1..];
     Ok(match data[0] {
+        charset::UCS4 => payload
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|unit| char::from_u32(u32::from_be_bytes(*unit)).expect("validated UCS-4 scalar"))
+            .collect(),
         charset::UCS2 => payload
             .as_chunks::<2>()
             .0

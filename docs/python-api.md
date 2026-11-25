@@ -1103,7 +1103,10 @@ is an error.
   boundaries of a constructed list aren't marked in the octets, so the
   binding doesn't split one into elements: the tree shows its fields in
   wire order. Writing the value back sends the same octets.
-- **Content `PropertyValue` can't hold**, such as a CharacterString in UCS-4,
+- **UCS-4 CharacterStrings** decode to Unicode text, including supplementary
+  characters. A scalar text value writes as UTF-8. The original value octets
+  are available in `.read_context.raw` on RP/RPM reads and in `raw` on COV rows.
+- **Content `PropertyValue` can't hold**, such as a CharacterString in
   DBCS or JIS X 0208, UTF-8 that doesn't decode, an ENUMERATED wider than 32
   bits or a reserved application tag, anywhere in the value, makes the whole
   value `application_data` whose `.value` holds the octets as served, and so
@@ -1200,7 +1203,7 @@ Code that handled `application_data` reads should expect:
 
 - **Both tags.** A value with a context tag is still `application_data`,
   its octets in `.value`, when the octets don't read as tags the binding
-  can show: an application value it has no form for (a UCS-4, DBCS or JIS
+  can show: an application value it has no form for (a DBCS or JIS
   string, bad UTF-8, an ENUMERATED past 32 bits, a reserved application
   tag) anywhere in it, or more than 10,000 elements. Accept `"tagged"` and
   `"application_data"`, and read the octets from `.octets`, which both

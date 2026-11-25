@@ -1,7 +1,7 @@
 //! A notification decoder that drops a message text it can't read.
 //!
 //! A peer may send its message text in a character set this stack does not
-//! decode (DBCS, JIS X 0208, UCS-4 and so on). That shouldn't lose the rest of
+//! decode (DBCS or JIS X 0208). That shouldn't lose the rest of
 //! the notification, so the receiving client and the Event Log record decoder
 //! read such a request with no message text. Only the text's characters are
 //! forgiven: it must still be one well-framed primitive context 7 in its place

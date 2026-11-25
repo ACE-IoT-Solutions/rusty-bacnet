@@ -21,7 +21,7 @@ pub(in crate::server) fn confirmed_class(service: ConfirmedServiceChoice, data: 
 // Its final decode remains authoritative, including optional duration, charset
 // validity and the refusal of trailing data. Every accepted password has <=20
 // characters (#2060), so its wire payload is at most 20 octets in Latin-1, 40 in
-// UCS-2 and 80 in UTF-8 (up to four octets a character). Thus rejecting larger
+// UCS-2 and 80 in UTF-8 or UCS-4 (up to four octets a character). Thus rejecting larger
 // content loses no accepted encoding, and the authoritative decode can allocate
 // only bounded password storage. There is deliberately no total-request-length
 // cutoff.
@@ -33,7 +33,7 @@ fn bounded_password(data: &[u8]) -> bool {
         Ok(match password {
             None => true,
             Some(content) => match content.first() {
-                Some(0) => content.len() <= 81,
+                Some(0 | 3) => content.len() <= 81,
                 Some(5) => content.len() <= 21,
                 Some(4) => content.len() <= 41,
                 _ => false,
@@ -156,8 +156,32 @@ mod tests {
     }
 
     #[test]
+    fn ucs4_recovery_admission_validates_the_character_count_and_scalars() {
+        let scalar = 0x1f980_u32.to_be_bytes();
+        for (payload, recovery) in [
+            (scalar.repeat(20), true),
+            (scalar.repeat(21), false),
+            (vec![0, 0, 0xd8, 0], false),
+            (vec![0, 0, 3], false),
+        ] {
+            let mut data = BytesMut::from(&[0x19, 0][..]);
+            tags::encode_tag(&mut data, 2, TagClass::Context, 1 + payload.len() as u32);
+            data.extend_from_slice(&[primitives::charset::UCS4]);
+            data.extend_from_slice(&payload);
+            assert_matches_decoder(&data);
+            assert_eq!(
+                matches!(
+                    confirmed_class(ConfirmedServiceChoice::DEVICE_COMMUNICATION_CONTROL, &data),
+                    Class::Recovery
+                ),
+                recovery
+            );
+        }
+    }
+
+    #[test]
     fn recovery_preflight_bounds_the_password_not_the_request_and_a_trailing_dcc_is_confirmed() {
-        for charset in [0, 4, 5] {
+        for charset in [0, 3, 4, 5] {
             let mut data = BytesMut::from(&[0x19, 0][..]);
             tags::encode_tag(&mut data, 2, TagClass::Context, 1_000_001);
             data.extend_from_slice(&[charset]);

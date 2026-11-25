@@ -103,12 +103,21 @@ class TaggedValueTests(unittest.TestCase):
         self.assertNotEqual(PropertyValue.list([tagged]),
                             PropertyValue.list([PropertyValue.application_data(VENDOR)]))
 
+    def test_ucs4_tag_node_preserves_its_served_octets(self) -> None:
+        raw = bytes.fromhex("75 05 03 00 00 03 a9")
+        wire = b"\x09\x01" + raw
+        tagged = PropertyValue.tagged(wire)
+        _, string = tagged.value
+        self.assertEqual((tagged.octets, string.octets), (wire, raw))
+        self.assertEqual(string.value, PropertyValue.character_string("Ω"))
+        self.assertEqual(string.value.octets, bytes.fromhex("73 00 ce a9"))
+
     def test_octets_that_dont_read_as_tags_raise(self) -> None:
         for octets in (
             b"\x1e\x21\x01",  # never closed
             b"\x09\x01\x2f",  # a closing tag with nothing open
             b"\x0e" * 33 + b"\x0f" * 33,  # nested past 32
-            b"\x09\x01\x75\x05\x03\x00\x00\x00\x41",  # a UCS-4 string
+            b"\x09\x01\x73\x02\x30\x21",  # a JIS X 0208 string
             b"\x44\x3f",  # cut short
             b"\x00" * 10_001,  # past the 10,000-element bound
         ):

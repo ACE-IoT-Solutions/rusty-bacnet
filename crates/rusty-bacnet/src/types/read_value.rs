@@ -33,7 +33,7 @@
 //!   keeps its octets as read; its `.value` is the date and time. A
 //!   Present_Value write takes the bare pair, not them.
 //! - When an application element is well framed but [`PropertyValue`] has no
-//!   form for its content (a CharacterString in UCS-4, DBCS or JIS X 0208,
+//!   form for its content (a CharacterString in DBCS or JIS X 0208,
 //!   UTF-8 that doesn't decode, an ENUMERATED past 32 bits), or the tree
 //!   holds more elements than the decoder's bound, the whole value comes
 //!   back as [`PropertyValue::ApplicationData`] holding its octets.
