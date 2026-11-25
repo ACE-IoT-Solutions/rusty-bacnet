@@ -127,6 +127,38 @@ allocator instructions per request, a report-only measure. The complete
 results are in `target/downstream-linux/perf-bcc0422c2/summary.md` and
 `summary.json`.
 
+## Mixed shared-endpoint workload
+
+Two loopback tests exercise one B/IP socket, an explicitly named router and
+strict confirmed COV admission. On four destination networks the peer
+receives one RP, RPM, ReadRange and AtomicReadFile before answering any of
+them. It sends a late answer to the cancelled RP. The file response and an
+incoming segmented COV use the same station and invoke ID in opposite
+directions. The peer waits for each initial SegmentACK and withholds file
+segment one to force a NAK and retransmission. The client returns all 1,024
+file octets at offset 40 with EOF, both RPM rows including the indexed error,
+and the original ReadRange record, flags, count and first sequence number zero.
+
+The second test uses one destination network. The routed path admits one
+outbound request per router and destination network. While the file holds
+that path, the client submits three more reads, receives a segmented COV,
+and cancels the RP. The peer observes the file followed by one RPM and one
+ReadRange in either order. A subsequent confirmed COV reply bounds the trace.
+
+The tests check the endpoint's UDP source and the destination station on replies,
+the admitted COV's provenance and value, and an unknown-subscription Error
+for the same registration fields from a different station. A capacity-one
+frame subscription reports loss while the COV iterator delivers its next
+distinct value. A follow-up read succeeds with zero active leases and a ready
+transport. Closing the endpoint wakes an unfinished read and pending COV and
+frame subscriptions. Three native tests cover cancelled path waiters, a full
+notification worker queue and shutdown while a client handle survives.
+
+Both cases in `test_endpoint_mixed_workload.py` ran on macOS arm64 loopback
+with CPython 3.13 and a local wheel built from `f90a6b430`. They cover the exchanges
+observed by the test peer. Deployment traffic captures and shared-client
+performance measurements remain open.
+
 ## Remaining acceptance work
 
 | Owner | Required evidence |
