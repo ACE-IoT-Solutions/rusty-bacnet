@@ -101,9 +101,9 @@ pub struct RuntimeHealth {
     pub accepting_commands: bool,
     /// Number of currently managed background tasks.
     pub task_count: usize,
-    /// Number of runtime supervisor tasks. This slice has none.
+    /// Number of persistent supervisor tasks. Whole-set transitions finish before this snapshot.
     pub supervisor_task_count: usize,
-    /// Number of attachment client/transport task groups.
+    /// Number of owned attachment groups, including groups awaiting a confirmed shutdown.
     pub attachment_task_count: usize,
     /// Number of active scheduled batch operations.
     pub operation_count: usize,
@@ -134,9 +134,9 @@ pub struct RuntimeHealth {
 pub struct StopReport {
     /// Whether this call performed the transition.
     pub newly_stopped: bool,
-    /// Tasks stopped cooperatively.
+    /// Attachment groups with a confirmed shutdown in this call.
     pub tasks_joined: usize,
-    /// Tasks aborted after the shutdown deadline.
+    /// Batch tasks signalled to abort during this call.
     pub tasks_aborted: usize,
     /// Attachments remaining after shutdown.
     pub remaining_attachments: usize,

@@ -246,7 +246,7 @@ async fn invalid_routed_paths_are_rejected_before_operation_admission() {
             Err(error) => error,
         };
         assert_eq!(error.code, crate::ErrorCode::InvalidConfig);
-        assert_eq!(runtime.inner.active_operations.load(Ordering::Acquire), 0);
+        assert_eq!(*runtime.inner.operation_count.borrow(), 0);
     }
     runtime.stop().await.unwrap();
 }

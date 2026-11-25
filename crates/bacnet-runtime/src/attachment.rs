@@ -1,9 +1,12 @@
+use std::future::Future;
 use std::net::Ipv4Addr;
-use std::time::Duration;
+use std::pin::Pin;
+use std::sync::Mutex;
 
 use bacnet_client::client::{BACnetClient, Station};
 use bacnet_transport::bip::{BipMode, BipTransport, ForeignBbmd, ForeignDeviceConfig};
-use tokio::sync::Mutex;
+use tokio::sync::{Semaphore, SemaphorePermit};
+use tokio::time::Instant;
 
 use crate::config::{AttachmentConfig, TransportConfig};
 use crate::health::{
@@ -12,11 +15,53 @@ use crate::health::{
 };
 use crate::{DevicePath, PropertyTarget, RuntimeError};
 
+type Client = Box<BACnetClient<BipTransport>>;
+#[cfg(test)]
+type StopBarrier = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<Result<(), bacnet_types::error::Error>>,
+);
+type Shutdown =
+    Pin<Box<dyn Future<Output = (Client, Result<(), bacnet_types::error::Error>)> + Send>>;
+
+enum Owner {
+    Running(Client),
+    RetryStop(Client),
+    Stopping(Shutdown),
+    Stopped,
+}
+
+// The permit excludes all other consumers while the owner is outside the slot.
+// Drop puts it back before releasing admission, including cancellation mid-request.
+struct Lease<'a> {
+    slot: &'a Mutex<Owner>,
+    owner: Owner,
+    _permit: SemaphorePermit<'a>,
+}
+
+impl Drop for Lease<'_> {
+    fn drop(&mut self) {
+        *self.slot.lock().unwrap() = std::mem::replace(&mut self.owner, Owner::Stopped);
+    }
+}
+
+impl Lease<'_> {
+    fn client(&self) -> Result<&Client, RuntimeError> {
+        match &self.owner {
+            Owner::Running(client) => Ok(client),
+            _ => Err(RuntimeError::stopped()),
+        }
+    }
+}
+
 pub(super) struct ManagedAttachment {
     pub(super) config: AttachmentConfig,
-    pub(super) client: Mutex<Option<BACnetClient<BipTransport>>>,
-    state: Mutex<AttachmentState>,
-    last_error: Mutex<Option<crate::ErrorCode>>,
+    admission: Semaphore,
+    owner: Mutex<Owner>,
+    local_mac: Vec<u8>,
+    status: Mutex<(AttachmentState, Option<crate::ErrorCode>)>,
+    #[cfg(test)]
+    pub(crate) stop_barrier: Mutex<Option<StopBarrier>>,
 }
 
 impl DevicePath {
@@ -36,21 +81,33 @@ impl ManagedAttachment {
     fn new(config: AttachmentConfig, client: BACnetClient<BipTransport>) -> Self {
         Self {
             config,
-            client: Mutex::new(Some(client)),
-            state: Mutex::new(AttachmentState::Running),
-            last_error: Mutex::new(None),
+            local_mac: client.local_mac().to_vec(),
+            owner: Mutex::new(Owner::Running(Box::new(client))),
+            admission: Semaphore::new(1),
+            status: Mutex::new((AttachmentState::Running, None)),
+            #[cfg(test)]
+            stop_barrier: Mutex::default(),
+        }
+    }
+
+    async fn lease(&self) -> Lease<'_> {
+        let permit = self
+            .admission
+            .acquire()
+            .await
+            .expect("attachment admission stays open");
+        let owner = std::mem::replace(&mut *self.owner.lock().unwrap(), Owner::Stopped);
+        Lease {
+            slot: &self.owner,
+            owner,
+            _permit: permit,
         }
     }
 
     pub(super) async fn health(&self) -> AttachmentHealth {
-        let state = *self.state.lock().await;
-        let last_error = *self.last_error.lock().await;
-        let local_mac = self
-            .client
-            .lock()
-            .await
-            .as_ref()
-            .map(|client| client.local_mac().to_vec());
+        let lease = self.lease().await;
+        let (state, last_error) = *self.status.lock().unwrap();
+        let local_mac = (!matches!(lease.owner, Owner::Stopped)).then(|| self.local_mac.clone());
         let foreign_device_registration = if matches!(
             &self.config.transport,
             TransportConfig::Bip(crate::BipConfig {
@@ -58,10 +115,9 @@ impl ManagedAttachment {
                 ..
             })
         ) {
-            self.client
-                .lock()
-                .await
-                .as_ref()
+            lease
+                .client()
+                .ok()
                 .and_then(|client| client.foreign_registration().ok())
                 .map(ForeignDeviceRegistrationStatus::from)
         } else {
@@ -92,8 +148,8 @@ impl ManagedAttachment {
         &self,
         target: &PropertyTarget,
     ) -> Result<Vec<u8>, RuntimeError> {
-        let client = self.client.lock().await;
-        let client = client.as_ref().ok_or_else(RuntimeError::stopped)?;
+        let lease = self.lease().await;
+        let client = lease.client()?;
         let result = client
             .read_property(
                 &target.path.station(),
@@ -113,8 +169,8 @@ impl ManagedAttachment {
         raw_value: Vec<u8>,
         priority: Option<u8>,
     ) -> Result<(), RuntimeError> {
-        let client = self.client.lock().await;
-        let client = client.as_ref().ok_or_else(RuntimeError::stopped)?;
+        let lease = self.lease().await;
+        let client = lease.client()?;
         let result = client
             .write_property(
                 &target.path.station(),
@@ -128,37 +184,64 @@ impl ManagedAttachment {
         result.map_err(|error| RuntimeError::operation(self.config.id, error))
     }
 
-    pub(super) async fn stop(&self, timeout: Duration) -> Result<(), RuntimeError> {
-        *self.state.lock().await = AttachmentState::Stopping;
-        let id = self.config.id;
-        let stop = async {
-            let mut client = self.client.lock().await.take();
-            let Some(mut client) = client.take() else {
-                return Ok(());
-            };
-            client.stop().await
+    pub(super) async fn stop(&self, deadline: Option<Instant>) -> Result<(), RuntimeError> {
+        *self.status.lock().unwrap() = (AttachmentState::Stopping, None);
+        let stop = self.finish_shutdown();
+        let result = match deadline {
+            Some(deadline) => tokio::time::timeout_at(deadline, stop)
+                .await
+                .unwrap_or_else(|_| {
+                    Err(RuntimeError {
+                        code: crate::ErrorCode::DeadlineExceeded,
+                        retryable: true,
+                        attachment_id: Some(self.config.id),
+                        message: "attachment shutdown timed out".into(),
+                    })
+                }),
+            None => stop.await,
         };
-        match tokio::time::timeout(timeout, stop).await {
-            Ok(Ok(())) => {
-                *self.state.lock().await = AttachmentState::Stopped;
+        *self.status.lock().unwrap() = match &result {
+            Ok(()) => (AttachmentState::Stopped, None),
+            Err(error) => (AttachmentState::Failed, Some(error.code)),
+        };
+        result
+    }
+
+    async fn finish_shutdown(&self) -> Result<(), RuntimeError> {
+        let mut lease = self.lease().await;
+        if matches!(lease.owner, Owner::Running(_) | Owner::RetryStop(_)) {
+            let (Owner::Running(mut client) | Owner::RetryStop(mut client)) =
+                std::mem::replace(&mut lease.owner, Owner::Stopped)
+            else {
+                unreachable!()
+            };
+            #[cfg(test)]
+            let barrier = self.stop_barrier.lock().unwrap().take();
+            // Preserve the actual shutdown future: it can own a join removed from the client.
+            lease.owner = Owner::Stopping(Box::pin(async move {
+                #[cfg(test)]
+                if let Some((entered, resume)) = barrier {
+                    let _ = entered.send(());
+                    if let Ok(Err(error)) = resume.await {
+                        return (client, Err(error));
+                    }
+                }
+                let result = client.stop().await;
+                (client, result)
+            }));
+        }
+        let Owner::Stopping(shutdown) = &mut lease.owner else {
+            return Ok(());
+        };
+        let (client, result) = shutdown.await;
+        match result {
+            Ok(()) => {
+                lease.owner = Owner::Stopped;
                 Ok(())
             }
-            Ok(Err(error)) => {
-                let runtime_error = RuntimeError::start(id, error);
-                *self.last_error.lock().await = Some(runtime_error.code);
-                *self.state.lock().await = AttachmentState::Failed;
-                Err(runtime_error)
-            }
-            Err(_) => {
-                let runtime_error = RuntimeError {
-                    code: crate::ErrorCode::DeadlineExceeded,
-                    retryable: true,
-                    attachment_id: Some(id),
-                    message: "attachment shutdown timed out".to_owned(),
-                };
-                *self.last_error.lock().await = Some(runtime_error.code);
-                *self.state.lock().await = AttachmentState::Failed;
-                Err(runtime_error)
+            Err(error) => {
+                lease.owner = Owner::RetryStop(client);
+                Err(RuntimeError::start(self.config.id, error))
             }
         }
     }

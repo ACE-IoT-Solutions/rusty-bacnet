@@ -1,4 +1,5 @@
 use super::*;
+use crate::AttachmentState;
 use crate::batch::{PropertyTarget, ReadBatchItem};
 use crate::config::{BipConfig, TransportConfig};
 use bacnet_types::enums::PropertyIdentifier;
@@ -6,6 +7,7 @@ use bacnet_types::primitives::ObjectIdentifier;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
+mod lifecycle;
 mod routed;
 
 fn attachment(id: u128, port: u16) -> AttachmentConfig {
@@ -138,20 +140,9 @@ async fn reconcile_rejects_while_a_batch_operation_is_active() {
     let runtime = BacnetRuntime::start(RuntimeConfig::default())
         .await
         .unwrap();
-    let permit = runtime
-        .inner
-        .operation_slots
-        .clone()
-        .try_acquire_owned()
+    let guard = runtime
+        .reserve_operation(OperationId(98), runtime.inner.clone())
         .unwrap();
-    let id = OperationId(98);
-    runtime
-        .inner
-        .active_operations
-        .fetch_add(1, Ordering::AcqRel);
-    runtime.inner.operations.lock().unwrap().insert(id, None);
-    let guard = OperationGuard::new(id, Arc::clone(&runtime.inner), permit);
-
     let error = runtime.reconcile(2, Vec::new()).await.unwrap_err();
     assert_eq!(error.code, crate::ErrorCode::Backpressure);
 
@@ -188,43 +179,6 @@ async fn failed_reconcile_restores_the_previous_attachment_set() {
     assert_eq!(health.attachments[0].id, AttachmentId::from(1));
     assert_eq!(health.attachments[0].state, AttachmentState::Running);
     runtime.stop().await.unwrap();
-}
-
-#[tokio::test]
-async fn failed_stop_retains_attachments_and_can_be_retried() {
-    let runtime = BacnetRuntime::start(RuntimeConfig {
-        attachments: vec![attachment(1, 0)],
-        shutdown_timeout: Duration::from_millis(10),
-        ..RuntimeConfig::default()
-    })
-    .await
-    .unwrap();
-    let managed = runtime
-        .inner
-        .attachments
-        .lock()
-        .await
-        .get(&AttachmentId::from(1))
-        .unwrap()
-        .clone();
-    let client_guard = managed.client.lock().await;
-    let stopping = runtime.clone();
-    let stop_task = tokio::spawn(async move { stopping.stop().await });
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    drop(client_guard);
-
-    assert_eq!(
-        stop_task.await.unwrap().unwrap_err().code,
-        crate::ErrorCode::DeadlineExceeded
-    );
-    let health = runtime.health().await;
-    assert!(!health.accepting_commands);
-    assert_eq!(health.attachments.len(), 1);
-
-    let retry = runtime.stop().await.unwrap();
-    assert!(!retry.newly_stopped);
-    assert_eq!(retry.remaining_attachments, 0);
-    assert!(runtime.health().await.attachments.is_empty());
 }
 
 #[tokio::test]
@@ -276,22 +230,12 @@ async fn dropping_an_operation_guard_releases_its_slot() {
     let runtime = BacnetRuntime::start(RuntimeConfig::default())
         .await
         .unwrap();
-    let permit = runtime
-        .inner
-        .operation_slots
-        .clone()
-        .try_acquire_owned()
+    let guard = runtime
+        .reserve_operation(OperationId(99), runtime.inner.clone())
         .unwrap();
-    runtime
-        .inner
-        .active_operations
-        .fetch_add(1, Ordering::AcqRel);
-    let id = OperationId(99);
-    runtime.inner.operations.lock().unwrap().insert(id, None);
-    let guard = OperationGuard::new(id, Arc::clone(&runtime.inner), permit);
-    assert_eq!(runtime.inner.active_operations.load(Ordering::Acquire), 1);
+    assert_eq!(*runtime.inner.operation_count.borrow(), 1);
     drop(guard);
-    assert_eq!(runtime.inner.active_operations.load(Ordering::Acquire), 0);
+    assert_eq!(*runtime.inner.operation_count.borrow(), 0);
 }
 
 #[tokio::test]
@@ -330,6 +274,17 @@ async fn stop_aborts_and_joins_an_inflight_batch() {
 
 #[tokio::test]
 async fn direct_read_batch_round_trips_through_bip() {
+    let runtime = BacnetRuntime::start(RuntimeConfig {
+        attachments: vec![attachment(1, 0)],
+        ..RuntimeConfig::default()
+    })
+    .await
+    .unwrap();
+    assert_read(&runtime).await;
+    runtime.stop().await.unwrap();
+}
+
+async fn assert_read(runtime: &BacnetRuntime) {
     use bacnet_encoding::apdu::{self, Apdu, ComplexAck, encode_apdu};
     use bacnet_network::layer::NetworkLayer;
     use bacnet_npdu::NetworkPriority;
@@ -388,12 +343,6 @@ async fn direct_read_batch_round_trips_through_bip() {
         peer.stop().await.unwrap();
     });
 
-    let runtime = BacnetRuntime::start(RuntimeConfig {
-        attachments: vec![attachment(1, 0)],
-        ..RuntimeConfig::default()
-    })
-    .await
-    .unwrap();
     let outcomes = runtime
         .read_batch(ReadBatch {
             items: vec![ReadBatchItem {
@@ -422,7 +371,6 @@ async fn direct_read_batch_round_trips_through_bip() {
     assert!(outcomes[0].error.is_none());
 
     responder.await.unwrap();
-    runtime.stop().await.unwrap();
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]

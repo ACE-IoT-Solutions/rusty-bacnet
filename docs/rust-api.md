@@ -9235,12 +9235,22 @@ set of BACnet attachments. The initial 0.13 port deliberately supports B/IP
 attachments only. It owns client startup and shutdown, transactional whole-set
 reconciliation, health snapshots, and ordered read/write batches.
 
-`BacnetRuntime::start` validates the complete configuration and rolls back any
-attachments already started if a later bind fails. `reconcile` accepts a newer
-complete revision, rejects reconciliation while a batch is active, and restores
-the prior attachment set if replacement fails. `stop` is idempotent, refuses
-new work, cancels runtime-owned batches, and then stops every attachment within
-the configured deadline.
+`BacnetRuntime::start` validates the complete configuration. If a later bind
+fails or the caller drops startup before accepting the result, the runtime
+joins the attachments it started. A startup cleanup timeout returns both
+causes while the startup task continues cleaning the unpublished attachments.
+
+`reconcile` accepts a newer complete revision when no batch is active. Once
+admitted, the transition finishes even if its caller drops the future. It
+releases the previous owners before binding replacements. A successful
+rollback restores the prior configuration and keeps its revision and generation.
+Failed cleanup or rollback closes command admission and retains unresolved
+owners. Health reports these owners until shutdown is confirmed.
+
+`stop` closes admission, cancels batches and waits for shutdown within the
+configured deadline. After cancellation or a timeout, call `stop` again to
+resume the remaining joins. Keep the Tokio executor running through cleanup.
+Dropping the executor or process cannot confirm task completion.
 
 Batch admission is bounded by `max_inflight_operations` and
 `scheduler_capacity`; `max_batch_items` bounds each operation. Inputs execute

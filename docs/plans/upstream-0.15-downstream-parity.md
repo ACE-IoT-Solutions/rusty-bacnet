@@ -41,17 +41,11 @@ cleanup barrier whether startup succeeded or was cancelled.
   implement runtime SC attachments or broaden transport support. It is
   explicitly non-publishable on this ACE migration branch, so the inherited
   crates.io release workflow and public installation page do not advertise it.
-- A separate read-only review identified pre-existing runtime failure-state
-  risks that remain unresolved here: an operation-drain timeout after
-  `stop()` sets `stopped=true` can leave attachments running while later stop
-  calls no-op; `reconcile()` removes the active map before cleanup and can
-  return from cleanup failure without restoring it; failure of both desired
-  startup and rollback can leave an empty map with `stopped=false`. Commands
-  can then be admitted only to fail with attachment-not-found. These findings
-  are release risks, not integration regressions or evidence of wider runtime
-  support. Add regression tests for socket/task release after drain timeout,
-  retryable cleanup, map restoration after stop failure, and explicit failed
-  state after unsuccessful rollback before treating those paths as accepted.
+- The native B/IP runtime retains each attachment until shutdown completes.
+  An admitted whole-set replacement or rollback runs through caller
+  cancellation. If cleanup fails, the runtime closes command admission and
+  keeps outstanding owners available to a later `stop()`. Only a successful
+  complete replacement advances the applied revision and generation.
 - Node F still needs a separate comparison against its vendored 0.11.7 line:
   reconcile its deadline and parser patches before updating that vendor pin.
   This integration makes no changes to Node F or other downstream projects.
@@ -67,7 +61,7 @@ cleanup barrier whether startup succeeded or was cancelled.
 | Runtime and native routing | Runtime 19, network 329 and router-core 14 unit tests passed; recovered/unknown-port traces, hosted reannouncement and routed-RPM helper passed. |
 | Mixed lifecycle failure/cancellation | All six injected native tests passed after repair: cleanup failure/restart fence, cancelled multiport rollback, cancelled stop barrier, lost startup publication, and SC recovery before monitor spawn or first poll. The 13 upstream router unit tests and 12 lifecycle integration tests also passed unchanged. |
 | Follow-up upstream SC integration | `cargo check --locked` passed for runtime, bindings, transport and ops. Transport passed 1,430 tests with one pre-existing local B/IP shared-port test excluded; that test also timed out on the pre-merge checkout. A fresh CPython 3.13 wheel passed 55 router/SC-hub Python tests and 357 subtests. Ops and MCP passed 243 and 129 unit tests. |
-| Runtime failure-state release risk | Resolve and test the pre-existing stop/drain-timeout and reconcile/rollback findings above; the current 19 passing runtime tests do not establish these failure paths. |
+| Native B/IP runtime ownership | Barrier and paused-clock regressions exercise shutdown retry, operation drain, partial cleanup and rollback failure, cancellation before and after the initial startup offer, and cancellation of a replacement waiter. Real loopback binds and a read through a restored attachment confirm release and service recovery. Python and Edge attachment orchestration remain separate qualification work. |
 | ACE adaptor migration | Update imports/construction and run adaptor tests against the exact built wheel. Resolve required missing counters and health fields without synthetic values. |
 | SC wire behavior | Run an exact-wheel Python 3.13 SC hub + mixed-router + B/IP device scenario, including read/write, reconnect, teardown and oversized-message handling. Record the wheel hash and fixture configuration. |
 | Node F vendor update | Compare 0.11.7 deadline/parser patches, preserve needed behavior, then run firmware and protocol regressions before changing the pin. |
