@@ -724,7 +724,7 @@ cleaned target directory and a freshly built wheel.
 |---|---|
 | `cargo test --workspace --exclude rusty-bacnet --locked --features bacnet-types/serde,bacnet-transport/ipv6,bacnet-transport/sc-tls --no-fail-fast` | 48 suites, 4724 passed, 0 failed |
 | `bash .github/scripts/check-file-size.sh`, `cargo fmt --check`, `git diff --check main..HEAD` | clean |
-| `shellcheck -S warning scripts/publish-python-release.sh` | clean |
+| ShellCheck on the private release script at that revision (local builds now use `scripts/build-python-release.sh`) | clean |
 | Fresh `ace_rusty_bacnet-0.11.1-cp313` wheel in a new venv with `PYTHONPATH` cleared, full Python suite | 153 passed, 1877 subtests, 0 failed |
 | `rustls` in `Cargo.lock` | 0.23.45 as the changelog states |
 

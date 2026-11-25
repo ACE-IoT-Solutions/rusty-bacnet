@@ -18,7 +18,7 @@ import tempfile
 import tomllib
 
 
-def repair(archive: Path) -> None:
+def repair(archive: Path, *, epoch: int | None = None) -> None:
     """Prune a source archive's lockfile without updating registry packages."""
     archive = archive.resolve()
     with tempfile.TemporaryDirectory(prefix="bacnet-sdist-") as temporary:
@@ -59,7 +59,8 @@ def repair(archive: Path) -> None:
             after = tomllib.loads(lock.decode())
             if any(identity(package) not in allowed for package in after["package"]):
                 raise ValueError("source lock repair would introduce a new package or version")
-            epoch = int(os.environ.get("SOURCE_DATE_EPOCH", locks[0].mtime))
+            if epoch is None:
+                epoch = int(os.environ.get("SOURCE_DATE_EPOCH", locks[0].mtime))
             # Keep all original members and metadata; only Cargo.lock's payload
             # and size change. In particular, notices and package data survive.
             pending = None

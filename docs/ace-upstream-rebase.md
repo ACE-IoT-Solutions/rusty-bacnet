@@ -22,4 +22,22 @@ The uncommitted TLS-attempt diagnostics prototype is preserved outside this inte
 
 Before the version bump, the macOS feature suite passed 15,727 native tests and the installed wheel passed 1,159 Python tests. Both the wheel built from the checkout and the wheel rebuilt offline from its repaired source archive passed the release smoke test. See the [local macOS checks](../scripts/ci/local-macos.sh) for native feature selection.
 
-Run `scripts/release/repair_sdist.py` on the source archive and `cargo build --locked --offline -p rusty-bacnet` in the extracted source. To check an installed ACE 0.16.0 wheel, run `python -I scripts/release/wheel_smoke.py --version 0.16.0`.
+For a local packaging check, run `cargo fetch --locked` to populate the Cargo
+cache, then `scripts/build-python-release.sh <version>`. The script uses
+the release-pinned maturin and the Git commit timestamp. It prunes the
+sdist’s workspace lockfile offline, compiles from that archive and
+smoke-tests the local wheel. `--wheel-dir DIR` adds supplemental wheels
+for metadata checks. `--allow-dirty` permits a local working copy for
+validation. Each run writes its files to a fresh directory under
+`dist/python-build/<version>/`.
+
+The tagged GitHub release workflow publishes ACE distributions. Its private
+index job checks that `origin` advertises `v<version>` at the tested commit
+and verifies the downloaded release assets against the staged GitHub
+release’s SHA-256 manifest. It builds a smoke wheel from the canonical
+archive with the locked, cached dependencies. Immediately before uploading
+the original sdist and ten CPython 3.10/3.13 wheels, it rechecks the manifest,
+checkout and remote tag. An existing index file with a different hash stops
+the upload. Corrections to published artifacts require a new version.
+
+To check an installed ACE 0.16.0 wheel, run `python -I scripts/release/wheel_smoke.py --version 0.16.0`.
