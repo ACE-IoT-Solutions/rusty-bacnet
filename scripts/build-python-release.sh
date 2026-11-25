@@ -61,7 +61,8 @@ if [[ "$allow_dirty" == false ]] && [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 release_commit=$(git rev-parse HEAD)
-metadata=$(cargo metadata --locked --no-deps --format-version 1)
+release_tool=("$metadata_python" "$repo_root/scripts/release/release_toolchain.py")
+metadata=$("${release_tool[@]}" "$repo_root" cargo metadata --locked --no-deps --format-version 1)
 package_record=$("$python_executable" -c '
 import json, sys
 metadata = json.load(sys.stdin)
@@ -128,11 +129,10 @@ PATH="$tools_dir/bin:$PATH" "$metadata_python" scripts/release/build_ace_sdist.p
 sdist="$assembled/ace_rusty_bacnet-$python_version.tar.gz"
 mkdir "$release_tmp/source"
 tar -xzf "$sdist" -C "$release_tmp/source"
-(
-    cd "$release_tmp/source/ace_rusty_bacnet-$python_version"
-    cargo check --locked --offline -p rusty-bacnet --lib
-    "$tools_dir/bin/maturin" build --locked --offline --release --interpreter "$python_executable" --out "$assembled"
-)
+source_dir="$release_tmp/source/ace_rusty_bacnet-$python_version"
+"${release_tool[@]}" "$source_dir" cargo check --locked --offline -p rusty-bacnet --lib
+"${release_tool[@]}" "$source_dir" "$tools_dir/bin/maturin" build --locked --offline --release \
+    --interpreter "$python_executable" --out "$assembled"
 
 shopt -s nullglob
 local_wheels=("$assembled"/ace_rusty_bacnet-"$python_version"-*.whl)

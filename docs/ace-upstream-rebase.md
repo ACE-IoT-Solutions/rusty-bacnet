@@ -24,7 +24,8 @@ Before the version bump, the macOS feature suite passed 15,727 native tests and 
 
 For a local packaging check, run `cargo fetch --locked` to populate the Cargo
 cache, then `scripts/build-python-release.sh <version>`. The script uses
-the release-pinned maturin and the Git commit timestamp. It prunes the
+the pinned maturin version and the Git commit timestamp. Source builds and
+archive checks use the Cargo and rustc versions in `rust-toolchain.toml`. The script prunes the
 sdist’s workspace lockfile offline, compiles from that archive and
 smoke-tests the local wheel. `--wheel-dir DIR` adds supplemental wheels
 for metadata checks. `--allow-dirty` permits a local working copy for

@@ -18,7 +18,7 @@ import tempfile
 import tomllib
 
 
-def repair(archive: Path, *, epoch: int | None = None) -> None:
+def repair(archive: Path, *, epoch: int | None = None, env: dict[str, str] | None = None) -> None:
     """Prune a source archive's lockfile without updating registry packages."""
     archive = archive.resolve()
     with tempfile.TemporaryDirectory(prefix="bacnet-sdist-") as temporary:
@@ -49,8 +49,8 @@ def repair(archive: Path, *, epoch: int | None = None) -> None:
             workspace = source / root
             before = tomllib.loads((workspace / "Cargo.lock").read_text())
             command = ["cargo", "metadata", "--format-version", "1", "--offline"]
-            subprocess.run(command, cwd=workspace, check=True, stdout=subprocess.DEVNULL)
-            subprocess.run([*command, "--locked"], cwd=workspace, check=True,
+            subprocess.run(command, cwd=workspace, env=env, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run([*command, "--locked"], cwd=workspace, env=env, check=True,
                            stdout=subprocess.DEVNULL)
             lock = (workspace / "Cargo.lock").read_bytes()
             identity = lambda package: (package["name"], package["version"],

@@ -2,12 +2,12 @@
 """Build the ACE source archive once with the release-pinned maturin and prune its lock offline."""
 
 import argparse
-import os
 from pathlib import Path
 import subprocess
 import tempfile
 
 from check_artifacts import pep440
+from release_toolchain import release_env
 from repair_sdist import repair
 
 
@@ -22,15 +22,16 @@ def build(version: str, output: Path) -> Path:
     epoch = subprocess.check_output(["git", "log", "-1", "--format=%ct"], cwd=root, text=True).strip()
     # Maturin/repair both read the epoch. A caller's previous value cannot
     # change a tagged release's timestamp.
+    env = {**release_env(root), "SOURCE_DATE_EPOCH": epoch, "CARGO_NET_OFFLINE": "true"}
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=output) as tmp:
         subprocess.run(["maturin", "sdist", "-m", "crates/rusty-bacnet/Cargo.toml",
-                        "--out", tmp], check=True, cwd=root, env={**os.environ, "SOURCE_DATE_EPOCH": epoch, "CARGO_NET_OFFLINE": "true"})
+                        "--out", tmp], check=True, cwd=root, env=env)
         archive = Path(tmp) / f"ace_rusty_bacnet-{pep440(version)}.tar.gz"
         if list(Path(tmp).glob("*.tar.gz")) != [archive]:
             raise ValueError(f"expected a single {archive.name} source archive")
-        repair(archive, epoch=int(epoch))
+        repair(archive, epoch=int(epoch), env=env)
         final = output / archive.name
         archive.replace(final)
     return final

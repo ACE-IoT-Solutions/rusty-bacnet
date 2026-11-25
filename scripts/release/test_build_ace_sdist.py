@@ -45,6 +45,7 @@ class SourceBuildTests(unittest.TestCase):
                 '[project]\nname="ace-rusty-bacnet"\ndynamic=["version"]\nlicense-files=["THIRD-PARTY-NOTICES"]\n'
                 '[tool.maturin]\nbindings="bin"\nlocked=true\n')
             (crate / "THIRD-PARTY-NOTICES").write_text("fixture notice\n")
+            shutil.copy(ROOT / "rust-toolchain.toml", repo / "rust-toolchain.toml")
             (repo / ".github").mkdir()
             shutil.copy(ROOT / ".github/ci-pins.env", repo / ".github/ci-pins.env")
             env = {**os.environ, "CARGO_NET_OFFLINE": "true", "CARGO_TARGET_DIR": str(work / "target"),
@@ -52,19 +53,30 @@ class SourceBuildTests(unittest.TestCase):
                    "GIT_AUTHOR_NAME": "Release Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
                    "GIT_COMMITTER_NAME": "Release Test", "GIT_COMMITTER_EMAIL": "test@example.invalid",
                    "SOURCE_DATE_EPOCH": "999999999"}  # the producer must override the caller's clock
-            def run(*args, cwd=repo):
-                return subprocess.run(args, cwd=cwd, env=env, check=True, capture_output=True, text=True)
+            def run(*args, cwd=repo, extra=None):
+                return subprocess.run(args, cwd=cwd, env={**env, **(extra or {})}, check=True, capture_output=True, text=True)
             run("cargo", "generate-lockfile", "--offline")
             before = (repo / "Cargo.lock").read_bytes()
             run("git", "init", "-q")
             run("git", "add", ".")
             run("git", "commit", "-qm", "fixture source")
+            # If repair escapes the command environment during extraction,
+            # it will pick this shadow Cargo instead of the release compiler.
+            incoming = {"RUSTUP_TOOLCHAIN": "caller-override"}
+            if shutil.which("rustup"):
+                shadow = work / "system-bin"
+                shadow.mkdir()
+                ambient_cargo = shadow / "cargo"
+                ambient_cargo.write_text("#!/bin/sh\necho unexpected ambient Cargo >&2\nexit 29\n")
+                ambient_cargo.chmod(0o755)
+                incoming["PATH"] = str(shadow) + os.pathsep + env["PATH"]
+                incoming["CARGO"] = incoming["RUSTC"] = str(ambient_cargo)
             archives = []
             for run_id in (1, 2):
                 # Different output paths and source mtimes, same file content and commit.
                 os.utime(crate / "src/main.rs", (epoch + run_id, epoch + run_id))
                 output = work / str(run_id)
-                result = run(sys.executable, ROOT / "scripts/release/build_ace_sdist.py", version, output)
+                result = run(sys.executable, ROOT / "scripts/release/build_ace_sdist.py", version, output, extra=incoming)
                 archive = Path(result.stdout.strip().splitlines()[-1])
                 self.assertEqual(archive, output / "ace_rusty_bacnet-1.2.3rc1.tar.gz")
                 archives.append(archive)
@@ -79,7 +91,9 @@ class SourceBuildTests(unittest.TestCase):
                     self.assertEqual([(pkg["name"], pkg["version"]) for pkg in lock["package"]],
                                      [("rusty-bacnet", version)])
                     source.extractall(output, filter="data")
-                run("cargo", "check", "--locked", "--offline", "-p", "rusty-bacnet", cwd=output / root)
+                probe = ROOT / "scripts/release/release_toolchain.py"
+                run(sys.executable, probe, output / root, "cargo", "check", "--locked", "--offline",
+                    "-p", "rusty-bacnet", extra=incoming)
             first, second = (archive.read_bytes() for archive in archives)
             self.assertEqual(hashlib.sha256(first).digest(), hashlib.sha256(second).digest())
             self.assertEqual(gzip.decompress(first), gzip.decompress(second))  # all tar headers and member bytes

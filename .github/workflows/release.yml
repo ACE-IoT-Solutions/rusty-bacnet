@@ -1010,11 +1010,9 @@ jobs:
           mkdir "$RUNNER_TEMP/sdist-check"
           tar -xzf "$archive" -C "$RUNNER_TEMP/sdist-check"
           bash scripts/ci/install-tools.sh maturin
-          (
-            cd "$RUNNER_TEMP/sdist-check/$root"
-            cargo fetch --locked
-            maturin build --locked --offline --interpreter "$PY313" --out "$RUNNER_TEMP/sdist-wheel"
-          )
+          from_archive=(python3 scripts/release/release_toolchain.py "$RUNNER_TEMP/sdist-check/$root")
+          "${from_archive[@]}" cargo fetch --locked
+          "${from_archive[@]}" maturin build --locked --offline --interpreter "$PY313" --out "$RUNNER_TEMP/sdist-wheel"
           uv venv --python "$PY313" "$RUNNER_TEMP/sdist-venv"
           uv pip install --python "$RUNNER_TEMP/sdist-venv/bin/python" --no-deps "$RUNNER_TEMP"/sdist-wheel/*.whl
           "$RUNNER_TEMP/sdist-venv/bin/python" -I scripts/release/wheel_smoke.py --version "$VERSION"
