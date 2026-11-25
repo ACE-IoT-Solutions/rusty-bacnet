@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Entries for the next release are fragment files in [`changelog.d/`](changelog.d/), assembled here when a version is released. Add one per change instead of editing this file: [`changelog.d/README.md`](changelog.d/README.md) has the format, and `python3 scripts/changelog.py preview` shows the section they make.
 
+## [0.17.2] - 2026-11-25
+
+### Migration notes
+
+- Update exhaustive Rust matches on `ConfirmedCOVNotificationResponse` to
+  handle `Error(class, code)`. Python callers can enable strict admission with
+  `confirmed_cov_subscription_limit`; the default still acknowledges every
+  decoded confirmed COV notification. ([96b8436](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/96b8436e2ce6216e3e860c7f47c1d18733deab4b))
+
+### Added
+
+- B/IP endpoints expose local receive readiness and listener counts in their
+  status, so applications can detect a lost broadcast listener while unicast
+  still works. ([57a523f](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/57a523f73fd1b714191633d1a8b29d4193c5da00))
+
+- **Breaking (Rust API):** Clients can opt into bounded local registrations for
+  confirmed COV from direct, routed and own-network stations. They acknowledge matching single-object notifications and
+  return a service Error for unknown subscriptions. Rust response policies
+  can now return a service Error. ([96b8436](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/96b8436e2ce6216e3e860c7f47c1d18733deab4b))
+
+- **Wire:** Clients reassemble both confirmed COV forms before admission, and full servers acknowledge the opening request segment.
+  Endpoint clients follow the Device receive capability and segment timeout and wait for their worker on shutdown. See the [qualification results](docs/plans/downstream-runtime-support.md#candidate-qualification). ([b0f1bed](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/b0f1bed411266f94c213b7476d213342a3ac114d))
+
+### Fixed
+
+- **Wire:** The client acknowledges the first segment of a response
+  immediately, so property reads, trend log pages, and file reads complete with
+  peers that wait for this acknowledgment before sending the rest of a window. ([7b59ac3](https://github.com/ACE-IoT-Solutions/rusty-bacnet/commit/7b59ac33d84782b5e58fb01447808580b826af0e))
+
 ## [0.17.1] - 2026-11-21
 
 ### Added
