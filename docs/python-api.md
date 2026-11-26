@@ -3150,7 +3150,9 @@ Multiple notifications or general numeric-array reduction.
 
 Pass a positive `confirmed_cov_subscription_limit` to `BACnetClient(...)` or
 `await endpoint.client(confirmed_cov_subscription_limit=...)` to start with
-an empty, bounded registry. Register before subscribing so an immediate
+an empty, bounded registry. To reacquire the active client, pass the same limit to
+`endpoint.client()` each time. Omitting it selects `None` (admission disabled),
+and a different setting raises `ValueError`. Register before subscribing so an immediate
 notification can be acknowledged. For example:
 
 ```python

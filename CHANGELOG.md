@@ -1035,6 +1035,8 @@ Entries for the next release are fragment files in [`changelog.d/`](changelog.d/
 
 ### Fixed
 
+- Router diagnostics preserve the ingress port and destination network for missing and unreachable routes. An isolated routing-table update records the isolation refusal. The public guide samples continue to use the upstream release shown on the site.
+
 - MCP reads and searches, a trend's state texts, and the CLI's and TUI's
   name and state-text reads stop when the client's own link fails (a stopped
   transport, say) instead of taking each object for one with no name or

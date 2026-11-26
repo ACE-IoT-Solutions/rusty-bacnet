@@ -46,7 +46,7 @@ async fn routed_read_preserves_dnet_dadr_and_outcome_path() {
     let mut peer = BipTransport::new(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::BROADCAST);
     let mut incoming = peer.start().await.unwrap();
     let router_mac = peer.local_mac().to_vec();
-    let dadr = vec![0, 42];
+    let dadr = vec![1, 42];
     let expected_path = DevicePath::Routed {
         ingress_mac: router_mac.clone(),
         dnet: 200,
@@ -60,7 +60,7 @@ async fn routed_read_preserves_dnet_dadr_and_outcome_path() {
         let npdu = decode_npdu(frame.npdu).unwrap();
         let destination = npdu.destination.unwrap();
         assert_eq!(destination.network, 200);
-        assert_eq!(destination.mac_address.as_slice(), &[0, 42]);
+        assert_eq!(destination.mac_address.as_slice(), &[1, 42]);
         let Apdu::ConfirmedRequest(request) = apdu::decode_apdu(npdu.payload).unwrap() else {
             panic!("expected ReadProperty request")
         };
@@ -80,7 +80,7 @@ async fn routed_read_preserves_dnet_dadr_and_outcome_path() {
         send_routed_reply(
             &peer,
             frame.source_mac.as_slice(),
-            &[0, 42],
+            &[1, 42],
             Apdu::ComplexAck(ComplexAck {
                 segmented: false,
                 more_follows: false,
@@ -115,12 +115,12 @@ async fn routed_read_preserves_dnet_dadr_and_outcome_path() {
         .result()
         .await
         .unwrap();
+    assert!(outcomes[0].error.is_none(), "{:?}", outcomes[0].error);
     assert_eq!(outcomes[0].path.as_ref(), Some(&expected_path));
     assert_eq!(
         outcomes[0].raw_value.as_deref(),
         Some(&[0x44, 0x41, 0x20, 0, 0][..])
     );
-    assert!(outcomes[0].error.is_none());
     responder.await.unwrap();
     runtime.stop().await.unwrap();
 }

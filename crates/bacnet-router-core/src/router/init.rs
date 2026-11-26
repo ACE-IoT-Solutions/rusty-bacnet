@@ -108,7 +108,7 @@ impl<
         }
         for entry in entries.iter() {
             let network = entry.network;
-            if network == 0 || network == GLOBAL_NETWORK || self.hidden_from(at.port, network) {
+            if network == 0 || network == GLOBAL_NETWORK {
                 continue;
             }
             if self.hidden_from(at.port, network) {

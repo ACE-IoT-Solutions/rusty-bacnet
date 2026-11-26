@@ -16,16 +16,20 @@ fn read(path: &Path) -> Value {
     toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
-/// The version the workspace gives a crate, which a release publishes: its
-/// own (bacnet-time versions on its own) or the workspace's.
+/// Public guides pin workspace-versioned crates to the site's upstream release.
+/// The Docs gate also verifies these versions against that tag's manifests.
 pub fn published_version(krate: &str) -> String {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let package = &read(&crates.join(krate).join("Cargo.toml"))["package"];
     match &package["version"] {
         Value::String(own) => own.clone(),
-        _ => read(&crates.parent().unwrap().join("Cargo.toml"))["workspace"]["package"]["version"]
-            .as_str()
-            .unwrap()
+        _ => include_str!("../../../../website/src/lib/site.mjs")
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("export const release = '")?
+                    .strip_suffix("';")
+            })
+            .expect("the website names its published upstream release")
             .to_owned(),
     }
 }

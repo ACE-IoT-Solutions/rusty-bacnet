@@ -33,13 +33,13 @@ import time
 import tomllib
 import unittest
 
+from lab_runner import lab_command
 import site_samples as samples
 from site_samples import ApiCheck, CargoRun, Construct, Covered, Deps, Example, Expect, Parse, Run, ScriptArgs, Skip
 
 REPO = samples.REPO
 SMOKE = REPO / "scripts/release/cli_smoke.sh"
 INTEGRATION_MANIFEST = REPO / "crates/bacnet-integration-tests/Cargo.toml"
-LAB = samples.WEBSITE / "examples/python/loopback_lab.py"
 SERVER_DEVICE = samples.WEBSITE / "examples/python/server_device.py"
 LOOPBACK = "127.0.0.1"
 TIMEOUT = 30
@@ -243,7 +243,7 @@ class Server:
 
 def start_server(kind: str) -> Server:
     if kind == "lab":
-        return Server([sys.executable, "-u", str(LAB), "--serve", "--seconds", "600"], "Example server: ", False)
+        return Server(lab_command("--serve", "--seconds", "600"), "Example server: ", False)
     if kind == "server_device":
         return Server([sys.executable, "-u", str(SERVER_DEVICE)], "Serving device 1001 at ", True)
     if kind == "readme":

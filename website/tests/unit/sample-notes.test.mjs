@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { frontmatter, plainBody, sampleManifests } from '../../scripts/content.mjs';
 import { devInstall, devSource, manifestState, noteMarkdown, noteParts, pythonMinimum, sampleNote, samples, tagUrl } from '../../src/lib/samples.mjs';
 import { release, repository } from '../../src/lib/site.mjs';
-import { assertManifestSource, assertSampleNotes, followsDev, workspaceVersion } from './sample-notes.mjs';
+import { assertManifestSource, assertSampleNotes, followsDev, publishedVersion, releasedManifest } from './sample-notes.mjs';
 
 const root = new URL('../../', import.meta.url);
 const repo = fileURLToPath(new URL('../', root));
@@ -32,10 +32,10 @@ test('the registry lists every sample under website/examples, by its file name, 
   assert.equal(text, `${JSON.stringify(JSON.parse(text), null, 2)}\n`);
 });
 
-test('the pip build\'s minimums are the workspace\'s', async () => {
-  const pyproject = await readFile(new URL('crates/rusty-bacnet/pyproject.toml', new URL('../', root)), 'utf8');
+test('the site names the pip and Rust minimums of its public release', async () => {
+  const pyproject = releasedManifest('crates/rusty-bacnet/pyproject.toml');
   assert.equal(pyproject.match(/^requires-python = ">=([0-9.]+)"$/m)?.[1], pythonMinimum);
-  const workspace = await readFile(new URL('Cargo.toml', new URL('../', root)), 'utf8');
+  const workspace = releasedManifest('Cargo.toml');
   const msrv = workspace.match(/^rust-version = "([^"]+)"$/m)[1];
   for (const [path, manifest] of Object.entries(await sampleManifests())) {
     assert.equal(manifest.match(/^rust-version = "([^"]+)"$/m)?.[1], msrv, path);
@@ -179,7 +179,7 @@ async function releasedForm(manifest) {
       lines.push(line);
       continue;
     }
-    const version = await workspaceVersion(match[1]);
+    const version = publishedVersion(match[1]);
     lines.push(`${match[1]} = ${match[2] ? `{ version = "=${version}", ${match[2]} }` : `"=${version}"`}`);
   }
   return lines.join('\n');

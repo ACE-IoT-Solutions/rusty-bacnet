@@ -494,6 +494,7 @@ jobs:
         if: ${{ !cancelled() && matrix.python == '3.12' }}
         env:
           BACNET_CLI: ${{ github.workspace }}/target/debug/bacnet
+          BACNET_LAB_EXPECTED_DISTRIBUTION: ace-rusty-bacnet
         run: |
           . "$RUNNER_TEMP/venv/bin/activate"
           # The lab expects the site's release; this wheel has the workspace's version.

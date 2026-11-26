@@ -268,7 +268,7 @@ fn a_problem_says_what_came_back() {
                 P::RELINQUISH_DEFAULT,
                 Ok(vec![0x75, 0x05, 0x03, 0, 0, 0, 0x41]),
             ),
-            "can't be decoded: a character string in UCS-4",
+            r#"not a Real (got a character string, "A")"#,
         ),
         (
             ObjectType::ANALOG_VALUE,

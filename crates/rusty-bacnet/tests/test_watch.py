@@ -179,7 +179,7 @@ async def drain(watch: Watch, quiet: float = 1.0) -> None:
     while True:
         try:
             await asyncio.wait_for(anext(watch), quiet)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             return
 
 
@@ -341,7 +341,7 @@ class LifetimeTests(Lab):
                              f"not device {DEVICE}")
             # Nothing more comes for the point, the new device's values least
             # of all.
-            with self.assertRaises(TimeoutError):
+            with self.assertRaises(asyncio.TimeoutError):
                 await asyncio.wait_for(anext(watch), 2)
             await watch.close()
         values = [u.value.value.value for u in seen if u.value is not None]
@@ -553,7 +553,7 @@ class StepTests(Lab):
             await next_where(watch, subscribed)
             await drain(watch)
             for _ in range(3):
-                with self.assertRaises(TimeoutError):
+                with self.assertRaises(asyncio.TimeoutError):
                     await asyncio.wait_for(anext(watch), 0.1)
             await self.server.set_present_value_local(AI, PropertyValue.real(27.0))
             update = await asyncio.wait_for(anext(watch), 10)
@@ -740,7 +740,7 @@ class ChangeTests(Lab):
             await self.server.set_present_value_local(AI, PropertyValue.real(6.0))
             update = await next_where(watch, valued(6.0))
             self.assertEqual(update.object_id, AI)
-            with self.assertRaises(TimeoutError):
+            with self.assertRaises(asyncio.TimeoutError):
                 while True:
                     late = await asyncio.wait_for(anext(watch), 1)
                     self.assertNotEqual(late.object_id, AI2)

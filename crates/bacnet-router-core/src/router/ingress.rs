@@ -471,6 +471,10 @@ impl<
         let route = self.table.lookup(dnet);
         let reachability = self.table.effective_reachability(dnet, at.now);
         let Some(route) = route else {
+            host.observe(super::Event::NoRoute {
+                port: at.port,
+                network: dnet,
+            });
             self.solicit(at.port, dnet, at.now, options);
             self.reject(
                 at,
@@ -487,7 +491,13 @@ impl<
         self.table.touch(dnet, at.now);
         let refusal = match reachability {
             Some(Reachability::Busy) => RejectMessageReason::ROUTER_BUSY,
-            Some(Reachability::Unreachable) => RejectMessageReason::NOT_DIRECTLY_CONNECTED,
+            Some(Reachability::Unreachable) => {
+                host.observe(super::Event::NoRoute {
+                    port: at.port,
+                    network: dnet,
+                });
+                RejectMessageReason::NOT_DIRECTLY_CONNECTED
+            }
             _ => return Ok(route),
         };
         self.reject(at, npdu.source, dnet, refusal, host);

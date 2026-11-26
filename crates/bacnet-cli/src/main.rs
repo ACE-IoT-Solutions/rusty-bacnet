@@ -694,11 +694,21 @@ async fn cli_main(cli: Box<Cli>) -> CliResult {
     if args.mstp.is_some() {
         return boxed(|| mstp::run(&cli, &args, format)).await;
     }
+    boxed(|| run_ip_session(&cli, &args, format)).await
+}
+
+/// Keep the selected IP client's builder, registration and shutdown state in the
+/// session's heap allocation, outside the top-level command future.
+async fn run_ip_session(
+    cli: &Cli,
+    args: &transport::TransportArgs,
+    format: OutputFormat,
+) -> CliResult {
     if args.sc {
         #[cfg(feature = "sc-tls")]
         {
-            let client = transport::build_sc_client(&args).await?;
-            boxed(|| run(client, &cli, format)).await?;
+            let client = transport::build_sc_client(args).await?;
+            boxed(|| run(client, cli, format)).await?;
         }
         #[cfg(not(feature = "sc-tls"))]
         {
@@ -708,7 +718,7 @@ async fn cli_main(cli: Box<Cli>) -> CliResult {
             std::process::exit(1);
         }
     } else if args.ipv6 {
-        let mut client = transport::build_bip6_client(&args).await?;
+        let mut client = transport::build_bip6_client(args).await?;
         // Broadcasts reach the remote network once the BBMD has taken the
         // registration (#2365, #2388).
         if let Some(foreign) = &args.bip6_foreign_device {
@@ -723,9 +733,9 @@ async fn cli_main(cli: Box<Cli>) -> CliResult {
                 }
             }
         }
-        boxed(|| run(client, &cli, format)).await?;
+        boxed(|| run(client, cli, format)).await?;
     } else {
-        let mut client = transport::build_bip_client(&args).await?;
+        let mut client = transport::build_bip_client(args).await?;
         let cmd = cli.command.as_ref().expect("a command after parsing");
         // Broadcasts reach the remote network once the BBMD has taken the
         // registration (#938).
@@ -744,11 +754,11 @@ async fn cli_main(cli: Box<Cli>) -> CliResult {
         }
         let command = boxed(|| async {
             if !boxed(|| execute_bip_command(&client, cmd, cli.ttl, format)).await? {
-                boxed(|| execute_command(&client, &cli, format)).await?;
+                boxed(|| execute_command(&client, cli, format)).await?;
             }
             Ok(())
         });
-        boxed(|| routed_paths::around(&client, &cli, format, command)).await?;
+        boxed(|| routed_paths::around(&client, cli, format, command)).await?;
         client.stop().await?;
     }
 

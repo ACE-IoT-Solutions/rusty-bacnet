@@ -10,9 +10,10 @@ from pathlib import Path
 import subprocess
 from queue import Queue
 from threading import Thread
-import sys
 import unittest
 from unittest import mock
+
+from lab_runner import lab_command
 
 SCRIPT = Path(__file__).resolve().parents[2] / "examples/python/loopback_lab.py"
 spec = importlib.util.spec_from_file_location("loopback_lab", SCRIPT)
@@ -69,15 +70,22 @@ class VersionCheck(unittest.TestCase):
 
 
 class RealExtensionLab(unittest.TestCase):
+    def test_missing_selected_distribution_refuses_before_starting(self):
+        with mock.patch.dict(os.environ, BACNET_LAB_EXPECTED_DISTRIBUTION="absent-bacnet-test-wheel"):
+            result = subprocess.run(lab_command(), text=True, capture_output=True, timeout=20)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Install rusty-bacnet", result.stderr)
+        self.assertNotIn("Example server:", result.stdout)
+
     def test_default_lab_reads_and_exits(self):
-        result = subprocess.run([sys.executable, str(SCRIPT)], text=True, capture_output=True, timeout=20)
+        result = subprocess.run(lab_command(), text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("real: 72.5", result.stdout)
         self.assertIn("PASS:", result.stdout)
         self.assertIn("Server stopped.", result.stdout)
 
     def test_serve_mode_is_bounded(self):
-        result = subprocess.run([sys.executable, str(SCRIPT), "--serve", "--seconds", "1"], text=True, capture_output=True, timeout=15)
+        result = subprocess.run(lab_command("--serve", "--seconds", "1"), text=True, capture_output=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--interface 127.0.0.1 --port 0 read 127.0.0.1:", result.stdout)
         self.assertIn("Server stopped.", result.stdout)
@@ -85,7 +93,7 @@ class RealExtensionLab(unittest.TestCase):
     def test_real_client_can_read_serve_mode(self):
         import asyncio
         from rusty_bacnet import BACnetClient, ObjectIdentifier, ObjectType, PropertyIdentifier
-        process = subprocess.Popen([sys.executable, "-u", str(SCRIPT), "--serve", "--seconds", "3"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen(lab_command("--serve", "--seconds", "3"), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             lines = Queue()
             Thread(target=lambda: lines.put(process.stdout.readline()), daemon=True).start()
