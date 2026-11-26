@@ -28,8 +28,7 @@ pub(super) fn sent(lab: &Lab, service: u8) -> usize {
     lab.services().iter().filter(|s| **s == service).count()
 }
 
-/// Wait, on the real clock, for the client's pooled hubs to go, their
-/// tasks ended, so the lab can take its client back.
+/// Check that a client's pooled hubs have been released after explicit shutdown.
 pub(super) async fn hubs_gone(lab: &Lab) {
     for _ in 0..500 {
         if super::stream_tests::pooled(&lab.client) == 0 {
@@ -93,7 +92,8 @@ async fn a_removal_beside_a_waiting_next_lets_nothing_through_after() {
     let lab = Arc::new(Lab::start(WatchOptions::default()).await);
     let device = lab_device(&lab).await;
     let (one, two) = (device.point("ai:1").unwrap(), device.point("ai:2").unwrap());
-    let mut watch = lab.client.watch([one.clone(), two.clone()]).unwrap();
+    // Lab::stop joins this hub after the reader and writer have finished.
+    let mut watch = lab.hub.stream([one.clone(), two.clone()]).unwrap();
     let wait = Duration::from_secs(10);
     tokio::time::timeout(wait, until(&mut watch, |u| subscribed(u, &one)))
         .await
@@ -139,7 +139,6 @@ async fn a_removal_beside_a_waiting_next_lets_nothing_through_after() {
     assert!(late.is_empty(), "after the removal: {late:?}");
     drop((control, device));
     let lab = Arc::try_unwrap(lab).ok().expect("the lab's last holder");
-    hubs_gone(&lab).await;
     lab.stop().await;
 }
 

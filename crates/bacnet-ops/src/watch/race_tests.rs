@@ -42,7 +42,7 @@ async fn two_controls_race(other: bool) {
     let wait = Duration::from_secs(10);
     let mut keeper = match other {
         true => {
-            let mut keeper = lab.client.watch([two.clone()]).unwrap();
+            let mut keeper = lab.hub.stream([two.clone()]).unwrap();
             tokio::time::timeout(wait, until(&mut keeper, |u| u.state == State::Subscribed))
                 .await
                 .unwrap();
@@ -50,7 +50,7 @@ async fn two_controls_race(other: bool) {
         }
         false => None,
     };
-    let mut watch = lab.client.watch([one.clone()]).unwrap();
+    let mut watch = lab.hub.stream([one.clone()]).unwrap();
     tokio::time::timeout(wait, until(&mut watch, |u| u.state == State::Subscribed))
         .await
         .unwrap();
@@ -98,7 +98,6 @@ async fn two_controls_race(other: bool) {
     assert_eq!(watch.control().remove([&two]).unwrap(), 1);
     table_holds(&lab, if other { 2 } else { 1 }).await;
     drop((watch, keeper, device));
-    hubs_gone(&lab).await;
     let lab = Arc::try_unwrap(lab).ok().expect("the lab's last holder");
     lab.stop().await;
 }
